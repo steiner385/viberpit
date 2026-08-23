@@ -220,6 +220,16 @@ _TRANSCRIPT_WINDOW_CEILING_S = env_float("CCSWITCH_TRANSCRIPT_WINDOW_CEILING_S",
 # never as a successful empty document (a silent empty export is worse than a slow one).
 TRANSCRIPT_EXPORT_CEILING_S = env_float("CCSWITCH_TRANSCRIPT_EXPORT_CEILING_S", 120.0, minimum=0.1)
 
+# Ceiling on how long ensure_driver waits for an in-flight completion-driver release
+# before it gives up and builds the replacement driver anyway. That wait exists to
+# avoid racing the old process's session-file flush, but it runs under the
+# orchestrator-wide `_ensure_lock` and `SessionDriver.aclose()` is only partly
+# bounded (the SDK client's __aexit__ and the account sync-back are not), so an
+# unbounded wait would let one stuck teardown wedge every attach in the process.
+# minimum=0.1: a 0/negative override would fire the timeout instantly and defeat the
+# race protection entirely — fall back to the default instead.
+DRIVER_RELEASE_WAIT_S = env_float("CCSWITCH_DRIVER_RELEASE_WAIT_S", 20.0, minimum=0.1)
+
 
 class SessionOrchestrator:
     """Orchestrates session lifecycle: creation, rotation, termination.
@@ -1487,19 +1497,27 @@ class SessionOrchestrator:
         await self._maybe_push(session_id, status)
         if completed_turn:
             await self._maybe_apply_auto_name(session_id)
-        # A `complete`/`done` session still holds a live `claude` process until
-        # something releases it — historically only auto-archive did, which has two
+        # A `complete` session still holds a live `claude` process until something
+        # releases it — historically only auto-archive did, which has two
         # independent failure modes (autopilot outages; the sticky manual-unarchive
         # opt-out), so a stuck autopilot or an opted-out session could pin capacity
         # forever. Release the process deterministically here instead: completion
         # itself frees the driver/capacity slot, no model call and no autopilot
         # dependency required. Nothing is archived — the row and transcript stay;
         # reopening lazily rebuilds the driver via ensure_driver (resume=
-        # claude_session_id). `idle` (never ran) and the parked overlays
-        # (waiting_external/waiting_question, computed above) are deliberately left
-        # alone — those sessions are still alive and awaiting input or an event, not
-        # finished. Placed after the live-driver side effects above (dashboard Title
-        # push) so an attached client still sees them before the process goes away.
+        # claude_session_id).
+        #
+        # ONLY `complete` — never `done`. `done` is not a finished-work signal: it is
+        # what derive_status returns for ANY ended turn (turns_completed >= 1, no turn
+        # active), i.e. after every ordinary prompt in every session — `completed_turn`
+        # above says exactly that. Releasing on `done` killed the `claude` process at
+        # the end of every turn, so the next prompt paid a full resume and any warm
+        # in-process state was thrown away. `idle` (never ran) and the parked overlays
+        # (waiting_external/waiting_question, computed above) are likewise left alone —
+        # those sessions are still alive and awaiting input or an event, not finished.
+        #
+        # Placed after the live-driver side effects above (dashboard Title push) so an
+        # attached client still sees them before the process goes away.
         # Same pop+suppress+aclose idiom as close_session/stop() — but the pop is
         # synchronous (so capacity accounting sees it the instant this call returns)
         # while the aclose() is deferred to its own task, NOT awaited inline: this
@@ -1508,7 +1526,7 @@ class SessionOrchestrator:
         # would be the task waiting on itself. (Identical reasoning to why
         # _maybe_autoarchive_completed schedules the archive instead of awaiting it
         # inline.)
-        if status in ("done", "complete"):
+        if status == "complete":
             live_driver = self._drivers.pop(session_id, None)
             if live_driver is not None:
                 async def _release(d=live_driver, sid=session_id):
@@ -1537,15 +1555,16 @@ class SessionOrchestrator:
                 log.debug("autopilot.nudge_failed", exc_info=True)
         # When a session reaches ANY status that frees a capacity slot — terminal
         # (ended/archived) via its driver (self-exit, process death, etc.) without an
-        # explicit close_session/archive_session call, OR complete/done per Task 3 —
-        # a queued session should get that slot immediately, not wait for some later
-        # unrelated event (another close/archive, a rehydrate, a settings change, a
-        # manual RPC) to happen to drain it. CAPACITY_EXEMPT_STATUSES is exactly "a
-        # slot just freed"; excluding "queued" itself is required — that member means
-        # "waiting FOR a slot", not "just freed one", and status here is never actually
-        # "queued" (queued rows are written directly at creation/enqueue, not through
-        # this driver on_status callback) but excluding it keeps this call site correct
-        # even if that ever changes, rather than relying on an invariant elsewhere.
+        # explicit close_session/archive_session call, OR `complete` (the driver was
+        # just released a few lines above) — a queued session should get that slot
+        # immediately, not wait for some later unrelated event (another close/archive,
+        # a rehydrate, a settings change, a manual RPC) to happen to drain it.
+        # CAPACITY_EXEMPT_STATUSES is exactly "a slot just freed"; excluding "queued"
+        # itself is required — that member means "waiting FOR a slot", not "just freed
+        # one", and status here is never actually "queued" (queued rows are written
+        # directly at creation/enqueue, not through this driver on_status callback) but
+        # excluding it keeps this call site correct even if that ever changes, rather
+        # than relying on an invariant elsewhere.
         # Tracked via _spawn so stop() can cancel it; never awaited inline
         # (WS-attach-reentrant).
         if status in CAPACITY_EXEMPT_STATUSES and status != "queued":
@@ -1671,7 +1690,19 @@ class SessionOrchestrator:
                 nudge = (verdict.remedy
                          or "Finish the remaining work before signalling completion.")
                 try:
-                    await self.send_prompt(session_id, nudge)
+                    # The session is `complete`, so `_persist_status` has ALREADY popped
+                    # and released its driver — send_prompt would just return "no_driver"
+                    # and the corrective nudge would be silently thrown away, parking the
+                    # session at `complete` on a premature marker. Resume it first (which
+                    # also moves it out of `complete`, so it stops being capacity-exempt).
+                    if await self.ensure_driver(session_id, SYSTEM_IDENTITY) is None:
+                        log.warning("completion.nudge_failed sid=%s reason=no_driver",
+                                    session_id)
+                        return
+                    result = await self.send_prompt(session_id, nudge)
+                    if result != "sent":
+                        log.warning("completion.nudge_failed sid=%s reason=%s",
+                                    session_id, result)
                 except Exception:
                     log.warning("completion.nudge_failed sid=%s", session_id, exc_info=True)
                 return
@@ -3434,6 +3465,15 @@ class SessionOrchestrator:
                     "info", f"auto-fix injected for {target}",
                     kind="attempted", target=target, session_id=live_rec.id)
                 return "sent", live_rec.id
+            # Unlike the completion nudge, this call site does NOT need an
+            # ensure_driver: `live_rec` is only set when the session is already in
+            # `self._drivers`, so a released (complete/detached) session takes the
+            # fresh-spawn path below instead of silently dropping the prompt. A
+            # "no_driver" here means the driver was released between that check and
+            # the send — rare, and retried by the next sweep, but never silent.
+            if result == "no_driver":
+                log.warning("pr_doctor: driver for %s vanished mid-inject (target=%s)",
+                            live_rec.id, target)
             # transient (draining / not actionable) → no attempt consumed.
             return "transient", None
 
@@ -5051,10 +5091,25 @@ class SessionOrchestrator:
             # can lose the last assistant message. Wait for the release to finish
             # first; it always clears its own `_releasing` entry (success or
             # failure), so this cannot hang forever or leave the session stuck.
+            # Bounded: this runs under the orchestrator-wide `_ensure_lock`, and
+            # aclose() is only PARTLY bounded internally (its pump wait is; the SDK
+            # client's __aexit__ and the sync-back call are not). An unbounded await
+            # here would let one stuck teardown block every attach in the process and
+            # leave the session permanently unopenable. On timeout we proceed to build
+            # the replacement anyway: losing the tail of the old transcript is strictly
+            # better than an un-openable session, and the release task keeps running
+            # (it clears its own `_releasing` entry when it eventually finishes).
             release_task = self._releasing.get(session_id)
             if release_task is not None:
-                with contextlib.suppress(Exception):
-                    await release_task
+                try:
+                    await asyncio.wait_for(asyncio.shield(release_task),
+                                           timeout=DRIVER_RELEASE_WAIT_S)
+                except asyncio.TimeoutError:
+                    log.warning("session.resume id=%s driver release still in flight "
+                                "after %.1fs — building a replacement anyway",
+                                session_id, DRIVER_RELEASE_WAIT_S)
+                except Exception:
+                    pass
 
             # Build and start a new driver resuming from the stored claude_session_id
             resume = rec.claude_session_id or None
@@ -5148,9 +5203,50 @@ class SessionOrchestrator:
             if rec.model is not None:
                 await driver.set_model(rec.model)
             rec.detached = False
+            # INVARIANT: a session holding a live driver is not capacity-exempt.
+            # `complete` is exempt (see CAPACITY_EXEMPT_STATUSES) precisely because
+            # its process was released; resuming it makes that false again. Without
+            # this, every path that resumes a finished session (autopilot assist,
+            # _rearm_session, restore_deploy / _recover_resume_failures_once, a user
+            # prompt over the WS) produced a live `claude` process that never passed
+            # the capacity gate AND stayed uncounted while it ran — the cap stops
+            # being a ceiling. `done` (a live session between turns) is the correct
+            # landing status: it has completed turns and is awaiting the next prompt.
+            # Done here rather than as a second capacity check at each call site so
+            # the existing accounting is simply true again (one source of truth).
+            if rec.status == "complete":
+                await self._exit_complete_on_resume(session_id, rec)
             await self._maybe_rearm_on_attach(session_id)
             log.info("session.resume id=%s resume=%s", session_id, resume or "<fresh>")
             return driver
+
+    async def _exit_complete_on_resume(self, session_id: str, rec) -> None:
+        """Move a just-resumed `complete` session back to `done` (in-memory + DB).
+
+        Deliberately NOT routed through `_persist_status`: this is not a turn boundary,
+        so it must not bump `last_turn_at` (the "active … ago" clock), re-scan the
+        transcript for parked background tasks, or re-run the completion side effects.
+        Best-effort on the DB write — a bookkeeping failure must never fail an attach —
+        but the in-memory record (what `_active_session_count` reads) is always fixed."""
+        rec.status = "done"
+        from datetime import datetime
+        rec.updated_at = datetime.utcnow()
+        try:
+            async with db_session() as db:
+                from sqlalchemy import update as sa_update
+                await db.execute(sa_update(DbSession).where(DbSession.id == session_id)
+                                 .values(status="done"))
+        except Exception:  # pragma: no cover — never fail an attach on bookkeeping
+            log.warning("session.resume id=%s could not persist complete→done",
+                        session_id, exc_info=True)
+        # Same lifecycle frame _persist_status publishes, so the dashboard's status
+        # patcher (_patchSessionStatus) sees the card leave "complete" immediately
+        # instead of waiting for the 5s poll. One frame shape, not a second one.
+        self._publish_event({"type": "status", "sessionId": session_id, "status": "done",
+                             "updatedAt": rec.updated_at_iso,
+                             "revAt": rec.rev_at,
+                             "interruptedByRestart": bool(
+                                 getattr(rec, "interrupted_by_restart", False))})
 
     # ------------------------------------------------------------------
     # Adoption — bring an untracked live claude session under management
@@ -5427,6 +5523,13 @@ class SessionOrchestrator:
             return "draining"
         d = self._drivers.get(session_id)
         if not d:
+            # A dropped prompt is never routine. This return value used to be a silent
+            # sentinel that several callers ignored, which is exactly how the discarded
+            # completion nudge (below) stayed invisible in production — the caller's own
+            # failure log never fired because nothing raised. Log it here, once, for
+            # every caller: the fix at a call site is an `ensure_driver` before the send.
+            log.warning("send_prompt: no live driver for session=%s — prompt dropped",
+                        session_id)
             return "no_driver"
         ids = list(attachment_ids or [])
         if len(ids) > _attachments.MAX_PER_MESSAGE:

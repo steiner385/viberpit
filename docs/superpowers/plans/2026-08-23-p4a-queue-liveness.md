@@ -577,7 +577,9 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
   d=json.load(sys.stdin); c=Counter(s['status'] for s in d)
   print(c); print('cap-occupying:', sum(v for k,v in c.items() if k not in ('queued','complete','done','ended','archived')))"
   ```
-  Expected: cap-occupying drops to 3 (the `idle` sessions), and queued sessions begin starting.
+  Expected: cap-occupying drops to 4 — the 3 `idle` sessions plus the 1 `done` one (see the
+  amendment below; `done` still counts) — and queued sessions begin starting. Drop `'done'` from
+  the exclusion tuple in the snippet above when re-running it.
 - [ ] Confirm the orphan is gone:
   ```sql
   select count(*) from sessions s where s.status='queued'
@@ -592,3 +594,30 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 **Note:** P4a does not fix autopilot's underlying failure (RC3.2) — it only makes the failure
 visible. The `Claude Code returned an error result: success` root cause is still unproven, with
 account quota exhaustion the leading hypothesis. That remains its own investigation.
+
+
+---
+
+## Amendment (2026-08-23, final review) — `done` was the wrong signal
+
+The plan above treats `complete` and `done` as one "finished work" state. They are not.
+`derive_status` (`server/sessions/status.py`) returns `done` for **any** ended turn
+(`turns_completed >= 1` with no turn active) — i.e. after every ordinary prompt in every session.
+`_persist_status` says so itself: `completed_turn = status == "done"`.
+
+As shipped in the plan, that meant the `claude` process was released at the end of **every turn in
+every session**, and a live between-turns session was exempt from the capacity cap. What actually
+ships:
+
+- The driver release in `_persist_status` fires on `complete` only.
+- `CAPACITY_EXEMPT_STATUSES` = `INACTIVE_SESSION_STATUSES | {"queued", "complete"}` — `done`
+  counts against the cap, like `idle`. `NON_ACTIVE_SESSION_STATUSES` had no production consumer
+  and was deleted; the exempt set is derived directly.
+- The live-fleet arithmetic becomes 7 → **4** cap-occupying (3 `idle` + 1 `done`) against a cap of
+  7, which still unblocks the queue.
+- Invariant added: a session that acquires a live driver must not stay capacity-exempt, so
+  `ensure_driver` transitions a resumed `complete` session back to `done`.
+- The completion nudge in `_auto_archive_completed` now calls `ensure_driver` before `send_prompt`
+  (the release had already popped the driver, so the nudge was silently discarded), and the WS
+  bridge clears its `live_tasks` entry when a forwarding task ends so the next prompt on an open
+  socket resumes instead of vanishing.

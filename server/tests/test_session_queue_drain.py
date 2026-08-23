@@ -124,7 +124,7 @@ def test_close_drains_head_in_priority_order(tmp_path):
 def test_start_failure_ends_session_and_continues(tmp_path):
     """A failed-to-start session must be marked ended (not needs_attention).
 
-    ended ∈ NON_ACTIVE_SESSION_STATUSES, so it does not consume a cap slot and
+    ended ∈ CAPACITY_EXEMPT_STATUSES, so it does not consume a cap slot and
     the drain loop can start the next queued entry within the cap on the very
     next iteration — no skip_capacity_check bypass required.
     """
@@ -161,8 +161,8 @@ def test_start_failure_ends_session_and_continues(tmp_path):
             # Call the production counter directly rather than re-deriving the cap
             # math here — a re-derivation using a stale/wrong status set would keep
             # passing silently as long as no fixture in this file reaches that
-            # status, which is exactly what happened with NON_ACTIVE_SESSION_STATUSES
-            # before CAPACITY_EXEMPT_STATUSES existed.
+            # status, which is exactly what happened with the old
+            # NON_ACTIVE_SESSION_STATUSES before CAPACITY_EXEMPT_STATUSES existed.
             active = orch._active_session_count()
             assert active <= 1, f"cap breached: {active} active sessions with max=1"
         finally:

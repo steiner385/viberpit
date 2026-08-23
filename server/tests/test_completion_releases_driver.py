@@ -1,16 +1,21 @@
 """Completion releases the driver — deterministically, no autopilot dependency.
 
-Regression: a session reaching `complete`/`done` never had its driver popped —
-only `close_session`, `archive_session`, and daemon `stop()` did. Auto-archive was
-the ONLY path that freed that resource, and it had two independent failure modes
+Regression: a session reaching `complete` never had its driver popped — only
+`close_session`, `archive_session`, and daemon `stop()` did. Auto-archive was the
+ONLY path that freed that resource, and it had two independent failure modes
 (autopilot outages; the sticky manual-unarchive opt-out), so the capacity cap could
 fill with finished-but-unarchived sessions and deadlock the queue forever.
 
-`_persist_status` now pops + closes the driver itself on the `complete`/`done`
-transition (see orchestrator.py, same pop+suppress+aclose idiom as
-close_session/stop()). Nothing is archived: the row and transcript stay, and
-reopening lazily rebuilds the driver via `ensure_driver` (resume=claude_session_id).
-`idle` is untouched — an idle session is alive and awaiting input.
+`_persist_status` now pops + closes the driver itself on the `complete` transition
+(see orchestrator.py, same pop+suppress+aclose idiom as close_session/stop()).
+Nothing is archived: the row and transcript stay, and reopening lazily rebuilds the
+driver via `ensure_driver` (resume=claude_session_id).
+
+ONLY `complete`. `done` is NOT a finished-work signal — `derive_status` returns it
+for any ended turn (turns_completed >= 1, no turn active), i.e. after every ordinary
+prompt — so releasing on `done` killed the claude process at the end of every turn in
+every session. `done` and `idle` both keep their drivers: those sessions are alive
+and awaiting input.
 
 The pop is synchronous (capacity accounting sees it the instant `_persist_status`
 returns) but the `aclose()` await is deferred to its own spawned task, not awaited
@@ -111,17 +116,27 @@ def test_complete_status_does_not_archive_the_session(tmp_path):
     assert status == "complete"
 
 
-def test_done_status_pops_and_closes_driver(tmp_path):
+def test_done_status_keeps_its_driver(tmp_path):
+    """`done` is the END OF A TURN, not the end of the session.
+
+    This test asserted the exact opposite while `done` was (wrongly) treated as a
+    finished-work signal: it enshrined a release that fired after EVERY ordinary
+    turn in EVERY session, killing the claude process the user was about to prompt
+    again. A `done` session is live between turns and keeps its warm driver.
+    """
     async def run():
         orch = await _build_orch(tmp_path)
         driver = _FakeDriver()
         orch._drivers["s1"] = driver
         await orch._persist_status("s1", "done")
-        assert "s1" not in orch._drivers  # pop is synchronous
+        assert "s1" in orch._drivers
+        assert orch._drivers["s1"] is driver
+        assert "s1" not in orch._releasing   # no release scheduled at all
         await _drain(orch)
-        return driver
-    driver = asyncio.run(run())
-    assert driver.closed is True
+        return orch, driver
+    orch, driver = asyncio.run(run())
+    assert driver.closed is False
+    assert orch._drivers["s1"] is driver
 
 
 def test_idle_status_keeps_driver(tmp_path):
@@ -258,14 +273,15 @@ def test_ensure_driver_awaits_in_flight_release_before_rebuilding(tmp_path):
 
 # --- Review findings (Task 3 follow-up: drain trigger) ---------------------------
 #
-# Task 3 exempted complete/done from the capacity count (CAPACITY_EXEMPT_STATUSES),
+# Task 3 exempted `complete` from the capacity count (CAPACITY_EXEMPT_STATUSES),
 # but the drain trigger a few lines below the driver-release block in
 # _persist_status still gated on the OLD set (INACTIVE_SESSION_STATUSES, i.e. only
-# ended/archived). So a complete/done transition freed a slot in the count but
-# nothing woke the queue for it — it would only drain on some later, unrelated
-# event (another close/archive, a rehydrate, a settings change, a manual RPC).
+# ended/archived). So a complete transition freed a slot in the count but nothing
+# woke the queue for it — it would only drain on some later, unrelated event
+# (another close/archive, a rehydrate, a settings change, a manual RPC).
 # The trigger now reads CAPACITY_EXEMPT_STATUSES (excluding "queued" — see comment
 # at the call site — since a session entering "queued" hasn't freed anything).
+# `done` is NOT exempt and frees nothing, so it correctly no longer fires it.
 
 
 def test_complete_transition_schedules_a_queue_drain(tmp_path):
@@ -286,7 +302,10 @@ def test_complete_transition_schedules_a_queue_drain(tmp_path):
     assert drained, "a complete transition must schedule _maybe_start_queued"
 
 
-def test_done_transition_schedules_a_queue_drain(tmp_path):
+def test_done_transition_does_not_schedule_a_queue_drain(tmp_path):
+    """The drain trigger is "a slot just freed" (CAPACITY_EXEMPT_STATUSES). A `done`
+    transition frees nothing — the session keeps its driver and its slot — so it must
+    not wake the queue. (While `done` was exempt this test asserted the opposite.)"""
     async def run():
         orch = await _build_orch(tmp_path)
         orch._drivers["s1"] = _FakeDriver()
@@ -299,7 +318,7 @@ def test_done_transition_schedules_a_queue_drain(tmp_path):
         await _drain(orch)
         return drained
     drained = asyncio.run(run())
-    assert drained, "a done transition must schedule _maybe_start_queued"
+    assert not drained, "a done transition frees no slot — nothing to drain"
 
 
 def test_queued_status_does_not_self_trigger_a_drain(tmp_path):
@@ -321,3 +340,103 @@ def test_queued_status_does_not_self_trigger_a_drain(tmp_path):
         return drained
     drained = asyncio.run(run())
     assert not drained, "a queued transition must never self-trigger a drain"
+
+
+# --- Final-review findings C4 + I1 ------------------------------------------------
+
+
+def test_resumed_complete_session_counts_toward_capacity_again(tmp_path):
+    """C4: the cap must stay a ceiling.
+
+    `complete` is capacity-exempt precisely because its claude process was released.
+    Every resume path (autopilot assist, _rearm_session, restore_deploy /
+    _recover_resume_failures_once, a user prompt over the WS) goes through
+    ensure_driver, which refuses only `queued` — so a resumed `complete` session used
+    to become a live process that never passed the capacity gate AND stayed uncounted
+    while it ran. ensure_driver now transitions it back to `done`, which makes the
+    existing accounting true again rather than bolting on a second capacity check.
+    """
+    async def run():
+        cwd = str(tmp_path / "repo")
+        orch = await _build_orch(tmp_path, status="complete", cwd=cwd)
+        orch.record("s1").auto_archive_opt_out_reason = "manual-unarchive"
+        assert orch._active_session_count() == 0   # exempt while finished
+        with patch("server.sessions.orchestrator.compose", return_value=tmp_path / "cfg"), \
+             patch("server.sessions.orchestrator.configdir.trust_project"):
+            driver = await orch.ensure_driver("s1")
+        assert driver is not None
+        async with db_session() as db:
+            from sqlalchemy import select as sa_select
+            row = (await db.execute(
+                sa_select(DbSession).where(DbSession.id == "s1"))).scalars().first()
+        return orch, row.status
+    orch, db_status = asyncio.run(run())
+    assert orch.record("s1").status == "done", "a resumed session is no longer finished"
+    assert db_status == "done", "the DB row must agree — rehydrate reads it"
+    assert orch._active_session_count() == 1, (
+        "a session holding a live driver must consume a capacity slot")
+
+
+def test_ensure_driver_gives_up_on_a_stuck_release_and_rebuilds(tmp_path):
+    """I1: the release wait is bounded.
+
+    ensure_driver waits for an in-flight completion release so it does not race the
+    old process's session-file flush — but it does so under the orchestrator-wide
+    `_ensure_lock`, and aclose() is only partly bounded internally (the SDK client's
+    __aexit__ and the account sync-back are not). Unbounded, one stuck teardown would
+    block every attach in the process and make the session permanently unopenable. On
+    timeout it must build the replacement anyway.
+    """
+    async def run():
+        cwd = str(tmp_path / "repo")
+        orch = await _build_orch(tmp_path, cwd=cwd)
+        orch.record("s1").auto_archive_opt_out_reason = "manual-unarchive"
+        driver = _GatedCloseDriver()      # aclose() blocks forever; gate never set
+        orch._drivers["s1"] = driver
+        await orch._persist_status("s1", "complete")
+        assert "s1" in orch._releasing
+
+        with patch("server.sessions.orchestrator.DRIVER_RELEASE_WAIT_S", 0.2), \
+             patch("server.sessions.orchestrator.compose", return_value=tmp_path / "cfg"), \
+             patch("server.sessions.orchestrator.configdir.trust_project"):
+            # Unbounded, this never returns. The outer wait_for is the assertion.
+            new_driver = await asyncio.wait_for(orch.ensure_driver("s1"), timeout=5)
+        assert driver.closed is False     # the old release really is still stuck
+        driver.gate.set()                 # clean up the leaked release task
+        await _drain(orch)
+        return new_driver, driver
+    new_driver, old_driver = asyncio.run(run())
+    assert new_driver is not None
+    assert new_driver is not old_driver
+
+
+def test_completion_nudge_is_delivered_after_the_driver_was_released(tmp_path):
+    """C3: the "goal not met → nudge back to work" prompt must actually arrive.
+
+    `_persist_status` releases the driver on `complete`, and `_auto_archive_completed`
+    runs after it — so its `send_prompt` found no driver and returned the "no_driver"
+    sentinel. Being a RETURN VALUE and not an exception, even the
+    `completion.nudge_failed` log never fired: a premature completion marker parked the
+    session at `complete` with the corrective nudge silently thrown away. The nudge path
+    now resumes the session first.
+    """
+    from types import SimpleNamespace
+
+    verdict = SimpleNamespace(met=False, confidence="high", reason="no PR opened",
+                              remedy="Open the PR before signalling completion.")
+
+    async def run():
+        cwd = str(tmp_path / "repo")
+        orch = await _build_orch(tmp_path, status="complete", cwd=cwd)
+        assert "s1" not in orch._drivers   # released by completion, as in production
+        with patch("server.automations.completion_bar.met_bar", return_value=verdict), \
+             patch("server.sessions.orchestrator.compose", return_value=tmp_path / "cfg"), \
+             patch("server.sessions.orchestrator.configdir.trust_project"):
+            await orch._auto_archive_completed("s1")
+        return orch
+    orch = asyncio.run(run())
+    # send_prompt records _last_prompt ONLY on the delivered path — a "no_driver"
+    # return leaves it unset, which is exactly the silent drop this covers.
+    assert orch._last_prompt.get("s1") == verdict.remedy
+    assert "s1" in orch._drivers, "the nudge must run on a live driver"
+    assert orch.record("s1").status != "complete", "a nudged session is no longer complete"

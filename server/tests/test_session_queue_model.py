@@ -2,12 +2,15 @@
 import asyncio
 
 
-def test_non_active_statuses_superset():
-    from server.db.models import (DEFAULT_MAX_ACTIVE_SESSIONS,
-                                  INACTIVE_SESSION_STATUSES,
-                                  NON_ACTIVE_SESSION_STATUSES)
+def test_status_sets_and_default_cap():
+    """`queued` is not an inactive status — it is a runtime-capacity exemption only
+    (CAPACITY_EXEMPT_STATUSES). The old NON_ACTIVE_SESSION_STATUSES that conflated
+    the two had no production consumer and was deleted."""
+    from server.db.models import (CAPACITY_EXEMPT_STATUSES,
+                                  DEFAULT_MAX_ACTIVE_SESSIONS,
+                                  INACTIVE_SESSION_STATUSES)
     assert INACTIVE_SESSION_STATUSES == frozenset({"ended", "archived"})
-    assert NON_ACTIVE_SESSION_STATUSES == INACTIVE_SESSION_STATUSES | {"queued"}
+    assert CAPACITY_EXEMPT_STATUSES == INACTIVE_SESSION_STATUSES | {"queued", "complete"}
     assert DEFAULT_MAX_ACTIVE_SESSIONS == 5
 
 
