@@ -1010,6 +1010,67 @@ class SessionOrchestrator:
                         )
         return started
 
+    async def _reconcile_orphan_queued(self, candidate_rows=None) -> int:
+        """Reconcile 'queued' session rows with no matching session_queue entry.
+
+        The drain loop (server/sessions/session_queue.py) only ever iterates the
+        session_queue table, so a 'queued' sessions row that has lost (or never
+        got) its queue entry is invisible to it forever: stranded garbage that
+        also renders in the UI as a duplicate queue position (two cards both
+        numbered 1 — the live incident this fixes).
+
+        Decision: mark orphans 'ended', never re-enqueue. Re-enqueueing needs the
+        full _enqueue_session params dict, but per SessionQueue's docstring,
+        session_queue.params is the ONLY place cols/rows/identity/attachment_ids
+        are persisted — the sessions row itself never carries them (confirmed
+        against the live schema and the actual stranded row: `sessions` has no
+        such columns). An orphan's queue entry is gone, so those fields cannot be
+        reconstructed without guessing at values that could silently corrupt the
+        replayed session. This mirrors _maybe_start_queued's start-failure
+        handling (see its docstring above): a queued row we cannot honor is
+        marked 'ended' rather than left occupying a phantom slot forever.
+        'ended' is in CAPACITY_EXEMPT_STATUSES / INACTIVE_SESSION_STATUSES, so it
+        drops out of both the capacity count and any future 'queued' query.
+
+        Called from rehydrate(), immediately before the queue-drain-on-rehydrate
+        spawn, so a reconciled slate is what that drain sees in the same pass.
+        Idempotent: once a row is 'ended' it no longer matches the orphan query,
+        so a second call reconciles nothing. Returns the count reconciled.
+
+        ``candidate_rows``: rehydrate() already selects every non-inactive row
+        (which includes 'queued') in one query — pass that list in to avoid a
+        second full-table SELECT. Standalone callers (tests) omit it and this
+        method queries for itself.
+        """
+        from sqlalchemy import select as sa_select
+        from sqlalchemy import update as sa_update
+        from server.sessions import session_queue as sq
+
+        if candidate_rows is None:
+            async with db_session() as db:
+                candidate_rows = (await db.execute(
+                    sa_select(DbSession).where(DbSession.status == "queued")
+                )).scalars().all()
+        rows = [r for r in candidate_rows if r.status == "queued"]
+        if not rows:
+            return 0
+        queued_ids = set((await sq.positions()).keys())
+        orphans = [row for row in rows if row.id not in queued_ids]
+        for row in orphans:
+            async with db_session() as db:
+                await db.execute(
+                    sa_update(DbSession).where(DbSession.id == row.id)
+                    .values(status="ended")
+                )
+            if row.id in self._records:
+                self._records[row.id].status = "ended"
+            log.warning(
+                "session_queue.orphan_reconciled id=%s action=ended "
+                "origin=%s origin_ref=%s enqueued_since=%s",
+                row.id, getattr(row, "origin", None),
+                getattr(row, "origin_ref", None), getattr(row, "created_at", None))
+        return len(orphans)
+
     async def session_queue_move(self, session_id: str, op: str,
                                  position: int | None = None) -> bool:
         """Reorder a queued session. Returns True on success, False if not found."""
@@ -4011,6 +4072,12 @@ class SessionOrchestrator:
                     )
         log.info("rehydrate: %d session(s) restored (%d branch backfilled, %d status healed)",
                  added, len(backfilled), len(healed))
+        # Reconcile 'queued' rows with no session_queue entry BEFORE draining, so
+        # the drain never has to reach a row it structurally cannot see, and a
+        # reconciled row (now 'ended') is reflected in the very same pass. Reuse
+        # the rows already selected above (see _reconcile_orphan_queued's
+        # candidate_rows docstring) instead of re-querying.
+        await self._reconcile_orphan_queued(candidate_rows=rows)
         # After rebuilding in-memory records, drain the queue: a restarted daemon may
         # have fewer active sessions than the cap (e.g. some were closed before restart),
         # so queued sessions should fill those free slots immediately. Tracked via _spawn
