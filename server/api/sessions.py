@@ -35,6 +35,7 @@ from server.sessions.orchestrator import (
     InsufficientStorageError,
 )
 from server.ipc.client import DaemonError, DaemonUnavailable
+from server.sessions.facade import call_with_deadline
 from server.sessions.selection import AllAccountsBusy
 from server.time_iso import iso_utc
 
@@ -231,22 +232,20 @@ async def _session_is_archived(orch, session_id: str) -> bool:
     return any(a.get("id") == session_id for a in archived)
 
 
-async def _resolve_prs(orch, record):
+async def _resolve_prs(orch, record, timeout: float):
     """Resolve a record's PR list via ``orch.prs_for``, sync (in-process) or async (remote).
 
     Returns ``list[PullRequestInfo]``; an orchestrator with no ``prs_for`` (older shim)
-    yields ``[]`` rather than raising.
+    yields ``[]`` rather than raising. ``timeout`` goes through call_with_deadline, which
+    pushes it INTO the RPC rather than cancelling it from outside.
     """
     fn = getattr(orch, "prs_for", None)
     if fn is None:
         return []
-    res = fn(record.id)
-    if inspect.isawaitable(res):
-        res = await res
-    return res or []
+    return await call_with_deadline(fn, record.id, timeout=timeout) or []
 
 
-async def _resolve_summary(orch, record, viewing: bool) -> str:
+async def _resolve_summary(orch, record, viewing: bool, timeout: float) -> str:
     """Resolve a record's one-line status summary via ``orch.latest_summary``.
 
     Returns "" for an orchestrator shim without ``latest_summary`` (never raises),
@@ -255,16 +254,19 @@ async def _resolve_summary(orch, record, viewing: bool) -> str:
     fn = getattr(orch, "latest_summary", None)
     if fn is None:
         return ""
-    res = fn(record.id, viewing=viewing)
-    if inspect.isawaitable(res):
-        res = await res
-    return res or ""
+    return await call_with_deadline(fn, record.id, viewing=viewing, timeout=timeout) or ""
 
 
 # Per-session enrichment calls (suggestions, prs, summary) are daemon RPCs
 # with no inherent timeout — one wedged session holds up the whole response.
 # Gate each RPC individually so total /api/sessions latency stays bounded
 # even when the daemon is under memory pressure or mid-restart.
+#
+# This deadline is pushed INTO each RPC (call_with_deadline → DaemonClient.call →
+# httpx), never raced from outside with asyncio.wait_for. wait_for CANCELS the
+# request, and a CancelledError thrown into httpcore orphans the socket and strands
+# its pool slot ACTIVE forever — 63 cancellable RPCs per page load wedged the edge
+# twice in two days (issue #734, spike 2026-08-23-edge-socket-leak.md).
 ENRICH_FETCH_TIMEOUT = float(os.environ.get("CCSWITCH_ENRICH_FETCH_TIMEOUT", "3.0"))
 
 
@@ -277,9 +279,9 @@ async def _enrich_one(orch, record, viewing: bool, timeout: float):
     """
     _raw = await asyncio.gather(
         _resolve_repo(record),
-        asyncio.wait_for(orch.latest_suggestions(record.id), timeout),
-        asyncio.wait_for(_resolve_prs(orch, record), timeout),
-        asyncio.wait_for(_resolve_summary(orch, record, viewing), timeout),
+        call_with_deadline(orch.latest_suggestions, record.id, timeout=timeout),
+        _resolve_prs(orch, record, timeout),
+        _resolve_summary(orch, record, viewing, timeout),
         return_exceptions=True,
     )
     # Access by index — asyncio.gather+return_exceptions=True gives list[Any],

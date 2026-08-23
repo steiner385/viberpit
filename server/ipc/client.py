@@ -13,6 +13,51 @@ from server.ipc.paths import Endpoint, parse_endpoint
 
 log = logging.getLogger("server.ipc.client")
 
+# --------------------------------------------------------------------------- #
+# HTTP client bounds — ONE definition, applied identically to the unix and TLS
+# branches below so the two constructions can never drift.
+#
+# Before this, the client passed a bare `timeout=30.0`. httpx expands a scalar to
+# connect = read = write = POOL = 30s, and with no `limits=` it inherited
+# max_connections=100. So a request that could not get a pool slot waited the full
+# 30s before failing — which is exactly what every daemon-backed route did while the
+# pool held stranded connections: 503 after exactly 30s (issue #734).
+# --------------------------------------------------------------------------- #
+
+# max_connections: unchanged from httpx's default. GET /api/sessions still fans out
+#   ~3 RPCs per session concurrently, so a smaller ceiling would turn a busy page load
+#   into pool queueing and degrade enrichment fields. Pinned explicitly so it is a
+#   deliberate number that moves with the fan-out (see #742) rather than a library one.
+# max_keepalive_connections: above the 20 default so a fan-out burst reuses its
+#   connections on the next poll instead of closing 80% of them every time.
+# keepalive_expiry: httpx's 5s default, made explicit. Short on purpose — an idle
+#   connection to a daemon that has since restarted must be discarded, not handed out.
+_LIMITS = httpx.Limits(max_connections=100, max_keepalive_connections=32,
+                       keepalive_expiry=5.0)
+
+# pool: the short leg. Healthy RPCs take ~200ms, so waiting 2s for a slot means ~10
+#   RPC-lifetimes of starvation — the pool is not recovering for this request, and
+#   failing fast beats tying up an edge worker (and the browser) for 30s.
+# connect: bounded but generous enough for a TLS handshake over the relayed tailnet
+#   link (~200ms round trips today).
+# read: kept at 30s — some RPCs legitimately take seconds (transcript_events was
+#   measured at 4.3s); longer ones (automation_*) pass their own per-call timeout.
+# write: matched to read; request bodies are small, but a stalled write must not hang.
+_TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=2.0)
+
+
+def _call_timeout(timeout: float) -> httpx.Timeout:
+    """Expand a per-call deadline WITHOUT letting it stretch the pool leg.
+
+    httpx turns a scalar ``timeout=`` into connect = read = write = **pool**, so a
+    long per-call deadline (automation_* passes 90s) would also let a starved caller
+    wait 90s for a connection slot — the very shape this module bounds. The caller's
+    deadline governs the RPC; pool acquisition keeps the client's short shared budget,
+    and connect never exceeds it either.
+    """
+    return httpx.Timeout(connect=min(timeout, _TIMEOUT.connect), read=timeout,
+                         write=timeout, pool=_TIMEOUT.pool)
+
 # Base subscriber queue size. Scales up automatically with active stream count;
 # override with CCSWITCH_IPC_QUEUE_SIZE to tune without code changes.
 _BASE_Q_SIZE = int(os.environ.get("CCSWITCH_IPC_QUEUE_SIZE", "1024"))
@@ -56,6 +101,18 @@ class DaemonUnavailable(Exception):
     """The daemon socket could not be reached."""
 
 
+class DaemonTimeout(DaemonUnavailable):
+    """An RPC exceeded its deadline, enforced natively by httpx.
+
+    A subclass of :class:`DaemonUnavailable` so every existing handler keeps behaving
+    exactly as before (a timeout has always been "daemon unreachable" to them). It
+    exists so the handful of callers that used to distinguish ``asyncio.TimeoutError``
+    (deadline expired — degrade and tell the user to retry) from a transport failure
+    (daemon down — give up) can still tell them apart now that the deadline is pushed
+    into the RPC instead of raced from outside with ``asyncio.wait_for``.
+    """
+
+
 class DaemonError(Exception):
     """The daemon returned an error envelope for an RPC call."""
 
@@ -87,9 +144,11 @@ class DaemonClient:
         if endpoint.is_unix:
             self._ssl = None
             self._http = httpx.AsyncClient(
-                transport=httpx.AsyncHTTPTransport(uds=endpoint.path),
+                # The explicit transport owns the pool, so `limits` belongs on it —
+                # AsyncClient(limits=…) is ignored whenever a transport is supplied.
+                transport=httpx.AsyncHTTPTransport(uds=endpoint.path, limits=_LIMITS),
                 base_url="http://daemon",
-                timeout=30.0,
+                timeout=_TIMEOUT,
             )
         else:
             from server.ipc.tls import client_ssl_context, client_tls_files
@@ -97,7 +156,8 @@ class DaemonClient:
             self._http = httpx.AsyncClient(
                 base_url=f"https://{endpoint.host}:{endpoint.port}",
                 verify=self._ssl,
-                timeout=30.0,
+                limits=_LIMITS,
+                timeout=_TIMEOUT,
             )
         self._ws: Any = None
         self._reader_task: asyncio.Task | None = None
@@ -133,12 +193,20 @@ class DaemonClient:
         ``httpx.ReadTimeout`` bubbling to an unhandled ASGI 500 (the GET /api/accounts
         wedge, incident 2026-07-02). Callers on the control path (usage, counts) pass a
         short timeout so one wedged daemon can't tie up the edge for the full 30s.
+
+        ALWAYS bound a call with this parameter, NEVER with ``asyncio.wait_for`` around
+        it: wait_for CANCELS the request rather than timing it out, and CancelledError is
+        a BaseException that httpcore's ``except Exception`` in ``AnyIOStream.start_tls``
+        does not catch — the socket is orphaned and its pool slot stranded ACTIVE forever
+        (incident 2026-08-23, spike docs/superpowers/spikes/2026-08-23-edge-socket-leak.md).
+        ``server.sessions.facade.call_with_deadline`` is the helper for call sites that
+        must work against both orchestrator implementations.
         """
-        post_kwargs = {} if timeout is None else {"timeout": timeout}
+        post_kwargs = {} if timeout is None else {"timeout": _call_timeout(timeout)}
         try:
             resp = await self._http.post(f"/rpc/{method}", json=params, **post_kwargs)
         except httpx.TimeoutException as exc:
-            raise DaemonUnavailable(f"{method} timed out: {exc}") from exc
+            raise DaemonTimeout(f"{method} timed out: {exc}") from exc
         except httpx.TransportError as exc:
             # Covers ConnectError, ReadError, WriteError, CloseError — any transport-level
             # failure that means the daemon is unreachable or reset mid-response.

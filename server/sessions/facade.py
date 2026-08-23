@@ -8,7 +8,12 @@ as it is today); this layer only adds async-ness at the edge boundary.
 Each method forwards to the orchestrator and `_maybe_await`s the result, so it is
 correct whether the underlying method is sync OR async — no per-method
 sync/async classification to get wrong.
+
+`call_with_deadline` is the matching helper for the other end of that boundary: it
+bounds ONE edge→orchestrator call without ever cancelling an in-flight daemon RPC,
+so callers need no per-method native-deadline classification either.
 """
+import asyncio
 import inspect
 
 
@@ -16,6 +21,48 @@ async def _maybe_await(result):
     if inspect.isawaitable(result):
         return await result
     return result
+
+
+def _supports_native_deadline(fn) -> bool:
+    """True when *fn* takes its own ``timeout=`` (i.e. it can enforce the deadline
+    itself instead of being raced from outside). Every RemoteOrchestrator RPC does;
+    this adapter's ``*a, **k`` forwarders and test doubles do not."""
+    try:
+        return "timeout" in inspect.signature(fn).parameters
+    except (TypeError, ValueError):  # C callables / unintrospectable mocks
+        return False
+
+
+async def call_with_deadline(fn, *args, timeout: float, **kwargs):
+    """Await ``fn(*args, **kwargs)`` under *timeout*, never cancelling a daemon RPC.
+
+    ``asyncio.wait_for`` does not time an HTTP request out — it **cancels** it, and
+    ``CancelledError`` is a ``BaseException``, so httpcore's ``except Exception`` in
+    ``AnyIOStream.start_tls`` never closes the TCP stream. The socket is orphaned for
+    the life of the process and its pool slot stranded permanently ACTIVE; once
+    ``max_connections`` are stranded, every daemon-backed route 503s after exactly the
+    pool timeout. That is the edge wedge of 2026-08-23 (issue #734); see
+    ``docs/superpowers/spikes/2026-08-23-edge-socket-leak.md``, whose control showed
+    that the same requests killed by httpx's OWN timeout leaked zero connections.
+
+    So when the callee accepts a native ``timeout=`` — every ``RemoteOrchestrator`` RPC
+    does, forwarding it to ``DaemonClient.call`` — hand the deadline to it and let httpx
+    enforce it: httpx raises a plain ``Exception`` that httpcore's handlers DO catch, so
+    it closes its own connection. Expiry then surfaces as
+    :class:`~server.ipc.client.DaemonTimeout` (a ``DaemonUnavailable``) rather than
+    ``asyncio.TimeoutError``.
+
+    Only fall back to ``asyncio.wait_for`` for a callee with no native deadline (the
+    in-process adapter, test doubles), where the coroutine owns no socket and cancelling
+    it is harmless. A callee that returns a non-awaitable is passed through unchanged,
+    matching ``_maybe_await``'s tolerance of sync orchestrator methods.
+    """
+    if _supports_native_deadline(fn):
+        return await _maybe_await(fn(*args, timeout=timeout, **kwargs))
+    result = fn(*args, **kwargs)
+    if not inspect.isawaitable(result):
+        return result
+    return await asyncio.wait_for(result, timeout)
 
 
 class InProcessOrchestratorAdapter:

@@ -53,9 +53,9 @@ class _NoOrch:
 @pytest.mark.asyncio
 async def test_resolve_prs_handles_sync_async_and_missing():
     rec = _rec()
-    assert [p.number for p in await _resolve_prs(_SyncOrch(), rec)] == [1]
-    assert [p.number for p in await _resolve_prs(_AsyncOrch(), rec)] == [2]
-    assert await _resolve_prs(_NoOrch(), rec) == []
+    assert [p.number for p in await _resolve_prs(_SyncOrch(), rec, 2.0)] == [1]
+    assert [p.number for p in await _resolve_prs(_AsyncOrch(), rec, 2.0)] == [2]
+    assert await _resolve_prs(_NoOrch(), rec, 2.0) == []
 
 
 def test_record_to_dict_pr_includes_check_groups_key():

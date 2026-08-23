@@ -32,7 +32,9 @@ from ccswitch.selector import rank_accounts
 from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.db import get_db
+from server.ipc.client import DaemonTimeout
 from server.reauth import ReauthBusy, ReauthNoKey
+from server.sessions.facade import call_with_deadline
 from server.time_iso import iso_utc
 
 if TYPE_CHECKING:
@@ -111,8 +113,13 @@ async def _safe_usage(orch, name: str, timeout: float):
                     name, exc_info=True)
 
     try:
-        return await asyncio.wait_for(orch.usage(name), timeout)
-    except asyncio.TimeoutError:
+        # The deadline is pushed INTO the RPC (call_with_deadline), never raced from
+        # outside: asyncio.wait_for CANCELS an in-flight httpx request, which orphans
+        # the socket and strands its pool slot ACTIVE forever (issue #734). It also
+        # collapses the old nested pair of deadlines (this one and remote's
+        # USAGE_RPC_TIMEOUT) into a single, unambiguous one.
+        return await call_with_deadline(orch.usage, name, timeout=timeout)
+    except (asyncio.TimeoutError, DaemonTimeout):
         log.warning("usage fetch for %s timed out after %.1fs — degrading to None",
                     name, timeout)
         return None

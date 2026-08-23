@@ -35,11 +35,11 @@ def test_record_to_dict_summary_defaults_empty():
 def test_resolve_summary_passes_viewing_and_tolerates_missing_method():
     orch = types.SimpleNamespace(latest_summary=AsyncMock(return_value="Doing X"))
     rec = types.SimpleNamespace(id="s1")
-    assert asyncio.run(_resolve_summary(orch, rec, True)) == "Doing X"
+    assert asyncio.run(_resolve_summary(orch, rec, True, 2.0)) == "Doing X"
     orch.latest_summary.assert_awaited_once_with("s1", viewing=True)
     # Older shim without the method → "" (never raises)
     bare = types.SimpleNamespace()
-    assert asyncio.run(_resolve_summary(bare, rec, True)) == ""
+    assert asyncio.run(_resolve_summary(bare, rec, True, 2.0)) == ""
 
 
 # ---------------------------------------------------------------------------

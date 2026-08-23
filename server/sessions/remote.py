@@ -23,8 +23,9 @@ log = logging.getLogger(__name__)
 # Usage is served from the daemon's poller cache — a cheap read. Bound it tightly
 # so a wedged/slow daemon degrades one account to "unknown" fast instead of tying
 # up the edge for the 30s client default (incident 2026-07-02).
-# Matches USAGE_FETCH_TIMEOUT in server/api/accounts.py — the outer asyncio.wait_for
-# fires first, but a matching httpx timeout ensures clean connection teardown.
+# Default only: GET /api/accounts passes its own USAGE_FETCH_TIMEOUT down through
+# call_with_deadline, so there is exactly ONE deadline on that path rather than a
+# nested pair that could fire in the wrong order.
 USAGE_RPC_TIMEOUT = 3.0
 
 # The opposite extreme: automation_consolidate / automation_trigger run the whole
@@ -287,9 +288,12 @@ class RemoteOrchestrator:
         info = r.get("pr")
         return PullRequestInfo.from_dict(info) if info else None
 
-    async def prs_for(self, session_id: str) -> "list[PullRequestInfo]":
-        """Resolve a session's full PR list via the daemon (empty if none)."""
-        r = await self._client.call("prs_for", session_id=session_id)
+    async def prs_for(self, session_id: str, *, timeout: float | None = None) -> "list[PullRequestInfo]":
+        """Resolve a session's full PR list via the daemon (empty if none).
+
+        ``timeout`` is the caller's deadline pushed INTO the RPC (see
+        server.sessions.facade.call_with_deadline) — never race this from outside."""
+        r = await self._client.call("prs_for", session_id=session_id, timeout=timeout)
         return [PullRequestInfo.from_dict(d) for d in (r.get("prs") or [])]
 
     async def all_prs(self) -> "list[PipelinePr]":
@@ -512,8 +516,14 @@ class RemoteOrchestrator:
         continues live, deduping the overlap by ``head`` (see daemon.ring_tail)."""
         return await self._client.call("ring_tail", session_id=session_id, since=since)
 
-    async def ensure_driver(self, session_id: str, identity: str = SYSTEM_IDENTITY) -> "RemoteDriver | None":
-        r = await self._client.call("ensure_driver", session_id=session_id, identity=identity)
+    async def ensure_driver(self, session_id: str, identity: str = SYSTEM_IDENTITY,
+                            *, timeout: float | None = None) -> "RemoteDriver | None":
+        """Resume (or fetch) a session's driver in the daemon.
+
+        ``timeout`` is the caller's deadline pushed INTO the RPC; expiry raises
+        DaemonTimeout, which ws.py maps to SESSION_RESUME_TIMEOUT."""
+        r = await self._client.call("ensure_driver", session_id=session_id, identity=identity,
+                                    timeout=timeout)
         if not r["found"]:
             return None
         return RemoteDriver(self._client, session_id, status=r["status"], queued=r["queued"],
@@ -601,16 +611,20 @@ class RemoteOrchestrator:
                 raise KeyError(exc.message) from exc
             raise
 
-    async def latest_suggestions(self, session_id: str) -> list[str]:
-        r = await self._client.call("latest_suggestions", session_id=session_id)
+    async def latest_suggestions(self, session_id: str, *,
+                                 timeout: float | None = None) -> list[str]:
+        r = await self._client.call("latest_suggestions", session_id=session_id,
+                                    timeout=timeout)
         return r if isinstance(r, list) else []
 
     async def generate_suggestions_now(self, session_id: str) -> list[str]:
         r = await self._client.call("generate_suggestions_now", session_id=session_id)
         return r if isinstance(r, list) else []
 
-    async def latest_summary(self, session_id: str, *, viewing: bool = False) -> str:
-        r = await self._client.call("latest_summary", session_id=session_id, viewing=viewing)
+    async def latest_summary(self, session_id: str, *, viewing: bool = False,
+                             timeout: float | None = None) -> str:
+        r = await self._client.call("latest_summary", session_id=session_id, viewing=viewing,
+                                    timeout=timeout)
         return r if isinstance(r, str) else ""
 
     async def list_archived(self):
@@ -665,9 +679,10 @@ class RemoteOrchestrator:
         r = await self._client.call("transcript_search_text", session_id=session_id)
         return r if isinstance(r, str) else ""
 
-    async def usage(self, name):
+    async def usage(self, name, *, timeout: float | None = None):
         try:
-            r = await self._client.call("usage", name=name, timeout=USAGE_RPC_TIMEOUT)
+            r = await self._client.call("usage", name=name,
+                                        timeout=USAGE_RPC_TIMEOUT if timeout is None else timeout)
         except DaemonUnavailable:
             # Wedged/slow daemon → treat as unknown usage rather than 500 the caller.
             log.warning("usage RPC for %s unavailable — returning None", name)

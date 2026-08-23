@@ -255,4 +255,5 @@ def test_remote_orchestrator_latest_summary_proxies_with_viewing():
     ro._client = types.SimpleNamespace(call=AsyncMock(return_value="Doing X"))
     out = asyncio.run(ro.latest_summary("s1", viewing=True))
     assert out == "Doing X"
-    ro._client.call.assert_awaited_once_with("latest_summary", session_id="s1", viewing=True)
+    ro._client.call.assert_awaited_once_with("latest_summary", session_id="s1", viewing=True,
+                                             timeout=None)
