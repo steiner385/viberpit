@@ -45,10 +45,11 @@ from server.auth.identity import verify_identity
 from server.auth.middleware import require_ws_identity
 from server.db import db_session
 from server.ipc import protocol as proto
-from server.ipc.client import DaemonUnavailable
+from server.ipc.client import DaemonTimeout, DaemonUnavailable
 from server.obs.context import bind_session, log_event
 from server.obs.tasks import supervise
 from server.sessions.events import ErrorEvent, PermissionRequest, tool_kind
+from server.sessions.facade import call_with_deadline
 from server.sessions.replay import replay_window
 
 if TYPE_CHECKING:
@@ -382,9 +383,16 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             clears) and returns None.
             """
             try:
-                driver = await asyncio.wait_for(
-                    orchestrator.ensure_driver(session_id, identity), _RESUME_TIMEOUT)
-            except asyncio.TimeoutError:
+                # The deadline goes INTO the RPC (call_with_deadline), never around it:
+                # asyncio.wait_for CANCELS an in-flight httpx request, orphaning the
+                # socket and stranding its pool slot ACTIVE forever (issue #734). Expiry
+                # therefore arrives as DaemonTimeout — a DaemonUnavailable subclass, so
+                # it must be caught BEFORE the generic daemon-down branch below or a
+                # slow resume would close 1013 instead of surfacing the retry hint.
+                driver = await call_with_deadline(
+                    orchestrator.ensure_driver, session_id, identity,
+                    timeout=_RESUME_TIMEOUT)
+            except (asyncio.TimeoutError, DaemonTimeout):
                 # A wedged resume (saturated box / stuck MCP fleet) must not hang the
                 # socket forever — surface it so the client can stop spinning and retry.
                 log.warning("ws.attach: ensure_driver timed out for %s after %.0fs",

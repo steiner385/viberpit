@@ -125,7 +125,8 @@ async def test_ensure_driver_returns_remotedriver_when_found():
     ro = RemoteOrchestrator(c)
     driver = await ro.ensure_driver("s1")
     assert isinstance(driver, RemoteDriver)
-    assert c.calls == [("ensure_driver", {"session_id": "s1", "identity": "system"})]
+    assert c.calls == [("ensure_driver",
+                       {"session_id": "s1", "identity": "system", "timeout": None})]
     first = await asyncio.wait_for(driver.events().__anext__(), 2)
     assert first.to_wire() == {"type": "turnEnd"}
 

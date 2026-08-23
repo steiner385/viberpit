@@ -173,6 +173,69 @@ async def test_daemon_deploy_snapshots_and_restores():
 
 
 @pytest.mark.asyncio
+async def test_every_per_deploy_daemon_client_is_closed():
+    """``default_daemon_factory`` builds a NEW DaemonClient per call site, and each one
+    owns two ``httpx.AsyncClient``s, two transports and two SSL contexts. Left unclosed
+    they hold their sockets until GC — the same short-lived-caller leak that
+    ``DaemonClient.aclose`` exists to prevent, once per deploy per call site.
+    """
+    g = FakeGit("a", "b", [])
+    s, _calls = make_steps(healthy=True)
+    s.classify_change = lambda files: "daemon_changed"
+
+    built, closed = [], []
+
+    class FakeDaemon:
+        def __init__(self):
+            built.append(self)
+        async def call(self, method, **params):
+            if method == "drain_status": return {"state": "ready"}
+            if method == "snapshot_deploy": return {"live": []}
+            if method == "restore_deploy": return {"restored": [], "failed": []}
+            return {}
+        async def aclose(self):
+            closed.append(self)
+
+    c = DeployController("/r", health_url="http://h", venv_pip="/v/pip",
+                         git_mod=g, steps_mod=s, daemon_enabled=True,
+                         daemon_client_factory=lambda: FakeDaemon(),
+                         changed_files_fn=lambda repo, a, b: ["server/sessions/orchestrator.py"])
+    st = await c.deploy_once()
+
+    assert st.error is None
+    assert len(built) >= 3, "expected a client for snapshot, drain and restore"
+    assert closed == built, (
+        f"{len(built) - len(closed)} of {len(built)} per-deploy daemon clients leaked")
+
+
+@pytest.mark.asyncio
+async def test_a_daemon_client_without_aclose_does_not_fail_the_deploy():
+    """The factory is an injection point and test doubles are plain objects with only
+    ``call``. Teardown is best-effort: a missing (or raising) ``aclose`` must never turn a
+    successful deploy into a failed one."""
+    g = FakeGit("a", "b", [])
+    s, _calls = make_steps(healthy=True)
+    s.classify_change = lambda files: "daemon_changed"
+
+    class RudeDaemon:
+        async def call(self, method, **params):
+            if method == "drain_status": return {"state": "ready"}
+            if method == "snapshot_deploy": return {"live": []}
+            if method == "restore_deploy": return {"restored": [], "failed": []}
+            return {}
+        async def aclose(self):
+            raise RuntimeError("transport already gone")
+
+    c = DeployController("/r", health_url="http://h", venv_pip="/v/pip",
+                         git_mod=g, steps_mod=s, daemon_enabled=True,
+                         daemon_client_factory=lambda: RudeDaemon(),
+                         changed_files_fn=lambda repo, a, b: ["server/sessions/orchestrator.py"])
+    st = await c.deploy_once()
+    assert st.error is None
+    assert all(p == PhaseState.DONE.value for p in st.phases.values())
+
+
+@pytest.mark.asyncio
 async def test_edge_only_skips_restore_but_snapshots():
     g = FakeGit("a", "b", [])
     s, calls = make_steps(healthy=True)

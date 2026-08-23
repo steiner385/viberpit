@@ -8,7 +8,12 @@ as it is today); this layer only adds async-ness at the edge boundary.
 Each method forwards to the orchestrator and `_maybe_await`s the result, so it is
 correct whether the underlying method is sync OR async — no per-method
 sync/async classification to get wrong.
+
+`call_with_deadline` is the matching helper for the other end of that boundary: it
+bounds ONE edge→orchestrator call without ever cancelling an in-flight daemon RPC,
+so callers need no per-method native-deadline classification either.
 """
+import asyncio
 import inspect
 
 
@@ -16,6 +21,73 @@ async def _maybe_await(result):
     if inspect.isawaitable(result):
         return await result
     return result
+
+
+# Attribute stamped by @rpc_deadline. Not the parameter NAME `timeout`: matching on
+# that would silently mis-fire the day an unrelated method grows a `timeout=` meaning
+# something else (a poll interval, a subprocess grace) — call_with_deadline would pass
+# the RPC deadline in as that unrelated argument AND drop the wait_for fallback, leaving
+# the call both mis-parameterised and unbounded. Exactly the shape of bug this module
+# exists to remove, so the capability is declared explicitly instead of inferred.
+_DEADLINE_ATTR = "__ccswitch_rpc_deadline__"
+
+
+def rpc_deadline(fn):
+    """Declare that *fn* enforces a caller's ``timeout=`` itself (it forwards it to
+    ``DaemonClient.call``, i.e. to httpx), so ``call_with_deadline`` may hand the
+    deadline to it instead of racing it from outside.
+
+    Marking a method is a promise about what ``timeout=`` MEANS on it. The marked set is
+    pinned by ``test_ipc_cancel_does_not_strand.py`` against an explicit allowlist, in
+    both directions: adding or removing a marker, or adding an RPC that takes ``timeout``
+    without one, fails that test rather than silently changing how deadlines are applied.
+    """
+    setattr(fn, _DEADLINE_ATTR, True)
+    return fn
+
+
+def _supports_native_deadline(fn) -> bool:
+    """True when *fn* is marked with :func:`rpc_deadline`. Unmarked callees — this
+    adapter's ``*a, **k`` forwarders, sync in-process methods, test doubles — take the
+    ``wait_for`` fallback, which is safe because they own no socket."""
+    # getattr on a bound method falls through to the underlying function's attributes.
+    return getattr(fn, _DEADLINE_ATTR, False) is True
+
+
+async def call_with_deadline(fn, *args, timeout: float, **kwargs):
+    """Await ``fn(*args, **kwargs)`` under *timeout*, never cancelling a daemon RPC.
+
+    ``asyncio.wait_for`` does not time an HTTP request out — it **cancels** it, throwing a
+    ``CancelledError`` (a ``BaseException``) into httpcore. Measured consequence: the
+    socket is orphaned for the life of the process and its pool slot is never reclaimed;
+    once ``max_connections`` are stranded, every daemon-backed route 503s after exactly the
+    pool timeout. That is the edge wedge of 2026-08-23 (issue #734); see
+    ``docs/superpowers/spikes/2026-08-23-edge-socket-leak.md``, whose control showed that
+    the same requests killed by httpx's OWN timeout leaked zero connections.
+
+    The spike established THAT cancellation does this, not WHERE inside httpcore — its
+    original ``AnyIOStream.start_tls`` explanation does not survive source reading, and the
+    only shape that does (a pooled connection created but never dispatched on) involves no
+    TLS at all. So do not reason from a TLS-specific mechanism to "the unix-socket branch is
+    safe": that inference is unsupported, and this ban applies to both branches.
+
+    So when the callee is marked :func:`rpc_deadline` — every ``RemoteOrchestrator`` RPC
+    reached from here is, and it forwards the deadline to ``DaemonClient.call`` — hand the
+    deadline to it and let httpx enforce it: httpx raises a plain ``Exception``, which is
+    the path the spike's control showed cleans up. Expiry then surfaces as
+    :class:`~server.ipc.client.DaemonTimeout` (a ``DaemonUnavailable``) rather than
+    ``asyncio.TimeoutError``.
+
+    Only fall back to ``asyncio.wait_for`` for an unmarked callee (the in-process adapter,
+    test doubles), where the coroutine owns no socket and cancelling it is harmless. A callee that returns a non-awaitable is passed through unchanged,
+    matching ``_maybe_await``'s tolerance of sync orchestrator methods.
+    """
+    if _supports_native_deadline(fn):
+        return await _maybe_await(fn(*args, timeout=timeout, **kwargs))
+    result = fn(*args, **kwargs)
+    if not inspect.isawaitable(result):
+        return result
+    return await asyncio.wait_for(result, timeout)
 
 
 class InProcessOrchestratorAdapter:
@@ -38,6 +110,10 @@ class InProcessOrchestratorAdapter:
     # which is moot anyway since ring_covers is a constant False (#497).
     def daemon_epoch(self): return None
     def daemon_sha(self): return None
+    # In-process mode makes no HTTP calls to a daemon, so there is no RPC pool that could
+    # wedge. None (not an empty snapshot) so the health surface says "not applicable"
+    # rather than reporting a permanently-idle pool that does not exist.
+    def daemon_pool_stats(self): return None
     async def archive_session(self, *a, **k): return await _maybe_await(self._orch.archive_session(*a, **k))
     async def unarchive(self, *a, **k): return await _maybe_await(self._orch.unarchive(*a, **k))
     async def permanent_delete(self, *a, **k): return await _maybe_await(self._orch.permanent_delete(*a, **k))

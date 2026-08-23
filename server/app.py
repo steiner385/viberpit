@@ -664,9 +664,21 @@ def create_app(
         # runs have no separate daemon to watch.
         monitor = getattr(app.state, "daemon_health", None)
         if monitor is None:
-            return {"available": False, "epoch": None, "startedAt": None,
-                    "uptimeSec": None, "restartCount24h": 0, "lastRestartAt": None}
-        return monitor.snapshot()
+            payload = {"available": False, "epoch": None, "startedAt": None,
+                       "uptimeSec": None, "restartCount24h": 0, "lastRestartAt": None}
+        else:
+            payload = monitor.snapshot()
+        # Issue #734: the RPC pool's own occupancy. Note this is the pool of the
+        # orchestrator's client — the one every route's RPCs share — NOT the monitor's
+        # separate /info client, so it reports the pool that actually wedges. Both edge
+        # outages were diagnosed by hand with `ss -tn state close-wait` because nothing
+        # surfaced this. A sync cached-field read on purpose: it must answer while every
+        # RPC is failing, which is exactly when an RPC-backed field could not.
+        try:
+            payload["pool"] = app.state.sessions.daemon_pool_stats()
+        except Exception:  # noqa: BLE001 — health must never fail on telemetry
+            payload["pool"] = None
+        return payload
 
     from fastapi import Body, HTTPException  # noqa: PLC0415 — local import avoids top-level churn
 
