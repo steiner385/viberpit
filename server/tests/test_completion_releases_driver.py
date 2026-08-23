@@ -254,3 +254,70 @@ def test_ensure_driver_awaits_in_flight_release_before_rebuilding(tmp_path):
     assert new_driver is not None
     assert new_driver is not driver
     assert "s1" not in orch._releasing   # cleared once the release completed
+
+
+# --- Review findings (Task 3 follow-up: drain trigger) ---------------------------
+#
+# Task 3 exempted complete/done from the capacity count (CAPACITY_EXEMPT_STATUSES),
+# but the drain trigger a few lines below the driver-release block in
+# _persist_status still gated on the OLD set (INACTIVE_SESSION_STATUSES, i.e. only
+# ended/archived). So a complete/done transition freed a slot in the count but
+# nothing woke the queue for it — it would only drain on some later, unrelated
+# event (another close/archive, a rehydrate, a settings change, a manual RPC).
+# The trigger now reads CAPACITY_EXEMPT_STATUSES (excluding "queued" — see comment
+# at the call site — since a session entering "queued" hasn't freed anything).
+
+
+def test_complete_transition_schedules_a_queue_drain(tmp_path):
+    """The whole point of Task 3: a complete transition must wake the queue
+    immediately, not just free a slot that nothing drains until later."""
+    async def run():
+        orch = await _build_orch(tmp_path)
+        orch._drivers["s1"] = _FakeDriver()
+        drained = []
+
+        async def _fake_maybe_start_queued():
+            drained.append(True)
+        orch._maybe_start_queued = _fake_maybe_start_queued
+        await orch._persist_status("s1", "complete")
+        await _drain(orch)
+        return drained
+    drained = asyncio.run(run())
+    assert drained, "a complete transition must schedule _maybe_start_queued"
+
+
+def test_done_transition_schedules_a_queue_drain(tmp_path):
+    async def run():
+        orch = await _build_orch(tmp_path)
+        orch._drivers["s1"] = _FakeDriver()
+        drained = []
+
+        async def _fake_maybe_start_queued():
+            drained.append(True)
+        orch._maybe_start_queued = _fake_maybe_start_queued
+        await orch._persist_status("s1", "done")
+        await _drain(orch)
+        return drained
+    drained = asyncio.run(run())
+    assert drained, "a done transition must schedule _maybe_start_queued"
+
+
+def test_queued_status_does_not_self_trigger_a_drain(tmp_path):
+    """Defensive guard: CAPACITY_EXEMPT_STATUSES includes "queued" (a session
+    waiting FOR capacity, not one that just freed it). _persist_status is never
+    actually called with status="queued" in production today — queued rows are
+    written directly at creation/enqueue time, not via the driver's on_status
+    callback — but the trigger excludes "queued" explicitly anyway so a future
+    caller can't create a self-referential drain loop."""
+    async def run():
+        orch = await _build_orch(tmp_path)
+        drained = []
+
+        async def _fake_maybe_start_queued():
+            drained.append(True)
+        orch._maybe_start_queued = _fake_maybe_start_queued
+        await orch._persist_status("s1", "queued")
+        await _drain(orch)
+        return drained
+    drained = asyncio.run(run())
+    assert not drained, "a queued transition must never self-trigger a drain"

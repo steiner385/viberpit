@@ -1474,11 +1474,20 @@ class SessionOrchestrator:
                 self._spawn(self._autopilot_loop.tick(), name="autopilot-nudge")
             except Exception:  # pragma: no cover — scheduling must never break status persist
                 log.debug("autopilot.nudge_failed", exc_info=True)
-        # When a session reaches a terminal/inactive status via its driver (self-exit,
-        # process death, etc.) without an explicit close_session / archive_session call,
-        # a queued session should still get the freed slot. Tracked via _spawn so stop()
-        # can cancel it; never awaited inline (WS-attach-reentrant).
-        if status in INACTIVE_SESSION_STATUSES:
+        # When a session reaches ANY status that frees a capacity slot — terminal
+        # (ended/archived) via its driver (self-exit, process death, etc.) without an
+        # explicit close_session/archive_session call, OR complete/done per Task 3 —
+        # a queued session should get that slot immediately, not wait for some later
+        # unrelated event (another close/archive, a rehydrate, a settings change, a
+        # manual RPC) to happen to drain it. CAPACITY_EXEMPT_STATUSES is exactly "a
+        # slot just freed"; excluding "queued" itself is required — that member means
+        # "waiting FOR a slot", not "just freed one", and status here is never actually
+        # "queued" (queued rows are written directly at creation/enqueue, not through
+        # this driver on_status callback) but excluding it keeps this call site correct
+        # even if that ever changes, rather than relying on an invariant elsewhere.
+        # Tracked via _spawn so stop() can cancel it; never awaited inline
+        # (WS-attach-reentrant).
+        if status in CAPACITY_EXEMPT_STATUSES and status != "queued":
             self._spawn(self._maybe_start_queued(), name="queue-drain-on-status")
 
     def _maybe_autoarchive_completed(self, session_id: str, status: str, rec) -> None:

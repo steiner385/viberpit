@@ -33,17 +33,21 @@ class Base(DeclarativeBase):
 # Single source of truth: import this instead of re-inlining the string set.
 INACTIVE_SESSION_STATUSES: frozenset[str] = frozenset({"ended", "archived"})
 
-# Statuses that answer "is this session reviewable/inactive" — used for review
-# queues and similar UI, NOT for runtime capacity. "queued" rows are real
+# Statuses that answer "is this session reviewable/inactive" (as opposed to
+# runtime capacity — see CAPACITY_EXEMPT_STATUSES below). "queued" rows are real
 # sessions waiting for capacity — neither reviewable (inactive) nor running.
-# Capacity accounting derives from CAPACITY_EXEMPT_STATUSES below, not this set;
-# _ACTIVE_STATUSES in orchestrator.py is a separate allow-list counter with its
-# own consumers (/info, deploy drain) and is intentionally not unified with either.
+# As of this writing it has no production consumer outside this module (it only
+# feeds CAPACITY_EXEMPT_STATUSES below); it is kept as a distinct set — not
+# repurposed or folded away — pending a follow-up that gives it a real reviewable/
+# inactive consumer. Do not assert or re-add a consumer here without verifying it
+# with grep; a comment claiming a consumer that doesn't exist is worse than none.
+# _ACTIVE_STATUSES in orchestrator.py is a third, separate allow-list counter with
+# its own consumers (/info, deploy drain) and is intentionally not unified with
+# either set here.
 NON_ACTIVE_SESSION_STATUSES: frozenset[str] = INACTIVE_SESSION_STATUSES | {"queued"}
 
 # Statuses that consume no RUNTIME capacity slot. Distinct from
-# NON_ACTIVE_SESSION_STATUSES, which answers "is this session reviewable/inactive"
-# and has other consumers.
+# NON_ACTIVE_SESSION_STATUSES, which answers "is this session reviewable/inactive".
 #
 # `complete` and `done` are here because the work is finished — the completion
 # marker was emitted and no turn is running. Counting them against the cap made
