@@ -33,10 +33,32 @@ class Base(DeclarativeBase):
 # Single source of truth: import this instead of re-inlining the string set.
 INACTIVE_SESSION_STATUSES: frozenset[str] = frozenset({"ended", "archived"})
 
-# Statuses that do NOT consume an active-session slot. "queued" rows are real
-# sessions waiting for capacity — neither reviewable (inactive) nor running.
-# EVERY cap/slot count derives from this set; no inline status math elsewhere.
-NON_ACTIVE_SESSION_STATUSES: frozenset[str] = INACTIVE_SESSION_STATUSES | {"queued"}
+# Statuses that consume no RUNTIME capacity slot: a terminal row (ended/archived),
+# a "queued" row (waiting FOR a slot — it holds none), and "complete".
+#
+# `complete` is here because the work is genuinely finished — the agent emitted the
+# completion marker — and `_persist_status` releases the `claude` process on that
+# transition, so the session is not holding a live driver either. Counting finished
+# work against the cap made it starve queued work: on 2026-08-23 seven finished
+# sessions held a cap of seven while ZERO sessions were mid-turn, and 15 queued jobs
+# could never start. Six of the seven were permanently exempt from auto-archive
+# (`manual-unarchive`), so the deadlock could not self-heal — an archive opt-out had
+# silently become a permanent capacity leak.
+#
+# `done` is deliberately NOT here. It does NOT mean "the session finished": see
+# server/sessions/status.derive_status — `done` is returned for ANY ended turn
+# (turns_completed >= 1 with no turn active), i.e. after every ordinary prompt. A
+# `done` session is a LIVE session between turns: it keeps its warm driver for the
+# next prompt, so it holds a real slot and must be counted. `idle` is excluded for
+# the same reason — alive and awaiting input.
+#
+# INVARIANT: a session holding a live driver must not be capacity-exempt. Resuming a
+# `complete` session (ensure_driver) therefore transitions it back to `done`, so it
+# re-enters the count instead of running as an uncapped ghost.
+#
+# _ACTIVE_STATUSES in orchestrator.py is a separate allow-list counter with its own
+# consumers (/info, deploy drain) and is intentionally not unified with this set.
+CAPACITY_EXEMPT_STATUSES: frozenset[str] = INACTIVE_SESSION_STATUSES | {"queued", "complete"}
 
 # Session.archived_by values written by an AUTOMATIC archive (vs a manual "user"
 # archive). Only these are eligible for auto-unarchive by the Archive Audit — a human's

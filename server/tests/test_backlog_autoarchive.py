@@ -187,6 +187,7 @@ def _orch_with_send_prompt(records, pr_info=None):
 
     archived_calls: list[dict] = []
     nudged: list[str] = []
+    resumed: list[str] = []
 
     async def _spy_archive(session_id, *, archived_by="user", context=None):
         archived_calls.append({"session_id": session_id, "archived_by": archived_by,
@@ -196,9 +197,19 @@ def _orch_with_send_prompt(records, pr_info=None):
         nudged.append(prompt)
         return "sent"
 
+    async def _spy_ensure_driver(session_id, identity="system"):
+        # The nudge path resumes the session before sending (the driver was released
+        # by the `complete` transition). Stubbed here so these unit-level stubs, which
+        # have no _drivers registry, exercise the nudge rather than blowing up in
+        # ensure_driver — a resumed session is exactly what production hands it.
+        resumed.append(session_id)
+        return object()
+
     orch.archive_session = _spy_archive  # type: ignore[method-assign]
+    orch.ensure_driver = _spy_ensure_driver  # type: ignore[method-assign]
     orch.send_prompt = _spy_send_prompt  # type: ignore[method-assign]
     orch.pr_for = lambda repo, branch: pr_info  # type: ignore[method-assign]
+    orch.resumed_for_nudge = resumed
     return orch, archived_calls, nudged
 
 

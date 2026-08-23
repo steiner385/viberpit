@@ -569,10 +569,28 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             session. The stream was opened by driver.open_stream() BEFORE the replay
             (see _handle_attach's settle-race note); once this task starts, the
             stream's events() generator owns queue teardown."""
-            live_tasks[session_id] = supervise(
+            task = supervise(
                 asyncio.create_task(
                     _forward_live(stream, out_q, session_id), name=f"ws-live-{session_id}"),
                 name=f"ws-live-{session_id}", on_failure=_on_forward_task_failed)
+            live_tasks[session_id] = task
+
+            def _clear_when_finished(finished: asyncio.Task, sid: str = session_id) -> None:
+                """Drop the live_tasks entry when THIS forwarding task ends on its own.
+
+                A forwarding task does not only end via _teardown_live_task: the driver's
+                stream also ends normally when the driver is released (aclose() pushes
+                _STREAM_DONE), so `events()` returns and this task finishes while the
+                socket is still open and attached. The entry used to survive that, and
+                `_ensure_live` short-circuits on `session_id in live_tasks` — so the next
+                prompt skipped the resume, hit send_prompt with no driver, and vanished.
+                Identity-checked so a NEWER task registered for the same session (a
+                rebind, or a resume right after this one ended) is never clobbered by a
+                late callback from the old one."""
+                if live_tasks.get(sid) is finished:
+                    live_tasks.pop(sid, None)
+
+            task.add_done_callback(_clear_when_finished)
 
         async def _maybe_catch_up(session_id: str, driver, since_src_seq: int | None,
                                   since_epoch: str | None) -> bool:
@@ -924,12 +942,18 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                         attachment_ids = msg.get("attachmentIds")
                         status = await orchestrator.send_prompt(session_id, text, attachment_ids)
                         await orchestrator.note_user_interaction(session_id)
-                        if status == "draining":
-                            # Deploy drain refused the turn — ack it so the browser
-                            # re-queues instead of losing the prompt.
+                        if status in ("draining", "no_driver"):
+                            # The turn was refused — ack it so the browser re-queues
+                            # instead of losing the prompt. "draining": a deploy drain.
+                            # "no_driver": the session's driver was released between
+                            # _ensure_live and the send (or _ensure_live believed it was
+                            # already live). Either way the prompt was NOT delivered, and
+                            # a dropped user message must never be silent.
+                            log.warning("ws.prompt rejected session=%s reason=%s",
+                                        session_id, status)
                             await _send({"type": "promptRejected", "sessionId": session_id,
                                          "text": text, "attachmentIds": attachment_ids,
-                                         "reason": "draining"})
+                                         "reason": status})
                 elif msg_type == "interrupt":
                     await orchestrator.interrupt(session_id)
                     try:

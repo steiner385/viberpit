@@ -36,6 +36,7 @@ def _orch(records, pr_info=None):
 
     archived: list[dict] = []
     nudged: list[str] = []
+    resumed: list[str] = []
 
     async def _spy_archive(session_id, *, archived_by="user", context=None):
         archived.append({"session_id": session_id, "archived_by": archived_by,
@@ -45,9 +46,19 @@ def _orch(records, pr_info=None):
         nudged.append(prompt)
         return "sent"
 
+    async def _spy_ensure_driver(session_id, identity="system"):
+        # The nudge path resumes the session before sending (the driver was released
+        # by the `complete` transition). Stubbed here so these unit-level stubs, which
+        # have no _drivers registry, exercise the nudge rather than blowing up in
+        # ensure_driver — a resumed session is exactly what production hands it.
+        resumed.append(session_id)
+        return object()
+
     orch.archive_session = _spy_archive  # type: ignore[method-assign]
+    orch.ensure_driver = _spy_ensure_driver  # type: ignore[method-assign]
     orch.send_prompt = _spy_send_prompt  # type: ignore[method-assign]
     orch.pr_for = lambda repo, branch: pr_info  # type: ignore[method-assign]
+    orch.resumed_for_nudge = resumed
     return orch, archived, nudged
 
 
@@ -123,6 +134,10 @@ def test_human_complete_with_unarmed_pr_is_nudged_not_archived():
         assert archived == [], "open-unarmed PR is not the finished state"
         assert nudged, "must nudge toward arming the PR"
         assert "99" in nudged[0]  # remedy references the PR number
+        # The `complete` transition already released the driver, so the nudge MUST
+        # resume the session first — otherwise send_prompt returns the "no_driver"
+        # sentinel and the corrective nudge is silently discarded (final review, C3).
+        assert orch.resumed_for_nudge == ["s1"]
     asyncio.run(run())
 
 

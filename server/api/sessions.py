@@ -106,7 +106,7 @@ _UNSET = object()
 def _record_to_dict(
     record, repo: Any = _UNSET, suggestions: list[str] | None = None,
     prs: list | None = None, summary: str = "", defer_seconds: int | None = None,
-    queue_position: int | None = None,
+    queue_position: int | None = None, queue_stall_reason: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Convert an in-memory SessionRecord to the wire-format dict.
 
@@ -123,6 +123,12 @@ def _record_to_dict(
 
     ``summary`` is the one-line status summary for the session (from
     ``orch.latest_summary``). Defaults to "" when omitted or unavailable.
+
+    ``queue_stall_reason`` is set (only on queued records) when the queue is
+    non-empty and cannot drain — see :func:`_compute_queue_stall_reason`.
+    ``None`` for every non-queued record and for a queued record whose queue
+    is not actually stalled. Purely additive: a client that has never heard of
+    this field sees nothing new to worry about.
     """
     from datetime import datetime, timedelta, timezone
     from server.sessions.goals import effective_goal
@@ -177,6 +183,7 @@ def _record_to_dict(
         "interruptedByRestart": getattr(record, "interrupted_by_restart", False),
         "summary": summary or "",
         "queuePosition": queue_position,
+        "queueStallReason": queue_stall_reason,
     }
 
 
@@ -315,6 +322,63 @@ async def _autopilot_defer_seconds() -> int | None:
         return None
 
 
+async def _max_active_sessions_setting() -> int:
+    """Effective global active-session cap (``AppSettings.max_active_sessions``,
+    falling back to ``DEFAULT_MAX_ACTIVE_SESSIONS`` when unset).
+
+    Mirrors ``SessionOrchestrator._max_active_sessions`` — that method is
+    orchestrator-private and not exposed on either adapter (in-process or
+    remote), so this reads the row directly instead, the same pattern already
+    used by :func:`_autopilot_defer_seconds` in this module. One query for the
+    whole list response, not per session.
+    """
+    from sqlalchemy import select
+    from server.db.models import AppSettings, DEFAULT_MAX_ACTIVE_SESSIONS
+    async with db_session() as db:
+        row = (await db.execute(select(AppSettings))).scalar_one_or_none()
+    val = getattr(row, "max_active_sessions", None) if row else None
+    return max(1, val if val is not None else DEFAULT_MAX_ACTIVE_SESSIONS)
+
+
+async def _compute_queue_stall_reason(records: list) -> dict[str, Any] | None:
+    """Why the queue can't drain right now, or ``None`` when nothing is wrong.
+
+    The 2026-08-22 deadlock: 15 queued sessions, capacity fully occupied by
+    finished sessions that were exempt from auto-archive, and the UI showed
+    nothing but a list. Finding the cause took a DB query, a source read, and
+    a py-spy dump of a production process — this makes that same fact visible
+    on the endpoint that already renders the queue.
+
+    Capacity-occupancy is read straight off ``CAPACITY_EXEMPT_STATUSES`` (Task
+    2's source of truth) applied to the same ``records`` the list endpoint
+    already fetched — not re-derived, not a second query. Only the numeric cap
+    itself requires a DB read (see :func:`_max_active_sessions_setting`).
+
+    Scope is deliberately narrow: this only names the capacity-full cause.
+    An empty queue, or a queue with room to start, reports nothing — there is
+    nothing to explain.
+    """
+    from server.db.models import CAPACITY_EXEMPT_STATUSES
+    queued_count = sum(1 for r in records if r.status == "queued")
+    if queued_count == 0:
+        return None
+    cap_occupying = sum(1 for r in records if r.status not in CAPACITY_EXEMPT_STATUSES)
+    cap = await _max_active_sessions_setting()
+    if cap_occupying < cap:
+        return None
+    return {
+        "code": "capacity_full",
+        "message": (
+            f"{cap_occupying} of {cap} active-session slot(s) are occupied, so "
+            f"{queued_count} queued session(s) cannot start. End or archive an "
+            "occupying session to free a slot."
+        ),
+        "capOccupying": cap_occupying,
+        "cap": cap,
+        "queuedCount": queued_count,
+    }
+
+
 def _get_orchestrator(request: Request) -> "InProcessOrchestratorAdapter":
     return request.app.state.sessions
 
@@ -352,9 +416,12 @@ async def list_sessions(
             positions = _pos_res or {}
         except Exception:
             log.warning("list_sessions: session_queue_positions fetch failed", exc_info=True)
+    stall_reason = await _compute_queue_stall_reason(records)
     return [
-        _record_to_dict(r, repo=repo, suggestions=s, prs=pr_list, summary=summary,
-                        defer_seconds=defer_seconds, queue_position=positions.get(r.id))
+        _record_to_dict(
+            r, repo=repo, suggestions=s, prs=pr_list, summary=summary,
+            defer_seconds=defer_seconds, queue_position=positions.get(r.id),
+            queue_stall_reason=stall_reason if r.status == "queued" else None)
         for r, repo, s, pr_list, summary in zip(records, repos, suggs, prs, summaries)
     ]
 
