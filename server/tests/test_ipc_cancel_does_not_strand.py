@@ -200,3 +200,71 @@ async def test_ws_resume_deadline_does_not_orphan_daemon_sockets(blackhole, blac
         blackhole.assert_no_orphans()
     finally:
         await client.aclose()
+
+
+# ---------------------------------------------------------------------------
+# The deadline-capable set is declared, not inferred
+# ---------------------------------------------------------------------------
+
+# Methods that promise "timeout= is MY RPC deadline, and I forward it to httpx".
+# call_with_deadline hands the deadline straight to these; everything else is bounded
+# from outside with wait_for. Changing this set changes how a deadline is applied, so it
+# is pinned here: add or remove an @rpc_deadline and this test tells you to say why.
+_DEADLINE_CAPABLE_RPCS = frozenset({
+    "ensure_driver",
+    "latest_suggestions",
+    "latest_summary",
+    "prs_for",
+    "usage",
+})
+
+
+def _marked() -> set[str]:
+    import inspect as _inspect
+    return {name for name, fn in _inspect.getmembers(RemoteOrchestrator, _inspect.isfunction)
+            if getattr(fn, "__ccswitch_rpc_deadline__", False)}
+
+
+def test_marked_rpcs_match_the_allowlist():
+    assert _marked() == set(_DEADLINE_CAPABLE_RPCS)
+
+
+def test_no_rpc_takes_a_timeout_without_being_marked():
+    """The dangerous direction: an RPC that accepts ``timeout=`` but carries no marker
+    would be bounded by wait_for instead — i.e. cancelled mid-flight, re-introducing the
+    strand. Marking it (or renaming the parameter, as ``transcript_window``'s
+    ``timeout_s`` does) is the fix."""
+    import inspect as _inspect
+
+    unmarked = set()
+    for name, fn in _inspect.getmembers(RemoteOrchestrator, _inspect.isfunction):
+        if getattr(fn, "__ccswitch_rpc_deadline__", False):
+            continue
+        try:
+            params = _inspect.signature(fn).parameters
+        except (TypeError, ValueError):  # pragma: no cover - defensive
+            continue
+        if "timeout" in params:
+            unmarked.add(name)
+    assert unmarked == set(), (
+        f"{sorted(unmarked)} accept timeout= but are not @rpc_deadline — "
+        "call_with_deadline would cancel them instead of pushing the deadline in")
+
+
+@pytest.mark.asyncio
+async def test_an_unrelated_timeout_kwarg_is_never_hijacked():
+    """The failure the marker exists to prevent: a callee whose ``timeout=`` means
+    something else entirely must NOT receive the RPC deadline as that argument, and must
+    still be bounded from outside."""
+    class _UnrelatedTimeout:
+        def __init__(self) -> None:
+            self.seen = "not-called"
+
+        async def latest_summary(self, session_id, *, viewing=False, timeout=None):
+            self.seen = timeout          # a poll interval, say — nothing to do with RPCs
+            await asyncio.sleep(30)
+
+    obj = _UnrelatedTimeout()
+    with pytest.raises(asyncio.TimeoutError):
+        await call_with_deadline(obj.latest_summary, "s1", viewing=False, timeout=0.05)
+    assert obj.seen is None, "the RPC deadline leaked into an unrelated timeout parameter"

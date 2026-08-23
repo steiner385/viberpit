@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from ccswitch.oauth import Usage
 from server.ipc.client import DaemonError, DaemonUnavailable
+from server.sessions.facade import rpc_deadline
 from server.sessions.selection import AllAccountsBusy
 
 if TYPE_CHECKING:
@@ -288,6 +289,7 @@ class RemoteOrchestrator:
         info = r.get("pr")
         return PullRequestInfo.from_dict(info) if info else None
 
+    @rpc_deadline
     async def prs_for(self, session_id: str, *, timeout: float | None = None) -> "list[PullRequestInfo]":
         """Resolve a session's full PR list via the daemon (empty if none).
 
@@ -516,6 +518,7 @@ class RemoteOrchestrator:
         continues live, deduping the overlap by ``head`` (see daemon.ring_tail)."""
         return await self._client.call("ring_tail", session_id=session_id, since=since)
 
+    @rpc_deadline
     async def ensure_driver(self, session_id: str, identity: str = SYSTEM_IDENTITY,
                             *, timeout: float | None = None) -> "RemoteDriver | None":
         """Resume (or fetch) a session's driver in the daemon.
@@ -611,6 +614,7 @@ class RemoteOrchestrator:
                 raise KeyError(exc.message) from exc
             raise
 
+    @rpc_deadline
     async def latest_suggestions(self, session_id: str, *,
                                  timeout: float | None = None) -> list[str]:
         r = await self._client.call("latest_suggestions", session_id=session_id,
@@ -621,6 +625,7 @@ class RemoteOrchestrator:
         r = await self._client.call("generate_suggestions_now", session_id=session_id)
         return r if isinstance(r, list) else []
 
+    @rpc_deadline
     async def latest_summary(self, session_id: str, *, viewing: bool = False,
                              timeout: float | None = None) -> str:
         r = await self._client.call("latest_summary", session_id=session_id, viewing=viewing,
@@ -679,6 +684,7 @@ class RemoteOrchestrator:
         r = await self._client.call("transcript_search_text", session_id=session_id)
         return r if isinstance(r, str) else ""
 
+    @rpc_deadline
     async def usage(self, name, *, timeout: float | None = None):
         try:
             r = await self._client.call("usage", name=name,

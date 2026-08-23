@@ -1087,6 +1087,42 @@ def test_prompt_resume_timeout_emits_error_and_keeps_ws_alive(tmp_path):
                 )
 
 
+def test_daemon_timeout_on_resume_takes_the_timeout_branch_not_the_1013_close(tmp_path):
+    """Ordering guard (issue #734).
+
+    In remote mode a resume that outruns _RESUME_TIMEOUT arrives as DaemonTimeout, which
+    SUBCLASSES DaemonUnavailable. ws.py's `except (asyncio.TimeoutError, DaemonTimeout)`
+    only wins because it sits BEFORE `except DaemonUnavailable`; swap the two and a slow
+    resume silently regresses to websocket.close(1013) — the reconnect-loop-on-a-blank-
+    screen behaviour this change removed. Type alone does not pin that, so pin the
+    outcome: the retry frame must be emitted AND the socket must survive.
+    """
+    from server.ipc.client import DaemonTimeout
+
+    with _rehydrated_detached_client(tmp_path, []) as (orch, client, session_id):
+        async def _timed_out(*_a, **_k):
+            raise DaemonTimeout("ensure_driver timed out: mock")
+
+        orch.ensure_driver = _timed_out
+
+        with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+            ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+            _drain_events(ws, until_type="replayComplete", timeout=8.0)
+
+            ws.send_text(json.dumps({"type": "prompt", "sessionId": session_id, "text": "go"}))
+            events = _drain_events(ws, until_type="error", timeout=4.0)
+            assert any(e.get("code") == "SESSION_RESUME_TIMEOUT" for e in events), (
+                "a DaemonTimeout took the generic daemon-unavailable branch — check that "
+                f"the except clauses are still ordered timeout-first; got {events}"
+            )
+            # A 1013 close would have killed the socket; it must still answer.
+            ws.send_text(json.dumps({"type": "bogus", "sessionId": session_id}))
+            evs = _drain_events(ws, until_type="error", timeout=4.0)
+            assert any(e.get("code") == "UNKNOWN_TYPE" for e in evs), (
+                "socket was closed — the 1013 branch caught the DaemonTimeout"
+            )
+
+
 
 # ---------------------------------------------------------------------------
 # Live-forwarder: a crash mid-stream still reaches the UI as an error frame

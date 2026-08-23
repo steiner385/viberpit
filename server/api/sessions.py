@@ -257,16 +257,24 @@ async def _resolve_summary(orch, record, viewing: bool, timeout: float) -> str:
     return await call_with_deadline(fn, record.id, viewing=viewing, timeout=timeout) or ""
 
 
-# Per-session enrichment calls (suggestions, prs, summary) are daemon RPCs
-# with no inherent timeout — one wedged session holds up the whole response.
-# Gate each RPC individually so total /api/sessions latency stays bounded
-# even when the daemon is under memory pressure or mid-restart.
+# Per-session enrichment calls (suggestions, prs, summary) are daemon RPCs with no
+# inherent timeout — one wedged session would otherwise hold up the whole response.
+# Gate each RPC individually so a single bad session degrades to an empty field instead
+# of stalling the list, even when the daemon is under memory pressure or mid-restart.
 #
-# This deadline is pushed INTO each RPC (call_with_deadline → DaemonClient.call →
-# httpx), never raced from outside with asyncio.wait_for. wait_for CANCELS the
-# request, and a CancelledError thrown into httpcore orphans the socket and strands
-# its pool slot ACTIVE forever — 63 cancellable RPCs per page load wedged the edge
-# twice in two days (issue #734, spike 2026-08-23-edge-socket-leak.md).
+# The deadline is pushed INTO each RPC (call_with_deadline → DaemonClient.call → httpx),
+# never raced from outside with asyncio.wait_for. wait_for CANCELS the request, and a
+# CancelledError thrown into httpcore orphans the socket and strands its pool slot ACTIVE
+# forever — 63 cancellable RPCs per page load wedged the edge twice in two days
+# (issue #734, spike 2026-08-23-edge-socket-leak.md).
+#
+# WHAT THIS DOES *NOT* BOUND: httpx's read timeout is per-read — the gap between bytes —
+# not a whole-response budget. A daemon that STALLS is cut off after this many seconds; a
+# daemon that drips a response slowly can exceed it, so total /api/sessions latency is no
+# longer strictly wall-clock bounded the way the old outer wait_for made it. That is
+# inherent to the fix: any outer bound reintroduces the cancellation being removed. If a
+# whole-response budget is ever needed it has to come from the daemon side (an RPC that
+# answers or gives up), not from an asyncio timer on the edge.
 ENRICH_FETCH_TIMEOUT = float(os.environ.get("CCSWITCH_ENRICH_FETCH_TIMEOUT", "3.0"))
 
 

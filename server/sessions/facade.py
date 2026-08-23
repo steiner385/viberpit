@@ -23,14 +23,35 @@ async def _maybe_await(result):
     return result
 
 
+# Attribute stamped by @rpc_deadline. Not the parameter NAME `timeout`: matching on
+# that would silently mis-fire the day an unrelated method grows a `timeout=` meaning
+# something else (a poll interval, a subprocess grace) — call_with_deadline would pass
+# the RPC deadline in as that unrelated argument AND drop the wait_for fallback, leaving
+# the call both mis-parameterised and unbounded. Exactly the shape of bug this module
+# exists to remove, so the capability is declared explicitly instead of inferred.
+_DEADLINE_ATTR = "__ccswitch_rpc_deadline__"
+
+
+def rpc_deadline(fn):
+    """Declare that *fn* enforces a caller's ``timeout=`` itself (it forwards it to
+    ``DaemonClient.call``, i.e. to httpx), so ``call_with_deadline`` may hand the
+    deadline to it instead of racing it from outside.
+
+    Marking a method is a promise about what ``timeout=`` MEANS on it. The marked set is
+    pinned by ``test_ipc_cancel_does_not_strand.py`` against an explicit allowlist, in
+    both directions: adding or removing a marker, or adding an RPC that takes ``timeout``
+    without one, fails that test rather than silently changing how deadlines are applied.
+    """
+    setattr(fn, _DEADLINE_ATTR, True)
+    return fn
+
+
 def _supports_native_deadline(fn) -> bool:
-    """True when *fn* takes its own ``timeout=`` (i.e. it can enforce the deadline
-    itself instead of being raced from outside). Every RemoteOrchestrator RPC does;
-    this adapter's ``*a, **k`` forwarders and test doubles do not."""
-    try:
-        return "timeout" in inspect.signature(fn).parameters
-    except (TypeError, ValueError):  # C callables / unintrospectable mocks
-        return False
+    """True when *fn* is marked with :func:`rpc_deadline`. Unmarked callees — this
+    adapter's ``*a, **k`` forwarders, sync in-process methods, test doubles — take the
+    ``wait_for`` fallback, which is safe because they own no socket."""
+    # getattr on a bound method falls through to the underlying function's attributes.
+    return getattr(fn, _DEADLINE_ATTR, False) is True
 
 
 async def call_with_deadline(fn, *args, timeout: float, **kwargs):
@@ -45,16 +66,15 @@ async def call_with_deadline(fn, *args, timeout: float, **kwargs):
     ``docs/superpowers/spikes/2026-08-23-edge-socket-leak.md``, whose control showed
     that the same requests killed by httpx's OWN timeout leaked zero connections.
 
-    So when the callee accepts a native ``timeout=`` — every ``RemoteOrchestrator`` RPC
-    does, forwarding it to ``DaemonClient.call`` — hand the deadline to it and let httpx
-    enforce it: httpx raises a plain ``Exception`` that httpcore's handlers DO catch, so
-    it closes its own connection. Expiry then surfaces as
+    So when the callee is marked :func:`rpc_deadline` — every ``RemoteOrchestrator`` RPC
+    reached from here is, and it forwards the deadline to ``DaemonClient.call`` — hand the
+    deadline to it and let httpx enforce it: httpx raises a plain ``Exception`` that
+    httpcore's handlers DO catch, so it closes its own connection. Expiry then surfaces as
     :class:`~server.ipc.client.DaemonTimeout` (a ``DaemonUnavailable``) rather than
     ``asyncio.TimeoutError``.
 
-    Only fall back to ``asyncio.wait_for`` for a callee with no native deadline (the
-    in-process adapter, test doubles), where the coroutine owns no socket and cancelling
-    it is harmless. A callee that returns a non-awaitable is passed through unchanged,
+    Only fall back to ``asyncio.wait_for`` for an unmarked callee (the in-process adapter,
+    test doubles), where the coroutine owns no socket and cancelling it is harmless. A callee that returns a non-awaitable is passed through unchanged,
     matching ``_maybe_await``'s tolerance of sync orchestrator methods.
     """
     if _supports_native_deadline(fn):
