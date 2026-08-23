@@ -108,3 +108,91 @@ def test_flaky_entry_during_scan_does_not_abort_and_reports_incomplete(tmp_path,
     assert [p.name for p in metas] == ["agent-1.meta.json"]
     # But the sweep hit an error on one entry, so it cannot be trusted as exhaustive.
     assert complete is False
+
+
+def test_collect_oserror_on_preferred_dir_marks_incomplete(tmp_path, monkeypatch):
+    """A per-directory OSError raised inside `_collect` itself (e.g. `sub.is_dir()`
+    failing on a stale sshfs handle for the probed `<cwd>/<sid>/subagents` dir) must
+    mark the overall result incomplete — not be silently swallowed as if that
+    directory had been fully scanned. This is the same defect class as the
+    flaky-entry test above, at a different site (inside `_collect`, not the outer
+    scandir loop), and it must be fixed before the discovery cache is trustworthy:
+    a falsely-True `complete` here would let a wrong answer live for the whole
+    cache TTL."""
+    projects = _layout(tmp_path, "s6", cwd_dirs=["-cwd-main"], sub_in="-cwd-main")
+
+    real_is_dir = Path.is_dir
+
+    def raising_is_dir(self):
+        if self.name == "subagents":
+            raise OSError("stale sshfs handle")
+        return real_is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", raising_is_dir)
+
+    metas, complete = _find_subagent_meta_files(projects, "s6", preferred=projects / "-cwd-main")
+
+    assert metas == []
+    assert complete is False
+
+
+def test_second_lookup_does_not_rescan(tmp_path, monkeypatch):
+    from server.sessions import replay
+
+    replay._subagent_cache_clear()
+    projects = _layout(tmp_path, "s4", cwd_dirs=["-cwd-main", "-cwd-b"], sub_in="-cwd-main")
+
+    calls = {"n": 0}
+    real_scandir = os.scandir
+
+    def counting_scandir(path):
+        calls["n"] += 1
+        return real_scandir(path)
+
+    monkeypatch.setattr(replay.os, "scandir", counting_scandir)
+
+    a, _ = replay._find_subagent_meta_files(projects, "s4", preferred=projects / "-cwd-main")
+    after_first = calls["n"]
+    b, _ = replay._find_subagent_meta_files(projects, "s4", preferred=projects / "-cwd-main")
+
+    assert a == b
+    assert after_first >= 1, "the first lookup should have scanned"
+    assert calls["n"] == after_first, "the second lookup must be served from cache"
+
+
+def test_partial_results_are_not_cached(tmp_path, monkeypatch):
+    """A budget-truncated scan must not become permanent."""
+    from server.sessions import replay
+
+    replay._subagent_cache_clear()
+    projects = _layout(
+        tmp_path, "s5",
+        cwd_dirs=[f"-cwd-{i}" for i in range(60)] + ["-cwd-main"],
+        sub_in="-cwd-main",
+    )
+
+    real_is_dir = Path.is_dir
+
+    def slow_is_dir(self):
+        time.sleep(0.05)
+        return real_is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", slow_is_dir)
+    _, complete = replay._find_subagent_meta_files(
+        projects, "s5", preferred=projects / "-cwd-main", budget_s=0.2)
+    assert complete is False
+
+    monkeypatch.undo()
+    calls = {"n": 0}
+    real_scandir = os.scandir
+
+    def counting_scandir(path):
+        calls["n"] += 1
+        return real_scandir(path)
+
+    monkeypatch.setattr(replay.os, "scandir", counting_scandir)
+    _, complete2 = replay._find_subagent_meta_files(
+        projects, "s5", preferred=projects / "-cwd-main")
+
+    assert calls["n"] >= 1, "a partial result must not have been cached"
+    assert complete2 is True
