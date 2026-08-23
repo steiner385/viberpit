@@ -597,9 +597,16 @@ class DaemonClient:
                     "connection(s) to the old process (%d in use, %d idle, %d queued, "
                     "%d pool timeout(s) since start)", was, now, stats["connections"],
                     stats["inUse"], stats["idle"], stats["queued"], stats["poolTimeouts"])
-        # The wedge is over as far as the counter is concerned: the slots are about to be
-        # returned, so a stale consecutive count must not keep reading as an active wedge.
-        self._consecutive_pool_timeouts = 0
+        # The wedge is over as far as the counters are concerned: the slots are about to be
+        # returned, so a stale consecutive count must not keep reading as an active wedge —
+        # and the quiet-window clock must restart too. `_note_slot_served` bundles BOTH,
+        # which is exactly why this site calls it instead of resetting one by hand: leaving
+        # `_last_slot_at` stale meant a burst that saturated the FRESH pool was measured
+        # against a timestamp from before the restart, so it read as
+        # `secondsSinceSlot > _WEDGE_QUIET_S` and reported exhaustion. A false wedge alarm
+        # in the seconds after a restart is the worst possible moment for one: that is
+        # precisely when an operator is reading these logs.
+        self._note_slot_served()
         # The reserved health channel's own connection also points at the dead process.
         # Recycled separately and first, so a failure here can never skip the RPC pool
         # recycle — that is the one that clears the outage.

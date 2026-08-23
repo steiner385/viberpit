@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import logging
 import tempfile
 import time
 import types
@@ -237,13 +238,76 @@ async def test_a_wedged_pool_recovers_after_the_epoch_changes(daemon, mtls_certs
 
 
 @pytest.mark.asyncio
+async def test_a_recycled_pool_starts_its_quiet_window_fresh(daemon, mtls_certs,
+                                                             monkeypatch, caplog):
+    """A burst on a freshly recycled pool must not be reported as a wedge.
+
+    ``exhausted`` is "saturated AND the pool has served nobody for ``_WEDGE_QUIET_S``",
+    and a recycle hands every slot back — so the quiet-window clock has to restart WITH
+    the pool. It did not: ``_recycle_transport`` reset ``_consecutive_pool_timeouts`` and
+    left ``_last_slot_at`` holding a pre-restart timestamp, so the first burst to saturate
+    the NEW pool was measured against the OLD one's silence and reported "edge-side pool
+    exhaustion — the daemon was never asked".
+
+    That is the worst possible moment for a false alarm. The seconds after a restart are
+    exactly when an operator is reading these logs, and this branch exists to stop people
+    chasing phantom wedges.
+
+    The shape is an edge that has gone quiet (nothing is refreshing the clock), then a
+    deploy, then a page load. Idleness is simulated by ageing the clock rather than
+    sleeping out ``_WEDGE_QUIET_S``. Note the point is the CLOCK, not whether this
+    particular burst will eventually answer: seconds after a recycle, "queued" is the only
+    honest reading available.
+    """
+    client = _client(daemon, mtls_certs, max_connections=2, monkeypatch=monkeypatch)
+    try:
+        assert await client.call("echo", stream="s", text="warm") == {"ok": True}
+        client._last_slot_at -= 600.0                  # ...and then the edge went quiet
+        assert client.pool_stats()["secondsSinceSlot"] > ipc_client._WEDGE_QUIET_S, (
+            "test is vacuous — the clock is not stale going into the restart")
+
+        async def _restarted():
+            return {"epoch": "E-new"}
+
+        client._epoch, client.info = "E-old", _restarted   # type: ignore[assignment]
+        await client._reconcile_epoch()
+
+        # A page load lands on the brand-new pool and fills it.
+        inflight = [asyncio.create_task(client.call("hang")) for _ in range(2)]
+        deadline = time.monotonic() + _SETTLE
+        while daemon.started < 2 and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+        assert daemon.started >= 2, "the burst never reached the daemon"
+
+        with caplog.at_level(logging.WARNING, logger="server.ipc.client"):
+            with pytest.raises(DaemonTimeout):
+                await client.call("echo", stream="s", text="starved",
+                                  timeout=_STARVE_BUDGET)
+
+        stats = client.pool_stats()
+        assert stats["saturated"] is True, "test is vacuous — the burst did not fill the pool"
+        assert stats["exhausted"] is False, (
+            f"a pool recycled {stats['secondsSinceSlot']:.1f}s ago was reported exhausted "
+            "— the quiet-window clock did not restart with the pool")
+        warned = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert not any("pool exhaustion" in m for m in warned), (
+            "a freshly recycled pool was blamed for the previous process's silence:\n"
+            + "\n".join(warned))
+
+        for t in inflight:
+            t.cancel()
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_a_saturated_pool_still_sees_the_restart_signal(daemon, mtls_certs,
                                                               monkeypatch):
     """The self-heal must survive the state it exists to fix: a FULL pool.
 
     This is the gap the epoch recycle could not close on its own. ``/info`` used to ride
     the same pool as every RPC, so once all ``max_connections`` slots were pinned ACTIVE
-    it raised ``PoolTimeout`` after the 2s pool leg, ``_reconcile_epoch`` swallowed it in
+    it raised ``PoolTimeout`` after the pool leg, ``_reconcile_epoch`` swallowed it in
     its ``except Exception: return``, and the recycle never fired. The WS reader calls
     ``_reconcile_epoch`` once per reconnect, so a pool already saturated at restart-time
     stayed wedged for the life of the process — exactly the state both production outages
