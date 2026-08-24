@@ -58,7 +58,11 @@ This preserves exactly today's blast radius. The alternative — one deadline fo
 would turn a single bad session into blank enrichment for the entire page, a real regression.
 
 A session id the daemon does not know simply does not appear in the returned map. The edge treats
-absent and empty identically, so no error path is needed for unknown ids.
+absent and empty identically, so no error path is needed for unknown ids. The empty value is `[]`
+for prs and suggestions, `""` for summary — the same values `_enrich_one` degrades to today.
+
+Serialization reuses the existing `PullRequestInfo.to_dict()` the singular `prs_for` handler already
+calls. The batch handler must not grow its own serializer.
 
 ### D3 — Fall back on version skew, delete later
 
@@ -68,6 +72,12 @@ falls back to the existing per-session path for that call.
 
 This is not hypothetical. The deploy on 2026-08-22 half-failed and left rocky on new code with dobby
 on old — precisely this skew — and #740 (the health gate that caused it) is still open.
+
+The fallback is decided per request, not remembered. A sticky "daemon is old" flag would be a
+second piece of version state to invalidate, and it would keep the fleet on the slow path after a
+daemon upgrade until something cleared it. The cost of not caching is one 404 per batch call per
+request while skewed — three cheap round trips on a path that is already degraded, and it
+self-corrects the moment the daemon catches up.
 
 Consequence: `_enrich_one` survives as the fallback implementation rather than becoming dead code.
 It carries a `@deprecated` marker naming its removal condition, and a follow-up issue tracks
