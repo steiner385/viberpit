@@ -284,8 +284,7 @@ ENRICH_FETCH_TIMEOUT = float(os.environ.get("CCSWITCH_ENRICH_FETCH_TIMEOUT", "3.
 # because server/tests/test_sessions_enrich_timeout.py and
 # server/tests/test_ipc_cancel_does_not_strand.py exercise it directly as the documented
 # ancestor of that fallback. Remove once #740's health gate is fixed and edge/daemon
-# version skew is no longer observed in a deploy; tracked in the follow-up issue filed
-# with this change.
+# version skew is no longer observed in a deploy; tracked in #747.
 async def _enrich_one(orch, record, viewing: bool, timeout: float):
     """Fetch all enrichment fields for one session, each gated by ``timeout``.
 
