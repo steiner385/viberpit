@@ -29,6 +29,12 @@ def _orch_with_record(*, suggester_items=("Run tests", "Commit"), account="tonys
     return orch, rec
 
 
+def _add_record(orch, session_id, *, account="tonystein85_gmail.com"):
+    rec = types.SimpleNamespace(status="done", cwd="/x", account=account, repo=None)
+    orch._records[session_id] = rec
+    return rec
+
+
 def _temp_transcript():
     fd, path = tempfile.mkstemp(suffix=".jsonl")
     os.write(fd, b"{}\n")
@@ -97,11 +103,11 @@ def test_gate_gives_up_when_no_setup_token_either(monkeypatch, caplog):
     asyncio.run(run())
 
 
-async def _run_one_failed_attempt(orch):
+async def _run_one_failed_attempt(orch, session_id="s1"):
     """Drive one latest_suggestions() poll to completion (spawned task finished)."""
-    await orch.latest_suggestions("s1")
+    await orch.latest_suggestions(session_id)
     for _ in range(20):
-        if "s1" not in orch._suggest_inflight:
+        if session_id not in orch._suggest_inflight:
             break
         await asyncio.sleep(0.01)
 
@@ -110,7 +116,7 @@ def test_failed_gate_attempt_is_not_cached_and_retries_after_backoff(monkeypatch
     """A give-up (no auth available) must NOT be cached — a later call re-attempts generation
     rather than serving a stuck cached empty, even though the transcript signature is unchanged.
     "Later" means after the backoff window (see the poll-storm tests below) has elapsed; that
-    part is simulated here by forcing `_suggest_failed_until` into the past.
+    part is simulated here by forcing `_suggest_auth_failed_until` into the past.
     """
     async def run():
         orch, _ = _orch_with_record()
@@ -130,11 +136,13 @@ def test_failed_gate_attempt_is_not_cached_and_retries_after_backoff(monkeypatch
         await _run_one_failed_attempt(orch)
         assert "s1" not in orch._detached_suggestions, "a failed attempt must not populate the cache"
         assert orch._suggester.generate.call_count == 0
-        assert "s1" in orch._suggest_failed_until, "a failed attempt must arm the backoff"
+        assert "tonystein85_gmail.com" in orch._suggest_auth_failed_until, (
+            "a failed attempt must arm the backoff, keyed by account"
+        )
 
         # Cause is fixed (setup-token now present) and the backoff window has elapsed.
         state["has_token"] = True
-        orch._suggest_failed_until["s1"] = orch_mod.time.monotonic() - 1
+        orch._suggest_auth_failed_until["tonystein85_gmail.com"] = orch_mod.time.monotonic() - 1
         await orch.latest_suggestions("s1")   # must re-attempt, not serve a cached empty
         got = await _await_until(lambda: orch.latest_suggestions("s1"), lambda r: bool(r))
         assert got == ["Run tests", "Commit"]
@@ -188,9 +196,42 @@ def test_retries_once_backoff_window_elapses(monkeypatch):
         assert acquire.call_count == 1
 
         # Simulate the backoff window having elapsed (no real 60s sleep in a unit test).
-        orch._suggest_failed_until["s1"] = orch_mod.time.monotonic() - 1
+        orch._suggest_auth_failed_until["tonystein85_gmail.com"] = orch_mod.time.monotonic() - 1
         await _run_one_failed_attempt(orch)
         assert acquire.call_count == 2, "a poll after the backoff window must retry"
+    asyncio.run(run())
+
+
+def test_same_account_cooldown_shared_across_sessions(monkeypatch, caplog):
+    """Issue #749 finding 2 (re-keying): the cooldown backs off an ACCOUNT, not a session. Two
+    different sessions on the SAME account must share one cooldown — after session A's failed
+    attempt arms the backoff, session B's poll within the window must not re-invoke
+    acquire_valid_token or re-spawn generation, even though B has never attempted before.
+    """
+    async def run():
+        orch, _ = _orch_with_record()
+        _add_record(orch, "s2", account="tonystein85_gmail.com")
+        orch.resolve_transcript_path = AsyncMock(return_value=_temp_transcript())
+
+        acquire = MagicMock(side_effect=AuthError("token refresh failed with 400"))
+        monkeypatch.setattr(orch_mod.ccswitch_accounts, "acquire_valid_token", acquire)
+        monkeypatch.setattr(orch_mod, "oauth_env_for", lambda account: {})
+
+        with caplog.at_level("WARNING"):
+            # Session A fails first, arming the account-level backoff.
+            await _run_one_failed_attempt(orch, "s1")
+            assert acquire.call_count == 1
+
+            # Session B, same account, polls within the window: must not spawn generation.
+            await orch.latest_suggestions("s2")
+            await asyncio.sleep(0.02)
+            assert acquire.call_count == 1, (
+                "a second session on the same, already-backed-off account must not "
+                "re-invoke acquire_valid_token"
+            )
+            assert "s2" not in orch._suggest_inflight
+
+        assert caplog.text.count("detached suggestions: giving up") == 1
     asyncio.run(run())
 
 

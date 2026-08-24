@@ -342,9 +342,12 @@ class SessionOrchestrator:
         # the same transcript state is not re-generated on every /sessions poll.
         self._detached_suggestions: dict[str, tuple[float, list[str]]] = {}
         self._suggest_inflight: set[str] = set()
-        # Backoff after a give-up-for-no-auth attempt: session_id -> monotonic
-        # deadline before which a re-spawn is skipped. See _SUGGEST_AUTH_FAIL_BACKOFF_S.
-        self._suggest_failed_until: dict[str, float] = {}
+        # Backoff after a give-up-for-no-auth attempt: account -> monotonic deadline before
+        # which a re-spawn is skipped. Keyed by account (not session_id): "this account has
+        # no usable credential" is a per-account fact, so all sessions sharing an account
+        # share one cooldown instead of each hammering acquire_valid_token independently.
+        # See _SUGGEST_AUTH_FAIL_BACKOFF_S.
+        self._suggest_auth_failed_until: dict[str, float] = {}
         # Session status summaries: session_id -> (transcript mtime, generated_at_monotonic, text).
         # Generated lazily from the transcript, only while a viewer is present and at most
         # once / 60s (see latest_summary / should_regenerate). Ephemeral — never persisted.
@@ -5628,8 +5631,9 @@ class SessionOrchestrator:
         # none is already in flight, and any auth-failure backoff has elapsed (a failed
         # attempt is not cached — see _generate_detached_suggestions — so without this
         # gate every 5s /sessions poll would re-spawn generation for an account with no
-        # usable auth).
-        failed_until = self._suggest_failed_until.get(session_id)
+        # usable auth). Keyed by account, not session_id: the cooldown is shared by every
+        # session on the same account (see _suggest_auth_failed_until).
+        failed_until = self._suggest_auth_failed_until.get(rec.account)
         backed_off = failed_until is not None and time.monotonic() < failed_until
         if self._suggester is not None and session_id not in self._suggest_inflight and not backed_off:
             self._suggest_inflight.add(session_id)
@@ -5649,7 +5653,7 @@ class SessionOrchestrator:
         below, neither of which reflects a real answer from the model — is cached as
         (signature, items), so the same transcript state is not re-generated on the next
         poll. But when the call could not even be made (no usable auth), nothing is
-        cached: the give-up is logged (rate-limited by `_suggest_failed_until`, see
+        cached: the give-up is logged (rate-limited by `_suggest_auth_failed_until`, see
         below) and a later poll retries once the backoff elapses, so fixing the account
         (e.g. a setup-token added, or its browser-OAuth refresh restored) is picked up
         without waiting on the transcript to change. Always clears the in-flight flag.
@@ -5673,15 +5677,16 @@ class SessionOrchestrator:
                     # 5s while a dashboard is open) and re-run the real refresh_access_token
                     # network POST + sync_back that acquire_valid_token just did. Back off
                     # instead: skip re-spawning (see latest_suggestions) until the window
-                    # elapses, which also caps this WARNING to once per window rather than
-                    # once per poll.
-                    self._suggest_failed_until[session_id] = (
+                    # elapses, which also caps this WARNING to once per account per window
+                    # rather than once per poll — the cooldown is keyed by account, so it
+                    # covers every session sharing this account, not just this one.
+                    self._suggest_auth_failed_until[rec.account] = (
                         time.monotonic() + _SUGGEST_AUTH_FAIL_BACKOFF_S
                     )
                     log.warning(
-                        "detached suggestions: giving up for session=%s account=%s — no "
+                        "detached suggestions: giving up for account=%s (session=%s) — no "
                         "valid OAuth token and no setup-token; not caching, retrying in %ss",
-                        session_id, rec.account, _SUGGEST_AUTH_FAIL_BACKOFF_S,
+                        rec.account, session_id, _SUGGEST_AUTH_FAIL_BACKOFF_S,
                     )
                     return  # do NOT cache: this is "could not be made", not "no answer"
             events = await replay_events(path)
@@ -5689,7 +5694,7 @@ class SessionOrchestrator:
             context = f"User: {user_text}\n\nAssistant: {assistant_text}"
             items = await self._suggester.generate(rec.cwd, str(compose(rec.account)), context, rec.account)
             self._detached_suggestions[session_id] = (signature, list(items or []))
-            self._suggest_failed_until.pop(session_id, None)
+            self._suggest_auth_failed_until.pop(rec.account, None)
         except Exception:
             log.warning("detached suggestion generation failed id=%s", session_id, exc_info=True)
             self._detached_suggestions[session_id] = (signature, [])
