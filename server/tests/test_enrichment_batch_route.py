@@ -76,3 +76,46 @@ async def test_a_failing_batch_rpc_degrades_that_field_only():
         _Broken(), [_rec("a")], viewing=False, timeout=3.0)
     assert list(suggs) == [[]]
     assert [p[0].title for p in prs] == ["t-a"]  # the other two still landed
+
+
+@pytest.mark.asyncio
+async def test_unknown_method_falls_back_to_per_session_calls():
+    """An old daemon 404s the batched method; the page must still enrich (spec D3)."""
+    from server.ipc.client import DaemonError
+
+    class _OldDaemon(_BatchOrch):
+        async def latest_suggestions_many(self, session_ids, *, timeout=None):
+            self.calls.append("latest_suggestions_many")
+            raise DaemonError("UnknownMethod", "latest_suggestions_many")
+
+        async def latest_suggestions(self, session_id, *, timeout=None):
+            self.calls.append("latest_suggestions")
+            return [f"s-{session_id}"]
+
+    orch = _OldDaemon()
+    _repos, suggs, _prs, _summaries = await _enrich_batch(
+        orch, [_rec("a"), _rec("b")], viewing=False, timeout=3.0)
+    assert list(suggs) == [["s-a"], ["s-b"]]
+    assert orch.calls.count("latest_suggestions") == 2
+
+
+@pytest.mark.asyncio
+async def test_a_normal_daemon_error_does_not_trigger_fallback():
+    """Only UnknownMethod means 'old daemon'. Any other error degrades to empty —
+    retrying every failure per session would restore the N+1 under load."""
+    from server.ipc.client import DaemonError
+
+    class _Erroring(_BatchOrch):
+        async def latest_suggestions_many(self, session_ids, *, timeout=None):
+            self.calls.append("latest_suggestions_many")
+            raise DaemonError("InternalError", "boom")
+
+        async def latest_suggestions(self, session_id, *, timeout=None):
+            self.calls.append("latest_suggestions")
+            return ["should not be reached"]
+
+    orch = _Erroring()
+    _repos, suggs, _prs, _summaries = await _enrich_batch(
+        orch, [_rec("a")], viewing=False, timeout=3.0)
+    assert list(suggs) == [[]]
+    assert "latest_suggestions" not in orch.calls

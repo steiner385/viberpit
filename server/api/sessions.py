@@ -278,6 +278,14 @@ async def _resolve_summary(orch, record, viewing: bool, timeout: float) -> str:
 ENRICH_FETCH_TIMEOUT = float(os.environ.get("CCSWITCH_ENRICH_FETCH_TIMEOUT", "3.0"))
 
 
+# @deprecated — superseded by _enrich_batch's _each fallback (#742). This whole-record
+# helper is no longer on the route's call path (the per-field _each fallback in
+# _enrich_batch is what actually runs against a version-skewed daemon); it stays only
+# because server/tests/test_sessions_enrich_timeout.py and
+# server/tests/test_ipc_cancel_does_not_strand.py exercise it directly as the documented
+# ancestor of that fallback. Remove once #740's health gate is fixed and edge/daemon
+# version skew is no longer observed in a deploy; tracked in the follow-up issue filed
+# with this change.
 async def _enrich_one(orch, record, viewing: bool, timeout: float):
     """Fetch all enrichment fields for one session, each gated by ``timeout``.
 
@@ -327,22 +335,58 @@ async def _enrich_batch(orch, records, viewing: bool, timeout: float):
     if not ids:
         return (), (), (), ()
 
-    async def _batch(name, **extra):
+    async def _batch(name, singular, **extra):
+        """One batched RPC, falling back to per-session calls only on UnknownMethod.
+
+        UnknownMethod means the daemon predates this method — a version-skewed fleet,
+        which #740 makes a live possibility. Any OTHER failure degrades to empty: retrying
+        every error per session would restore the N+1 precisely when the daemon is
+        struggling.
+
+        Decided per request, not remembered. A sticky flag would be another piece of
+        version state to invalidate and would pin the fleet to the slow path after the
+        daemon caught up.
+        """
         fn = getattr(orch, name, None)
         if fn is None:
-            return {}
+            log.info("list_sessions: daemon has no %s — falling back to per-session "
+                      "calls (version skew, #742)", name)
+            return await singular()
         try:
             return await call_with_deadline(fn, ids, timeout=timeout, **extra) or {}
+        except DaemonError as exc:
+            if exc.err_type != "UnknownMethod":
+                log.warning("list_sessions: %s failed (%s)", name, exc.err_type)
+                return {}
+            log.info("list_sessions: daemon has no %s — falling back to per-session "
+                      "calls (version skew, #742)", name)
+            return await singular()
         except Exception:
             log.warning("list_sessions: %s failed for %d sessions", name, len(ids),
                         exc_info=True)
             return {}
 
+    async def _each(fn_name, empty, **extra):
+        """Per-session fallback: the pre-batch path, kept for version skew only."""
+        fn = getattr(orch, fn_name, None)
+        if fn is None:
+            return {}
+        async def _one(sid):
+            try:
+                return await call_with_deadline(fn, sid, timeout=timeout, **extra)
+            except Exception:
+                return empty
+        vals = await asyncio.gather(*(_one(sid) for sid in ids))
+        return dict(zip(ids, vals))
+
     repos, sugg_map, pr_map, sum_map = await asyncio.gather(
         asyncio.gather(*(_resolve_repo(r) for r in records), return_exceptions=True),
-        _batch("latest_suggestions_many"),
-        _batch("prs_for_many"),
-        _batch("latest_summary_many", viewing=viewing),
+        _batch("latest_suggestions_many",
+               lambda: _each("latest_suggestions", [])),
+        _batch("prs_for_many",
+               lambda: _each("prs_for", [])),
+        _batch("latest_summary_many",
+               lambda: _each("latest_summary", "", viewing=viewing), viewing=viewing),
     )
     resolved_repos = [
         repo if not isinstance(repo, BaseException) else getattr(r, "repo", None)
