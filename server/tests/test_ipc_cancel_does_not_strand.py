@@ -259,7 +259,12 @@ async def test_enrich_batch_does_not_orphan_daemon_sockets(blackhole, blackhole_
         assert list(prs) == [[], []]
         assert list(summaries) == ["", ""]
         # Three RPCs for two sessions — six would mean the batch did not take effect.
+        # settle() only waits for >= expect, so the count itself needs its own assertion:
+        # six accepted sockets would satisfy the wait just as well as three.
         await blackhole.settle(expect=3)
+        assert blackhole.accepted == 3, (
+            f"expected exactly 3 batched RPCs for 2 sessions, saw {blackhole.accepted}"
+        )
         blackhole.assert_no_orphans()
     finally:
         await client.aclose()

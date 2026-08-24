@@ -34,19 +34,27 @@ def _make_fake_record():
 
 
 class _BlippedSessions:
-    """Fake orchestrator facade whose auxiliary RPCs raise DaemonUnavailable."""
+    """Fake orchestrator facade whose batched auxiliary RPCs raise DaemonUnavailable.
+
+    GET /api/sessions is wired through _enrich_batch's three batched _many RPCs
+    (#742), not the per-session latest_summary/latest_suggestions/prs_for — those are
+    only reached by the version-skew fallback (_enrich_one). A fake exposing only the
+    per-session methods is never invoked at all: _enrich_batch's ``getattr(orch, name,
+    None) is None`` guard silently degrades to ``{}`` without ever calling anything,
+    which made this regression guard pass green while testing nothing.
+    """
 
     def __init__(self, record):
         self._record = record
-        self.latest_summary = AsyncMock(side_effect=DaemonUnavailable("blip"))
+        self.latest_summary_many = AsyncMock(side_effect=DaemonUnavailable("blip"))
 
     async def list_sessions(self):
         return [self._record]
 
-    async def latest_suggestions(self, sid):
+    async def latest_suggestions_many(self, session_ids, *, timeout=None):
         raise DaemonUnavailable("blip")
 
-    async def prs_for(self, sid):
+    async def prs_for_many(self, session_ids, *, timeout=None):
         raise DaemonUnavailable("blip")
 
 
