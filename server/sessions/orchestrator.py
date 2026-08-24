@@ -3851,13 +3851,32 @@ class SessionOrchestrator:
             log.debug("persist_sub_agents failed (non-fatal) session=%s", session_id, exc_info=True)
 
     async def _default_title_fn(self, prompts, *, account, cwd):
-        """Default fallback title generator: a one-shot Haiku query under the account."""
+        """Default fallback title generator: a one-shot Haiku query under the account.
+
+        Same auth gate as ``_generate_detached_suggestions`` (#749): a dead browser-OAuth
+        refresh (``AuthError``/``FileNotFoundError`` from ``acquire_valid_token``) does not
+        by itself mean the account is unusable — its setup-token (``oauth_env_for``, the
+        single source of truth for model-auth env) may still work, the same way session
+        launch treats it. Only give up, logging the account (never the token), when neither
+        credential is available. Fail-open throughout: any lookup failure degrades to
+        ``None`` rather than raising — this is a best-effort title generator.
+        """
         from ccswitch.oauth import AuthError
         try:
             await asyncio.to_thread(ccswitch_accounts.acquire_valid_token, account)
         except (AuthError, FileNotFoundError) as exc:
-            log.debug("title gen skipped — token refresh failed account=%s: %s", account, exc)
-            return None
+            log.debug("title gen — token refresh failed account=%s: %s", account, exc)
+            try:
+                has_setup_token = bool(oauth_env_for(account))
+            except Exception as lookup_exc:
+                log.debug("title gen — setup-token lookup failed account=%s: %s", account, lookup_exc)
+                has_setup_token = False
+            if not has_setup_token:
+                log.warning(
+                    "title gen: giving up for account=%s — no valid OAuth token and no "
+                    "setup-token", account,
+                )
+                return None
         return await generate_title(prompts, config_dir=str(compose(account)), cwd=cwd)
 
     def _account_limited(self, account: str) -> bool:
