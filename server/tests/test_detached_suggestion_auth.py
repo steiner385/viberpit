@@ -10,7 +10,7 @@ import asyncio
 import os
 import tempfile
 import types
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -19,12 +19,12 @@ import server.sessions.orchestrator as orch_mod
 from server.sessions.orchestrator import SessionOrchestrator
 
 
-def _orch_with_record(*, suggester_items=("Run tests", "Commit")):
+def _orch_with_record(*, suggester_items=("Run tests", "Commit"), account="tonystein85_gmail.com"):
     orch = SessionOrchestrator()
     orch._suggester = types.SimpleNamespace(
         generate=AsyncMock(return_value=list(suggester_items))
     )
-    rec = types.SimpleNamespace(status="done", cwd="/x", account="tonystein85_gmail.com", repo=None)
+    rec = types.SimpleNamespace(status="done", cwd="/x", account=account, repo=None)
     orch._records["s1"] = rec
     return orch, rec
 
@@ -97,9 +97,20 @@ def test_gate_gives_up_when_no_setup_token_either(monkeypatch, caplog):
     asyncio.run(run())
 
 
-def test_failed_gate_attempt_is_not_cached_and_retries(monkeypatch):
-    """A give-up (no auth available) must NOT be cached — the next call re-attempts generation
+async def _run_one_failed_attempt(orch):
+    """Drive one latest_suggestions() poll to completion (spawned task finished)."""
+    await orch.latest_suggestions("s1")
+    for _ in range(20):
+        if "s1" not in orch._suggest_inflight:
+            break
+        await asyncio.sleep(0.01)
+
+
+def test_failed_gate_attempt_is_not_cached_and_retries_after_backoff(monkeypatch):
+    """A give-up (no auth available) must NOT be cached — a later call re-attempts generation
     rather than serving a stuck cached empty, even though the transcript signature is unchanged.
+    "Later" means after the backoff window (see the poll-storm tests below) has elapsed; that
+    part is simulated here by forcing `_suggest_failed_until` into the past.
     """
     async def run():
         orch, _ = _orch_with_record()
@@ -116,16 +127,14 @@ def test_failed_gate_attempt_is_not_cached_and_retries(monkeypatch):
         )
 
         # First attempt: no setup-token -> gives up.
-        await orch.latest_suggestions("s1")
-        for _ in range(20):
-            if "s1" not in orch._suggest_inflight:
-                break
-            await asyncio.sleep(0.01)
+        await _run_one_failed_attempt(orch)
         assert "s1" not in orch._detached_suggestions, "a failed attempt must not populate the cache"
         assert orch._suggester.generate.call_count == 0
+        assert "s1" in orch._suggest_failed_until, "a failed attempt must arm the backoff"
 
-        # Cause is fixed (setup-token now present); same transcript signature.
+        # Cause is fixed (setup-token now present) and the backoff window has elapsed.
         state["has_token"] = True
+        orch._suggest_failed_until["s1"] = orch_mod.time.monotonic() - 1
         await orch.latest_suggestions("s1")   # must re-attempt, not serve a cached empty
         got = await _await_until(lambda: orch.latest_suggestions("s1"), lambda r: bool(r))
         assert got == ["Run tests", "Commit"]
@@ -133,10 +142,75 @@ def test_failed_gate_attempt_is_not_cached_and_retries(monkeypatch):
     asyncio.run(run())
 
 
-def test_no_setup_token_and_no_valid_token_returns_empty_from_latest_suggestions():
+def test_repeated_polls_within_backoff_do_not_respawn_generation(monkeypatch, caplog):
+    """Issue #749 finding 1 (poll-storm regression): since a failed attempt is not cached, a
+    naive re-check on every /sessions poll (every 5s while a dashboard is open) would re-invoke
+    acquire_valid_token — a real refresh_access_token network POST plus sync_back — and log a
+    WARNING on every single poll, for as long as the account has no usable auth. Two rapid
+    consecutive failed attempts must produce exactly ONE acquire_valid_token call (and one
+    WARNING), not two.
+    """
     async def run():
         orch, _ = _orch_with_record()
         orch.resolve_transcript_path = AsyncMock(return_value=_temp_transcript())
+
+        acquire = MagicMock(side_effect=AuthError("token refresh failed with 400"))
+        monkeypatch.setattr(orch_mod.ccswitch_accounts, "acquire_valid_token", acquire)
+        monkeypatch.setattr(orch_mod, "oauth_env_for", lambda account: {})
+
+        with caplog.at_level("WARNING"):
+            # First poll: spawns generation, which gives up and arms the backoff.
+            await _run_one_failed_attempt(orch)
+            assert acquire.call_count == 1
+
+            # Second poll immediately after: backoff window has not elapsed, must not re-spawn.
+            await orch.latest_suggestions("s1")
+            await asyncio.sleep(0.02)
+            assert acquire.call_count == 1, "a backed-off poll must not re-invoke acquire_valid_token"
+
+        assert caplog.text.count("detached suggestions: giving up") == 1
+    asyncio.run(run())
+
+
+def test_retries_once_backoff_window_elapses(monkeypatch):
+    """The other direction of the poll-storm fix: backoff must not be permanent — once the
+    window elapses, a poll retries generation. (Sticky-blank regression guard.)
+    """
+    async def run():
+        orch, _ = _orch_with_record()
+        orch.resolve_transcript_path = AsyncMock(return_value=_temp_transcript())
+
+        acquire = MagicMock(side_effect=AuthError("token refresh failed with 400"))
+        monkeypatch.setattr(orch_mod.ccswitch_accounts, "acquire_valid_token", acquire)
+        monkeypatch.setattr(orch_mod, "oauth_env_for", lambda account: {})
+
+        await _run_one_failed_attempt(orch)
+        assert acquire.call_count == 1
+
+        # Simulate the backoff window having elapsed (no real 60s sleep in a unit test).
+        orch._suggest_failed_until["s1"] = orch_mod.time.monotonic() - 1
+        await _run_one_failed_attempt(orch)
+        assert acquire.call_count == 2, "a poll after the backoff window must retry"
+    asyncio.run(run())
+
+
+def test_no_setup_token_and_no_valid_token_returns_empty_from_latest_suggestions(monkeypatch):
+    """Cache-miss path with no usable auth returns [] without touching real credentials.
+
+    Uses a dummy account name that cannot exist and monkeypatches both auth entry points so
+    the spawned background task never performs a real OAuth refresh or sync_back write.
+    """
+    async def run():
+        orch, _ = _orch_with_record(account="does-not-exist_example.invalid")
+        orch.resolve_transcript_path = AsyncMock(return_value=_temp_transcript())
+        monkeypatch.setattr(
+            orch_mod.ccswitch_accounts, "acquire_valid_token",
+            lambda name: (_ for _ in ()).throw(AuthError("token refresh failed with 400")),
+        )
+        monkeypatch.setattr(orch_mod, "oauth_env_for", lambda account: {})
+
         res = await orch.latest_suggestions("s1")
         assert res == []
+        await _run_one_failed_attempt(orch)
+        assert orch._suggester.generate.call_count == 0
     asyncio.run(run())

@@ -28,6 +28,10 @@ def test_real_suggestion_factory_injects_oauth_token_for_account(monkeypatch):
 
 
 def test_real_suggestion_factory_no_setup_token_omits_env(monkeypatch):
+    # The factory starts from dict(os.environ, ...), so this assertion only means what it
+    # claims if the *test process's own* environment doesn't already export the var (plausible
+    # on a dev box for this project).
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     captured = _patch_sdk_client(monkeypatch)
     monkeypatch.setattr(sf, "oauth_env_for", lambda account: {})
     sf.real_suggestion_factory("/tmp/r", "/tmp/cfg-acct", "primary")
@@ -45,6 +49,8 @@ def test_real_summary_factory_injects_oauth_token_for_account(monkeypatch):
 
 
 def test_real_summary_factory_no_setup_token_omits_env(monkeypatch):
+    # See the matching comment on test_real_suggestion_factory_no_setup_token_omits_env.
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     captured = _patch_sdk_client(monkeypatch)
     monkeypatch.setattr(sf, "oauth_env_for", lambda account: {})
     sf.real_summary_factory("/tmp/r", "/tmp/cfg-acct", "primary")

@@ -135,6 +135,19 @@ def _log_bg_exception(task: asyncio.Task) -> None:
 # TTL for cached issue proposals (seconds).
 _ISSUE_TTL_S: float = 300.0
 
+# Backoff after a detached-suggestion generation attempt gives up for lack of
+# usable auth (no valid OAuth token and no setup-token). The result is not
+# cached as an answer (see _generate_detached_suggestions), so without this a
+# 5s dashboard poll (/sessions) would re-spawn generation — and its real
+# acquire_valid_token -> refresh_access_token network POST plus sync_back —
+# on every single poll for as long as any dashboard is open. This is a narrow
+# negative-TTL, not the helper_call circuit breaker: the breaker classifies
+# failures of an actual SDK query stream (429/401/5xx/crash) around
+# run_helper_call, and this give-up happens *before* any such call is even
+# attempted, so it doesn't fit that call shape. Same 60s window as the
+# breaker's cooldown for consistency, not because they share state.
+_SUGGEST_AUTH_FAIL_BACKOFF_S: float = 60.0
+
 
 def _prepend_proposal(proposal: str | None, base: list[str]) -> list[str]:
     """Prepend *proposal* to *base* iff truthy and not already present."""
@@ -329,6 +342,9 @@ class SessionOrchestrator:
         # the same transcript state is not re-generated on every /sessions poll.
         self._detached_suggestions: dict[str, tuple[float, list[str]]] = {}
         self._suggest_inflight: set[str] = set()
+        # Backoff after a give-up-for-no-auth attempt: session_id -> monotonic
+        # deadline before which a re-spawn is skipped. See _SUGGEST_AUTH_FAIL_BACKOFF_S.
+        self._suggest_failed_until: dict[str, float] = {}
         # Session status summaries: session_id -> (transcript mtime, generated_at_monotonic, text).
         # Generated lazily from the transcript, only while a viewer is present and at most
         # once / 60s (see latest_summary / should_regenerate). Ephemeral — never persisted.
@@ -5608,8 +5624,14 @@ class SessionOrchestrator:
         if cached is not None and cached[0] == signature:
             return _prepend_proposal(proposal, list(cached[1]))
 
-        # Only schedule a background suggestion refresh when a suggester is available.
-        if self._suggester is not None and session_id not in self._suggest_inflight:
+        # Only schedule a background suggestion refresh when a suggester is available,
+        # none is already in flight, and any auth-failure backoff has elapsed (a failed
+        # attempt is not cached — see _generate_detached_suggestions — so without this
+        # gate every 5s /sessions poll would re-spawn generation for an account with no
+        # usable auth).
+        failed_until = self._suggest_failed_until.get(session_id)
+        backed_off = failed_until is not None and time.monotonic() < failed_until
+        if self._suggester is not None and session_id not in self._suggest_inflight and not backed_off:
             self._suggest_inflight.add(session_id)
             self._spawn(
                 self._generate_detached_suggestions(session_id, rec, path, signature),
@@ -5622,12 +5644,15 @@ class SessionOrchestrator:
     async def _generate_detached_suggestions(self, session_id, rec, path, signature) -> None:
         """Generate suggestions for a detached session from its transcript (best-effort).
 
-        A genuine result — including a genuinely empty one — is cached as (signature, items),
-        so the same transcript state is not re-generated on the next poll. But when the call
-        could not even be made (no usable auth), nothing is cached: the give-up is logged and
-        the next poll retries, so fixing the account (e.g. a setup-token added, or its
-        browser-OAuth refresh restored) is picked up without waiting on the transcript to
-        change. Always clears the in-flight flag.
+        A result reached by actually attempting generation — including a genuinely empty
+        one, and including the `self._suggester is None` and unhandled-exception cases
+        below, neither of which reflects a real answer from the model — is cached as
+        (signature, items), so the same transcript state is not re-generated on the next
+        poll. But when the call could not even be made (no usable auth), nothing is
+        cached: the give-up is logged (rate-limited by `_suggest_failed_until`, see
+        below) and a later poll retries once the backoff elapses, so fixing the account
+        (e.g. a setup-token added, or its browser-OAuth refresh restored) is picked up
+        without waiting on the transcript to change. Always clears the in-flight flag.
         """
         try:
             if self._suggester is None:
@@ -5639,13 +5664,24 @@ class SessionOrchestrator:
             except (AuthError, FileNotFoundError):
                 # Browser-OAuth refresh is dead. Fall back to the same setup-token auth
                 # session launch uses (oauth_env_for is the single source of truth for
-                # model-auth env) — a non-empty env means the account is still model-capable
-                # even though acquire_valid_token gave up.
+                # model-auth env): a non-empty env means the account can still launch a
+                # session even though acquire_valid_token gave up — though the API may
+                # still reject the setup-token, in which case generate() below swallows
+                # the error and returns [], which then IS cached as a genuine result.
                 if not oauth_env_for(rec.account):
+                    # Not caching means the next poll would re-attempt immediately (every
+                    # 5s while a dashboard is open) and re-run the real refresh_access_token
+                    # network POST + sync_back that acquire_valid_token just did. Back off
+                    # instead: skip re-spawning (see latest_suggestions) until the window
+                    # elapses, which also caps this WARNING to once per window rather than
+                    # once per poll.
+                    self._suggest_failed_until[session_id] = (
+                        time.monotonic() + _SUGGEST_AUTH_FAIL_BACKOFF_S
+                    )
                     log.warning(
                         "detached suggestions: giving up for session=%s account=%s — no "
-                        "valid OAuth token and no setup-token; not caching, next poll retries",
-                        session_id, rec.account,
+                        "valid OAuth token and no setup-token; not caching, retrying in %ss",
+                        session_id, rec.account, _SUGGEST_AUTH_FAIL_BACKOFF_S,
                     )
                     return  # do NOT cache: this is "could not be made", not "no answer"
             events = await replay_events(path)
@@ -5653,6 +5689,7 @@ class SessionOrchestrator:
             context = f"User: {user_text}\n\nAssistant: {assistant_text}"
             items = await self._suggester.generate(rec.cwd, str(compose(rec.account)), context, rec.account)
             self._detached_suggestions[session_id] = (signature, list(items or []))
+            self._suggest_failed_until.pop(session_id, None)
         except Exception:
             log.warning("detached suggestion generation failed id=%s", session_id, exc_info=True)
             self._detached_suggestions[session_id] = (signature, [])
