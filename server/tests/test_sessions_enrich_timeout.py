@@ -1,9 +1,15 @@
-"""GET /api/sessions enrichment timeout isolation (issue #660).
+"""Enrichment timeout isolation for the deprecated per-session helper (issue #660).
 
-Per-session RPC calls (suggestions, prs, summary) must be bounded by
-ENRICH_FETCH_TIMEOUT — a single slow/hung daemon RPC must not stall the whole
-sessions list for the 30s httpx default. All sessions and all enrichment types
-must run concurrently, not serially.
+``_enrich_one`` is no longer on the GET /api/sessions call path — the route batches
+enrichment via ``_enrich_batch`` (#742) and falls back per-session only through
+``_each``, not through this function. ``_enrich_one`` survives solely as the
+test-exercised ancestor of that fallback logic (see its docstring in
+server/api/sessions.py), so this file exercises it directly: each of its per-field
+RPC calls (suggestions, prs, summary) must be bounded by ENRICH_FETCH_TIMEOUT, and a
+single slow/hung RPC must not stall the whole gather for the 30s httpx default.
+
+The route's own batching/concurrency behavior is covered separately by
+server/tests/test_enrichment_batch_route.py — this file does NOT exercise the route.
 """
 from __future__ import annotations
 
@@ -107,7 +113,9 @@ def test_enrich_one_degrades_on_exception():
 
 
 # ---------------------------------------------------------------------------
-# Concurrency: N sessions must enrich in parallel, not serially
+# Concurrency within a single _enrich_one call: N *sessions calling _enrich_one*
+# must not serialize on each other. This is NOT the route's batching behavior —
+# see server/tests/test_enrichment_batch_route.py for that.
 # ---------------------------------------------------------------------------
 
 

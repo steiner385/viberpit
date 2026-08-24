@@ -588,7 +588,7 @@ class DaemonClient:
         backoff, so the blast radius is a handful of requests, and they DEGRADE rather than
         500: every killed request surfaces as ``httpx.TransportError`` →
         ``DaemonUnavailable``, the typed failure every RPC call site already handles
-        (``_enrich_one`` maps it to empty fields through ``gather(return_exceptions=True)``),
+        (``_enrich_batch`` maps it to empty fields through ``gather(return_exceptions=True)``),
         so a caller sees a fast empty field instead of a 30s hang.
 
         Never raises: a client that cannot recycle must still be a working client.

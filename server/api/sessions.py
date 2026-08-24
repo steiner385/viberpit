@@ -238,6 +238,10 @@ async def _resolve_prs(orch, record, timeout: float):
     Returns ``list[PullRequestInfo]``; an orchestrator with no ``prs_for`` (older shim)
     yields ``[]`` rather than raising. ``timeout`` goes through call_with_deadline, which
     pushes it INTO the RPC rather than cancelling it from outside.
+
+    Off the route's call path since the batch rewrite (#742) — reached only via
+    ``_enrich_one`` below, which in turn is reached only by tests. See ``_enrich_one``'s
+    docstring for the removal condition.
     """
     fn = getattr(orch, "prs_for", None)
     if fn is None:
@@ -250,6 +254,10 @@ async def _resolve_summary(orch, record, viewing: bool, timeout: float) -> str:
 
     Returns "" for an orchestrator shim without ``latest_summary`` (never raises),
     mirroring the defensiveness of :func:`_resolve_prs`.
+
+    Off the route's call path since the batch rewrite (#742) — reached only via
+    ``_enrich_one`` below, which in turn is reached only by tests. See ``_enrich_one``'s
+    docstring for the removal condition.
     """
     fn = getattr(orch, "latest_summary", None)
     if fn is None:
@@ -279,12 +287,14 @@ ENRICH_FETCH_TIMEOUT = float(os.environ.get("CCSWITCH_ENRICH_FETCH_TIMEOUT", "3.
 
 
 # @deprecated — superseded by _enrich_batch's _each fallback (#742). This whole-record
-# helper is no longer on the route's call path (the per-field _each fallback in
-# _enrich_batch is what actually runs against a version-skewed daemon); it stays only
-# because server/tests/test_sessions_enrich_timeout.py and
-# server/tests/test_ipc_cancel_does_not_strand.py exercise it directly as the documented
-# ancestor of that fallback. Remove once #740's health gate is fixed and edge/daemon
-# version skew is no longer observed in a deploy; tracked in #747.
+# helper has zero production callers; the route reaches only _enrich_batch, and that
+# function's own per-field fallback is _each (~line 368), NOT this function. _enrich_one
+# is retained SOLELY because server/tests/test_sessions_enrich_timeout.py and
+# server/tests/test_ipc_cancel_does_not_strand.py call it directly, as the documented
+# ancestor of _each's logic. Its removal is gated on retargeting those two test files at
+# _enrich_batch (or _each) — NOT on #740's health gate, which is the removal condition for
+# _each itself, not for this dead helper. Tracked under the general fallback-cleanup
+# issue #747.
 async def _enrich_one(orch, record, viewing: bool, timeout: float):
     """Fetch all enrichment fields for one session, each gated by ``timeout``.
 
@@ -349,7 +359,7 @@ async def _enrich_batch(orch, records, viewing: bool, timeout: float):
         fn = getattr(orch, name, None)
         if fn is None:
             log.info("list_sessions: daemon has no %s — falling back to per-session "
-                      "calls (version skew, #742)", name)
+                     "calls (version skew, #742)", name)
             return await singular()
         try:
             return await call_with_deadline(fn, ids, timeout=timeout, **extra) or {}
@@ -358,7 +368,7 @@ async def _enrich_batch(orch, records, viewing: bool, timeout: float):
                 log.warning("list_sessions: %s failed (%s)", name, exc.err_type)
                 return {}
             log.info("list_sessions: daemon has no %s — falling back to per-session "
-                      "calls (version skew, #742)", name)
+                     "calls (version skew, #742)", name)
             return await singular()
         except Exception:
             log.warning("list_sessions: %s failed for %d sessions", name, len(ids),
@@ -374,6 +384,8 @@ async def _enrich_batch(orch, records, viewing: bool, timeout: float):
             try:
                 return await call_with_deadline(fn, sid, timeout=timeout, **extra)
             except Exception:
+                log.warning("list_sessions: %s timed out or failed for %s "
+                            "(per-session fallback)", fn_name, sid)
                 return empty
         vals = await asyncio.gather(*(_one(sid) for sid in ids))
         return dict(zip(ids, vals))
