@@ -42,7 +42,7 @@ class _StubSuggester:
         self.items = items
         self.calls = 0
 
-    async def generate(self, cwd, config_dir, context):
+    async def generate(self, cwd, config_dir, context, account=None):
         self.calls += 1
         return self.items
 

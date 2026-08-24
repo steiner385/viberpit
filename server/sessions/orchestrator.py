@@ -5638,7 +5638,7 @@ class SessionOrchestrator:
             events = await replay_events(path)
             user_text, assistant_text = last_turn_context(events)
             context = f"User: {user_text}\n\nAssistant: {assistant_text}"
-            items = await self._suggester.generate(rec.cwd, str(compose(rec.account)), context)
+            items = await self._suggester.generate(rec.cwd, str(compose(rec.account)), context, rec.account)
             self._detached_suggestions[session_id] = (signature, list(items or []))
         except Exception:
             log.warning("detached suggestion generation failed id=%s", session_id, exc_info=True)
@@ -5687,7 +5687,7 @@ class SessionOrchestrator:
             events = await replay_events(path)
             user_text, assistant_text = last_turn_context(events)
             context = f"User: {user_text}\n\nAssistant: {assistant_text}"
-            items = await self._suggester.generate(rec.cwd, str(compose(rec.account)), context)
+            items = await self._suggester.generate(rec.cwd, str(compose(rec.account)), context, rec.account)
             items = list(items or [])
             # Refresh the mtime-keyed cache too so the next passive poll agrees.
             try:
@@ -5780,7 +5780,7 @@ class SessionOrchestrator:
             events = await replay_events(path)
             user_text, assistant_text = last_turn_context(events)
             context = f"User: {user_text}\n\nAssistant: {assistant_text}"
-            text = await self._summarizer.generate(rec.cwd, str(compose(rec.account)), context)
+            text = await self._summarizer.generate(rec.cwd, str(compose(rec.account)), context, rec.account)
             self._summaries[session_id] = (signature, time.monotonic(), text or "")
         except Exception:
             log.warning("summary generation failed id=%s", session_id, exc_info=True)
