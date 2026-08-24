@@ -244,6 +244,28 @@ async def test_enrich_one_does_not_orphan_daemon_sockets(blackhole, blackhole_tl
 
 
 @pytest.mark.asyncio
+async def test_enrich_batch_does_not_orphan_daemon_sockets(blackhole, blackhole_tls):
+    """The batched path must clean up exactly as the per-session path does — and cost
+    three sockets for the whole page rather than three per session (#742)."""
+    from server.api.sessions import _enrich_batch
+
+    client = blackhole.client(blackhole_tls)
+    orch = RemoteOrchestrator(client)
+    try:
+        records = [_record("s1"), _record("s2")]
+        repos, suggs, prs, summaries = await _enrich_batch(
+            orch, records, viewing=False, timeout=_DEADLINE)
+        assert list(suggs) == [[], []]
+        assert list(prs) == [[], []]
+        assert list(summaries) == ["", ""]
+        # Three RPCs for two sessions — six would mean the batch did not take effect.
+        await blackhole.settle(expect=3)
+        blackhole.assert_no_orphans()
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_safe_usage_does_not_orphan_daemon_sockets(blackhole, blackhole_tls,
                                                          monkeypatch):
     """GET /api/accounts fans out one usage RPC per account."""

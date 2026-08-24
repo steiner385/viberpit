@@ -311,6 +311,51 @@ async def _enrich_one(orch, record, viewing: bool, timeout: float):
     )
 
 
+async def _enrich_batch(orch, records, viewing: bool, timeout: float):
+    """Fetch every session's enrichment in three batched RPCs instead of three per session.
+
+    Returns (repos, suggestions, prs, summaries), each positionally aligned to *records*.
+
+    A session id absent from a reply degrades to that field's empty value, and a whole
+    batch that fails degrades only its own field — the other two still render (#742).
+
+    Each RPC's deadline is pushed IN via call_with_deadline. Do NOT wrap these in
+    asyncio.wait_for: it cancels the request, stranding the connection's pool slot and
+    wedging the edge (#734).
+    """
+    ids = [r.id for r in records]
+    if not ids:
+        return (), (), (), ()
+
+    async def _batch(name, **extra):
+        fn = getattr(orch, name, None)
+        if fn is None:
+            return {}
+        try:
+            return await call_with_deadline(fn, ids, timeout=timeout, **extra) or {}
+        except Exception:
+            log.warning("list_sessions: %s failed for %d sessions", name, len(ids),
+                        exc_info=True)
+            return {}
+
+    repos, sugg_map, pr_map, sum_map = await asyncio.gather(
+        asyncio.gather(*(_resolve_repo(r) for r in records), return_exceptions=True),
+        _batch("latest_suggestions_many"),
+        _batch("prs_for_many"),
+        _batch("latest_summary_many", viewing=viewing),
+    )
+    resolved_repos = [
+        repo if not isinstance(repo, BaseException) else getattr(r, "repo", None)
+        for r, repo in zip(records, repos)
+    ]
+    return (
+        resolved_repos,
+        [sugg_map.get(r.id) or [] for r in records],
+        [pr_map.get(r.id) or [] for r in records],
+        [sum_map.get(r.id) or "" for r in records],
+    )
+
+
 async def _autopilot_defer_seconds() -> int | None:
     """Human-deference window (seconds) for the cooldown badge, or None when autopilot is
     disabled/off (→ no badge). Reads the autopilot Automation row directly: the edge process owns
@@ -407,14 +452,11 @@ async def list_sessions(
     orch = _get_orchestrator(request)
     records = await orch.list_sessions()
     viewing = request.query_params.get("viewing") in ("1", "true", "yes")
-    # Enrich all sessions concurrently — repo, suggestions, prs, and summary
-    # run in parallel within each session, and all sessions run in parallel.
-    # Each RPC is bounded by ENRICH_FETCH_TIMEOUT so one wedged daemon or slow
-    # session never holds up the entire response.
-    enriched = await asyncio.gather(
-        *(_enrich_one(orch, r, viewing, ENRICH_FETCH_TIMEOUT) for r in records)
-    )
-    repos, suggs, prs, summaries = zip(*enriched) if enriched else ((), (), (), ())
+    # Enrich the whole page in three batched RPCs (one per field) rather than three per
+    # session: 21 sessions cost 3 daemon round trips, not 63 (#742). Each is bounded by
+    # ENRICH_FETCH_TIMEOUT, pushed INTO the RPC — never raced with wait_for (#734).
+    repos, suggs, prs, summaries = await _enrich_batch(
+        orch, records, viewing, ENRICH_FETCH_TIMEOUT)
     defer_seconds = await _autopilot_defer_seconds()
     positions: dict[str, int] = {}
     _positions_fn = getattr(orch, "session_queue_positions", None)
