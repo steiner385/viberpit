@@ -286,8 +286,11 @@ async def test_ws_resume_deadline_does_not_orphan_daemon_sockets(blackhole, blac
 _DEADLINE_CAPABLE_RPCS = frozenset({
     "ensure_driver",
     "latest_suggestions",
+    "latest_suggestions_many",
     "latest_summary",
+    "latest_summary_many",
     "prs_for",
+    "prs_for_many",
     "usage",
 })
 

@@ -298,6 +298,19 @@ class RemoteOrchestrator:
         r = await self._client.call("prs_for", session_id=session_id, timeout=timeout)
         return [PullRequestInfo.from_dict(d) for d in (r.get("prs") or [])]
 
+    @rpc_deadline
+    async def prs_for_many(self, session_ids: list[str], *,
+                           timeout: float | None = None) -> "dict[str, list[PullRequestInfo]]":
+        """Batched :meth:`prs_for`. One RPC for the whole page instead of one per session.
+
+        ``timeout`` is the caller's deadline pushed INTO the RPC — never race this from
+        outside (see server.sessions.facade.call_with_deadline)."""
+        r = await self._client.call("prs_for_many", session_ids=list(session_ids),
+                                    timeout=timeout)
+        by_sid = (r or {}).get("prs") if isinstance(r, dict) else None
+        return {sid: [PullRequestInfo.from_dict(d) for d in (v or [])]
+                for sid, v in (by_sid or {}).items()}
+
     async def all_prs(self) -> "list[PipelinePr]":
         """Resolve the full PR population (joined to sessions) via the daemon."""
         from server.github.pr_status import PipelinePr
@@ -642,6 +655,22 @@ class RemoteOrchestrator:
         r = await self._client.call("latest_summary", session_id=session_id, viewing=viewing,
                                     timeout=timeout)
         return r if isinstance(r, str) else ""
+
+    @rpc_deadline
+    async def latest_suggestions_many(self, session_ids: list[str], *,
+                                      timeout: float | None = None) -> dict[str, list[str]]:
+        """Batched :meth:`latest_suggestions` (deadline pushed in, never raced)."""
+        r = await self._client.call("latest_suggestions_many",
+                                    session_ids=list(session_ids), timeout=timeout)
+        return r if isinstance(r, dict) else {}
+
+    @rpc_deadline
+    async def latest_summary_many(self, session_ids: list[str], *, viewing: bool = False,
+                                  timeout: float | None = None) -> dict[str, str]:
+        """Batched :meth:`latest_summary` (deadline pushed in, never raced)."""
+        r = await self._client.call("latest_summary_many", session_ids=list(session_ids),
+                                    viewing=viewing, timeout=timeout)
+        return r if isinstance(r, dict) else {}
 
     async def list_archived(self):
         return await self._client.call("list_archived")
