@@ -7,6 +7,7 @@ import logging
 import os
 from pathlib import Path
 
+from server.sessions.account_auth import helper_env
 from server.sessions.helper_call import run_helper_call
 
 from .autopilot_policy import Decision, DecisionContext
@@ -123,7 +124,7 @@ async def decide(ctx: DecisionContext, *, _query_fn=None, _config_dir=None, _cwd
             from claude_agent_sdk import ClaudeAgentOptions
             options = ClaudeAgentOptions(
                 model="haiku", system_prompt=_GUIDANCE, cwd=cwd,
-                env={**os.environ, "CLAUDE_CONFIG_DIR": config_dir},
+                env=helper_env(config_dir),
                 allowed_tools=[], setting_sources=[])
     except Exception as exc:  # bad/unimportable options
         log.warning("autopilot.decide failed: %s", exc)

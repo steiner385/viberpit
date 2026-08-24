@@ -23,6 +23,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
+from server.sessions.account_auth import helper_env
 from server.time_iso import iso_utc
 
 from .backlog_selection import Batch
@@ -165,7 +166,7 @@ async def propose_groups(
             model="sonnet",
             system_prompt=_GROUPING_SYSTEM,
             cwd=cwd,
-            env={**os.environ, "CLAUDE_CONFIG_DIR": config_dir},
+            env=helper_env(config_dir),
             allowed_tools=[],
             setting_sources=[],
         )

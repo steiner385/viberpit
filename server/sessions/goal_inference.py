@@ -8,8 +8,8 @@ middle tier of effective_goal()."""
 from __future__ import annotations
 
 import logging
-import os
 
+from .account_auth import helper_env
 from .helper_call import run_helper_call
 
 log = logging.getLogger(__name__)
@@ -70,7 +70,7 @@ async def infer_goal(
             query_fn = _default_query_fn()
             options = ClaudeAgentOptions(
                 model=model, system_prompt=_SYSTEM_PROMPT, cwd=cwd,
-                env={**os.environ, "CLAUDE_CONFIG_DIR": config_dir},
+                env=helper_env(config_dir),
                 allowed_tools=[], setting_sources=[])
     except Exception as exc:
         log.warning("infer_goal failed: %s", exc)

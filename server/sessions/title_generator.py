@@ -10,9 +10,9 @@ never break the session loop.
 from __future__ import annotations
 
 import logging
-import os
 import re
 
+from .account_auth import helper_env
 from .helper_call import run_helper_call
 
 log = logging.getLogger(__name__)
@@ -109,7 +109,7 @@ async def generate_title(
             model=model,
             system_prompt=_SYSTEM_PROMPT,
             cwd=cwd,
-            env={**os.environ, "CLAUDE_CONFIG_DIR": config_dir},
+            env=helper_env(config_dir),
             allowed_tools=[],
             setting_sources=[],
         )
