@@ -143,7 +143,7 @@ Expected: FAIL — `AttributeError: type object 'SessionOrchestrator' has no att
 In `server/sessions/orchestrator.py`, immediately after the `prs_for` method:
 
 ```python
-    def prs_for_many(self, session_ids: list[str]) -> dict[str, list["PullRequestInfo"]]:
+    def prs_for_many(self, session_ids: list[str]) -> dict[str, list[PullRequestInfo]]:
         """Batched :meth:`prs_for` — one entry per requested id.
 
         Isolated per session: a failure yields [] for that id alone. This mirrors the
@@ -198,9 +198,9 @@ Immediately after `latest_summary`:
         return out
 ```
 
-Note: `PullRequestInfo` is already imported inside `prs_for` via
-`from server.github.pr_status import _STATE_RANK`. If the annotation needs the symbol at
-module scope, use the string annotation shown above rather than adding an import.
+`PullRequestInfo`, `asyncio` and `log` are all already available at module scope in
+`orchestrator.py` (lines 73, 14, 76). Use a plain annotation — `dict[str, list[PullRequestInfo]]`
+— not a string one, and add no imports.
 
 - [ ] **Step 4: Run to verify it passes**
 
@@ -247,7 +247,7 @@ import pytest
 from fastapi import FastAPI
 
 from server.github.pr_status import PullRequestInfo
-from server.ipc.orchestrator_rpc import register_orchestrator_rpcs
+from server.ipc.orchestrator_rpc import register_orchestrator_rpc
 
 
 class _Orch:
@@ -265,7 +265,7 @@ def _app():
     app = FastAPI()
     app.state.rpc = {}
     app.state.evict = lambda sid: None
-    register_orchestrator_rpcs(app, _Orch())
+    register_orchestrator_rpc(app, _Orch())
     return app
 
 
@@ -285,8 +285,8 @@ async def test_suggestions_and_summary_many_are_registered():
         {"session_ids": ["a"], "viewing": True}) == {"a": "sum-a-True"}
 ```
 
-If `register_orchestrator_rpcs` has a different name or signature, read the top of
-`server/ipc/orchestrator_rpc.py` and match it; do not invent one.
+`register_orchestrator_rpc(app, orch)` is the real entrypoint (`server/ipc/orchestrator_rpc.py:15`)
+— singular, not `..._rpcs`.
 
 - [ ] **Step 2: Run to verify it fails**
 
