@@ -5622,8 +5622,12 @@ class SessionOrchestrator:
     async def _generate_detached_suggestions(self, session_id, rec, path, signature) -> None:
         """Generate suggestions for a detached session from its transcript (best-effort).
 
-        Caches (signature, items) even when items is empty, so the same transcript
-        state is not re-generated on the next poll. Always clears the in-flight flag.
+        A genuine result — including a genuinely empty one — is cached as (signature, items),
+        so the same transcript state is not re-generated on the next poll. But when the call
+        could not even be made (no usable auth), nothing is cached: the give-up is logged and
+        the next poll retries, so fixing the account (e.g. a setup-token added, or its
+        browser-OAuth refresh restored) is picked up without waiting on the transcript to
+        change. Always clears the in-flight flag.
         """
         try:
             if self._suggester is None:
@@ -5633,8 +5637,17 @@ class SessionOrchestrator:
             try:
                 await asyncio.to_thread(ccswitch_accounts.acquire_valid_token, rec.account)
             except (AuthError, FileNotFoundError):
-                self._detached_suggestions[session_id] = (signature, [])
-                return
+                # Browser-OAuth refresh is dead. Fall back to the same setup-token auth
+                # session launch uses (oauth_env_for is the single source of truth for
+                # model-auth env) — a non-empty env means the account is still model-capable
+                # even though acquire_valid_token gave up.
+                if not oauth_env_for(rec.account):
+                    log.warning(
+                        "detached suggestions: giving up for session=%s account=%s — no "
+                        "valid OAuth token and no setup-token; not caching, next poll retries",
+                        session_id, rec.account,
+                    )
+                    return  # do NOT cache: this is "could not be made", not "no answer"
             events = await replay_events(path)
             user_text, assistant_text = last_turn_context(events)
             context = f"User: {user_text}\n\nAssistant: {assistant_text}"
