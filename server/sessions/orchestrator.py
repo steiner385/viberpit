@@ -4368,6 +4368,22 @@ class SessionOrchestrator:
             key=lambda p: (_STATE_RANK.get(p.state, 99), -p.number),
         )
 
+    def prs_for_many(self, session_ids: list[str]) -> dict[str, list[PullRequestInfo]]:
+        """Batched :meth:`prs_for` — one entry per requested id.
+
+        Isolated per session: a failure yields [] for that id alone. This mirrors the
+        blast radius of the per-session calls it replaces (#742); a batch that failed
+        whole-hog would turn one bad session into a blank page.
+        """
+        out: dict[str, list[PullRequestInfo]] = {}
+        for sid in session_ids:
+            try:
+                out[sid] = self.prs_for(sid)
+            except Exception:
+                log.warning("prs_for_many: failed for %s", sid, exc_info=True)
+                out[sid] = []
+        return out
+
     async def _pr_repos(self) -> list[str]:
         """Distinct repos to watch: live in-memory sessions ∪ all persisted sessions
         (incl. archived), so a repo with only an archived session still appears."""
@@ -5715,6 +5731,40 @@ class SessionOrchestrator:
             self._spawn(self._generate_summary(session_id, rec, path, signature),
                         name=f"generate-summary-{session_id}")
         return cached[2] if cached else ""
+
+    async def latest_suggestions_many(self, session_ids: list[str]) -> dict[str, list[str]]:
+        """Batched :meth:`latest_suggestions`, isolated per session (see prs_for_many)."""
+        ids = list(session_ids)
+        results = await asyncio.gather(
+            *(self.latest_suggestions(sid) for sid in ids), return_exceptions=True)
+        out: dict[str, list[str]] = {}
+        for sid, r in zip(ids, results):
+            if isinstance(r, BaseException):
+                log.warning("latest_suggestions_many: failed for %s", sid, exc_info=r)
+                out[sid] = []
+            else:
+                out[sid] = r
+        return out
+
+    async def latest_summary_many(self, session_ids: list[str], *,
+                                  viewing: bool) -> dict[str, str]:
+        """Batched :meth:`latest_summary`, isolated per session (see prs_for_many).
+
+        ``viewing`` is request-level, not per-session (api/sessions.py reads one query
+        param for the whole page), so it applies uniformly to the batch.
+        """
+        ids = list(session_ids)
+        results = await asyncio.gather(
+            *(self.latest_summary(sid, viewing=viewing) for sid in ids),
+            return_exceptions=True)
+        out: dict[str, str] = {}
+        for sid, r in zip(ids, results):
+            if isinstance(r, BaseException):
+                log.warning("latest_summary_many: failed for %s", sid, exc_info=r)
+                out[sid] = ""
+            else:
+                out[sid] = r
+        return out
 
     async def _generate_summary(self, session_id, rec, path, signature) -> None:
         """Generate a summary from the session's transcript (best-effort).

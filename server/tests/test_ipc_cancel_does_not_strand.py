@@ -244,6 +244,33 @@ async def test_enrich_one_does_not_orphan_daemon_sockets(blackhole, blackhole_tl
 
 
 @pytest.mark.asyncio
+async def test_enrich_batch_does_not_orphan_daemon_sockets(blackhole, blackhole_tls):
+    """The batched path must clean up exactly as the per-session path does — and cost
+    three sockets for the whole page rather than three per session (#742)."""
+    from server.api.sessions import _enrich_batch
+
+    client = blackhole.client(blackhole_tls)
+    orch = RemoteOrchestrator(client)
+    try:
+        records = [_record("s1"), _record("s2")]
+        repos, suggs, prs, summaries = await _enrich_batch(
+            orch, records, viewing=False, timeout=_DEADLINE)
+        assert list(suggs) == [[], []]
+        assert list(prs) == [[], []]
+        assert list(summaries) == ["", ""]
+        # Three RPCs for two sessions — six would mean the batch did not take effect.
+        # settle() only waits for >= expect, so the count itself needs its own assertion:
+        # six accepted sockets would satisfy the wait just as well as three.
+        await blackhole.settle(expect=3)
+        assert blackhole.accepted == 3, (
+            f"expected exactly 3 batched RPCs for 2 sessions, saw {blackhole.accepted}"
+        )
+        blackhole.assert_no_orphans()
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_safe_usage_does_not_orphan_daemon_sockets(blackhole, blackhole_tls,
                                                          monkeypatch):
     """GET /api/accounts fans out one usage RPC per account."""
@@ -286,8 +313,11 @@ async def test_ws_resume_deadline_does_not_orphan_daemon_sockets(blackhole, blac
 _DEADLINE_CAPABLE_RPCS = frozenset({
     "ensure_driver",
     "latest_suggestions",
+    "latest_suggestions_many",
     "latest_summary",
+    "latest_summary_many",
     "prs_for",
+    "prs_for_many",
     "usage",
 })
 

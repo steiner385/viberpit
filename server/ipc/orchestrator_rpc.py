@@ -172,6 +172,12 @@ def register_orchestrator_rpc(app, orch) -> None:
 
     import inspect
 
+    async def prs_for_many(params: dict) -> dict:
+        by_sid = orch.prs_for_many(params.get("session_ids") or [])
+        if inspect.isawaitable(by_sid):
+            by_sid = await by_sid
+        return {"prs": {sid: [i.to_dict() for i in infos] for sid, infos in by_sid.items()}}
+
     async def all_prs(params: dict) -> dict:
         items = orch.all_prs()
         if inspect.isawaitable(items):
@@ -241,6 +247,7 @@ def register_orchestrator_rpc(app, orch) -> None:
     register_rpc(app, "send_prompt", send_prompt)
     register_rpc(app, "pr_for", pr_for)
     register_rpc(app, "prs_for", prs_for)
+    register_rpc(app, "prs_for_many", prs_for_many)
 
     register_rpc(app, "all_prs", all_prs)
     register_rpc(app, "all_repos_stage_models", all_repos_stage_models)
@@ -268,7 +275,9 @@ def register_orchestrator_rpc(app, orch) -> None:
         "transcript_path", "resolve_transcript_path", "transcript_search_text",
         "pending_questions", "pop_pending_initial_prompt",
         "pop_pending_initial_attachment_ids", "command_catalog", "run_command", "list_archived",
-        "latest_suggestions", "generate_suggestions_now", "seed_idle_suggestions", "latest_summary",
+        "latest_suggestions", "latest_suggestions_many",
+        "generate_suggestions_now", "seed_idle_suggestions",
+        "latest_summary", "latest_summary_many",
         "begin_drain", "drain_status",
         "live_session_load", "live_session_counts",
         "snapshot_deploy", "restore_deploy", "resume_recovery_status",

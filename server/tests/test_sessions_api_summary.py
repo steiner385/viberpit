@@ -69,20 +69,26 @@ def _make_fake_record():
 
 
 class _FakeSessions:
-    """Minimal facade for GET /api/sessions; exposes latest_summary as an AsyncMock."""
+    """Minimal facade for GET /api/sessions; exposes latest_summary_many as an AsyncMock.
+
+    GET /api/sessions is wired through the batched _many RPCs (#742), so the fake must
+    expose those — not the per-session latest_summary/latest_suggestions/prs_for, which
+    only the version-skew fallback (_enrich_one) still calls.
+    """
 
     def __init__(self, record, summary_return: str = ""):
         self._record = record
-        self.latest_summary = AsyncMock(return_value=summary_return)
+        self.latest_summary_many = AsyncMock(
+            return_value={record.id: summary_return})
 
     async def list_sessions(self):
         return [self._record]
 
-    async def latest_suggestions(self, sid):
-        return []
+    async def latest_suggestions_many(self, sids, *, timeout=None):
+        return {}
 
-    async def prs_for(self, sid):
-        return []
+    async def prs_for_many(self, sids, *, timeout=None):
+        return {}
 
 
 def _build_client(summary_return: str = "Writing tests"):
@@ -114,11 +120,11 @@ def test_get_sessions_viewing_flag_threaded():
     with patch.dict(os.environ, _ENV), client_t:
         resp = client_t.get("/api/sessions?viewing=1", headers=_H)
     assert resp.status_code == 200, resp.text
-    fake_t.latest_summary.assert_awaited_once_with("s1", viewing=True)
+    fake_t.latest_summary_many.assert_awaited_once_with(["s1"], viewing=True)
 
     # viewing=False (no query param)
     client_f, fake_f = _build_client(summary_return="Summary B")
     with patch.dict(os.environ, _ENV), client_f:
         resp = client_f.get("/api/sessions", headers=_H)
     assert resp.status_code == 200, resp.text
-    fake_f.latest_summary.assert_awaited_once_with("s1", viewing=False)
+    fake_f.latest_summary_many.assert_awaited_once_with(["s1"], viewing=False)
