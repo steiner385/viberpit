@@ -154,3 +154,94 @@ def test_unexpected_exception_still_degrades_to_none(monkeypatch, caplog):
             title = await orch._default_title_fn(["do the thing"], account="tonystein85_gmail.com", cwd="/x")
         assert title is None
     asyncio.run(run())
+
+
+def _giveup_warning_count(caplog, account: str) -> int:
+    return sum(
+        1 for r in caplog.records
+        if r.levelname == "WARNING" and "title gen: giving up" in r.getMessage() and account in r.getMessage()
+    )
+
+
+def test_giveup_warning_rate_limited_within_window(monkeypatch, caplog):
+    """Finding 1: _titling_sweep re-invokes _default_title_fn every _titling_interval (15s
+    default) for every still-auto-named session, so an unconditional WARNING on give-up is a
+    log storm (~240/hr per session). Repeated calls within the backoff window must log the
+    WARNING only once."""
+    async def run():
+        orch = SessionOrchestrator()
+
+        monkeypatch.setattr(
+            orch_mod.ccswitch_accounts, "acquire_valid_token",
+            lambda name: (_ for _ in ()).throw(AuthError("token refresh failed with 400")),
+        )
+        monkeypatch.setattr(orch_mod, "oauth_env_for", lambda account: {})
+
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(orch_mod.time, "monotonic", lambda: clock["t"])
+
+        account = "tonystein85_gmail.com"
+        with caplog.at_level("WARNING"):
+            for _ in range(5):
+                title = await orch._default_title_fn(["do the thing"], account=account, cwd="/x")
+                assert title is None
+                clock["t"] += 1.0  # 5 calls, 1s apart — well inside the 60s window
+
+        assert _giveup_warning_count(caplog, account) == 1
+    asyncio.run(run())
+
+
+def test_giveup_warning_fires_again_after_window(monkeypatch, caplog):
+    """Finding 1: a give-up call after the backoff window has elapsed must warn again — the
+    rate limit suppresses the storm, it does not silence the account forever."""
+    async def run():
+        orch = SessionOrchestrator()
+
+        monkeypatch.setattr(
+            orch_mod.ccswitch_accounts, "acquire_valid_token",
+            lambda name: (_ for _ in ()).throw(AuthError("token refresh failed with 400")),
+        )
+        monkeypatch.setattr(orch_mod, "oauth_env_for", lambda account: {})
+
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(orch_mod.time, "monotonic", lambda: clock["t"])
+
+        account = "tonystein85_gmail.com"
+        with caplog.at_level("WARNING"):
+            title = await orch._default_title_fn(["do the thing"], account=account, cwd="/x")
+            assert title is None
+            assert _giveup_warning_count(caplog, account) == 1
+
+            # Still inside the window: no second warning.
+            clock["t"] += orch_mod._TITLE_AUTH_WARN_BACKOFF_S - 1
+            title = await orch._default_title_fn(["do the thing"], account=account, cwd="/x")
+            assert title is None
+            assert _giveup_warning_count(caplog, account) == 1
+
+            # Window elapsed: warns again.
+            clock["t"] += 2
+            title = await orch._default_title_fn(["do the thing"], account=account, cwd="/x")
+            assert title is None
+            assert _giveup_warning_count(caplog, account) == 2
+    asyncio.run(run())
+
+
+def test_giveup_warning_backoff_keyed_per_account(monkeypatch, caplog):
+    """The backoff must not cross-suppress a different account's give-up warning."""
+    async def run():
+        orch = SessionOrchestrator()
+
+        monkeypatch.setattr(
+            orch_mod.ccswitch_accounts, "acquire_valid_token",
+            lambda name: (_ for _ in ()).throw(AuthError("token refresh failed with 400")),
+        )
+        monkeypatch.setattr(orch_mod, "oauth_env_for", lambda account: {})
+        monkeypatch.setattr(orch_mod.time, "monotonic", lambda: 1000.0)
+
+        with caplog.at_level("WARNING"):
+            await orch._default_title_fn(["hi"], account="account-a", cwd="/x")
+            await orch._default_title_fn(["hi"], account="account-b", cwd="/x")
+
+        assert _giveup_warning_count(caplog, "account-a") == 1
+        assert _giveup_warning_count(caplog, "account-b") == 1
+    asyncio.run(run())

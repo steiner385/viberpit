@@ -52,14 +52,24 @@ def helper_env(config_dir: str) -> dict[str, str]:
     Fail-open: an unmappable config_dir, a missing/unmapped account, or any lookup failure (e.g.
     a corrupt ledger) yields the base env unchanged. These are best-effort helper calls; a raise
     here must not crash an automation tick.
+
+    No Copilot branch (unlike ``orchestrator._oat_env``, which routes Copilot accounts to
+    ``CopilotProxyManager.env_for``): harmless today because ``oauth_env_for`` -> the reverse-
+    mapped account's ``read_oauth_token`` returns ``None`` for Copilot accounts (they have no
+    Anthropic setup-token), and ``pick_helper_config_dir`` already filters candidates to
+    ``provider == "anthropic"`` before a config_dir ever reaches here — but a Copilot session's
+    *own* config_dir does still reach ``title_generator``/``goal_inference`` via other paths, so
+    a config_dir belonging to a Copilot account is not actually impossible here. Adding Copilot
+    support to this function is out of scope for #751; if one of those two invariants ever
+    changes, revisit.
     """
     env = {**os.environ, "CLAUDE_CONFIG_DIR": config_dir}
     try:
         known = [a["name"] for a in _accounts.list_accounts()]
         account = _map_account(config_dir, known, _paths.account_cfg_dir)
+        if account:
+            env.update(oauth_env_for(account))
     except Exception as exc:
         log.debug("helper_env: account lookup failed for config_dir=%s: %s", config_dir, exc)
         return env
-    if account:
-        env.update(oauth_env_for(account))
     return env
