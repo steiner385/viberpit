@@ -43,6 +43,7 @@ from server.audit import record_audit
 from server.db import db_session
 from server.db.models import AUTO_ARCHIVE_PROVENANCE, CAPACITY_EXEMPT_STATUSES, INACTIVE_SESSION_STATUSES, Session as DbSession
 from server.sessions import adopt as _adopt
+from server.sessions.account_auth import oauth_env_for
 from server.sessions import deploy_snapshot as _deploy_snapshot
 from server.sessions.archive_move import mountpoint, move_into_archive
 from server.sessions import attachments as _attachments
@@ -616,8 +617,7 @@ class SessionOrchestrator:
             return {}
         if self._copilot is not None and _provider_of(rec.account) == _copilot_mod.PROVIDER:
             return self._copilot.env_for(rec.account)
-        tok = crypto.read_oauth_token(rec.account)
-        return {"CLAUDE_CODE_OAUTH_TOKEN": tok} if tok else {}
+        return oauth_env_for(rec.account)
 
     def _session_factory(self, session_id: str):
         """Return a factory closure injecting this session's DISPLAY and PreCompact hook.
