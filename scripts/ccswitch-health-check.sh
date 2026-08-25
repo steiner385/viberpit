@@ -22,8 +22,13 @@
 # the edge's own CCSWITCH_SESSIOND_ENDPOINT — see server/ipc/paths.py), section 5 adds:
 #   5a. Remote daemon reachability — GET /info over mTLS with the edge's client cert/key/CA.
 #       Alerted, never auto-restarted: a restart across SSH is a bigger decision than the
-#       local wedge-restart in section 1, and systemd Restart=always already owns recovery
-#       on the daemon host itself.
+#       local wedge-restart in section 1. NOTE: this used to say "systemd Restart=always
+#       already owns recovery on the daemon host itself" — that is FALSE for one case, and
+#       it cost a 45-minute outage on 2026-08-25 (#765). Restart= only restarts a process
+#       that actually ran and exited; a start job CANCELLED by a failed Requires= (e.g.
+#       ccswitch-mounts.service not ready at boot) leaves the unit inactive forever and
+#       Restart= never engages. That gap is now covered on the daemon host itself by
+#       ccswitch-daemon-ensure.timer, not by this script.
 #   5b. Protocol compatibility — /info's "protocol" must match this checkout's
 #       server.ipc.protocol.PROTOCOL_VERSION, or the edge silently refuses the daemon
 #       (looks like a hang, is actually a stale build on one side).
@@ -171,7 +176,10 @@ elif [ "$LOCAL_DAEMON_ACTIVE" -eq 1 ]; then
     log "daemon unresponsive but within ${RESTART_COOLDOWN}s restart cooldown — leaving to systemd Restart= policy"
   fi
 else
-  log "daemon service not active — not our job (systemd Restart=always owns this)"
+  # Restart= covers a process that ran and died; ccswitch-daemon-ensure.timer (on the
+  # daemon host) covers a start job cancelled by a failed dependency, which Restart=
+  # does NOT cover (#765). Neither is this script's job.
+  log "daemon service not active — not our job (systemd Restart= + ccswitch-daemon-ensure.timer own this)"
 fi
 
 # --- 2. Disk --------------------------------------------------------------------
