@@ -6860,14 +6860,23 @@ class SessionOrchestrator:
         self._last_prompt.pop(session_id, None)
         self._turn_restart_at.pop(session_id, None)
         self._pending_initial_prompt.pop(session_id, None)
-        if driver is not None:
-            await driver.aclose()
 
-        # Remove from active records — archived sessions are NOT in _records.
+        # Remove from active records BEFORE driver.aclose() so the session
+        # disappears from list_sessions() immediately.  aclose() takes up to
+        # _CLOSE_GRACE_SEC (5 s) for live sessions; a background refetch firing
+        # during that window would see the session still in _records and restore
+        # it in the UI before the archive completes.
         record = self._records.pop(session_id, None)
 
         # Clear in-memory worktree registration (we move the dir, not remove via git).
         self._worktrees.pop(session_id, None)
+
+        if driver is not None:
+            try:
+                await driver.aclose()
+            except Exception:
+                log.warning("session.archive_driver_close_failed id=%s", session_id,
+                            exc_info=True)
 
         # Move the cwd into the archive directory. Capture the root actually used so
         # unarchive can resolve through it later — see Session.archive_root.
@@ -7224,7 +7233,17 @@ class SessionOrchestrator:
                     f"archive_root before unarchiving."
                 )
 
-        move_result = await asyncio.to_thread(_restore)
+        try:
+            move_result = await asyncio.to_thread(_restore)
+        except (ArchiveMissingError, InsufficientStorageError):
+            raise
+        except Exception as exc:
+            log.exception("session.unarchive_move_failed id=%s archive=%s dest=%s",
+                          session_id, archive_path, original_cwd)
+            raise OSError(
+                f"Failed to restore archived session {session_id} "
+                f"from {archive_path} to {original_cwd}: {exc}"
+            ) from exc
         if move_result == "skipped:nospace":
             raise InsufficientStorageError(
                 f"Not enough disk space to restore session — the target filesystem "
