@@ -12,6 +12,63 @@ from server.db.models import AutomationEvent, AutomationTargetState
 
 log = logging.getLogger(__name__)
 
+# What an automation-spawned session runs as when nothing else says otherwise.
+#
+# NOT "interactive" (create_session's default, which is right for a human at a
+# keyboard): an automation session has no one watching it, so the first Edit or
+# Bash blocks forever on a prompt nobody will answer — a Backlog Runner needs git,
+# gh and pytest, so unattended runs stalled indefinitely (#750).
+#
+# "full-auto" is ccswitch's OWN existing mode (PermissionRegistry.request, and the
+# canonical list in web/src/session/permissionModes.ts). It approves every tool
+# without prompting, INCLUDING shell. That is a deliberate, owner-approved trade:
+# there is no middle tier that permits edits and shell while gating anything else —
+# "auto" still prompts on both, since Bash and Edit are on the DANGEROUS denylist.
+_AUTOMATION_FALLBACK_PERMISSION_MODE = "full-auto"
+
+
+def _account_defaults_for(account: str) -> dict:
+    """This account's ledger defaults, or {} — the same read the human create path does.
+
+    Mirrors server/api/sessions.py's account-default resolution (same ledger call,
+    same lock) so the two cannot disagree about what an operator pinned.
+    """
+    from ccswitch import ledger as _ledger
+
+    with _ledger.locked_ledger() as _led:
+        return _ledger.get_account_defaults(_led, account) or {}
+
+
+def resolve_permission_mode(create_kwargs: dict) -> str:
+    """Permission mode for an automation-spawned session, highest precedence first.
+
+    1. an explicit ``permission_mode`` the automation asked for
+    2. the account's pinned ``defaultPermissionMode``, when an account is pinned
+    3. ``full-auto``
+
+    Step 2 is what keeps step 3 from being a blanket escalation: ``full-auto`` is a
+    FALLBACK, so an operator who pins an account to a restrictive mode genuinely
+    constrains the unattended sessions running on it.
+
+    A ledger read failure degrades to the fallback rather than raising — an
+    automation that cannot read a preference should still run, not crash the tick.
+    """
+    explicit = create_kwargs.get("permission_mode")
+    if explicit:
+        return str(explicit)
+    account = create_kwargs.get("account")
+    if account:
+        try:
+            pinned = _account_defaults_for(str(account)).get("defaultPermissionMode")
+        except Exception:
+            log.warning("automation: account-default lookup failed for %s; "
+                        "falling back to %s", account,
+                        _AUTOMATION_FALLBACK_PERMISSION_MODE, exc_info=True)
+            pinned = None
+        if pinned:
+            return str(pinned)
+    return _AUTOMATION_FALLBACK_PERMISSION_MODE
+
 
 class AutomationContext:
     def __init__(self, automation_id: str, *,
@@ -109,6 +166,19 @@ class AutomationContext:
                 AutomationTargetState.automation_id == self.automation_id))).scalars().all()
         return {r.target: dict(r.state) for r in rows}
 
+    async def _existing_session(self, key: str):
+        """The live session already spawned for *key*, or None.
+
+        Split out of spawn_session so the spawn path's resolution logic is testable
+        without standing up a database.
+        """
+        from server.db.models import INACTIVE_SESSION_STATUSES, Session
+        async with db_session() as db:
+            return (await db.execute(select(Session).where(
+                Session.origin == self.automation_id,
+                Session.origin_ref == key,
+                Session.status.not_in(INACTIVE_SESSION_STATUSES)))).scalars().first()
+
     async def spawn_session(self, *, origin_ref: str, dedupe_key: str | None = None,
                             detail: dict | None = None, **create_kwargs) -> Any:
         """Find-or-create a session for this automation. If a NON-terminal session
@@ -116,19 +186,17 @@ class AutomationContext:
         'skipped_duplicate' event instead of creating a second. Otherwise create
         via the injected create_session (which stamps origin/origin_ref), then emit
         a linked 'spawned' event (carrying the optional ``detail`` payload)."""
-        from server.db.models import INACTIVE_SESSION_STATUSES, Session
         key = dedupe_key or origin_ref
-        async with db_session() as db:
-            existing = (await db.execute(select(Session).where(
-                Session.origin == self.automation_id,
-                Session.origin_ref == key,
-                Session.status.not_in(INACTIVE_SESSION_STATUSES)))).scalars().first()
+        existing = await self._existing_session(key)
         if existing is not None:
             await self.emit("info", f"skipped duplicate spawn for {key}",
                             kind="skipped_duplicate", target=key, session_id=existing.id)
             return existing
         if self._create_session is None:
             raise RuntimeError("AutomationContext has no create_session bound")
+        # An automation session has nobody watching it, so it must not inherit
+        # create_session's human-oriented "interactive" default (#750).
+        create_kwargs["permission_mode"] = resolve_permission_mode(create_kwargs)
         rec = await self._create_session(origin=self.automation_id, origin_ref=origin_ref,
                                          **create_kwargs)
         await self.emit("info", f"spawned session for {origin_ref}",
