@@ -1,5 +1,5 @@
 import asyncio, time
-from server.sessions.permissions import PermissionRegistry
+from server.sessions.permissions import PermissionRegistry, to_sdk_permission_mode
 
 # ---------------------------------------------------------------------------
 # Regression tests for issue #5 — "Ask each time" mode must prompt for
@@ -287,3 +287,61 @@ def test_non_mcp_unknown_tool_still_prompts_in_interactive():
     reg = PermissionRegistry()
     pid = _request_tool(reg, "SomeRandomTool", "interactive")
     assert pid is not None, "non-MCP tools must still prompt in interactive mode"
+
+
+# ---------------------------------------------------------------------------
+# acceptEdits / bypassPermissions modes (issue #750).  acceptEdits auto-accepts
+# file-write tools while every other tool still prompts (the default for
+# unattended automation sessions).  bypassPermissions approves everything, like
+# full-auto.  Both mirror the SDK's own permission_mode names.
+# ---------------------------------------------------------------------------
+
+def test_accept_edits_auto_allows_file_writes():
+    reg = PermissionRegistry()
+    for tool, inp in [("Edit", {"file_path": "/repo/a.py"}),
+                      ("Write", {"file_path": "/repo/b.py"}),
+                      ("MultiEdit", {"file_path": "/repo/c.py"}),
+                      ("NotebookEdit", {"notebook_path": "/repo/d.ipynb"})]:
+        pid = _request_tool(reg, tool, "acceptEdits", inp)
+        assert pid is None, f"{tool} must auto-accept in acceptEdits mode"
+
+
+def test_accept_edits_still_prompts_for_bash():
+    reg = PermissionRegistry()
+    async def run():
+        pid, fut = await reg.request("s1", "t1", "Bash", {"command": "rm -rf build"},
+                                     mode="acceptEdits", denylist=PermissionRegistry.DANGEROUS,
+                                     allowlist=True, identity="me")
+        if pid is not None:
+            reg.resolve(pid, "allow", "me")
+            await fut
+        return pid
+    assert asyncio.run(run()) is not None, "Bash must still prompt in acceptEdits mode"
+
+
+def test_bypass_permissions_allows_bash_without_prompt():
+    reg = PermissionRegistry()
+    async def run():
+        pid, fut = await reg.request("s1", "t1", "Bash", {"command": "rm -rf /"},
+                                     mode="bypassPermissions", denylist=frozenset(),
+                                     allowlist=True, identity="me")
+        return pid, (await fut if fut else True)
+    pid, allowed = asyncio.run(run())
+    assert pid is None and allowed is True, "bypassPermissions must approve everything"
+
+
+# ---------------------------------------------------------------------------
+# to_sdk_permission_mode: the single source of truth mapping ccswitch modes to
+# the SDK's permission_mode.  SDK-vocabulary names pass through; everything else
+# collapses to "default" (ccswitch's registry is the authority for those).
+# ---------------------------------------------------------------------------
+
+def test_to_sdk_permission_mode_passes_through_sdk_names():
+    assert to_sdk_permission_mode("plan") == "plan"
+    assert to_sdk_permission_mode("acceptEdits") == "acceptEdits"
+    assert to_sdk_permission_mode("bypassPermissions") == "bypassPermissions"
+
+
+def test_to_sdk_permission_mode_collapses_ccswitch_modes_to_default():
+    for mode in ("interactive", "auto", "allowlist", "full-auto", "", "nonsense"):
+        assert to_sdk_permission_mode(mode) == "default", mode

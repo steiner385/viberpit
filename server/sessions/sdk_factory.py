@@ -5,6 +5,7 @@ import os
 
 from .account_auth import oauth_env_for
 from .completion import COMPLETION_INSTRUCTION, NO_PR_INSTRUCTION
+from .permissions import to_sdk_permission_mode
 
 
 def _build_append_string() -> str:
@@ -33,7 +34,7 @@ def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None
         hooks = {"PreCompact": [HookMatcher(hooks=[on_pre_compact])]}
     opts = ClaudeAgentOptions(
         cwd=cwd, env=env, can_use_tool=can_use_tool,
-        permission_mode=("plan" if mode == "plan" else "default"),
+        permission_mode=to_sdk_permission_mode(mode),
         include_partial_messages=True, resume=resume,
         hooks=hooks,
         settings=_MCP_TRUST_SETTINGS,

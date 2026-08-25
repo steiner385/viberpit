@@ -23,7 +23,8 @@ from server.db.models import PermissionProfile, _utcnow
 
 router = APIRouter(prefix="/api/permission-profiles", tags=["permission-profiles"])
 
-_VALID_MODES = frozenset({"interactive", "auto", "allowlist", "full-auto"})
+_VALID_MODES = frozenset({"interactive", "auto", "allowlist", "full-auto",
+                          "acceptEdits", "bypassPermissions"})
 
 
 def _profile_to_dict(p: PermissionProfile) -> dict:

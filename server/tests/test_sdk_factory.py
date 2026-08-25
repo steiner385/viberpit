@@ -2,7 +2,7 @@ from server.sessions.completion import COMPLETION_MARKER
 from server.sessions.sdk_factory import real_sdk_factory
 
 
-def _captured_options(monkeypatch):
+def _captured_options(monkeypatch, mode="interactive"):
     captured = {}
 
     class _FakeClient:
@@ -13,7 +13,7 @@ def _captured_options(monkeypatch):
     monkeypatch.setattr(claude_agent_sdk, "ClaudeSDKClient", _FakeClient)
 
     from server.sessions.sdk_factory import real_sdk_factory as _rsf
-    _rsf("/tmp/cwd", "/tmp/cfg", lambda *a, **k: None, "interactive", None)
+    _rsf("/tmp/cwd", "/tmp/cfg", lambda *a, **k: None, mode, None)
     return captured["options"]
 
 
@@ -29,6 +29,17 @@ def test_factory_still_sets_core_options(monkeypatch):
     opts = _captured_options(monkeypatch)
     assert opts.cwd == "/tmp/cwd"
     assert opts.permission_mode == "default"
+
+
+def test_factory_maps_permission_mode_via_helper(monkeypatch):
+    """The spawn factory routes mode → SDK permission_mode through the single
+    to_sdk_permission_mode helper (issue #750): SDK-vocabulary names pass through,
+    everything else collapses to "default"."""
+    assert _captured_options(monkeypatch, "plan").permission_mode == "plan"
+    assert _captured_options(monkeypatch, "acceptEdits").permission_mode == "acceptEdits"
+    assert _captured_options(monkeypatch, "bypassPermissions").permission_mode == "bypassPermissions"
+    assert _captured_options(monkeypatch, "full-auto").permission_mode == "default"
+    assert _captured_options(monkeypatch, "auto").permission_mode == "default"
 
 
 async def _cb(*a, **k):
