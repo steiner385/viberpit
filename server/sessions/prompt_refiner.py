@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 
+from server.sessions.account_auth import helper_env
 from server.sessions.helper_call import pick_helper_config_dir, run_helper_call
 
 log = logging.getLogger("ccswitch.dispatch")
@@ -66,7 +67,7 @@ async def refine_prompt(
             model="haiku",
             system_prompt=_REFINE_SYSTEM,
             cwd=cwd,
-            env={**os.environ, "CLAUDE_CONFIG_DIR": config_dir},
+            env=helper_env(config_dir),
             allowed_tools=[],
             setting_sources=[],
         )

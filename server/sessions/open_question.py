@@ -22,6 +22,7 @@ import json
 import logging
 import os
 
+from .account_auth import helper_env
 from .helper_call import pick_helper_config_dir, run_helper_call
 
 log = logging.getLogger(__name__)
@@ -93,7 +94,7 @@ async def completion_awaits_user(
             query_fn = query
             options = ClaudeAgentOptions(
                 model="haiku", system_prompt=_SYSTEM, cwd=cwd or os.getcwd(),
-                env={**os.environ, "CLAUDE_CONFIG_DIR": config_dir},
+                env=helper_env(config_dir),
                 allowed_tools=[], setting_sources=[])
     except Exception as exc:
         log.warning("open_question.classify unavailable: %s", exc)

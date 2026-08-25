@@ -148,6 +148,16 @@ _ISSUE_TTL_S: float = 300.0
 # breaker's cooldown for consistency, not because they share state.
 _SUGGEST_AUTH_FAIL_BACKOFF_S: float = 60.0
 
+# Rate-limit window for _default_title_fn's give-up WARNING (see below). Same account-keyed
+# monotonic-deadline shape as _SUGGEST_AUTH_FAIL_BACKOFF_S above, but scoped to the log line
+# only, not to skipping the underlying acquire_valid_token/setup-token lookup on each call:
+# unlike detached suggestions (re-spawned on every 5s /sessions poll), title generation is
+# already bounded to once per _titling_sweep pass (every _titling_interval, default 15s), so
+# there is no equivalent network-call storm to also suppress — only the WARNING volume
+# (~240/hr per still-auto-named session on an unauthed account) needed rate-limiting. Same
+# 60s window for consistency, not because the two dicts share state.
+_TITLE_AUTH_WARN_BACKOFF_S: float = 60.0
+
 
 def _prepend_proposal(proposal: str | None, base: list[str]) -> list[str]:
     """Prepend *proposal* to *base* iff truthy and not already present."""
@@ -348,6 +358,10 @@ class SessionOrchestrator:
         # share one cooldown instead of each hammering acquire_valid_token independently.
         # See _SUGGEST_AUTH_FAIL_BACKOFF_S.
         self._suggest_auth_failed_until: dict[str, float] = {}
+        # Backoff for _default_title_fn's give-up WARNING: account -> monotonic deadline
+        # before which the log line is suppressed (the underlying lookup still runs every
+        # call — only the warning is rate-limited). See _TITLE_AUTH_WARN_BACKOFF_S.
+        self._title_auth_failed_until: dict[str, float] = {}
         # Session status summaries: session_id -> (transcript mtime, generated_at_monotonic, text).
         # Generated lazily from the transcript, only while a viewer is present and at most
         # once / 60s (see latest_summary / should_regenerate). Ephemeral — never persisted.
@@ -3851,13 +3865,43 @@ class SessionOrchestrator:
             log.debug("persist_sub_agents failed (non-fatal) session=%s", session_id, exc_info=True)
 
     async def _default_title_fn(self, prompts, *, account, cwd):
-        """Default fallback title generator: a one-shot Haiku query under the account."""
+        """Default fallback title generator: a one-shot Haiku query under the account.
+
+        Same *credential* gate as ``_generate_detached_suggestions`` (#749): a dead
+        browser-OAuth refresh (``AuthError``/``FileNotFoundError`` from
+        ``acquire_valid_token``) does not by itself mean the account is unusable — its
+        setup-token (``oauth_env_for``, the single source of truth for model-auth env) may
+        still work, the same way session launch treats it. Only give up, logging the
+        account (never the token), when neither credential is available. Unlike #749's give-
+        up path, this one is invoked repeatedly on a timer (``_titling_monitor`` ->
+        ``_titling_sweep``, every ``_titling_interval``\\ s — 15s by default — for every
+        still-auto-named session), so the give-up WARNING is separately rate-limited by
+        ``self._title_auth_failed_until``/``_TITLE_AUTH_WARN_BACKOFF_S`` — see there for why
+        this needed its own backoff rather than reusing ``_suggest_auth_failed_until``.
+        Fail-open throughout: any lookup failure degrades to ``None`` rather than raising —
+        this is a best-effort title generator.
+        """
         from ccswitch.oauth import AuthError
         try:
             await asyncio.to_thread(ccswitch_accounts.acquire_valid_token, account)
         except (AuthError, FileNotFoundError) as exc:
-            log.debug("title gen skipped — token refresh failed account=%s: %s", account, exc)
-            return None
+            log.debug("title gen — token refresh failed account=%s: %s", account, exc)
+            try:
+                has_setup_token = bool(oauth_env_for(account))
+            except Exception as lookup_exc:
+                log.debug("title gen — setup-token lookup failed account=%s: %s", account, lookup_exc)
+                has_setup_token = False
+            if not has_setup_token:
+                failed_until = self._title_auth_failed_until.get(account)
+                if failed_until is None or time.monotonic() >= failed_until:
+                    log.warning(
+                        "title gen: giving up for account=%s — no valid OAuth token and no "
+                        "setup-token", account,
+                    )
+                    self._title_auth_failed_until[account] = (
+                        time.monotonic() + _TITLE_AUTH_WARN_BACKOFF_S
+                    )
+                return None
         return await generate_title(prompts, config_dir=str(compose(account)), cwd=cwd)
 
     def _account_limited(self, account: str) -> bool:

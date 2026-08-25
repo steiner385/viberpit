@@ -8,6 +8,8 @@ import logging
 import os
 from pathlib import Path
 
+from server.sessions.account_auth import helper_env
+
 log = logging.getLogger(__name__)
 
 _GUIDANCE = (Path(__file__).parent / "nudge_composer_guidance.md").read_text(encoding="utf-8")
@@ -74,7 +76,7 @@ async def compose_nudge(ctx, *, intent_hint, verdict_reason, verdict_remedy,
             from claude_agent_sdk import ClaudeAgentOptions
             options = ClaudeAgentOptions(
                 model="sonnet", system_prompt=_GUIDANCE, cwd=cwd,
-                env={**os.environ, "CLAUDE_CONFIG_DIR": config_dir},
+                env=helper_env(config_dir),
                 allowed_tools=[], setting_sources=[])
         parts: list[str] = []
         prompt = _build_prompt(ctx, intent_hint=intent_hint, verdict_reason=verdict_reason,

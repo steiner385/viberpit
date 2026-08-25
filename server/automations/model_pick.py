@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import os
 
+from server.sessions.account_auth import helper_env
 from server.sessions.helper_call import pick_helper_config_dir, run_helper_call
 from server.sessions.model_catalog import ALIASES
 
@@ -105,7 +106,7 @@ async def assess_model(
             model="haiku",
             system_prompt=_ASSESS_SYSTEM,
             cwd=cwd,
-            env={**os.environ, "CLAUDE_CONFIG_DIR": config_dir},
+            env=helper_env(config_dir),
             allowed_tools=[],
             setting_sources=[],
         )
