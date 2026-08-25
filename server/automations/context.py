@@ -195,7 +195,11 @@ class AutomationContext:
         if self._create_session is None:
             raise RuntimeError("AutomationContext has no create_session bound")
         # An automation session has nobody watching it, so it must not inherit
-        # create_session's human-oriented "interactive" default (#750).
+        # create_session's human-oriented "interactive" default (#750). Resolve the
+        # mode the way the human path does: explicit choice → account default →
+        # full-auto fallback (see resolve_permission_mode). acceptEdits is NOT used
+        # as the automation default: a Backlog Runner's core work is shell (git, gh,
+        # pytest), which acceptEdits still gates — so it would stall just the same.
         create_kwargs["permission_mode"] = resolve_permission_mode(create_kwargs)
         rec = await self._create_session(origin=self.automation_id, origin_ref=origin_ref,
                                          **create_kwargs)

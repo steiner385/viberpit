@@ -16,7 +16,7 @@ from ccswitch.accounts import provider_of as _provider_of
 from . import events as ev
 from .failure import classify, TurnFailure
 from .translator import Translator
-from .permissions import PermissionRegistry
+from .permissions import PermissionRegistry, to_sdk_permission_mode
 from .questions import QuestionRegistry
 from .status import StatusSignals, derive_status
 from .transcript_repair import repair_resumed_transcript
@@ -986,7 +986,7 @@ class SessionDriver:
     async def set_permission_mode(self, mode: str):
         self.mode = mode
         if self._client:
-            await self._client.set_permission_mode("plan" if mode == "plan" else "default")
+            await self._client.set_permission_mode(to_sdk_permission_mode(mode))
 
     async def set_model(self, model: str | None) -> None:
         if self._client:

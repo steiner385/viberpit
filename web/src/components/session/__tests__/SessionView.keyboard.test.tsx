@@ -118,13 +118,17 @@ describe('SessionView keyboard shortcuts (Task 7)', () => {
   it('Shift+Tab cycles through all modes in order', async () => {
     const user = userEvent.setup()
     render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
-    // interactive → auto → allowlist → full-auto → interactive
+    // interactive → auto → allowlist → acceptEdits → full-auto → bypassPermissions → interactive
     await user.keyboard('{Shift>}{Tab}{/Shift}')
     expect(mockSetPermissionMode).toHaveBeenLastCalledWith('s1', 'auto')
     await user.keyboard('{Shift>}{Tab}{/Shift}')
     expect(mockSetPermissionMode).toHaveBeenLastCalledWith('s1', 'allowlist')
     await user.keyboard('{Shift>}{Tab}{/Shift}')
+    expect(mockSetPermissionMode).toHaveBeenLastCalledWith('s1', 'acceptEdits')
+    await user.keyboard('{Shift>}{Tab}{/Shift}')
     expect(mockSetPermissionMode).toHaveBeenLastCalledWith('s1', 'full-auto')
+    await user.keyboard('{Shift>}{Tab}{/Shift}')
+    expect(mockSetPermissionMode).toHaveBeenLastCalledWith('s1', 'bypassPermissions')
     await user.keyboard('{Shift>}{Tab}{/Shift}')
     expect(mockSetPermissionMode).toHaveBeenLastCalledWith('s1', 'interactive')
   })

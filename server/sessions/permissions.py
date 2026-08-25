@@ -7,6 +7,32 @@ from ccswitch import paths as _paths
 # File-writing tools whose target is a single path argument.
 _FILE_WRITE_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
 
+# ccswitch session modes whose names mirror the Claude Agent SDK's own
+# ``permission_mode`` vocabulary. For these the SDK's permission engine is the
+# front-line authority (it can auto-accept edits / bypass checks before the
+# ``can_use_tool`` callback even fires); every other ccswitch mode
+# (interactive/auto/allowlist/full-auto) runs the SDK on ``"default"`` and is
+# gated entirely by ``PermissionRegistry.request`` below.
+_SDK_PASSTHROUGH_MODES = frozenset({"plan", "acceptEdits", "bypassPermissions"})
+
+
+def to_sdk_permission_mode(mode: str) -> str:
+    """Map a ccswitch session mode to the Claude Agent SDK ``permission_mode``.
+
+    Single source of truth for the mapping: both the initial spawn
+    (``sdk_factory.real_sdk_factory``) and live mode switches
+    (``SessionDriver.set_permission_mode``) route through here so the two can
+    never drift — the bug that motivated issue #750, where the mapping was
+    duplicated verbatim and a new mode would have been honoured by one path and
+    silently collapsed to ``"default"`` by the other.
+
+    Modes that share the SDK's own vocabulary (``plan``/``acceptEdits``/
+    ``bypassPermissions``) pass through verbatim; everything else uses the SDK's
+    ``"default"`` engine and is gated by ``PermissionRegistry`` via the
+    ``can_use_tool`` callback.
+    """
+    return mode if mode in _SDK_PASSTHROUGH_MODES else "default"
+
 
 def _is_account_memory_path(file_path) -> bool:
     """True if file_path targets a managed-account auto-memory dir.
@@ -68,8 +94,12 @@ class PermissionRegistry:
 
     async def request(self, session_id, turn_id, tool, input, *, mode, denylist, allowlist, identity):
         now = time.time()
-        if mode == "full-auto":
-            # Full auto — incl. shell: approve everything without a prompt.
+        if mode in ("full-auto", "bypassPermissions"):
+            # Full auto / bypass-permissions — incl. shell: approve everything
+            # without a prompt. ``bypassPermissions`` mirrors the SDK's own name
+            # (the SDK bypasses its checks too), but the registry stays the
+            # authority so the outcome is identical whether or not the SDK routes
+            # the call through can_use_tool.
             return None, _resolved(True)
         # Grant-cache bypass ("Always allow this exact command/file") is honoured in all
         # modes EXCEPT "interactive" ("Ask each time").  A user who chose interactive
@@ -99,6 +129,13 @@ class PermissionRegistry:
             # Allowlist read-only, prompt the rest: only strictly read-only tools are
             # auto-approved; write-capable tools (TodoWrite, etc.) must prompt even if
             # they are not on the DANGEROUS denylist.
+            return None, _resolved(True)
+        if mode == "acceptEdits" and tool in _FILE_WRITE_TOOLS:
+            # Auto-accept file edits (Edit/Write/MultiEdit/NotebookEdit); every other
+            # tool still prompts. Mirrors the SDK's acceptEdits semantics and is the
+            # default for unattended automation sessions (issue #750): an agent editing
+            # its own worktree proceeds without a human, while shell/network calls — a
+            # materially larger blast radius — remain gated.
             return None, _resolved(True)
         pid = _uuid.uuid4().hex
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
