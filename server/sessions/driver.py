@@ -901,7 +901,7 @@ class SessionDriver:
         sig = hashlib.sha1(context.encode("utf-8", "surrogatepass")).hexdigest()
         if sig == self._last_suggest_sig:
             return
-        items = await self._suggester.generate(self.cwd, self.config_dir, context)
+        items = await self._suggester.generate(self.cwd, self.config_dir, context, self.account)
         # Record the signature only once generation actually ran to completion (a
         # cancelled task never reaches here), so a genuinely new context still refreshes.
         self._last_suggest_sig = sig
@@ -925,7 +925,7 @@ class SessionDriver:
         user = self._last_user_text[:500]
         assistant = "".join(self._last_assistant_parts)[-1500:]
         context = f"User: {user}\n\nAssistant: {assistant}"
-        items = await self._suggester.generate(self.cwd, self.config_dir, context)
+        items = await self._suggester.generate(self.cwd, self.config_dir, context, self.account)
         if items:
             self._last_suggestions = items
             self._emit(

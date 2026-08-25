@@ -9,7 +9,7 @@ from server.sessions.orchestrator import SessionOrchestrator
 async def _run_caches():
     fake = types.SimpleNamespace(
         _suggester=types.SimpleNamespace(generate=AsyncMock(return_value=["Run the tests", "Commit it"])),
-        cwd="/x", config_dir="/c", session_id="s1",
+        cwd="/x", config_dir="/c", session_id="s1", account="acct",
         _emit=lambda e: None, _last_suggestions=[], _last_turn_id="",
         _last_suggest_sig=None,
     )
