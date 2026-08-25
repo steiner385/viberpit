@@ -85,7 +85,17 @@ def test_handed_off_rows_do_not_hold_slots(tmp_path):
     asyncio.run(run())
 
 
-def test_repo_load_skips_handed_off_rows(tmp_path):
+def test_repo_load_counts_handed_off_rows(tmp_path):
+    """Fairness load counts handed_off rows — unlike slot occupancy.
+
+    A handed_off run frees its concurrency slot (PR Doctor carries the PR), so
+    ``_backlog_count_in_flight`` excludes it. But the work is still THIS repo's,
+    in flight downstream until the PR merges: if fairness ignored it, a repo that
+    merges fast would drop its counted load to zero the instant it hands off and
+    immediately re-win every freed slot ahead of a repo with nothing running (the
+    KinDash-bias amplifier). So ``_backlog_repo_load`` counts handed_off toward
+    the repo's pipeline pressure. ``gave_up`` rows are terminal (needs-human) and
+    stay excluded."""
     async def run():
         await _init(tmp_path)
         orch = _orch_with_ctx()
@@ -94,7 +104,7 @@ def test_repo_load_skips_handed_off_rows(tmp_path):
         await ctx.set_target_state("o/r#2", {"claimed": True, "repo": "o/r",
                                              "handed_off": True})
         await ctx.set_target_state("o/k#3", {"gave_up": True, "repo": "o/k"})
-        assert await orch._backlog_repo_load() == {"o/r": 1}
+        assert await orch._backlog_repo_load() == {"o/r": 2}
 
     asyncio.run(run())
 
