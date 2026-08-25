@@ -1,15 +1,14 @@
-"""Enrichment timeout isolation for the deprecated per-session helper (issue #660).
+"""Enrichment timeout isolation for the batched enrichment path (issue #660, #747).
 
-``_enrich_one`` is no longer on the GET /api/sessions call path — the route batches
-enrichment via ``_enrich_batch`` (#742) and falls back per-session only through
-``_each``, not through this function. ``_enrich_one`` survives solely as the
-test-exercised ancestor of that fallback logic (see its docstring in
-server/api/sessions.py), so this file exercises it directly: each of its per-field
-RPC calls (suggestions, prs, summary) must be bounded by ENRICH_FETCH_TIMEOUT, and a
-single slow/hung RPC must not stall the whole gather for the 30s httpx default.
+``_enrich_batch`` is the sole enrichment path on GET /api/sessions — it makes three
+batched RPCs (one per field) for any number of sessions (#742). Each is bounded by
+ENRICH_FETCH_TIMEOUT, pushed INTO the RPC; a single slow/hung RPC must not stall the
+whole gather for the 30s httpx default.
 
-The route's own batching/concurrency behavior is covered separately by
-server/tests/test_enrichment_batch_route.py — this file does NOT exercise the route.
+The route's shape (3 RPCs for N sessions, positional alignment, per-field degradation)
+is covered by server/tests/test_enrichment_batch_route.py. This file focuses purely on
+the timeout/error degradation contract: hung or raising batch RPCs must degrade to empty
+within the deadline, and the three concurrent RPCs must not serialize on each other.
 """
 from __future__ import annotations
 
@@ -18,7 +17,7 @@ import time
 import types
 
 
-from server.api.sessions import _enrich_one, ENRICH_FETCH_TIMEOUT
+from server.api.sessions import _enrich_batch, ENRICH_FETCH_TIMEOUT
 
 
 def _make_record(session_id: str = "s1", cwd: str | None = None):
@@ -31,114 +30,106 @@ def _make_record(session_id: str = "s1", cwd: str | None = None):
 
 
 class _OkOrch:
-    async def latest_suggestions(self, sid):
-        return ["suggestion"]
+    async def latest_suggestions_many(self, session_ids, *, timeout=None):
+        return {sid: ["suggestion"] for sid in session_ids}
 
-    async def prs_for(self, sid):
-        return []
+    async def prs_for_many(self, session_ids, *, timeout=None):
+        return {sid: [] for sid in session_ids}
 
-    async def latest_summary(self, sid, *, viewing=False):
-        return "summary text"
+    async def latest_summary_many(self, session_ids, *, viewing=False, timeout=None):
+        return {sid: "summary text" for sid in session_ids}
 
 
 class _HungOrch:
     """All enrichment RPCs hang indefinitely."""
 
-    async def latest_suggestions(self, sid):
+    async def latest_suggestions_many(self, session_ids, *, timeout=None):
         await asyncio.sleep(1000)
 
-    async def prs_for(self, sid):
+    async def prs_for_many(self, session_ids, *, timeout=None):
         await asyncio.sleep(1000)
 
-    async def latest_summary(self, sid, *, viewing=False):
+    async def latest_summary_many(self, session_ids, *, viewing=False, timeout=None):
         await asyncio.sleep(1000)
 
 
 class _RaisingOrch:
     """All enrichment RPCs raise."""
 
-    async def latest_suggestions(self, sid):
+    async def latest_suggestions_many(self, session_ids, *, timeout=None):
         raise RuntimeError("suggestions boom")
 
-    async def prs_for(self, sid):
+    async def prs_for_many(self, session_ids, *, timeout=None):
         raise RuntimeError("prs boom")
 
-    async def latest_summary(self, sid, *, viewing=False):
+    async def latest_summary_many(self, session_ids, *, viewing=False, timeout=None):
         raise RuntimeError("summary boom")
 
 
 # ---------------------------------------------------------------------------
-# _enrich_one unit tests
+# _enrich_batch unit tests
 # ---------------------------------------------------------------------------
 
 
-def test_enrich_one_happy_path():
-    """_enrich_one returns enrichment data from a healthy orch."""
+def test_enrich_batch_happy_path():
+    """_enrich_batch returns enrichment data from a healthy orch."""
     rec = _make_record()
-    repo, sugg, prs, summary = asyncio.run(
-        _enrich_one(_OkOrch(), rec, viewing=False, timeout=2.0)
+    _repos, suggs, prs, summaries = asyncio.run(
+        _enrich_batch(_OkOrch(), [rec], viewing=False, timeout=2.0)
     )
-    assert sugg == ["suggestion"]
-    assert prs == []
-    assert summary == "summary text"
+    assert suggs[0] == ["suggestion"]
+    assert prs[0] == []
+    assert summaries[0] == "summary text"
 
 
-def test_enrich_one_degrades_on_timeout():
-    """Hung RPCs degrade to safe empty values within the timeout."""
+def test_enrich_batch_degrades_on_timeout():
+    """Hung batch RPCs degrade to safe empty values within the timeout."""
     rec = _make_record()
     start = time.monotonic()
-    repo, sugg, prs, summary = asyncio.run(
-        _enrich_one(_HungOrch(), rec, viewing=False, timeout=0.1)
+    _repos, suggs, prs, summaries = asyncio.run(
+        _enrich_batch(_HungOrch(), [rec], viewing=False, timeout=0.1)
     )
     elapsed = time.monotonic() - start
 
     # All degrade to empty defaults.
-    assert sugg == []
-    assert prs == []
-    assert summary == ""
-    # Bounded: must finish within ~timeout, not hang × 3.
+    assert suggs[0] == []
+    assert prs[0] == []
+    assert summaries[0] == ""
+    # Bounded: the three concurrent RPCs must finish within ~timeout, not 3×.
     # Generous ceiling for loaded CI boxes; well below the 30s httpx default.
     assert elapsed < 0.5
 
 
-def test_enrich_one_degrades_on_exception():
-    """Raising RPCs degrade gracefully to empty values."""
+def test_enrich_batch_degrades_on_exception():
+    """Raising batch RPCs degrade gracefully to empty values."""
     rec = _make_record()
-    repo, sugg, prs, summary = asyncio.run(
-        _enrich_one(_RaisingOrch(), rec, viewing=False, timeout=2.0)
+    _repos, suggs, prs, summaries = asyncio.run(
+        _enrich_batch(_RaisingOrch(), [rec], viewing=False, timeout=2.0)
     )
-    assert sugg == []
-    assert prs == []
-    assert summary == ""
+    assert suggs[0] == []
+    assert prs[0] == []
+    assert summaries[0] == ""
 
 
-# ---------------------------------------------------------------------------
-# Concurrency within a single _enrich_one call: N *sessions calling _enrich_one*
-# must not serialize on each other. This is NOT the route's batching behavior —
-# see server/tests/test_enrichment_batch_route.py for that.
-# ---------------------------------------------------------------------------
-
-
-def test_enrich_multiple_sessions_is_concurrent():
-    """N sessions with hung enrichment must complete in ~1× timeout, not N×."""
+def test_enrich_batch_three_rpcs_are_concurrent():
+    """Three hung batch RPCs must complete in ~1× timeout, not 3×."""
     records = [_make_record(f"s{i}") for i in range(5)]
     orch = _HungOrch()
 
-    async def go():
-        start = time.monotonic()
-        results = await asyncio.gather(
-            *(_enrich_one(orch, r, viewing=False, timeout=0.1) for r in records)
-        )
-        return results, time.monotonic() - start
+    start = time.monotonic()
+    _repos, suggs, prs, summaries = asyncio.run(
+        _enrich_batch(orch, records, viewing=False, timeout=0.1)
+    )
+    elapsed = time.monotonic() - start
 
-    results, elapsed = asyncio.run(go())
-
-    assert len(results) == 5
-    for repo, sugg, prs, summary in results:
-        assert sugg == []
-        assert prs == []
+    assert len(suggs) == 5
+    for s in suggs:
+        assert s == []
+    for p in prs:
+        assert p == []
+    for summary in summaries:
         assert summary == ""
-    # Concurrent: total ≈ 1× timeout, not 5×.
+    # Concurrent: total ≈ 1× timeout, not 3×.
     assert elapsed < 0.5
 
 
