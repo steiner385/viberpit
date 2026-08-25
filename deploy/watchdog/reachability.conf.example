@@ -1,0 +1,33 @@
+# watchdog-reachability config — copy to /etc/ccswitch/watchdog-reachability.conf
+# (root:root, 0644) and edit for THIS host. Sourced by test-reachability.sh.
+#
+# This file is what turns the reachability watchdog ON. With no WDR_TARGETS the
+# script is a deliberate no-op (a misconfigured host must never reboot-loop).
+
+# REQUIRED. Space-separated INDEPENDENT off-box targets. Reachability = ANY of
+# them answers; a reboot is only ever eligible when ALL fail, so no single dead
+# peer can trip it. Pick targets that fail together ONLY when THIS host is cut
+# off — e.g. the default gateway, one always-on tailnet peer, and one target on
+# a different path (public resolver / another peer). Use at least three.
+#   rocky example: gateway + dobby (tailnet peer) + a public anycast resolver.
+WDR_TARGETS="192.168.1.1 dobby 1.1.1.1"
+
+# --- Safety guards (defaults shown; raise, don't lower, unless you understand
+#     the reboot-loop hazard documented at the top of test-reachability.sh) ------
+
+# Continuous total-isolation time before a reboot is eligible (seconds).
+#WDR_FAIL_WINDOW=300
+
+# Hard rate limit: minimum seconds between reboots, regardless of anything else.
+#WDR_REBOOT_COOLDOWN=1800
+
+# No-op window after boot, so the network stack (Tailscale/routes/DHCP) can settle.
+#WDR_BOOT_GRACE=600
+
+# Per-target ping shape.
+#WDR_PING_COUNT=2
+#WDR_PING_TIMEOUT=2
+
+# Where the outage-window + cooldown state live. Must survive reboots (for the
+# cooldown anchor), so keep it on persistent storage, not tmpfs.
+#WDR_STATE_DIR=/var/lib/watchdog-reachability
