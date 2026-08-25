@@ -59,7 +59,52 @@ function RepoMultiselect({ field, value, onChange }: FieldProps) {
   )
 }
 
-function ConfigInput({ field, value, onChange }: FieldProps) {
+// A per-repo number map (weights / concurrency caps). One numeric input per repo
+// currently in `enabled_repos`: an empty input leaves the repo out of the map
+// (default weight / uncapped); typing a number stores it, clearing removes it.
+function RepoNumberMap({ field, value, onChange, enabledRepos }: FieldProps & {
+  enabledRepos: string[]
+}) {
+  const map: Record<string, number> =
+    value && typeof value === 'object' ? (value as Record<string, number>) : {}
+
+  function setRepo(repo: string, raw: string) {
+    const next = { ...map }
+    if (raw === '') delete next[repo]
+    else {
+      const n = Number(raw)
+      if (Number.isNaN(n)) return
+      next[repo] = n
+    }
+    onChange(field.key, next)
+  }
+
+  if (enabledRepos.length === 0) {
+    return <p className="text-sm text-muted-foreground">Select repositories above first.</p>
+  }
+
+  return (
+    <div className="space-y-1 border border-border rounded p-2">
+      {enabledRepos.map((repo) => (
+        <label key={repo} className="flex items-center justify-between gap-2 text-sm">
+          <span className="truncate">{repo}</span>
+          <input
+            type="number"
+            min={0}
+            aria-label={`${field.label}: ${repo}`}
+            value={repo in map ? String(map[repo]) : ''}
+            onChange={(e) => setRepo(repo, e.target.value)}
+            className="text-sm rounded border border-border bg-background px-2 py-1 w-24 shrink-0"
+          />
+        </label>
+      ))}
+    </div>
+  )
+}
+
+function ConfigInput({ field, value, onChange, enabledRepos }: FieldProps & {
+  enabledRepos?: string[]
+}) {
   switch (field.type) {
     case 'bool':
       return (
@@ -102,6 +147,9 @@ function ConfigInput({ field, value, onChange }: FieldProps) {
       )
     case 'repo-multiselect':
       return <RepoMultiselect field={field} value={value} onChange={onChange} />
+    case 'repo-number-map':
+      return <RepoNumberMap field={field} value={value} onChange={onChange}
+        enabledRepos={enabledRepos ?? []} />
     default:
       return null
   }
@@ -129,6 +177,12 @@ function ConfigPanel({ automation: a }: ConfigPanelProps) {
     patch.mutate({ id: a.id, body: { config: next } })
   }
 
+  // The per-repo weight/cap widgets render one input per selected repo, so they
+  // track the live `enabled_repos` value (which the user can edit in the same panel).
+  const enabledRepos = Array.isArray(localConfig['enabled_repos'])
+    ? (localConfig['enabled_repos'] as string[])
+    : []
+
   return (
     <section>
       <h4 className="text-xs font-semibold uppercase text-muted-foreground mb-2">Configuration</h4>
@@ -138,13 +192,13 @@ function ConfigPanel({ automation: a }: ConfigPanelProps) {
             <label className="block text-sm font-medium mb-1">
               {field.type === 'bool' ? (
                 <span className="flex items-center gap-2">
-                  <ConfigInput field={field} value={localConfig[field.key]} onChange={handleChange} />
+                  <ConfigInput field={field} value={localConfig[field.key]} onChange={handleChange} enabledRepos={enabledRepos} />
                   {field.label}
                 </span>
               ) : (
                 <>
                   <span className="block mb-1">{field.label}</span>
-                  <ConfigInput field={field} value={localConfig[field.key]} onChange={handleChange} />
+                  <ConfigInput field={field} value={localConfig[field.key]} onChange={handleChange} enabledRepos={enabledRepos} />
                 </>
               )}
             </label>

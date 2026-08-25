@@ -12,7 +12,7 @@ from server.github.pr_status import PullRequestInfo
 
 from .backlog_github import NEEDS_HUMAN_RETRY_DAYS_DEFAULT, GhRun, query_candidates
 from .backlog_grouping import load_plan, mark_consumed, plan_to_batch
-from .backlog_selection import Batch, should_free_slot
+from .backlog_selection import SELECTION_STRATEGIES, Batch, should_free_slot
 from .base import AutomationStatus, ConfigField
 from .model_pick import AUTOMATION_MODEL_CHOICES
 from .context import AutomationContext
@@ -121,7 +121,14 @@ async def select_batch(
         return None
 
     plan = await load_plan()
-    batch, group_id = plan_to_batch(plan, candidates, repo_load, paused_repos)
+    # The user-selectable per-repo strategy + its params ride on the config; the
+    # ordered ``enabled_repos`` list doubles as the ``priority`` ranking.
+    batch, group_id = plan_to_batch(
+        plan, candidates, repo_load, paused_repos,
+        strategy=config.get("selection_strategy") or "balanced",
+        repo_order=config.get("enabled_repos") or [],
+        weights=config.get("repo_weights") or {},
+        caps=config.get("repo_caps") or {})
     if batch is not None and group_id is not None:
         try:
             await mark_consumed(group_id)
@@ -143,6 +150,24 @@ class BacklogRunner:
                     default="ready",
                     help="Only issues with this label are candidates. Leave blank "
                          "to consider ALL open, unassigned issues (no label gate)."),
+        ConfigField(key="selection_strategy", label="Repo selection strategy",
+                    type="enum", default="balanced",
+                    choices=list(SELECTION_STRATEGIES),
+                    help="How a freed slot chooses among repos with work. "
+                         "'balanced': fewest in-flight runs first (equal "
+                         "rotation). 'priority': serve repos in the order listed "
+                         "above, top first. 'weighted': bias by per-repo weight "
+                         "(a freed slot favors higher-weighted repos; weight 0 "
+                         "pauses a repo). 'concurrency-cap': never exceed a "
+                         "repo's max in-flight runs."),
+        ConfigField(key="repo_weights", label="Repo weights", type="repo-number-map",
+                    default={},
+                    help="Per-repo weight for the 'weighted' strategy (default 1). "
+                         "Higher = more freed slots; 0 pauses the repo."),
+        ConfigField(key="repo_caps", label="Repo concurrency caps",
+                    type="repo-number-map", default={},
+                    help="Per-repo max in-flight runs for the 'concurrency-cap' "
+                         "strategy (a repo not listed is uncapped)."),
         ConfigField(key="max_concurrent", label="Max sessions in flight", type="int", default=1,
                     help="Parallel implementing sessions allowed at once."),
         ConfigField(key="max_spawns_per_day", label="Max spawns per day", type="int", default=10,
