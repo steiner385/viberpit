@@ -18,7 +18,7 @@ class _StubSuggester:
         self.gate = gate
         self.calls = 0
 
-    async def generate(self, cwd, config_dir, context):
+    async def generate(self, cwd, config_dir, context, account=None):
         self.calls += 1
         if self.gate is not None:
             await self.gate.wait()

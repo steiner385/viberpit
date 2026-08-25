@@ -69,19 +69,20 @@ def should_regenerate(
 class SummaryService:
     """Generates a one-line status summary via a throwaway, resume-less SDK query.
 
-    ``sdk_factory(cwd, config_dir) -> SDKClientProtocol`` builds a one-shot client bound
-    to the session's own account config dir. Best-effort: returns "" on empty context or
-    any failure.
+    ``sdk_factory(cwd, config_dir, account) -> SDKClientProtocol`` builds a one-shot client
+    bound to the session's own account config dir; ``account`` is used to also inject a
+    setup-token env (see ``account_auth.oauth_env_for``) for accounts whose browser-OAuth
+    refresh is dead. Best-effort: returns "" on empty context or any failure.
     """
 
     def __init__(self, sdk_factory):
         self._factory = sdk_factory
 
-    async def generate(self, cwd: str, config_dir: str, context: str) -> str:
+    async def generate(self, cwd: str, config_dir: str, context: str, account: str | None = None) -> str:
         if not context.strip():
             return ""
         try:
-            client = self._factory(cwd, config_dir)
+            client = self._factory(cwd, config_dir, account)
             tr = Translator()
             parts: list[str] = []
             async with client:

@@ -44,7 +44,7 @@ def test_generate_parses_streamed_json():
     msgs = [f.stream_start(uuid="t1"),
             f.stream_text('["Run the tests", "Commit it"]', uuid="t1"),
             f.result(uuid="t1")]
-    svc = SuggestionService(lambda cwd, cfg: FakeSDKClient(msgs))
+    svc = SuggestionService(lambda cwd, cfg, account=None: FakeSDKClient(msgs))
     out = asyncio.run(svc.generate("/tmp/r", "/tmp/cfg", "User: hi\n\nAssistant: done"))
     assert out == ["Run the tests", "Commit it"]
 
@@ -52,7 +52,7 @@ def test_generate_parses_streamed_json():
 def test_generate_empty_context_skips():
     called = {"n": 0}
 
-    def factory(cwd, cfg):
+    def factory(cwd, cfg, account=None):
         called["n"] += 1
         return FakeSDKClient([])
 
@@ -62,7 +62,7 @@ def test_generate_empty_context_skips():
 
 
 def test_generate_swallows_errors():
-    def boom(cwd, cfg):
+    def boom(cwd, cfg, account=None):
         raise RuntimeError("sdk down")
 
     svc = SuggestionService(boom)

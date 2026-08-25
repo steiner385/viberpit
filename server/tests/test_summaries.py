@@ -53,12 +53,12 @@ def test_should_regenerate_after_60s_and_change():
 
 
 def test_summary_service_empty_context_returns_empty():
-    svc = SummaryService(sdk_factory=lambda cwd, cfg: None)
+    svc = SummaryService(sdk_factory=lambda cwd, cfg, account=None: None)
     assert asyncio.run(svc.generate("/x", "/c", "   ")) == ""
 
 
 def test_summary_service_failure_returns_empty():
-    def boom(cwd, cfg):
+    def boom(cwd, cfg, account=None):
         raise RuntimeError("no sdk")
     svc = SummaryService(sdk_factory=boom)
     assert asyncio.run(svc.generate("/x", "/c", "User: hi\n\nAssistant: hey")) == ""
@@ -68,6 +68,6 @@ def test_generate_parses_streamed_text():
     msgs = [f.stream_start(uuid="t1"),
             f.stream_text("Refactoring the auth middleware", uuid="t1"),
             f.result(uuid="t1")]
-    svc = SummaryService(lambda cwd, cfg: FakeSDKClient(msgs))
+    svc = SummaryService(lambda cwd, cfg, account=None: FakeSDKClient(msgs))
     out = asyncio.run(svc.generate("/tmp/r", "/tmp/cfg", "User: hi\n\nAssistant: done"))
     assert out == "Refactoring the auth middleware"
