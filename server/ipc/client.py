@@ -70,7 +70,27 @@ _POOL_WARN_INTERVAL_S = 30.0
 # called exhaustion rather than queueing (see _note_pool_timeout). Under load the pool
 # turns over continuously — every completed, timed-out or reset RPC returns its slot — so
 # a gap this long against a pool that is still refusing slots is not a busy moment.
-_WEDGE_QUIET_S = 30.0
+#
+# Raised clear of the longest per-call budget: `automation_*` passes 90s
+# (`sessions.remote.AUTOMATION_RPC_TIMEOUT`), so a single connection can be legitimately
+# ACTIVE that long while completing nothing. This window gates BOTH signals below, and a
+# window shorter than the longest RPC would misread legitimate slow work as a strand on
+# either — a lockstep automation fan-out has zero pool-wide turnover for the whole call,
+# and a connection mid-flight on a 90s RPC has not "turned over" for 90s. 120s = 90s plus
+# headroom keeps both clear. (Not imported from remote.py: that module imports THIS one, so
+# the coupling is a comment, not a cycle — the test pins the invariant instead.)
+_WEDGE_QUIET_S = 120.0
+
+# Partial-strand threshold. A strand accumulates one stranded slot at a time — most of the
+# pool sits ACTIVE and never completes while a few sockets still recycle — so the pool-wide
+# clock above, refreshed by those few, never trips even at a fraction of throughput (both
+# 2026-08-22/23 outages passed through 81/100 stranded on the way down). Distinct-connection
+# turnover catches it directly: when a SATURATED pool has had fewer than this fraction of
+# its slots actually COMPLETE a request within the quiet window, the majority have been
+# ACTIVE-without-completing for longer than any legitimate RPC — a strand, not load. 0.5 is
+# deliberately conservative: it takes a majority of the pool going dark, so an ordinary
+# burst (whose connections all keep completing) never trips it.
+_STRAND_TURNOVER_FRACTION = 0.5
 
 # The pool-acquisition ceiling. It MUST outlast the slowest expected RPC: a caller queued
 # behind a full pool is waiting for one in-flight RPC to return its slot, and
@@ -238,6 +258,14 @@ class DaemonClient:
         # (see _note_pool_timeout). Seeded at construction so a brand-new client that
         # immediately queues is never mistaken for a wedge.
         self._last_slot_at = time.monotonic()
+        # connection-stream id -> monotonic time it last COMPLETED a request. httpcore
+        # reuses one `network_stream` object per physical connection for its lifetime —
+        # stable across keepalive reuse, distinct per concurrent connection — so the size
+        # of this map over `_WEDGE_QUIET_S` is the count of DISTINCT connections actually
+        # turning over. That is the signal `_last_slot_at` cannot give: a pool-wide "nobody
+        # served" clock is blind to a PARTIAL strand, where a handful of live sockets keep
+        # the clock young while the rest sit stranded (#744). Pruned on read.
+        self._recent_servers: dict[int, float] = {}
         self._ws: Any = None
         self._reader_task: asyncio.Task | None = None
         # stream -> set of subscriber queues. A stream may have MORE THAN ONE local
@@ -311,6 +339,7 @@ class DaemonClient:
             self._note_slot_served()
             raise DaemonUnavailable(str(exc)) from exc
         self._note_slot_served()
+        self._note_connection_served(resp)
         body = resp.json()
         if "error" in body:
             err = body["error"]
@@ -328,23 +357,83 @@ class DaemonClient:
         self._consecutive_pool_timeouts = 0
         self._last_slot_at = time.monotonic()
 
-    def _pool_is_exhausted(self) -> bool:
+    def _note_connection_served(self, resp: httpx.Response) -> None:
+        """Record WHICH connection just completed a request, for turnover accounting.
+
+        httpcore attaches the connection's ``network_stream`` to every HTTP/1.1 response
+        (``resp.extensions``); the same object is reused for the connection's whole
+        lifetime, so its ``id()`` identifies the physical connection — stable across
+        keepalive reuse, distinct per concurrent connection. Storing ``id -> now`` turns a
+        stream of completed RPCs into a set of DISTINCT recently-serving connections, which
+        is the signal ``_last_slot_at`` alone cannot give (see ``_recent_servers`` and
+        ``_pool_is_exhausted``). Guarded because it is telemetry: a missing extension (a
+        non-HTTP/1.1 path, a future httpcore) must never fail an RPC that otherwise
+        succeeded.
+        """
+        try:
+            stream = resp.extensions.get("network_stream")
+            if stream is not None:
+                self._recent_servers[id(stream)] = time.monotonic()
+        except Exception:  # noqa: BLE001 — turnover telemetry must never break a good RPC
+            pass
+
+    def _distinct_recent_servers(self) -> int:
+        """Count — and prune to — the connections that COMPLETED a request in the window.
+
+        A strand is about turnover *now*: a connection that served ten minutes ago proves
+        nothing about a pool that has been stranded since. So entries older than
+        ``_WEDGE_QUIET_S`` are dropped here (the only reader), which also bounds the map and
+        makes ``id()`` reuse harmless — a recycled id can only re-enter within a live window,
+        by which point it is a genuinely distinct serving connection anyway.
+        """
+        cutoff = time.monotonic() - _WEDGE_QUIET_S
+        self._recent_servers = {
+            sid: t for sid, t in self._recent_servers.items() if t >= cutoff}
+        return len(self._recent_servers)
+
+    def _pool_is_exhausted(self, *, in_use: int, max_connections: int | None) -> bool:
         """True when a pool timeout means "nothing is ever freed", not "we are busy".
 
         The two look IDENTICAL in occupancy — a saturated pool with queued requests is
         what a fan-out burst and a permanent strand both produce — so occupancy cannot
         tell them apart, and reporting on occupancy alone is how ordinary concurrent use
-        gets called a wedge. What separates them is turnover: under load the pool hands
-        out slots continuously (``_note_slot_served`` fires on every completed, timed-out
-        or reset RPC), whereas a pool holding unevictable connections hands out none, ever.
-        So: no slot served for ``_WEDGE_QUIET_S`` while we are still failing to get one.
+        gets called a wedge. What separates them is turnover, and there are two shapes of
+        stalled turnover, so two signals:
+
+        1. TERMINAL strand — no slot served to ANYONE for ``_WEDGE_QUIET_S``. Under load
+           the pool hands out slots continuously (``_note_slot_served`` fires on every
+           completed, timed-out or reset RPC); a pool holding only unevictable connections
+           hands out none, ever. This is the state the signal was first built for.
+
+        2. PARTIAL strand — the pool is STILL turning over, so (1)'s clock never trips, but
+           only a few DISTINCT connections are doing it while the rest sit ACTIVE and never
+           complete. That is the accumulation phase both outages passed through (81/100
+           stranded, one still recycling), and (1) is blind to it because the one live
+           socket keeps ``_last_slot_at`` young (#744). Distinct turnover catches it: a
+           SATURATED pool in which fewer than ``_STRAND_TURNOVER_FRACTION`` of the slots
+           have completed anything in the window has most of its connections ACTIVE-without-
+           completing for longer than any legitimate RPC (the window clears the longest
+           budget). The ``>= 1`` floor is load-bearing: a fresh burst that has just
+           saturated but not completed anything yet has zero distinct servers AND a young
+           clock — requiring at least one connection to have served proves the pool is
+           genuinely alive-but-mostly-stranded, not merely warming up.
 
         The reserved ``/info`` channel was the other candidate signal and was NOT used:
         ``_reconcile_epoch`` polls it only once per WS reconnect, so its last result can be
         minutes stale — it is a restart signal, not a liveness feed. Turnover is measured
         by this pool, about this pool, at the moment of the timeout.
         """
-        return time.monotonic() - self._last_slot_at >= _WEDGE_QUIET_S
+        if time.monotonic() - self._last_slot_at >= _WEDGE_QUIET_S:
+            return True
+        # An unbounded pool has no saturation to strand against; leave the verdict to the
+        # pool-wide clock above (and `saturated` is False there anyway, so this never fires).
+        if max_connections is None:
+            return False
+        # Of the slots actually HELD, how many turned over in the window? Compared against
+        # `in_use` — the held-slot count — so the fraction reads as "most of what is held is
+        # dark". Under the `saturated` gate at the call site `in_use == max_connections`.
+        distinct = self._distinct_recent_servers()
+        return 1 <= distinct < in_use * _STRAND_TURNOVER_FRACTION
 
     def _note_pool_timeout(self, method: str) -> None:
         """Record a pool timeout and, when it IS a wedge, make it legible in the journal.
@@ -377,13 +466,26 @@ class DaemonClient:
             return
         self._last_pool_warn_at = now
         stats = self.pool_stats()
-        verdict = (
-            "No connection has been served to any caller for %.0fs, so this is edge-side "
-            "pool exhaustion — the daemon was never asked." % stats["secondsSinceSlot"]
-            if stats["exhausted"] else
-            "The pool served a caller %.1fs ago, so it is still turning over: this is "
-            "queueing under load, not exhaustion." % stats["secondsSinceSlot"]
-        )
+        if not stats["exhausted"]:
+            verdict = (
+                "The pool served a caller %.1fs ago, so it is still turning over: this is "
+                "queueing under load, not exhaustion." % stats["secondsSinceSlot"])
+        elif stats["secondsSinceSlot"] >= _WEDGE_QUIET_S:
+            # Terminal strand: no slot handed to ANYONE for the whole quiet window.
+            verdict = (
+                "No connection has been served to any caller for %.0fs, so this is "
+                "edge-side pool exhaustion — the daemon was never asked."
+                % stats["secondsSinceSlot"])
+        else:
+            # Partial strand: still turning over (the clock above is young), but only a few
+            # distinct connections are, while the rest sit stranded — the accumulation phase
+            # a pool-wide silence check is blind to (#744).
+            verdict = (
+                "Only %d distinct connection(s) have completed a request in the last %.0fs "
+                "while %d of %d slots are held — a partial strand: most of the pool is "
+                "stranded ACTIVE and only a few sockets are still recycling."
+                % (stats["distinctRecentServers"], _WEDGE_QUIET_S,
+                   stats["inUse"], stats["maxConnections"]))
         log.warning(
             "ipc: RPC %s could not get a connection slot (%d consecutive pool timeout(s), "
             "%d total) — pool %d/%d connections, %d in use, %d idle, %d request(s) queued. "
@@ -420,6 +522,10 @@ class DaemonClient:
             "poolTimeouts": self._pool_timeouts,
             "consecutivePoolTimeouts": self._consecutive_pool_timeouts,
             "secondsSinceSlot": round(since_slot, 3),
+            # Distinct connections that COMPLETED a request within `_WEDGE_QUIET_S`. Read
+            # against `inUse`: `inUse` high while this is low is a partial strand (#744) —
+            # most slots held, few actually turning over — which `secondsSinceSlot` hides.
+            "distinctRecentServers": self._distinct_recent_servers(),
             "saturated": False,
             "exhausted": False,
         }
@@ -434,8 +540,14 @@ class DaemonClient:
                 _LIMITS.max_connections is not None
                 and stats["inUse"] >= _LIMITS.max_connections)
             # Both conditions, deliberately: a saturated pool that is still handing out
-            # slots is load, and a quiet pool with free slots is just an idle edge.
-            stats["exhausted"] = bool(stats["saturated"] and self._pool_is_exhausted())
+            # slots is load, and a quiet pool with free slots is just an idle edge. The
+            # turnover leg of `_pool_is_exhausted` reads `inUse`/`maxConnections`, so pass
+            # the freshly-measured counts rather than have it re-read the pool.
+            stats["exhausted"] = bool(
+                stats["saturated"]
+                and self._pool_is_exhausted(
+                    in_use=stats["inUse"],
+                    max_connections=_LIMITS.max_connections))
         except Exception:  # noqa: BLE001 — telemetry only; never fail a health route
             pass
         return stats
