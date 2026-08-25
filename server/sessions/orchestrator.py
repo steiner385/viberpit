@@ -2055,14 +2055,25 @@ class SessionOrchestrator:
         return len(groups)
 
     async def _backlog_repo_load(self) -> dict[str, int]:
-        """Active runs per repo, derived from durable target states — the input to
-        the runner's per-repo fairness. Mirrors ``_backlog_count_in_flight``'s
-        active-state basis (skips ``gave_up`` guard rows) but split by repo, so a
-        freed slot goes to the repo currently carrying the fewest runs."""
+        """Per-repo pipeline pressure, derived from durable target states — the
+        input to the runner's per-repo fairness (``plan_to_batch`` sends a freed
+        slot to the repo carrying the fewest).
+
+        This deliberately DIVERGES from ``_backlog_count_in_flight``, which counts
+        occupied concurrency slots: a ``handed_off`` run has freed its slot (PR
+        Doctor carries the PR now) but is still THIS repo's work, in flight
+        downstream until the PR merges. Counting it here is the fix for the
+        KinDash-bias amplifier: a repo with a deep backlog that merges fast would
+        otherwise drop its counted load to zero the instant it hands off and
+        immediately re-win every freed slot ahead of a repo with nothing running.
+        Load only reorders repos that both have live plan groups, so counting
+        handed_off can never block or starve selection — it only stops the
+        fast-handoff repo from monopolising freed slots. Terminal ``gave_up``
+        (needs-human) guard rows carry no active work and stay excluded."""
         states = await self._backlog_ctx.list_target_states()
         load: dict[str, int] = {}
         for st in states.values():
-            if st.get("gave_up") or st.get("handed_off"):
+            if st.get("gave_up"):
                 continue
             repo = st.get("repo")
             if repo:
