@@ -158,6 +158,7 @@ async def test_daemon_deploy_snapshots_and_restores():
             if method == "drain_status": return {"state": "ready"}
             if method == "snapshot_deploy": return {"live": [{"id": "s1", "status": "working"}]}
             if method == "restore_deploy": return {"restored": ["s1"], "failed": ["s2"]}
+            if method == "close_events_connections": return {"closed": 0}
             raise AssertionError(method)
 
     c = DeployController("/r", health_url="http://h", venv_pip="/v/pip",
@@ -332,3 +333,74 @@ async def test_restart_units_exception_triggers_rollback():
     assert calls.rolled_back is True
     assert st.phases["restart"] == PhaseState.FAILED.value
     assert st.error is not None
+
+
+@pytest.mark.asyncio
+async def test_running_cleared_before_rollback_executes():
+    """running must flip to False before rollback starts (issue #741).
+
+    The rollback restarts units which takes ~60s; keeping running=True that long freezes
+    the overlay on "Restarting service" with no error shown — the exact symptom reported.
+    """
+    g = FakeGit("a", "b", [])
+    s, _ = make_steps(healthy=False)
+    s.classify_change = lambda files: "daemon_changed"
+    running_at_rollback: list[bool] = []
+    c_ref: list = []
+
+    orig_rollback = s.rollback_to
+    def spy_rollback(repo, sha, *, daemon_changed, daemon_enabled, run=None):
+        running_at_rollback.append(c_ref[0].status.running)
+        return orig_rollback(repo, sha, daemon_changed=daemon_changed,
+                             daemon_enabled=daemon_enabled, run=run)
+    s.rollback_to = spy_rollback
+
+    c = DeployController("/r", health_url="http://h", venv_pip="/v/pip",
+                         git_mod=g, steps_mod=s, daemon_enabled=True,
+                         changed_files_fn=lambda repo, a, b: ["server/sessions/orchestrator.py"])
+    c_ref.append(c)
+    await c.deploy_once()
+    assert running_at_rollback == [False], (
+        "running must be False before rollback so the overlay can leave the spinner state")
+
+
+@pytest.mark.asyncio
+async def test_close_events_connections_called_before_daemon_restart():
+    """close_events_connections RPC must be called before restart_units (issue #740).
+
+    Closing the edge's /events WebSocket BEFORE the daemon gets SIGTERM lets uvicorn
+    shut down immediately rather than waiting ~45s for the connection to drain.
+    """
+    g = FakeGit("a", "b", [])
+    s, _ = make_steps(healthy=True)
+    s.classify_change = lambda files: "daemon_changed"
+    order: list[str] = []
+
+    orig_restart = s.restart_units
+    def restart_spy(*, daemon_changed, daemon_enabled, target_sha=None, run=None):
+        order.append("restart_units")
+        return orig_restart(daemon_changed=daemon_changed, daemon_enabled=daemon_enabled,
+                            target_sha=target_sha, run=run)
+    s.restart_units = restart_spy
+
+    class FakeDaemon:
+        async def call(self, method, **params):
+            order.append(f"rpc:{method}")
+            if method == "begin_drain": return {}
+            if method == "drain_status": return {"state": "ready"}
+            if method == "snapshot_deploy": return {"live": []}
+            if method == "restore_deploy": return {"restored": [], "failed": []}
+            if method == "close_events_connections": return {"closed": 1}
+            raise AssertionError(method)
+        async def aclose(self): pass
+
+    c = DeployController("/r", health_url="http://h", venv_pip="/v/pip",
+                         git_mod=g, steps_mod=s, daemon_enabled=True,
+                         daemon_client_factory=lambda: FakeDaemon(),
+                         changed_files_fn=lambda repo, a, b: ["server/sessions/orchestrator.py"])
+    st = await c.deploy_once()
+    assert st.error is None
+    assert "rpc:close_events_connections" in order
+    close_idx = order.index("rpc:close_events_connections")
+    restart_idx = order.index("restart_units")
+    assert close_idx < restart_idx, "close_events_connections must precede restart_units"
