@@ -64,6 +64,50 @@ class TestLauncher(unittest.TestCase):
             self.assertEqual(spawns, [])           # the single proc was consumed
             self.assertFalse(only_proc.terminated)  # exited cleanly, never killed/switched
 
+    def test_setup_token_injected_into_env(self):
+        """Launcher injects CLAUDE_CODE_OAUTH_TOKEN when account has a setup-token."""
+        with temp_env():
+            from ccswitch import launcher, accounts
+            _seed("alpha")
+            captured_envs: list[dict] = []
+
+            def _capture_spawn(cmd, env):
+                captured_envs.append(dict(env))
+                return FakeProc(turns=0)
+
+            with mock.patch.object(accounts, "usage_for", return_value=usage(session=5.0)), \
+                 mock.patch.object(launcher, "spawn_claude", side_effect=_capture_spawn), \
+                 mock.patch.object(launcher, "scan_for_limit", return_value=None), \
+                 mock.patch.object(launcher, "current_session_id", return_value="sess-1"), \
+                 mock.patch.object(accounts, "sync_back"), \
+                 mock.patch("ccswitch.launcher.read_oauth_token", return_value="sk-ant-oat01-testtoken"):
+                rc = launcher.main(["--poll-interval", "0"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(len(captured_envs), 1)
+            self.assertEqual(captured_envs[0]["CLAUDE_CODE_OAUTH_TOKEN"], "sk-ant-oat01-testtoken")
+
+    def test_setup_token_absent_when_no_token_stored(self):
+        """Launcher does not set CLAUDE_CODE_OAUTH_TOKEN when no setup-token is available."""
+        with temp_env():
+            from ccswitch import launcher, accounts
+            _seed("alpha")
+            captured_envs: list[dict] = []
+
+            def _capture_spawn(cmd, env):
+                captured_envs.append(dict(env))
+                return FakeProc(turns=0)
+
+            with mock.patch.object(accounts, "usage_for", return_value=usage(session=5.0)), \
+                 mock.patch.object(launcher, "spawn_claude", side_effect=_capture_spawn), \
+                 mock.patch.object(launcher, "scan_for_limit", return_value=None), \
+                 mock.patch.object(launcher, "current_session_id", return_value="sess-1"), \
+                 mock.patch.object(accounts, "sync_back"), \
+                 mock.patch("ccswitch.launcher.read_oauth_token", return_value=None):
+                rc = launcher.main(["--poll-interval", "0"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(len(captured_envs), 1)
+            self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", captured_envs[0])
+
     def test_proactive_switch_when_less_loaded_account_exists(self):
         with temp_env():
             from ccswitch import launcher, accounts

@@ -9,6 +9,7 @@ import time
 
 from . import accounts
 from .config import load_config
+from .crypto import read_oauth_token
 from .detect import detect_limit_in_jsonl_line
 
 
@@ -101,6 +102,9 @@ def main(argv: list[str] | None = None) -> int:
     while True:
         cfg_dir = str(compose(name))
         env = dict(os.environ, CLAUDE_CONFIG_DIR=cfg_dir)
+        tok = read_oauth_token(name)
+        if tok:
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = tok
         cmd = _claude_cmd(cfg) + (["--resume", resume_id] if resume_id else []) + claude_args
         proc = spawn_claude(cmd, env)
         # Inner loop: poll the SAME live process. Only re-spawn (outer loop) after an actual

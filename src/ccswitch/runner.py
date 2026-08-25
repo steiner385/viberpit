@@ -10,6 +10,7 @@ from datetime import datetime
 from . import accounts
 from .config import load_config
 from .configdir import compose
+from .crypto import read_oauth_token
 from .detect import detect_limit_in_result
 from .selector import AllAccountsBusy
 
@@ -63,6 +64,9 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         cfg_dir = compose(name)
         env = dict(os.environ, CLAUDE_CONFIG_DIR=str(cfg_dir))
+        tok = read_oauth_token(name)
+        if tok:
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = tok
         rc, stdout = run_claude(_claude_cmd(cfg) + argv, env)
         sys.stdout.write(stdout)
         result = _last_result(stdout)

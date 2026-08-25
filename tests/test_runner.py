@@ -51,6 +51,48 @@ class TestRunner(unittest.TestCase):
             self.assertEqual(rc, 2)
             os.environ.pop("CCSWITCH_FAKE_LIMITED", None)
 
+    def test_setup_token_injected_into_env(self):
+        """Runner injects CLAUDE_CODE_OAUTH_TOKEN when account has a setup-token."""
+        with temp_env():
+            from ccswitch import runner, accounts
+            from tests.helpers import usage
+            _seed("alpha")
+            captured_envs: list[dict] = []
+
+            def _fake_run(cmd, env):
+                captured_envs.append(dict(env))
+                return 0, json.dumps({"type": "result", "is_error": False, "result": "ok"})
+
+            with mock.patch.object(accounts, "usage_for", return_value=usage(session=5.0)), \
+                 mock.patch.object(runner, "run_claude", side_effect=_fake_run), \
+                 mock.patch.object(accounts, "sync_back"), \
+                 mock.patch("ccswitch.runner.read_oauth_token", return_value="sk-ant-oat01-testtoken"):
+                rc = runner.main(["--", "-p", "hi"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(len(captured_envs), 1)
+            self.assertEqual(captured_envs[0]["CLAUDE_CODE_OAUTH_TOKEN"], "sk-ant-oat01-testtoken")
+
+    def test_setup_token_absent_when_no_token_stored(self):
+        """Runner does not set CLAUDE_CODE_OAUTH_TOKEN when no setup-token is available."""
+        with temp_env():
+            from ccswitch import runner, accounts
+            from tests.helpers import usage
+            _seed("alpha")
+            captured_envs: list[dict] = []
+
+            def _fake_run(cmd, env):
+                captured_envs.append(dict(env))
+                return 0, json.dumps({"type": "result", "is_error": False, "result": "ok"})
+
+            with mock.patch.object(accounts, "usage_for", return_value=usage(session=5.0)), \
+                 mock.patch.object(runner, "run_claude", side_effect=_fake_run), \
+                 mock.patch.object(accounts, "sync_back"), \
+                 mock.patch("ccswitch.runner.read_oauth_token", return_value=None):
+                rc = runner.main(["--", "-p", "hi"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(len(captured_envs), 1)
+            self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", captured_envs[0])
+
     def test_last_result_ignores_non_json_and_non_result_lines(self):
         from ccswitch.runner import _last_result
         stdout = "\n".join([
