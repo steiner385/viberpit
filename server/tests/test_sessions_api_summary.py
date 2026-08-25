@@ -1,11 +1,10 @@
-import asyncio
 import os
 import types
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
-from server.api.sessions import _record_to_dict, _resolve_summary
+from server.api.sessions import _record_to_dict
 from server.app import create_app
 from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.fakes.fake_factory import fake_sdk_factory
@@ -30,16 +29,6 @@ def test_record_to_dict_summary_defaults_empty():
         active_goal=None, usage_unverified=False, updated_at_iso=None, rev_at=None,
     )
     assert _record_to_dict(rec)["summary"] == ""
-
-
-def test_resolve_summary_passes_viewing_and_tolerates_missing_method():
-    orch = types.SimpleNamespace(latest_summary=AsyncMock(return_value="Doing X"))
-    rec = types.SimpleNamespace(id="s1")
-    assert asyncio.run(_resolve_summary(orch, rec, True, 2.0)) == "Doing X"
-    orch.latest_summary.assert_awaited_once_with("s1", viewing=True)
-    # Older shim without the method → "" (never raises)
-    bare = types.SimpleNamespace()
-    assert asyncio.run(_resolve_summary(bare, rec, True, 2.0)) == ""
 
 
 # ---------------------------------------------------------------------------
