@@ -226,24 +226,6 @@ async def test_native_rpc_deadline_closes_the_socket(blackhole, blackhole_tls):
 
 
 @pytest.mark.asyncio
-async def test_enrich_one_does_not_orphan_daemon_sockets(blackhole, blackhole_tls):
-    """GET /api/sessions fans out 3 RPCs per session — the wedge's trigger."""
-    from server.api.sessions import _enrich_one
-
-    client = blackhole.client(blackhole_tls)
-    orch = RemoteOrchestrator(client)
-    try:
-        repo, sugg, prs, summary = await _enrich_one(
-            orch, _record(), viewing=False, timeout=_DEADLINE)
-        # Degradation contract is unchanged: empty fields, never a raised error.
-        assert sugg == [] and prs == [] and summary == ""
-        await blackhole.settle(expect=3)
-        blackhole.assert_no_orphans()
-    finally:
-        await client.aclose()
-
-
-@pytest.mark.asyncio
 async def test_enrich_batch_does_not_orphan_daemon_sockets(blackhole, blackhole_tls):
     """The batched path must clean up exactly as the per-session path does — and cost
     three sockets for the whole page rather than three per session (#742)."""

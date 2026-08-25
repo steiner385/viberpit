@@ -120,7 +120,7 @@ def _record_to_dict(
     (detached sessions or none yet generated).
 
     ``prs`` is the list of cached PullRequestInfo for the session's authored
-    branches (see :func:`_resolve_prs`).  Serialised to a list of dicts on the wire.
+    branches.  Serialised to a list of dicts on the wire.
 
     ``summary`` is the one-line status summary for the session (from
     ``orch.latest_summary``). Defaults to "" when omitted or unavailable.
@@ -232,39 +232,6 @@ async def _session_is_archived(orch, session_id: str) -> bool:
     return any(a.get("id") == session_id for a in archived)
 
 
-async def _resolve_prs(orch, record, timeout: float):
-    """Resolve a record's PR list via ``orch.prs_for``, sync (in-process) or async (remote).
-
-    Returns ``list[PullRequestInfo]``; an orchestrator with no ``prs_for`` (older shim)
-    yields ``[]`` rather than raising. ``timeout`` goes through call_with_deadline, which
-    pushes it INTO the RPC rather than cancelling it from outside.
-
-    Off the route's call path since the batch rewrite (#742) — reached only via
-    ``_enrich_one`` below, which in turn is reached only by tests. See ``_enrich_one``'s
-    docstring for the removal condition.
-    """
-    fn = getattr(orch, "prs_for", None)
-    if fn is None:
-        return []
-    return await call_with_deadline(fn, record.id, timeout=timeout) or []
-
-
-async def _resolve_summary(orch, record, viewing: bool, timeout: float) -> str:
-    """Resolve a record's one-line status summary via ``orch.latest_summary``.
-
-    Returns "" for an orchestrator shim without ``latest_summary`` (never raises),
-    mirroring the defensiveness of :func:`_resolve_prs`.
-
-    Off the route's call path since the batch rewrite (#742) — reached only via
-    ``_enrich_one`` below, which in turn is reached only by tests. See ``_enrich_one``'s
-    docstring for the removal condition.
-    """
-    fn = getattr(orch, "latest_summary", None)
-    if fn is None:
-        return ""
-    return await call_with_deadline(fn, record.id, viewing=viewing, timeout=timeout) or ""
-
-
 # Per-session enrichment calls (suggestions, prs, summary) are daemon RPCs with no
 # inherent timeout — one wedged session would otherwise hold up the whole response.
 # Gate each RPC individually so a single bad session degrades to an empty field instead
@@ -286,48 +253,6 @@ async def _resolve_summary(orch, record, viewing: bool, timeout: float) -> str:
 ENRICH_FETCH_TIMEOUT = float(os.environ.get("CCSWITCH_ENRICH_FETCH_TIMEOUT", "3.0"))
 
 
-# @deprecated — superseded by _enrich_batch's _each fallback (#742). This whole-record
-# helper has zero production callers; the route reaches only _enrich_batch, and that
-# function's own per-field fallback is _each (~line 368), NOT this function. _enrich_one
-# is retained SOLELY because server/tests/test_sessions_enrich_timeout.py and
-# server/tests/test_ipc_cancel_does_not_strand.py call it directly, as the documented
-# ancestor of _each's logic. Its removal is gated on retargeting those two test files at
-# _enrich_batch (or _each) — NOT on #740's health gate, which is the removal condition for
-# _each itself, not for this dead helper. Tracked under the general fallback-cleanup
-# issue #747.
-async def _enrich_one(orch, record, viewing: bool, timeout: float):
-    """Fetch all enrichment fields for one session, each gated by ``timeout``.
-
-    Runs repo resolution and the three daemon RPCs (suggestions, prs, summary)
-    concurrently via ``asyncio.gather``.  Any call that times out or raises
-    degrades to the safe empty value — it never propagates to the caller.
-    """
-    _raw = await asyncio.gather(
-        _resolve_repo(record),
-        call_with_deadline(orch.latest_suggestions, record.id, timeout=timeout),
-        _resolve_prs(orch, record, timeout),
-        _resolve_summary(orch, record, viewing, timeout),
-        return_exceptions=True,
-    )
-    # Access by index — asyncio.gather+return_exceptions=True gives list[Any],
-    # which avoids mypy overload-narrowing issues with tuple unpacking.
-    repo, sugg, pr_list, summary = _raw[0], _raw[1], _raw[2], _raw[3]
-    if isinstance(repo, BaseException):
-        log.warning("list_sessions: repo resolve failed for %s", record.id, exc_info=repo)
-    if isinstance(sugg, BaseException):
-        log.warning("list_sessions: suggestions timed out or failed for %s", record.id)
-    if isinstance(pr_list, BaseException):
-        log.warning("list_sessions: prs timed out or failed for %s", record.id)
-    if isinstance(summary, BaseException):
-        log.warning("list_sessions: summary timed out or failed for %s", record.id)
-    return (
-        repo if not isinstance(repo, BaseException) else getattr(record, "repo", None),
-        sugg if not isinstance(sugg, BaseException) else [],
-        pr_list if not isinstance(pr_list, BaseException) else [],
-        summary if not isinstance(summary, BaseException) else "",
-    )
-
-
 async def _enrich_batch(orch, records, viewing: bool, timeout: float):
     """Fetch every session's enrichment in three batched RPCs instead of three per session.
 
@@ -344,60 +269,23 @@ async def _enrich_batch(orch, records, viewing: bool, timeout: float):
     if not ids:
         return (), (), (), ()
 
-    async def _batch(name, singular, **extra):
-        """One batched RPC, falling back to per-session calls only on UnknownMethod.
-
-        UnknownMethod means the daemon predates this method — a version-skewed fleet,
-        which #740 makes a live possibility. Any OTHER failure degrades to empty: retrying
-        every error per session would restore the N+1 precisely when the daemon is
-        struggling.
-
-        Decided per request, not remembered. A sticky flag would be another piece of
-        version state to invalidate and would pin the fleet to the slow path after the
-        daemon caught up.
-        """
+    async def _batch(name, **extra):
+        """One batched RPC; any failure degrades to empty."""
         fn = getattr(orch, name, None)
         if fn is None:
-            log.info("list_sessions: daemon has no %s — falling back to per-session "
-                     "calls (version skew, #742)", name)
-            return await singular()
+            return {}
         try:
             return await call_with_deadline(fn, ids, timeout=timeout, **extra) or {}
-        except DaemonError as exc:
-            if exc.err_type != "UnknownMethod":
-                log.warning("list_sessions: %s failed (%s)", name, exc.err_type)
-                return {}
-            log.info("list_sessions: daemon has no %s — falling back to per-session "
-                     "calls (version skew, #742)", name)
-            return await singular()
         except Exception:
             log.warning("list_sessions: %s failed for %d sessions", name, len(ids),
                         exc_info=True)
             return {}
 
-    async def _each(fn_name, empty, **extra):
-        """Per-session fallback: the pre-batch path, kept for version skew only."""
-        fn = getattr(orch, fn_name, None)
-        if fn is None:
-            return {}
-        async def _one(sid):
-            try:
-                return await call_with_deadline(fn, sid, timeout=timeout, **extra)
-            except Exception:
-                log.warning("list_sessions: %s timed out or failed for %s "
-                            "(per-session fallback)", fn_name, sid)
-                return empty
-        vals = await asyncio.gather(*(_one(sid) for sid in ids))
-        return dict(zip(ids, vals))
-
     repos, sugg_map, pr_map, sum_map = await asyncio.gather(
         asyncio.gather(*(_resolve_repo(r) for r in records), return_exceptions=True),
-        _batch("latest_suggestions_many",
-               lambda: _each("latest_suggestions", [])),
-        _batch("prs_for_many",
-               lambda: _each("prs_for", [])),
-        _batch("latest_summary_many",
-               lambda: _each("latest_summary", "", viewing=viewing), viewing=viewing),
+        _batch("latest_suggestions_many"),
+        _batch("prs_for_many"),
+        _batch("latest_summary_many", viewing=viewing),
     )
     resolved_repos = [
         repo if not isinstance(repo, BaseException) else getattr(r, "repo", None)

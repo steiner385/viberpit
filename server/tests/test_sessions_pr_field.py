@@ -1,6 +1,4 @@
-import pytest
-
-from server.api.sessions import _record_to_dict, _resolve_prs
+from server.api.sessions import _record_to_dict
 from server.github.pr_status import CheckGroup, CheckRow, PullRequestInfo
 from server.sessions.types import SessionRecord
 
@@ -34,28 +32,6 @@ def test_record_to_dict_includes_prs_when_given():
 
 def test_record_to_dict_prs_empty_by_default():
     assert _record_to_dict(_rec(), repo="o/r")["prs"] == []
-
-
-class _SyncOrch:
-    def prs_for(self, sid):
-        return [PullRequestInfo(1, "u", "open", "none", "t")]
-
-
-class _AsyncOrch:
-    async def prs_for(self, sid):
-        return [PullRequestInfo(2, "u", "merged", "passing", "t")]
-
-
-class _NoOrch:
-    pass
-
-
-@pytest.mark.asyncio
-async def test_resolve_prs_handles_sync_async_and_missing():
-    rec = _rec()
-    assert [p.number for p in await _resolve_prs(_SyncOrch(), rec, 2.0)] == [1]
-    assert [p.number for p in await _resolve_prs(_AsyncOrch(), rec, 2.0)] == [2]
-    assert await _resolve_prs(_NoOrch(), rec, 2.0) == []
 
 
 def test_record_to_dict_pr_includes_check_groups_key():
