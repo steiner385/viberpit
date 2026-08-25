@@ -16,9 +16,12 @@ up any partial copy on failure.
 from __future__ import annotations
 
 import errno
+import logging
 import os
 import shutil
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 # Regenerable dependency dirs — never worth archiving; an unarchived session
 # just reinstalls them. Pruned on BOTH move paths: across a filesystem boundary
@@ -122,7 +125,19 @@ def move_into_archive(
         pass  # can't probe — proceed and let copytree raise naturally
 
     try:
-        shutil.copytree(src, dest, ignore=shutil.ignore_patterns(*prune), symlinks=True)
+        shutil.copytree(src, dest, ignore=shutil.ignore_patterns(*prune),
+                        symlinks=True, ignore_dangling_symlinks=True)
+    except shutil.Error as exc:
+        # Individual-file failures (e.g. symlink metadata on SSHFS, special files the
+        # remote filesystem can't represent).  The core session content is intact — log
+        # each failed path and continue so the archive directory exists and unarchive
+        # can later find it.  A hard OSError (disk full, permissions) is still fatal.
+        failures = exc.args[0] if exc.args else []
+        log.warning(
+            "archive_move: %d file(s) failed to copy but archive will proceed "
+            "(src=%s dest=%s): %s",
+            len(failures), src, dest, failures,
+        )
     except OSError:
         shutil.rmtree(dest, ignore_errors=True)  # never leave a partial copy behind
         raise
