@@ -108,6 +108,8 @@ def test_repairs_an_unparseable_auto_seeded_endpoint(tmp_path):
     dataclass repr. The row then failed every probe with "unsupported daemon
     endpoint" and nothing could repair it: ensure_default_host no-ops once any
     host exists, and the API deliberately refuses to set endpoint.
+
+    The repair also renames 'local' → derived host name (#743).
     """
     from sqlalchemy import select as sa_select
 
@@ -123,11 +125,11 @@ def test_repairs_an_unparseable_auto_seeded_endpoint(tmp_path):
         name = await ensure_default_host("https://h:9443")
         async with db_session() as db:
             row = (await db.execute(
-                sa_select(Host).where(Host.name == DEFAULT_HOST_NAME))).scalars().first()
+                sa_select(Host).where(Host.name == name))).scalars().first()
         return name, row
 
     name, row = asyncio.run(run())
-    assert name == DEFAULT_HOST_NAME
+    assert name == "h", "must derive name from hostname, not keep 'local'"
     assert row.endpoint == "https://h:9443", "must repair the unusable endpoint"
 
 
@@ -150,6 +152,58 @@ def test_does_not_touch_an_operator_row_with_a_different_endpoint(tmp_path):
                 sa_select(Host).where(Host.name == "rocky"))).scalars().first()
 
     assert asyncio.run(run()).endpoint == "https://rocky:9443"
+
+# ── #743 — seeded name derived from endpoint hostname ──────────────────────
+
+
+def test_fresh_seed_name_derived_from_https_endpoint(tmp_path):
+    """A fresh install with an HTTPS endpoint seeds the host with a name derived
+    from the hostname, not the generic 'local' constant."""
+    from sqlalchemy import select as sa_select
+
+    from server.db import db_session, init_db
+    from server.db.models import Host
+    from server.sessions.fleet_router import ensure_default_host
+
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'https_seed.db'}")
+        name = await ensure_default_host("https://rocky.tail0dd570.ts.net:9443")
+        async with db_session() as db:
+            rows = (await db.execute(sa_select(Host))).scalars().all()
+        return name, rows
+
+    name, rows = asyncio.run(run())
+    assert name == "rocky"
+    assert len(rows) == 1
+    assert rows[0].name == "rocky"
+    assert rows[0].endpoint == "https://rocky.tail0dd570.ts.net:9443"
+
+
+def test_renames_local_row_to_match_https_endpoint(tmp_path):
+    """An already-seeded 'local' row whose endpoint is HTTPS gets renamed on
+    startup to the hostname derived from the endpoint (#743)."""
+    from sqlalchemy import select as sa_select
+
+    from server.db import db_session, init_db
+    from server.db.models import Host
+    from server.sessions.fleet_router import DEFAULT_HOST_NAME, ensure_default_host
+
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'rename.db'}")
+        async with db_session() as db:
+            db.add(Host(name=DEFAULT_HOST_NAME,
+                        endpoint="https://rocky.tail0dd570.ts.net:9443",
+                        enabled=True))
+        name = await ensure_default_host("https://rocky.tail0dd570.ts.net:9443")
+        async with db_session() as db:
+            rows = (await db.execute(sa_select(Host))).scalars().all()
+        return name, rows
+
+    name, rows = asyncio.run(run())
+    assert name == "rocky"
+    assert len(rows) == 1
+    assert rows[0].name == "rocky", "row must be renamed from 'local' to 'rocky'"
+
 
 # ── CCSWITCH_FLEET_HOSTS env-var seeding ───────────────────────────────────
 

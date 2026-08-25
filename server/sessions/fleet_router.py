@@ -19,7 +19,8 @@ from server.sessions.fleet import HostCandidate, rank_hosts
 
 log = logging.getLogger(__name__)
 
-# Name given to the host seeded from a pre-fleet single-endpoint config.
+# Fallback name for hosts seeded from a unix-socket endpoint (they really are local).
+# HTTPS-endpoint seeds derive their name from the hostname instead.
 DEFAULT_HOST_NAME = "local"
 
 __all__ = ["FleetRouter", "UnknownHost", "NoHostAvailable",
@@ -96,6 +97,23 @@ class FleetRouter:
         return order
 
 
+def _derive_host_name(endpoint_str: str) -> str:
+    """Derive a short display name from a daemon endpoint string.
+
+    HTTPS endpoints use the first label of their hostname:
+      https://rocky.tail0dd570.ts.net:9443  →  rocky
+    Unix sockets stay DEFAULT_HOST_NAME ('local') — they really are local.
+    """
+    try:
+        from server.ipc.paths import parse_endpoint
+        ep = parse_endpoint(endpoint_str)
+        if ep.is_tcp and ep.host:
+            return ep.host.split(".")[0]
+    except Exception:
+        pass
+    return DEFAULT_HOST_NAME
+
+
 async def ensure_default_host(endpoint: str) -> str | None:
     """Resolve which registry host *endpoint* is, seeding a one-row fleet if empty.
 
@@ -109,10 +127,18 @@ async def ensure_default_host(endpoint: str) -> str | None:
     from server.ipc.paths import parse_endpoint
 
     async with db_session() as db:
-        match = (await db.execute(
-            sa_select(Host.name).where(Host.endpoint == endpoint))).scalar_one_or_none()
-        if match:
-            return match
+        # Already registered — return its name, renaming 'local' → derived if needed.
+        row = (await db.execute(
+            sa_select(Host).where(Host.endpoint == endpoint))).scalars().first()
+        if row is not None:
+            if row.name == DEFAULT_HOST_NAME:
+                derived = _derive_host_name(endpoint)
+                if derived != DEFAULT_HOST_NAME:
+                    log.info("fleet: renaming auto-seeded host %r -> %r",
+                             row.name, derived)
+                    row.name = derived
+                    return derived
+            return row.name
 
         # Repair the AUTO-SEEDED row when its endpoint cannot be parsed. #720
         # seeded it with str(endpoint) before Endpoint had a __str__, storing the
@@ -120,6 +146,7 @@ async def ensure_default_host(endpoint: str) -> str | None:
         # no-ops once any host exists and the API refuses to set endpoint.
         # Scoped deliberately — only our own row, only when unusable, so an
         # operator's deliberate endpoint is never rewritten behind their back.
+        # Also renames the row when the endpoint resolves to a non-local host. #743
         seeded = (await db.execute(
             sa_select(Host).where(Host.name == DEFAULT_HOST_NAME))).scalars().first()
         if seeded is not None:
@@ -129,10 +156,16 @@ async def ensure_default_host(endpoint: str) -> str | None:
                 log.warning("fleet: repairing unparseable auto-seeded endpoint %r -> %r",
                             seeded.endpoint, endpoint)
                 seeded.endpoint = endpoint
-            return DEFAULT_HOST_NAME
+            derived = _derive_host_name(endpoint)
+            if derived != DEFAULT_HOST_NAME:
+                log.info("fleet: renaming auto-seeded host %r -> %r",
+                         seeded.name, derived)
+                seeded.name = derived
+            return derived
         existing = (await db.execute(
             sa_select(func.count()).select_from(Host))).scalar()
         if existing:
             return None
-        db.add(Host(name=DEFAULT_HOST_NAME, endpoint=endpoint, enabled=True))
-    return DEFAULT_HOST_NAME
+        derived = _derive_host_name(endpoint)
+        db.add(Host(name=derived, endpoint=endpoint, enabled=True))
+    return derived
