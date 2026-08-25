@@ -26,7 +26,7 @@ from typing import Any
 from server.sessions.account_auth import helper_env
 from server.time_iso import iso_utc
 
-from .backlog_selection import Batch
+from .backlog_selection import Batch, order_live_groups
 
 log = logging.getLogger(__name__)
 
@@ -267,22 +267,33 @@ def plan_to_batch(
     candidates: list[dict],
     repo_load: "dict[str, int] | None" = None,
     paused_repos: "set[str] | None" = None,
+    *,
+    strategy: str = "balanced",
+    repo_order: "list[str] | None" = None,
+    weights: "dict[str, float] | None" = None,
+    caps: "dict[str, int] | None" = None,
 ) -> "tuple[Batch | None, int | None]":
     """Pure: pop the highest-priority still-live group off *plan* as a Batch.
 
     A group is live when at least one of its refs is in the live candidate
     pool; stale refs (claimed/closed since the plan was computed) are dropped
-    from the batch, never re-invented. ``repo_load`` stable-reorders live
-    groups by ascending active-run count (per-repo fairness, mirroring the
-    old selection path) while preserving plan priority within a repo.
+    from the batch, never re-invented. The live groups are then ordered by the
+    configured per-repo selection ``strategy`` (see
+    :func:`~server.automations.backlog_selection.order_live_groups`) — ``balanced``
+    (the default) reproduces the old ascending-active-run fairness; ``priority`` /
+    ``weighted`` / ``concurrency-cap`` let the user bias or cap specific repos.
+    Ordering is always stable, so plan priority stands within a repo.
 
     ``paused_repos`` (repos with stale git credentials, issue #670) are skipped
     entirely: branching a worktree off their stale ``origin`` would implement
     against ancient code, so the runner waits on those repos while still
     servicing every other repo's backlog.
 
-    Returns ``(batch, group_id)`` or ``(None, None)`` when no plan group has
-    a live ref — the runner then WAITS for the grouper rather than choosing.
+    Returns ``(batch, group_id)`` or ``(None, None)`` when no plan group has a
+    live ref, or when the strategy filtered every candidate repo out (a
+    ``concurrency-cap`` where all repos with work are at their cap, or a
+    ``weighted`` where the only live repos are weight-0) — the runner then WAITS
+    rather than choosing.
     """
     by_ref = {c["ref"]: c for c in candidates}
     paused = paused_repos or set()
@@ -293,8 +304,11 @@ def plan_to_batch(
             live.append((g, refs))
     if not live:
         return None, None
-    if repo_load:
-        live = sorted(live, key=lambda t: repo_load.get(by_ref[t[1][0]]["repo"], 0))
+    live = order_live_groups(
+        live, repo_of=lambda t: by_ref[t[1][0]]["repo"], strategy=strategy,
+        repo_load=repo_load, repo_order=repo_order, weights=weights, caps=caps)
+    if not live:
+        return None, None
     group, refs = live[0]
     primary = refs[0]
     return Batch(

@@ -11,6 +11,8 @@ def _schema():
         ConfigField(key="max_attempts", label="Max attempts", type="int", default=3),
         ConfigField(key="lens", label="Lens", type="enum", default="a",
                     help="", choices=["a", "b"]),
+        ConfigField(key="repo_weights", label="Weights", type="repo-number-map",
+                    default={}),
     ]
 
 
@@ -38,6 +40,37 @@ def test_validate_config_rejects_bad_enum():
     from server.automations.base import validate_config
     with pytest.raises(ValueError, match="lens"):
         validate_config(_schema(), {"lens": "z"})
+
+
+def test_repo_number_map_accepts_str_to_number():
+    from server.automations.base import validate_config
+    out = validate_config(_schema(), {"repo_weights": {"o/a": 3, "o/b": 1.5, "o/c": 0}})
+    assert out["repo_weights"] == {"o/a": 3, "o/b": 1.5, "o/c": 0}
+
+
+def test_repo_number_map_default_is_empty_dict():
+    from server.automations.base import validate_config
+    out = validate_config(_schema(), {})
+    assert out["repo_weights"] == {}
+
+
+def test_repo_number_map_rejects_non_dict():
+    from server.automations.base import validate_config
+    with pytest.raises(ValueError, match="repo_weights"):
+        validate_config(_schema(), {"repo_weights": ["o/a"]})
+
+
+def test_repo_number_map_rejects_non_number_value():
+    from server.automations.base import validate_config
+    with pytest.raises(ValueError, match="repo_weights"):
+        validate_config(_schema(), {"repo_weights": {"o/a": "3"}})
+
+
+def test_repo_number_map_rejects_bool_value():
+    # bool is an int subclass — a stray True must not read as the number 1.
+    from server.automations.base import validate_config
+    with pytest.raises(ValueError, match="repo_weights"):
+        validate_config(_schema(), {"repo_weights": {"o/a": True}})
 
 
 def test_status_to_dict():

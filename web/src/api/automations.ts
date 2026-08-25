@@ -9,7 +9,7 @@ export interface AutomationStatus {
 export interface ConfigField {
   key: string
   label: string
-  type: 'bool' | 'int' | 'string' | 'enum' | 'repo-multiselect'
+  type: 'bool' | 'int' | 'string' | 'enum' | 'repo-multiselect' | 'repo-number-map'
   default: unknown
   help: string
   choices: string[] | null

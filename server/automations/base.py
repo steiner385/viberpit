@@ -89,6 +89,12 @@ def _type_ok(field_type: str, value: Any) -> bool:
         return isinstance(value, str)
     if field_type == "repo-multiselect":
         return isinstance(value, list) and all(isinstance(v, str) for v in value)
+    if field_type == "repo-number-map":
+        # {repo: number} — per-repo weights / caps. bool is an int subclass, so
+        # reject it explicitly or a stray True would masquerade as the number 1.
+        return isinstance(value, dict) and all(
+            isinstance(k, str) and isinstance(v, (int, float)) and not isinstance(v, bool)
+            for k, v in value.items())
     return False
 
 

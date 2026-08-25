@@ -220,6 +220,67 @@ async def test_no_repo_load_keeps_plan_order():
 
 
 # --------------------------------------------------------------------------- #
+# Selection strategy read from config (selection_strategy + repo_weights/caps)  #
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_strategy_priority_serves_by_enabled_repo_order():
+    """'priority' ranks repos by the enabled_repos order — o/b first here even
+    though the plan puts o/a's group first."""
+    result = await select_batch(
+        make_config(enabled_repos=["o/b", "o/a"], selection_strategy="priority"),
+        query=canned_query(_MULTI_REPO),
+        load_plan=canned_plan(_MULTI_PLAN),
+        mark_consumed=consumed_recorder([]),
+    )
+    assert result is not None and result.primary == "o/b#2"
+
+
+@pytest.mark.asyncio
+async def test_strategy_weighted_favors_higher_weight():
+    """'weighted' compares load/weight: o/a 6/3=2.0 beats o/b 3/1=3.0."""
+    result = await select_batch(
+        make_config(enabled_repos=["o/a", "o/b"], selection_strategy="weighted",
+                    repo_weights={"o/a": 3, "o/b": 1}),
+        query=canned_query(_MULTI_REPO),
+        load_plan=canned_plan(_MULTI_PLAN),
+        mark_consumed=consumed_recorder([]),
+        repo_load={"o/a": 6, "o/b": 3},
+    )
+    assert result is not None and result.primary == "o/a#1"
+
+
+@pytest.mark.asyncio
+async def test_strategy_concurrency_cap_skips_capped_repo():
+    """A repo at its cap is skipped; the under-cap repo takes the slot."""
+    result = await select_batch(
+        make_config(enabled_repos=["o/a", "o/b"],
+                    selection_strategy="concurrency-cap", repo_caps={"o/a": 2}),
+        query=canned_query(_MULTI_REPO),
+        load_plan=canned_plan(_MULTI_PLAN),
+        mark_consumed=consumed_recorder([]),
+        repo_load={"o/a": 2, "o/b": 0},
+    )
+    assert result is not None and result.primary == "o/b#2"
+
+
+@pytest.mark.asyncio
+async def test_strategy_concurrency_cap_idles_when_all_capped():
+    """Every repo with work is at its cap → no batch (the slot idles rather than
+    exceeding a hard ceiling)."""
+    result = await select_batch(
+        make_config(enabled_repos=["o/a", "o/b"],
+                    selection_strategy="concurrency-cap",
+                    repo_caps={"o/a": 2, "o/b": 1}),
+        query=canned_query(_MULTI_REPO),
+        load_plan=canned_plan(_MULTI_PLAN),
+        mark_consumed=consumed_recorder([]),
+        repo_load={"o/a": 2, "o/b": 1},
+    )
+    assert result is None
+
+
+# --------------------------------------------------------------------------- #
 # FakeGh wiring (gh_run injected)                                              #
 # --------------------------------------------------------------------------- #
 

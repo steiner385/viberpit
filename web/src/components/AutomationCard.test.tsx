@@ -197,6 +197,60 @@ describe('AutomationCard', () => {
       })
     })
 
+    it('renders a number input per enabled repo for a repo-number-map field', () => {
+      mockBasicHooks()
+      const withMap: Automation = {
+        ...PR_DOCTOR,
+        configSchema: [
+          { key: 'enabled_repos', label: 'Repos', type: 'repo-multiselect', default: [], help: '', choices: null },
+          { key: 'repo_weights', label: 'Repo weights', type: 'repo-number-map', default: {}, help: 'per-repo weight', choices: null },
+        ],
+        config: { enabled_repos: ['owner/repo-a', 'owner/repo-b'], repo_weights: { 'owner/repo-a': 3 } },
+      }
+      render(<MemoryRouter><AutomationCard automation={withMap} /></MemoryRouter>)
+      fireEvent.click(screen.getByRole('button', { name: /expand/i }))
+      // One numeric input per selected repo; seeded from the map (a=3, b empty).
+      // The accessible name is scoped by field label so it never collides with the
+      // repo-multiselect checkbox (or the other map) of the same repo name.
+      expect(screen.getByLabelText('Repo weights: owner/repo-a')).toHaveValue(3)
+      expect(screen.getByLabelText('Repo weights: owner/repo-b')).toHaveValue(null)
+    })
+
+    it('editing a repo-number-map input patches the map, not the whole config', () => {
+      const mutate = vi.fn()
+      mockBasicHooks(mutate)
+      const withMap: Automation = {
+        ...PR_DOCTOR,
+        configSchema: [
+          { key: 'enabled_repos', label: 'Repos', type: 'repo-multiselect', default: [], help: '', choices: null },
+          { key: 'repo_caps', label: 'Repo caps', type: 'repo-number-map', default: {}, help: '', choices: null },
+        ],
+        config: { enabled_repos: ['owner/repo-a'], repo_caps: {} },
+      }
+      render(<MemoryRouter><AutomationCard automation={withMap} /></MemoryRouter>)
+      fireEvent.click(screen.getByRole('button', { name: /expand/i }))
+      fireEvent.change(screen.getByLabelText('Repo caps: owner/repo-a'), { target: { value: '2' } })
+      expect(mutate).toHaveBeenCalledWith({
+        id: 'pr-doctor',
+        body: { config: expect.objectContaining({ repo_caps: { 'owner/repo-a': 2 } }) },
+      })
+    })
+
+    it('repo-number-map prompts to select repos when none are enabled', () => {
+      mockBasicHooks()
+      const withMap: Automation = {
+        ...PR_DOCTOR,
+        configSchema: [
+          { key: 'enabled_repos', label: 'Repos', type: 'repo-multiselect', default: [], help: '', choices: null },
+          { key: 'repo_weights', label: 'Repo weights', type: 'repo-number-map', default: {}, help: '', choices: null },
+        ],
+        config: { enabled_repos: [], repo_weights: {} },
+      }
+      render(<MemoryRouter><AutomationCard automation={withMap} /></MemoryRouter>)
+      fireEvent.click(screen.getByRole('button', { name: /expand/i }))
+      expect(screen.getByText('Select repositories above first.')).toBeInTheDocument()
+    })
+
     it('does not render config section when configSchema is empty', () => {
       mockBasicHooks()
       render(<MemoryRouter><AutomationCard automation={PR_DOCTOR} /></MemoryRouter>)
