@@ -110,3 +110,68 @@ def test_poll_once_swallows_info_errors():
     # Must not raise — a momentarily-unreachable daemon is expected during a restart.
     asyncio.run(mon.poll_once())
     assert mon.snapshot()["available"] is False
+
+
+# ---------------------------------------------------------------------------
+# Issue #766: available must reflect a live probe, not the last cached epoch.
+# ---------------------------------------------------------------------------
+
+def test_last_seen_ago_sec_is_none_before_first_poll():
+    mon = DaemonHealthMonitor(info_fn=None)
+    snap = mon.snapshot(now=1000.0)
+    assert snap["lastSeenAgoSec"] is None
+
+
+def test_last_seen_ago_sec_is_zero_immediately_after_record():
+    mon = DaemonHealthMonitor(info_fn=None)
+    mon.record(_epoch(1_000_000), now=500.0)
+    snap = mon.snapshot(now=500.0)
+    assert snap["lastSeenAgoSec"] == pytest.approx(0.0)
+    assert snap["available"] is True
+
+
+def test_available_becomes_false_after_staleness_window():
+    """Once no successful probe arrives within stale_after_s, available must flip False.
+
+    Invariant from issue #766: if a daemon RPC would raise DaemonUnavailable,
+    /api/daemon/health must not report available=True.
+    """
+    mon = DaemonHealthMonitor(info_fn=None, poll_interval_s=15.0, stale_after_s=45.0)
+    mon.record(_epoch(1_000_000), now=0.0)
+    assert mon.snapshot(now=44.9)["available"] is True   # within window
+    snap = mon.snapshot(now=45.1)
+    assert snap["available"] is False                    # stale — past window
+    assert snap["lastSeenAgoSec"] == pytest.approx(45.1, abs=0.01)
+    # Epoch is preserved for diagnostic purposes even when stale.
+    assert snap["epoch"] == _epoch(1_000_000)
+
+
+def test_available_recovers_after_fresh_probe():
+    """A successful record() after a stale period restores available=True."""
+    mon = DaemonHealthMonitor(info_fn=None, stale_after_s=30.0)
+    mon.record(_epoch(1_000_000), now=0.0)
+    assert mon.snapshot(now=60.0)["available"] is False  # gone stale
+    mon.record(_epoch(1_000_000), now=60.0)              # fresh probe arrived
+    assert mon.snapshot(now=60.0)["available"] is True
+
+
+def test_stale_invariant_probe_errors_never_set_last_seen():
+    """poll_once() errors must not advance _last_seen_at (daemon is unreachable)."""
+    async def always_fail():
+        raise RuntimeError("DaemonUnavailable")
+
+    mon = DaemonHealthMonitor(
+        info_fn=always_fail, clock=lambda: 100.0,
+        poll_interval_s=15.0, stale_after_s=45.0,
+    )
+    # Seed an initial successful epoch so available starts True.
+    mon.record(_epoch(1_000_000), now=0.0)
+
+    # Run two failed polls (clock stays at 100.0, which is past stale_after_s=45).
+    asyncio.run(mon.poll_once())
+    asyncio.run(mon.poll_once())
+
+    snap = mon.snapshot(now=100.0)
+    # The failed polls must not have reset _last_seen_at, so the staleness is intact.
+    assert snap["available"] is False
+    assert snap["lastSeenAgoSec"] == pytest.approx(100.0, abs=0.01)

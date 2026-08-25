@@ -79,6 +79,12 @@ class DaemonHealthMonitor:
     injected (rather than a ``DaemonClient``) so the monitor is trivially unit-testable and
     decoupled from transport. ``poll_once`` is best-effort: a daemon that's momentarily
     unreachable mid-restart must never propagate an error out of the poll loop.
+
+    ``stale_after_s`` controls how long a cached epoch is trusted without a fresh successful
+    probe before ``available`` flips to ``False``. Defaults to 3 × ``poll_interval_s`` (i.e.
+    three consecutive missed polls trigger unavailability). This prevents the edge from serving
+    a false-green ``available: true`` from a tombstoned cache when the daemon is dead (issue
+    #766).
     """
 
     def __init__(
@@ -87,13 +93,16 @@ class DaemonHealthMonitor:
         *,
         window_s: float = 86_400.0,
         poll_interval_s: float = 15.0,
+        stale_after_s: float | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._info_fn = info_fn
         self._window_s = window_s
         self._poll_interval_s = poll_interval_s
+        self._stale_after_s = stale_after_s if stale_after_s is not None else 3 * poll_interval_s
         self._clock = clock
         self._epoch: str | None = None
+        self._last_seen_at: float | None = None  # when /info last succeeded (issue #766)
         self._restarts: deque[float] = deque()   # unix timestamps of observed epoch changes
         self._task: asyncio.Task | None = None
 
@@ -111,6 +120,7 @@ class DaemonHealthMonitor:
                 "daemon restart observed: epoch %s → %s (%d restart(s) in the last %.0fh)",
                 self._epoch, epoch, len(self._restarts) + 1, self._window_s / 3600)
         self._epoch = epoch
+        self._last_seen_at = now
 
     def _prune(self, now: float) -> None:
         cutoff = now - self._window_s
@@ -125,13 +135,22 @@ class DaemonHealthMonitor:
         started_ms = epoch_started_at_ms(self._epoch)
         started_at = started_ms / 1000.0 if started_ms is not None else None
         last_restart = self._restarts[-1] if self._restarts else _watchdog_last_restart()
+        # Issue #766: available is only True when we have a fresh successful probe within the
+        # staleness window. A cached epoch from a dead daemon must not read as available=True.
+        last_seen_ago = (now - self._last_seen_at) if self._last_seen_at is not None else None
+        available = (
+            self._epoch is not None
+            and last_seen_ago is not None
+            and last_seen_ago <= self._stale_after_s
+        )
         return {
-            "available": self._epoch is not None,
+            "available": available,
             "epoch": self._epoch,
             "startedAt": _iso(started_at),
             "uptimeSec": (now - started_at) if started_at is not None else None,
             "restartCount24h": len(self._restarts),
             "lastRestartAt": _iso(last_restart),
+            "lastSeenAgoSec": last_seen_ago,
         }
 
     async def poll_once(self) -> None:

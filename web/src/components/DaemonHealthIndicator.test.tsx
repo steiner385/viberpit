@@ -43,7 +43,7 @@ describe('daemonHealthTooltip', () => {
   it('includes restart count and epoch', () => {
     const tip = daemonHealthTooltip({
       available: true, epoch: 'abc-1-x', startedAt: null, uptimeSec: 3600,
-      restartCount24h: 3, lastRestartAt: null,
+      restartCount24h: 3, lastRestartAt: null, lastSeenAgoSec: 5,
     })
     expect(tip).toContain('Restarts (24h): 3')
     expect(tip).toContain('Epoch: abc-1-x')
@@ -60,7 +60,7 @@ describe('DaemonHealthIndicator', () => {
   it('shows uptime when healthy (no restarts)', () => {
     mockHealth.mockReturnValue({ data: {
       available: true, epoch: 'e', startedAt: null, uptimeSec: 7200,
-      restartCount24h: 0, lastRestartAt: null,
+      restartCount24h: 0, lastRestartAt: null, lastSeenAgoSec: 2,
     } })
     renderIndicator()
     expect(screen.getByTestId('daemon-health').textContent).toContain('up 2h')
@@ -69,7 +69,7 @@ describe('DaemonHealthIndicator', () => {
   it('shows a restart count when the daemon has flapped', () => {
     mockHealth.mockReturnValue({ data: {
       available: true, epoch: 'e', startedAt: null, uptimeSec: 60,
-      restartCount24h: 9, lastRestartAt: '2026-07-02T12:00:00Z',
+      restartCount24h: 9, lastRestartAt: '2026-07-02T12:00:00Z', lastSeenAgoSec: 8,
     } })
     renderIndicator()
     expect(screen.getByTestId('daemon-health').textContent).toContain('9× restarts (24h)')

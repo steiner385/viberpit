@@ -323,6 +323,9 @@ export interface DaemonHealth {
   restartCount24h: number
   /** ISO time of the most recent observed restart (or the watchdog file), null if none. */
   lastRestartAt: string | null
+  /** Seconds since the last successful /info probe; null if never probed. Issue #766:
+   *  a non-null value > stale_after_s means the daemon is unreachable (available=false). */
+  lastSeenAgoSec: number | null
 }
 
 export interface ApiError {
