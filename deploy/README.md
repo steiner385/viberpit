@@ -159,3 +159,49 @@ The daemon unit also gains `MemoryHigh=10G` (soft reclaim pressure below the 12G
 instead of being OOM-killed. On an already-running host apply it live without a restart:
 
     sudo systemctl set-property --runtime ccswitch-daemon.service MemoryHigh=10G
+
+## Hardware watchdog reachability test (`deploy/watchdog/test-reachability.sh`)
+
+This is a **host-level** hardware-watchdog test, separate from the application health
+timer above. It closes the gap that let rocky sit off the network for ~46 min on
+2026-08-25 while its `watchdog.service` ran happily the whole time
+([#767](https://github.com/steiner385/ccswitch/issues/767)): the stock
+`/etc/watchdog.d/test-ssh.sh` only probed **loopback** (`localhost:22`,
+`127.0.0.1/22`), which proves `sshd` is alive *on the box* but says nothing about
+whether anything can **reach** the box. A hardware watchdog only fires on a *hung*
+system; an alive-but-unreachable host never hangs, so nothing tripped.
+
+`test-reachability.sh` adds the missing **outward** probe — but an outward probe is
+exactly what reboot-loops a fleet when the *network* (not the host) is down, so it is
+gated by four non-negotiable guards:
+
+1. **Multiple independent targets, all must fail** — one dead peer can't trip it.
+2. **Sustained window** (`WDR_FAIL_WINDOW`, default 5 min) of *continuous* total
+   isolation before a reboot is even eligible — a blip is ignored.
+3. **Reboot cooldown** (`WDR_REBOOT_COOLDOWN`, default 30 min) — a hard rate limit;
+   a genuinely-down network becomes "one reboot every 30 min", never a loop.
+4. **Boot grace** (`WDR_BOOT_GRACE`, default 10 min) — a no-op right after boot so
+   Tailscale/routes/DHCP can settle before the host can re-reboot itself.
+
+With **no targets configured it is a deliberate no-op** — a misconfigured host does
+nothing rather than reboot-loop. See `deploy/watchdog/reachability.conf.example` for
+the config contract; the guard behaviour is pinned by
+`server/tests/test_watchdog_reachability.py`.
+
+Install on the daemon host (this needs the `watchdog` package with
+`test-directory = /etc/watchdog.d` in `/etc/watchdog.conf`):
+
+    # 1. config for THIS host (root:root, 0644) — set WDR_TARGETS to a gateway +
+    #    a tailnet peer + one target on a different path (>= 3 independent targets)
+    sudo install -m644 deploy/watchdog/reachability.conf.example \
+        /etc/ccswitch/watchdog-reachability.conf
+    sudo $EDITOR /etc/ccswitch/watchdog-reachability.conf   # set WDR_TARGETS
+
+    # 2. drop the test beside (or replacing) the loopback-only test-ssh.sh
+    sudo install -m755 deploy/watchdog/test-reachability.sh /etc/watchdog.d/
+    sudo systemctl restart watchdog.service
+
+The `watchdog` daemon runs the script every interval with `test`; a non-zero exit
+makes it re-run the script with `repair`, and a non-zero `repair` triggers the reset.
+State (outage-window start + cooldown anchor) lives in `WDR_STATE_DIR`
+(`/var/lib/watchdog-reachability`, must survive reboots for the cooldown to hold).
