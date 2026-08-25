@@ -310,9 +310,27 @@ async def _lifespan(app: FastAPI):
         name="loop-lag-watchdog",
     )
 
+    # --- pipeline dashboard populator --------------------------------------
+    # Compute the expensive dashboard frame once per cycle into a shared cache,
+    # so the /api/pipeline SSE fan-out and /snapshot serve a warm frame instead
+    # of each connection rebuilding _build_state(). Runs in both modes (reads
+    # app.state.sessions, exactly like the endpoints). Constructed here (not in
+    # create_app) so ASGI-direct route tests, which never run this lifespan,
+    # keep exercising the endpoints' standalone rebuild path.
+    from server.api import pipeline as _pipeline_api
+    from server.pipeline.state_poller import PipelineStatePoller
+    app.state.pipeline_state = PipelineStatePoller(
+        lambda: _pipeline_api._build_state(app.state.sessions)
+    )
+    await app.state.pipeline_state.start()
+
     yield
     # Shutdown
     import contextlib
+    _pipeline_state = getattr(app.state, "pipeline_state", None)
+    if _pipeline_state is not None:
+        with contextlib.suppress(Exception):
+            await _pipeline_state.stop()
     _lag_task = getattr(app.state, "loop_lag_task", None)
     if _lag_task is not None:
         _lag_task.cancel()

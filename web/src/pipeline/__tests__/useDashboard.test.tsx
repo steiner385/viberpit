@@ -93,6 +93,50 @@ describe('useDashboard', () => {
     await waitFor(() => expect(result.current.connected).toBe(false))
   })
 
+  it('paints the /snapshot warm frame before any SSE frame arrives', async () => {
+    const snap = { generatedAt: 'snap', staleSince: null, repos: [] }
+    const fetchImpl = vi.fn(
+      async () => ({ ok: true, json: async () => snap }),
+    ) as unknown as typeof fetch
+    const w = ({ children }: { children: ReactNode }) => (
+      <ApiBaseProvider base="/api/pipeline" fetchImpl={fetchImpl}>{children}</ApiBaseProvider>
+    )
+
+    const { result } = renderHook(() => useDashboard(), { wrapper: w })
+
+    await waitFor(() => expect(result.current.state).toEqual(snap))
+    expect(fetchImpl).toHaveBeenCalledWith('/api/pipeline/snapshot', undefined)
+  })
+
+  it('does not let a late /snapshot clobber an SSE frame', async () => {
+    let resolveSnap: (v: unknown) => void = () => {}
+    const jsonReady = new Promise((res) => { resolveSnap = res })
+    const fetchImpl = vi.fn(
+      async () => ({ ok: true, json: () => jsonReady }),
+    ) as unknown as typeof fetch
+    const w = ({ children }: { children: ReactNode }) => (
+      <ApiBaseProvider base="/api/pipeline" fetchImpl={fetchImpl}>{children}</ApiBaseProvider>
+    )
+
+    const { result } = renderHook(() => useDashboard(), { wrapper: w })
+
+    // Live frame lands first…
+    const live = { generatedAt: 'live', staleSince: null, repos: [] }
+    act(() => {
+      FakeEventSource.instances[0].onmessage?.(
+        new MessageEvent('message', { data: JSON.stringify(live) }),
+      )
+    })
+    await waitFor(() => expect(result.current.state).toEqual(live))
+
+    // …then the slow snapshot resolves — it must be ignored.
+    await act(async () => {
+      resolveSnap({ generatedAt: 'stale-snap', staleSince: null, repos: [] })
+      await Promise.resolve()
+    })
+    expect(result.current.state).toEqual(live)
+  })
+
   it('staleness: no frame for >90s → stale becomes true', () => {
     vi.useFakeTimers()
 

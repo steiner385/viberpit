@@ -48,7 +48,7 @@ export function useDashboard(): DashboardHook {
   const [stale, setStale] = useState(false);
   const staleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const supported = notifySupported();
-  const { apiUrl, withCredentials } = useApiBase();
+  const { apiUrl, withCredentials, fetch: apiFetch } = useApiBase();
   // restore the persisted bell only while permission is still granted — a
   // revoked permission would otherwise show an on-bell that does nothing
   const [notifyEnabled, setNotifyEnabled] = useState(() =>
@@ -57,15 +57,29 @@ export function useDashboard(): DashboardHook {
   useLayoutEffect(() => { notifyEnabledRef.current = notifyEnabled; }, [notifyEnabled]);
 
   useEffect(() => {
-    // No initial fetch: the SSE endpoint sends a full state frame on connect,
-    // and a parallel fetch can race it and overwrite fresher data.
     // Each frame resets the staleness watchdog; if the timer fires first, the feed
     // has gone quiet while the socket stayed open → stale (not disconnected).
+    let cancelled = false;
+    let sseArrived = false;
     const armStale = () => {
       if (staleTimer.current) clearTimeout(staleTimer.current);
       staleTimer.current = setTimeout(() => setStale(true), STALE_AFTER_MS);
     };
-    const onFrame = (data: string) => { setConnected(true); setStale(false); armStale(); setState(JSON.parse(data) as DashboardState); };
+    const onFrame = (data: string) => { sseArrived = true; setConnected(true); setStale(false); armStale(); setState(JSON.parse(data) as DashboardState); };
+
+    // Fast first paint: pull the warm cached frame from /snapshot and render it
+    // immediately, but ONLY if the live stream hasn't already delivered a
+    // (fresher-or-equal) frame — a slow snapshot must never clobber live data.
+    // Best-effort: any failure is ignored because the SSE stream fills state in
+    // regardless (this is why there was historically no initial fetch — the race
+    // is now resolved by the sseArrived guard rather than by skipping the fetch).
+    try {
+      void apiFetch(apiUrl('/snapshot'), withCredentials ? { credentials: 'include' } : undefined)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((snap) => { if (!cancelled && !sseArrived && snap) setState(snap as DashboardState); })
+        .catch(() => { /* snapshot is optional — SSE is the source of truth */ });
+    } catch { /* fetch unavailable — ignore */ }
+
     const es = new EventSource(apiUrl('/events'), withCredentials ? { withCredentials: true } : undefined);
     es.onopen = () => setConnected(true);
     es.onmessage = (e) => onFrame(e.data);
@@ -87,8 +101,8 @@ export function useDashboard(): DashboardHook {
         });
       } catch { /* malformed frame — ignore */ }
     });
-    return () => { es.close(); if (staleTimer.current) clearTimeout(staleTimer.current); };
-  }, [apiUrl, withCredentials]);
+    return () => { cancelled = true; es.close(); if (staleTimer.current) clearTimeout(staleTimer.current); };
+  }, [apiUrl, withCredentials, apiFetch]);
 
   const toggleNotify = useCallback(() => {
     if (!notifySupported()) return;

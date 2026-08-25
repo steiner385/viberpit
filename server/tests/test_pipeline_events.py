@@ -284,6 +284,95 @@ async def test_events_emits_notification_on_new_ci_failure():
     assert ev["rendered"]["body"] == "break things"
 
 
+async def _get_json(app, path: str, headers: dict[str, str]):
+    """Drive a normal (non-streaming) GET through the ASGI app via httpx."""
+    import httpx
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        return await client.get(path, headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_snapshot_returns_cached_frame_without_rebuilding():
+    """A warm poller serves its cached frame; the request triggers no new build."""
+    from server.pipeline.state_poller import PipelineStatePoller
+
+    app = _make_app()
+    builds = 0
+
+    async def builder():
+        nonlocal builds
+        builds += 1
+        return {"generatedAt": "x", "staleSince": None, "repos": [], "cached": True}
+
+    poller = PipelineStatePoller(builder)
+    await poller.poll_once()          # warm the cache (builds == 1)
+    app.state.pipeline_state = poller
+
+    with patch.dict(os.environ, _ENV):
+        resp = await _get_json(
+            app, "/api/pipeline/snapshot",
+            {"tailscale-user-login": "testuser@example.com"},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["cached"] is True
+    assert builds == 1                # served from cache — no extra build
+
+
+@pytest.mark.asyncio
+async def test_snapshot_cold_cache_builds_once_inline():
+    """No frame yet → the endpoint builds a single frame inline and returns it."""
+    from server.pipeline.state_poller import PipelineStatePoller
+
+    app = _make_app()
+    builds = 0
+
+    async def builder():
+        nonlocal builds
+        builds += 1
+        return {"generatedAt": "x", "staleSince": None, "repos": [], "n": builds}
+
+    app.state.pipeline_state = PipelineStatePoller(builder)  # never polled → cold
+
+    with patch.dict(os.environ, _ENV):
+        resp = await _get_json(
+            app, "/api/pipeline/snapshot",
+            {"tailscale-user-login": "testuser@example.com"},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["n"] == 1
+    assert builds == 1
+    assert app.state.pipeline_state.generation == 1  # published for the next reader
+
+
+@pytest.mark.asyncio
+async def test_events_serves_cached_frame_without_per_connection_build():
+    """The SSE feed reads the shared cache: a connection does not rebuild state."""
+    from server.pipeline.state_poller import PipelineStatePoller
+
+    app = _make_app()
+    builds = 0
+
+    async def builder():
+        nonlocal builds
+        builds += 1
+        return {"generatedAt": "x", "staleSince": None, "repos": [], "b": builds}
+
+    poller = PipelineStatePoller(builder)
+    await poller.poll_once()          # warm frame (builds == 1)
+    app.state.pipeline_state = poller
+
+    with patch.dict(os.environ, _ENV):
+        status, hdrs, body = await _drive_sse(
+            app, [(b"tailscale-user-login", b"testuser@example.com")]
+        )
+    assert status == 200
+    frame = json.loads(body.decode().splitlines()[0][len("data: "):])
+    assert frame["b"] == 1            # the cached frame, served immediately
+    assert builds == 1               # the connection did NOT trigger another build
+
+
 @pytest.mark.asyncio
 async def test_events_requires_identity():
     """No identity header -> 401 from the auth middleware (never opens the stream)."""

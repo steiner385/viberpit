@@ -220,15 +220,68 @@ async def _sim_ctx(repos: list[str]) -> dict[str, dict]:
     return ctx
 
 
+@repos_router.get("/snapshot")
+async def pipeline_snapshot(
+    request: Request,
+    _identity: str = Depends(current_identity),
+) -> dict:
+    """One-shot warm frame for fast first paint (issue: background population).
+
+    Returns the shared poller's latest cached frame — the same object the SSE
+    feed streams — so a freshly loaded tab renders in a single round-trip
+    instead of waiting for the stream's first frame. Cold start (poller present
+    but no frame yet, or poller absent) falls back to a single inline build.
+    """
+    poller = getattr(request.app.state, "pipeline_state", None)
+    if poller is not None:
+        state = poller.snapshot()
+        if state is None:
+            state = await poller.build_now()
+        return state
+    return await _build_state(request.app.state.sessions)
+
+
 @repos_router.get("/events")
 async def pipeline_events(
     request: Request,
     _identity: str = Depends(current_identity),
 ) -> StreamingResponse:
     orch = request.app.state.sessions
+    poller = getattr(request.app.state, "pipeline_state", None)
     notifier = TransitionNotifier()
 
-    async def gen():
+    def _frame(state: dict) -> str:
+        # Full-state frame plus any transition notifications for this connection.
+        out = f"data: {json.dumps(state)}\n\n"
+        for ev in notifier.diff(state):
+            out += f"event: notification\ndata: {json.dumps(ev)}\n\n"
+        return out
+
+    async def gen_cached():
+        # Shared-poller path: the expensive build runs once in the background;
+        # every connection reads the cache. Serve the warm frame immediately for
+        # fast first paint (building one inline only on a truly cold cache).
+        state = poller.snapshot()
+        gen_seen = poller.generation
+        if state is None:
+            try:
+                state = await poller.build_now()
+                gen_seen = poller.generation
+            except Exception:
+                log.exception("pipeline SSE initial frame build failed")
+        if state is not None:
+            yield _frame(state)
+        while True:
+            if await request.is_disconnected():
+                return
+            # Blocks until a newer frame is published, or heartbeats on timeout.
+            state, gen_seen = await poller.wait_for_frame(gen_seen, _EVENTS_INTERVAL_S)
+            if state is not None:
+                yield _frame(state)
+
+    async def gen_inline():
+        # Degraded path — no shared poller (e.g. lifespan not started). Rebuild
+        # per cycle exactly as before, so the feed still works standalone.
         while True:
             if await request.is_disconnected():
                 return
@@ -238,13 +291,12 @@ async def pipeline_events(
                 log.exception("pipeline SSE frame build failed")  # not kill the feed
                 await asyncio.sleep(_EVENTS_INTERVAL_S)
                 continue
-            yield f"data: {json.dumps(state)}\n\n"
-            for ev in notifier.diff(state):
-                yield f"event: notification\ndata: {json.dumps(ev)}\n\n"
+            yield _frame(state)
             await asyncio.sleep(_EVENTS_INTERVAL_S)
 
+    body = gen_cached() if poller is not None else gen_inline()
     return StreamingResponse(
-        gen(), media_type="text/event-stream",
+        body, media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
