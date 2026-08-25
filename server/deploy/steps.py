@@ -256,7 +256,11 @@ def restart_units(*, daemon_changed: bool, daemon_enabled: bool,
     locally, and the local ``daemon_enabled`` guard is bypassed for it — dobby's local unit
     is deliberately *disabled* once the daemon has moved to rocky, so gating on it would
     make every deploy silently restart nothing and leave rocky running stale code (the
-    Postgres cutover incident this change exists to prevent). ``daemon_changed`` still gates
+    Postgres cutover incident this change exists to prevent). rocky is the SINGLE targeted
+    session runner: this env var names exactly one remote daemon, and the fleet registry is
+    seeded to match via ``CCSWITCH_FLEET_HOSTS`` (see ``server/config.py``) — both are set
+    in ``/etc/ccswitch/ccswitch.env`` and must agree, so a deploy that pushes rocky's code
+    and a dispatcher that can see rocky stay consistent. ``daemon_changed`` still gates
     the remote restart: it reflects whether daemon-relevant files changed in this deploy's
     diff, so skipping an unneeded restart avoids unnecessary daemon churn.
 

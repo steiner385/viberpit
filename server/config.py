@@ -106,9 +106,20 @@ try:
         # Defaults to $CCSWITCH_HOME/archive. Set to a path on a larger/slower
         # drive to keep live session data and archives on separate filesystems.
         archive_home: str | None = Field(default=None, alias="CCSWITCH_ARCHIVE_HOME")
-        # Comma-separated name=endpoint pairs seeded into the host registry on startup.
-        # Example: CCSWITCH_FLEET_HOSTS=rocky=https://rocky:9443,dobby=https://dobby:9443
-        # Existing rows (matched by name) are never overwritten — operator changes survive restarts.
+        # Comma-separated name=endpoint pairs seeded into the host registry on startup
+        # (insert-if-absent by name; existing rows are never overwritten, so operator
+        # changes via the Fleet UI survive restarts).
+        #
+        # Deployed topology: rocky is the SOLE targeted session runner. dobby is the
+        # edge/master (web UI, config, reauth, deploy) and its local ccswitch-daemon is
+        # deliberately disabled after the rocky session-host cutover — see
+        # server/deploy/steps.py::restart_units (CCSWITCH_DAEMON_SSH_HOST), which pins the
+        # remote daemon restart to rocky. Production therefore sets this to rocky ONLY, in
+        # the out-of-band /etc/ccswitch/ccswitch.env:
+        #   CCSWITCH_FLEET_HOSTS=rocky=https://rocky.tail0dd570.ts.net:9443
+        # Adding dobby (…,dobby=https://dobby:9443) is a supported but currently-unenabled
+        # two-host expansion (fleet plan Task 13); the ranking/routing code is already
+        # N-host, so this is a config flip, not a code change.
         fleet_hosts: str = Field(default="", alias="CCSWITCH_FLEET_HOSTS")
 
         model_config = {"populate_by_name": True, "env_file": ".env", "extra": "ignore"}
