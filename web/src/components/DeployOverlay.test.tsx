@@ -55,6 +55,20 @@ describe('DeployOverlay', () => {
     expect(screen.getByText(/reconnecting/i)).toBeInTheDocument()
   })
 
+  it('surfaces the error message in the running overlay when a phase failed (issue #741)', () => {
+    mock({
+      ctrl: { visible: true, intent: 'idle' },
+      deploy: {
+        running: true,
+        phases: { preflight: 'done', save: 'done', update: 'done', report: 'done', restart: 'failed' },
+        error: 'restart: health gate failed',
+        warnings: [],
+      },
+    })
+    render(<DeployOverlay />)
+    expect(screen.getByText(/restart: health gate failed/i)).toBeInTheDocument()
+  })
+
   it('shows a held failure with the error and a Close button', () => {
     const dismiss = vi.fn()
     mock({

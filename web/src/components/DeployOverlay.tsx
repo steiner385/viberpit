@@ -20,8 +20,10 @@ export function DeployOverlay() {
   const count = pending?.commits.length ?? 0
   const shortSha = (pending?.targetSha ?? deploy?.targetSha ?? '').slice(0, 7)
   const reconnecting = (running || intent === 'starting') && isError && failureCount > 0
+  // Only highlight the phase that is actively running, never a failed one — a failed phase
+  // should show its red dot, not the amber pulse that implies "in progress" (issue #741).
   const activeKey = running
-    ? DEPLOY_PHASES.find(p => phaseState(deploy, p.key) !== 'done')?.key
+    ? DEPLOY_PHASES.find(p => phaseState(deploy, p.key) === 'running')?.key
     : undefined
 
   return (
@@ -80,6 +82,8 @@ export function DeployOverlay() {
             <div className="mt-4 min-h-[1.25rem] text-xs">
               {reconnecting ? (
                 <span className="text-amber-600 dark:text-amber-400">Restarting service — reconnecting…</span>
+              ) : deploy?.error ? (
+                <p className="text-red-600 dark:text-red-400">{deploy.error}</p>
               ) : (
                 deploy?.warnings?.map((w, i) => (
                   <p key={i} className="text-amber-600 dark:text-amber-400">{w}</p>

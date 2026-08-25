@@ -427,6 +427,7 @@ def create_daemon_app() -> FastAPI:
     register_rpc(app, "ping", _ping)
     register_rpc(app, "start_demo", _make_start_demo(app))
     register_rpc(app, "echo", _make_echo(app))
+    register_rpc(app, "close_events_connections", _make_close_events_connections(app))
     return app
 
 
@@ -490,3 +491,22 @@ def _make_echo(app: FastAPI):
         await app.state.publish(params["stream"], {"type": "echo", "text": params["text"]})
         return {"ok": True}
     return echo
+
+
+def _make_close_events_connections(app: FastAPI):
+    async def close_events_connections(params: dict) -> dict:
+        """Cancel all active /events writer tasks so the daemon can shut down quickly.
+
+        The edge holds a long-lived /events WebSocket that keeps uvicorn's graceful
+        shutdown waiting ~45s while connections drain. Cancelling the writers here
+        closes those sockets before SIGTERM arrives; uvicorn then sees no active
+        connections and exits immediately. Called by the deploy controller just before
+        restarting the daemon (issue #740).
+        """
+        n = 0
+        for task in list(app.state.writers.values()):
+            if not task.done():
+                task.cancel()
+                n += 1
+        return {"closed": n}
+    return close_events_connections

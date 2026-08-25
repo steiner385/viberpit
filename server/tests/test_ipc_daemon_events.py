@@ -34,3 +34,25 @@ def test_unsubscribed_stream_not_delivered():
             frame = json.loads(ws.receive_text())
     # First (and only) delivered frame is for "mine", proving "other" was filtered.
     assert frame["stream"] == "mine" and frame["event"]["text"] == "y"
+
+
+def test_close_events_connections_rpc_cancels_writer_tasks():
+    """close_events_connections must report the number of writer tasks it cancelled.
+
+    The deploy controller calls this before restarting the daemon (issue #740) so the
+    long-lived /events WebSocket doesn't hold up uvicorn's graceful shutdown.
+    """
+    app = create_daemon_app()
+    with TestClient(app) as c:
+        # One active /events connection.
+        with c.websocket_connect("/events"):
+            result = c.post("/rpc/close_events_connections", json={})
+            assert result.status_code == 200
+            body = result.json()
+            assert body["result"]["closed"] >= 1
+
+    # No active connections — returns 0 without error.
+    with TestClient(app) as c:
+        result = c.post("/rpc/close_events_connections", json={})
+        assert result.status_code == 200
+        assert result.json()["result"]["closed"] == 0

@@ -155,6 +155,19 @@ class DeployController:
                     self.status.warnings.append(f"drain {result} — restarting anyway")
             if daemon_changed and self.daemon_enabled:
                 log_event(log, logging.INFO, "deploy.daemon.stop", deploy_id=self._deploy_id)
+            # Drop the edge's /events WebSocket before stopping the daemon. The long-lived
+            # connection holds uvicorn's graceful shutdown open for ~45s; closing it here
+            # lets the old daemon exit on SIGTERM instead of waiting for the edge to
+            # reconnect. Best-effort: a failure here must not abort the deploy (issue #740).
+            if daemon_changed and self._client_factory is not None:
+                _ec_client = self._client_factory()
+                try:
+                    await _ec_client.call("close_events_connections")
+                except Exception:
+                    log.debug("deploy: close_events_connections RPC failed (best-effort)",
+                              exc_info=True)
+                finally:
+                    await _aclose_quietly(_ec_client)
             # Resolve the target sha BEFORE restarting: a remote daemon has its own
             # checkout and restart_units fast-forwards it to exactly this commit, so
             # both hosts land on the same code instead of the edge racing ahead.
@@ -236,6 +249,10 @@ class DeployController:
         except DeployError as e:
             self._set(Phase[e.phase.upper()], PhaseState.FAILED)
             self.status.error = str(e)
+            # Signal failure immediately so the UI can leave the spinner state; rollback
+            # can take ~60s (it restarts units), and keeping running=True that long keeps
+            # the overlay frozen on "Restarting service" with no error shown (issue #741).
+            self.status.running = False
             # Roll back only if we already fast-forwarded (preflight failures changed nothing).
             if e.phase != "preflight" and local:
                 await asyncio.to_thread(self._steps.rollback_to, self.repo, local,
