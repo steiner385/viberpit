@@ -343,6 +343,126 @@ async def test_a_completed_rpc_clears_the_consecutive_count(daemon, mtls_certs,
         await client.aclose()
 
 
+# --------------------------------------------------------------------------- #
+# 2b. A PARTIAL strand — the blind spot of the pool-wide signal (#744)
+# --------------------------------------------------------------------------- #
+
+
+def test_the_quiet_window_clears_the_longest_caller_budget():
+    """The quiet window must outlast the slowest legitimate RPC (#744, follow-up).
+
+    ``_WEDGE_QUIET_S`` gates BOTH the pool-wide "nobody served" clock and the distinct-
+    turnover signal. ``automation_*`` calls pass ``AUTOMATION_RPC_TIMEOUT`` (90s), so a
+    single connection can be legitimately ACTIVE that long while completing nothing. A
+    window shorter than that reports a healthy lockstep automation fan-out as exhaustion
+    and makes an in-flight slow RPC look like a strand — a false positive on the one
+    diagnostic an operator is asked to trust.
+    """
+    from server.sessions.remote import AUTOMATION_RPC_TIMEOUT
+
+    assert ipc_client._WEDGE_QUIET_S > AUTOMATION_RPC_TIMEOUT, (
+        f"_WEDGE_QUIET_S={ipc_client._WEDGE_QUIET_S} must exceed the longest caller "
+        f"budget AUTOMATION_RPC_TIMEOUT={AUTOMATION_RPC_TIMEOUT}")
+
+
+@pytest.mark.asyncio
+async def test_distinct_recent_servers_counts_and_prunes_by_window(daemon, mtls_certs,
+                                                                   monkeypatch):
+    """``distinctRecentServers`` counts connections that COMPLETED a request in the window.
+
+    It is the turnover measure the pool-wide clock lacks: two concurrent RPCs complete on
+    two distinct connections, so the count is two; once they age past the quiet window they
+    stop counting, because a strand is about turnover *now*, not ever.
+    """
+    monkeypatch.setattr(ipc_client, "_WEDGE_QUIET_S", 0.3)
+    client = _client(daemon, mtls_certs, max_connections=4, monkeypatch=monkeypatch)
+    try:
+        # Two RPCs that overlap in flight force two distinct connections to serve.
+        await asyncio.gather(client.call("slow", secs=0.2), client.call("slow", secs=0.2))
+        assert client.pool_stats()["distinctRecentServers"] == 2, client.pool_stats()
+
+        await asyncio.sleep(0.35)                    # older than the quiet window now
+        assert client.pool_stats()["distinctRecentServers"] == 0, (
+            "connections that completed before the window must age out")
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_partial_strand_is_exhaustion_though_the_clock_is_young(daemon, mtls_certs,
+                                                                       monkeypatch, caplog):
+    """#744: pool-wide silence is blind to a *partial* strand.
+
+    With most slots stranded ACTIVE but one still recycling, the recycling slot keeps
+    ``secondsSinceSlot`` low, so the pool-wide quiet clock never trips — even at a fraction
+    of throughput (both outages passed through 81/100 stranded on the way down). Distinct-
+    connection turnover catches it: the pool is saturated, yet only one connection has
+    actually completed anything, so the rest have been ACTIVE-without-completing longer than
+    any legitimate RPC.
+    """
+    client = _client(daemon, mtls_certs, max_connections=4, monkeypatch=monkeypatch)
+    inflight = []
+    try:
+        # Exactly one distinct connection serves a request to completion...
+        assert await client.call("echo", stream="s", text="alive") == {"ok": True}
+        # ...then every slot is stranded ACTIVE (httpcore reuses the just-served idle
+        # connection and opens the rest), so the pool saturates while turnover has stopped.
+        inflight = await _saturate(client, daemon, 4)
+
+        stats = client.pool_stats()
+        assert stats["saturated"] is True, stats
+        assert stats["secondsSinceSlot"] < ipc_client._WEDGE_QUIET_S, (
+            "the recent completion keeps the pool-wide clock young — the exact blind spot "
+            "#744 describes; the verdict must not depend on that clock")
+        assert stats["distinctRecentServers"] == 1, stats
+        assert stats["exhausted"] is True, (
+            "a saturated pool with only one distinct connection turning over is a partial "
+            "strand and must read as exhaustion")
+
+        with caplog.at_level(logging.WARNING, logger="server.ipc.client"):
+            with pytest.raises(DaemonTimeout):
+                await client.call("echo", stream="s", text="starved", timeout=_STARVE_BUDGET)
+        warned = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("partial strand" in m for m in warned), warned
+
+        for t in inflight:
+            t.cancel()
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_pool_that_was_all_turning_over_is_not_yet_exhaustion(daemon, mtls_certs,
+                                                                     monkeypatch):
+    """The turnover signal must not fire on a fresh burst that just saturated.
+
+    If every connection completed a request a moment ago, a pool that then saturates looks
+    exactly like the start of an ordinary fan-out — many slots busy, all of them having
+    served. Calling that a strand is the false positive the whole design guards against, so
+    the verdict requires turnover to have COLLAPSED, not merely for the pool to be full.
+    """
+    client = _client(daemon, mtls_certs, max_connections=4, monkeypatch=monkeypatch)
+    inflight = []
+    try:
+        # All four connections complete a request: full turnover across the pool.
+        await asyncio.gather(*(client.call("slow", secs=0.3) for _ in range(4)))
+        assert client.pool_stats()["distinctRecentServers"] == 4, client.pool_stats()
+
+        # Now strand every slot. Saturated, but every connection was serving a moment ago.
+        inflight = await _saturate(client, daemon, 4)
+        stats = client.pool_stats()
+        assert stats["saturated"] is True, stats
+        assert stats["distinctRecentServers"] == 4, stats
+        assert stats["exhausted"] is False, (
+            "a pool whose whole set of connections was just turning over is a fresh burst, "
+            "not a strand")
+
+        for t in inflight:
+            t.cancel()
+    finally:
+        await client.aclose()
+
+
 @pytest.mark.asyncio
 async def test_a_standing_wedge_does_not_flood_the_journal(daemon, mtls_certs, monkeypatch,
                                                            caplog):
