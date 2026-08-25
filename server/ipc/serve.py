@@ -113,7 +113,11 @@ async def daemon_lifespan(app, orchestrator):
     # above, so deploy/health checks catch it.
     from server.obs.loop_lag import LoopLagWatchdog
     from server.obs.tasks import supervise
-    app.state.loop_lag = LoopLagWatchdog()
+    from server.config import env_float
+    app.state.loop_lag = LoopLagWatchdog(
+        dump_after=env_float("CCSWITCH_LOOP_STALL_DUMP_S", 10.0, minimum=0.0),
+        dump_path=os.environ.get("CCSWITCH_LOOP_STALL_DUMP_PATH") or None,
+    )
     app.state.loop_lag_task = supervise(
         asyncio.create_task(app.state.loop_lag.run(), name="loop-lag-watchdog"),
         name="loop-lag-watchdog",
