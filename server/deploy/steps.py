@@ -359,6 +359,7 @@ HEALTH_ATTEMPTS_WITH_DAEMON = 75
 
 
 def wait_healthy(expected_sha: str, *, url: str, attempts: int = 15, sleep_s: float = 2.0,
+                 require_daemon_sha: bool = True,
                  fetch: Callable[[str], str] | None = None,
                  sleep: Callable[[float], None] = time.sleep) -> bool:
     """Poll url for health status; return True when body contains status:ok AND expected sha.
@@ -368,6 +369,9 @@ def wait_healthy(expected_sha: str, *, url: str, attempts: int = 15, sleep_s: fl
         url: Health check endpoint URL.
         attempts: Number of poll attempts (default 15).
         sleep_s: Seconds between polls (default 2.0).
+        require_daemon_sha: assert the daemon is at *expected_sha* too. Pass
+            ``daemon_changed`` here: only a deploy that actually advanced the remote
+            daemon may require it to be on the target commit (see below).
         fetch: Callable(url) -> str; defaults to httpx.get().text (empty string on error).
         sleep: Callable(seconds); defaults to time.sleep.
 
@@ -380,16 +384,22 @@ def wait_healthy(expected_sha: str, *, url: str, attempts: int = 15, sleep_s: fl
 
     Two extra conditions, both read from the SAME response (no new round-trip):
       * daemon "unavailable" is unhealthy — the flag was already there, ignored.
-      * daemonSha, when reported, must equal expected_sha. That is the #719 skew
-        class: an edge deployed with a new RPC caller while the daemon still
-        lacks the handler.
+      * daemonSha, when reported AND *require_daemon_sha*, must match expected_sha.
+        That is the #719 skew class: an edge deployed with a new RPC caller while
+        the daemon still lacks the handler. But an EDGE-ONLY deploy
+        (daemon_changed=False) never touches the daemon — restart_units skips it —
+        so it stays on its previous (older) commit by design. Requiring it to be on
+        the target then rolls back every edge-only deploy once the daemon has
+        drifted behind the edge (the 2026-08-26 #776 rollback). So the sha
+        assertion is conditional on the daemon having actually been advanced;
+        availability is always required.
 
     Both degrade open when absent: a single-host deploy reports no daemon key, and
     a daemon too old to report its sha must not brick deploys.
 
     Returns:
         True if the edge is ok at expected_sha AND the daemon is not unavailable
-        AND any reported daemonSha matches.
+        AND (when require_daemon_sha) any reported daemonSha matches.
         False if attempts exhausted without all conditions met.
     """
     fetch = fetch or _default_fetch
@@ -397,7 +407,8 @@ def wait_healthy(expected_sha: str, *, url: str, attempts: int = 15, sleep_s: fl
     needle_sha = f'"sha":"{expected_sha}"'
     for _ in range(attempts):
         body = fetch(url)
-        if needle_status in body and needle_sha in body and _daemon_ok(body, expected_sha):
+        if (needle_status in body and needle_sha in body
+                and _daemon_ok(body, expected_sha, require_sha=require_daemon_sha)):
             return True
         sleep(sleep_s)
     return False
@@ -420,13 +431,17 @@ def _short_sha_match(a: str, b: str) -> bool:
     return bool(a) and bool(b) and (a.startswith(b) or b.startswith(a))
 
 
-def _daemon_ok(body: str, expected_sha: str) -> bool:
+def _daemon_ok(body: str, expected_sha: str, *, require_sha: bool = True) -> bool:
     """True unless the body positively reports an unhealthy or skewed daemon.
 
     Parsed, not substring-matched: `"daemonSha":"<sha>"` contains `"sha":"<sha>"`
     as a substring, so naive matching would let the edge's own sha check pass off
     the daemon's value (or vice versa). Unparseable bodies fall through to the
     caller's other needles rather than failing here.
+
+    *require_sha* gates only the daemonSha comparison. An edge-only deploy leaves
+    the daemon on its prior commit deliberately, so it must still be reachable but
+    is not expected to be on the target sha — see ``wait_healthy``.
     """
     try:
         doc = json.loads(body)
@@ -436,9 +451,10 @@ def _daemon_ok(body: str, expected_sha: str) -> bool:
         return True
     if doc.get("daemon") == "unavailable":
         return False
-    daemon_sha = doc.get("daemonSha")
-    if daemon_sha and not _short_sha_match(str(daemon_sha), expected_sha):
-        return False
+    if require_sha:
+        daemon_sha = doc.get("daemonSha")
+        if daemon_sha and not _short_sha_match(str(daemon_sha), expected_sha):
+            return False
     return True
 
 
