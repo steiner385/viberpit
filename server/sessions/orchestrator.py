@@ -1015,6 +1015,41 @@ class SessionOrchestrator:
                 try:
                     await self._spawn_session(sid, preexisting_row=True, **params)
                     started += 1
+                except asyncio.CancelledError:
+                    # The drain task was cancelled after sq.remove(sid) but before
+                    # _spawn_session completed. The sessions row is still 'queued'
+                    # but the session_queue entry is gone — that's the orphan state
+                    # that _reconcile_orphan_queued would permanently end on next
+                    # rehydrate. Re-insert into session_queue so the next drain or
+                    # rehydrate can pick it up cleanly. asyncio.CancelledError is a
+                    # BaseException (not Exception), so this block must be explicit.
+                    try:
+                        await sq.enqueue(sid, params)
+                    except Exception:  # pragma: no cover
+                        log.warning("session_queue.requeue_on_cancel_failed id=%s",
+                                    sid, exc_info=True)
+                    if sid not in self._records:
+                        from datetime import datetime
+                        self._records[sid] = SessionRecord(
+                            id=sid,
+                            name=params.get("name", sid),
+                            account=params.get("account") or "",
+                            claude_session_id="",
+                            cols=params.get("cols", 220),
+                            rows=params.get("rows", 50),
+                            cwd=params.get("cwd") or "",
+                            repo=params.get("repo"),
+                            branch=None,
+                            status="queued",
+                            name_is_auto=params.get("name_is_auto", True),
+                            updated_at=datetime.utcnow(),
+                            origin=params.get("origin"),
+                            origin_ref=params.get("origin_ref"),
+                            model=params.get("model"),
+                        )
+                    else:
+                        self._records[sid].status = "queued"
+                    raise
                 except Exception:
                     log.warning("session_queue.start_failed id=%s", sid, exc_info=True)
                     # Mark the session ended so it does not occupy a cap slot.
