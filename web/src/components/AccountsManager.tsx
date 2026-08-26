@@ -325,7 +325,8 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
         'bg-white dark:bg-gray-800 px-3 py-2',
       )}
     >
-      <div className="flex items-center gap-3">
+      {/* Top row: account name / edit inputs + action icon buttons */}
+      <div className="flex items-center gap-2">
         {editing ? (
           <div className="flex-1 flex items-center gap-2 min-w-0">
             <input
@@ -388,162 +389,167 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
             </button>
           </div>
         ) : (
-          <div className="flex-1 min-w-0 flex items-center gap-2">
-            <span className={cn(
-              'text-sm font-medium text-gray-900 dark:text-gray-100 truncate',
-              isDisabled && 'opacity-50 line-through',
-            )}>
-              {displayLabel}
-            </span>
-            {account.provider === 'copilot' && <CopilotChip />}
-          </div>
-        )}
-        {!editing && (
-          <div className="flex items-center gap-3 flex-shrink-0">
-            <StatusPill status={account.status} />
-            {isDisabled && (
-              <span
-                className="rounded px-1.5 py-0.5 text-xs font-medium bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300"
-              >
-                Disabled
+          <>
+            <div className="flex-1 min-w-0 flex items-center gap-2">
+              <span className={cn(
+                'text-sm font-medium text-gray-900 dark:text-gray-100 truncate',
+                isDisabled && 'opacity-50 line-through',
+              )}>
+                {displayLabel}
               </span>
-            )}
-            <SessionsBadge counts={account.liveSessions} />
-            <RankBadge rank={account.rank} reason={account.rankReason} />
-            {account.weeklyReservePct != null && account.usage != null &&
-              account.usage.weekly.pct >= account.weeklyReservePct && <OverReserveChip />}
-            {account.usage && (
-              <>
-                <UsageBadge
-                  pct={account.usage.session.pct}
-                  label={account.provider === 'copilot' ? 'premium-req' : 'session'}
-                  resetsAt={account.usage.session.resetsAt}
-                />
-                <UsageBadge
-                  pct={account.usage.weekly.pct}
-                  label="weekly"
-                  resetsAt={account.usage.weekly.resetsAt}
-                  markerPct={account.weeklyReservePct ?? null}
-                />
-              </>
-            )}
-            {account.provider === 'copilot' ? (
-              !isReauthRunning && !isAwaitingCode && (
-                <button
-                  type="button"
-                  className={cn(
-                    'rounded min-h-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500',
-                    needsReauth
-                      ? 'px-2 py-1 text-xs font-medium bg-amber-500 text-white hover:bg-amber-600 dark:bg-amber-600 dark:hover:bg-amber-500'
-                      : 'min-w-[44px] flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-amber-500 dark:hover:text-amber-400 hover:bg-gray-100 dark:hover:bg-gray-700',
-                  )}
-                  aria-label={`Re-run device flow for ${account.name}`}
-                  onClick={() => onCopilotReauth?.(account)}
-                >
-                  {needsReauth ? 'Re-authenticate' : <KeyRound size={14} aria-hidden="true" />}
-                </button>
-              )
-            ) : (
-              <>
-                {!isReauthRunning && !isAwaitingCode && (
-                  <button
-                    type="button"
-                    className={cn(
-                      'rounded min-h-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500',
-                      needsReauth
-                        ? 'px-2 py-1 text-xs font-medium bg-amber-500 text-white hover:bg-amber-600 dark:bg-amber-600 dark:hover:bg-amber-500'
-                        : 'min-w-[44px] flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-amber-500 dark:hover:text-amber-400 hover:bg-gray-100 dark:hover:bg-gray-700',
-                    )}
-                    aria-label={`Re-authenticate ${account.name}`}
-                    onClick={handleReauth}
-                  >
-                    {needsReauth ? 'Re-authenticate' : <KeyRound size={14} aria-hidden="true" />}
-                  </button>
-                )}
-              </>
-            )}
-            {(isReauthRunning || isAwaitingCode) && (
+              {account.provider === 'copilot' && <CopilotChip />}
+            </div>
+            {/* Action icon buttons — always icon-only so they don't crowd the name */}
+            <div className="flex items-center gap-1 flex-shrink-0">
               <button
                 type="button"
                 className={cn(
-                  'rounded px-2 py-1 text-xs font-medium min-h-[44px]',
-                  'border border-gray-300 dark:border-gray-600',
-                  'text-gray-700 dark:text-gray-300',
+                  'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
+                  isDisabled ? 'text-green-600 dark:text-green-400' : 'text-gray-500 dark:text-gray-400',
+                  'hover:bg-gray-100 dark:hover:bg-gray-700',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+                  'disabled:opacity-40',
+                )}
+                aria-label={`${isDisabled ? 'Enable' : 'Disable'} account ${account.name}`}
+                title={isDisabled
+                  ? 'Re-enable this account for selection'
+                  : 'Pause this account — kept intact but never selected until re-enabled'}
+                disabled={setEnabled.isPending}
+                onClick={() => setEnabled.mutate({ name: account.name, enabled: isDisabled })}
+              >
+                <Power size={14} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className={cn(
+                  'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
+                  'text-gray-500 dark:text-gray-400',
                   'hover:bg-gray-100 dark:hover:bg-gray-700',
                   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
                 )}
-                aria-label="Cancel reauth"
-                onClick={handleCancel}
+                aria-label={`Rename ${account.name}`}
+                onClick={startEdit}
               >
-                Cancel
+                <Pencil size={14} aria-hidden="true" />
               </button>
-            )}
-            <button
-              type="button"
-              className={cn(
-                'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
-                isDisabled ? 'text-green-600 dark:text-green-400' : 'text-gray-500 dark:text-gray-400',
-                'hover:bg-gray-100 dark:hover:bg-gray-700',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-                'disabled:opacity-40',
-              )}
-              aria-label={`${isDisabled ? 'Enable' : 'Disable'} account ${account.name}`}
-              title={isDisabled
-                ? 'Re-enable this account for selection'
-                : 'Pause this account — kept intact but never selected until re-enabled'}
-              disabled={setEnabled.isPending}
-              onClick={() => setEnabled.mutate({ name: account.name, enabled: isDisabled })}
-            >
-              <Power size={14} aria-hidden="true" />
-            </button>
-            <button
-              type="button"
-              className={cn(
-                'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
-                'text-gray-500 dark:text-gray-400',
-                'hover:bg-gray-100 dark:hover:bg-gray-700',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-              )}
-              aria-label={`Rename ${account.name}`}
-              onClick={startEdit}
-            >
-              <Pencil size={14} aria-hidden="true" />
-            </button>
-            <button
-              type="button"
-              className={cn(
-                'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
-                'text-red-500 dark:text-red-400',
-                'hover:bg-red-50 dark:hover:bg-red-900/30',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500',
-              )}
-              aria-label={`Delete account ${account.name}`}
-              onClick={() => onDelete(account)}
-            >
-              <Trash2 size={14} aria-hidden="true" />
-            </button>
-            <button
-              type="button"
-              className={cn(
-                'h-8 w-8 flex items-center justify-center rounded',
-                'text-gray-500 dark:text-gray-400',
-                'hover:bg-gray-100 dark:hover:bg-gray-700',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-                'disabled:opacity-40',
-              )}
-              aria-label={`Refresh account ${account.name}`}
-              disabled={refreshing}
-              onClick={() => onRefresh(account.name)}
-            >
-              <RefreshCw
-                size={14}
-                aria-hidden="true"
-                className={cn(refreshing && 'animate-spin')}
-              />
-            </button>
-          </div>
+              <button
+                type="button"
+                className={cn(
+                  'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
+                  'text-red-500 dark:text-red-400',
+                  'hover:bg-red-50 dark:hover:bg-red-900/30',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500',
+                )}
+                aria-label={`Delete account ${account.name}`}
+                onClick={() => onDelete(account)}
+              >
+                <Trash2 size={14} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className={cn(
+                  'h-8 w-8 flex items-center justify-center rounded',
+                  'text-gray-500 dark:text-gray-400',
+                  'hover:bg-gray-100 dark:hover:bg-gray-700',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+                  'disabled:opacity-40',
+                )}
+                aria-label={`Refresh account ${account.name}`}
+                disabled={refreshing}
+                onClick={() => onRefresh(account.name)}
+              >
+                <RefreshCw
+                  size={14}
+                  aria-hidden="true"
+                  className={cn(refreshing && 'animate-spin')}
+                />
+              </button>
+            </div>
+          </>
         )}
       </div>
+
+      {/* Badge row: status + usage + reauth — wraps naturally on narrow screens */}
+      {!editing && (
+        <div className="flex items-center flex-wrap gap-x-2 gap-y-1">
+          <StatusPill status={account.status} />
+          {isDisabled && (
+            <span
+              className="rounded px-1.5 py-0.5 text-xs font-medium bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300"
+            >
+              Disabled
+            </span>
+          )}
+          <SessionsBadge counts={account.liveSessions} />
+          <RankBadge rank={account.rank} reason={account.rankReason} />
+          {account.weeklyReservePct != null && account.usage != null &&
+            account.usage.weekly.pct >= account.weeklyReservePct && <OverReserveChip />}
+          {account.usage && (
+            <>
+              <UsageBadge
+                pct={account.usage.session.pct}
+                label={account.provider === 'copilot' ? 'premium-req' : 'session'}
+                resetsAt={account.usage.session.resetsAt}
+              />
+              <UsageBadge
+                pct={account.usage.weekly.pct}
+                label="weekly"
+                resetsAt={account.usage.weekly.resetsAt}
+                markerPct={account.weeklyReservePct ?? null}
+              />
+            </>
+          )}
+          {account.provider === 'copilot' ? (
+            !isReauthRunning && !isAwaitingCode && (
+              <button
+                type="button"
+                className={cn(
+                  'rounded min-h-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500',
+                  needsReauth
+                    ? 'px-2 py-1 text-xs font-medium bg-amber-500 text-white hover:bg-amber-600 dark:bg-amber-600 dark:hover:bg-amber-500'
+                    : 'min-w-[44px] flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-amber-500 dark:hover:text-amber-400 hover:bg-gray-100 dark:hover:bg-gray-700',
+                )}
+                aria-label={`Re-run device flow for ${account.name}`}
+                onClick={() => onCopilotReauth?.(account)}
+              >
+                {needsReauth ? 'Re-authenticate' : <KeyRound size={14} aria-hidden="true" />}
+              </button>
+            )
+          ) : (
+            !isReauthRunning && !isAwaitingCode && (
+              <button
+                type="button"
+                className={cn(
+                  'rounded min-h-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500',
+                  needsReauth
+                    ? 'px-2 py-1 text-xs font-medium bg-amber-500 text-white hover:bg-amber-600 dark:bg-amber-600 dark:hover:bg-amber-500'
+                    : 'min-w-[44px] flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-amber-500 dark:hover:text-amber-400 hover:bg-gray-100 dark:hover:bg-gray-700',
+                )}
+                aria-label={`Re-authenticate ${account.name}`}
+                onClick={handleReauth}
+              >
+                {needsReauth ? 'Re-authenticate' : <KeyRound size={14} aria-hidden="true" />}
+              </button>
+            )
+          )}
+          {(isReauthRunning || isAwaitingCode) && (
+            <button
+              type="button"
+              className={cn(
+                'rounded px-2 py-1 text-xs font-medium min-h-[44px]',
+                'border border-gray-300 dark:border-gray-600',
+                'text-gray-700 dark:text-gray-300',
+                'hover:bg-gray-100 dark:hover:bg-gray-700',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+              )}
+              aria-label="Cancel reauth"
+              onClick={handleCancel}
+            >
+              Cancel
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Generate long-lived (setup-token) — Anthropic accounts only */}
       {!editing && account.provider !== 'copilot' && (
