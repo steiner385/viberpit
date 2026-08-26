@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Pencil, Archive, Trash2, FolderGit2, ChevronRight, ChevronDown, Sparkles, Loader2, Target, Wrench, Bot } from 'lucide-react'
+import { Pencil, Archive, Trash2, FolderGit2, ChevronRight, ChevronDown, Sparkles, Loader2, Target, Wrench, Bot, MoreVertical } from 'lucide-react'
 import { toast } from 'sonner'
 import { matchListShortcut } from '@/lib/shortcuts'
 import { QUICK_REPLIES } from '@/lib/quickReplies'
@@ -79,6 +79,8 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   const hasSubAgents = subAgents.length > 0
   const [expanded, setExpanded] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [overflowOpen, setOverflowOpen] = useState(false)
+  const overflowRef = useRef<HTMLDivElement>(null)
   const [generating, setGenerating] = useState(false)
 
   const suggestions = session.latestSuggestions ?? []
@@ -156,6 +158,21 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   useEffect(() => {
     if (listMode && selected) buttonRef.current?.focus()
   }, [listMode, selected])
+
+  // Close the mobile overflow menu on outside-click or Escape (mirrors SessionActions).
+  useEffect(() => {
+    if (!overflowOpen) return
+    function onDocClick(e: MouseEvent) {
+      if (overflowRef.current && !overflowRef.current.contains(e.target as Node)) setOverflowOpen(false)
+    }
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') { e.stopPropagation(); setOverflowOpen(false) } }
+    document.addEventListener('mousedown', onDocClick)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDocClick)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [overflowOpen])
 
   const repoLabel = formatRepoLabel(session.repo)
 
@@ -487,34 +504,23 @@ export function SessionCard({ session, account, selected = false, listMode = fal
         )}
       </button>
 
-      {/* Per-session actions — explicit buttons (no overflow menu).
-          On touch devices they stay visible at the 44px tap-target minimum. On
-          hover-capable devices (desktop) they shrink to a denser 32px and stay
-          hidden until the row is hovered, focused, or selected — so the meta row
-          gets the full card width instead of fighting three permanent buttons.
-          In a narrow card only Resume stays inline; the rest are `hidden @md:*`
-          (see the secondary-actions group below) and live in the detail view.
-          On a wide card (container ≥ 28rem) the buttons lay out as a 3-column
-          grid so the (up to six) controls fold into two rows — halving the
-          horizontal footprint they steal from the meta row. The secondary group
-          uses `@md:contents` so its five children flow into this grid directly
-          rather than as one wide flex child. */}
+      {/* Per-session actions — Resume and Quick Replies are always visible on both
+          mobile and desktop. Below lg (mobile/tablet) the secondary actions
+          (Rename, Archive, Delete, and optionally Autopilot) fold into a `…`
+          overflow menu following the ExportMenu pattern. At lg+ (desktop) they
+          show as individual icon buttons via `hidden lg:contents`.
+          On hover-capable devices all controls hide until the row is hovered,
+          focused, or selected. */}
       <div
         className={cn(
           'flex flex-shrink-0 items-center gap-0.5 transition-opacity',
-          // On a wide card the (up to six) controls form a 3-column grid,
-          // anchored to the TOP of the row (`self-start`) so they read as a
-          // toolbar in the card's corner — vertically centered, the second grid
-          // row floated free next to unrelated content (a stray delete icon
-          // mid-card). When narrow only Resume renders, and a single centered
-          // button aligns better with the two-line body.
-          '@md:grid @md:grid-cols-3 @md:justify-items-center @md:self-start',
           '[@media(hover:hover)]:opacity-0',
           '[@media(hover:hover)]:group-hover:opacity-100',
           '[@media(hover:hover)]:group-focus-within:opacity-100',
           selected && '[@media(hover:hover)]:opacity-100',
         )}
       >
+        {/* Resume — always visible. */}
         {!isBusy && (
           <button
             type="button"
@@ -533,14 +539,8 @@ export function SessionCard({ session, account, selected = false, listMode = fal
               : <Sparkles size={16} aria-hidden="true" />}
           </button>
         )}
-        {/* Secondary actions group — wide-card-only. Suggestions/rename/archive/
-            delete each render a 44px tap target with no hover to retreat behind,
-            so in a narrow card they consumed most of the card width. Gating the
-            group to `@md:` leaves Resume as the single inline action when narrow.
-            `@md:contents` dissolves this wrapper on a wide card so its buttons
-            become direct children of the parent action grid (two rows), while
-            staying `hidden` (as a box) when narrow. */}
-        <div data-testid="card-secondary-actions" className="hidden @md:contents">
+        {/* Quick Replies — always visible on both mobile and desktop so users can
+            send canned replies without opening the session. */}
         {!isBusy && (
           <div className="relative flex items-center">
             <button
@@ -550,7 +550,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
               aria-expanded={menuOpen}
               className={cn(actionBtn, 'text-emerald-600 dark:text-emerald-400',
                 'hover:bg-emerald-50 dark:hover:bg-emerald-900/20 focus-visible:ring-emerald-500',
-              'active:bg-emerald-100 dark:active:bg-emerald-900/40')}
+                'active:bg-emerald-100 dark:active:bg-emerald-900/40')}
               onClick={() => setMenuOpen((o) => !o)}
             >
               <ChevronDown size={16} aria-hidden="true" />
@@ -602,60 +602,155 @@ export function SessionCard({ session, account, selected = false, listMode = fal
             )}
           </div>
         )}
-        {onToggleAutopilot && (
+        {/* Mobile overflow (hidden at lg+): Autopilot, Rename, Archive, Delete in a
+            single `…` menu. Follows the ExportMenu pattern: a relative wrapper
+            anchors the absolute dropdown to the trigger button; outside-click and
+            Escape close it via the useEffect above. */}
+        <div className="relative lg:hidden" ref={overflowRef}>
           <button
             type="button"
-            data-testid="card-autopilot"
-            className={cn(actionBtn,
-              session.autopilotPaused
-                ? 'text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700'
-                : 'text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20',
-              'focus-visible:ring-blue-500')}
-            aria-label={session.autopilotPaused
-              ? `Autopilot paused for session ${session.name} — resume`
-              : `Autopilot on for session ${session.name} — pause`}
-            aria-pressed={!session.autopilotPaused}
-            title={session.autopilotPaused
-              ? 'Autopilot paused — click to resume'
-              : 'Autopilot on — click to pause'}
-            onClick={() => onToggleAutopilot(session.id, !session.autopilotPaused)}
+            className={cn(actionBtn, 'text-gray-500 dark:text-gray-400',
+              'hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:ring-blue-500',
+              'active:bg-gray-200 dark:active:bg-gray-600')}
+            aria-label={`More actions for session ${session.name}`}
+            aria-haspopup="menu"
+            aria-expanded={overflowOpen}
+            title="More actions"
+            onClick={() => setOverflowOpen((o) => !o)}
           >
-            <Bot size={16} aria-hidden="true" />
+            <MoreVertical size={16} aria-hidden="true" />
           </button>
-        )}
-        <button
-          type="button"
-          className={cn(actionBtn, 'text-gray-500 dark:text-gray-400',
-            'hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:ring-blue-500',
-            'active:bg-gray-200 dark:active:bg-gray-600')}
-          aria-label={`Rename session ${session.name}`}
-          title="Rename"
-          onClick={() => onRename(session.id)}
-        >
-          <Pencil size={16} aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          className={cn(actionBtn, 'text-gray-500 dark:text-gray-400',
-            'hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:ring-blue-500',
-            'active:bg-gray-200 dark:active:bg-gray-600')}
-          aria-label={`Archive session ${session.name}`}
-          title="Archive"
-          onClick={() => onClose(session.id)}
-        >
-          <Archive size={16} aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          className={cn(actionBtn, 'text-red-600 dark:text-red-400',
-            'hover:bg-red-50 dark:hover:bg-red-900/20 focus-visible:ring-red-500',
-            'active:bg-red-100 dark:active:bg-red-900/40')}
-          aria-label={`Delete session ${session.name}`}
-          title="Delete"
-          onClick={() => onDelete(session.id)}
-        >
-          <Trash2 size={16} aria-hidden="true" />
-        </button>
+          {overflowOpen && (
+            <div
+              role="menu"
+              className={cn(
+                'absolute right-0 top-full mt-1 min-w-[10rem] z-20',
+                'rounded-md border border-gray-200 dark:border-gray-700',
+                'bg-white dark:bg-gray-800 shadow-lg py-1',
+              )}
+            >
+              {onToggleAutopilot && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-testid="card-overflow-autopilot"
+                  onClick={() => { setOverflowOpen(false); onToggleAutopilot(session.id, !session.autopilotPaused) }}
+                  className={cn(
+                    'flex w-full items-center gap-2 px-3 py-2 text-sm text-left',
+                    session.autopilotPaused
+                      ? 'text-gray-700 dark:text-gray-200'
+                      : 'text-emerald-700 dark:text-emerald-300',
+                    'hover:bg-gray-100 dark:hover:bg-gray-700',
+                    'focus-visible:outline-none focus-visible:bg-gray-100 dark:focus-visible:bg-gray-700',
+                  )}
+                >
+                  <Bot size={16} aria-hidden="true" />
+                  {session.autopilotPaused ? 'Resume autopilot' : 'Pause autopilot'}
+                </button>
+              )}
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => { setOverflowOpen(false); onRename(session.id) }}
+                className={cn(
+                  'flex w-full items-center gap-2 px-3 py-2 text-sm text-left',
+                  'text-gray-700 dark:text-gray-200',
+                  'hover:bg-gray-100 dark:hover:bg-gray-700',
+                  'focus-visible:outline-none focus-visible:bg-gray-100 dark:focus-visible:bg-gray-700',
+                )}
+              >
+                <Pencil size={16} aria-hidden="true" />
+                Rename
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => { setOverflowOpen(false); onClose(session.id) }}
+                className={cn(
+                  'flex w-full items-center gap-2 px-3 py-2 text-sm text-left',
+                  'text-gray-700 dark:text-gray-200',
+                  'hover:bg-gray-100 dark:hover:bg-gray-700',
+                  'focus-visible:outline-none focus-visible:bg-gray-100 dark:focus-visible:bg-gray-700',
+                )}
+              >
+                <Archive size={16} aria-hidden="true" />
+                Archive
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => { setOverflowOpen(false); onDelete(session.id) }}
+                className={cn(
+                  'flex w-full items-center gap-2 px-3 py-2 text-sm text-left',
+                  'text-red-600 dark:text-red-400',
+                  'hover:bg-gray-100 dark:hover:bg-gray-700',
+                  'focus-visible:outline-none focus-visible:bg-gray-100 dark:focus-visible:bg-gray-700',
+                )}
+              >
+                <Trash2 size={16} aria-hidden="true" />
+                Delete
+              </button>
+            </div>
+          )}
+        </div>
+        {/* Desktop secondary actions (hidden below lg): Autopilot, Rename, Archive,
+            Delete as individual icon buttons at lg+. `lg:contents` dissolves this
+            wrapper so the buttons become direct flex children of the action row. */}
+        <div data-testid="card-secondary-actions" className="hidden lg:contents">
+          {onToggleAutopilot && (
+            <button
+              type="button"
+              data-testid="card-autopilot"
+              className={cn(actionBtn,
+                session.autopilotPaused
+                  ? 'text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700'
+                  : 'text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20',
+                'focus-visible:ring-blue-500')}
+              aria-label={session.autopilotPaused
+                ? `Autopilot paused for session ${session.name} — resume`
+                : `Autopilot on for session ${session.name} — pause`}
+              aria-pressed={!session.autopilotPaused}
+              title={session.autopilotPaused
+                ? 'Autopilot paused — click to resume'
+                : 'Autopilot on — click to pause'}
+              onClick={() => onToggleAutopilot(session.id, !session.autopilotPaused)}
+            >
+              <Bot size={16} aria-hidden="true" />
+            </button>
+          )}
+          <button
+            type="button"
+            className={cn(actionBtn, 'text-gray-500 dark:text-gray-400',
+              'hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:ring-blue-500',
+              'active:bg-gray-200 dark:active:bg-gray-600')}
+            aria-label={`Rename session ${session.name}`}
+            title="Rename"
+            onClick={() => onRename(session.id)}
+          >
+            <Pencil size={16} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className={cn(actionBtn, 'text-gray-500 dark:text-gray-400',
+              'hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:ring-blue-500',
+              'active:bg-gray-200 dark:active:bg-gray-600')}
+            aria-label={`Archive session ${session.name}`}
+            title="Archive"
+            onClick={() => onClose(session.id)}
+          >
+            <Archive size={16} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className={cn(actionBtn, 'text-red-600 dark:text-red-400',
+              'hover:bg-red-50 dark:hover:bg-red-900/20 focus-visible:ring-red-500',
+              'active:bg-red-100 dark:active:bg-red-900/40')}
+            aria-label={`Delete session ${session.name}`}
+            title="Delete"
+            onClick={() => onDelete(session.id)}
+          >
+            <Trash2 size={16} aria-hidden="true" />
+          </button>
         </div>
       </div>
      </div>

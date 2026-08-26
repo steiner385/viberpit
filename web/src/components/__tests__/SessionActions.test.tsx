@@ -209,10 +209,12 @@ describe('SessionActions (via Dashboard)', () => {
     expect(screen.getByRole('button', { name: /delete session alpha session/i })).toBeInTheDocument()
   })
 
-  it('no longer renders an overflow actions menu', () => {
+  it('renders a mobile overflow (`…`) button for secondary actions on each session card', () => {
+    // Below lg viewport (default jsdom), Rename/Archive/Delete are in the `…`
+    // overflow menu; at lg+ they appear as direct icon buttons.
     render(<Dashboard />, { wrapper })
 
-    expect(screen.queryByRole('button', { name: /actions for session/i })).not.toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /more actions for session/i }).length).toBeGreaterThan(0)
   })
 
   it('clicking rename shows a rename dialog', async () => {
