@@ -78,3 +78,39 @@ def test_recovers_when_the_daemon_comes_up_mid_poll():
     assert steps.wait_healthy(SHA, url="u", attempts=5,
                               fetch=lambda u: next(it, seq[-1]),
                               sleep=lambda s: None) is True
+
+
+# --- SHA abbreviation skew across hosts (2026-08-25 #774 rollback) ------------------
+#
+# ``git rev-parse --short`` picks the shortest prefix that is UNIQUE within a given
+# repository's object database, so the SAME commit abbreviates to different lengths on
+# different hosts: dobby rendered f26c56ee475… as "f26c56ee" (8 chars, a colliding
+# object forced the extra nibble) while rocky rendered it "f26c56e" (7). The edge's
+# expected sha is abbreviated on dobby and the daemon's sha on rocky, so an exact
+# ``!=`` wrongly failed the gate and rolled back a deploy where BOTH hosts were on the
+# correct commit. The gate must treat one short-sha as matching the other when either
+# is a prefix of the other.
+
+def test_daemon_sha_shorter_abbreviation_of_same_commit_passes():
+    # dobby expected/edge = 8 chars; rocky daemon = 7 chars; same commit.
+    body = _body(sha="f26c56ee", daemon="ok", daemonSha="f26c56e")
+    assert steps.wait_healthy("f26c56ee", url="u", attempts=1,
+                              fetch=lambda u: body, sleep=lambda s: None) is True
+
+
+def test_daemon_sha_longer_abbreviation_of_same_commit_passes():
+    # The reverse: daemon abbreviates longer than the edge's expected sha.
+    body = _body(sha="f26c56e", daemon="ok", daemonSha="f26c56ee")
+    assert steps.wait_healthy("f26c56e", url="u", attempts=1,
+                              fetch=lambda u: body, sleep=lambda s: None) is True
+
+
+def test_daemon_ok_prefix_match_unit():
+    import json
+    ok_short = json.dumps({"daemon": "ok", "daemonSha": "f26c56e"})
+    ok_long = json.dumps({"daemon": "ok", "daemonSha": "f26c56ee"})
+    diff = json.dumps({"daemon": "ok", "daemonSha": "deadbee"})
+    assert steps._daemon_ok(ok_short, "f26c56ee") is True
+    assert steps._daemon_ok(ok_long, "f26c56e") is True
+    # A genuinely different commit (the #719 skew class) is still rejected.
+    assert steps._daemon_ok(diff, "f26c56ee") is False

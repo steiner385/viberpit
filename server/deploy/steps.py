@@ -403,6 +403,23 @@ def wait_healthy(expected_sha: str, *, url: str, attempts: int = 15, sleep_s: fl
     return False
 
 
+def _short_sha_match(a: str, b: str) -> bool:
+    """True if two git short-SHAs denote the same commit despite differing length.
+
+    ``git rev-parse --short`` emits the shortest prefix that is UNIQUE within a
+    single repository's object database, so the SAME commit abbreviates to
+    different lengths on different hosts: on 2026-08-25 dobby rendered f26c56ee475…
+    as ``f26c56ee`` (8 chars — a colliding object forced the extra nibble) while
+    rocky rendered it ``f26c56e`` (7). The edge's expected sha is abbreviated on the
+    edge host and the daemon's sha on the daemon host, so exact ``==`` wrongly
+    reported skew and rolled back a deploy where both hosts were on the right
+    commit. Either abbreviation of one commit is a prefix of the other, so match on
+    prefix rather than equality — a genuinely different commit shares no such prefix
+    and is still rejected (the #719 skew class).
+    """
+    return bool(a) and bool(b) and (a.startswith(b) or b.startswith(a))
+
+
 def _daemon_ok(body: str, expected_sha: str) -> bool:
     """True unless the body positively reports an unhealthy or skewed daemon.
 
@@ -420,7 +437,7 @@ def _daemon_ok(body: str, expected_sha: str) -> bool:
     if doc.get("daemon") == "unavailable":
         return False
     daemon_sha = doc.get("daemonSha")
-    if daemon_sha and daemon_sha != expected_sha:
+    if daemon_sha and not _short_sha_match(str(daemon_sha), expected_sha):
         return False
     return True
 
