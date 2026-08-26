@@ -134,18 +134,22 @@ describe('SessionCard narrow-card declutter contract', () => {
     expect([...unreachable].map((el) => el.getAttribute('data-testid') ?? el.className)).toEqual([])
   })
 
-  it('gates rename/archive/delete to a wide card but keeps resume when narrow', () => {
+  it('gates rename/archive/delete to desktop (lg+) but keeps resume and quick-replies always visible', () => {
     renderCard(rich)
     const secondary = screen.getByTestId('card-secondary-actions')
-    expect(secondary).toHaveClass('hidden', '@md:contents')
+    // Hidden below lg via viewport breakpoint; dissolves to `contents` at lg+
+    // so its children become direct flex members of the action row.
+    expect(secondary).toHaveClass('hidden', 'lg:contents')
     expect(within(secondary).getByRole('button', { name: /rename session/i })).toBeInTheDocument()
     expect(within(secondary).getByRole('button', { name: /archive session/i })).toBeInTheDocument()
     expect(within(secondary).getByRole('button', { name: /delete session/i })).toBeInTheDocument()
-    // Resume is the one action kept inline when narrow — it must NOT live in the
-    // wide-card-only group.
+    // Resume and Quick Replies are always visible — they must NOT live inside
+    // the desktop-only group.
     const resume = screen.getByRole('button', { name: /resume session/i })
     expect(secondary).not.toContainElement(resume)
     expect(resume).not.toHaveClass('hidden')
+    const quickReplies = screen.getByRole('button', { name: /quick replies/i })
+    expect(secondary).not.toContainElement(quickReplies)
   })
 
   it('keeps the essentials (title + account chip) visible when narrow', () => {
