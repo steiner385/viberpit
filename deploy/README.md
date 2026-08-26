@@ -205,3 +205,64 @@ The `watchdog` daemon runs the script every interval with `test`; a non-zero exi
 makes it re-run the script with `repair`, and a non-zero `repair` triggers the reset.
 State (outage-window start + cooldown anchor) lives in `WDR_STATE_DIR`
 (`/var/lib/watchdog-reachability`, must survive reboots for the cooldown to hold).
+
+## Remote mounts (`ccswitch-mounts.service`, remote session host only)
+
+rocky runs the sessions; **dobby is canonical** for the account store, the shared
+`~/.claude` assets, and the archive dir (spec decision 4). rocky reaches all of them
+over sshfs across the tailnet. Without the mounts the daemon starts but every session
+fails: no credentials, the wrong skill set, and archiving dies with `Permission denied`
+on `/mnt/hdd-storage`.
+
+`ccswitch-daemon.service.d/require-mounts.conf` binds the daemon to the mount unit with
+`Requires=` + `After=`. That `Requires=` is **load-bearing** — #765 was the daemon
+starting into a *dead* sshfs mount and dying with
+`OSError: [Errno 5] Input/output error: '/home/tony/.claude-accounts'`. Do not loosen it
+to `Wants=`.
+
+The cost of `Requires=` is that a failed mount unit **cancels** the daemon's start job,
+and a cancelled start job never engages `Restart=always`. On 2026-08-26 that took the
+fleet down: rocky rebooted, `ccswitch-mounts.service` ran while tailscaled was still
+settling, the first sshfs attempt for `.claude-accounts` died with
+`read: Connection reset by peer`, and the daemon sat dead until
+`ccswitch-daemon-ensure.timer` fired ~60s later. Two layers now cover it, in order:
+
+1. **`bin-ccswitch-mounts.sh` retries internally** (`CCSWITCH_MOUNT_ATTEMPTS`, default 5,
+   `CCSWITCH_MOUNT_RETRY_DELAY`, default 3s) so a tailnet still settling at boot never
+   fails the unit in the first place. Retries are bounded, so a genuinely-down dobby
+   still fails loudly. `TimeoutStartSec=300` on the unit must stay above the worst-case
+   retry budget, or systemd SIGKILLs the script mid-retry and reopens the race.
+2. **`ccswitch-daemon-ensure.timer`** re-starts a daemon left dead by a cancelled job (#765).
+
+Behaviour is pinned by `server/tests/test_mounts_unit.py`, which executes the real script
+against stubbed `sshfs`/`mountpoint` (a retry loop that does not retry passes a grep).
+
+Install on the remote session host:
+
+    sudo install -m755 deploy/bin-ccswitch-mounts.sh /home/tony/bin-ccswitch-mounts.sh
+    sudo install -m644 deploy/ccswitch-mounts.service /etc/systemd/system/
+    sudo mkdir -p /etc/systemd/system/ccswitch-daemon.service.d
+    sudo install -m644 deploy/ccswitch-daemon.service.d/require-mounts.conf \
+        /etc/systemd/system/ccswitch-daemon.service.d/
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now ccswitch-mounts.service
+
+## Hardware watchdog load thresholds (`/etc/watchdog.conf`)
+
+Separate knob from the reachability test above, and a sharp one. `watchdog(8)` will
+**hard-reboot the host** when the load average exceeds `max-load-1/5/15`. rocky ships
+8 cores but runs six KinDash self-hosted CI runners *plus* the whole claude session
+fleet, so load in the tens is normal working load, not a hang.
+
+On 2026-08-26 the stock `max-load-1 = 50` fired during ordinary work (a session doing
+Android AVD/qemu work on top of the fleet): load crossed 50 at 09:18:25, and 70s later
+the watchdog killed the box — `shutting down the system because of error 253 = 'load
+average too high'` — taking every live session with it.
+
+Thresholds are now `150 / 120 / 90`, well clear of realistic peaks while still bounding
+a true runaway. Raise them, don't lower them, if the runner count on a host grows:
+
+    load=150,120,90    # confirm with: journalctl -u watchdog | grep 'load='
+
+A hung *kernel* is still caught by the hardware watchdog itself (`iTCO_wdt`, 60s), which
+is independent of these software thresholds — high load is not what that protects against.
