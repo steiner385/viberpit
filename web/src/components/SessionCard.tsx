@@ -325,7 +325,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
           panels; on desktop it is a plain wrapper with no gesture handlers. */}
       <div
         {...(!isWide ? { 'data-testid': 'card-swipe-fg', onPointerDown: swipe.onPointerDown } : {})}
-        style={!isWide ? { transform: `translateX(${restX}px)` } : undefined}
+        style={(!isWide && restX !== 0) ? { transform: `translateX(${restX}px)` } : undefined}
         className={cn(
           !isWide && 'relative bg-white dark:bg-gray-800 touch-pan-y',
           !isWide && !swipe.dragging && !reduceMotion && 'transition-transform duration-200',
