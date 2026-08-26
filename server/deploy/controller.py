@@ -186,8 +186,14 @@ class DeployController:
             # legitimately report daemon:"unavailable" for tens of seconds.
             _attempts = (self._steps.HEALTH_ATTEMPTS_WITH_DAEMON if daemon_changed
                          else self._steps.HEALTH_ATTEMPTS_EDGE_ONLY)
+            # Only assert the daemon's sha when THIS deploy advanced it. An edge-only
+            # deploy (daemon_changed=False) never touches the remote daemon, so it
+            # stays on its prior commit by design; requiring the target sha there
+            # rolls back every edge-only deploy once the daemon drifts behind the
+            # edge (the 2026-08-26 #776 rollback). Availability is still required.
             if not await asyncio.to_thread(self._steps.wait_healthy, short,
-                                           url=self.health_url, attempts=_attempts):
+                                           url=self.health_url, attempts=_attempts,
+                                           require_daemon_sha=daemon_changed):
                 raise DeployError("restart", "health gate failed")
 
             # /healthz proves the process is up and the schema matches; it never

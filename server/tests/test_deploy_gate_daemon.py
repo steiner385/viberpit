@@ -114,3 +114,43 @@ def test_daemon_ok_prefix_match_unit():
     assert steps._daemon_ok(ok_long, "f26c56e") is True
     # A genuinely different commit (the #719 skew class) is still rejected.
     assert steps._daemon_ok(diff, "f26c56ee") is False
+
+
+# --- edge-only deploys leave the daemon behind (2026-08-26 #776 rollback) -----------
+#
+# An edge-only deploy (daemon_changed=False) deliberately does NOT touch the remote
+# daemon — restart_units skips it — so it stays on whatever (older) commit it was
+# already running. The #719 daemon-sha check was unconditional, so it demanded the
+# daemon be at the deploy TARGET even on these deploys: #776 was a pure web/ change,
+# rocky was still on the previous daemon commit, and the gate rolled it back. The
+# daemon-sha assertion must apply only when the daemon was actually advanced; the
+# daemon must always still be REACHABLE.
+
+def test_edge_only_deploy_tolerates_a_daemon_left_on_an_older_commit():
+    body = _body(sha="8b5f5ac5", daemon="ok", daemonSha="f26c56e")
+    assert steps.wait_healthy("8b5f5ac5", url="u", attempts=1, require_daemon_sha=False,
+                              fetch=lambda u: body, sleep=lambda s: None) is True
+
+
+def test_edge_only_deploy_still_requires_the_daemon_to_be_reachable():
+    """Relaxing the sha check does not relax availability: a daemon that went
+    unavailable during the edge restart is still a failed deploy."""
+    body = _body(sha="8b5f5ac5", daemon="unavailable")
+    assert steps.wait_healthy("8b5f5ac5", url="u", attempts=2, require_daemon_sha=False,
+                              fetch=lambda u: body, sleep=lambda s: None) is False
+
+
+def test_daemon_changed_deploy_still_requires_matching_daemon_sha():
+    """When the daemon WAS advanced (daemon_changed=True, the default), a daemon
+    still on the old sha is the #719 skew and must fail."""
+    body = _body(sha="8b5f5ac5", daemon="ok", daemonSha="0000000")
+    assert steps.wait_healthy("8b5f5ac5", url="u", attempts=2, require_daemon_sha=True,
+                              fetch=lambda u: body, sleep=lambda s: None) is False
+
+
+def test_daemon_ok_require_sha_false_skips_only_the_sha_check():
+    import json
+    behind = json.dumps({"daemon": "ok", "daemonSha": "0000000"})
+    gone = json.dumps({"daemon": "unavailable"})
+    assert steps._daemon_ok(behind, "8b5f5ac5", require_sha=False) is True
+    assert steps._daemon_ok(gone, "8b5f5ac5", require_sha=False) is False
