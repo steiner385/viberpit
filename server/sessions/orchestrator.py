@@ -981,6 +981,8 @@ class SessionOrchestrator:
         NEVER awaited inline inside a WS-attach coroutine — always scheduled via
         asyncio.create_task so a client-disconnect cancellation cannot interrupt it.
         """
+        if self._shutting_down:
+            return 0
         from server.sessions import session_queue as sq
         started = 0
         # Guard: an instance created before this attribute was added (mid-session
