@@ -36,11 +36,17 @@ def make_steps(*, ci="green", healthy=True, changed=None):
         calls.controller_refresh_scheduled = True
         return True
     mod.schedule_controller_restart = _sched
-    mod.wait_healthy = lambda sha, **k: healthy
-    # The controller selects a poll window by daemon_changed (a remote daemon
-    # restart outlasts the edge-only window).
+    def wait_healthy(sha, **k):
+        calls.health_kwargs = k
+        return healthy
+    mod.wait_healthy = wait_healthy
+    # The controller selects a poll window by whether a remote daemon is PRESENT
+    # (daemon_changed OR remote_daemon_configured): the edge must re-attach to a
+    # remote daemon over the tailnet after its own restart, outlasting the
+    # edge-only window even when the daemon's code did not change.
     mod.HEALTH_ATTEMPTS_EDGE_ONLY = 15
     mod.HEALTH_ATTEMPTS_WITH_DAEMON = 75
+    mod.remote_daemon_configured = lambda: False
     # Functional probes run after the health gate; default to healthy in these tests.
     mod.require_endpoints_healthy = lambda base, paths=None, **k: None
     def rollback(repo, sha, *, daemon_changed, daemon_enabled, run=None):
@@ -130,6 +136,41 @@ async def test_edge_only_skips_daemon_restart_and_publishes():
     st = await c.deploy_once()
     assert calls.restarted == ["ccswitch.service"]   # no daemon restart
     assert calls.published is True and st.error is None
+
+
+@pytest.mark.asyncio
+async def test_edge_only_with_remote_daemon_uses_long_health_window():
+    """An edge-only deploy must still use the LONG health window when a remote daemon is
+    configured: after the edge restarts it must re-attach to the daemon over a settling
+    tailnet, and /healthz blocks on that re-attach reporting daemon:"unavailable". Sizing the
+    window by daemon_changed alone rolled back a healthy frontend-only deploy (#780). The
+    daemon-sha assertion still keys off daemon_changed — an edge-only deploy leaves the daemon
+    on its prior commit by design, so require_daemon_sha stays False."""
+    g = FakeGit("a", "b", [])
+    s, calls = make_steps(healthy=True)
+    s.remote_daemon_configured = lambda: True
+    c = DeployController("/r", health_url="http://h/healthz", venv_pip="/v/pip",
+                         git_mod=g, steps_mod=s, daemon_enabled=True,
+                         changed_files_fn=lambda repo, a, b: ["web/src/App.tsx"])
+    st = await c.deploy_once()
+    assert calls.restarted == ["ccswitch.service"]                       # daemon NOT restarted
+    assert calls.health_kwargs["attempts"] == s.HEALTH_ATTEMPTS_WITH_DAEMON
+    assert calls.health_kwargs["require_daemon_sha"] is False
+    assert st.error is None
+
+
+@pytest.mark.asyncio
+async def test_edge_only_single_host_keeps_short_health_window():
+    """No remote daemon means nothing slow to re-attach to; keep the fast edge-only window."""
+    g = FakeGit("a", "b", [])
+    s, calls = make_steps(healthy=True)
+    s.remote_daemon_configured = lambda: False
+    c = DeployController("/r", health_url="http://h/healthz", venv_pip="/v/pip",
+                         git_mod=g, steps_mod=s, daemon_enabled=True,
+                         changed_files_fn=lambda repo, a, b: ["web/src/App.tsx"])
+    st = await c.deploy_once()
+    assert calls.health_kwargs["attempts"] == s.HEALTH_ATTEMPTS_EDGE_ONLY
+    assert st.error is None
 
 
 @pytest.mark.asyncio

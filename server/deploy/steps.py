@@ -337,24 +337,51 @@ def restart_units(*, daemon_changed: bool, daemon_enabled: bool,
 
 
 def _default_fetch(url: str) -> str:
-    """Fetch URL body with a 3s timeout; return empty string on error."""
+    """Fetch URL body with an 8s timeout; return empty string on error.
+
+    The timeout must outlast a *healthy* /healthz, not just a fast one. In remote mode
+    /healthz makes daemon RPCs (active_session_count, x11_metrics) that answer quickly once
+    the daemon is reachable but can lag for a few seconds while the daemon warms up and the
+    edge re-attaches over a settling tailnet right after a restart. A 3s timeout gave up
+    before such a slow-but-healthy response arrived, so the gate saw only empty bodies and
+    rolled back a healthy deploy (#780). 8s clears that warmup latency while still capping how
+    long a genuinely-wedged /healthz (~10s of connect timeouts, daemon:"unavailable") drags
+    each poll — so a dead daemon still rolls back in bounded time.
+    """
     import httpx
     try:
-        return httpx.get(url, timeout=3.0).text
+        return httpx.get(url, timeout=8.0).text
     except Exception:
         return ""
+
+
+def remote_daemon_configured() -> bool:
+    """True when a REMOTE session daemon is configured (``CCSWITCH_DAEMON_SSH_HOST``).
+
+    Reads the SAME env var ``restart_units`` uses to decide whether the daemon restart is
+    issued over ssh, so the health window and the restart path can never disagree about the
+    topology. A remote daemon means the edge must RE-ATTACH to it over the tailnet after the
+    edge's own restart — a slow, settling dependency even when the daemon's code did not change
+    (see the health-window note below).
+    """
+    return bool(os.environ.get("CCSWITCH_DAEMON_SSH_HOST"))
 
 
 # Health-gate poll windows. wait_healthy returns on the FIRST healthy poll, so a
 # longer ceiling costs nothing when the deploy is fine — it is only spent when
 # something is actually wrong.
 HEALTH_POLL_INTERVAL_S = 2.0
-# Edge-only deploy: nothing slow to wait for, so fail fast as before.
+# Single-host edge-only deploy (NO remote daemon): nothing slow to wait for, so fail fast.
+# This short window applies only when ``remote_daemon_configured()`` is False; with a remote
+# daemon the edge must re-attach to it after restart, so the controller uses the longer
+# window below even for an edge-only deploy (see controller.deploy_once).
 HEALTH_ATTEMPTS_EDGE_ONLY = 15
-# A remote daemon was restarted. `systemctl restart` over ssh returns when the
-# process STARTS, not when uvicorn is SERVING, and rocky needs ~10-30s more to
-# bind its port. The first real deploy after #726 failed at the 30s ceiling and
-# rolled back with nothing actually wrong — the daemon was still coming up.
+# A remote daemon is in play. Either it was restarted (`systemctl restart` over ssh returns
+# when the process STARTS, not when uvicorn is SERVING, and rocky needs ~10-30s more to bind
+# its port), OR — even on an edge-only deploy — the restarted edge must re-attach to it over a
+# settling tailnet (#780). The first real deploy after #726 failed at the 30s ceiling and
+# rolled back with nothing actually wrong; #780 rolled back an edge-only deploy for the same
+# reason. Both need this longer window.
 HEALTH_ATTEMPTS_WITH_DAEMON = 75
 
 
