@@ -181,10 +181,16 @@ class DeployController:
                 raise DeployError("restart", str(e)) from e
             if daemon_changed and self.daemon_enabled:
                 log_event(log, logging.INFO, "deploy.daemon.start", deploy_id=self._deploy_id)
-            # Give the gate a longer window when a daemon was restarted: the
-            # remote restart returns before uvicorn is serving, so the edge can
-            # legitimately report daemon:"unavailable" for tens of seconds.
-            _attempts = (self._steps.HEALTH_ATTEMPTS_WITH_DAEMON if daemon_changed
+            # Give the gate the longer window whenever a REMOTE daemon is in play — not just
+            # when it was restarted. A remote restart returns before uvicorn is serving, so the
+            # edge reports daemon:"unavailable" for tens of seconds; but even an EDGE-ONLY
+            # deploy must re-attach the restarted edge to the remote daemon over a settling
+            # tailnet, during which /healthz blocks and reports the daemon unavailable just the
+            # same (the 2026-08-26 #780 rollback of a frontend-only deploy). Size the window by
+            # remote-daemon PRESENCE, not code-change; require_daemon_sha below still keys off
+            # daemon_changed, since an edge-only deploy leaves the daemon on its prior commit.
+            _needs_daemon_window = daemon_changed or self._steps.remote_daemon_configured()
+            _attempts = (self._steps.HEALTH_ATTEMPTS_WITH_DAEMON if _needs_daemon_window
                          else self._steps.HEALTH_ATTEMPTS_EDGE_ONLY)
             # Only assert the daemon's sha when THIS deploy advanced it. An edge-only
             # deploy (daemon_changed=False) never touches the remote daemon, so it

@@ -40,3 +40,39 @@ def test_health_gives_up_after_attempts():
                             fetch=lambda u: '{"status":"ok","sha":"other00"}',
                             sleep=lambda s: None)
     assert ok is False
+
+
+def test_gate_fetch_timeout_outlasts_a_slow_but_healthy_healthz(monkeypatch):
+    """The gate must poll /healthz with a read timeout longer than a healthy /healthz can take.
+
+    In remote mode /healthz makes daemon RPCs (active_session_count, x11_metrics); just after a
+    restart the daemon can answer slowly while it warms up and the edge re-attaches over the
+    tailnet. A 3s poll timeout gave up before a slow-but-healthy /healthz answered, so the gate
+    saw only empty bodies and rolled back a healthy deploy (#780). The timeout must comfortably
+    exceed that warmup latency.
+    """
+    import httpx
+
+    captured: dict = {}
+
+    def fake_get(url, timeout):
+        captured["timeout"] = timeout
+
+        class _R:
+            text = ""
+
+        return _R()
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    steps._default_fetch("http://h/healthz")
+    assert captured["timeout"] >= 6.0
+
+
+def test_remote_daemon_configured_reads_ssh_host(monkeypatch):
+    """A REMOTE daemon is present iff CCSWITCH_DAEMON_SSH_HOST is set — the same env var
+    restart_units uses to decide whether the daemon restart is issued over ssh. One source of
+    truth so the health window and the restart path never disagree about the topology."""
+    monkeypatch.delenv("CCSWITCH_DAEMON_SSH_HOST", raising=False)
+    assert steps.remote_daemon_configured() is False
+    monkeypatch.setenv("CCSWITCH_DAEMON_SSH_HOST", "rocky")
+    assert steps.remote_daemon_configured() is True
