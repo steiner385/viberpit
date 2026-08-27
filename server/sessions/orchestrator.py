@@ -1517,7 +1517,10 @@ class SessionOrchestrator:
             )
         # Refresh the per-sub-agent summary so the dashboard list can nest sub-agents
         # under this session. Best-effort: a failure must never break the session loop.
-        await self._persist_sub_agents(session_id)
+        # Deferred to a background task — _persist_sub_agents reads the full transcript
+        # via a sync glob that can take >1s on machines with many project dirs; awaiting
+        # it inline would block the event loop and stall the session status pump.
+        self._spawn(self._persist_sub_agents(session_id))
         # Live-push the change to every connected dashboard so the session LIST updates
         # immediately, instead of waiting for the 5s poll (which the browser suspends
         # while the ccswitch tab is backgrounded — the cause of cards getting stuck on
