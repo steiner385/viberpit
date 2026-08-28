@@ -950,7 +950,11 @@ async def close_session(
     identity: str = Depends(current_identity),
     db=Depends(get_db),
 ):
-    """Archive a session (moves cwd to archive, keeps DB row). Returns 404 if unknown."""
+    """Archive a session (status flip; worktree stays in place, DB row kept).
+
+    Returns 404 if unknown. Disk is reclaimed later, when the
+    max_archived_sessions cap purges the row.
+    """
     orch = _get_orchestrator(request)
     record = await orch.get_session(session_id)
     if record is None:

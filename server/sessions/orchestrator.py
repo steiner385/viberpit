@@ -45,7 +45,7 @@ from server.db.models import AUTO_ARCHIVE_PROVENANCE, CAPACITY_EXEMPT_STATUSES, 
 from server.sessions import adopt as _adopt
 from server.sessions.account_auth import oauth_env_for
 from server.sessions import deploy_snapshot as _deploy_snapshot
-from server.sessions.archive_move import mountpoint, move_into_archive
+from server.sessions.archive_move import mountpoint, restore_from_archive
 from server.sessions import attachments as _attachments
 from server.sessions import dispatch
 from server.sessions import events as ev
@@ -6879,12 +6879,19 @@ class SessionOrchestrator:
 
     async def archive_session(self, session_id: str, *, archived_by: str = "user",
                               context: dict | None = None) -> None:
-        """Archive a session: stop driver, move cwd into archive_dir, status='archived'.
+        """Archive a session: stop the driver and flip status='archived'. Nothing moves.
 
-        The DB row is KEPT (status='archived'). The working directory is moved to
-        archive_dir()/<session_id>/ so it can be reviewed or unarchived later.
-        If the cwd is missing (already gone), skip the move but still mark archived.
-        Git worktree registrations are pruned best-effort after the move.
+        The DB row is KEPT (status='archived') and the working directory STAYS IN
+        PLACE — archiving is a pure state change, so it completes in milliseconds
+        and cannot half-fail, time out the daemon RPC, or saturate the thread pool
+        when auto-archive fires in bursts (the old in-request move did all three).
+        Disk is reclaimed only when the max_archived_sessions cap purges the row
+        (permanent_delete), which is also where the worktree is deleted and its
+        git registration cleared.
+
+        ``archive_root`` is stamped NULL: NULL marks a stay-in-place archive whose
+        files are at ``cwd``; a non-NULL value marks a legacy row whose files were
+        moved into an archive home (unarchive still restores those).
 
         ``archived_by`` records provenance ("user" | "autopilot" | "backlog-runner") and
         ``context`` snapshots the decision features for AUTO archives, so a later manual
@@ -6904,79 +6911,28 @@ class SessionOrchestrator:
         self._pending_initial_prompt.pop(session_id, None)
 
         # Remove from active records BEFORE driver.aclose() so the session
-        # disappears from list_sessions() immediately.  aclose() takes up to
-        # _CLOSE_GRACE_SEC (5 s) for live sessions; a background refetch firing
-        # during that window would see the session still in _records and restore
-        # it in the UI before the archive completes.
+        # disappears from list_sessions() immediately and a background refetch
+        # can never see it half-archived.
         record = self._records.pop(session_id, None)
 
-        # Clear in-memory worktree registration (we move the dir, not remove via git).
+        # Clear the in-memory worktree registration; the git registration stays
+        # until the cap purge deletes the worktree (permanent_delete).
         self._worktrees.pop(session_id, None)
 
+        # Close the driver in the background: aclose() takes up to
+        # _CLOSE_GRACE_SEC (5 s) for live sessions and nothing below depends on
+        # it, so the archive request must not wait on it.
         if driver is not None:
-            try:
-                await driver.aclose()
-            except Exception:
-                log.warning("session.archive_driver_close_failed id=%s", session_id,
-                            exc_info=True)
-
-        # Move the cwd into the archive directory. Capture the root actually used so
-        # unarchive can resolve through it later — see Session.archive_root.
-        archive_home = await self._effective_archive_home()
-        dest = archive_home / session_id
-        cwd_path: Path | None = Path(record.cwd) if (record and record.cwd) else None
-
-        # Resolve the shared clone BEFORE the move, while the worktree is still a
-        # valid git dir, so we can scope-deregister exactly this path afterward
-        # (never a global prune — issue #177).
-        # Both git calls run off the event loop (asyncio.to_thread) — git subprocess
-        # startup can spike under load, and simultaneous archive of many sessions was
-        # blocking the event loop long enough to trip the health-check watchdog.
-        repo_top: str | None = None
-        if cwd_path and cwd_path.exists():
-            repo_top = await asyncio.to_thread(_resolve_git_common_dir, str(cwd_path))
-
-        if cwd_path and cwd_path.exists():
-            try:
-                outcome = await asyncio.to_thread(move_into_archive, cwd_path, dest)
-                if outcome == "skipped:nospace":
-                    log.warning(
-                        "session.archive_move_skipped id=%s src=%s dest=%s — "
-                        "insufficient free space on archive disk; worktree left in place",
-                        session_id, cwd_path, dest,
-                    )
-                else:
-                    log.info(
-                        "session.archive id=%s moved cwd=%s to archive=%s (%s)",
-                        session_id, cwd_path, dest, outcome,
-                    )
-            except Exception:
-                log.exception(
-                    "session.archive_move_failed id=%s src=%s dest=%s",
-                    session_id, cwd_path, dest,
-                )
-        else:
-            log.info("session.archive id=%s cwd missing or unknown, skip move", session_id)
-
-        # Best-effort: drop THIS session's now-stale worktree registration, scoped
-        # to its own path. NOT a global `git worktree prune`: that reaped a sibling
-        # session's live worktree (issue #177), and it can no longer clean up our
-        # own record anyway now that session worktrees are locked on create.
-        if repo_top and cwd_path:
-            try:
-                await asyncio.to_thread(
-                    worktrees.clear_stale_registration, repo_top, str(cwd_path)
-                )
-            except Exception:
-                log.debug("session.archive_worktree_deregister_failed id=%s",
-                          session_id, exc_info=True)
+            self._spawn(self._close_archived_driver(driver, session_id),
+                        name=f"archive-driver-close-{session_id}")
 
         # Remove from the session queue BEFORE persisting archived status so the
         # drain triggered below cannot resurrect a just-archived queued session.
         from server.sessions import session_queue as sq
         await sq.remove(session_id)
 
-        # Mark archived in DB.
+        # Mark archived in DB. archive_root=None also clears a stale root left by
+        # a legacy archive→unarchive round trip, whose files are back at cwd.
         async with db_session() as db:
             from datetime import datetime
             from sqlalchemy import update as sa_update
@@ -6984,24 +6940,30 @@ class SessionOrchestrator:
                 sa_update(DbSession)
                 .where(DbSession.id == session_id)
                 .values(status="archived", archived_by=archived_by, archive_context=context,
-                        archived_at=datetime.utcnow(), archive_root=str(archive_home))
+                        archived_at=datetime.utcnow(), archive_root=None)
             )
         prev_status = record.status if record is not None else None
         log_event(log, logging.INFO, "session.terminal",
                   session_id=session_id,
                   **{"from": prev_status, "to": "archived", "reason": "archive"})
-        log.info("session.archive id=%s done", session_id)
+        log.info("session.archive id=%s done (worktree left in place)", session_id)
 
-        # Enforce the configured archived-session cap. Best-effort: a purge failure
-        # must never fail the archive that triggered it.
-        try:
-            await self._enforce_archive_limit()
-        except Exception:
-            log.exception("archive_limit: enforcement after archive failed id=%s", session_id)
+        # Enforce the configured archived-session cap off the request path — the
+        # purge deletes worktrees (heavy I/O) and must never slow or fail the
+        # archive that triggered it. _spawn logs any failure.
+        self._spawn(self._enforce_archive_limit(), name="archive-limit-on-archive")
 
         # Drain the session queue: an archived session frees a slot so the next queued
         # session can start. Tracked via _spawn — mirrors close_session.
         self._spawn(self._maybe_start_queued(), name="queue-drain-on-archive")
+
+    async def _close_archived_driver(self, driver: "SessionDriver", session_id: str) -> None:
+        """Background half of archive_session: graceful driver shutdown (5 s grace)."""
+        try:
+            await driver.aclose()
+        except Exception:
+            log.warning("session.archive_driver_close_failed id=%s", session_id,
+                        exc_info=True)
 
     async def _effective_repo_root(self) -> str:
         """DB AppSettings.repo_root → env/default fallback.
@@ -7255,7 +7217,13 @@ class SessionOrchestrator:
         return "\n".join(lines)
 
     async def unarchive(self, session_id: str) -> "SessionRecord | None":
-        """Move the archived cwd back and restore the session to idle.
+        """Restore an archived session to idle.
+
+        New-style (status-flip) archives leave the worktree at ``cwd``, so
+        unarchiving is a pure status flip — instant, no disk I/O, cannot run out
+        of space. Legacy rows (non-NULL ``archive_root``, or pre-archive_root
+        rows whose cwd is gone) still have their files moved back from the
+        archive home.
 
         Returns the restored SessionRecord, or None if not found / not archived.
         Adds the record to _records so it reappears in list_sessions() without restart.
@@ -7271,47 +7239,17 @@ class SessionOrchestrator:
         if row is None:
             return None
 
-        # Resolve through the root recorded at archive time. The current archive home is
-        # only a fallback for legacy rows predating archive_root — using it unconditionally
-        # is what silently restored empty trees after the archive root moved disks.
         stored_root = getattr(row, "archive_root", None)
-        archive_base = Path(stored_root) if stored_root else (await self._effective_archive_home())
-        archive_path = archive_base / session_id
         original_cwd = Path(row.cwd)
 
-        def _restore() -> str:
-            if archive_path.exists():
-                original_cwd.parent.mkdir(parents=True, exist_ok=True)
-                # Same cross-device safety as archiving, but keep the whole tree
-                # (prune=()): unarchiving restores the worktree, it does not shed deps.
-                return move_into_archive(archive_path, original_cwd, prune=())
-            else:
-                # Do NOT fabricate an empty cwd here: that reports success while handing
-                # the user an empty worktree, hiding a real misconfiguration.
-                raise ArchiveMissingError(
-                    f"Archived session {session_id} is not present at {archive_path}. "
-                    f"Its recorded archive root is "
-                    f"{stored_root or '(none — legacy row, used current archive home)'}; "
-                    f"if the archive directory moved, restore it or correct the session's "
-                    f"archive_root before unarchiving."
-                )
-
-        try:
-            move_result = await asyncio.to_thread(_restore)
-        except (ArchiveMissingError, InsufficientStorageError):
-            raise
-        except Exception as exc:
-            log.exception("session.unarchive_move_failed id=%s archive=%s dest=%s",
-                          session_id, archive_path, original_cwd)
-            raise OSError(
-                f"Failed to restore archived session {session_id} "
-                f"from {archive_path} to {original_cwd}: {exc}"
-            ) from exc
-        if move_result == "skipped:nospace":
-            raise InsufficientStorageError(
-                f"Not enough disk space to restore session — the target filesystem "
-                f"({mountpoint(original_cwd)}) is low on inodes or bytes"
-            )
+        if stored_root is None and original_cwd.exists():
+            # New-style archive: the worktree never moved. NULL archive_root with
+            # a present cwd is the marker (a pre-archive_root legacy row also has
+            # NULL, but its cwd was moved away, so it falls through to restore).
+            log.info("session.unarchive id=%s worktree already in place at %s",
+                     session_id, original_cwd)
+        else:
+            await self._restore_legacy_archive(session_id, stored_root, original_cwd)
 
         # Capture the archive provenance BEFORE we clear it, so we can tell whether this
         # unarchive is REVERSING an automated archive (→ a learning heuristic).
@@ -7331,9 +7269,11 @@ class SessionOrchestrator:
             from sqlalchemy import update as sa_update
             values: dict = dict(
                 # Restore to idle AND pin the sticky opt-out: a manually-unarchived
-                # session is never auto-archived again. Clear the now-consumed provenance.
+                # session is never auto-archived again. Clear the now-consumed provenance
+                # and the archive root — after a legacy restore the files are back at
+                # cwd, so a stale root would misdescribe where they live.
                 status="idle", auto_archive_opt_out_reason="manual-unarchive",
-                archived_by=None, archive_context=None)
+                archived_by=None, archive_context=None, archive_root=None)
             # Persist the seed so it survives a daemon restart between now and the next
             # attach (the in-memory _pending_initial_prompt below covers the no-restart
             # common case; the column is the durable copy + feeds completion judgement).
@@ -7382,17 +7322,65 @@ class SessionOrchestrator:
             kind="archive_reversed", session_id=session_id, target=ctx.get("repo"),
             detail=detail)
 
+    async def _restore_legacy_archive(self, session_id: str, stored_root: str | None,
+                                      original_cwd: Path) -> None:
+        # @deprecated — legacy pre-status-flip archives (files moved into an archive
+        # home); remove when no archived rows with a moved-away worktree remain.
+        """Move a legacy archived cwd back into place (raises on failure).
+
+        Resolves through the root recorded at archive time. The current archive home
+        is only a fallback for rows predating archive_root — using it unconditionally
+        is what silently restored empty trees after the archive root moved disks.
+        """
+        archive_base = Path(stored_root) if stored_root else (await self._effective_archive_home())
+        archive_path = archive_base / session_id
+
+        def _restore() -> str:
+            if archive_path.exists():
+                original_cwd.parent.mkdir(parents=True, exist_ok=True)
+                return restore_from_archive(archive_path, original_cwd)
+            else:
+                # Do NOT fabricate an empty cwd here: that reports success while handing
+                # the user an empty worktree, hiding a real misconfiguration.
+                raise ArchiveMissingError(
+                    f"Archived session {session_id} is not present at {archive_path}. "
+                    f"Its recorded archive root is "
+                    f"{stored_root or '(none — legacy row, used current archive home)'}; "
+                    f"if the archive directory moved, restore it or correct the session's "
+                    f"archive_root before unarchiving."
+                )
+
+        try:
+            move_result = await asyncio.to_thread(_restore)
+        except (ArchiveMissingError, InsufficientStorageError):
+            raise
+        except Exception as exc:
+            log.exception("session.unarchive_move_failed id=%s archive=%s dest=%s",
+                          session_id, archive_path, original_cwd)
+            raise OSError(
+                f"Failed to restore archived session {session_id} "
+                f"from {archive_path} to {original_cwd}: {exc}"
+            ) from exc
+        if move_result == "skipped:nospace":
+            raise InsufficientStorageError(
+                f"Not enough disk space to restore session — the target filesystem "
+                f"({mountpoint(original_cwd)}) is low on inodes or bytes"
+            )
+
     async def permanent_delete(self, session_id: str) -> bool:
-        """Permanently delete a session: remove archive folder + DB row.
+        """Permanently delete a session: remove its on-disk directory + DB row.
+
+        This is where archived-session disk is actually reclaimed (archiving
+        itself is a pure status flip). New-style rows (archive_root NULL) have
+        their worktree deleted at ``cwd`` — guarded to ccswitch-managed paths —
+        and its git worktree registration cleared. Legacy rows (non-NULL
+        archive_root) have their moved-away archive folder deleted instead.
 
         Returns True if deleted, False if the session was not found in DB.
-        Containment guard: only removes paths that are direct children of the resolved
-        archive root.
 
         A *live* session (still in _records/_drivers, or status != 'archived') is
-        archived first: archive_session stops the driver and moves the cwd into the
-        archive. Deleting a live session directly would otherwise leave a zombie
-        driver running and orphan the working directory outside archive_dir().
+        archived first: archive_session stops the driver, so deleting it can't
+        leave a zombie driver running.
         """
         from sqlalchemy import select as sa_select
 
@@ -7404,7 +7392,7 @@ class SessionOrchestrator:
             return False
 
         # Archive-then-delete: a live session must be torn down before its row and
-        # working dir are removed, or we leak a driver and orphan the cwd.
+        # working dir are removed, or we leak a driver.
         if (
             session_id in self._records
             or session_id in self._drivers
@@ -7412,16 +7400,83 @@ class SessionOrchestrator:
         ):
             await self.archive_session(session_id)
 
-        # Resolve the root the session was ACTUALLY archived into. Re-read the column
-        # rather than reusing `row`: the archive-then-delete above calls archive_session,
-        # which stamps archive_root, so the row loaded earlier predates it.
+        # Re-read archive_root rather than reusing `row`: the archive-then-delete
+        # above stamps it (to NULL), so the row loaded earlier predates it.
         async with db_session() as db:
             stored_root = (await db.execute(
                 sa_select(DbSession.archive_root).where(DbSession.id == session_id)
             )).scalar_one_or_none()
-        base = Path(stored_root) if stored_root else await self._effective_archive_home()
 
-        # Containment guard: candidate must be a direct child of the resolved root.
+        cwd_path = Path(row.cwd) if row.cwd else None
+        if stored_root is None and cwd_path is not None and cwd_path.exists():
+            # New-style archive: the worktree is still at cwd (same NULL-root +
+            # present-cwd marker as unarchive).
+            await self._delete_worktree_at_cwd(session_id, cwd_path)
+        else:
+            # Legacy archive (moved into an archive home) — including ancient
+            # pre-archive_root rows, whose NULL root resolves to the current home.
+            if not await self._delete_legacy_archive_dir(session_id, stored_root):
+                return False
+
+        async with db_session() as db:
+            from sqlalchemy import delete as sa_delete
+            # Remove the session's attachment rows + (dedup-aware) on-disk files
+            # before the session row itself.
+            n_att = await _attachments.delete_for_session(db, session_id)
+            await db.execute(
+                sa_delete(DbSession).where(DbSession.id == session_id)
+            )
+        if n_att:
+            log.info("session.permanent_delete id=%s removed %d attachment(s)",
+                     session_id, n_att)
+        log.info("session.permanent_delete id=%s db row removed", session_id)
+        return True
+
+    async def _delete_worktree_at_cwd(self, session_id: str, cwd_path: Path) -> None:
+        """Delete a new-style archived session's worktree (still at its cwd).
+
+        Containment guard: sessions only ever run in ccswitch-created worktrees or
+        scratch dirs (both under a ``.ccswitch`` segment — see the create-session
+        isolation guarantee), so anything else is a misconfigured row and is left
+        in place rather than risk deleting a user's real directory. Guarded by
+        path segment, not the current worktrees base, so a repo_root move can't
+        strand directories the way the 2026-08-21 archive-root incident did.
+        """
+        if ".ccswitch" not in cwd_path.parts:
+            log.warning(
+                "session.permanent_delete id=%s cwd=%s is not a ccswitch-managed "
+                "directory — leaving it in place, deleting the row only",
+                session_id, cwd_path,
+            )
+            return
+        # Resolve the shared clone BEFORE the delete, while the worktree is still a
+        # valid git dir, so we can scope-deregister exactly this path afterward
+        # (never a global prune — issue #177). Off the event loop: git subprocess
+        # startup can spike under load.
+        repo_top = await asyncio.to_thread(_resolve_git_common_dir, str(cwd_path))
+        await asyncio.to_thread(shutil.rmtree, str(cwd_path), True)
+        if repo_top:
+            try:
+                await asyncio.to_thread(
+                    worktrees.clear_stale_registration, repo_top, str(cwd_path)
+                )
+            except Exception:
+                log.debug("session.permanent_delete_worktree_deregister_failed id=%s",
+                          session_id, exc_info=True)
+        log.info("session.permanent_delete id=%s worktree removed at %s",
+                 session_id, cwd_path)
+
+    async def _delete_legacy_archive_dir(self, session_id: str,
+                                         stored_root: str | None) -> bool:
+        # @deprecated — legacy pre-status-flip archives (files moved into an archive
+        # home); remove together with _restore_legacy_archive.
+        """Delete a legacy archived session's folder under its recorded archive root.
+
+        Containment guard: only removes paths that are direct children of the
+        resolved archive root. Returns False (caller must keep the DB row) on a
+        guard violation, True otherwise.
+        """
+        base = Path(stored_root) if stored_root else await self._effective_archive_home()
         archive_base = base.resolve()
         candidate = (archive_base / session_id).resolve()
         try:
@@ -7448,19 +7503,6 @@ class SessionOrchestrator:
                 " — deleting the row anyway; check for a stranded directory under a"
                 " previous archive root", session_id, candidate, stored_root or "<unset>",
             )
-
-        async with db_session() as db:
-            from sqlalchemy import delete as sa_delete
-            # Remove the session's attachment rows + (dedup-aware) on-disk files
-            # before the session row itself.
-            n_att = await _attachments.delete_for_session(db, session_id)
-            await db.execute(
-                sa_delete(DbSession).where(DbSession.id == session_id)
-            )
-        if n_att:
-            log.info("session.permanent_delete id=%s removed %d attachment(s)",
-                     session_id, n_att)
-        log.info("session.permanent_delete id=%s db row removed", session_id)
         return True
 
     async def resolve_transcript_path(self, session_id: str) -> str | None:
@@ -7490,7 +7532,7 @@ class SessionOrchestrator:
         """Return replayed transcript events for a session (read-only review).
 
         Works for both active and archived sessions: transcripts live in the
-        account's config dir (not the moved cwd), so always accessible.
+        account's config dir (not the session cwd), so always accessible.
         Returns [] if no transcript is found or parsing fails.
         max_turns=None returns the FULL transcript — pass it whenever the result
         feeds a user-facing surface, or the default tail silently truncates it

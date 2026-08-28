@@ -1,17 +1,16 @@
-"""Cross-device-safe archiving of a session worktree.
+"""Cross-device-safe restore of legacy archived session worktrees.
 
-Archiving moves a session's working directory into the archive dir. When the
-two live on the *same* filesystem this is an instant atomic ``rename``. When
-they live on *different* filesystems (e.g. worktrees on a data drive, archive
-on the root partition), ``shutil.move`` silently falls back to a recursive
-copy — and copying a worktree's ``node_modules`` across the boundary can fill
-the destination disk, leaving a multi-gigabyte partial copy behind. That is
-exactly what broke a deploy: the root partition filled mid-archive and the
-next daemon boot could not write per-session config, so no sessions restored.
+@deprecated — archiving is now a pure DB status flip that leaves the worktree
+in place, so nothing moves *into* an archive home anymore. This module only
+restores LEGACY archives (rows whose files were moved into an archive home by
+the old implementation) back to their original cwd. Remove it together with
+``_restore_legacy_archive`` once no such rows remain.
 
-``move_into_archive`` makes the cross-device path safe: prune regenerable
-dependency dirs, refuse to start if the destination lacks headroom, and clean
-up any partial copy on failure.
+When source and destination live on the *same* filesystem the restore is an
+instant atomic ``rename``. When they live on *different* filesystems (e.g.
+archive on the root partition, worktrees on a data drive), the copy is guarded
+by a free-space/inode pre-check so a restore can never drive a disk to 0, and
+a copy that fails partway is cleaned up rather than left as a partial tree.
 """
 from __future__ import annotations
 
@@ -23,15 +22,8 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-# Regenerable dependency dirs — never worth archiving; an unarchived session
-# just reinstalls them. Pruned on BOTH move paths: across a filesystem boundary
-# they'd bloat the copy, and even a free same-device rename permanently parks
-# their INODES in the archive (200 auto-archived KinDash sessions exhausted the
-# data disk's inode table, killing every new session's `git worktree add`).
-PRUNE_DIRS: tuple[str, ...] = ("node_modules", ".venv")
-
 # Required free headroom (beyond the copy itself) before a cross-device copy
-# is allowed to start, so archiving can never drive a disk to 0.
+# is allowed to start, so restoring can never drive a disk to 0.
 FREE_SPACE_MARGIN_BYTES = 1 * 1024 * 1024 * 1024  # 1 GiB
 
 # Minimum available inodes on the destination filesystem before a cross-device
@@ -57,19 +49,10 @@ def mountpoint(path: Path) -> Path:
     return p
 
 
-def _prune_regenerable(src: Path, prune: tuple[str, ...]) -> None:
-    """Delete *prune*-named dirs anywhere under *src* (best-effort)."""
-    for root, dirs, _files in os.walk(src):
-        for name in [d for d in dirs if d in prune]:
-            shutil.rmtree(os.path.join(root, name), ignore_errors=True)
-            dirs.remove(name)
-
-
-def _tree_size(path: Path, prune: tuple[str, ...]) -> int:
-    """Apparent byte size of *path*, skipping *prune* dirs (what a copy costs)."""
+def _tree_size(path: Path) -> int:
+    """Apparent byte size of *path* (what a copy costs)."""
     total = 0
-    for root, dirs, files in os.walk(path):
-        dirs[:] = [d for d in dirs if d not in prune]
+    for root, _dirs, files in os.walk(path):
         for name in files:
             try:
                 total += os.lstat(os.path.join(root, name)).st_size
@@ -78,19 +61,13 @@ def _tree_size(path: Path, prune: tuple[str, ...]) -> int:
     return total
 
 
-def move_into_archive(
+def restore_from_archive(
     src: Path,
     dest: Path,
     *,
-    prune: tuple[str, ...] = PRUNE_DIRS,
     margin: int = FREE_SPACE_MARGIN_BYTES,
 ) -> str:
-    """Move directory *src* to *dest*, pruning regenerable *prune* dirs first.
-
-    The prune happens on BOTH paths — a same-device rename is free in bytes
-    but permanently parks the pruned dirs' inodes in the archive otherwise,
-    and the cross-device copy would pay for them in bytes. Either way the
-    archive lands dependency-free; unarchiving reinstalls.
+    """Move a legacy archive directory *src* back to its original cwd *dest*.
 
     Same filesystem: atomic ``os.rename`` (instant).
 
@@ -103,7 +80,6 @@ def move_into_archive(
     signals "different filesystem").
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
-    _prune_regenerable(src, prune)
 
     try:
         os.rename(src, dest)
@@ -111,9 +87,9 @@ def move_into_archive(
     except OSError as exc:
         if exc.errno != errno.EXDEV:
             raise
-        # Different filesystem — fall through to a guarded, pruned copy.
+        # Different filesystem — fall through to a guarded copy.
 
-    need = _tree_size(src, prune)
+    need = _tree_size(src)
     free = shutil.disk_usage(dest.parent).free
     if free < need + margin:
         return "skipped:nospace"
@@ -125,16 +101,16 @@ def move_into_archive(
         pass  # can't probe — proceed and let copytree raise naturally
 
     try:
-        shutil.copytree(src, dest, ignore=shutil.ignore_patterns(*prune),
+        shutil.copytree(src, dest,
                         symlinks=True, ignore_dangling_symlinks=True)
     except shutil.Error as exc:
         # Individual-file failures (e.g. symlink metadata on SSHFS, special files the
-        # remote filesystem can't represent).  The core session content is intact — log
-        # each failed path and continue so the archive directory exists and unarchive
-        # can later find it.  A hard OSError (disk full, permissions) is still fatal.
+        # filesystem can't represent).  The core session content is intact — log each
+        # failed path and continue so the restored worktree exists.  A hard OSError
+        # (disk full, permissions) is still fatal.
         failures = exc.args[0] if exc.args else []
         log.warning(
-            "archive_move: %d file(s) failed to copy but archive will proceed "
+            "archive_move: %d file(s) failed to copy but restore will proceed "
             "(src=%s dest=%s): %s",
             len(failures), src, dest, failures,
         )

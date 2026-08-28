@@ -276,8 +276,8 @@ def clear_stale_registration(repo_top: str, path: str | Path) -> None:
     session is ever considered.
 
     Used on two paths that both leave a stale registration behind: create-time
-    reuse of a crashed session's dest, and archive (which *moves* the working dir
-    out from under git rather than removing it via git).
+    reuse of a crashed session's dest, and archived-session purge (which rmtree's
+    the working dir rather than removing it via git).
     """
     p = Path(path)
     if os.path.abspath(str(p)) not in _registered_worktrees(repo_top):
