@@ -1,12 +1,15 @@
 """Tests for session-archive feature.
 
 Covers:
-  - archive_session: moves cwd into archive_dir, sets status='archived',
-    removes from _records; handles missing cwd gracefully.
+  - archive_session: pure status flip — sets status='archived', leaves the
+    worktree in place (archive_root NULL), removes from _records; handles
+    missing cwd gracefully.
   - rehydrate: excludes archived rows (status='archived' not loaded).
   - list_archived: returns rows with correct metadata.
-  - unarchive: moves folder back, sets status='idle', reappears in list_sessions.
-  - permanent_delete: removes archive folder + DB row; containment guard.
+  - unarchive: new-style rows flip back in place; legacy rows (moved into an
+    archive home) are restored, set status='idle', reappear in list_sessions.
+  - permanent_delete: removes the worktree (new-style) or archive folder
+    (legacy) + DB row; containment guards for both.
   - transcript_events: returns replayed events (mocked replay).
 
 All tests use file-backed SQLite DBs via asyncio.run() so rehydrate callers
@@ -24,7 +27,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-import errno
 import pytest
 
 from server.db import init_db, db_session
@@ -44,6 +46,14 @@ async def _seed(rows: list[dict]) -> None:
             db.add(DbSession(**r))
 
 
+async def _drain_bg(orch: SessionOrchestrator) -> None:
+    """Await the orchestrator's fire-and-forget tasks (driver close, cap
+    enforcement, queue drain) so assertions see their effects."""
+    tasks = list(getattr(orch, "_bg_tasks", ()) or ())
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 def _make_orch(tmp_path: Path) -> tuple[str, str, SessionOrchestrator]:
     """Return (db_url, archive_base, orchestrator) wired to a temp CCSWITCH_HOME."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
@@ -56,8 +66,9 @@ def _make_orch(tmp_path: Path) -> tuple[str, str, SessionOrchestrator]:
 # ---------------------------------------------------------------------------
 
 
-def test_archive_moves_cwd_and_sets_db_status(tmp_path):
-    """Closing via archive_session moves the cwd directory to archive and sets DB status."""
+def test_archive_leaves_cwd_in_place_and_sets_db_status(tmp_path):
+    """archive_session is a pure status flip: the worktree stays at cwd, nothing
+    is moved into an archive home, and archive_root is stamped NULL."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
     cwd = tmp_path / "session_cwd"
     cwd.mkdir()
@@ -79,24 +90,22 @@ def test_archive_moves_cwd_and_sets_db_status(tmp_path):
                 claude_session_id="", cols=80, rows=24, cwd=str(cwd),
             )
             await orch.archive_session("s1")
+            await _drain_bg(orch)
 
-            # DB should be 'archived'.
             from sqlalchemy import select as sa_select
             async with db_session() as db:
                 row = (await db.execute(
                     sa_select(DbSession).where(DbSession.id == "s1")
                 )).scalars().first()
-            return row.status, orch._records, cwd.exists()
+            return row.status, row.archive_root, orch._records, cwd.exists()
 
-    status, records, cwd_still_exists = asyncio.run(run())
+    status, archive_root, records, cwd_still_exists = asyncio.run(run())
     assert status == "archived"
+    assert archive_root is None  # NULL marks a stay-in-place archive
     assert "s1" not in records   # removed from active _records
-    assert not cwd_still_exists  # moved away
-
-    # The archive folder should contain the file.
-    archive_dest = tmp_path / "archive" / "s1"
-    assert archive_dest.is_dir()
-    assert (archive_dest / "work.txt").exists()
+    assert cwd_still_exists      # the worktree was NOT moved
+    assert (cwd / "work.txt").exists()
+    assert not (tmp_path / "archive" / "s1").exists()  # nothing lands in archive home
 
 
 def test_archive_missing_cwd_still_marks_archived(tmp_path):
@@ -155,6 +164,8 @@ def test_archive_removes_from_records_and_drivers(tmp_path):
             orch._drivers["s3"] = fake_driver
 
             await orch.archive_session("s3")
+            # The driver close runs as a background task off the request path.
+            await _drain_bg(orch)
             return "s3" in orch._records, "s3" in orch._drivers, fake_driver.aclose.called
 
     in_records, in_drivers, driver_closed = asyncio.run(run())
@@ -248,8 +259,45 @@ def test_list_archived_empty_when_none(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def test_unarchive_new_style_flips_status_in_place(tmp_path):
+    """A status-flip archive unarchives instantly: cwd untouched, no move, idle."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+    cwd = tmp_path / "inplace_cwd"
+
+    async def run():
+        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+            cwd.mkdir()
+            (cwd / "work.txt").write_text("still here")
+
+            await init_db(db_url=db_url)
+            await _seed([
+                dict(id="s9", name="InPlace", account_name="acc1",
+                     claude_session_id=None, status="archived",
+                     cwd=str(cwd), archive_root=None),
+            ])
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            # Any move attempt would blow up: new-style unarchive must not move.
+            with patch("server.sessions.orchestrator.restore_from_archive",
+                       side_effect=AssertionError("must not move")):
+                record = await orch.unarchive("s9")
+
+            from sqlalchemy import select as sa_select
+            async with db_session() as db:
+                row = (await db.execute(
+                    sa_select(DbSession).where(DbSession.id == "s9")
+                )).scalars().first()
+            return record, row.status
+
+    record, db_status = asyncio.run(run())
+    assert record is not None and record.status == "idle"
+    assert db_status == "idle"
+    assert (cwd / "work.txt").read_text() == "still here"
+
+
 def test_unarchive_moves_folder_back_and_sets_idle(tmp_path):
-    """unarchive() moves the archive dir back to the original cwd and sets status='idle'."""
+    """LEGACY: unarchive() moves the archive dir back to the original cwd and sets
+    status='idle' (row predates the status-flip archive — cwd is gone, files live
+    under the archive home)."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
     original_cwd = tmp_path / "my_session_cwd"
 
@@ -402,18 +450,18 @@ def test_permanent_delete_removes_folder_and_db_row(tmp_path):
 def test_permanent_delete_live_session_archives_then_deletes(tmp_path):
     """permanent_delete on a LIVE session archives it first, then hard-deletes.
 
-    A live session is still in _records/_drivers with its cwd at the original
-    location (outside archive_dir). Deleting it directly would leave a zombie
-    driver and orphan the working directory. permanent_delete must archive first
-    (stop the driver, move the cwd into the archive) and only then remove the
-    archive folder + DB row.
+    A live session is still in _records/_drivers. Deleting it directly would
+    leave a zombie driver. permanent_delete must archive first (stop the
+    driver; the worktree stays at cwd) and then remove the worktree + DB row.
     """
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
-    cwd = tmp_path / "live_cwd"
+    # Real sessions always run in ccswitch-created worktrees/scratch dirs —
+    # the purge's containment guard requires the .ccswitch path segment.
+    cwd = tmp_path / ".ccswitch" / "worktrees" / "live_cwd"
 
     async def run():
         with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
-            cwd.mkdir()
+            cwd.mkdir(parents=True)
             (cwd / "work.txt").write_text("live work")
 
             await init_db(db_url=db_url)
@@ -432,6 +480,7 @@ def test_permanent_delete_live_session_archives_then_deletes(tmp_path):
             orch._drivers["live1"] = fake_driver
 
             result = await orch.permanent_delete("live1")
+            await _drain_bg(orch)
 
             from sqlalchemy import select as sa_select
             async with db_session() as db:
@@ -451,8 +500,74 @@ def test_permanent_delete_live_session_archives_then_deletes(tmp_path):
     assert driver_closed           # driver stopped — no zombie
     assert not in_records          # cleared from active state
     assert not in_drivers
-    assert not cwd_exists          # live working dir not orphaned (moved then removed)
-    assert not archive_exists      # archive folder cleaned up too
+    assert not cwd_exists          # worktree removed by the purge
+    assert not archive_exists      # nothing was ever moved into the archive home
+
+
+def test_permanent_delete_new_style_removes_worktree(tmp_path):
+    """Purging a status-flip archived session deletes its worktree at cwd."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+    cwd = tmp_path / ".ccswitch" / "worktrees" / "s30"
+
+    async def run():
+        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+            cwd.mkdir(parents=True)
+            (cwd / "work.txt").write_text("reclaim me")
+
+            await init_db(db_url=db_url)
+            await _seed([
+                dict(id="s30", name="Reap", account_name="acc1",
+                     claude_session_id=None, status="archived",
+                     cwd=str(cwd), archive_root=None),
+            ])
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            result = await orch.permanent_delete("s30")
+
+            from sqlalchemy import select as sa_select
+            async with db_session() as db:
+                row = (await db.execute(
+                    sa_select(DbSession).where(DbSession.id == "s30")
+                )).scalars().first()
+            return result, row, cwd.exists()
+
+    deleted, db_row, cwd_exists = asyncio.run(run())
+    assert deleted is True
+    assert db_row is None
+    assert not cwd_exists
+
+
+def test_permanent_delete_leaves_non_ccswitch_cwd_in_place(tmp_path):
+    """Containment guard: a cwd outside any .ccswitch segment is never deleted —
+    the row is purged but the directory is left alone (misconfigured row must
+    not cost the user a real directory)."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+    cwd = tmp_path / "users_real_checkout"
+
+    async def run():
+        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+            cwd.mkdir()
+            (cwd / "precious.txt").write_text("do not delete")
+
+            await init_db(db_url=db_url)
+            await _seed([
+                dict(id="s31", name="Guarded", account_name="acc1",
+                     claude_session_id=None, status="archived",
+                     cwd=str(cwd), archive_root=None),
+            ])
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            result = await orch.permanent_delete("s31")
+
+            from sqlalchemy import select as sa_select
+            async with db_session() as db:
+                row = (await db.execute(
+                    sa_select(DbSession).where(DbSession.id == "s31")
+                )).scalars().first()
+            return result, row
+
+    deleted, db_row = asyncio.run(run())
+    assert deleted is True
+    assert db_row is None
+    assert (cwd / "precious.txt").exists()  # directory untouched
 
 
 def test_permanent_delete_returns_false_for_unknown(tmp_path):
@@ -603,7 +718,7 @@ def test_resolve_transcript_path_without_credential_slot(tmp_path):
 
 
 def test_unarchive_raises_insufficient_storage_when_move_skipped(tmp_path):
-    """unarchive() raises InsufficientStorageError when move_into_archive returns skipped:nospace."""
+    """unarchive() raises InsufficientStorageError when restore_from_archive returns skipped:nospace."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
     original_cwd = tmp_path / "oom_cwd"
 
@@ -620,7 +735,7 @@ def test_unarchive_raises_insufficient_storage_when_move_skipped(tmp_path):
                      cwd=str(original_cwd)),
             ])
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
-            with patch("server.sessions.orchestrator.move_into_archive", return_value="skipped:nospace"):
+            with patch("server.sessions.orchestrator.restore_from_archive", return_value="skipped:nospace"):
                 return await orch.unarchive("s_oom")
 
     with pytest.raises(InsufficientStorageError):
@@ -646,36 +761,13 @@ def test_unarchive_error_message_names_real_mountpoint(tmp_path):
                      cwd=str(original_cwd)),
             ])
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
-            with patch("server.sessions.orchestrator.move_into_archive", return_value="skipped:nospace"), \
+            with patch("server.sessions.orchestrator.restore_from_archive", return_value="skipped:nospace"), \
                  patch("server.sessions.orchestrator.mountpoint", return_value=Path("/mnt/ssk-ssd")):
                 return await orch.unarchive("s_oom")
 
     # The real mount point appears; the misleading bare "(/)" does not.
     with pytest.raises(InsufficientStorageError, match=r"\(/mnt/ssk-ssd\)"):
         asyncio.run(run())
-
-
-def test_move_into_archive_skips_when_inodes_low(tmp_path):
-    """move_into_archive returns skipped:nospace when destination is low on inodes."""
-    from server.sessions.archive_move import move_into_archive
-
-    src = tmp_path / "src"
-    src.mkdir()
-    (src / "f.txt").write_text("hi")
-    dest = tmp_path / "dest"
-
-    # Fake statvfs: claim f_favail=1 (below FREE_INODE_MARGIN).
-    # Also fake rename to raise EXDEV so we reach the cross-device copy path.
-    fake_sv = MagicMock()
-    fake_sv.f_favail = 1
-
-    with patch("server.sessions.archive_move.os.rename", side_effect=OSError(errno.EXDEV, "cross")), \
-         patch("server.sessions.archive_move.os.statvfs", return_value=fake_sv), \
-         patch("server.sessions.archive_move.shutil.disk_usage", return_value=MagicMock(free=10 * 1024 ** 3)):
-        result = move_into_archive(src, dest, margin=0)
-
-    assert result == "skipped:nospace"
-    assert not dest.exists()  # no partial copy left behind
 
 
 def test_permanent_delete_uses_stored_archive_root_not_current_home(tmp_path):

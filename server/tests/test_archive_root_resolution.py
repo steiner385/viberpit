@@ -8,10 +8,13 @@ archive was believed to live: unarchive looked in the new root, missed, and sile
 recreated an empty cwd — reporting success while handing the user an empty worktree.
 
 Covers:
-  - archive_session records the root it actually used.
-  - unarchive resolves through that stored root even when the current home differs.
+  - archive_session (now a status flip) stamps archive_root NULL — the marker
+    for "files still at cwd"; only LEGACY rows carry a root.
+  - unarchive resolves legacy rows through their stored root even when the
+    current home differs.
   - a missing archive raises ArchiveMissingError instead of fabricating an empty cwd.
-  - legacy rows (archive_root NULL) still fall back to the current archive home.
+  - ancient rows (archive_root NULL, cwd moved away) still fall back to the
+    current archive home.
 """
 from __future__ import annotations
 
@@ -38,8 +41,10 @@ async def _add_archived(*, cwd, archive_root):
                          archive_root=(str(archive_root) if archive_root else None)))
 
 
-def test_archive_session_records_archive_root(tmp_path):
-    """archive_session must persist the archive root it moved the cwd into."""
+def test_archive_session_stamps_null_root_and_leaves_cwd(tmp_path):
+    """archive_session is a status flip: archive_root is stamped NULL (files stay
+    at cwd) — including clearing a stale root left by a legacy archive→unarchive
+    round trip — and nothing lands under the archive home."""
     from server.db import db_session, init_db
     from server.db.models import Session as DbSession
     from server.sessions.types import SessionRecord
@@ -53,8 +58,11 @@ def test_archive_session_records_archive_root(tmp_path):
                                      "CCSWITCH_ARCHIVE_HOME": str(home)}):
             await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'ar.db'}")
             async with db_session() as db:
+                # A stale root from a legacy archive→unarchive round trip must be
+                # cleared, or unarchive would look for files that are at cwd.
                 db.add(DbSession(id="s1", name="S1", account_name="a",
-                                 claude_session_id=None, status="idle", cwd=str(cwd)))
+                                 claude_session_id=None, status="idle", cwd=str(cwd),
+                                 archive_root=str(tmp_path / "stale_old_root")))
             orch = _orch()
             orch._records["s1"] = SessionRecord(
                 id="s1", name="S1", account="a", claude_session_id="",
@@ -64,7 +72,9 @@ def test_archive_session_records_archive_root(tmp_path):
                 return (await db.execute(
                     sa_select(DbSession).where(DbSession.id == "s1"))).scalars().first().archive_root
 
-    assert asyncio.run(run()) == str(home), "archive_root must record the root actually used"
+    assert asyncio.run(run()) is None, "a status-flip archive must stamp archive_root NULL"
+    assert cwd.is_dir(), "the worktree must stay in place"
+    assert not (tmp_path / "archives" / "s1").exists()
 
 
 def test_unarchive_resolves_through_stored_root_not_current_home(tmp_path):

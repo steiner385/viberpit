@@ -216,6 +216,10 @@ def test_archive_session_enforces_cap(tmp_path):
                 claude_session_id="", cols=80, rows=24, cwd=str(cwd),
             )
             await orch.archive_session("live1")
+            # Cap enforcement runs as a fire-and-forget task off the request
+            # path — drain the orchestrator's background tasks before asserting.
+            await asyncio.gather(*list(getattr(orch, "_bg_tasks", ()) or ()),
+                                 return_exceptions=True)
             return await _archived_ids()
 
     remaining = asyncio.run(run())

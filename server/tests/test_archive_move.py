@@ -1,9 +1,10 @@
-"""Tests for move_into_archive — the cross-device-safe worktree archiver.
+"""Tests for restore_from_archive — cross-device-safe restore of LEGACY archives.
 
-Regression coverage for the disk-full incident: archiving a session whose
-worktree lives on a different filesystem than the archive dir used to do a
-plain ``shutil.move``, which fell back to a recursive copy of ``node_modules``
-and filled the destination disk (leaving a multi-GB partial copy behind).
+@deprecated together with server/sessions/archive_move.py — archiving no longer
+moves worktrees, so this module only restores rows archived by the old
+implementation. Regression coverage for the disk-full incident survives here in
+the restore direction: a cross-device restore is guarded by a free-space
+pre-check and never leaves a partial copy behind.
 """
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from server.sessions.archive_move import mountpoint, move_into_archive
+from server.sessions.archive_move import mountpoint, restore_from_archive
 
 
 def test_mountpoint_resolves_to_filesystem_boundary(tmp_path):
@@ -32,16 +33,13 @@ def test_mountpoint_of_nonexistent_absolute_path_is_root():
     assert str(mountpoint(Path("/nonexistent/deep/path"))) == "/"
 
 
-def _make_tree(base: Path) -> Path:
-    """A worktree with real work plus a fat, regenerable node_modules tree."""
-    src = base / "wt"
+def _make_archived_tree(base: Path) -> Path:
+    """A legacy archived worktree (already dependency-pruned at archive time)."""
+    src = base / "archived" / "sess"
     (src / "src").mkdir(parents=True)
     (src / "src" / "app.py").write_text("print('hi')\n")
     (src / ".git").mkdir()
     (src / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
-    nm = src / "node_modules" / ".pnpm" / "pkg"
-    nm.mkdir(parents=True)
-    (nm / "big.js").write_text("x" * 10_000)
     return src
 
 
@@ -54,127 +52,116 @@ class _Usage:
         self.free = free
 
 
-def test_same_device_uses_rename_and_prunes_regenerable_dirs(tmp_path):
-    """A same-device rename is free in BYTES but not in INODES: archives that
-    keep node_modules park tens of thousands of inodes each, forever. 200
-    auto-archived KinDash sessions exhausted /mnt/ssk-ssd's inode table and
-    every new session's `git worktree add` died with ENOSPC. Regenerable dirs
-    are pruned on BOTH paths so archives always land dependency-free."""
-    src = _make_tree(tmp_path)
-    dest = tmp_path / "archive" / "sess1"
+def test_same_device_uses_rename(tmp_path):
+    src = _make_archived_tree(tmp_path)
+    dest = tmp_path / "worktrees" / "sess1"
 
-    assert move_into_archive(src, dest) == "renamed"
+    assert restore_from_archive(src, dest) == "renamed"
 
     assert not src.exists()
     assert (dest / "src" / "app.py").exists()      # real work preserved
     assert (dest / ".git" / "HEAD").exists()       # history preserved
-    assert not (dest / "node_modules").exists()    # regenerable deps pruned
 
 
-def test_same_device_prunes_nested_and_venv_dirs(tmp_path):
-    src = _make_tree(tmp_path)
-    (src / ".venv" / "lib").mkdir(parents=True)
-    (src / ".venv" / "lib" / "mod.py").write_text("x")
-    nested = src / "web" / "node_modules" / "pkg"
-    nested.mkdir(parents=True)
-    (nested / "index.js").write_text("x")
-    dest = tmp_path / "archive" / "sess5"
-
-    assert move_into_archive(src, dest) == "renamed"
-
-    assert not (dest / ".venv").exists()
-    assert not (dest / "web" / "node_modules").exists()
-    assert (dest / "web").exists()                 # parent of pruned dir survives
-
-
-def test_cross_device_prunes_node_modules(tmp_path, monkeypatch):
-    src = _make_tree(tmp_path)
-    dest = tmp_path / "archive" / "sess2"
+def test_cross_device_copies_whole_tree(tmp_path, monkeypatch):
+    src = _make_archived_tree(tmp_path)
+    dest = tmp_path / "worktrees" / "sess2"
     monkeypatch.setattr(os, "rename", _raise_exdev)
     monkeypatch.setattr(shutil, "disk_usage", lambda _p: _Usage(free=10**12))
 
-    assert move_into_archive(src, dest) == "copied"
+    assert restore_from_archive(src, dest) == "copied"
 
     assert not src.exists()
     assert (dest / "src" / "app.py").exists()      # real work preserved
     assert (dest / ".git" / "HEAD").exists()       # history preserved
-    assert not (dest / "node_modules").exists()    # regenerable deps pruned
 
 
 def test_cross_device_skips_when_insufficient_space(tmp_path, monkeypatch):
-    src = _make_tree(tmp_path)
-    dest = tmp_path / "archive" / "sess3"
+    src = _make_archived_tree(tmp_path)
+    dest = tmp_path / "worktrees" / "sess3"
     monkeypatch.setattr(os, "rename", _raise_exdev)
     monkeypatch.setattr(shutil, "disk_usage", lambda _p: _Usage(free=1))  # disk basically full
 
-    assert move_into_archive(src, dest) == "skipped:nospace"
+    assert restore_from_archive(src, dest) == "skipped:nospace"
 
     assert src.exists()        # left in place, never destroyed
     assert not dest.exists()   # and no partial copy created
 
 
+def test_cross_device_skips_when_inodes_low(tmp_path, monkeypatch):
+    """The inode guard: bytes look fine but the destination is out of inodes."""
+    src = _make_archived_tree(tmp_path)
+    dest = tmp_path / "worktrees" / "sess_inode"
+    monkeypatch.setattr(os, "rename", _raise_exdev)
+    monkeypatch.setattr(shutil, "disk_usage", lambda _p: _Usage(free=10**12))
+
+    class _SV:
+        f_favail = 1  # below FREE_INODE_MARGIN
+
+    monkeypatch.setattr(os, "statvfs", lambda _p: _SV())
+
+    assert restore_from_archive(src, dest, margin=0) == "skipped:nospace"
+    assert not dest.exists()   # no partial copy left behind
+
+
 def test_cross_device_cleans_partial_copy_on_failure(tmp_path, monkeypatch):
-    """The exact incident shape: the guard passes but the copy dies mid-way
-    (ENOSPC). The half-written destination must not be left hogging disk."""
-    src = _make_tree(tmp_path)
-    dest = tmp_path / "archive" / "sess4"
+    """The guard passes but the copy dies mid-way (ENOSPC). The half-written
+    destination must not be left hogging disk."""
+    src = _make_archived_tree(tmp_path)
+    dest = tmp_path / "worktrees" / "sess4"
     monkeypatch.setattr(os, "rename", _raise_exdev)
     monkeypatch.setattr(shutil, "disk_usage", lambda _p: _Usage(free=10**12))
 
     def boom(*_a, **_k):
         dest.mkdir(parents=True, exist_ok=True)
-        (dest / "partial").write_text("half a node_modules")
+        (dest / "partial").write_text("half a worktree")
         raise OSError(errno.ENOSPC, "No space left on device")
 
     monkeypatch.setattr(shutil, "copytree", boom)
 
     with pytest.raises(OSError):
-        move_into_archive(src, dest)
+        restore_from_archive(src, dest)
 
     assert not dest.exists()   # partial cleaned up
     assert src.exists()        # source preserved for a retry
 
 
 def test_cross_device_dangling_symlink_is_preserved(tmp_path, monkeypatch):
-    """A worktree with a dangling symlink (e.g. certbot cert) copies successfully.
+    """An archive with a dangling symlink (e.g. certbot cert) restores successfully.
 
     Regression: shutil.copytree raised shutil.Error for dangling symlinks on SSHFS
-    mounts, which triggered cleanup of the partial archive directory.  Sessions then
-    ended up 'archived' in the DB with no archive dir — making them unrestorable.
+    mounts, which triggered cleanup of the partial directory.
     """
-    src = _make_tree(tmp_path)
+    src = _make_archived_tree(tmp_path)
     # Dangling symlink — target does not exist (certbot / .git/config style).
     (src / "cert.pem").symlink_to("/etc/letsencrypt/live/example.com/cert.pem")
-    dest = tmp_path / "archive" / "sess6"
+    dest = tmp_path / "worktrees" / "sess6"
     monkeypatch.setattr(os, "rename", _raise_exdev)
     monkeypatch.setattr(shutil, "disk_usage", lambda _p: _Usage(free=10**12))
 
-    result = move_into_archive(src, dest)
+    result = restore_from_archive(src, dest)
 
     assert result == "copied"
     assert not src.exists()             # source removed
-    assert dest.is_dir()                # archive directory exists
+    assert dest.is_dir()                # restored directory exists
     assert (dest / "src" / "app.py").exists()
     # Symlink recreated at destination (dangling is fine — the target path is preserved).
     assert (dest / "cert.pem").is_symlink()
 
 
-def test_cross_device_individual_file_failures_do_not_abort_archive(tmp_path, monkeypatch):
-    """shutil.Error (individual-file failures, e.g. SSHFS xattr) does not abort the archive.
+def test_cross_device_individual_file_failures_do_not_abort_restore(tmp_path, monkeypatch):
+    """shutil.Error (individual-file failures, e.g. SSHFS xattr) does not abort the restore.
 
-    Regression: the original except OSError: clause caught shutil.Error (a subclass) and
-    cleaned up the partial dest directory.  The session was then marked 'archived' in the DB
-    but the archive dir was gone — making unarchive fail with ArchiveMissingError forever.
+    Regression: an except OSError: clause caught shutil.Error (a subclass) and
+    cleaned up the partial dest directory, losing the restorable content.
     """
-    src = _make_tree(tmp_path)
-    dest = tmp_path / "archive" / "sess7"
+    src = _make_archived_tree(tmp_path)
+    dest = tmp_path / "worktrees" / "sess7"
     monkeypatch.setattr(os, "rename", _raise_exdev)
     monkeypatch.setattr(shutil, "disk_usage", lambda _p: _Usage(free=10**12))
 
     # Simulate SSHFS-style per-file metadata failures: copytree creates the dest
     # directory with most files but raises shutil.Error for one entry.
-    # We don't call the real copytree to avoid its recursive re-entry — we only
-    # care that move_into_archive handles the shutil.Error from copytree gracefully.
     def partial_copytree(src_arg, dest_arg, **kwargs):
         dest_arg.mkdir(parents=True, exist_ok=True)
         (dest_arg / "src").mkdir(parents=True, exist_ok=True)
@@ -184,8 +171,8 @@ def test_cross_device_individual_file_failures_do_not_abort_archive(tmp_path, mo
 
     monkeypatch.setattr(shutil, "copytree", partial_copytree)
 
-    result = move_into_archive(src, dest)
+    result = restore_from_archive(src, dest)
 
     assert result == "copied"
-    assert dest.is_dir()                # archive directory exists despite the error
+    assert dest.is_dir()                # restored directory exists despite the error
     assert not src.exists()             # source still removed after partial-success copy
