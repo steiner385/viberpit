@@ -159,10 +159,11 @@ def _registered_worktrees(repo: str) -> set[str]:
     }
 
 
-def test_archive_session_deregisters_own_worktree_but_not_sibling(wt_setup):
-    """Archiving one session scope-deregisters ONLY its own worktree; a sibling's
-    live registration must survive (regression for issue #177 in the archive path,
-    which previously ran a repo-global `git worktree prune`)."""
+def test_archive_session_leaves_worktrees_intact(wt_setup):
+    """archive_session is a pure status flip: it must not touch any git worktree
+    registrations.  Both the archived session's worktree and a sibling's must
+    remain registered after archiving.  Disk reclaim (and the #177-safe
+    scope-deregister) happens only at permanent_delete time."""
     orch, client, repo, _repo_root = wt_setup
 
     a = client.portal.call(lambda: orch.create_session("arch-a", cwd=str(repo), branch="feature"))
@@ -175,10 +176,32 @@ def test_archive_session_deregisters_own_worktree_but_not_sibling(wt_setup):
     client.portal.call(lambda: orch.archive_session(a.id))
 
     after = _registered_worktrees(str(repo))
-    assert os.path.abspath(a.cwd) not in after, \
-        "archived session's own worktree registration was not cleared"
+    assert os.path.abspath(a.cwd) in after, \
+        "archive_session must not remove the worktree (pure status flip — disk reclaim is at permanent_delete)"
     assert os.path.abspath(b.cwd) in after, \
-        "archiving a session reaped a sibling's live worktree (#177)"
+        "archiving a session must not affect a sibling's worktree (#177)"
+
+
+def test_permanent_delete_deregisters_own_worktree_but_not_sibling(wt_setup):
+    """permanent_delete scope-deregisters ONLY the deleted session's worktree;
+    a sibling's live registration must survive (regression for issue #177 in the
+    archive path, which previously ran a repo-global `git worktree prune`)."""
+    orch, client, repo, _repo_root = wt_setup
+
+    a = client.portal.call(lambda: orch.create_session("perm-a", cwd=str(repo), branch="feature"))
+    b = client.portal.call(lambda: orch.create_session("perm-b", cwd=str(repo), branch="feature"))
+
+    before = _registered_worktrees(str(repo))
+    assert os.path.abspath(a.cwd) in before
+    assert os.path.abspath(b.cwd) in before
+
+    client.portal.call(lambda: orch.permanent_delete(a.id))
+
+    after = _registered_worktrees(str(repo))
+    assert os.path.abspath(a.cwd) not in after, \
+        "permanent_delete must clear the deleted session's worktree registration"
+    assert os.path.abspath(b.cwd) in after, \
+        "permanent_delete must not reap a sibling's live worktree (#177)"
 
 
 def test_repo_session_without_branch_gets_own_detached_worktree(wt_setup):
