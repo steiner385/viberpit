@@ -11,7 +11,7 @@
 import { useReducer, useEffect, useRef, useCallback } from 'react'
 import { cn } from '@/lib/utils'
 import { transcriptReducer, initialTranscript } from '@/session/reducer'
-import { useSessionTranscript } from '@/api/hooks'
+import { useSessionTranscript, useUnarchiveSession } from '@/api/hooks'
 import { fetchOlderTurns } from '@/api/transcript'
 import { TranscriptView } from './session/TranscriptView'
 
@@ -26,6 +26,7 @@ interface Props {
 export function ReviewView({ sessionId, onBack }: Props) {
   const { data, isLoading } = useSessionTranscript(sessionId, true, INITIAL_TURN_LIMIT)
   const [state, dispatch] = useReducer(transcriptReducer, initialTranscript)
+  const unarchive = useUnarchiveSession()
 
   // Fold all transcript events into turns once the data arrives, then close the
   // replay: replayComplete stores earliestTurn/totalTurns (which drive the
@@ -81,9 +82,25 @@ export function ReviewView({ sessionId, onBack }: Props) {
         >
           ← Back
         </button>
-        <span className="text-sm text-gray-500 dark:text-gray-400 italic">
+        <span className="text-sm text-gray-500 dark:text-gray-400 italic flex-1">
           Read-only (archived)
         </span>
+        <button
+          type="button"
+          disabled={unarchive.isPending}
+          onClick={() => unarchive.mutate(sessionId, { onSuccess: onBack })}
+          className={cn(
+            'rounded px-3 py-1.5 text-sm font-medium min-h-[44px]',
+            'border border-blue-400 dark:border-blue-500',
+            'text-blue-600 dark:text-blue-400',
+            'hover:bg-blue-50 dark:hover:bg-blue-900/30',
+            'disabled:opacity-50 disabled:cursor-not-allowed',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+          )}
+          aria-label="Restore this session from archive"
+        >
+          {unarchive.isPending ? 'Restoring…' : 'Unarchive'}
+        </button>
       </header>
 
       {/* Transcript area */}
