@@ -197,6 +197,48 @@ def test_put_max_archived_clamps_to_ceiling():
         assert put_resp.json()["maxArchivedSessions"] == _MAX_ARCHIVED_CEILING
 
 
+# ---------------------------------------------------------------------------
+# autoArchiveEnabled — global kill switch for completion auto-archive
+# ---------------------------------------------------------------------------
+
+
+def test_get_settings_auto_archive_enabled_defaults_true():
+    """GET /api/settings returns autoArchiveEnabled true by default (column NULL)."""
+    with _client() as client:
+        resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
+
+    assert resp.status_code == 200
+    assert resp.json()["autoArchiveEnabled"] is True
+
+
+def test_put_auto_archive_enabled_false_round_trips():
+    """PUT {autoArchiveEnabled: false} then GET → false (auto-archive off app-wide)."""
+    with _client() as client:
+        put_resp = client.put(
+            "/api/settings",
+            json={"autoArchiveEnabled": False},
+            headers=IDENTITY_HEADERS,
+        )
+        assert put_resp.status_code == 200
+        assert put_resp.json()["autoArchiveEnabled"] is False
+
+        get_resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
+        assert get_resp.json()["autoArchiveEnabled"] is False
+
+
+def test_put_auto_archive_enabled_back_to_true():
+    """Turning it off then on again restores the default enabled state."""
+    with _client() as client:
+        client.put("/api/settings", json={"autoArchiveEnabled": False}, headers=IDENTITY_HEADERS)
+        put_resp = client.put(
+            "/api/settings",
+            json={"autoArchiveEnabled": True},
+            headers=IDENTITY_HEADERS,
+        )
+        assert put_resp.status_code == 200
+        assert put_resp.json()["autoArchiveEnabled"] is True
+
+
 # NOTE: prAutofixMode is no longer an /api/settings field. The pr-doctor mode
 # moved onto the automation registry row (Automation id="pr-doctor", column
 # `mode`); see test_pr_autofix_migration.py. No parallel state in AppSettings.

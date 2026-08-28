@@ -1667,7 +1667,17 @@ class SessionOrchestrator:
         the user even when the bar is met. It flips back to ``waiting_question``
         ("Answer needed") instead of archiving or nudging; the guard is cleared so the
         answer's turn can complete cleanly later, and no completion nudge is consumed
-        (the cap bounds not-ready nudges — a held session did nothing wrong)."""
+        (the cap bounds not-ready nudges — a held session did nothing wrong).
+
+        Before all of that, the app-wide kill switch: when a user has turned
+        auto-archive off globally, a completed session is left exactly as a
+        per-session manual opt-out would be — no archive, no nudge, no status flip
+        (its driver was already released by ``_persist_status``). The guard is
+        cleared so re-enabling the setting and a later ``complete`` can retry."""
+        if not await self._read_auto_archive_enabled():
+            self._auto_archiving.discard(session_id)
+            log.info("completion.autoarchive_disabled sid=%s", session_id)
+            return
         rec = self._records.get(session_id)
         origin = getattr(rec, "origin", None) if rec is not None else None
         try:
@@ -7042,6 +7052,27 @@ class SessionOrchestrator:
         if val is None or val < 1:
             return None
         return int(val)
+
+    async def _read_auto_archive_enabled(self) -> bool:
+        """Read the app-wide auto-archive kill switch from the app-settings singleton.
+
+        Returns True (auto-archive on) when the column is NULL, no settings row exists,
+        or the read fails — auto-archive stays on unless a user explicitly turned it off.
+        Read from the shared DB on demand (not cached) so a toggle made on the edge is
+        honored by the daemon in a split deployment, matching ``_read_max_archived_sessions``."""
+        from sqlalchemy import select as sa_select
+
+        from server.db.models import AppSettings
+        try:
+            async with db_session() as db:
+                val = (await db.execute(
+                    sa_select(AppSettings.auto_archive_enabled)
+                    .where(AppSettings.id == "singleton")
+                )).scalar_one_or_none()
+        except Exception:
+            log.debug("autoarchive_toggle: settings read failed", exc_info=True)
+            return True
+        return val is not False  # NULL/True → enabled; only an explicit False disables
 
     async def purge_oldest_archived(self, count: int) -> list[str]:
         """Permanently delete the ``count`` oldest archived sessions (oldest first by

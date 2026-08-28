@@ -349,6 +349,11 @@ class AppSettings(Base):
     # NULL = DEFAULT_MAX_ACTIVE_SESSIONS. Nullable so init_db backfills it
     # without a migration.
     max_active_sessions: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    # App-wide kill switch for completion auto-archive. NULL/True = auto-archive
+    # completed sessions (the default); False disables it globally, so a completed
+    # session lingers exactly like a per-session manual opt-out. Nullable (three-state:
+    # NULL means "unset → default enabled") so init_db backfills it without a migration.
+    auto_archive_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
 
 
 class SessionQueue(Base):

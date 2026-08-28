@@ -58,6 +58,13 @@ def _orch(records, pr_info=None):
     orch.ensure_driver = _spy_ensure_driver  # type: ignore[method-assign]
     orch.send_prompt = _spy_send_prompt  # type: ignore[method-assign]
     orch.pr_for = lambda repo, branch: pr_info  # type: ignore[method-assign]
+    # Unit-level orch, no DB: pin the app-wide auto-archive toggle enabled so the
+    # gate reads a known value (its own read is covered in test_settings.py; the
+    # disabled path is exercised by test_global_disable_blocks_autoarchive, which
+    # overrides this).
+    async def _autoarchive_enabled() -> bool:
+        return True
+    orch._read_auto_archive_enabled = _autoarchive_enabled  # type: ignore[method-assign]
     orch.resumed_for_nudge = resumed
     return orch, archived, nudged
 
@@ -298,6 +305,27 @@ def test_question_hold_does_not_consume_nudge_cap(monkeypatch):
         assert not getattr(orch, "_complete_nudge_counts", None), (
             "question holds must not increment the nudge counter")
         assert archived == [] and nudged == []
+    asyncio.run(run())
+
+
+def test_global_disable_blocks_autoarchive():
+    """When the app-wide auto-archive toggle is OFF, a completed session with an armed
+    PR (bar met, would normally archive) is left untouched — no archive, no nudge, no
+    status flip — exactly like a per-session manual opt-out. The guard is cleared so a
+    later re-enable + `complete` can retry."""
+    async def run():
+        rec = _rec("s1", origin=None)
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=_armed_pr())
+
+        async def _disabled() -> bool:
+            return False
+
+        orch._read_auto_archive_enabled = _disabled  # type: ignore[method-assign]
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _drain()
+        assert archived == [], "global disable must block the completion archive"
+        assert nudged == [], "global disable is not a not-ready nudge"
+        assert "s1" not in orch._auto_archiving, "guard cleared so a later re-enable can retry"
     asyncio.run(run())
 
 

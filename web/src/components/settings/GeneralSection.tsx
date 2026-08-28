@@ -31,6 +31,8 @@ function GeneralForm({ settings }: { settings: AppSettings | undefined }) {
   const [maxActive, setMaxActive] = useState(
     settings?.maxActiveSessions != null ? String(settings.maxActiveSessions) : '',
   )
+  // Defaults to true — the server surfaces its NULL "unset" state as enabled.
+  const [autoArchiveEnabled, setAutoArchiveEnabled] = useState(settings?.autoArchiveEnabled ?? true)
 
   function handleSave() {
     const parsed = Number.parseInt(maxArchived, 10)
@@ -45,6 +47,7 @@ function GeneralForm({ settings }: { settings: AppSettings | undefined }) {
       // Send raw string: "" means "clear to server default", path means "use this path".
       archiveHome: archiveHome,
       maxActiveSessions: Number.isFinite(parsedActive) && parsedActive > 0 ? parsedActive : null,
+      autoArchiveEnabled,
     }, { onSuccess: () => toast('Settings saved') })
   }
 
@@ -168,6 +171,32 @@ function GeneralForm({ settings }: { settings: AppSettings | undefined }) {
           <p className="text-xs text-gray-500 dark:text-gray-400">
             Where archived session files are stored. Blank uses the server default.
             Existing archives are moved when this changes.
+          </p>
+        </div>
+
+        {/* Auto-archive completed sessions */}
+        <div className="space-y-1 border-t border-gray-200 dark:border-gray-700 pt-4">
+          <div className="flex items-center gap-3">
+            <input
+              id="settings-auto-archive"
+              type="checkbox"
+              checked={autoArchiveEnabled}
+              onChange={(e) => setAutoArchiveEnabled(e.target.checked)}
+              className={cn(
+                'h-4 w-4 rounded border-gray-300 dark:border-gray-600',
+                'text-blue-600 focus:ring-2 focus:ring-blue-500',
+              )}
+            />
+            <label
+              htmlFor="settings-auto-archive"
+              className="text-sm font-medium text-gray-700 dark:text-gray-300 cursor-pointer"
+            >
+              Auto-archive completed sessions
+            </label>
+          </div>
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            When on, a session that finishes its goal is archived automatically. Turn this
+            off to keep completed sessions on the dashboard until you archive them yourself.
           </p>
         </div>
 
