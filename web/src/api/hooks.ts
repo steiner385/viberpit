@@ -175,6 +175,9 @@ export interface AppSettings {
   archiveHome: string | null
   // Maximum concurrent active sessions; sessions beyond this are queued. null = server default (5).
   maxActiveSessions: number | null
+  // App-wide toggle: when false, completed sessions are not auto-archived (they linger
+  // like a per-session manual opt-out). The server's NULL default surfaces here as true.
+  autoArchiveEnabled: boolean
 }
 
 export function useSettings() {

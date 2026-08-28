@@ -23,6 +23,23 @@ def _rec(sid="s1", *, origin="backlog-runner"):
     return r
 
 
+async def _drain():
+    # Let the scheduled _auto_archive_completed task run to completion. The path
+    # awaits several times (the app-wide toggle read, the completion-bar gate, the
+    # archive/nudge), so pump enough turns rather than a fixed one or two.
+    for _ in range(6):
+        await asyncio.sleep(0)
+
+
+async def _autoarchive_enabled() -> bool:
+    """Stub for the app-wide auto-archive toggle read. These are unit-level orchs
+    with every external seam stubbed and no DB, so the toggle is pinned enabled
+    here (its own behavior is covered in test_settings.py and the global-disable
+    case in test_completion_autoarchive.py) rather than left to read ambient DB
+    state — which otherwise leaks across files and flakes these tests."""
+    return True
+
+
 def _orch(records):
     import server.sessions.orchestrator as orch_mod
     from server.automations.context import AutomationContext
@@ -37,6 +54,7 @@ def _orch(records):
 
     orch.archive_session = _spy_archive  # type: ignore[method-assign]
     orch.pr_for = lambda repo, branch: None  # type: ignore[method-assign]
+    orch._read_auto_archive_enabled = _autoarchive_enabled  # type: ignore[method-assign]
     return orch, archived
 
 
@@ -45,8 +63,7 @@ def test_completed_backlog_session_is_archived():
         orch, archived = _orch({"s1": _rec("s1")})
         orch.pr_for = lambda repo, branch: _armed_pr()  # met bar (armed PR) → archive
         orch._maybe_autoarchive_completed("s1", "complete", orch._records["s1"])
-        await asyncio.sleep(0)  # let the scheduled task run
-        await asyncio.sleep(0)
+        await _drain()
         assert archived == ["s1"]
 
     asyncio.run(run())
@@ -74,8 +91,7 @@ def test_manually_unarchived_backlog_session_is_not_re_archived():
         rec.auto_archive_opt_out_reason = "manual-unarchive"
         orch, archived = _orch({"s1": rec})
         orch._maybe_autoarchive_completed("s1", "complete", rec)
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
+        await _drain()
         assert archived == []  # the sticky opt-out wins over the completion signal
 
     asyncio.run(run())
@@ -87,8 +103,7 @@ def test_double_complete_archives_once():
         orch.pr_for = lambda repo, branch: _armed_pr()  # met bar → archive
         orch._maybe_autoarchive_completed("s1", "complete", orch._records["s1"])
         orch._maybe_autoarchive_completed("s1", "complete", orch._records["s1"])
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
+        await _drain()
         assert archived == ["s1"]  # idempotent guard
 
     asyncio.run(run())
@@ -113,6 +128,7 @@ def _orch_with_pr(records, pr_info=None):
 
     orch.archive_session = _spy_archive  # type: ignore[method-assign]
     orch.pr_for = lambda repo, branch: pr_info  # type: ignore[method-assign]
+    orch._read_auto_archive_enabled = _autoarchive_enabled  # type: ignore[method-assign]
     return orch, archived_calls
 
 
@@ -127,8 +143,7 @@ def test_completed_backlog_archive_context_includes_pr_state_no_pr():
         # rec.repo = "o/r", rec.branch = "feat/x"
         orch, calls = _orch_with_pr({"s1": rec}, pr_info=None)
         orch._maybe_autoarchive_completed("s1", "complete", rec)
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
+        await _drain()
         assert len(calls) == 1
         ctx = calls[0]["context"]
         assert "pr_state" in ctx
@@ -150,8 +165,7 @@ def test_completed_backlog_archive_context_includes_pr_state_with_pr():
             url="https://github.com/o/r/pull/42")
         orch, calls = _orch_with_pr({"s1": rec}, pr_info=pr_info)
         orch._maybe_autoarchive_completed("s1", "complete", rec)
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
+        await _drain()
         assert len(calls) == 1
         ctx = calls[0]["context"]
         assert "pr_state" in ctx
@@ -209,6 +223,7 @@ def _orch_with_send_prompt(records, pr_info=None):
     orch.ensure_driver = _spy_ensure_driver  # type: ignore[method-assign]
     orch.send_prompt = _spy_send_prompt  # type: ignore[method-assign]
     orch.pr_for = lambda repo, branch: pr_info  # type: ignore[method-assign]
+    orch._read_auto_archive_enabled = _autoarchive_enabled  # type: ignore[method-assign]
     orch.resumed_for_nudge = resumed
     return orch, archived_calls, nudged
 
@@ -235,8 +250,7 @@ def test_open_unarmed_pr_with_arm_step_in_instructions_defers_archive():
         rec.initial_prompt = _BACKLOG_PROMPT
         orch, archived, nudged = _orch_with_send_prompt({"s1": rec}, pr_info=_unarmed_pr())
         orch._maybe_autoarchive_completed("s1", "complete", rec)
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
+        await _drain()
         assert archived == [], "must NOT archive — PR is open-unarmed"
         assert nudged, "must send a nudge to arm auto-merge"
         assert "squash" in nudged[0].lower() or "auto" in nudged[0].lower() or "arm" in nudged[0].lower()
@@ -251,8 +265,7 @@ def test_armed_pr_with_arm_step_in_instructions_archives_normally():
         rec.initial_prompt = _BACKLOG_PROMPT
         orch, archived, nudged = _orch_with_send_prompt({"s1": rec}, pr_info=_armed_pr())
         orch._maybe_autoarchive_completed("s1", "complete", rec)
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
+        await _drain()
         assert len(archived) == 1 and archived[0]["session_id"] == "s1"
         assert nudged == []
 
@@ -266,8 +279,7 @@ def test_no_pr_with_arm_step_in_instructions_defers_archive():
         rec.initial_prompt = _BACKLOG_PROMPT
         orch, archived, nudged = _orch_with_send_prompt({"s1": rec}, pr_info=None)
         orch._maybe_autoarchive_completed("s1", "complete", rec)
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
+        await _drain()
         assert archived == [], "no armed PR found → must not archive"
         assert nudged
 
@@ -284,8 +296,7 @@ def test_open_unarmed_pr_without_arm_step_now_defers():
         # No initial_prompt — the gate still applies from the open-unarmed PR fact alone.
         orch, archived, nudged = _orch_with_send_prompt({"s1": rec}, pr_info=_unarmed_pr())
         orch._maybe_autoarchive_completed("s1", "complete", rec)
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
+        await _drain()
         assert archived == [], "open-unarmed PR is not the finished state"
         assert nudged, "must nudge toward arming the PR"
 
@@ -300,8 +311,7 @@ def test_deferred_archive_clears_guard_for_retry():
         rec.initial_prompt = _BACKLOG_PROMPT
         orch, archived, nudged = _orch_with_send_prompt({"s1": rec}, pr_info=_unarmed_pr())
         orch._maybe_autoarchive_completed("s1", "complete", rec)
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
+        await _drain()
         assert "s1" not in orch._auto_archiving, "guard must be cleared after deferral"
 
     asyncio.run(run())

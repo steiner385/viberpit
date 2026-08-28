@@ -35,6 +35,9 @@ class SettingsBody(BaseModel):
     # Max concurrently active sessions. Omitted (None) → unchanged; >=1 → that cap;
     # <=0 → clamped to 1 (minimum). UI shows "5 (default)" as placeholder when null.
     maxActiveSessions: int | None = None
+    # App-wide auto-archive toggle. Omitted (None) → unchanged; true/false sets it.
+    # Exposed to the UI as a plain bool (the storage-level NULL default surfaces as true).
+    autoArchiveEnabled: bool | None = None
 
 
 async def _migrate_archive_home(orch, db, old_home: str | None, new_home: str | None) -> None:
@@ -93,6 +96,8 @@ def _to_dict(s: AppSettings) -> dict:
         "maxArchivedSessions": s.max_archived_sessions,
         "archiveHome": s.archive_home,
         "maxActiveSessions": s.max_active_sessions,
+        # NULL (unset) surfaces as enabled — the client sees a plain bool.
+        "autoArchiveEnabled": s.auto_archive_enabled is not False,
     }
 
 
@@ -117,6 +122,8 @@ async def put_settings_row(
         row.repo_root = body.repoRoot
     if body.defaultToolDetail is not None and body.defaultToolDetail in _VALID_TOOL_DETAIL:
         row.default_tool_detail = body.defaultToolDetail
+    if body.autoArchiveEnabled is not None:
+        row.auto_archive_enabled = body.autoArchiveEnabled
     if body.maxArchivedSessions is not None:
         # <=0 clears to unlimited; otherwise clamp to a sane ceiling.
         row.max_archived_sessions = (

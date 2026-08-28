@@ -23,6 +23,7 @@ const SETTINGS = {
   repoRoot: '/home/user/repos',
   defaultToolDetail: 'auto',
   maxArchivedSessions: null,
+  autoArchiveEnabled: true,
 }
 
 const NOOP_MUTATION = {
@@ -109,6 +110,24 @@ describe('GeneralSection', () => {
     await user.click(screen.getByRole('button', { name: /save/i }))
     expect(mutate).toHaveBeenCalledWith(
       expect.objectContaining({ maxArchivedSessions: 150 }),
+      expect.anything(),
+    )
+  })
+
+  it('pre-fills auto-archive checkbox as checked by default', () => {
+    render(<GeneralSection />, { wrapper })
+    expect((screen.getByLabelText(/auto-archive completed sessions/i) as HTMLInputElement).checked).toBe(true)
+  })
+
+  it('sends autoArchiveEnabled false when the checkbox is unchecked', async () => {
+    const mutate = vi.fn()
+    vi.mocked(hooks.useUpdateSettings).mockReturnValue({ ...NOOP_MUTATION, mutate } as unknown as ReturnType<typeof hooks.useUpdateSettings>)
+    const user = userEvent.setup()
+    render(<GeneralSection />, { wrapper })
+    await user.click(screen.getByLabelText(/auto-archive completed sessions/i))
+    await user.click(screen.getByRole('button', { name: /save/i }))
+    expect(mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ autoArchiveEnabled: false }),
       expect.anything(),
     )
   })
