@@ -245,8 +245,9 @@ SessionEnded = Callable[[str], Awaitable[bool]]
 # (non-terminal runner sessions), release any dangling claim to the pool.
 Reconcile = Callable[[list[str], "set[str]"], Awaitable[None]]
 # GitHub-truth orphan healing: (config, tracked_refs) -> [(ref, action), ...]
-# where action is "closed" (merged PR found → issue closed) or "reclaimed"
-# (stale lock released back to the pool).
+# where action is "closed" (merged PR found → issue closed), "escalated" (merged
+# PR found, but the human gate blocked auto-close → handed to needs-human, #784),
+# or "reclaimed" (stale lock released back to the pool).
 HealOrphans = Callable[[dict, "set[str]"], Awaitable["list[tuple[str, str]]"]]
 # Grouping-optimizer seam: recompute + persist the group plan from the live
 # backlog; returns the number of groups stored. MUST raise on a model/plan
@@ -548,6 +549,11 @@ class BacklogRunnerLoop:
                 await self._ctx.emit(
                     "info", f"{ref}: orphaned claim — merged PR found, issue closed",
                     kind="orphan_closed", target=ref)
+            elif action == "escalated":
+                await self._ctx.emit(
+                    "info", f"{ref}: orphaned claim — merged PR found, but auto-close "
+                    "blocked (action/ops or docs-only); escalated to a human",
+                    kind="orphan_escalated", target=ref)
             else:
                 await self._ctx.emit(
                     "info", f"{ref}: orphaned claim released back to the pool",
