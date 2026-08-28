@@ -38,6 +38,40 @@ NEEDS_HUMAN_LABEL = "needs-human"
 SKIP_ISSUE_LABELS = frozenset({"dependencies", "renovate"})
 SKIP_ISSUE_TITLES = frozenset({"dependency dashboard"})
 
+# Human-gate signals (#784). Linkage (#642) proves a PR *references* an issue;
+# it does NOT prove the PR *did the work*. Two issue classes a merged PR can
+# never legitimately complete, so the runner must escalate them to a human
+# instead of auto-closing:
+#
+#   1. Action/ops issues — real-world steps no diff performs (verify a domain in
+#      Search Console, prune scopes on the GCP consent screen, record a demo
+#      video, submit to Google for review). Detected by an ops label or a curated
+#      high-signal phrase in the title/body. Bare ambiguous words ("submit",
+#      "console") are matched ONLY inside these multi-word phrases — a bare
+#      keyword would escalate ordinary code issues ("fix console.log").
+#   2. Any non-documentation issue "closed" by a DOCS-ONLY PR — a runbook/guide
+#      for X is not doing X. The docs-only diff gate is the catch-all for action
+#      issues whose wording the phrase list didn't enumerate.
+#
+# The gate fails SAFE: a false positive just asks a human to close manually; a
+# false negative is the false-completion bug itself. So the phrase list can be
+# generous and the docs-only gate broad.
+ACTION_ISSUE_LABELS = frozenset({
+    "action-required", "action", "ops", "operations", "manual", "manual-step"})
+DOC_ISSUE_LABELS = frozenset({"documentation", "docs"})
+ACTION_ISSUE_PHRASES = (
+    "search console", "consent screen", "consent-screen", "oauth consent",
+    "verify domain", "verify the domain", "domain verification",
+    "demo video", "record a demo", "record and upload", "record + upload",
+    "gcp console", "google cloud console", "cloud console",
+    "google search console", "app verification", "verification submission",
+    "submit for verification", "submit for review", "submit to google",
+    "publishing status",
+)
+# A PR whose diff touches ONLY these is documentation, not implementation.
+DOC_PATH_SUFFIXES = (".md", ".mdx", ".markdown", ".rst", ".txt")
+
+
 # How long an escalated (``needs-human``) issue must sit untouched before the
 # runner reconsiders it. Escalation itself bumps the issue's ``updatedAt``, so
 # every give-up re-arms the cooldown — a permanently-failing issue is retried at
@@ -514,6 +548,141 @@ def _close_issue(ref: str, comment: str, *, gh_run: GhRun) -> bool:
         return False
 
 
+# --------------------------------------------------------------------------- #
+# Human gate: action-required issues & docs-only PRs (fail safe, #784)         #
+# --------------------------------------------------------------------------- #
+
+def _issue_signals(ref: str, *, gh_run: GhRun) -> dict | None:
+    """Title, body and label names for issue *ref* — the human-gate inputs.
+
+    Returns ``{"title": str, "body": str, "labels": list[str]}`` or ``None`` when
+    the lookup failed / the issue is gone (caller treats ``None`` as *can't
+    assess* → don't block the close)."""
+    repo, number = _split_ref(ref)
+    owner, _, name = repo.partition("/")
+    if not owner or not name or not number.isdigit():
+        return None
+    query = (
+        "query {\n"
+        f"  repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{\n"
+        f"    issue(number: {int(number)}) {{\n"
+        "      title body\n"
+        "      labels(first: 50) { nodes { name } }\n"
+        "    }\n"
+        "  }\n"
+        "}"
+    )
+    proc = gh_run(["api", "graphql", "-f", f"query={query}"])
+    if getattr(proc, "returncode", 1) != 0:
+        log.warning("backlog_github.issue_signals_failed ref=%s err=%s",
+                    ref, (getattr(proc, "stderr", "") or "").strip())
+        return None
+    try:
+        payload = json.loads(getattr(proc, "stdout", "") or "{}")
+    except json.JSONDecodeError:
+        log.warning("backlog_github.issue_signals_unparseable ref=%s", ref)
+        return None
+    issue = ((payload.get("data") or {}).get("repository") or {}).get("issue")
+    if not issue:
+        return None
+    labels = [((n or {}).get("name") or "")
+              for n in (((issue.get("labels") or {}).get("nodes")) or [])]
+    return {"title": issue.get("title") or "",
+            "body": issue.get("body") or "", "labels": labels}
+
+
+def _pr_changed_files(repo: str, pr_number: int, *, gh_run: GhRun) -> list[str] | None:
+    """Paths changed by ``repo`` PR ``pr_number`` (first 100). ``None`` on lookup
+    failure (unknown — never assume docs-only)."""
+    owner, _, name = repo.partition("/")
+    if not owner or not name or not pr_number:
+        return None
+    query = (
+        "query {\n"
+        f"  repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{\n"
+        f"    pullRequest(number: {int(pr_number)}) {{\n"
+        "      files(first: 100) { nodes { path } }\n"
+        "    }\n"
+        "  }\n"
+        "}"
+    )
+    proc = gh_run(["api", "graphql", "-f", f"query={query}"])
+    if getattr(proc, "returncode", 1) != 0:
+        log.warning("backlog_github.pr_files_failed repo=%s pr=%s err=%s",
+                    repo, pr_number, (getattr(proc, "stderr", "") or "").strip())
+        return None
+    try:
+        payload = json.loads(getattr(proc, "stdout", "") or "{}")
+    except json.JSONDecodeError:
+        log.warning("backlog_github.pr_files_unparseable repo=%s pr=%s", repo, pr_number)
+        return None
+    pr = ((payload.get("data") or {}).get("repository") or {}).get("pullRequest")
+    if not pr:
+        return None
+    nodes = ((pr.get("files") or {}).get("nodes")) or []
+    return [((n or {}).get("path") or "") for n in nodes if (n or {}).get("path")]
+
+
+def _issue_is_action_required(signals: dict) -> bool:
+    """True when *signals* describe a real-world action no diff performs (#784):
+    an ops label, or a curated action phrase in the title/body."""
+    labels = {lbl.strip().lower() for lbl in (signals.get("labels") or ())}
+    if labels & ACTION_ISSUE_LABELS:
+        return True
+    haystack = f"{signals.get('title') or ''}\n{signals.get('body') or ''}".lower()
+    return any(phrase in haystack for phrase in ACTION_ISSUE_PHRASES)
+
+
+def _issue_is_documentation(signals: dict) -> bool:
+    """True when the issue is itself documentation work — a docs-only PR then
+    legitimately satisfies it, so the docs-only gate must not fire."""
+    labels = {lbl.strip().lower() for lbl in (signals.get("labels") or ())}
+    if labels & DOC_ISSUE_LABELS:
+        return True
+    title = (signals.get("title") or "").lower()
+    return "document" in title or "readme" in title or "changelog" in title
+
+
+def _is_doc_path(path: str) -> bool:
+    p = path.strip().lower()
+    return (p.startswith("docs/") or "/docs/" in p or p.endswith(DOC_PATH_SUFFIXES))
+
+
+def _is_docs_only(files: list[str] | None) -> bool | None:
+    """True when every changed path is documentation, False when at least one is
+    not, ``None`` when the file list is unknown/empty (never assume docs-only)."""
+    if not files:
+        return None
+    return all(_is_doc_path(p) for p in files)
+
+
+def _human_gate_reason(signals: dict | None, docs_only: bool | None) -> str | None:
+    """Why a verified-linked PR must NOT auto-close this issue, or ``None`` to
+    close it. Fails safe: unknown signals → close (linkage already gated it)."""
+    if signals is None:
+        return None
+    if _issue_is_action_required(signals):
+        return ("this looks like a manual/operational action a merged PR cannot "
+                "perform (verification, console change, recording, submission)")
+    if docs_only and not _issue_is_documentation(signals):
+        return ("the merged PR changed only documentation — a runbook/guide for "
+                "the work is not the work itself")
+    return None
+
+
+def _escalate_issue(ref: str, reason: str, pr_link: str, *, gh_run: GhRun) -> None:
+    """Hand an issue to a human instead of closing it: comment why, add
+    ``needs-human`` and drop ``in-progress`` (needs-human's retry cooldown keeps
+    it out of the pool, so the runner won't churn re-attempting it). Best-effort."""
+    _issue_comment(
+        ref,
+        f"Batch PR {pr_link} merged, but this issue was **not** auto-closed: "
+        f"{reason}. Escalated to a human (`needs-human`) by ccswitch Backlog "
+        f"Runner — please complete the real work and close manually.",
+        gh_run=gh_run)
+    _issue_edit(ref, add=NEEDS_HUMAN_LABEL, remove=IN_PROGRESS_LABEL, gh_run=gh_run)
+
+
 def close_batch_issues(batch, info, *, gh_run: GhRun = gitrepos._run_gh) -> str:
     """Close the batch's issues after its PR merged — FAIL CLOSED on linkage.
 
@@ -531,8 +700,12 @@ def close_batch_issues(batch, info, *, gh_run: GhRun = gitrepos._run_gh) -> str:
 
     - ``"closed"``   — the PR is the batch's (≥1 issue verifiably linked).
       Linked issues are closed with a linking comment (best-effort: an
-      individual failure is logged and the rest still close). Verified-unlinked
-      issues are left OPEN and returned to the pool (comment + unclaim).
+      individual failure is logged and the rest still close) UNLESS the human
+      gate (:func:`_human_gate_reason`, #784) says a merged PR can't legitimately
+      complete them — an action/ops issue, or a non-doc issue with a docs-only
+      diff — in which case they are escalated to ``needs-human`` and left OPEN.
+      Verified-unlinked issues are left OPEN and returned to the pool
+      (comment + unclaim).
     - ``"unlinked"`` — every issue is verified-unlinked: a misattributed PR.
       Nothing is closed or relabeled; the caller must ignore/denylist the PR.
     - ``"retry"``    — linkage unverifiable (lookups failed) for at least one
@@ -557,8 +730,18 @@ def close_batch_issues(batch, info, *, gh_run: GhRun = gitrepos._run_gh) -> str:
     pr_link = getattr(info, "url", "") or f"PR #{pr_number}"
     comment = (f"Implemented by {pr_link} (merged) — "
                f"closed by ccswitch Backlog Runner.")
+    # A verified-linked PR still must not falsely complete an action/ops issue or
+    # be satisfied by a docs-only diff (#784). Fetch the diff once (same PR for
+    # the whole batch), then gate each linked issue on its own signals.
+    docs_only = _is_docs_only(_pr_changed_files(repo, pr_number, gh_run=gh_run))
     for ref in linked:
-        _close_issue(ref, comment, gh_run=gh_run)
+        reason = _human_gate_reason(_issue_signals(ref, gh_run=gh_run), docs_only)
+        if reason:
+            log.info("backlog_github.close_batch_escalate ref=%s pr=%s reason=%s",
+                     ref, pr_number, reason)
+            _escalate_issue(ref, reason, pr_link, gh_run=gh_run)
+        else:
+            _close_issue(ref, comment, gh_run=gh_run)
     # The PR is the batch's, but it never referenced these issues — closing
     # them would be exactly the #642 bug. Leave them open and unclaim so they
     # re-enter the candidate pool. (Unverifiable refs stay claimed untouched;
@@ -653,6 +836,20 @@ def heal_orphan_claims(refs: list[str], tracked: set[str], *,
             info = find_referencing_pr(ref, gh_run=gh_run)
             if info is not None and info.state == "merged":
                 pr_link = info.url or f"PR #{info.number}"
+                # Same human gate as close_batch_issues (#784): never let the heal
+                # path auto-close an action/ops issue or one satisfied only by a
+                # docs-only diff — escalate to a human instead.
+                repo, _ = _split_ref(ref)
+                docs_only = _is_docs_only(
+                    _pr_changed_files(repo, info.number, gh_run=gh_run))
+                reason = _human_gate_reason(
+                    _issue_signals(ref, gh_run=gh_run), docs_only)
+                if reason:
+                    log.info("backlog_github.heal_escalate ref=%s pr=%s reason=%s",
+                             ref, info.number, reason)
+                    _escalate_issue(ref, reason, pr_link, gh_run=gh_run)
+                    healed.append((ref, "escalated"))
+                    continue
                 comment = (f"Implemented by {pr_link} (merged) — closed by "
                            f"ccswitch Backlog Runner (orphaned-claim heal).")
                 if _close_issue(ref, comment, gh_run=gh_run):

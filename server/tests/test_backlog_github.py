@@ -665,6 +665,174 @@ def test_close_batch_issues_mixed_unlinked_and_unverifiable_retries():
 
 
 # --------------------------------------------------------------------------- #
+# close_batch_issues — human gate: action-required issues & docs-only PRs (#784)#
+# --------------------------------------------------------------------------- #
+
+def _signals_stdout(title="", body="", labels=()) -> str:
+    """An issue-signals GraphQL response: title + body + labels."""
+    return json.dumps({"data": {"repository": {"issue": {
+        "title": title, "body": body,
+        "labels": {"nodes": [{"name": n} for n in labels]}}}}})
+
+
+def _files_stdout(paths) -> str:
+    """A PR changed-files GraphQL response."""
+    return json.dumps({"data": {"repository": {"pullRequest": {
+        "files": {"nodes": [{"path": p} for p in paths]}}}}})
+
+
+class GateGh:
+    """Routes the four graphql shapes close_batch_issues issues once linkage is
+    verified: PR linkage (``closingIssuesReferences``), PR files (``files(``),
+    per-issue signals (``issue(number: N)`` with ``labels(``), and the timeline
+    cross-ref (``timelineItems``). Non-graphql calls succeed."""
+
+    def __init__(self, *, pr, files=None, signals=None):
+        self.calls: list[list[str]] = []
+        self._pr = pr
+        self._files = files
+        self._signals = dict(signals or {})  # issue number -> proc
+
+    def __call__(self, args, token=None):
+        self.calls.append(list(args))
+        if args[:2] != ["api", "graphql"]:
+            return _proc()
+        q = args[-1]
+        if "pullRequest(" in q and "files(" in q:
+            return self._files or _proc(stdout=_files_stdout([]))
+        if "pullRequest(" in q:
+            return self._pr
+        if "timelineItems" in q:
+            return _proc(stdout=_crossref_stdout([]))
+        if "issue(number" in q:
+            for num, proc in self._signals.items():
+                if f"issue(number: {num})" in q:
+                    return proc
+            return _proc(stdout=_signals_stdout())
+        return _proc()
+
+
+def _batch8() -> Batch:
+    return Batch(primary="o/r#8", issues=["o/r#8"], repo="o/r")
+
+
+def test_close_batch_issues_action_required_issue_is_escalated_not_closed():
+    """A verifiably-linked PR must NOT auto-close an action/ops issue (a manual
+    console step). The #784 incident: the issue is escalated to needs-human and
+    left OPEN — a PR can never perform the real-world action."""
+    from server.automations.backlog_github import close_batch_issues
+    gh = GateGh(
+        pr=_proc(stdout=_linkage_stdout(closing=[8])),
+        files=_proc(stdout=_files_stdout(["src/oauth.py"])),  # even a CODE PR
+        signals={8: _proc(stdout=_signals_stdout(
+            title="Remove Classroom scopes on the GCP consent screen"))})
+
+    outcome = close_batch_issues(_batch8(), _merged_info(), gh_run=gh)
+
+    assert outcome == "closed"  # batch handled — some closed, some escalated
+    assert not [c for c in gh.calls if c[:2] == ["issue", "close"]]
+    esc = next(c for c in gh.calls
+               if c[:2] == ["issue", "edit"] and "--add-label" in c)
+    assert esc[esc.index("--add-label") + 1] == "needs-human"
+    assert "--remove-label" in esc and esc[esc.index("--remove-label") + 1] == "in-progress"
+    assert [c for c in gh.calls if c[:2] == ["issue", "comment"]]
+
+
+def test_close_batch_issues_docs_only_pr_does_not_satisfy_non_doc_issue():
+    """A docs-only diff (runbook/guide) must not close a non-documentation
+    issue — a guide for X is not doing X (#784). Escalate to a human instead."""
+    from server.automations.backlog_github import close_batch_issues
+    gh = GateGh(
+        pr=_proc(stdout=_linkage_stdout(closing=[8])),
+        files=_proc(stdout=_files_stdout(["docs/runbook.md", "README.md"])),
+        signals={8: _proc(stdout=_signals_stdout(title="Rotate the signing key"))})
+
+    outcome = close_batch_issues(_batch8(), _merged_info(), gh_run=gh)
+
+    assert outcome == "closed"
+    assert not [c for c in gh.calls if c[:2] == ["issue", "close"]]
+    assert [c for c in gh.calls
+            if c[:2] == ["issue", "edit"] and "--add-label" in c
+            and c[c.index("--add-label") + 1] == "needs-human"]
+
+
+def test_close_batch_issues_docs_only_pr_closes_a_documentation_issue():
+    """A docs-only PR legitimately satisfies a documentation issue — the gate
+    must not over-fire and block real doc work."""
+    from server.automations.backlog_github import close_batch_issues
+    gh = GateGh(
+        pr=_proc(stdout=_linkage_stdout(closing=[8])),
+        files=_proc(stdout=_files_stdout(["docs/setup.md"])),
+        signals={8: _proc(stdout=_signals_stdout(
+            title="Document the setup flow", labels=["documentation"]))})
+
+    outcome = close_batch_issues(_batch8(), _merged_info(), gh_run=gh)
+
+    assert outcome == "closed"
+    closes = [c for c in gh.calls if c[:2] == ["issue", "close"]]
+    assert [c[2] for c in closes] == ["8"]
+
+
+def test_close_batch_issues_code_pr_normal_issue_still_closes():
+    """The happy path is unchanged: a code PR for an ordinary code issue closes
+    it — the human gate only fires on action issues or docs-only diffs."""
+    from server.automations.backlog_github import close_batch_issues
+    gh = GateGh(
+        pr=_proc(stdout=_linkage_stdout(closing=[8])),
+        files=_proc(stdout=_files_stdout(["src/sweep.py", "server/tests/test_sweep.py"])),
+        signals={8: _proc(stdout=_signals_stdout(title="Fix the sweep off-by-one"))})
+
+    outcome = close_batch_issues(_batch8(), _merged_info(), gh_run=gh)
+
+    assert outcome == "closed"
+    closes = [c for c in gh.calls if c[:2] == ["issue", "close"]]
+    assert [c[2] for c in closes] == ["8"]
+    assert not [c for c in gh.calls
+                if c[:2] == ["issue", "edit"] and "--add-label" in c]
+
+
+def test_close_batch_issues_action_signal_lookup_failure_falls_back_to_close():
+    """If the issue-signals lookup fails we cannot assert action/ops, so a
+    verified-linked PR still closes — a transient read must not wedge close-out
+    forever (the linkage check already gates misattribution)."""
+    from server.automations.backlog_github import close_batch_issues
+    gh = GateGh(
+        pr=_proc(stdout=_linkage_stdout(closing=[8])),
+        files=_proc(stdout=_files_stdout(["src/x.py"])),
+        signals={8: _proc(returncode=1, stderr="boom")})
+
+    outcome = close_batch_issues(_batch8(), _merged_info(), gh_run=gh)
+
+    assert outcome == "closed"
+    assert [c for c in gh.calls if c[:2] == ["issue", "close"]]
+
+
+# --------------------------------------------------------------------------- #
+# Action-required / docs-only predicates (#784)                                #
+# --------------------------------------------------------------------------- #
+
+def test_is_action_required_matches_phrases_and_labels():
+    from server.automations.backlog_github import _issue_is_action_required
+    assert _issue_is_action_required({"title": "Verify domain in Search Console",
+                                      "body": "", "labels": []})
+    assert _issue_is_action_required({"title": "Cleanup",
+                                      "body": "Record a demo video and upload it",
+                                      "labels": []})
+    assert _issue_is_action_required({"title": "misc", "body": "",
+                                      "labels": ["action-required"]})
+    assert not _issue_is_action_required({"title": "Fix null deref",
+                                         "body": "guard the pointer", "labels": []})
+
+
+def test_is_docs_only_classifies_paths():
+    from server.automations.backlog_github import _is_docs_only
+    assert _is_docs_only(["docs/a.md", "README.md", "web/docs/b.mdx"]) is True
+    assert _is_docs_only(["docs/a.md", "src/main.py"]) is False
+    assert _is_docs_only([]) is None          # unknown, not "docs-only"
+    assert _is_docs_only(None) is None
+
+
+# --------------------------------------------------------------------------- #
 # query_claimed_refs / heal_orphan_claims (orphaned-claim healing)            #
 # --------------------------------------------------------------------------- #
 
@@ -707,6 +875,37 @@ def test_heal_orphan_merged_pr_closes_issue_and_strips_label():
     assert "--comment" in close and "o/r" in close
     edit = next(c for c in fake.calls if c[:2] == ["issue", "edit"])
     assert "--remove-label" in edit and "in-progress" in edit
+
+
+def test_heal_orphan_merged_pr_escalates_action_issue_instead_of_closing():
+    """The orphan-heal path shares the #784 human gate: a merged PR that landed
+    for an action/ops issue is escalated to needs-human, never auto-closed."""
+    pr = {"number": 40, "url": "https://github.com/o/r/pull/40", "title": "docs",
+          "state": "MERGED", "isDraft": False, "headRefName": "b",
+          "autoMergeRequest": None}
+
+    def router(args, token=None):
+        router.calls.append(list(args))
+        if args[:2] != ["api", "graphql"]:
+            return _proc()
+        q = args[-1]
+        if "timelineItems" in q:
+            return _proc(stdout=_crossref_stdout([pr]))
+        if "pullRequest(" in q and "files(" in q:
+            return _proc(stdout=_files_stdout(["docs/runbook.md"]))
+        if "issue(number" in q:
+            return _proc(stdout=_signals_stdout(
+                title="Submit to Google for verification"))
+        return _proc()
+    router.calls = []
+
+    healed = heal_orphan_claims(["o/r#5"], set(), gh_run=router)
+
+    assert healed == [("o/r#5", "escalated")]
+    assert not [c for c in router.calls if c[:2] == ["issue", "close"]]
+    esc = next(c for c in router.calls
+               if c[:2] == ["issue", "edit"] and "--add-label" in c)
+    assert esc[esc.index("--add-label") + 1] == "needs-human"
 
 
 def test_heal_orphan_open_pr_left_untouched():
