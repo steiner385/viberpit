@@ -39,6 +39,39 @@ def test_rehydrate_loads_non_ended_rows_as_detached(tmp_path):
     assert drivers == {}                        # lazy: no drivers spawned
 
 
+def test_rehydrate_normalizes_awaiting_human_statuses(tmp_path):
+    """A restart wipes the in-memory permission/question registries, so a row
+    persisted as waiting_input / waiting_question / ready_review can never re-derive
+    that status — it would keep a dead "needs you" badge with no prompt to answer.
+    rehydrate() must normalize all live/in-memory-derived statuses to idle
+    (resumable) and flag them interrupted_by_restart, exactly like mid-turn rows."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'ccswitch.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed([
+            dict(id="perm", name="Perm", account_name="x",
+                 claude_session_id="cs1", status="waiting_input", cwd="/r"),
+            dict(id="ques", name="Ques", account_name="x",
+                 claude_session_id="cs2", status="waiting_question", cwd="/r"),
+            dict(id="plan", name="Plan", account_name="x",
+                 claude_session_id="cs3", status="ready_review", cwd="/r"),
+            dict(id="calm", name="Calm", account_name="x",
+                 claude_session_id="cs4", status="idle", cwd="/r"),
+        ])
+        orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+        await orch.rehydrate()
+        return {r.id: r for r in orch.list_sessions()}
+
+    recs = asyncio.run(run())
+    for sid in ("perm", "ques", "plan"):
+        assert recs[sid].status == "idle", f"{sid} not normalized"
+        assert recs[sid].interrupted_by_restart is True, f"{sid} missing restart flag"
+    # A genuinely-idle row is untouched — not spuriously flagged interrupted.
+    assert recs["calm"].status == "idle"
+    assert recs["calm"].interrupted_by_restart is False
+
+
 def test_rehydrate_is_idempotent(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path/'ccswitch.db'}"
 

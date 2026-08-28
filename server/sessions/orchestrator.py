@@ -78,9 +78,20 @@ log = logging.getLogger(__name__)
 
 
 # Statuses that mean a session is mid-turn or awaiting user input — restarting now
-# would lose in-flight work. All other statuses (idle / ready_review / done /
-# limited / ended / archived) are restart-safe: resume + transcript replay recover them.
+# would lose in-flight work, so the deploy drain waits for them to clear. All other
+# statuses (idle / done / limited / ended / archived) are restart-safe: resume +
+# transcript replay recover them.
 _ACTIVE_STATUSES = frozenset({"in_progress", "working", "waiting_input", "condensing"})
+
+# Statuses derived purely from the live driver's in-memory registries — a mid-turn
+# turn, or a pending permission / question / plan approval (see status.derive_status
+# + driver._dash_signals). A daemon restart wipes those registries, so NONE of these
+# can ever re-derive after a restart: the persisted row would keep a "needs you"
+# badge with no prompt to answer (the permission Future the restart destroyed).
+# rehydrate() MUST normalize every one to idle (resumable). Superset of
+# _ACTIVE_STATUSES: waiting_question / ready_review don't block the deploy drain but
+# strand identically, so they belong here even though they're absent above.
+_RESTART_TRANSIENT_STATUSES = _ACTIVE_STATUSES | frozenset({"waiting_question", "ready_review"})
 
 # Message surfaced to the user when auto-recovery gives up on a repeatedly-dropped turn.
 _TURN_DROPPED_GIVEUP = ("Auto-recovery gave up after repeated empty turns — the context "
@@ -4147,13 +4158,18 @@ class SessionOrchestrator:
         for row in rows:
             if row.id in self._records:
                 continue
-            # A pre-crash live status has no driver anymore → normalize to idle. When we
-            # DO normalize (the row was mid-turn), the daemon restart dropped an in-flight
-            # turn — flag it (issue #434) so the dashboard says "interrupted by daemon
-            # restart — re-send to resume" instead of a generic idle card. Transient: the
-            # flag lives only on this in-memory record and clears on the next turn.
-            was_midturn = row.status in ("working", "in_progress", "condensing")
-            status = "idle" if was_midturn else row.status
+            # A pre-crash live status has no driver anymore → normalize to idle. This
+            # covers both mid-turn statuses AND the awaiting-human ones (waiting_input /
+            # waiting_question / ready_review): all are backed only by the live driver's
+            # in-memory registries, which the restart wiped, so none can re-derive — left
+            # as-is they show a dead "needs you" badge with no prompt (the orphaned
+            # permission the user reported). When we DO normalize, the daemon restart
+            # dropped an in-flight turn — flag it (issue #434) so the dashboard says
+            # "interrupted by daemon restart — re-send to resume" instead of a generic
+            # idle card. Transient: the flag lives only on this in-memory record and
+            # clears on the next turn.
+            was_interrupted = row.status in _RESTART_TRANSIENT_STATUSES
+            status = "idle" if was_interrupted else row.status
             # Backfill the PR-join branch for legacy sessions created before the
             # branch was persisted (NULL column). Derive it once from the session's
             # worktree and write it back so the column becomes the source of truth.
@@ -4167,7 +4183,7 @@ class SessionOrchestrator:
             # row-backed field — so it threads through as a call-site override
             # rather than living in _record_from_row's row mapping.
             self._records[row.id] = self._record_from_row(
-                row, status=status, branch=branch, interrupted_by_restart=was_midturn)
+                row, status=status, branch=branch, interrupted_by_restart=was_interrupted)
             added += 1
             log_event(log, logging.INFO, "session.reattach",
                       session_id=row.id,
