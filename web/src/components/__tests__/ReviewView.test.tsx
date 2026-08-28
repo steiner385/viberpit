@@ -24,6 +24,7 @@ vi.mock('@/api/hooks', () => ({
   useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
   useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAssessDispatch: vi.fn(() => ({ assess: vi.fn() })),
+  useUnarchiveSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }))
 
 vi.mock('@/api/transcript', () => ({
@@ -170,5 +171,46 @@ describe('ReviewView', () => {
     fireEvent.scroll(scroller)
 
     expect(fetchOlderTurns).not.toHaveBeenCalled()
+  })
+
+  it('renders an Unarchive button', () => {
+    vi.mocked(hooks.useSessionTranscript).mockReturnValue({
+      data: { events: [] },
+      isLoading: false,
+    } as ReturnType<typeof hooks.useSessionTranscript>)
+
+    render(<ReviewView sessionId="arc-1" onBack={vi.fn()} />, { wrapper })
+
+    expect(screen.getByRole('button', { name: /restore this session from archive/i })).toBeInTheDocument()
+  })
+
+  it('calls unarchive.mutate with sessionId when Unarchive is clicked', async () => {
+    const user = userEvent.setup()
+    const mutate = vi.fn()
+    vi.mocked(hooks.useUnarchiveSession).mockReturnValue({ mutate, isPending: false } as ReturnType<typeof hooks.useUnarchiveSession>)
+    vi.mocked(hooks.useSessionTranscript).mockReturnValue({
+      data: { events: [] },
+      isLoading: false,
+    } as ReturnType<typeof hooks.useSessionTranscript>)
+
+    render(<ReviewView sessionId="arc-42" onBack={vi.fn()} />, { wrapper })
+
+    await user.click(screen.getByRole('button', { name: /restore this session from archive/i }))
+
+    expect(mutate).toHaveBeenCalledWith('arc-42', expect.objectContaining({ onSuccess: expect.any(Function) }))
+  })
+
+  it('shows "Restoring…" and disables button while unarchive is pending', () => {
+    vi.mocked(hooks.useUnarchiveSession).mockReturnValue({ mutate: vi.fn(), isPending: true } as ReturnType<typeof hooks.useUnarchiveSession>)
+    vi.mocked(hooks.useSessionTranscript).mockReturnValue({
+      data: { events: [] },
+      isLoading: false,
+    } as ReturnType<typeof hooks.useSessionTranscript>)
+
+    render(<ReviewView sessionId="arc-1" onBack={vi.fn()} />, { wrapper })
+
+    const btn = screen.getByRole('button', { name: /restore this session from archive/i })
+    expect(btn).toBeDisabled()
+    expect(btn).toHaveTextContent('Restoring…')
   })
 })
