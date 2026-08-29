@@ -254,3 +254,28 @@ async def test_x_real_ip_ignored_when_direct_peer_not_trusted(monkeypatch):
     # whois called with direct peer (100.64.0.99), not the spoofed X-Real-IP
     assert len(whois_calls) == 1
     assert whois_calls[0] == "100.64.0.99"
+
+
+@pytest.mark.asyncio
+async def test_invalid_x_real_ip_does_not_invoke_whois(monkeypatch):
+    """A non-IP value in X-Real-IP (e.g. a flag string) is rejected by ipaddress
+    validation before whois is invoked — closing the argv injection vector."""
+    whois_calls: list[str] = []
+
+    def fake_whois(cmd, **kwargs):
+        whois_calls.append(cmd[-1])
+        mock = MagicMock()
+        mock.returncode = 0
+        mock.stdout = json.dumps({"UserProfile": {"LoginName": "attacker@evil.com"}})
+        return mock
+
+    monkeypatch.setattr("server.auth.identity.subprocess.run", fake_whois)
+    app = create_app()
+    transport = ASGITransport(app=app, client=("127.0.0.1", 12345))
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/api/health",
+            headers={"X-Real-IP": "--version"},  # flag injection attempt
+        )
+    assert response.status_code == 401
+    assert len(whois_calls) == 0, "whois must not be called with an invalid IP"

@@ -108,13 +108,24 @@ uvicorn server.app:app --host 127.0.0.1 --port 8787
 
 The server serves both the API and the compiled web assets.
 
-#### 4. Expose to your phone via Tailscale
+#### 4. Expose to your phone via Tailscale (nginx + tailscale cert)
+
+The server binds to `127.0.0.1:8787`. Expose it over HTTPS on the tailnet via nginx:
 
 ```bash
-tailscale serve https / http://127.0.0.1:8787
+# One-time setup on the host (requires root)
+sudo tailscale cert \
+    --cert-file /etc/ccswitch/dobby.tail0dd570.ts.net.crt \
+    --key-file  /etc/ccswitch/dobby.tail0dd570.ts.net.key \
+    dobby.tail0dd570.ts.net
+sudo cp deploy/ccswitch-tailnet.nginx /etc/nginx/sites-available/ccswitch-tailnet
+sudo ln -sf /etc/nginx/sites-available/ccswitch-tailnet /etc/nginx/sites-enabled/
+sudo nginx -t && sudo nginx -s reload
+sudo cp deploy/ccswitch-cert-renew.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now ccswitch-cert-renew.timer
 ```
 
-Open the Tailscale HTTPS URL on your phone. The server never binds to a public interface.
+Open `https://dobby.tail0dd570.ts.net/` on your phone. The server never binds to a public interface.
 
 #### Development (hot reload)
 
@@ -130,10 +141,19 @@ cd web && npm run dev      # → http://localhost:5173
 
 > **Read this before exposing the server to any network.**
 
-The server identifies callers from the `Tailscale-User-Login` header injected by `tailscale serve`.
-This is **only safe when the server is bound to loopback (`127.0.0.1`) and fronted by
-`tailscale serve`**. If you bind to `0.0.0.0` or skip `tailscale serve`, the header can be
-spoofed and the server trusts all callers unconditionally.
+The server identifies callers via two mechanisms, in order:
+
+1. **`Tailscale-User-Login` header** — set by any trusted reverse proxy (e.g. nginx with
+   `proxy_set_header Tailscale-User-Login ""` stripping client-supplied values).
+2. **`tailscale whois <X-Real-IP>`** — when the header is absent, the server calls
+   `tailscale whois` using the `X-Real-IP` header value, but **only when the direct TCP
+   peer is loopback (`127.0.0.1` / `::1`)** — preventing `X-Real-IP` spoofing by clients
+   that reach uvicorn directly. The `X-Real-IP` value is validated as a real IP address
+   before use.
+
+This is **only safe when uvicorn is bound to `127.0.0.1`** (the default) and fronted by a
+reverse proxy (nginx, as configured in `deploy/ccswitch-tailnet.nginx`). Binding to
+`0.0.0.0` without a proxy bypasses both guards.
 
 - **Set `CCSWITCH_TAILNET_ALLOWLIST`** to your own tailnet identity (e.g. `you@gmail.com`). An
   empty allowlist permits all authenticated tailnet nodes — only safe on a single-person tailnet.
