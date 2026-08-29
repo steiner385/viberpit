@@ -74,6 +74,9 @@ class CreateSessionRequest(BaseModel):
     # Model alias/id to start the session on (e.g. "opus", "fable"). None / "default"
     # → the account default; the value is applied to the driver once it starts.
     model: str | None = None
+    # Optional runner preference. None → auto-rank; a name → that host first, still
+    # failing over. Forwarded to FleetOrchestrator.create_session as prefer=.
+    host: str | None = None
 
 
 class RenameSessionRequest(BaseModel):
