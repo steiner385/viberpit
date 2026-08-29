@@ -132,3 +132,22 @@ async def test_prefer_is_forwarded_not_passed_to_daemon(monkeypatch):
     await fo.create_session(prefer="rocky", account="a")
     assert got["prefer"] == "rocky"
     assert "prefer" not in seen and seen["account"] == "a"  # prefer never reaches daemon
+
+
+@pytest.mark.asyncio
+async def test_fanout_groups_ids_by_host_and_merges(monkeypatch):
+    rocky, dobby = _FakeOrch("rocky"), _FakeOrch("dobby")
+    async def many(self, ids, *, timeout=None, viewing=False):
+        return {i: f"{self.name}:{i}" for i in ids}
+    rocky.latest_summary_many = many.__get__(rocky)
+    dobby.latest_summary_many = many.__get__(dobby)
+    fo = FleetOrchestrator(_FakeRouter({"rocky": rocky, "dobby": dobby}), primary="rocky")
+    async def host_for(sid): return "dobby" if sid.startswith("d") else "rocky"
+    monkeypatch.setattr(fo, "_host_for", host_for)
+    out = await fo.latest_summary_many(["r1", "d1", "r2"], timeout=1.0)
+    assert out == {"r1": "rocky:r1", "d1": "dobby:d1", "r2": "rocky:r2"}
+
+@pytest.mark.asyncio
+async def test_fanout_keeps_deadline_marker():
+    fo = FleetOrchestrator(_FakeRouter({"rocky": _FakeOrch("rocky")}), primary="rocky")
+    assert getattr(fo.latest_summary_many, _DEADLINE_ATTR, False) is True

@@ -4,9 +4,17 @@ Becomes app.state.sessions in remote mode. Routes each edge->session call to the
 right daemon; unrouted calls go to the primary host's REAL bound method, so sync/
 async behaviour and the @rpc_deadline marker are preserved for free.
 """
+import asyncio
+
 from server.sessions.facade import _DEADLINE_ATTR
 from server.sessions.fleet_router import FleetRouter, NoHostAvailable
 from server.sessions.remote import RemoteOrchestrator
+
+# Method names whose FIRST positional arg is session_id and that touch live daemon
+# state (must run on the owning host). Pinned by a completeness test (Task 4a).
+_FANOUT_BY_IDS: frozenset[str] = frozenset({
+    "latest_suggestions_many", "latest_summary_many", "prs_for_many",
+})
 
 # Method names whose FIRST positional arg is session_id and that touch live daemon
 # state (must run on the owning host). Pinned by a completeness test (Task 4a).
@@ -92,6 +100,28 @@ class FleetOrchestrator:
             await db.execute(_upd(_S).where(_S.id == session_id).values(host=host))
             await db.commit()
 
+    def _make_fanout(self, name: str):
+        async def _call(session_ids, *a, **k):
+            groups: dict[str, list[str]] = {}
+            for sid in session_ids:
+                host = await self._host_for(sid) or self._primary
+                groups.setdefault(host, []).append(sid)
+
+            async def _one(host, subset):
+                try:
+                    orch = self._router.get(host)
+                except Exception:
+                    orch = self._primary_orch()
+                return await getattr(orch, name)(subset, *a, **k)
+
+            merged: dict = {}
+            for res in await asyncio.gather(*(_one(h, s) for h, s in groups.items())):
+                merged.update(res or {})
+            return merged
+        if getattr(getattr(RemoteOrchestrator, name, None), _DEADLINE_ATTR, False):
+            setattr(_call, _DEADLINE_ATTR, True)
+        return _call
+
     def subscribe(self, session_id: str):
         # Sync per-session iterator. The WS handler calls ensure_driver (async, warms
         # the cache) before subscribe, so the cache is populated by now; on a miss we
@@ -99,6 +129,8 @@ class FleetOrchestrator:
         return self._orch_for_session_sync(session_id).subscribe(session_id)
 
     def __getattr__(self, name: str):
+        if name in _FANOUT_BY_IDS:
+            return self._make_fanout(name)
         if name in _PER_SESSION:
             return self._make_per_session(name)
         return getattr(self._primary_orch(), name)
