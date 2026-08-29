@@ -245,7 +245,7 @@ _SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
 
 def restart_units(*, daemon_changed: bool, daemon_enabled: bool,
-                  target_sha: str | None = None,
+                  target_sha: str | None = None, rewind_remote: bool = False,
                   run: Run = subprocess.run) -> list[str]:
     """Restart systemd units in order: daemon first (if changed), then edge.
 
@@ -274,6 +274,13 @@ def restart_units(*, daemon_changed: bool, daemon_enabled: bool,
     Requires ``CCSWITCH_DAEMON_SSH_REPO`` (the checkout path on the remote host) whenever a
     remote daemon actually needs restarting. Missing or unsafe values raise before any
     command runs — a deploy that cannot update the remote must fail, not silently restart it.
+
+    ``rewind_remote`` flips the remote update from fast-forward to ``reset --hard``, and
+    exists solely for ``rollback_to``. A rollback moves BACKWARD, which ``--ff-only``
+    cannot do at all — and the ``or "origin/master"`` fallback below aims an un-targeted
+    call at the newest commit, i.e. precisely the one being rolled back. Rewinding
+    therefore REQUIRES an explicit target_sha: "wherever origin happens to point" is the
+    bug, not a usable default.
 
     Returns the ordered list of units restarted.
     """
@@ -312,6 +319,13 @@ def restart_units(*, daemon_changed: bool, daemon_enabled: bool,
                 f"target_sha={target_sha!r} is not a hex git sha; "
                 "refusing to build an ssh command from it",
             )
+        if rewind_remote and not target_sha:
+            raise DeployError(
+                "restart",
+                "rewind_remote requires an explicit target_sha; refusing to reset a "
+                "remote daemon to origin/master during a rollback (that is the commit "
+                "being rolled back)",
+            )
 
     # DAEMON FIRST — order is load-bearing (browser reconnect-flush race, #190).
     if daemon_host:
@@ -321,9 +335,15 @@ def restart_units(*, daemon_changed: bool, daemon_enabled: bool,
             # remote aborts the deploy rather than losing whatever is there.
             run(["ssh", daemon_host, "git", "-C", daemon_repo, "fetch", "--quiet", "origin"],
                 check=True, capture_output=True)
-            run(["ssh", daemon_host, "git", "-C", daemon_repo, "merge", "--ff-only",
-                 target_sha or "origin/master"],
-                check=True, capture_output=True)
+            if rewind_remote:
+                # Rollback only. target_sha is guaranteed non-empty by the validation above.
+                run(["ssh", daemon_host, "git", "-C", daemon_repo, "reset", "--hard",
+                     target_sha],
+                    check=True, capture_output=True)
+            else:
+                run(["ssh", daemon_host, "git", "-C", daemon_repo, "merge", "--ff-only",
+                     target_sha or "origin/master"],
+                    check=True, capture_output=True)
             run(["ssh", daemon_host, "sudo", "systemctl", "restart", "ccswitch-daemon.service"],
                 check=True, capture_output=True)
             units.append("ccswitch-daemon.service")
@@ -570,7 +590,12 @@ def rollback_to(repo: str, sha: str, *, daemon_changed: bool, daemon_enabled: bo
         2. Rebuild frontend best-effort — a rollback build failure only leaves web/dist stale;
            it must not raise (catches DeployError).
         3. Restart BOTH units together via restart_units() so they run the same (old) code —
-           never split-version.
+           never split-version. A REMOTE daemon is rewound to *sha* too (rewind_remote):
+           this call used to omit target_sha entirely, so restart_units fast-forwarded the
+           remote to `origin/master` — the very commit being rolled back. On 2026-08-25 the
+           health gate rejected f26c56ee and this left dobby's edge on 0d15f128 while
+           rocky's daemon stayed on the rejected commit, from the function that promises
+           exactly the opposite.
     """
     run(["git", "-C", repo, "reset", "--hard", sha], check=True, capture_output=True)
     # Rebuild best-effort — a rollback build failure only leaves web/dist stale; never raise.
@@ -579,7 +604,8 @@ def rollback_to(repo: str, sha: str, *, daemon_changed: bool, daemon_enabled: bo
     except DeployError:
         pass
     # Restart BOTH together so they run the same (old) code — split-version is worse.
-    restart_units(daemon_changed=daemon_changed, daemon_enabled=daemon_enabled, run=run)
+    restart_units(daemon_changed=daemon_changed, daemon_enabled=daemon_enabled,
+                  target_sha=sha, rewind_remote=True, run=run)
 
 
 def _default_gh_api_json(path: str, body: str) -> str:
