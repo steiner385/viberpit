@@ -8,8 +8,8 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import (BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String,
-                        UniqueConstraint)
+from sqlalchemy import (BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer,
+                        String, UniqueConstraint)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import JSON
 
@@ -586,9 +586,18 @@ class CiTestResult(Base):
     # this same unique constraint, it MUST run AFTER scripts/ccswitch-db-compact.py
     # has deduped the table. Creating uq_ci_test_result_run_suite_test on the
     # un-compacted table fails outright — ~430k existing duplicate rows violate it.
+    #
+    # (repo, created_ts) composite: every doctor tick scans "this repo, this
+    # window" (cicd_doctor.flake_counts_stmt). The separate single-column indexes
+    # above cannot serve that pair, so Postgres chose a Parallel Seq Scan over the
+    # whole 26.4M-row table — 65s per tick per repo on 2026-08-29. Like the unique
+    # constraint above, create_all does NOT add indexes to an existing table and
+    # deploys do not run `alembic upgrade`, so on a live DB this must be created by
+    # hand (CREATE INDEX CONCURRENTLY — it takes minutes and must not hold a lock).
     __table_args__ = (
         UniqueConstraint("run_id", "suite", "test_id",
                          name="uq_ci_test_result_run_suite_test"),
+        Index("ix_ci_test_result_repo_created_ts", "repo", "created_ts"),
     )
 
 

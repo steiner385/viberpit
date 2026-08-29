@@ -3,27 +3,64 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from collections.abc import Iterable
 
 from .types import CheckStats, JobObs, TestObs
 
-_FAIL = {"failed", "error", "failure", "timed_out"}
-_PASS = {"passed", "success"}
+# Outcome vocabulary. PUBLIC because the flakiness aggregate also runs in SQL
+# (``cicd_doctor.flake_counts_stmt``): a caller that re-listed these strings in a
+# WHERE clause would silently drift from the in-memory fold the day a new outcome
+# is added. One definition, both call sites (constitution VI).
+FAIL_OUTCOMES: frozenset[str] = frozenset({"failed", "error", "failure", "timed_out"})
+PASS_OUTCOMES: frozenset[str] = frozenset({"passed", "success"})
+# Outcomes that carry flakiness evidence at all; everything else (notably
+# "skipped") is not evidence in either direction and must be filtered out
+# identically wherever the aggregate is computed.
+FLAKE_OUTCOMES: frozenset[str] = PASS_OUTCOMES | FAIL_OUTCOMES
+
+_FAIL = FAIL_OUTCOMES
+_PASS = PASS_OUTCOMES
 _DAY = 86400.0
+
+
+def flake_pcts_from_sha_counts(
+    rows: Iterable[tuple[str, int, int]],
+) -> dict[str, tuple[float, int]]:
+    """Per test_id: (flake %, distinct shas) from PRE-AGGREGATED per-test counts.
+
+    *rows* is ``(test_id, distinct_shas, shas_with_both_a_pass_and_a_fail)`` —
+    exactly what ``cicd_doctor.flake_counts_stmt`` returns from the database.
+
+    This is the single home of the percentage itself, shared with the in-memory
+    ``test_flake_pcts`` below, so the database path and the Python path cannot
+    disagree about the arithmetic. What the database necessarily re-expresses is
+    only the *predicate* ("this sha shows both a pass and a fail"), which
+    ``test_aggregate_form_matches_the_in_memory_form`` pins against this function.
+    """
+    return {t: (_pct(flaky, shas), shas) for t, shas, flaky in rows}
+
+
+def _pct(flaky: int, total: int) -> float:
+    return 100.0 * flaky / total if total else 0.0
 
 
 def _flake_pct(sha_outcomes: dict[str, set[str]]) -> float:
     """% of shas whose outcome set contains BOTH a pass and a fail."""
-    if not sha_outcomes:
-        return 0.0
     flaky = sum(1 for o in sha_outcomes.values() if (o & _PASS) and (o & _FAIL))
-    return 100.0 * flaky / len(sha_outcomes)
+    return _pct(flaky, len(sha_outcomes))
 
 
 def test_flake_pcts(obs: list[TestObs]) -> dict[str, tuple[float, int]]:
-    """Per test_id: (flake %, distinct shas observed). Skipped runs are ignored."""
+    """Per test_id: (flake %, distinct shas observed). Skipped runs are ignored.
+
+    In-memory fold, for callers that already hold the observations. Anything
+    reading a large window from the database must use ``flake_counts_stmt`` +
+    ``flake_pcts_from_sha_counts`` instead: this function's input is one row per
+    test *attempt*, which on a busy repo is millions of rows (#TBD).
+    """
     by_test: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
     for o in obs:
-        if o.outcome in _PASS or o.outcome in _FAIL:
+        if o.outcome in FLAKE_OUTCOMES:
             by_test[o.test_id][o.head_sha].add(o.outcome)
     return {t: (_flake_pct(shas), len(shas)) for t, shas in by_test.items()}
 
