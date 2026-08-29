@@ -151,3 +151,33 @@ async def test_fanout_groups_ids_by_host_and_merges(monkeypatch):
 async def test_fanout_keeps_deadline_marker():
     fo = FleetOrchestrator(_FakeRouter({"rocky": _FakeOrch("rocky")}), primary="rocky")
     assert getattr(fo.latest_summary_many, _DEADLINE_ATTR, False) is True
+
+
+def test_every_remote_method_is_classified():
+    import inspect
+    from server.sessions.remote import RemoteOrchestrator
+    from server.sessions.fleet_orchestrator import _PER_SESSION, _FANOUT_BY_IDS
+
+    EXPLICIT = {"create_session", "subscribe", "aclose", "__init__"}
+    # Global/primary-routed: everything not per-session, fan-out, or explicit. Listed
+    # so adding a NEW method forces a conscious classification here.
+    GLOBAL = {
+        "list_sessions", "list_archived", "pr_for", "prs_for", "all_prs",
+        "all_repos_stage_models", "all_merge_trains", "latest_queue_entries",
+        "check_insights", "ready_merge", "deploy_config_list", "deploy_config_put",
+        "deploy_status", "git_credential_alerts", "dismiss_git_credential_alert",
+        "automation_statuses", "automation_actionable", "automation_trigger",
+        "pr_doctor_job", "resume_recovery_status", "consolidation_candidates",
+        "automation_consolidate", "backlog_candidates", "backlog_runner_dispatch",
+        "list_adoptable_candidates", "migrate_archive_home", "cloned_repos", "usage",
+        "active_session_count", "live_session_load", "live_session_counts",
+        "copilot_add_start", "copilot_add_status", "copilot_add_cancel", "copilot_usage",
+        "subscribe_events", "unsubscribe_events", "x11_metrics", "adopt_session",
+        "daemon_sha", "daemon_pool_stats", "daemon_epoch",
+        "session_queue_positions", "maybe_start_queued",
+    }
+    public = {n for n, _ in inspect.getmembers(RemoteOrchestrator, callable)
+              if not n.startswith("_")}
+    classified = _PER_SESSION | _FANOUT_BY_IDS | EXPLICIT | GLOBAL
+    unclassified = public - classified
+    assert not unclassified, f"unclassified RemoteOrchestrator methods: {sorted(unclassified)}"
