@@ -178,12 +178,12 @@ async def test_ws_upgrade_without_identity_is_rejected():
 
 @pytest.mark.asyncio
 async def test_x_real_ip_used_for_whois_when_ts_header_absent(monkeypatch):
-    """When Tailscale-User-Login is absent, X-Real-IP is passed to tailscale whois
-    (not request.client.host, which is 127.0.0.1 behind nginx)."""
+    """When Tailscale-User-Login is absent and the direct TCP peer is a trusted proxy
+    (loopback), X-Real-IP is passed to tailscale whois instead of client.host."""
     whois_calls: list[str] = []
 
     def fake_whois(cmd, **kwargs):
-        whois_calls.append(cmd[3])  # the IP argument
+        whois_calls.append(cmd[-1])  # IP argument (after --)
         mock = MagicMock()
         mock.returncode = 0
         mock.stdout = json.dumps({"UserProfile": {"LoginName": "alice@example.com"}})
@@ -191,7 +191,9 @@ async def test_x_real_ip_used_for_whois_when_ts_header_absent(monkeypatch):
 
     monkeypatch.setattr("server.auth.identity.subprocess.run", fake_whois)
     app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    # Simulate nginx on loopback forwarding the real Tailscale peer IP via X-Real-IP
+    transport = ASGITransport(app=app, client=("127.0.0.1", 12345))
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get(
             "/api/health",
             headers={"X-Real-IP": "100.64.0.1"},
@@ -204,11 +206,13 @@ async def test_x_real_ip_used_for_whois_when_ts_header_absent(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_whois_falls_back_to_client_host_without_x_real_ip(monkeypatch):
-    """Without X-Real-IP, whois falls back to request.client.host (direct-connection path)."""
+    """Without X-Real-IP, whois is called with the direct peer IP (not a spoofed header).
+    Uses a non-trusted direct peer (100.64.0.50) so X-Real-IP would be ignored anyway;
+    whois fails → 401."""
     whois_calls: list[str] = []
 
     def fake_whois(cmd, **kwargs):
-        whois_calls.append(cmd[3])
+        whois_calls.append(cmd[-1])
         mock = MagicMock()
         mock.returncode = 1  # whois fails → 401
         mock.stdout = ""
@@ -216,10 +220,37 @@ async def test_whois_falls_back_to_client_host_without_x_real_ip(monkeypatch):
 
     monkeypatch.setattr("server.auth.identity.subprocess.run", fake_whois)
     app = create_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    transport = ASGITransport(app=app, client=("100.64.0.50", 12345))
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/api/health")
     assert response.status_code == 401
-    # whois was attempted with whatever the ASGI transport sets as client.host —
-    # the point is X-Real-IP was NOT used (header absent)
+    # whois was called with the direct peer IP — X-Real-IP was NOT used (header absent)
     assert len(whois_calls) == 1
-    assert whois_calls[0] != "100.64.0.1"
+    assert whois_calls[0] == "100.64.0.50"
+
+
+@pytest.mark.asyncio
+async def test_x_real_ip_ignored_when_direct_peer_not_trusted(monkeypatch):
+    """X-Real-IP is ignored when the direct TCP peer is not a trusted proxy.
+    An attacker reaching uvicorn directly cannot spoof identity via this header."""
+    whois_calls: list[str] = []
+
+    def fake_whois(cmd, **kwargs):
+        whois_calls.append(cmd[-1])  # IP argument (after --)
+        mock = MagicMock()
+        mock.returncode = 1
+        mock.stdout = ""
+        return mock
+
+    monkeypatch.setattr("server.auth.identity.subprocess.run", fake_whois)
+    app = create_app()
+    transport = ASGITransport(app=app, client=("100.64.0.99", 12345))
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/api/health",
+            headers={"X-Real-IP": "100.64.0.1"},  # attacker tries to spoof
+        )
+    assert response.status_code == 401
+    # whois called with direct peer (100.64.0.99), not the spoofed X-Real-IP
+    assert len(whois_calls) == 1
+    assert whois_calls[0] == "100.64.0.99"

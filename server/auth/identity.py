@@ -9,6 +9,7 @@ list or None is returned (deny). If empty (dev default), any identity is accepte
 """
 from __future__ import annotations
 
+import ipaddress
 import subprocess
 from starlette.requests import Request
 from starlette.websockets import WebSocket
@@ -53,6 +54,12 @@ def verify_identity(request: Request | WebSocket) -> str | None:
     return identity
 
 
+# Only trust X-Real-IP when the direct TCP connection comes from a loopback address
+# (i.e. a trusted reverse proxy such as nginx running on the same host). Any other
+# direct peer could forge the header and impersonate an arbitrary Tailscale identity.
+_TRUSTED_PROXIES = frozenset({"127.0.0.1", "::1"})
+
+
 def _whois_identity(request: Request | WebSocket) -> str | None:
     """Try to resolve identity via `tailscale whois <peer-ip>`.
 
@@ -61,16 +68,24 @@ def _whois_identity(request: Request | WebSocket) -> str | None:
     """
     import json
     try:
-        # Prefer X-Real-IP set by the nginx reverse proxy; fall back to the
-        # direct TCP peer when running without a proxy (dev, direct tailscale serve).
-        peer_ip = (
-            request.headers.get("X-Real-IP")
-            or (request.client.host if request.client else None)
-        )
+        direct_peer = request.client.host if request.client else None
+        peer_ip: str | None
+        if direct_peer in _TRUSTED_PROXIES:
+            # Only honour X-Real-IP when the request came through a trusted proxy
+            # (loopback). A client reaching Uvicorn directly cannot set this header.
+            peer_ip = request.headers.get("X-Real-IP") or direct_peer
+        else:
+            peer_ip = direct_peer
         if not peer_ip:
             return None
+        # Validate peer_ip is a real IP address to prevent argv flag injection
+        # (e.g. a value like "--flag" being misinterpreted by tailscale whois).
+        try:
+            ipaddress.ip_address(peer_ip)
+        except ValueError:
+            return None
         result = subprocess.run(
-            ["tailscale", "whois", "--json", peer_ip],
+            ["tailscale", "whois", "--json", "--", peer_ip],
             capture_output=True,
             text=True,
             timeout=2,
