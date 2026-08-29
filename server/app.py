@@ -302,7 +302,10 @@ async def _lifespan(app: FastAPI):
     from server.obs.tasks import supervise as _supervise
     from server.config import env_float
     app.state.loop_lag = LoopLagWatchdog(
-        dump_after=env_float("CCSWITCH_LOOP_STALL_DUMP_S", 10.0, minimum=0.0),
+        # Opt-in until the ThreadStallTracer proves itself under load (#792): the
+        # old faulthandler dumper segfaulted the daemon and had to be disabled in
+        # prod. Set CCSWITCH_LOOP_STALL_DUMP_S to a positive value to enable.
+        dump_after=env_float("CCSWITCH_LOOP_STALL_DUMP_S", 0.0, minimum=0.0),
         dump_path=os.environ.get("CCSWITCH_LOOP_STALL_DUMP_PATH") or None,
     )
     app.state.loop_lag_task = _supervise(
