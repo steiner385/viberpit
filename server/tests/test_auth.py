@@ -8,6 +8,9 @@ Tests:
 """
 from __future__ import annotations
 
+import json
+from unittest.mock import MagicMock
+
 import pytest
 from httpx import AsyncClient, ASGITransport
 from fastapi import FastAPI, WebSocket
@@ -166,3 +169,57 @@ async def test_ws_upgrade_without_identity_is_rejected():
         # Expected: connection refused / HTTP 401 from middleware before upgrade
         pass
     # The test simply asserts no unhandled exception escapes (WS rejection is the goal)
+
+
+# ---------------------------------------------------------------------------
+# X-Real-IP fallback (nginx reverse-proxy path)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_x_real_ip_used_for_whois_when_ts_header_absent(monkeypatch):
+    """When Tailscale-User-Login is absent, X-Real-IP is passed to tailscale whois
+    (not request.client.host, which is 127.0.0.1 behind nginx)."""
+    whois_calls: list[str] = []
+
+    def fake_whois(cmd, **kwargs):
+        whois_calls.append(cmd[3])  # the IP argument
+        mock = MagicMock()
+        mock.returncode = 0
+        mock.stdout = json.dumps({"UserProfile": {"LoginName": "alice@example.com"}})
+        return mock
+
+    monkeypatch.setattr("server.auth.identity.subprocess.run", fake_whois)
+    app = create_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(
+            "/api/health",
+            headers={"X-Real-IP": "100.64.0.1"},
+        )
+    assert response.status_code == 200
+    assert whois_calls == ["100.64.0.1"], (
+        f"whois should be called with X-Real-IP value, got {whois_calls}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_whois_falls_back_to_client_host_without_x_real_ip(monkeypatch):
+    """Without X-Real-IP, whois falls back to request.client.host (direct-connection path)."""
+    whois_calls: list[str] = []
+
+    def fake_whois(cmd, **kwargs):
+        whois_calls.append(cmd[3])
+        mock = MagicMock()
+        mock.returncode = 1  # whois fails → 401
+        mock.stdout = ""
+        return mock
+
+    monkeypatch.setattr("server.auth.identity.subprocess.run", fake_whois)
+    app = create_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/api/health")
+    assert response.status_code == 401
+    # whois was attempted with whatever the ASGI transport sets as client.host —
+    # the point is X-Real-IP was NOT used (header absent)
+    assert len(whois_calls) == 1
+    assert whois_calls[0] != "100.64.0.1"

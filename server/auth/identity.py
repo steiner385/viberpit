@@ -61,7 +61,12 @@ def _whois_identity(request: Request | WebSocket) -> str | None:
     """
     import json
     try:
-        peer_ip = request.client.host if request.client else None
+        # Prefer X-Real-IP set by the nginx reverse proxy; fall back to the
+        # direct TCP peer when running without a proxy (dev, direct tailscale serve).
+        peer_ip = (
+            request.headers.get("X-Real-IP")
+            or (request.client.host if request.client else None)
+        )
         if not peer_ip:
             return None
         result = subprocess.run(
