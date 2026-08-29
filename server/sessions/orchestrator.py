@@ -4170,6 +4170,18 @@ class SessionOrchestrator:
             # clears on the next turn.
             was_interrupted = row.status in _RESTART_TRANSIENT_STATUSES
             status = "idle" if was_interrupted else row.status
+            # Persist waiting_input → idle to DB when the backing process is gone
+            # (issue #789, companion to #785). waiting_input sessions where the process
+            # died between daemon runs leave the DB row stale: the in-memory normalization
+            # above corrects the live view, but the DB retains waiting_input until the next
+            # _persist_status call — which never comes if the session stays idle. A null pid
+            # means there is no tracked process to check; treat it as dead. A non-null pid
+            # gets an explicit liveness probe so a session whose process genuinely survived
+            # the restart (e.g. a soft reload) is not incorrectly marked idle in the DB.
+            if was_interrupted and row.status == "waiting_input":
+                pid = getattr(row, "pid", None)
+                if pid is None or not _adopt._pid_alive(pid):
+                    healed[row.id] = "idle"
             # Backfill the PR-join branch for legacy sessions created before the
             # branch was persisted (NULL column). Derive it once from the session's
             # worktree and write it back so the column becomes the source of truth.

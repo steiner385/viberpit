@@ -72,6 +72,37 @@ def test_rehydrate_normalizes_awaiting_human_statuses(tmp_path):
     assert recs["calm"].interrupted_by_restart is False
 
 
+def test_rehydrate_persists_waiting_input_normalization_to_db(tmp_path):
+    """Companion to #785 (issue #789): when a waiting_input session has no live
+    process (pid=None), rehydrate() must also persist the idle normalization to the
+    DB row — not just the in-memory record. Without the DB write the row stays
+    waiting_input forever (the next _persist_status call never comes for an idle
+    session that never runs again), causing a dead badge across restarts."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'ccswitch.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed([
+            dict(id="orphan", name="Orphan", account_name="x",
+                 claude_session_id="cs1", status="waiting_input", cwd="/r",
+                 pid=None),
+        ])
+        orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+        await orch.rehydrate()
+        # Read back from the DB directly — not from the in-memory record.
+        async with db_session() as db:
+            from sqlalchemy import select as sa_select
+            row = (await db.execute(
+                sa_select(DbSession).where(DbSession.id == "orphan")
+            )).scalar_one()
+            return row.status
+
+    db_status = asyncio.run(run())
+    assert db_status == "idle", (
+        "waiting_input orphan should be persisted as idle in DB on restart"
+    )
+
+
 def test_rehydrate_is_idempotent(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path/'ccswitch.db'}"
 
