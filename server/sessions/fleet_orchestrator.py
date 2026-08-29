@@ -66,6 +66,32 @@ class FleetOrchestrator:
             setattr(_call, _DEADLINE_ATTR, True)
         return _call
 
+    async def create_session(self, *, prefer: str | None = None, **kwargs):
+        order = await self._router.pick(prefer=prefer)  # raises NoHostAvailable if empty
+        last_exc: Exception | None = None
+        for host in order:
+            try:
+                rec = await self._router.get(host).create_session(**kwargs)
+            except Exception as e:  # spawn/clone/account errors → try next ranked host
+                last_exc = e
+                continue
+            self._host_cache[rec.id] = host
+            await self._stamp_host(rec.id, host)
+            try:
+                rec.host = host
+            except Exception:  # pragma: no cover — frozen record types
+                pass
+            return rec
+        raise last_exc if last_exc is not None else NoHostAvailable("no host accepted the session")
+
+    async def _stamp_host(self, session_id: str, host: str) -> None:
+        from sqlalchemy import update as _upd
+        from server.db import db_session
+        from server.db.models import Session as _S
+        async with db_session() as db:
+            await db.execute(_upd(_S).where(_S.id == session_id).values(host=host))
+            await db.commit()
+
     def subscribe(self, session_id: str):
         # Sync per-session iterator. The WS handler calls ensure_driver (async, warms
         # the cache) before subscribe, so the cache is populated by now; on a miss we

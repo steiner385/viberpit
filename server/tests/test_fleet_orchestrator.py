@@ -81,3 +81,54 @@ async def test_unknown_host_falls_back_to_primary(monkeypatch):
 
 
 async def _acoro(v): return v
+
+
+class _Rec:
+    def __init__(self, id): self.id = id; self.host = None
+
+@pytest.mark.asyncio
+async def test_create_picks_top_host_and_stamps(monkeypatch):
+    rocky, dobby = _FakeOrch("rocky"), _FakeOrch("dobby")
+    async def create_session(self, **kw): return _Rec(f"sess-{self.name}")
+    _FakeOrch.create_session = create_session
+    router = _FakeRouter({"rocky": rocky, "dobby": dobby})
+    async def pick(*, prefer=None): return ["dobby", "rocky"]  # dobby ranked first
+    router.pick = pick
+    fo = FleetOrchestrator(router, primary="rocky")
+    stamped = {}
+    async def fake_stamp(sid, host): stamped[sid] = host
+    monkeypatch.setattr(fo, "_stamp_host", fake_stamp)
+
+    rec = await fo.create_session(account="a")
+    assert rec.id == "sess-dobby" and rec.host == "dobby"
+    assert stamped == {"sess-dobby": "dobby"}
+    assert fo._host_cache["sess-dobby"] == "dobby"
+
+@pytest.mark.asyncio
+async def test_create_cascades_on_spawn_failure(monkeypatch):
+    good = _FakeOrch("rocky")
+    bad = _FakeOrch("dobby")
+    async def ok(self, **kw): return _Rec("s1")
+    async def boom(self, **kw): raise RuntimeError("spawn failed")
+    bad.create_session = boom.__get__(bad); good.create_session = ok.__get__(good)
+    router = _FakeRouter({"rocky": good, "dobby": bad})
+    async def pick(*, prefer=None): return ["dobby", "rocky"]
+    router.pick = pick
+    fo = FleetOrchestrator(router, primary="rocky")
+    monkeypatch.setattr(fo, "_stamp_host", lambda sid, host: _acoro(None))
+    rec = await fo.create_session()
+    assert rec.id == "s1" and rec.host == "rocky"
+
+@pytest.mark.asyncio
+async def test_prefer_is_forwarded_not_passed_to_daemon(monkeypatch):
+    rocky = _FakeOrch("rocky"); seen = {}
+    async def create_session(self, **kw): seen.update(kw); return _Rec("s1")
+    _FakeOrch.create_session = create_session
+    router = _FakeRouter({"rocky": rocky}); got = {}
+    async def pick(*, prefer=None): got["prefer"] = prefer; return ["rocky"]
+    router.pick = pick
+    fo = FleetOrchestrator(router, primary="rocky")
+    monkeypatch.setattr(fo, "_stamp_host", lambda sid, host: _acoro(None))
+    await fo.create_session(prefer="rocky", account="a")
+    assert got["prefer"] == "rocky"
+    assert "prefer" not in seen and seen["account"] == "a"  # prefer never reaches daemon
