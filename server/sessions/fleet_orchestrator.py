@@ -4,20 +4,75 @@ Becomes app.state.sessions in remote mode. Routes each edge->session call to the
 right daemon; unrouted calls go to the primary host's REAL bound method, so sync/
 async behaviour and the @rpc_deadline marker are preserved for free.
 """
+from server.sessions.facade import _DEADLINE_ATTR
 from server.sessions.fleet_router import FleetRouter, NoHostAvailable
+from server.sessions.remote import RemoteOrchestrator
+
+# Method names whose FIRST positional arg is session_id and that touch live daemon
+# state (must run on the owning host). Pinned by a completeness test (Task 4a).
+_PER_SESSION: frozenset[str] = frozenset({
+    "get_session", "send_prompt", "ensure_driver", "session_queue_move",
+    "session_queue_cancel", "cancel_queued", "archive_session", "permanent_delete",
+    "rename_session", "note_user_interaction", "set_autopilot_paused", "interrupt",
+    "set_permission_mode", "resolve_permission", "answer_question", "pending_questions",
+    "pending_permissions", "transcript_path", "transcript_events",
+    "resolve_transcript_path", "transcript_window", "transcript_search_text",
+    "command_catalog", "run_command", "latest_suggestions", "generate_suggestions_now",
+    "latest_summary", "pop_pending_initial_prompt", "pop_pending_initial_attachment_ids",
+    "request_pr_fix", "prs_for", "ring_covers", "ring_tail", "unarchive",
+    "x11_open_browser",
+})
 
 
 class FleetOrchestrator:
     def __init__(self, router: FleetRouter, primary: str) -> None:
         self._router = router
         self._primary = primary
-        self._host_cache: dict[str, str] = {}  # session_id -> host (populated in Task 2/3)
+        self._host_cache: dict[str, str] = {}  # session_id -> host
 
     def _primary_orch(self):
         return self._router.get(self._primary)
 
+    async def _host_for(self, session_id: str) -> str | None:
+        cached = self._host_cache.get(session_id)
+        if cached is not None:
+            return cached
+        from sqlalchemy import select as _sel
+        from server.db import db_session
+        from server.db.models import Session as _S
+        async with db_session() as db:
+            host = (await db.execute(
+                _sel(_S.host).where(_S.id == session_id))).scalar_one_or_none()
+        if host:
+            self._host_cache[session_id] = host
+        return host
+
+    def _orch_for_session_sync(self, session_id: str):
+        host = self._host_cache.get(session_id)
+        try:
+            return self._router.get(host) if host else self._primary_orch()
+        except Exception:
+            return self._primary_orch()
+
+    def _make_per_session(self, name: str):
+        async def _call(session_id, *a, **k):
+            host = await self._host_for(session_id)
+            try:
+                orch = self._router.get(host) if host else self._primary_orch()
+            except Exception:
+                orch = self._primary_orch()
+            return await getattr(orch, name)(session_id, *a, **k)
+        if getattr(getattr(RemoteOrchestrator, name, None), _DEADLINE_ATTR, False):
+            setattr(_call, _DEADLINE_ATTR, True)
+        return _call
+
+    def subscribe(self, session_id: str):
+        # Sync per-session iterator. The WS handler calls ensure_driver (async, warms
+        # the cache) before subscribe, so the cache is populated by now; on a miss we
+        # fall back to primary rather than block on a DB read from a sync method.
+        return self._orch_for_session_sync(session_id).subscribe(session_id)
+
     def __getattr__(self, name: str):
-        # Explicit overrides (create_session, per-session, fan-out, subscribe) are real
-        # methods and never reach __getattr__. Everything else = the primary's own bound
-        # method: correct sync/async, and the @rpc_deadline marker travels with it.
+        if name in _PER_SESSION:
+            return self._make_per_session(name)
         return getattr(self._primary_orch(), name)
