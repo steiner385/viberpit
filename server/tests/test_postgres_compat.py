@@ -160,6 +160,10 @@ _FK_LINKS: dict[str, dict[str, str]] = {
     "session_queue": {"session_id": "sessions"},
     "automation_event": {"automation_id": "automation"},
     "automation_target_state": {"automation_id": "automation"},
+    # initiative_artifacts joins the DateTime sweep via created_at; point its FK
+    # at a real initiatives row (inserted earlier — sorted_tables orders parents
+    # first) so the artifact references a live initiative rather than NULL.
+    "initiative_artifacts": {"initiative_id": "initiatives"},
 }
 
 

@@ -858,3 +858,97 @@ class Host(Base):
     load_avg: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
     mem_available_mb: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     active_sessions: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+
+
+# ---------------------------------------------------------------------------
+# AI-native SDLC artifact-chain spine (#795 Phase 1 / #796)
+#
+# An Initiative is one unit of work as it moves through the lifecycle
+# intake → design → plan → build → deploy → maintain → done, carrying an
+# ordered chain of InitiativeArtifacts (its intent, spec, and plan documents).
+#
+# Deliberately NOT modelled here: per-initiative state-machine counters
+# (retry/loop-guard/"gave up"). Those reuse the existing AutomationTargetState
+# table keyed by the initiative slug — there is no separate counter table, so
+# the one durable state store the automations already share is the single
+# source of truth (constitution VI).
+#
+# Every non-key column is nullable so init_db()'s _reconcile_columns can
+# ALTER-ADD it to an existing DB on any dialect (the deploy path runs reconcile,
+# never `alembic upgrade`). slug/repo/title/stage/status/kind/repo_path are
+# writer-side invariants (always set on insert) even though the schema permits
+# NULL — the same pattern as MergedPr / BacklogGroup.
+# ---------------------------------------------------------------------------
+
+
+# Ordered lifecycle stages an Initiative moves through. Single source of truth:
+# import this instead of re-inlining the sequence (constitution VI).
+INITIATIVE_STAGES: tuple[str, ...] = (
+    "intake", "design", "plan", "build", "deploy", "maintain", "done")
+
+# Coarse status an Initiative can rest in, orthogonal to its stage.
+INITIATIVE_STATUSES: tuple[str, ...] = (
+    "proposed", "active", "awaiting_human", "blocked", "done")
+
+# The three artifact kinds that make up an initiative's document chain, in order.
+INITIATIVE_ARTIFACT_KINDS: tuple[str, ...] = ("intent", "spec", "plan")
+
+
+class Initiative(Base):
+    """One unit of work tracked across the AI-native SDLC lifecycle.
+
+    ``slug`` is the stable, human-readable identity (unique) and the key under
+    which per-initiative state-machine counters live in AutomationTargetState.
+    ``stage`` advances through INITIATIVE_STAGES; ``status`` is the orthogonal
+    rest-state in INITIATIVE_STATUSES. ``origin`` records what spawned the
+    initiative (e.g. "backlog-runner") and ``origin_ref`` an optional pointer
+    back to it (e.g. an issue ref).
+    """
+
+    __tablename__ = "initiatives"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    # Writer-side invariant: always set. Nullable + unique so reconcile can
+    # ALTER-ADD it; a unique index over a nullable column allows many NULLs on
+    # both SQLite and Postgres, which never occur in practice (slug is required).
+    slug: Mapped[str | None] = mapped_column(String, nullable=True, unique=True, index=True)
+    repo: Mapped[str | None] = mapped_column(String, nullable=True)
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Lifecycle position; default is the first INITIATIVE_STAGES entry.
+    stage: Mapped[str | None] = mapped_column(String, nullable=True, default="intake")
+    # Rest-state; default is the first INITIATIVE_STATUSES entry.
+    status: Mapped[str | None] = mapped_column(String, nullable=True, default="proposed")
+    origin: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    origin_ref: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # timezone=True to match the newer tables: both default to _utcnow() (AWARE),
+    # which asyncpg rejects into a naive `timestamp without time zone` column.
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+
+
+class InitiativeArtifact(Base):
+    """One document in an Initiative's artifact chain (intent → spec → plan).
+
+    ``repo_path`` is where the artifact lives in the repo; ``commit_sha`` /
+    ``pr_number`` / ``pr_url`` are stamped once it is committed and proposed;
+    ``session_id`` / ``model`` record which ccswitch session (and which model)
+    authored it. All are nullable — an intent may exist before any commit.
+    """
+
+    __tablename__ = "initiative_artifacts"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    initiative_id: Mapped[str] = mapped_column(
+        String, ForeignKey("initiatives.id"), nullable=True, index=True)
+    # intent | spec | plan (INITIATIVE_ARTIFACT_KINDS).
+    kind: Mapped[str | None] = mapped_column(String, nullable=True)
+    repo_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    commit_sha: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    pr_url: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    session_id: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    model: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
