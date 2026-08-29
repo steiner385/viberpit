@@ -505,6 +505,7 @@ async def create_session(
 
     try:
         record = await orch.create_session(
+            prefer=getattr(body, "host", None),
             name=name,
             account=body.account,
             initial_prompt=body.initialPrompt,
@@ -576,23 +577,6 @@ async def create_session(
                 "earliestReset": reset_iso,
             },
         )
-
-    # Stamp the fleet host that ran this session. app.state.host_name is resolved
-    # at startup from the daemon endpoint; it is None when this deployment's
-    # endpoint is not in an operator-managed registry, in which case we record
-    # nothing rather than guessing — a wrong host stamp is worse than an absent one.
-    _host_name = getattr(request.app.state, "host_name", None)
-    if _host_name:
-        from sqlalchemy import update as _sa_update
-
-        from server.db.models import Session as _HostStampSession
-        await db.execute(_sa_update(_HostStampSession)
-                         .where(_HostStampSession.id == record.id)
-                         .values(host=_host_name))
-        try:
-            record.host = _host_name  # so the 201 body reports it too
-        except Exception:  # pragma: no cover — frozen record types
-            pass
 
     # Audit: session.create
     await record_audit(

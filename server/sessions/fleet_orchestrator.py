@@ -32,6 +32,39 @@ _PER_SESSION: frozenset[str] = frozenset({
 })
 
 
+def _orch_for_endpoint(endpoint: str):
+    """Build a RemoteOrchestrator for a non-primary host endpoint.
+
+    Called once per enabled non-primary Host row at startup. The edge's client TLS
+    config (one CA signs every daemon cert) is picked up automatically by DaemonClient.
+    """
+    from server.ipc.client import DaemonClient
+    from server.ipc.paths import parse_endpoint
+    return RemoteOrchestrator(DaemonClient(parse_endpoint(endpoint)))
+
+
+async def build_fleet_router(primary_name: str, primary_orch) -> FleetRouter:
+    """Populate a FleetRouter with one orchestrator per enabled Host row.
+
+    The primary reuses the already-built orchestrator (its client is already live).
+    All other enabled hosts get a fresh RemoteOrchestrator via _orch_for_endpoint.
+    """
+    from sqlalchemy import select as _sel
+    from server.db import db_session
+    from server.db.models import Host
+
+    router = FleetRouter()
+    router.add(primary_name, primary_orch)
+    async with db_session() as db:
+        rows = (await db.execute(
+            _sel(Host).where(Host.enabled.is_(True)))).scalars().all()
+    for r in rows:
+        if r.name == primary_name:
+            continue
+        router.add(r.name, _orch_for_endpoint(r.endpoint))
+    return router
+
+
 class FleetOrchestrator:
     def __init__(self, router: FleetRouter, primary: str) -> None:
         self._router = router

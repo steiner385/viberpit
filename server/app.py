@@ -268,11 +268,10 @@ async def _lifespan(app: FastAPI):
             "startup: attachment orphan sweep failed", exc_info=True
         )
 
-    # --- fleet registry (visibility) ---------------------------------------
-    # Additive only: resolves WHICH registry host this edge talks to and starts
-    # the health/capacity probe. Deliberately does not touch how
-    # app.state.sessions resolves — that path carries the split-brain guard and
-    # changes with the dispatcher, not with visibility.
+    # --- fleet registry + dispatcher ---------------------------------------
+    # Resolves WHICH registry host this edge talks to, starts the health/capacity
+    # probe, and promotes app.state.sessions from a bare RemoteOrchestrator to a
+    # FleetOrchestrator so session creates route across the full host pool.
     app.state.host_name = None
     app.state.fleet_probe_task = None
     _endpoint = getattr(app.state, "daemon_endpoint", None)
@@ -280,16 +279,27 @@ async def _lifespan(app: FastAPI):
         try:
             from server.sessions.fleet_router import ensure_default_host
             from server.sessions.host_probe import probe_loop
+            from server.sessions.fleet_orchestrator import FleetOrchestrator, build_fleet_router
 
             app.state.host_name = await ensure_default_host(str(_endpoint))
             app.state.fleet_probe_task = asyncio.create_task(
                 probe_loop(), name="fleet-host-probe")
             _logging.getLogger("server").info(
                 "fleet: this edge talks to host %r", app.state.host_name)
+
+            # Promote the provisional RemoteOrchestrator to a full FleetOrchestrator.
+            # build_fleet_router adds one RemoteOrchestrator per enabled Host row and
+            # reuses the already-built primary client.
+            _primary_name = app.state.host_name or "local"
+            _router = await build_fleet_router(_primary_name, app.state.remote_primary)
+            app.state.sessions = FleetOrchestrator(_router, primary=_primary_name)
+            _logging.getLogger("server").info(
+                "fleet: dispatcher ready; hosts=%s", list(_router.names()))
         except Exception:
-            # The fleet is observability; it must never block startup.
+            # The fleet init must never block startup. The provisional
+            # RemoteOrchestrator stays in place so single-host mode still works.
             _logging.getLogger("server").warning(
-                "fleet: registry init failed (continuing without it)", exc_info=True)
+                "fleet: registry init failed (continuing without fleet dispatch)", exc_info=True)
 
     # --- event-loop lag watchdog -------------------------------------------
     # The edge runs the /api/pipeline/events SSE fan-out and, in single-process
@@ -489,7 +499,10 @@ def create_app(
         app.state.daemon_socket = endpoint.path if endpoint.is_unix else None
         app.state.daemon_client_ssl = client_ssl
         app.state.orchestrator = None
-        app.state.sessions = RemoteOrchestrator(DaemonClient(endpoint))
+        # Save the primary orchestrator; the lifespan will wrap it in a FleetOrchestrator
+        # once ensure_default_host has resolved the primary host name.
+        app.state.remote_primary = RemoteOrchestrator(DaemonClient(endpoint))
+        app.state.sessions = app.state.remote_primary  # provisional; replaced in lifespan
     else:
         if orchestrator is None:
             orchestrator = SessionOrchestrator()
