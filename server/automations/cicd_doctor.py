@@ -85,6 +85,91 @@ class CicdDoctor:
         ...
 
 
+def flake_counts_stmt(repo: str, since_ts: float):
+    """SELECT (test_id, distinct_shas, shas_with_both_a_pass_and_a_fail) for *repo*.
+
+    Collapses the whole window to ONE ROW PER TEST inside the database. The
+    previous code streamed every raw attempt row into Python and folded it with
+    ``test_flake_pcts``; on 2026-08-29 that was 14,530,499 rows for a single repo
+    over a 7-day window (26.4M-row table). Because SQLAlchemy's async layer runs
+    ORM row construction via greenlet on the CALLING thread, that fold happened on
+    the daemon's event loop — 624 loop blocks in 12h, worst 99.02s, during which
+    the daemon served nothing and every session socket hung.
+
+    ``SELECT DISTINCT`` is not a substitute: 33,798 distinct tests x 320 distinct
+    shas leaves ~10.8M distinct triples, barely a quarter off. The aggregate has
+    to happen in SQL.
+
+    Two levels, because flakiness is a property of a (test, sha) PAIR — a sha that
+    shows both a pass and a fail — not of a single row:
+      inner: one row per (test_id, head_sha), flagging whether it saw a pass / a fail
+      outer: one row per test_id, counting shas and the both-flagged subset
+
+    ``max(CASE ...)`` rather than ``bool_or``/``FILTER`` so the same statement runs
+    on SQLite and Postgres alike (this DB is reconciled on both — see CLAUDE.md).
+    Outcome filtering reuses the exported sets from ``stats`` so the SQL and the
+    in-memory fold cannot drift.
+    """
+    from sqlalchemy import case, func, select
+
+    from server.db.models import CiTestResult
+    from .cicd.stats import FAIL_OUTCOMES, FLAKE_OUTCOMES, PASS_OUTCOMES
+
+    saw_pass = func.max(case((CiTestResult.outcome.in_(sorted(PASS_OUTCOMES)), 1),
+                             else_=0)).label("saw_pass")
+    saw_fail = func.max(case((CiTestResult.outcome.in_(sorted(FAIL_OUTCOMES)), 1),
+                             else_=0)).label("saw_fail")
+    per_sha = (
+        select(CiTestResult.test_id.label("test_id"), saw_pass, saw_fail)
+        .where(CiTestResult.repo == repo,
+               CiTestResult.created_ts >= since_ts,
+               CiTestResult.outcome.in_(sorted(FLAKE_OUTCOMES)))
+        .group_by(CiTestResult.test_id, CiTestResult.head_sha)
+        .subquery()
+    )
+    return (
+        select(
+            per_sha.c.test_id,
+            func.count().label("shas"),
+            func.sum(case(((per_sha.c.saw_pass == 1) & (per_sha.c.saw_fail == 1), 1),
+                          else_=0)).label("flaky_shas"),
+        )
+        .group_by(per_sha.c.test_id)
+    )
+
+
+def latest_failure_messages_stmt(repo: str, since_ts: float):
+    """SELECT (test_id, message) — the most recent failing message per test.
+
+    One row per test, not per attempt. The message is only ever shown attached to
+    a flaky-test finding, so fetching every failing row to keep "whichever the scan
+    saw last" was both unbounded and arbitrary; ``row_number()`` makes it bounded
+    and deterministic (newest wins). Window functions are available on both
+    SQLite (3.25+) and Postgres.
+
+    The outcome filter stays ``failed``/``error`` — deliberately NARROWER than
+    ``FAIL_OUTCOMES`` — to preserve the original behaviour exactly.
+    """
+    from sqlalchemy import func, select
+
+    from server.db.models import CiTestResult
+
+    rn = func.row_number().over(
+        partition_by=CiTestResult.test_id,
+        order_by=CiTestResult.created_ts.desc(),
+    ).label("rn")
+    ranked = (
+        select(CiTestResult.test_id.label("test_id"),
+               CiTestResult.message.label("message"), rn)
+        .where(CiTestResult.repo == repo,
+               CiTestResult.created_ts >= since_ts,
+               CiTestResult.outcome.in_(("failed", "error")),
+               CiTestResult.message.is_not(None))
+        .subquery()
+    )
+    return select(ranked.c.test_id, ranked.c.message).where(ranked.c.rn == 1)
+
+
 class CicdDoctorLoop:
     """Restart-safe, non-reentrant sense+advise loop. Every I/O dependency is
     injected. Per tick and per repo: ingest new completed runs (cursor in
@@ -215,8 +300,8 @@ class CicdDoctorLoop:
         from .cicd.findings import (check_transition_findings, flaky_test_findings,
                                     missing_junit_finding)
         from .cicd.gates import check_verdict
-        from .cicd.stats import check_stats, test_flake_pcts
-        from .cicd.types import GateThresholds, JobObs, TestObs
+        from .cicd.stats import check_stats, flake_pcts_from_sha_counts
+        from .cicd.types import GateThresholds, JobObs
         from .cicd.waste import workflow_waste_findings
 
         th = GateThresholds.from_config(config)
@@ -247,11 +332,20 @@ class CicdDoctorLoop:
                 select(CiJob.name, CiJob.head_sha, CiJob.head_branch, CiJob.conclusion,
                        CiJob.duration_s, CiJob.created_ts)
                 .where(CiJob.repo == repo, CiJob.created_ts >= since_ts))).all()
-            test_rows = (await db.execute(
-                select(CiTestResult.test_id, CiTestResult.head_sha,
-                       CiTestResult.outcome, CiTestResult.message)
+            # Aggregated in SQL to one row per test — see flake_counts_stmt for why
+            # the raw-row fold had to go.
+            flake_rows = (await db.execute(
+                flake_counts_stmt(repo, test_since_ts))).all()
+            msg_rows = (await db.execute(
+                latest_failure_messages_stmt(repo, test_since_ts))).all()
+            # missing_junit_finding asks whether ANY raw test row exists in the
+            # window — including outcomes the flake aggregate filters out — so it
+            # needs its own probe. LIMIT 1: existence, not a count.
+            any_test_row = (await db.execute(
+                select(CiTestResult.id)
                 .where(CiTestResult.repo == repo,
-                       CiTestResult.created_ts >= test_since_ts))).all()
+                       CiTestResult.created_ts >= test_since_ts)
+                .limit(1))).first() is not None
             run_count = (await db.execute(
                 select(func.count()).select_from(CiRun)
                 .where(CiRun.repo == repo, CiRun.created_ts >= since_ts))).scalar_one()
@@ -260,24 +354,20 @@ class CicdDoctorLoop:
                           head_branch=r.head_branch or "", conclusion=r.conclusion or "",
                           duration_s=r.duration_s or 0.0, created_ts=r.created_ts or 0.0)
                    for r in job_rows]
-        test_obs = [TestObs(test_id=r.test_id or "", head_sha=r.head_sha or "",
-                            outcome=r.outcome or "")
-                    for r in test_rows]
-        # A representative failure message per test (last one wins) — attached to
+        # A representative failure message per test (most recent wins) — attached to
         # the flaky-test finding so it points at a concrete failure, not just a %.
-        msg_by_test = {r.test_id or "": r.message
-                       for r in test_rows
-                       if r.outcome in ("failed", "error") and r.message}
+        msg_by_test = {r.test_id or "": r.message for r in msg_rows}
+        flake_pcts = flake_pcts_from_sha_counts(
+            [(r[0] or "", int(r[1] or 0), int(r[2] or 0)) for r in flake_rows])
         stats = check_stats(job_obs, default_branch=default_branch, now_ts=now,
                             demote_window_days=th.demote_window_days)
         verdicts = {c: v for c, s in stats.items()
                     if (v := check_verdict(s, is_required=c in required, th=th))}
-        fresh = flaky_test_findings(repo, test_flake_pcts(test_obs), th=th,
-                                    messages=msg_by_test)
+        fresh = flaky_test_findings(repo, flake_pcts, th=th, messages=msg_by_test)
         fresh += check_transition_findings(repo, verdicts)
         for path, text in (await self._fetch_workflows(repo, default_branch)).items():
             fresh += workflow_waste_findings(repo, path, text)
-        if run_count and not test_rows:
+        if run_count and not any_test_row:
             fresh.append(missing_junit_finding(repo))
         return fresh
 
