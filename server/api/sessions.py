@@ -37,6 +37,7 @@ from server.sessions.orchestrator import (
 from server.ipc.client import DaemonError, DaemonUnavailable
 from server.sessions.facade import call_with_deadline
 from server.sessions.selection import AllAccountsBusy
+from server.sessions.fleet_router import UnknownHost, NoHostAvailable
 from server.time_iso import iso_utc
 
 if TYPE_CHECKING:
@@ -520,6 +521,16 @@ async def create_session(
             attachment_ids=body.attachmentIds,
             name_is_auto=name_is_auto,
             model=_resolved_model,
+        )
+    except UnknownHost as exc:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"error": {"code": "unknown_host", "message": str(exc)}},
+        )
+    except NoHostAvailable as exc:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"error": {"code": "no_host_available", "message": str(exc)}},
         )
     except (gitrepos.CloneError, gitrepos.GhError) as exc:
         # repo→clone resolution now happens inside orch.create_session (on

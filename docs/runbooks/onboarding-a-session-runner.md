@@ -126,7 +126,7 @@ sudo mkdir -p /etc/ccswitch/tls
 sudo install -m 640 server.pem /etc/ccswitch/tls/server.pem
 sudo install -m 600 server.key /etc/ccswitch/tls/server.key
 # Copy the SHARED fleet CA (not the one just minted, if using Option A):
-sudo install -m 644 /etc/ccswitch/tls/ca.pem /etc/ccswitch/tls/ca.pem   # already present, or copy from dobby
+scp dobby:/etc/ccswitch/tls/ca.pem /tmp/ca.pem && sudo install -m 644 /tmp/ca.pem /etc/ccswitch/tls/ca.pem   # copy the shared fleet CA from dobby
 ```
 
 - [ ] `server.pem` and `server.key` installed at `/etc/ccswitch/tls/` on `<host>`.
@@ -225,6 +225,13 @@ Add the new host to the fleet registry. Choose one method:
 # then restart the edge. Format is a comma-separated list of name=endpoint pairs.
 CCSWITCH_FLEET_HOSTS=rocky=https://rocky.tail0dd570.ts.net:9443,<host>=https://<host>.tail0dd570.ts.net:9443
 ```
+
+> **NOTE — edge restart required for newly added hosts (current behaviour).**
+> The fleet router builds its per-host clients at edge startup. Adding or enabling a new host via
+> the Fleet UI takes effect only after the edge process is restarted (`sudo systemctl restart
+> ccswitch.service` on dobby). Disabling or removing a host IS live and requires no restart.
+> (Lazy per-pick reconciliation — picking up new hosts without a restart — is a deferred
+> follow-up.)
 
 - [ ] Host appears in `GET /api/fleet/hosts` response.
 - [ ] `max_sessions` is set to `<cap>` (protects the host from session starvation; the dispatcher respects it automatically).

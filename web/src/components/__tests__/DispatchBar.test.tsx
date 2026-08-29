@@ -346,7 +346,7 @@ describe('DispatchBar mobile collapse (More options)', () => {
   it('shows an indicator only when collapsed with a non-default account or model', async () => {
     const user = userEvent.setup()
     render(<DispatchBar {...makeProps()} />)
-    const indicator = () => screen.queryByText(/non-default account or model selected/i)
+    const indicator = () => screen.queryByText(/non-default account, model, or runner selected/i)
     // Collapsed but everything default → no indicator.
     expect(indicator()).not.toBeInTheDocument()
     await user.click(moreBtn())
@@ -364,7 +364,7 @@ describe('DispatchBar mobile collapse (More options)', () => {
     await user.click(moreBtn())
     await user.selectOptions(screen.getByRole('combobox', { name: /model/i }), 'opus')
     await user.click(moreBtn())
-    expect(screen.getByText(/non-default account or model selected/i)).toBeInTheDocument()
+    expect(screen.getByText(/non-default account, model, or runner selected/i)).toBeInTheDocument()
   })
 })
 

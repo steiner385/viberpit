@@ -346,7 +346,7 @@ export function DispatchBar({
                   aria-hidden="true"
                   className="absolute top-1 right-1 h-2 w-2 rounded-full bg-blue-500"
                 />
-                <span className="sr-only">Non-default account or model selected</span>
+                <span className="sr-only">Non-default account, model, or runner selected</span>
               </>
             )}
           </button>

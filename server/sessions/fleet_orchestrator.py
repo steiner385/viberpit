@@ -10,8 +10,8 @@ from server.sessions.facade import _DEADLINE_ATTR
 from server.sessions.fleet_router import FleetRouter, NoHostAvailable
 from server.sessions.remote import RemoteOrchestrator
 
-# Method names whose FIRST positional arg is session_id and that touch live daemon
-# state (must run on the owning host). Pinned by a completeness test (Task 4a).
+# Fan-out methods that take session_ids: list[str] and group calls by owning host,
+# then merge the results. Each host receives only the IDs it owns.
 _FANOUT_BY_IDS: frozenset[str] = frozenset({
     "latest_suggestions_many", "latest_summary_many", "prs_for_many",
 })

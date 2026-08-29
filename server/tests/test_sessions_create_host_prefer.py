@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 
 from server.app import create_app
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.fleet_router import UnknownHost, NoHostAvailable
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
 # ---------------------------------------------------------------------------
@@ -147,5 +148,64 @@ def test_create_without_host_passes_prefer_none():
             )
         assert resp.status_code == 201, resp.text
         assert fake.last_create_kwargs.get("prefer") is None
+    finally:
+        os.unlink(tf.name)
+
+
+# ---------------------------------------------------------------------------
+# Test: fleet exceptions map to correct HTTP status codes
+# ---------------------------------------------------------------------------
+
+
+class _UnknownHostOrch(FakeOrch):
+    """Fake orchestrator whose create_session raises UnknownHost."""
+
+    async def create_session(self, **kwargs):
+        raise UnknownHost("no such host: 'bogus'")
+
+
+class _NoHostAvailableOrch(FakeOrch):
+    """Fake orchestrator whose create_session raises NoHostAvailable."""
+
+    async def create_session(self, **kwargs):
+        raise NoHostAvailable("all fleet hosts are unhealthy or at capacity")
+
+
+def test_unknown_host_returns_400():
+    """POST that triggers UnknownHost must return 400 with code 'unknown_host'."""
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+        db_url = f"sqlite+aiosqlite:///{tf.name}"
+    try:
+        fake = _UnknownHostOrch()
+        client = _build_client(fake, db_url)
+        with patch.dict(os.environ, _make_env(db_url)), client:
+            resp = client.post(
+                "/api/sessions",
+                json={"initialPrompt": "hi", "host": "bogus"},
+                headers=_H,
+            )
+        assert resp.status_code == 400, resp.text
+        body = resp.json()
+        assert body["error"]["code"] == "unknown_host"
+    finally:
+        os.unlink(tf.name)
+
+
+def test_no_host_available_returns_409():
+    """POST that triggers NoHostAvailable must return 409 with code 'no_host_available'."""
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+        db_url = f"sqlite+aiosqlite:///{tf.name}"
+    try:
+        fake = _NoHostAvailableOrch()
+        client = _build_client(fake, db_url)
+        with patch.dict(os.environ, _make_env(db_url)), client:
+            resp = client.post(
+                "/api/sessions",
+                json={"initialPrompt": "hi"},
+                headers=_H,
+            )
+        assert resp.status_code == 409, resp.text
+        body = resp.json()
+        assert body["error"]["code"] == "no_host_available"
     finally:
         os.unlink(tf.name)
