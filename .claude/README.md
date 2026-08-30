@@ -12,6 +12,7 @@ decisions into live Claude sessions and CI.
 | `settings.json` | Project settings. Wires the **prod-deploy approval gate** as a `PreToolUse` hook on `Bash`. Overridable by a user's own settings — for the non-negotiables, see `managed-settings.json`. |
 | `managed-settings.json` | **Non-overridable** deny rules (constitution IV). Kept in exact sync with `server.sdlc.governance.MANAGED_DENY`; `test_sdlc_governance_config.py` fails CI if they drift. |
 | `hooks/prod-deploy-gate.py` | The gate. Blocks a production deploy command unless `RELEASE_APPROVAL` is set (and the approver differs from the change author). Reuses `governance.evaluate_release`; fails **closed**. |
+| `REVIEW.md` | **PR review policy** (Phase 4, issue #806). Loaded by `server.sdlc.review_policy` and injected into `pr_doctor` review sessions. Defines: allowed finding categories (bug / security / compliance), severity tags and their merge-blocking status, nit cap, excluded file patterns, separation-of-duties rules, `@claude` comment-driven fix contract, and the CLAUDE.md correction-seeding format. |
 
 ## Permission tiers by environment
 

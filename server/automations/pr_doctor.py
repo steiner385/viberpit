@@ -40,6 +40,11 @@ class PrDoctor:
                     type="bool", default=True, help="Spawns a session to fix failing CI jobs."),
         ConfigField(key="auto_resolve_conflicts", label="Auto-resolve merge conflicts",
                     type="bool", default=False, help="Risky — spawns a session to rebase/resolve."),
+        ConfigField(key="auto_fix_comment_commands", label="Auto-fix @claude review comments",
+                    type="bool", default=True,
+                    help="Spawns a session to address @claude fix directives on Initiative PRs "
+                         "(REVIEW.md policy, Phase 4 #806). The fix agent cannot approve the PR "
+                         "— separation of duties applies."),
         ConfigField(key="default_model", label="Session model", type="enum",
                     default="auto", choices=AUTOMATION_MODEL_CHOICES,
                     help="Model for spawned fix/consolidation sessions. 'auto' "
