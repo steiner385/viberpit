@@ -1,20 +1,23 @@
-"""_analyze's pure-Python folds must run OFF the event loop (issue #827).
+"""_analyze's residual pure-Python reshape must run OFF the event loop (#827/#828).
 
 The GIL-safe stall tracer (#793) caught the daemon's recurring wedges red-handed
 on 2026-08-30 — main thread mid-block:
 
     _cicd_tick_loop -> _cicd_tick_once -> tick -> _run
-      -> _analyze (cicd_doctor.py:362) -> check_stats (cicd/stats.py:93)
+      -> _analyze -> check_stats (cicd/stats.py)
 
-#791 moved the 14.5M-row CiTestResult aggregation into SQL but left the CiJob
-side materialized: check_stats folds a 90-day job window (ci_job: 292k rows) in
-pure Python, synchronously, on the loop thread. Wedges of 37.7s / 23.1s / 21.5s /
-20.5s in one day — during each, every edge request 503s, health fires
-remote-daemon-unreachable, and every session socket closes 1013.
+#791 moved the 14.5M-row CiTestResult aggregation into SQL but left the CiJob side
+materialized: check_stats folded a 90-day job window (ci_job: 292k rows) in pure
+Python on the loop thread. Wedges of 37.7s / 23.1s / 21.5s / 20.5s in one day —
+during each, every edge request 503s, health fires remote-daemon-unreachable, and
+every session socket closes 1013.
 
-The fold is pure CPU over detached tuples, so the fix is to run it in a worker
-thread. These tests pin the thread, not the timing: timing tests flake, thread
-identity doesn't.
+#828 ran the fold off the loop thread; #827 then moved check_stats itself into SQL
+(`check_stats_stmt`), so the loop no longer materializes the job window at all. What
+remains in Python is a light per-check / per-test reshape — `check_stats_from_agg`
+plus the flake-finding construction — which stays off the loop so a repo with many
+flaky tests can't creep back into a wedge. These tests pin the thread, not the
+timing: timing tests flake, thread identity doesn't.
 """
 from __future__ import annotations
 
@@ -27,16 +30,18 @@ from server.tests.test_cicd_doctor_loop import _loop
 from server.automations.registry import AutomationContext
 
 
-def test_check_stats_runs_off_the_event_loop(tmp_path, monkeypatch):
-    """The job-stats fold must execute on a worker thread, not the loop thread."""
+def test_check_stats_reshape_runs_off_the_event_loop(tmp_path, monkeypatch):
+    """The per-check reshape (check_stats_from_agg) must execute on a worker
+    thread, not the loop thread — it is the successor of the check_stats fold that
+    wedged the daemon (#827)."""
     seen: dict[str, int] = {}
-    real = stats_mod.check_stats
+    real = stats_mod.check_stats_from_agg
 
     def spy(*a, **kw):
         seen["thread"] = threading.get_ident()
         return real(*a, **kw)
 
-    monkeypatch.setattr(stats_mod, "check_stats", spy)
+    monkeypatch.setattr(stats_mod, "check_stats_from_agg", spy)
 
     async def run():
         await init_db(f"sqlite+aiosqlite:///{tmp_path}/t.db")
@@ -52,10 +57,10 @@ def test_check_stats_runs_off_the_event_loop(tmp_path, monkeypatch):
         seen["loop_thread"] = threading.get_ident()
 
     asyncio.run(run())
-    assert "thread" in seen, "check_stats was never called"
+    assert "thread" in seen, "check_stats_from_agg was never called"
     assert seen["thread"] != seen["loop_thread"], (
-        "check_stats ran ON the event loop thread — a 90-day job window folds "
-        "for 20-40s there and freezes the daemon (issue #827)")
+        "the check-stats reshape ran ON the event loop thread — the job-stats path "
+        "must stay off it so it can never re-wedge the daemon (issue #827)")
 
 
 def test_analyze_results_are_identical_off_loop(tmp_path):

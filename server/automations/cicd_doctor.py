@@ -138,6 +138,158 @@ def flake_counts_stmt(repo: str, since_ts: float):
     )
 
 
+def check_stats_stmt(repo: str, since_ts: float, *, now_ts: float,
+                     demote_window_days: float, default_branch: str):
+    """SELECT one row per check with everything ``check_stats`` needs, folded in SQL.
+
+    ``check_stats`` used to fold a 90-day CiJob window (``ci_job``: 292,216 rows on
+    2026-08-30) in pure Python. #791 moved the CiTestResult side into SQL but left
+    this one materialized; the GIL-safe stall tracer (#793) then caught the loop
+    wedged exactly here — 37.7s / 23.1s / 21.5s / 20.5s in one day, each freezing
+    every edge request and session socket (#827). #828 ran the fold off the loop
+    thread; this removes the fold entirely — the window collapses to one row per
+    check inside the database, so only ~#checks rows (not 292k) are ever built into
+    Python objects (SQLAlchemy's async layer constructs rows via greenlet on the
+    CALLING thread — the loop — so the row COUNT, not just the fold, is what wedged).
+
+    Grain: the raw rows collapse to per-(check, head_sha) first — flakiness is a
+    property of a SHA (one that shows both a pass and a fail), not of a row — then
+    to per check. Two order statistics the per-sha grain can't express are computed
+    with window functions (``row_number``/``count`` over): the p95 of job durations,
+    and the median timestamp that splits the flake-rising window. ``check_stats``
+    indexes those as ``durations[min(len-1, ceil(0.95*(len-1)))]`` and
+    ``ts[len//2]``; the first index equals ``19*len//20`` for every ``len >= 1``
+    (pinned by ``test_p95_index_formula_matches_check_stats``), so no ``ceil``/
+    ``min``/``LEAST`` — none reliably portable — is needed. Floor division (``//``)
+    renders as integer division on both SQLite and Postgres, and ``row_number`` /
+    ``count() OVER`` need only SQLite 3.25+.
+
+    ``max(CASE ...)`` rather than ``bool_or``/``FILTER`` so the same statement runs
+    on SQLite and Postgres alike (this DB is reconciled on both — see CLAUDE.md).
+    Columns are coalesced to match ``JobObs``'s ``r.x or default`` construction, and
+    outcome filtering reuses the exported sets from ``stats`` so the SQL and the
+    in-memory fold cannot drift.
+    """
+    from sqlalchemy import and_, case, func, select
+
+    from server.db.models import CiJob
+    from .cicd.stats import FAIL_OUTCOMES, PASS_OUTCOMES
+
+    recent_cut = now_ts - demote_window_days * 86400.0
+    # Coalesce exactly as JobObs does (check=r.name or "", created_ts=r.created_ts
+    # or 0.0, ...): a NULL conclusion must be KEPT (it is not "cancelled"/"skipped")
+    # and read as neither pass nor fail, matching the in-memory fold row-for-row.
+    conclusion = func.coalesce(CiJob.conclusion, "")
+    is_pass = case((conclusion.in_(sorted(PASS_OUTCOMES)), 1), else_=0)
+    is_fail = case((conclusion.in_(sorted(FAIL_OUTCOMES)), 1), else_=0)
+    jobs = (
+        select(
+            func.coalesce(CiJob.name, "").label("name"),
+            func.coalesce(CiJob.head_sha, "").label("head_sha"),
+            func.coalesce(CiJob.head_branch, "").label("head_branch"),
+            func.coalesce(CiJob.duration_s, 0.0).label("duration_s"),
+            func.coalesce(CiJob.created_ts, 0.0).label("created_ts"),
+            is_pass.label("is_pass"),
+            is_fail.label("is_fail"),
+        )
+        .where(CiJob.repo == repo, CiJob.created_ts >= since_ts,
+               conclusion.notin_(("cancelled", "skipped")))
+        .cte("jobs")
+    )
+    j = jobs.c
+
+    in_recent = j.created_ts > recent_cut
+    on_default = j.head_branch == default_branch
+    per_sha = (
+        select(
+            j.name.label("name"),
+            j.head_sha.label("head_sha"),
+            func.min(j.created_ts).label("sha_first_ts"),
+            func.max(j.is_pass).label("saw_pass"),
+            func.max(j.is_fail).label("saw_fail"),
+            func.max(case((in_recent, 1), else_=0)).label("r_any"),
+            func.max(case((and_(in_recent, j.is_pass == 1), 1), else_=0)).label("r_pass"),
+            func.max(case((and_(in_recent, j.is_fail == 1), 1), else_=0)).label("r_fail"),
+            func.max(case((and_(on_default, j.is_pass == 1), 1), else_=0)).label("d_pass"),
+            func.max(case((and_(on_default, j.is_fail == 1), 1), else_=0)).label("d_fail"),
+        )
+        .group_by(j.name, j.head_sha)
+        .cte("per_sha")
+    )
+    ps = per_sha.c
+
+    # Median job timestamp per check == ts[len//2] in check_stats. row_number is
+    # 1-based, the index 0-based, so the target row is len//2 + 1. Ties are safe:
+    # the k-th ordered row carries the k-th smallest VALUE regardless of tie-break.
+    ts_ranked = (
+        select(
+            j.name.label("name"),
+            j.created_ts.label("created_ts"),
+            func.row_number().over(partition_by=j.name, order_by=j.created_ts).label("rn"),
+            func.count().over(partition_by=j.name).label("cnt"),
+        ).cte("ts_ranked")
+    )
+    mid = (
+        select(ts_ranked.c.name.label("name"), ts_ranked.c.created_ts.label("mid_ts"))
+        .where(ts_ranked.c.rn == ts_ranked.c.cnt // 2 + 1)
+        .cte("mid")
+    )
+
+    # p95 duration per check. See the docstring for why the index is 19*len//20.
+    dur_ranked = (
+        select(
+            j.name.label("name"),
+            j.duration_s.label("duration_s"),
+            func.row_number().over(partition_by=j.name, order_by=j.duration_s).label("rn"),
+            func.count().over(partition_by=j.name).label("cnt"),
+        ).cte("dur_ranked")
+    )
+    p95 = (
+        select(dur_ranked.c.name.label("name"), dur_ranked.c.duration_s.label("p95"))
+        .where(dur_ranked.c.rn == (dur_ranked.c.cnt * 19) // 20 + 1)
+        .cte("p95")
+    )
+
+    base = (
+        select(
+            j.name.label("name"),
+            func.count().label("runs_total"),
+            func.min(j.created_ts).label("min_ts"),
+            func.max(j.created_ts).label("max_ts"),
+        )
+        .group_by(j.name)
+        .cte("base")
+    )
+
+    # first/second split the shas by whether their earliest job predates the median
+    # job timestamp; the flake % of each half feeds check_stats' rising rule.
+    before_mid = ps.sha_first_ts < mid.c.mid_ts
+    both = and_(ps.saw_pass == 1, ps.saw_fail == 1)
+    return (
+        select(
+            base.c.name.label("check"),
+            base.c.runs_total.label("runs_total"),
+            base.c.min_ts.label("min_ts"),
+            base.c.max_ts.label("max_ts"),
+            p95.c.p95.label("p95_duration_s"),
+            func.count().label("shas_total"),
+            func.sum(case((both, 1), else_=0)).label("flaky_shas"),
+            func.sum(ps.r_any).label("recent_total"),
+            func.sum(case((and_(ps.r_pass == 1, ps.r_fail == 1), 1), else_=0)).label("recent_flaky"),
+            func.sum(case((and_(ps.d_fail == 1, ps.d_pass == 0), 1), else_=0)).label("default_branch_failures"),
+            func.sum(case((before_mid, 1), else_=0)).label("first_total"),
+            func.sum(case((and_(before_mid, both), 1), else_=0)).label("first_flaky"),
+            func.sum(case((~before_mid, 1), else_=0)).label("second_total"),
+            func.sum(case((and_(~before_mid, both), 1), else_=0)).label("second_flaky"),
+        )
+        .select_from(base)
+        .join(per_sha, ps.name == base.c.name)
+        .join(mid, mid.c.name == base.c.name)
+        .join(p95, p95.c.name == base.c.name)
+        .group_by(base.c.name, base.c.runs_total, base.c.min_ts, base.c.max_ts, p95.c.p95)
+    )
+
+
 def latest_failure_messages_stmt(repo: str, since_ts: float):
     """SELECT (test_id, message) — the most recent failing message per test.
 
@@ -296,11 +448,11 @@ class CicdDoctorLoop:
     async def _analyze(self, repo: str, config: dict) -> list:
         from sqlalchemy import func, select
         from server.db import db_session
-        from server.db.models import CiJob, CiRun, CiTestResult
+        from server.db.models import CiRun, CiTestResult
         from .cicd.findings import (check_transition_findings, flaky_test_findings,
                                     missing_junit_finding)
         from .cicd.gates import check_verdict
-        from .cicd.types import GateThresholds, JobObs
+        from .cicd.types import CheckAgg, GateThresholds
         from .cicd.waste import workflow_waste_findings
 
         th = GateThresholds.from_config(config)
@@ -323,14 +475,18 @@ class CicdDoctorLoop:
         # still exists; job/run queries below keep the wider horizon_days window.
         raw_retention_days = float(config.get("raw_retention_days", 7))
         test_since_ts = now - raw_retention_days * 86400.0
-        # Select column tuples, not whole ORM entities: the analyzers only read a
-        # handful of columns and build detached value objects, so hydrating full
-        # mapped instances (identity map, all columns) is pure overhead at 10^5+ rows.
+        default_branch, required = await self._fetch_repo_meta(repo)
+        # Every window below is aggregated to a handful of rows INSIDE the database
+        # (one per check / one per test), never streamed row-by-row into Python:
+        # SQLAlchemy's async layer builds every Row via greenlet on the calling
+        # thread — the event loop — so the fix for the 20-40s wedges (#827) is to
+        # cut the row COUNT crossing that boundary, not just to fold off-loop (#828).
         async with db_session() as db:
-            job_rows = (await db.execute(
-                select(CiJob.name, CiJob.head_sha, CiJob.head_branch, CiJob.conclusion,
-                       CiJob.duration_s, CiJob.created_ts)
-                .where(CiJob.repo == repo, CiJob.created_ts >= since_ts))).all()
+            # check_stats folded a 90-day CiJob window in Python; now one row per
+            # check — see check_stats_stmt for the wedge it removes.
+            check_rows = (await db.execute(check_stats_stmt(
+                repo, since_ts, now_ts=now, demote_window_days=th.demote_window_days,
+                default_branch=default_branch))).all()
             # Aggregated in SQL to one row per test — see flake_counts_stmt for why
             # the raw-row fold had to go.
             flake_rows = (await db.execute(
@@ -348,35 +504,36 @@ class CicdDoctorLoop:
             run_count = (await db.execute(
                 select(func.count()).select_from(CiRun)
                 .where(CiRun.repo == repo, CiRun.created_ts >= since_ts))).scalar_one()
-        default_branch, required = await self._fetch_repo_meta(repo)
 
-        # The pure-Python folds below run in ONE worker thread, not on the loop.
-        # #791 moved the CiTestResult aggregation into SQL, but job_rows stayed
-        # materialized: check_stats over a 90-day CiJob window (292k-row table)
-        # is tens of seconds of uninterruptible CPU, and the stall tracer caught
-        # the loop wedged exactly here (issue #827 — 37.7s/23.1s/21.5s/20.5s in
-        # one day, each freezing every edge request and session socket). All
-        # inputs are detached row tuples and the fold is side-effect-free, so a
-        # thread is safe by construction. Re-binding through the module (not the
-        # function refs imported above) keeps monkeypatched seams honest — the
-        # off-loop regression test spies via the module attribute.
+        # The remaining pure-Python work runs in ONE worker thread, not on the loop.
+        # Both heavy folds are now SQL aggregates (check_stats -> check_stats_stmt,
+        # #827; flakiness -> flake_counts_stmt, #791), so this is only a light
+        # per-check / per-test reshape — but it stays off the loop (#828) so a repo
+        # with many flaky tests can't creep back into a wedge. Re-binding through the
+        # module (not the function refs imported above) keeps monkeypatched seams
+        # honest — the off-loop regression test spies via the module attribute.
         def _fold():
             from .cicd import stats as _stats
-            job_obs = [JobObs(check=r.name or "", head_sha=r.head_sha or "",
-                              head_branch=r.head_branch or "",
-                              conclusion=r.conclusion or "",
-                              duration_s=r.duration_s or 0.0,
-                              created_ts=r.created_ts or 0.0)
-                       for r in job_rows]
             # A representative failure message per test (most recent wins) —
             # attached to the flaky-test finding so it points at a concrete
             # failure, not just a %.
             msg_by_test = {r.test_id or "": r.message for r in msg_rows}
             flake_pcts = _stats.flake_pcts_from_sha_counts(
                 [(r[0] or "", int(r[1] or 0), int(r[2] or 0)) for r in flake_rows])
-            stats = _stats.check_stats(job_obs, default_branch=default_branch,
-                                       now_ts=now,
-                                       demote_window_days=th.demote_window_days)
+            stats = _stats.check_stats_from_agg(
+                CheckAgg(check=r.check, runs_total=int(r.runs_total or 0),
+                         min_ts=float(r.min_ts or 0.0), max_ts=float(r.max_ts or 0.0),
+                         p95_duration_s=float(r.p95_duration_s or 0.0),
+                         shas_total=int(r.shas_total or 0),
+                         flaky_shas=int(r.flaky_shas or 0),
+                         recent_total=int(r.recent_total or 0),
+                         recent_flaky=int(r.recent_flaky or 0),
+                         default_branch_failures=int(r.default_branch_failures or 0),
+                         first_total=int(r.first_total or 0),
+                         first_flaky=int(r.first_flaky or 0),
+                         second_total=int(r.second_total or 0),
+                         second_flaky=int(r.second_flaky or 0))
+                for r in check_rows)
             verdicts = {c: v for c, s in stats.items()
                         if (v := check_verdict(s, is_required=c in required, th=th))}
             out = flaky_test_findings(repo, flake_pcts, th=th, messages=msg_by_test)

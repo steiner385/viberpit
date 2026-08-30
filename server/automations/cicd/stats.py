@@ -5,7 +5,7 @@ import math
 from collections import defaultdict
 from collections.abc import Iterable
 
-from .types import CheckStats, JobObs, TestObs
+from .types import CheckAgg, CheckStats, JobObs, TestObs
 
 # Outcome vocabulary. PUBLIC because the flakiness aggregate also runs in SQL
 # (``cicd_doctor.flake_counts_stmt``): a caller that re-listed these strings in a
@@ -68,8 +68,47 @@ def test_flake_pcts(obs: list[TestObs]) -> dict[str, tuple[float, int]]:
 test_flake_pcts.__test__ = False  # type: ignore[attr-defined]
 
 
+def check_stats_from_agg(rows: Iterable[CheckAgg]) -> dict[str, CheckStats]:
+    """Per check: CheckStats from PRE-AGGREGATED per-check rows.
+
+    *rows* is exactly what ``cicd_doctor.check_stats_stmt`` returns from the
+    database — one row per check, the job window already collapsed inside SQL. This
+    is the single home of the derived ratios (flake %, window span, rising rule),
+    shared with the in-memory ``check_stats`` below through ``_pct`` and the
+    second>first>0 rule, so the database path and the Python path cannot disagree
+    about the arithmetic. It is the ``flake_pcts_from_sha_counts`` /
+    ``test_flake_pcts`` split (#791) applied to the CiJob side (#827): what the
+    database re-expresses is only the *shape* of the fold (grouping, the median
+    split, the p95 pick), which ``test_check_stats_stmt_matches_the_in_memory_form``
+    pins against ``check_stats``.
+    """
+    out: dict[str, CheckStats] = {}
+    for a in rows:
+        second_pct = _pct(a.second_flaky, a.second_total)
+        out[a.check] = CheckStats(
+            check=a.check,
+            runs_total=a.runs_total,
+            window_days=(a.max_ts - a.min_ts) / _DAY if a.runs_total > 1 else 0.0,
+            flake_pct=_pct(a.flaky_shas, a.shas_total),
+            recent_flake_pct=_pct(a.recent_flaky, a.recent_total),
+            default_branch_failures=a.default_branch_failures,
+            p95_duration_s=a.p95_duration_s,
+            flake_rising=second_pct > _pct(a.first_flaky, a.first_total) and second_pct > 0.0,
+        )
+    return out
+
+
 def check_stats(jobs: list[JobObs], *, default_branch: str, now_ts: float,
                 demote_window_days: float) -> dict[str, CheckStats]:
+    """In-memory fold over detached job observations.
+
+    No longer on the hot path: ``cicd_doctor._analyze`` reads the same statistics
+    from ``check_stats_stmt`` (one row per check, aggregated in SQL) so a 90-day
+    job window is never materialized into Python on the event loop (#827). This
+    stays as the anti-drift ORACLE — the SQL aggregate is proven equivalent to it
+    row-for-row in ``test_cicd_check_stats_aggregate`` — exactly as
+    ``test_flake_pcts`` was kept when ``flake_counts_stmt`` took over (#791).
+    """
     by_check: dict[str, list[JobObs]] = defaultdict(list)
     for j in jobs:
         if j.conclusion in ("cancelled", "skipped"):
