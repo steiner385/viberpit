@@ -38,7 +38,13 @@ RestartSec=3
 # _DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S in serve.py) + small overhead for reauth
 # shutdown/orchestrator stop = well under the 90s below.
 TimeoutStopSec=90
-KillMode=control-group
+# mixed, NOT control-group: control-group SIGTERMs every live claude child in
+# parallel with the daemon, so their turns die with exit 143 BEFORE stop() can
+# set _shutting_down — each was persisted as needs_attention and survived the
+# restart as a spurious "Turn failed" card (2026-08-29). mixed SIGTERMs only the
+# daemon; orchestrator.stop() then tears children down in order, and the final
+# SIGKILL phase still sweeps the whole cgroup at TimeoutStopSec.
+KillMode=mixed
 MemoryMax=12G
 # Soft limit below MemoryMax: at 10G the kernel applies reclaim pressure and throttles
 # the cgroup instead of hard-stopping it (OOMPolicy=stop) at 12G. Gives a restart-storm

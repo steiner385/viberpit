@@ -1483,6 +1483,15 @@ class SessionOrchestrator:
         rec = self._records.get(session_id)
         if rec is not None and rec.status == "ended":
             return
+        # A turn failure surfacing during teardown is our own shutdown dropping the
+        # turn (deploy / watchdog restart / systemctl stop), not a real failure.
+        # Persisting needs_attention here brands the session "Turn failed" across
+        # the restart; leaving the mid-turn row lets the next boot's rehydrate()
+        # normalize it to idle + interruptedByRestart (issue #434). Terminal writes
+        # (ended) and every other status still persist during shutdown.
+        if status == "needs_attention" and self._shutting_down:
+            log.info("persist.skip_needs_attention_during_shutdown session=%s", session_id)
+            return
         # Overlay: a turn that finished (`done`) but left the agent parked on an external
         # event — an open background task or an armed self-scheduled wakeup — is "Waiting…",
         # not "Your turn". Computed here (not in the pure `derive_status`) because it needs

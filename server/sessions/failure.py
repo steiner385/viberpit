@@ -58,6 +58,15 @@ def _is_process_crash(text: str) -> bool:
     # negative/signal exit codes (-2..-N) = killed by signal (SIGABRT/SIGTRAP/…)
     if re.search(r"exit code:?\s*-\d+", low):
         return True
+    # Positive exit codes >= 128 are the shell/CLI spelling of the same thing
+    # (128+N = killed by signal N): 143=SIGTERM, 137=SIGKILL/OOM. A daemon restart
+    # SIGTERMs live claude children, whose turns then surface "Command failed with
+    # exit code 143" — an external process death, never a model/API failure
+    # (2026-08-29: those turns were branded needs_attention across the restart).
+    # Codes < 128 (a genuine CLI error exit) stay "other" and keep surfacing.
+    m = re.search(r"exit code:?\s*(\d+)", low)
+    if m and int(m.group(1)) >= 128:
+        return True
     return False
 
 
