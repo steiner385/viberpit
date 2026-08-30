@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Write(.specify/memory/constitution.md)",
+      "Edit(.specify/memory/constitution.md)",
+      "Write(.claude/managed-settings.json)",
+      "Edit(.claude/managed-settings.json)"
+    ]
+  }
+}

@@ -1,0 +1,7 @@
+id: claude-md-branch-off-origin-master
+description: >-
+  Agents are told to branch off origin/master, never the stale local master ref a
+  worktree carries.
+kind: static
+tags: [agent-config, git-safety]
+check: 'grep -q "origin/master" CLAUDE.md'

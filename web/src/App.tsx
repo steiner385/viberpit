@@ -198,6 +198,7 @@ function App() {
           <Route path="/archived" element={<DashboardRoute tab="archived" />} />
           <Route path="/pipeline" element={<DashboardRoute tab="pipeline" />} />
           <Route path="/automations" element={<DashboardRoute tab="automations" />} />
+          <Route path="/initiatives" element={<DashboardRoute tab="initiatives" />} />
           <Route path="/insights" element={<DashboardRoute tab="insights" />} />
           <Route path="/settings" element={<DashboardRoute tab="settings" />} />
           {/* Legacy top-level tabs — now Settings sections. */}

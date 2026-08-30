@@ -1,0 +1,44 @@
+name: Evals
+
+# Gate agent-configuration changes on the eval corpus (AI-Native SDLC §7, #805).
+# Runs ONLY when a change touches how the agent behaves — CLAUDE.md, the .claude/
+# control plane, the eval corpus itself, or the workflow. A pass-rate threshold
+# gates the merge; the static evals are deterministic (no LLM / API key needed).
+on:
+  push:
+    branches: [master]
+    paths:
+      - "CLAUDE.md"
+      - ".claude/**"
+      - "evals/**"
+      - "scripts/run_evals.py"
+      - "server/sdlc/evals.py"
+      - ".github/workflows/evals.yml"
+  pull_request:
+    paths:
+      - "CLAUDE.md"
+      - ".claude/**"
+      - "evals/**"
+      - "scripts/run_evals.py"
+      - "server/sdlc/evals.py"
+      - ".github/workflows/evals.yml"
+
+concurrency:
+  group: evals-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install deps
+        run: pip install -e ".[server]"
+      - name: Run eval suite (static gate, threshold 1.0)
+        run: python scripts/run_evals.py --threshold 1.0

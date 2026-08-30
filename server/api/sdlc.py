@@ -87,11 +87,33 @@ async def list_initiatives(
     _identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> list[dict]:
-    """Return all initiatives ordered by created_at."""
+    """Return all initiatives ordered by created_at, each with its committed
+    artifact chain. The chain is fetched in one grouped query so the web board
+    renders N tracks (#803) from a single call rather than a detail fetch per
+    row (the detail endpoint additionally computes nextAction + build sessions,
+    which the board doesn't need per row)."""
     rows = (
         await db.execute(select(Initiative).order_by(Initiative.created_at))
     ).scalars().all()
-    return [_initiative_to_dict(i) for i in rows]
+    if not rows:
+        return []
+    ids = [i.id for i in rows]
+    artifacts = (
+        await db.execute(
+            select(InitiativeArtifact)
+            .where(InitiativeArtifact.initiative_id.in_(ids))
+            .order_by(InitiativeArtifact.created_at)
+        )
+    ).scalars().all()
+    by_init: dict[str, list[InitiativeArtifact]] = {}
+    for a in artifacts:
+        by_init.setdefault(a.initiative_id, []).append(a)
+    result = []
+    for i in rows:
+        d = _initiative_to_dict(i)
+        d["artifacts"] = [_artifact_to_dict(a) for a in by_init.get(i.id, [])]
+        result.append(d)
+    return result
 
 
 @router.post("/initiatives", status_code=status.HTTP_201_CREATED)
