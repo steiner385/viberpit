@@ -608,6 +608,42 @@ class SessionOrchestrator:
             clock=time.time,
         )
         self._archaudit_task: asyncio.Task | None = None
+        # SDLC control loops (#799/#800): intake (trigger→intent.md PR) and
+        # synthesizer (intent→spec→plan PRs). Every I/O seam is a thin adapter over
+        # db_session() + the same orchestrator helpers the backlog loop uses
+        # (healthy-account, resolve_model, default-branch, spawn_session de-dup,
+        # PR-poller cache). Propose-only v1 — the loops park initiatives at
+        # awaiting_human after spawning each artifact session.
+        from server.automations.sdlc_intake import SdlcIntakeLoop
+        from server.automations.sdlc_synthesizer import SdlcSynthesizerLoop
+        self._sdlc_intake_ctx = AutomationContext(
+            "sdlc-intake", create_session=self.create_session)
+        self._sdlc_synth_ctx = AutomationContext(
+            "sdlc-synthesizer", create_session=self.create_session)
+        self._sdlc_intake_loop = SdlcIntakeLoop(
+            self._sdlc_intake_ctx,
+            list_initiatives=self._sdlc_list_initiatives,
+            list_artifacts=self._sdlc_list_artifacts,
+            record_artifact=self._sdlc_record_artifact,
+            set_status=self._sdlc_set_status,
+            spawn=self._sdlc_spawn_intake,
+            read_config=self._sdlc_intake_read_config,
+            clock=time.monotonic,
+        )
+        self._sdlc_synthesizer_loop = SdlcSynthesizerLoop(
+            self._sdlc_synth_ctx,
+            list_initiatives=self._sdlc_list_initiatives,
+            list_artifacts=self._sdlc_list_artifacts,
+            record_artifact=self._sdlc_record_artifact,
+            set_status=self._sdlc_set_status,
+            spawn=self._sdlc_spawn_synth,
+            pr_lookup=self._sdlc_pr_lookup,
+            update_artifact=self._sdlc_update_artifact,
+            read_config=self._sdlc_synth_read_config,
+            clock=time.monotonic,
+        )
+        self._sdlc_intake_task: asyncio.Task | None = None
+        self._sdlc_synth_task: asyncio.Task | None = None
         # Fire-and-forget task registry (issue #405). Every detached ``create_task``
         # (persist, rotation, recovery, summary/proposal refresh, backlog nudge …) is
         # routed through ``_spawn`` so ``stop()`` can cancel+await ALL of them. An
@@ -745,6 +781,18 @@ class SessionOrchestrator:
         self._archaudit_task = asyncio.create_task(
             self._archaudit_tick_loop(interval=21600.0), name="archive-audit-loop"
         )
+        # SDLC intake + synthesizer: one tick per minute (propose artifact PRs and
+        # enrich PR metadata). A disabled row makes each tick a cheap read.
+        self._sdlc_intake_task = self._spawn(
+            self._sdlc_tick_loop(
+                "sdlc-intake", self._sdlc_intake_loop,
+                self._sdlc_intake_read_config, interval=60.0),
+            name="sdlc-intake-loop")
+        self._sdlc_synth_task = self._spawn(
+            self._sdlc_tick_loop(
+                "sdlc-synthesizer", self._sdlc_synthesizer_loop,
+                self._sdlc_synth_read_config, interval=60.0),
+            name="sdlc-synthesizer-loop")
         # Stuck-session sweep: retry rotation for needs_attention sessions every 5 min.
         # The rotation monitor is event-driven (fires on degradation); this covers
         # the recovery side — sessions paused due to all_accounts_busy get a chance
@@ -2403,6 +2451,241 @@ class SessionOrchestrator:
                 await self._bump_automation_active("backlog-runner")
         except Exception:  # pragma: no cover — a heartbeat failure must not stall
             log.debug("backlog_runner.bump_active_failed", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # SDLC control-loop dependencies (injected into SdlcIntakeLoop / ...Synthesizer)
+    # ------------------------------------------------------------------
+
+    async def _sdlc_tick_loop(self, automation_id: str, loop, read_config,
+                              *, interval: float) -> None:
+        """Periodic driver for an SDLC loop: one tick per *interval* seconds plus
+        an enabled-only ``last_active_at`` heartbeat (mirrors ``_cicd_tick_once``).
+        A disabled row makes each tick a cheap read (the loop returns on mode=off)."""
+        while True:
+            if await self._schedule_allows_tick(automation_id):
+                await loop.tick()
+                try:
+                    mode, _ = await read_config()
+                    if mode != "off":
+                        await self._bump_automation_active(automation_id)
+                except Exception:  # pragma: no cover — heartbeat must not stall
+                    log.debug("sdlc.%s.heartbeat_failed", automation_id, exc_info=True)
+            await asyncio.sleep(interval)
+
+    async def _sdlc_read_config(self, automation_id: str, schema) -> tuple[str, dict]:
+        """(effective mode, validated config) for an SDLC automation row; off +
+        defaults on any bad/absent row so a corrupt config can never spawn. Mirrors
+        ``_backlog_read_config`` for the 3-mode (off/propose/auto) SDLC automations."""
+        from sqlalchemy import select
+        from server.automations.base import validate_config
+        from server.db.models import Automation
+        enabled, mode, raw = False, None, {}
+        try:
+            async with db_session() as db:
+                row = (await db.execute(select(Automation).where(
+                    Automation.id == automation_id))).scalar_one_or_none()
+                if row is not None:
+                    enabled = bool(row.enabled)
+                    mode = row.mode
+                    raw = dict(row.config) if row.config else {}
+        except Exception:
+            log.debug("sdlc.%s.config.load_failed", automation_id, exc_info=True)
+        try:
+            config = validate_config(schema, raw)
+        except ValueError:
+            config = validate_config(schema, {})
+        effective = mode if (enabled and mode in ("propose", "auto")) else "off"
+        return effective, config
+
+    async def _sdlc_intake_read_config(self) -> tuple[str, dict]:
+        from server.automations.sdlc_intake import SdlcIntake
+        return await self._sdlc_read_config("sdlc-intake", SdlcIntake.config_schema)
+
+    async def _sdlc_synth_read_config(self) -> tuple[str, dict]:
+        from server.automations.sdlc_synthesizer import SdlcSynthesizer
+        return await self._sdlc_read_config(
+            "sdlc-synthesizer", SdlcSynthesizer.config_schema)
+
+    async def _sdlc_list_initiatives(self) -> list[dict]:
+        """Every non-done Initiative as a plain dict (the Task 4 seam shape).
+
+        An initiative is 'done' when EITHER its status or its stage is ``done`` —
+        both terminal signals drop it from the loops' candidate pool."""
+        from sqlalchemy import select
+        from server.db.models import Initiative
+        async with db_session() as db:
+            rows = (await db.execute(select(Initiative).where(
+                Initiative.status != "done", Initiative.stage != "done"))).scalars().all()
+        return [{"id": r.id, "slug": r.slug, "repo": r.repo, "title": r.title,
+                 "stage": r.stage, "status": r.status, "origin": r.origin,
+                 "origin_ref": r.origin_ref} for r in rows]
+
+    async def _sdlc_list_artifacts(self, initiative_id: str) -> list[dict]:
+        """Every InitiativeArtifact index row for *initiative_id* as a plain dict."""
+        from sqlalchemy import select
+        from server.db.models import InitiativeArtifact
+        async with db_session() as db:
+            rows = (await db.execute(select(InitiativeArtifact).where(
+                InitiativeArtifact.initiative_id == initiative_id))).scalars().all()
+        return [{"id": r.id, "kind": r.kind, "pr_number": r.pr_number,
+                 "pr_url": r.pr_url, "commit_sha": r.commit_sha,
+                 "session_id": r.session_id} for r in rows]
+
+    async def _sdlc_record_artifact(self, *, initiative_id: str, kind: str,
+                                    repo_path: str, session_id: str | None,
+                                    model: str | None) -> None:
+        """Insert an InitiativeArtifact index row for a freshly-spawned session."""
+        from server.db.models import InitiativeArtifact
+        async with db_session() as db:
+            db.add(InitiativeArtifact(
+                initiative_id=initiative_id, kind=kind, repo_path=repo_path,
+                session_id=session_id, model=model))
+            await db.commit()
+
+    async def _sdlc_set_status(self, initiative_id: str, status: str) -> None:
+        """Update an Initiative's status (e.g. → ``awaiting_human`` post-spawn)."""
+        from sqlalchemy import update
+        from server.db.models import Initiative
+        async with db_session() as db:
+            await db.execute(update(Initiative).where(
+                Initiative.id == initiative_id).values(status=status))
+            await db.commit()
+
+    async def _sdlc_update_artifact(self, artifact_id: str, **fields) -> None:
+        """Update an InitiativeArtifact (PR-metadata enrichment: pr_number/url/sha)."""
+        if not fields:
+            return
+        from sqlalchemy import update
+        from server.db.models import InitiativeArtifact
+        async with db_session() as db:
+            await db.execute(update(InitiativeArtifact).where(
+                InitiativeArtifact.id == artifact_id).values(**fields))
+            await db.commit()
+
+    async def _sdlc_default_branch(self, repo: str) -> str:
+        """The repo's default branch (``main``/``master``), resolved the same way
+        ``_backlog_spawn`` does — never hardcode ``master`` (the prompts warn)."""
+        try:
+            return await asyncio.to_thread(
+                lambda: gitrepos.list_remote_branches(repo).get("default") or "master")
+        except Exception:
+            return "master"
+
+    async def _sdlc_spawn_for(self, ini: dict, kind: str, prompt: str):
+        """Shared spawn tail for both SDLC loops: resolve the repo clone + model,
+        then spawn a de-duped artifact session keyed on ``<slug>:<kind>``.
+
+        Mirrors ``_backlog_spawn``: healthy-account gate, ensure_clone off the loop,
+        ``resolve_model`` for the model, and the same create-kwargs shape through
+        the automation context's de-dup-safe spawner. Returns the SessionRecord or
+        None when no account has headroom (retry next tick)."""
+        from server.automations.model_pick import resolve_model
+        repo = str(ini.get("repo") or "")
+        slug = str(ini.get("slug") or "")
+        if not repo or not slug:
+            return None
+        account = await self._backlog_healthy_account()
+        if account is None:
+            return None
+        if kind == "intent":
+            ctx = self._sdlc_intake_ctx
+            _mode, config = await self._sdlc_intake_read_config()
+        else:
+            ctx = self._sdlc_synth_ctx
+            _mode, config = await self._sdlc_synth_read_config()
+        url = f"https://github.com/{repo}.git"
+        cwd = await asyncio.to_thread(
+            gitrepos.ensure_clone, await self._effective_repo_root(), repo, url)
+        model, model_source = await resolve_model(
+            config, f"{ini.get('title') or slug}  ({kind})")
+        detail: dict = {"initiative": slug, "kind": kind}
+        if model is not None:
+            detail.update(model=model, model_source=model_source)
+        return await ctx.spawn_session(
+            origin_ref=f"{slug}:{kind}",
+            dedupe_key=f"{slug}:{kind}",
+            repo=repo,
+            cwd=cwd,
+            account=account,
+            name=f"sdlc {kind} {slug}",
+            initial_prompt=prompt,
+            model=model,
+            detail=detail,
+        )
+
+    async def _sdlc_spawn_intake(self, ini: dict, kind: str):
+        """Build the intent prompt and spawn the intake artifact session."""
+        from server.sdlc.prompts import IntentTrigger, build_intent_prompt
+        repo = str(ini.get("repo") or "")
+        slug = str(ini.get("slug") or "")
+        title = str(ini.get("title") or "")
+        default_branch = await self._sdlc_default_branch(repo) if repo else "master"
+        trigger = IntentTrigger(slug=slug, repo=repo, title=title,
+                                summary=title, origin=str(ini.get("origin") or "human"))
+        prompt = build_intent_prompt(trigger, default_branch=default_branch)
+        return await self._sdlc_spawn_for(ini, kind, prompt)
+
+    async def _sdlc_spawn_synth(self, ini: dict, kind: str):
+        """Build the spec/plan prompt (upstream artifact path per kind) and spawn."""
+        from server.sdlc.prompts import (
+            artifact_path, build_plan_prompt, build_spec_prompt)
+        repo = str(ini.get("repo") or "")
+        slug = str(ini.get("slug") or "")
+        default_branch = await self._sdlc_default_branch(repo) if repo else "master"
+        if kind == "spec":
+            prompt = build_spec_prompt(
+                slug, repo, artifact_path(slug, "intent"),
+                skills=(), default_branch=default_branch)
+        elif kind == "plan":
+            prompt = build_plan_prompt(
+                slug, repo, artifact_path(slug, "spec"),
+                default_branch=default_branch)
+        else:  # pragma: no cover — the loop only ever requests spec/plan here
+            return None
+        return await self._sdlc_spawn_for(ini, kind, prompt)
+
+    async def _sdlc_pr_lookup(self, art: dict) -> dict | None:
+        """The artifact session's PR as the Task 5 dict shape, or None.
+
+        Resolves the artifact's ``session_id`` to its repo + branch(es) and reads
+        the PR-poller cache — the SAME session→PR source of truth
+        ``_backlog_pr_status_for`` uses (live record first, then the DB row's
+        ``branch``/``authored_branches``). No network client: an artifact whose PR
+        the poller has not cached yet simply returns None and enriches next tick.
+        state ``merged`` carries the merge-commit sha (the enrich writer's key)."""
+        sid = art.get("session_id")
+        if not sid:
+            return None
+        from sqlalchemy import select as sa_select
+        repo: str | None = None
+        branches: list[str] = []
+        rec = self._records.get(sid)
+        if rec is not None:
+            repo = rec.repo
+            if rec.branch:
+                branches.append(rec.branch)
+            branches.extend(getattr(rec, "authored_branches", None) or [])
+        else:
+            async with db_session() as db:
+                row = (await db.execute(sa_select(
+                    DbSession.repo, DbSession.branch, DbSession.authored_branches,
+                ).where(DbSession.id == sid))).first()
+            if row is not None:
+                repo = row.repo
+                if row.branch:
+                    branches.append(row.branch)
+                branches.extend(row.authored_branches or [])
+        if not repo:
+            return None
+        for branch in dict.fromkeys(branches):
+            info = self._pr_poller.cached(repo, branch)
+            if info is None:
+                continue
+            state = "merged" if info.merged else info.state
+            sha = info.merge_commit_sha or None
+            return {"number": info.number, "url": info.url,
+                    "state": state, "sha": sha if state == "merged" else None}
+        return None
 
     # ------------------------------------------------------------------
     # CI/CD Doctor control-loop dependencies (injected into CicdDoctorLoop)
