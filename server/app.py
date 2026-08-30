@@ -341,6 +341,30 @@ async def _lifespan(app: FastAPI):
     )
     await app.state.pipeline_state.start()
 
+    # --- app_sessions janitor -----------------------------------------------
+    # Prunes expired/revoked rows so the table stays at tens of rows rather than
+    # the tens-of-thousands that accumulated before the row-minting fix (#830).
+    # Fires on startup (clears old stock immediately) then every 6 hours.
+    async def _app_sessions_prune_loop() -> None:
+        _log = _logging.getLogger("server.auth")
+        _interval = 6 * 3600.0
+        while True:
+            try:
+                from server.db import db_session as _dbs
+                from server.auth.middleware import prune_app_sessions as _prune
+                async with _dbs() as _db:
+                    deleted = await _prune(_db)
+                    await _db.commit()
+                if deleted:
+                    _log.info("app_sessions janitor: pruned %d row(s)", deleted)
+            except Exception:
+                _log.warning("app_sessions janitor: prune failed", exc_info=True)
+            await asyncio.sleep(_interval)
+
+    app.state.app_sessions_prune_task = asyncio.create_task(
+        _app_sessions_prune_loop(), name="app-sessions-prune"
+    )
+
     yield
     # Shutdown
     import contextlib
@@ -353,6 +377,11 @@ async def _lifespan(app: FastAPI):
         _lag_task.cancel()
         with contextlib.suppress(Exception, asyncio.CancelledError):
             await _lag_task
+    _prune_task = getattr(app.state, "app_sessions_prune_task", None)
+    if _prune_task is not None:
+        _prune_task.cancel()
+        with contextlib.suppress(Exception, asyncio.CancelledError):
+            await _prune_task
     _probe = getattr(app.state, "fleet_probe_task", None)
     if _probe is not None:
         _probe.cancel()

@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, Request, WebSocket, status
 from itsdangerous import BadSignature, TimestampSigner
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
@@ -196,6 +196,33 @@ async def _resolve_or_create_app_session(
     )
     db.add(new_session)
     return new_session
+
+
+# ---------------------------------------------------------------------------
+# Session pruning (janitor)
+# ---------------------------------------------------------------------------
+
+# How far past expiry (or revocation) before we delete a row. A short grace
+# window (7 days) keeps the table tiny while leaving room for post-mortem
+# inspection of recent auth events. Long-expired stock (the 42k rows observed
+# in prod) is reclaimed on the first pass. (#830)
+_PRUNE_GRACE = timedelta(days=7)
+
+
+async def prune_app_sessions(db: AsyncSession) -> int:
+    """Delete app_sessions rows that expired or were revoked more than _PRUNE_GRACE ago.
+
+    Returns the number of rows deleted. Safe to call concurrently — DELETE WHERE
+    is atomic; duplicated deletes are harmless no-ops.
+    """
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - _PRUNE_GRACE
+    result = await db.execute(
+        delete(AppSession).where(
+            (AppSession.expires_at < cutoff) | (AppSession.revoked_at < cutoff)
+        )
+    )
+    await db.flush()
+    return int(result.rowcount)  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
