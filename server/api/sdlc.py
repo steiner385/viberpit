@@ -12,11 +12,11 @@ from server.auth.middleware import current_identity
 from server.db import get_db
 from server.db.models import Initiative, InitiativeArtifact, Session as DbSession
 from server.sdlc.engine import (
-    ArtifactState,
+    ArtifactView,
     AwaitApproval,
     Done,
     HandoffToBuild,
-    InitiativeState,
+    InitiativeView,
     NeedsHuman,
     Propose,
     advance_stage,
@@ -150,21 +150,23 @@ async def get_initiative(
     ).scalars().all()
 
     # Build nextAction via the pure engine (display-only, mode="propose")
-    state = InitiativeState(
+    state = InitiativeView(
+        slug=ini.slug or "",
         stage=ini.stage,
         status=ini.status,
-        origin=ini.origin,
-        origin_ref=ini.origin_ref,
+        repo=ini.repo or "",
+        issue=ini.origin_ref,
     )
-    artifact_states = [
-        ArtifactState(
+    artifact_views = [
+        ArtifactView(
             kind=a.kind or "",
-            pr_number=a.pr_number,
             commit_sha=a.commit_sha,
+            pr_number=a.pr_number,
+            pr_url=a.pr_url,
         )
         for a in artifacts
     ]
-    action = next_action(state, artifact_states, "propose", {})
+    action = next_action(state, artifact_views, "propose", {})
 
     # Build-stage correlation (#801): find backlog-runner sessions with same origin_ref
     build_sessions: list[dict] = []
