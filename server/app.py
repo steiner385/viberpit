@@ -43,6 +43,7 @@ from server.api.hooks import router as hooks_router
 from server.api.notifications import router as notifications_router
 from server.api.snapshots import router as snapshots_router
 from server.api.dispatch import router as dispatch_router
+from server.api.sdlc import router as sdlc_router
 
 
 def _daemon_present(endpoint) -> bool:
@@ -199,10 +200,13 @@ async def _lifespan(app: FastAPI):
     if not remote_mode:
         try:
             await app.state.orchestrator.rehydrate()
-        except Exception:
+        except Exception as exc:
             _logging.getLogger("server").error(
                 "rehydrate() failed — starting with no sessions restored", exc_info=True
             )
+            # Feed the startup report so the bad boot is observable from
+            # /api/daemon/health, not just this log line.
+            app.state.orchestrator.note_startup_failure("rehydrate", exc)
 
     # Sweep stale reauth-tmp dirs (from crashed previous runs)
     app.state.reauth.sweep_stale()
@@ -661,6 +665,7 @@ def create_app(
     app.include_router(notifications_router)
     app.include_router(snapshots_router)
     app.include_router(dispatch_router)
+    app.include_router(sdlc_router)
 
     # WebSocket bridge
     ws_router = build_ws_router(app.state.sessions)
@@ -716,6 +721,14 @@ def create_app(
             payload["pool"] = app.state.sessions.daemon_pool_stats()
         except Exception:  # noqa: BLE001 — health must never fail on telemetry
             payload["pool"] = None
+        # Boot outcomes (rehydrate/rearm counts + step errors) — a rehydrate()
+        # failure used to be invisible outside the daemon journal. Best-effort:
+        # an unreachable daemon or a stub orchestrator degrades to None.
+        try:
+            srep = getattr(app.state.sessions, "startup_report", None)
+            payload["startup"] = (await srep()) if srep is not None else None
+        except Exception:  # noqa: BLE001 — health must never fail on telemetry
+            payload["startup"] = None
         return payload
 
     from fastapi import Body, HTTPException  # noqa: PLC0415 — local import avoids top-level churn

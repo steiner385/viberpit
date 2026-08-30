@@ -19,6 +19,19 @@ from server.time_iso import iso_utc
 # upgrade it (see SessionOrchestrator.ensure_driver) or their answers are rejected.
 SYSTEM_IDENTITY = "system"
 
+# The full ccswitch session permission-mode vocabulary — the single source of
+# truth for "what modes exist". The first four are ccswitch-native (gated by
+# PermissionRegistry.request); the last two share the Claude Agent SDK's own
+# vocabulary and pass through to its permission engine (see
+# server.sessions.permissions._SDK_PASSTHROUGH_MODES / to_sdk_permission_mode).
+# Defined here (a dependency-light module) so API validators and the SDLC
+# governance tier resolver reference ONE list instead of drifting copies
+# (constitution VI: single source of truth / no dead code).
+VALID_SESSION_MODES = frozenset({
+    "interactive", "auto", "allowlist", "full-auto",
+    "acceptEdits", "bypassPermissions",
+})
+
 
 @dataclass
 class SessionRecord:

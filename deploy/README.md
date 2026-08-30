@@ -165,9 +165,8 @@ instead of being OOM-killed. On an already-running host apply it live without a 
 This is a **host-level** hardware-watchdog test, separate from the application health
 timer above. It closes the gap that let rocky sit off the network for ~46 min on
 2026-08-25 while its `watchdog.service` ran happily the whole time
-([#767](https://github.com/steiner385/ccswitch/issues/767)): the stock
-`/etc/watchdog.d/test-ssh.sh` only probed **loopback** (`localhost:22`,
-`127.0.0.1/22`), which proves `sshd` is alive *on the box* but says nothing about
+([#767](https://github.com/steiner385/ccswitch/issues/767)): `test-ssh.sh` (below) only
+probes **loopback**, which proves `sshd` is alive *on the box* but says nothing about
 whether anything can **reach** the box. A hardware watchdog only fires on a *hung*
 system; an alive-but-unreachable host never hangs, so nothing tripped.
 
@@ -197,7 +196,7 @@ Install on the daemon host (this needs the `watchdog` package with
         /etc/ccswitch/watchdog-reachability.conf
     sudo $EDITOR /etc/ccswitch/watchdog-reachability.conf   # set WDR_TARGETS
 
-    # 2. drop the test beside (or replacing) the loopback-only test-ssh.sh
+    # 2. drop the test beside the loopback-only test-ssh.sh
     sudo install -m755 deploy/watchdog/test-reachability.sh /etc/watchdog.d/
     sudo systemctl restart watchdog.service
 
@@ -205,6 +204,66 @@ The `watchdog` daemon runs the script every interval with `test`; a non-zero exi
 makes it re-run the script with `repair`, and a non-zero `repair` triggers the reset.
 State (outage-window start + cooldown anchor) lives in `WDR_STATE_DIR`
 (`/var/lib/watchdog-reachability`, must survive reboots for the cooldown to hold).
+
+## Hardware watchdog SSH liveness test (`deploy/watchdog/test-ssh.sh`)
+
+The loopback half of the pair above: it proves `sshd` on this host is not merely
+listening but actually **speaking SSH**. It opens a TCP connection to `127.0.0.1:22`,
+reads the protocol version-exchange greeting, and requires it to start with `SSH-`.
+
+This replaces an earlier version that lived only on the host and had two defects:
+
+1. Its first branch ran `ssh … localhost exit 0` **as root**, which cannot
+   authenticate, so every 10s interval logged
+   `Connection closed by authenticating user root 127.0.0.1 … [preauth]` —
+   ~8,700 sshd auth failures a day, burying real signal during an incident.
+2. Its fallback, `echo > /dev/tcp/127.0.0.1/22`, only proved the port *accepts* a
+   connection and then wrote garbage into it (`banner exchange: … invalid format`
+   every 10s). It would still have passed with `sshd` wedged mid-handshake.
+
+Reading the greeting fixes both: it attempts **no authentication at all**, so it
+produces no auth failures, and a wedged `sshd` that accepts TCP without ever greeting
+is now correctly caught.
+
+What remains is one benign line per interval at `LogLevel INFO`
+(`Connection closed by 127.0.0.1 port N`, with no `[preauth]` and no user) — that is
+unavoidable for *any* TCP connection to `sshd`, and it is an ordinary disconnect
+notice rather than an auth failure or a protocol error. Sending a client
+identification string first was measured and is **not** quieter: same volume, but the
+lines come back tagged `[preauth]`, which reads more like a failure than less.
+
+**A non-zero exit here reboots the physical host**, so the script is deliberately
+fail-safe and every knob below serves that:
+
+* It exits **0** on any *inconclusive* result and returns non-zero only on a clear,
+  positive determination. In particular, before trusting a failed connect it
+  self-tests that this `bash` really supports `/dev/tcp` (a build with
+  `--disable-net-redirections` reports `No such file or directory` rather than
+  `Connection refused`); if that is unproven it passes rather than reboots.
+* Three attempts must **all** fail, absorbing transients; combined with
+  `retry-timeout = 60` a reboot needs ~6 consecutive failures over a full minute.
+* Every probe is wrapped in `timeout -s KILL`, bounding a run at ~18s — safely under
+  `test-timeout = 30` — so it can never hang the daemon.
+* There is intentionally **no `set -e`**: an unexpected non-zero from an intermediate
+  command must never become the script's exit status.
+
+Install on the daemon host:
+
+    sudo install -m755 deploy/watchdog/test-ssh.sh /etc/watchdog.d/
+    sudo systemctl restart watchdog.service
+
+Note that `systemctl restart watchdog.service` can fail on Debian/Ubuntu: the unit's
+`ExecStopPost` exits non-zero by design to hand `/dev/watchdog` to
+`wd_keepalive.service` via `OnFailure=`, which cancels the queued restart and leaves
+`watchdog.service` **inactive**. If that happens, `sudo systemctl start
+watchdog.service` completes the handoff back. Always confirm `systemctl is-active
+watchdog.service` afterwards, and check the startup log lists the tests you expect:
+
+    sudo journalctl -u watchdog.service -n 30 | grep 'test/repair'
+
+Keep anything else in `/etc/watchdog.d/` **non-executable** — the daemon runs *every*
+executable file in that directory, so an executable `test-ssh.sh.bak-<timestamp>` left
+beside the script silently keeps running the old test.
 
 ## Remote mounts (`ccswitch-mounts.service`, remote session host only)
 

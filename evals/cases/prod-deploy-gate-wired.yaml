@@ -1,0 +1,7 @@
+id: prod-deploy-gate-wired
+description: >-
+  The prod-deploy approval gate is wired as a PreToolUse hook in
+  .claude/settings.json.
+kind: static
+tags: [governance, approval-gate]
+check: 'grep -q "prod-deploy-gate.py" .claude/settings.json'

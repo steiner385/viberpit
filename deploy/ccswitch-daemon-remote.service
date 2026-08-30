@@ -30,7 +30,13 @@ ExecStart=/home/tony/GitHub/ccswitch/.venv/bin/python -m server.ipc
 Restart=always
 RestartSec=3
 TimeoutStopSec=90
-KillMode=control-group
+# mixed, NOT control-group: control-group SIGTERMs every live claude child in
+# parallel with the daemon, so their turns die with exit 143 BEFORE stop() can
+# set _shutting_down — each was persisted as needs_attention and survived the
+# restart as a spurious "Turn failed" card (2026-08-29). mixed SIGTERMs only the
+# daemon; orchestrator.stop() then tears children down in order, and the final
+# SIGKILL phase still sweeps the whole cgroup at TimeoutStopSec.
+KillMode=mixed
 # Sized for rocky's 31 GB, versus 10G/12G on dobby's 19 GB host. Memory headroom is
 # the main reason for offloading sessions here in the first place.
 MemoryHigh=24G

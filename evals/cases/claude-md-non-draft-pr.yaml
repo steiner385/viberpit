@@ -1,0 +1,7 @@
+id: claude-md-non-draft-pr
+description: >-
+  The completion workflow tells agents never to leave a PR as a draft — a draft PR
+  never triggers required checks and silently stalls.
+kind: static
+tags: [agent-config, completion-workflow]
+check: 'grep -q "never leave it a draft" CLAUDE.md'

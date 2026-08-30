@@ -20,6 +20,7 @@ import { ArchivedManager } from './ArchivedManager'
 import { PipelineTab } from '@/pipeline/PipelineTab'
 import { InsightsView } from './InsightsView'
 import { AutomationsTab } from '@/automations/AutomationsTab'
+import { InitiativesTab } from '@/initiatives/InitiativesTab'
 import { TabBar } from './TabBar'
 import { buildTabs } from './tabDefs'
 import { inFlightPrCount } from '@/session/prStatus'
@@ -462,7 +463,7 @@ export function RenameDialog({ sessionId, currentName, onClose, onSubmit, isPend
 
 // ── Dashboard ────────────────────────────────────────────────────────────────
 
-export type TabId = 'sessions' | 'archived' | 'pipeline' | 'automations' | 'insights' | 'settings'
+export type TabId = 'sessions' | 'archived' | 'pipeline' | 'automations' | 'initiatives' | 'insights' | 'settings'
 
 interface DashboardProps {
   /** Called when the user opens a session (navigates to Terminal view).
@@ -906,6 +907,18 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
             onOpenSession={onOpenSession ? (id) => onOpenSession(id) : undefined}
             onReviewSession={onReviewSession ? handleReview : undefined}
           />
+        </div>
+      )}
+
+      {/* Initiatives panel — the SDLC artifact-chain board (owns its scroll region) */}
+      {activeTab === 'initiatives' && (
+        <div
+          id="tabpanel-initiatives"
+          role="tabpanel"
+          aria-labelledby="tab-initiatives"
+          className="flex flex-col flex-1 min-h-0"
+        >
+          <InitiativesTab />
         </div>
       )}
 

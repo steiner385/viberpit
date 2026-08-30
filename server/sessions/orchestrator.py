@@ -357,6 +357,16 @@ class SessionOrchestrator:
         # in-memory by design — a fresh deploy rebuilds it; a crash loses it exactly
         # as the deploy controller loses its own frozen 'failed' list.
         self._resume_recovery: dict[str, int] = {}
+        # Startup health report (2026-08-29): a failed rehydrate() used to vanish into
+        # a log line while the daemon looked healthy with zero sessions. Boot steps
+        # record their outcome here; /api/daemon/health exposes it (RPC-bridged in
+        # remote mode). In-memory by design — it describes THIS process's boot.
+        from datetime import datetime as _dt, timezone as _tz
+        self._startup_report: dict = {
+            "startedAt": _dt.now(_tz.utc).isoformat(),
+            "rehydrated": None, "rehydrateError": None,
+            "rearmed": None, "rearmError": None,
+        }
         # Detached-session next-prompt suggestions: session_id -> (transcript mtime, items).
         # Generated from the on-disk transcript without resuming the driver (see
         # latest_suggestions / _generate_detached_suggestions). Cached even when empty so
@@ -544,6 +554,24 @@ class SessionOrchestrator:
             credential_alerts=self._backlog_credential_alerts,
         )
         self._backlog_task: asyncio.Task | None = None
+        # SDLC Intake control loop: turns pending triggers into proposed intent.md
+        # PRs (propose-only). Same injected-seam mold as BacklogRunnerLoop; the
+        # trigger source (read_triggers) stays empty until a triage queue (#804) or
+        # the /api/sdlc intake path (#802) feeds it, so today each tick is a cheap
+        # no-op sweep.
+        from server.automations.sdlc_intake import SdlcIntakeLoop
+        self._sdlc_intake_ctx = AutomationContext(
+            "sdlc-intake", create_session=self.create_session)
+        self._sdlc_intake_loop = SdlcIntakeLoop(
+            self._sdlc_intake_ctx,
+            read_config=self._sdlc_intake_read_config,
+            read_triggers=self._sdlc_intake_read_triggers,
+            ensure_initiative=self._sdlc_intake_ensure_initiative,
+            record_intent=self._sdlc_intake_record_intent,
+            spawn=self._sdlc_intake_spawn,
+            clock=time.monotonic,
+        )
+        self._sdlc_intake_task: asyncio.Task | None = None
         # Autopilot control loop: advances every governed session through its stuck
         # states each tick (also nudged from _persist_status). All seams injected so
         # the loop stays testable; the seam methods live on this orchestrator.
@@ -731,6 +759,11 @@ class SessionOrchestrator:
         # terminal-watch sweep). A disabled row makes each tick a cheap sweep.
         self._backlog_task = asyncio.create_task(
             self._backlog_tick_loop(interval=60.0), name="backlog-runner-loop"
+        )
+        # SDLC Intake control loop: one tick per interval (propose intent for each
+        # pending trigger). A disabled/absent row makes each tick a cheap no-op.
+        self._sdlc_intake_task = asyncio.create_task(
+            self._sdlc_intake_tick_loop(interval=60.0), name="sdlc-intake-loop"
         )
         # Autopilot control loop: one tick per interval plus status-change nudges.
         self._autopilot_task = asyncio.create_task(
@@ -1459,6 +1492,15 @@ class SessionOrchestrator:
         from server.sessions.status import ACTIVITY_STATUSES
         rec = self._records.get(session_id)
         if rec is not None and rec.status == "ended":
+            return
+        # A turn failure surfacing during teardown is our own shutdown dropping the
+        # turn (deploy / watchdog restart / systemctl stop), not a real failure.
+        # Persisting needs_attention here brands the session "Turn failed" across
+        # the restart; leaving the mid-turn row lets the next boot's rehydrate()
+        # normalize it to idle + interruptedByRestart (issue #434). Terminal writes
+        # (ended) and every other status still persist during shutdown.
+        if status == "needs_attention" and self._shutting_down:
+            log.info("persist.skip_needs_attention_during_shutdown session=%s", session_id)
             return
         # Overlay: a turn that finished (`done`) but left the agent parked on an external
         # event — an open background task or an armed self-scheduled wakeup — is "Waiting…",
@@ -2403,6 +2445,135 @@ class SessionOrchestrator:
                 await self._bump_automation_active("backlog-runner")
         except Exception:  # pragma: no cover — a heartbeat failure must not stall
             log.debug("backlog_runner.bump_active_failed", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # SDLC Intake control-loop dependencies (injected into SdlcIntakeLoop)
+    # ------------------------------------------------------------------
+
+    async def _sdlc_intake_read_config(self) -> tuple[str, dict]:
+        """The sdlc-intake row's (mode, config) merged onto schema defaults.
+
+        Mode is ``off`` unless the row is enabled AND carries propose/auto — an
+        absent/invalid row falls back to ``off`` + pure defaults so a bad config
+        never spawns. Mirrors ``_backlog_read_config`` (single source of truth)."""
+        from sqlalchemy import select
+        from server.automations.base import validate_config
+        from server.automations.sdlc_intake import SdlcIntake
+        from server.db.models import Automation
+        enabled, mode, raw = False, None, {}
+        try:
+            async with db_session() as db:
+                row = (await db.execute(select(Automation).where(
+                    Automation.id == "sdlc-intake"))).scalar_one_or_none()
+                if row is not None:
+                    enabled = bool(row.enabled)
+                    mode = row.mode
+                    raw = dict(row.config) if row.config else {}
+        except Exception:
+            log.debug("sdlc_intake.config.load_failed", exc_info=True)
+        try:
+            config = validate_config(SdlcIntake.config_schema, raw)
+        except ValueError:
+            config = validate_config(SdlcIntake.config_schema, {})
+        effective = mode if (enabled and mode in ("propose", "auto")) else "off"
+        return effective, config
+
+    async def _sdlc_intake_read_triggers(self) -> list:
+        """Pending intake triggers. Empty until a trigger source is wired: the
+        Phase-2 triage queue (#804) and the /api/sdlc intake path (#802) feed
+        this seam. Returning [] keeps every tick a cheap no-op today."""
+        return []
+
+    async def _sdlc_intake_ensure_initiative(self, trigger):
+        """Find-or-create the Initiative for *trigger* (idempotent by slug) at the
+        intake stage, and return its pure view + committed-or-proposed artifacts."""
+        from sqlalchemy import select
+        from server.db.models import Initiative, InitiativeArtifact
+        from server.sdlc.engine import ArtifactView, InitiativeView
+        async with db_session() as db:
+            row = (await db.execute(select(Initiative).where(
+                Initiative.slug == trigger.slug))).scalar_one_or_none()
+            if row is None:
+                row = Initiative(
+                    slug=trigger.slug, repo=trigger.repo or None,
+                    title=trigger.title or None, stage="intake", status="active",
+                    origin=trigger.origin, origin_ref=trigger.origin_ref)
+                db.add(row)
+                await db.flush()
+            arts = (await db.execute(select(InitiativeArtifact).where(
+                InitiativeArtifact.initiative_id == row.id))).scalars().all()
+            view = InitiativeView(
+                slug=row.slug or trigger.slug, stage=row.stage or "intake",
+                status=row.status or "active", repo=row.repo or "")
+            artifacts = [
+                ArtifactView(kind=a.kind or "", commit_sha=a.commit_sha,
+                             pr_number=a.pr_number, pr_url=a.pr_url) for a in arts]
+        return view, artifacts
+
+    async def _sdlc_intake_record_intent(self, slug: str, repo_path: str,
+                                         session_id: str | None) -> None:
+        """Insert the intent artifact row for *slug* (kind=intent, PR pending)."""
+        from sqlalchemy import select
+        from server.db.models import Initiative, InitiativeArtifact
+        async with db_session() as db:
+            row = (await db.execute(select(Initiative).where(
+                Initiative.slug == slug))).scalar_one_or_none()
+            if row is None:
+                log.warning("sdlc_intake.record_intent.no_initiative slug=%s", slug)
+                return
+            db.add(InitiativeArtifact(
+                initiative_id=row.id, kind="intent", repo_path=repo_path,
+                session_id=session_id))
+
+    async def _sdlc_intake_spawn(self, trigger, prompt: str):
+        """Spawn a de-duped intent session for *trigger*, seeded with *prompt*.
+
+        Resolves the repo clone cwd + a healthy account off the event loop, then
+        spawns via the de-dup-safe context spawner (origin_ref=``<slug>:intent``);
+        ``create_session`` falls back to its own account/cwd if these are None."""
+        account = await self._backlog_healthy_account()
+        cwd = None
+        if trigger.repo:
+            url = f"https://github.com/{trigger.repo}.git"
+            try:
+                cwd = await asyncio.to_thread(
+                    gitrepos.ensure_clone, await self._effective_repo_root(),
+                    trigger.repo, url)
+            except Exception:
+                log.warning("sdlc_intake.spawn.clone_failed repo=%s", trigger.repo,
+                            exc_info=True)
+        return await self._sdlc_intake_ctx.spawn_session(
+            origin_ref=f"{trigger.slug}:intent",
+            dedupe_key=f"{trigger.slug}:intent",
+            repo=trigger.repo or None,
+            cwd=cwd,
+            account=account,
+            name=f"sdlc intake {trigger.slug}",
+            initial_prompt=prompt,
+            detail={"slug": trigger.slug, "kind": "intent"},
+        )
+
+    async def _sdlc_intake_tick_loop(self, interval: float) -> None:
+        """Periodic driver for the intake control loop (mirrors _backlog_tick_loop)."""
+        while True:
+            await self._sdlc_intake_tick_once()
+            await asyncio.sleep(interval)
+
+    async def _sdlc_intake_tick_once(self) -> None:
+        """One intake tick + an enabled-only ``last_active_at`` heartbeat.
+        Best-effort — neither the tick nor the heartbeat may crash the loop."""
+        if not await self._schedule_allows_tick("sdlc-intake"):
+            return
+        try:
+            await self._sdlc_intake_loop.tick()
+        except Exception:  # pragma: no cover — tick() already swallows; belt+braces
+            log.warning("sdlc_intake.tick_loop_error", exc_info=True)
+        try:
+            mode, _ = await self._sdlc_intake_read_config()
+            if mode != "off":
+                await self._bump_automation_active("sdlc-intake")
+        except Exception:  # pragma: no cover — a heartbeat failure must not stall
+            log.debug("sdlc_intake.bump_active_failed", exc_info=True)
 
     # ------------------------------------------------------------------
     # CI/CD Doctor control-loop dependencies (injected into CicdDoctorLoop)
@@ -4229,6 +4400,7 @@ class SessionOrchestrator:
                     )
         log.info("rehydrate: %d session(s) restored (%d branch backfilled, %d status healed)",
                  added, len(backfilled), len(healed))
+        self._startup_note("rehydrated", added)
         # Reconcile 'queued' rows with no session_queue entry BEFORE draining, so
         # the drain never has to reach a row it structurally cannot see, and a
         # reconciled row (now 'ended') is reflected in the very same pass. Reuse
@@ -4255,6 +4427,8 @@ class SessionOrchestrator:
         pending = [(r.id, r.pending_rearm, r.pending_prompt) for r in rows
                    if (r.pending_rearm or r.pending_prompt) and r.id not in self._rearmed]
         if not pending:
+            # Idempotent re-calls must not reset a prior boot's count to 0.
+            self._startup_note("rearmed", self.startup_report().get("rearmed") or 0)
             return 0
         sem = asyncio.Semaphore(int(os.environ.get("CCSWITCH_REARM_CONCURRENCY", "3")))
 
@@ -4271,6 +4445,7 @@ class SessionOrchestrator:
             *(_one(sid, snap, prompt) for sid, snap, prompt in pending))
         n = sum(1 for ok in results if ok)
         log.info("rearm: re-armed %d/%d session(s)", n, len(pending))
+        self._startup_note("rearmed", (self.startup_report().get("rearmed") or 0) + n)
         return n
 
     async def _rearm_session(self, sid: str, snap: list | None,
@@ -7691,6 +7866,26 @@ class SessionOrchestrator:
         m = RESUME_RECOVERY_MAX_ATTEMPTS
         return {"failed": [s for s, a in self._resume_recovery.items() if a < m],
                 "gaveUp": [s for s, a in self._resume_recovery.items() if a >= m]}
+
+    def startup_report(self) -> dict:
+        """This process's boot outcomes (rehydrate/rearm counts + any step error).
+
+        Surfaced by /api/daemon/health so a boot where rehydrate() failed — which
+        used to be a single swallowed log line while the dashboard showed zero
+        sessions — is observable. Counts are None until the step has run."""
+        return dict(getattr(self, "_startup_report", None) or {})
+
+    def note_startup_failure(self, step: str, exc: BaseException) -> None:
+        """Record a boot-step failure (called by the lifespans that catch them)."""
+        self._startup_note(f"{step}Error", f"{type(exc).__name__}: {exc}"[:500])
+
+    def _startup_note(self, key: str, value) -> None:
+        """Write one startup-report entry. getattr-guarded because rehydrate-shaped
+        tests build orchestrators via SessionOrchestrator.__new__ (no __init__, so
+        no _startup_report) — recording is observability, never load-bearing."""
+        rep = getattr(self, "_startup_report", None)
+        if rep is not None:
+            rep[key] = value
 
 
 def _resolve_git_common_dir(path: str) -> str | None:
