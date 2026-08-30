@@ -496,14 +496,29 @@ class CicdDoctorLoop:
 
     async def _rollup_passed(self, config: dict) -> None:
         """Fold raw passed/skipped rows older than raw_retention_days into
-        CiTestDaily day-counts, then delete them. Failed AND error rows are never
-        folded — findings quote their message, so they stay raw until
-        retention_days. ("error" is a distinct outcome from "failed" — see
-        junit.py's _OUTCOME_TAGS — but it is still a failure and must be excluded
-        the same way.)
+        CiTestDaily day-counts, then delete them — DRAINING the backlog, not
+        folding a single batch. Failed AND error rows are never folded — findings
+        quote their message, so they stay raw until retention_days. ("error" is a
+        distinct outcome from "failed" — see junit.py's _OUTCOME_TAGS — but it is
+        still a failure and must be excluded the same way.)
+
+        Why a drain loop (#833): one batch per tick has a hard ceiling of
+        _ROLLUP_BATCH rows per 900s ≈ 960k rows/day, and KinDash alone ingests
+        ~2M/day. The fold silently lost that race for ~5 weeks: 12.3M stale rows
+        (12.0M of them passed) in a 27.4M-row table designed to hold 7 days.
+        Every consumer paid — the analyze aggregate read 40% of the table per
+        tick, no index could help at that selectivity, and the DB hit 24 GB.
+
+        So: keep folding batches until the backlog is empty or *rollup_budget_s*
+        (config, default 20s) is spent. One session per batch, so progress
+        commits incrementally and a crash or budget stop never double-counts.
+        Stopping early logs a WARNING with the shortfall — a losing race must be
+        visible long before the table is 4x oversized.
 
         Day bucketing happens in PYTHON, not SQL: this must behave identically on
-        SQLite today and Postgres after sub-project 1b.
+        SQLite today and Postgres after sub-project 1b. The per-bucket lookup is
+        one prefetch query per batch (not one per group, which at 10k groups was
+        most of a batch's cost).
         """
         from collections import Counter
         from datetime import datetime, timezone
@@ -513,36 +528,60 @@ class CicdDoctorLoop:
         from server.db.models import CiTestDaily, CiTestResult
 
         raw_days = float(config.get("raw_retention_days", 7))
-        horizon = self._clock() - raw_days * 86400.0
-        async with db_session() as db:
-            rows = (await db.execute(
-                select(CiTestResult.id, CiTestResult.repo, CiTestResult.test_id,
-                       CiTestResult.outcome, CiTestResult.created_ts)
-                .where(CiTestResult.outcome.notin_(("failed", "error")),
-                       CiTestResult.created_ts < horizon)
-                .limit(_ROLLUP_BATCH))).all()
-            if not rows:
+        budget_s = float(config.get("rollup_budget_s", 20.0))
+        started = self._clock()
+        horizon = started - raw_days * 86400.0
+        batches = 0
+        while True:
+            async with db_session() as db:
+                rows = (await db.execute(
+                    select(CiTestResult.id, CiTestResult.repo, CiTestResult.test_id,
+                           CiTestResult.outcome, CiTestResult.created_ts)
+                    .where(CiTestResult.outcome.notin_(("failed", "error")),
+                           CiTestResult.created_ts < horizon)
+                    .limit(_ROLLUP_BATCH))).all()
+                if not rows:
+                    return
+                counts: Counter = Counter()
+                for _id, repo, test_id, outcome, ts in rows:
+                    day = datetime.fromtimestamp(ts or 0.0, timezone.utc).strftime("%Y-%m-%d")
+                    counts[(repo, test_id, day, outcome)] += 1
+                # Prefetch every bucket this batch can touch in ONE query, then
+                # match exact (repo, test_id, day) triples in Python. The IN-lists
+                # over-fetch (cross product) but only among this batch's values.
+                repos = {k[0] for k in counts}
+                tests = {k[1] for k in counts}
+                days = {k[2] for k in counts}
+                existing = (await db.execute(select(CiTestDaily).where(
+                    CiTestDaily.repo.in_(repos),
+                    CiTestDaily.test_id.in_(tests),
+                    CiTestDaily.day.in_(days)))).scalars().all()
+                buckets = {(b.repo, b.test_id, b.day): b for b in existing}
+                for (repo, test_id, day, outcome), n in counts.items():
+                    bucket = buckets.get((repo, test_id, day))
+                    if bucket is None:
+                        bucket = CiTestDaily(repo=repo, test_id=test_id, day=day,
+                                             passed=0, failed=0, skipped=0)
+                        db.add(bucket)
+                        await db.flush()
+                        buckets[(repo, test_id, day)] = bucket
+                    if outcome == "skipped":
+                        bucket.skipped = (bucket.skipped or 0) + n
+                    else:
+                        bucket.passed = (bucket.passed or 0) + n
+                await db.execute(delete(CiTestResult).where(
+                    CiTestResult.id.in_([r[0] for r in rows])))
+            batches += 1
+            full_batch = len(rows) >= _ROLLUP_BATCH
+            if not full_batch:
+                return  # short batch == backlog drained
+            if self._clock() - started >= budget_s:
+                log.warning(
+                    "cicd rollup behind: budget %.1fs spent after %d batch(es) "
+                    "(%d rows folded) with stale rows still pending — will "
+                    "continue next tick", budget_s, batches,
+                    batches * _ROLLUP_BATCH)
                 return
-            counts: Counter = Counter()
-            for _id, repo, test_id, outcome, ts in rows:
-                day = datetime.fromtimestamp(ts or 0.0, timezone.utc).strftime("%Y-%m-%d")
-                counts[(repo, test_id, day, outcome)] += 1
-            for (repo, test_id, day, outcome), n in counts.items():
-                bucket = (await db.execute(select(CiTestDaily).where(
-                    CiTestDaily.repo == repo,
-                    CiTestDaily.test_id == test_id,
-                    CiTestDaily.day == day))).scalar_one_or_none()
-                if bucket is None:
-                    bucket = CiTestDaily(repo=repo, test_id=test_id, day=day,
-                                         passed=0, failed=0, skipped=0)
-                    db.add(bucket)
-                    await db.flush()
-                if outcome == "skipped":
-                    bucket.skipped = (bucket.skipped or 0) + n
-                else:
-                    bucket.passed = (bucket.passed or 0) + n
-            await db.execute(delete(CiTestResult).where(
-                CiTestResult.id.in_([r[0] for r in rows])))
 
     async def _prune(self, config: dict) -> None:
         """Bounded tables: drop history rows older than retention_days, and prune
