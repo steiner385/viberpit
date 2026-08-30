@@ -14,6 +14,11 @@ def client(monkeypatch):
     # bucket — isolation is structural, not dependent on intra-file test ordering.
     from server.api.ratelimit import _client_logs_limiter
     _client_logs_limiter._buckets.clear()
+    # Freeze the limiter clock: the burst test sends 61 requests against a
+    # 1-token/sec refill, so on a loaded host (>1s for the loop) real elapsed
+    # time refilled the bucket and the 61st request was never limited — a
+    # load-coupled flake. monkeypatch restores the real clock after the test.
+    monkeypatch.setattr(_client_logs_limiter, "_now", lambda: 0.0)
     app = FastAPI()
     # Override auth dependency to a fixed identity for the test.
     from server.auth.middleware import current_identity
