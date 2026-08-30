@@ -1,0 +1,5 @@
+id: claude-md-arms-auto-merge
+description: The completion workflow arms squash auto-merge on a finished PR.
+kind: static
+tags: [agent-config, completion-workflow]
+check: 'grep -q "gh pr merge" CLAUDE.md'

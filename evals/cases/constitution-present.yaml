@@ -1,0 +1,5 @@
+id: constitution-present
+description: The project constitution (the governance source of truth) is present.
+kind: static
+tags: [governance, constitution]
+check: 'test -f .specify/memory/constitution.md'

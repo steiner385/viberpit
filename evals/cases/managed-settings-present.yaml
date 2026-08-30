@@ -1,0 +1,7 @@
+id: managed-settings-present
+description: >-
+  The managed (non-overridable) settings file carrying the constitution-IV
+  non-negotiables exists.
+kind: static
+tags: [governance, managed-settings]
+check: 'test -f .claude/managed-settings.json'

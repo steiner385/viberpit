@@ -20,11 +20,13 @@ from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.db import get_db
 from server.db.models import PermissionProfile, _utcnow
+from server.sessions.types import VALID_SESSION_MODES
 
 router = APIRouter(prefix="/api/permission-profiles", tags=["permission-profiles"])
 
-_VALID_MODES = frozenset({"interactive", "auto", "allowlist", "full-auto",
-                          "acceptEdits", "bypassPermissions"})
+# Canonical mode vocabulary lives in server.sessions.types (single source of
+# truth); a profile may set any real session mode.
+_VALID_MODES = VALID_SESSION_MODES
 
 
 def _profile_to_dict(p: PermissionProfile) -> dict:
