@@ -961,6 +961,26 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                         text = msg.get("text", "")
                         attachment_ids = msg.get("attachmentIds")
                         status = await orchestrator.send_prompt(session_id, text, attachment_ids)
+                        if status == "no_driver":
+                            # The 2026-08-30 unresponsive-session incident: the daemon
+                            # dropped the driver AFTER this socket attached, so
+                            # _ensure_live's live_tasks short-circuit vouched for a
+                            # stream whose driver no longer existed and the user's
+                            # message evaporated behind a "Ready" header. live_tasks is
+                            # EDGE state; only send_prompt's answer reflects the
+                            # daemon's truth — so on no_driver, drop the stale stream,
+                            # rebuild through the FULL _ensure_live path (ensure_driver
+                            # + fresh open_stream), and retry the send exactly once.
+                            # A failed rebuild falls through to promptRejected below —
+                            # recovery must never turn into a retry loop.
+                            log.warning(
+                                "ws.prompt: no_driver with a live stream entry — "
+                                "rebuilding driver and retrying once session=%s",
+                                session_id)
+                            await _teardown_live_task(session_id)
+                            if await _ensure_live(session_id):
+                                status = await orchestrator.send_prompt(
+                                    session_id, text, attachment_ids)
                         await orchestrator.note_user_interaction(session_id)
                         if status in ("draining", "no_driver"):
                             # The turn was refused — ack it so the browser re-queues
