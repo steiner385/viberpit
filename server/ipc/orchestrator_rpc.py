@@ -280,7 +280,7 @@ def register_orchestrator_rpc(app, orch) -> None:
         "latest_summary", "latest_summary_many",
         "begin_drain", "drain_status",
         "live_session_load", "live_session_counts",
-        "snapshot_deploy", "restore_deploy", "resume_recovery_status",
+        "snapshot_deploy", "restore_deploy", "resume_recovery_status", "startup_report",
         "request_pr_fix",
         "automation_statuses", "automation_trigger", "pr_doctor_job",
         "consolidation_candidates", "automation_consolidate",

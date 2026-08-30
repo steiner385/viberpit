@@ -528,7 +528,10 @@ def _daemon_ok(body: str, expected_sha: str, *, require_sha: bool = True) -> boo
 # process is up and the DB schema matches; it never reads the ledger or the session
 # store, so a corrupt ledger left /api/accounts 500ing while /healthz stayed green
 # (2026-08-22). These are the cheapest endpoints that exercise those paths.
-DEFAULT_PROBE_PATHS: tuple[str, ...] = ("/api/sessions", "/api/accounts")
+# /api/github/repos exercises the gh listing + the daemon cloned_repos RPC — the
+# path whose failure blanked the New Session repo dropdown (2026-08-29); note the
+# probe is unauthenticated, so its 401 only proves the route answers (4xx passes).
+DEFAULT_PROBE_PATHS: tuple[str, ...] = ("/api/sessions", "/api/accounts", "/api/github/repos")
 
 
 def _default_status_fetch(url: str) -> int:
