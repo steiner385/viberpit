@@ -49,6 +49,57 @@ def test_create_and_list_initiative():
         assert items[0]["status"] == "proposed"
 
 
+def test_list_includes_artifact_chain():
+    """GET list returns each initiative's committed artifacts inline (#803), so the
+    web board renders N stage tracks from one call rather than a detail fetch per row."""
+    from server.db import db_session
+    from server.db.models import Initiative, InitiativeArtifact
+
+    async def _seed(db_url: str):
+        from server.db import init_db
+        await init_db(db_url)
+        async with db_session() as db:
+            ini = Initiative(
+                slug="dark-mode",
+                repo="steiner385/ccswitch",
+                title="Dark mode",
+                stage="design",
+                status="active",
+            )
+            db.add(ini)
+            await db.flush()
+            db.add(InitiativeArtifact(
+                initiative_id=ini.id,
+                kind="intent",
+                repo_path="docs/sdlc/dark-mode/intent.md",
+                commit_sha="abc1234",
+            ))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        asyncio.run(_seed(db_url))
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url,
+                                     "CCSWITCH_DEV": "1",
+                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.tests.fakes.fake_factory import fake_sdk_factory
+            from server.app import create_app
+            from fastapi.testclient import TestClient
+
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            app = create_app(orchestrator=orch)
+            with TestClient(app, raise_server_exceptions=False) as c:
+                r = c.get("/api/sdlc/initiatives", headers=IDENTITY_HEADERS)
+                assert r.status_code == 200, r.text
+                items = r.json()
+                assert len(items) == 1
+                artifacts = items[0]["artifacts"]
+                assert len(artifacts) == 1
+                assert artifacts[0]["kind"] == "intent"
+                assert artifacts[0]["commitSha"] == "abc1234"
+                assert artifacts[0]["repoPath"] == "docs/sdlc/dark-mode/intent.md"
+
+
 def test_create_conflicting_slug_409():
     """Second POST with same slug → 409."""
     with _client() as c:
