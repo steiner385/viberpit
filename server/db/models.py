@@ -632,8 +632,10 @@ class CiTestDaily(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     repo: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     test_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
-    # 'YYYY-MM-DD' UTC. A string, not a Date: it is bucketed in Python so the value is
-    # identical on SQLite and Postgres (see the plan's portability constraint).
+    # 'YYYY-MM-DD' UTC. A string, not a Date. Bucketed in SQL by the fold
+    # (cicd_doctor.rollup_day_expr, per-dialect) — pinned to the Python reference
+    # datetime.fromtimestamp(ts, utc).strftime('%Y-%m-%d') by an oracle test, so
+    # the value is identical on SQLite and Postgres (#833).
     day: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     passed: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
     # Reserved: no writer currently populates this. Failed rows are kept raw
