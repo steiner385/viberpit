@@ -12,10 +12,11 @@ from .base import AutomationStatus, ConfigField
 
 log = logging.getLogger(__name__)
 
-# Rows folded per tick. Bounds the transaction so a tick never rewrites millions of
-# rows at once; the backlog is drained by scripts/ccswitch-db-compact.py. The
-# delete uses id.in_([...]), one bound parameter per row — kept well under
-# SQLite's 32766-parameter ceiling (20_000 was only 1.6x away from it).
+# Rows folded per drain-loop batch (_rollup_passed drains batch-by-batch until
+# the backlog is empty or the tick's budget is spent). Bounds the transaction so
+# a batch never rewrites millions of rows at once. The fold/delete use
+# id.in_([...]), one bound parameter per row — kept well under SQLite's
+# 32766-parameter ceiling (20_000 was only 1.6x away from it).
 _ROLLUP_BATCH = 10_000
 
 
@@ -136,6 +137,39 @@ def flake_counts_stmt(repo: str, since_ts: float):
         )
         .group_by(per_sha.c.test_id)
     )
+
+
+def rollup_day_expr(dialect_name: str):
+    """The YYYY-MM-DD UTC day bucket for ``CiTestResult.created_ts``, in SQL.
+
+    Anti-drift contract: this must produce exactly what the Python reference
+    ``datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d")`` produced —
+    every existing ``ci_test_daily`` row was bucketed by that expression, so a
+    bucket that drifts (off-by-timezone, or truncating vs rounding a fractional
+    second across midnight) would silently split history under duplicate day
+    keys. Pinned by the boundary-timestamp oracle in test_cicd_rollup_drain (and
+    on the real dialect by test_postgres_compat), like ``flake_counts_stmt``'s
+    outcome sets (#791).
+
+    No single expression runs on both dialects — SQLite reads epoch seconds via
+    ``strftime(..., 'unixepoch')``, Postgres via ``to_timestamp`` (a timestamptz,
+    shifted to UTC before formatting so the server TimeZone can't leak in) — so
+    the caller passes the LIVE engine's dialect name, same rule as
+    ``dialect_insert``.
+    """
+    from sqlalchemy import func
+
+    from server.db.models import CiTestResult
+
+    if dialect_name == "postgresql":
+        return func.to_char(
+            func.timezone("UTC", func.to_timestamp(CiTestResult.created_ts)),
+            "YYYY-MM-DD")
+    if dialect_name == "sqlite":
+        return func.strftime("%Y-%m-%d", CiTestResult.created_ts, "unixepoch")
+    raise RuntimeError(
+        f"rollup_day_expr(): unsupported dialect {dialect_name!r} — only "
+        "'sqlite' and 'postgresql' are supported")
 
 
 def check_stats_stmt(repo: str, since_ts: float, *, now_ts: float,
@@ -669,75 +703,78 @@ class CicdDoctorLoop:
         So: keep folding batches until the backlog is empty or *rollup_budget_s*
         (config, default 20s) is spent. One session per batch, so progress
         commits incrementally and a crash or budget stop never double-counts.
-        Stopping early logs a WARNING with the shortfall — a losing race must be
-        visible long before the table is 4x oversized.
+        Stopping early logs a WARNING with the exact backlog left — a losing
+        race must be visible long before the table is 4x oversized.
 
-        Day bucketing happens in PYTHON, not SQL: this must behave identically on
-        SQLite today and Postgres after sub-project 1b. The per-bucket lookup is
-        one prefetch query per batch (not one per group, which at 10k groups was
-        most of a batch's cost).
+        The fold itself runs IN SQL (#833): one grouped INSERT..SELECT upsert
+        per batch instead of a Python Counter plus a bucket prefetch — 10k rows
+        never cross the wire, and (SQLAlchemy async runs ORM row construction
+        via greenlet on the calling thread — see flake_counts_stmt) never touch
+        the event loop. Two load-bearing details:
+        - the source SELECT pre-aggregates to ONE row per (repo, test_id, day)
+          conflict target with SUM(CASE ...) — grouping by outcome instead
+          would hand Postgres two source rows for one target, a hard error
+          ('ON CONFLICT DO UPDATE command cannot affect row a second time');
+        - counts accumulate as COALESCE(existing, 0) + excluded: every count
+          column is nullable (the reconcile rule), and NULL + n is NULL.
+        Day bucketing is per-dialect SQL pinned to the Python reference by an
+        oracle test — see rollup_day_expr.
         """
-        from collections import Counter
-        from datetime import datetime, timezone
+        from sqlalchemy import case, delete, func, literal, select
 
-        from sqlalchemy import delete, select
-        from server.db import db_session
+        from server.db import db_session, dialect_insert
         from server.db.models import CiTestDaily, CiTestResult
 
         raw_days = float(config.get("raw_retention_days", 7))
         budget_s = float(config.get("rollup_budget_s", 20.0))
         started = self._clock()
         horizon = started - raw_days * 86400.0
-        batches = 0
+        # "failed" AND "error" stay raw; everything else this predicate matches
+        # is folded and deleted. NULL outcomes never match a NOT IN, so they are
+        # untouched — same on both dialects.
+        stale = (CiTestResult.outcome.notin_(("failed", "error")),
+                 CiTestResult.created_ts < horizon)
+        batches = folded = 0
         while True:
             async with db_session() as db:
-                rows = (await db.execute(
-                    select(CiTestResult.id, CiTestResult.repo, CiTestResult.test_id,
-                           CiTestResult.outcome, CiTestResult.created_ts)
-                    .where(CiTestResult.outcome.notin_(("failed", "error")),
-                           CiTestResult.created_ts < horizon)
-                    .limit(_ROLLUP_BATCH))).all()
-                if not rows:
+                ids = (await db.execute(
+                    select(CiTestResult.id).where(*stale)
+                    .limit(_ROLLUP_BATCH))).scalars().all()
+                if not ids:
                     return
-                counts: Counter = Counter()
-                for _id, repo, test_id, outcome, ts in rows:
-                    day = datetime.fromtimestamp(ts or 0.0, timezone.utc).strftime("%Y-%m-%d")
-                    counts[(repo, test_id, day, outcome)] += 1
-                # Prefetch every bucket this batch can touch in ONE query, then
-                # match exact (repo, test_id, day) triples in Python. The IN-lists
-                # over-fetch (cross product) but only among this batch's values.
-                repos = {k[0] for k in counts}
-                tests = {k[1] for k in counts}
-                days = {k[2] for k in counts}
-                existing = (await db.execute(select(CiTestDaily).where(
-                    CiTestDaily.repo.in_(repos),
-                    CiTestDaily.test_id.in_(tests),
-                    CiTestDaily.day.in_(days)))).scalars().all()
-                buckets = {(b.repo, b.test_id, b.day): b for b in existing}
-                for (repo, test_id, day, outcome), n in counts.items():
-                    bucket = buckets.get((repo, test_id, day))
-                    if bucket is None:
-                        bucket = CiTestDaily(repo=repo, test_id=test_id, day=day,
-                                             passed=0, failed=0, skipped=0)
-                        db.add(bucket)
-                        await db.flush()
-                        buckets[(repo, test_id, day)] = bucket
-                    if outcome == "skipped":
-                        bucket.skipped = (bucket.skipped or 0) + n
-                    else:
-                        bucket.passed = (bucket.passed or 0) + n
+                day = rollup_day_expr(db.get_bind().dialect.name)
+                src = (
+                    select(CiTestResult.repo, CiTestResult.test_id,
+                           day.label("day"), literal(0).label("failed"),
+                           func.sum(case((CiTestResult.outcome == "skipped", 0),
+                                         else_=1)).label("passed"),
+                           func.sum(case((CiTestResult.outcome == "skipped", 1),
+                                         else_=0)).label("skipped"))
+                    .where(CiTestResult.id.in_(ids))
+                    .group_by(CiTestResult.repo, CiTestResult.test_id, day))
+                ins = dialect_insert(CiTestDaily).from_select(
+                    ["repo", "test_id", "day", "failed", "passed", "skipped"], src)
+                await db.execute(ins.on_conflict_do_update(
+                    index_elements=["repo", "test_id", "day"],
+                    set_={"passed": func.coalesce(CiTestDaily.passed, 0)
+                          + ins.excluded.passed,
+                          "skipped": func.coalesce(CiTestDaily.skipped, 0)
+                          + ins.excluded.skipped}))
                 await db.execute(delete(CiTestResult).where(
-                    CiTestResult.id.in_([r[0] for r in rows])))
+                    CiTestResult.id.in_(ids)))
             batches += 1
-            full_batch = len(rows) >= _ROLLUP_BATCH
-            if not full_batch:
+            folded += len(ids)
+            if len(ids) < _ROLLUP_BATCH:
                 return  # short batch == backlog drained
             if self._clock() - started >= budget_s:
+                async with db_session() as db:
+                    remaining = (await db.execute(
+                        select(func.count()).select_from(CiTestResult)
+                        .where(*stale))).scalar_one()
                 log.warning(
                     "cicd rollup behind: budget %.1fs spent after %d batch(es) "
-                    "(%d rows folded) with stale rows still pending — will "
-                    "continue next tick", budget_s, batches,
-                    batches * _ROLLUP_BATCH)
+                    "(%d rows folded), %d stale rows still pending — will "
+                    "continue next tick", budget_s, batches, folded, remaining)
                 return
 
     async def _prune(self, config: dict) -> None:
