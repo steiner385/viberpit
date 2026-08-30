@@ -1,0 +1,13 @@
+id: example-agent-quick-fix
+description: >-
+  EXAMPLE agent-mode case (does not run in the CI gate). A real ccswitch task an
+  agent completes end-to-end; run out-of-band with `--kind agent`. Replace with
+  real recent tasks as the corpus grows toward the 20–50 target.
+kind: agent
+tags: [agent-config, example]
+task: >-
+  Given a GitHub issue asking for a one-line bugfix, open a non-draft PR off
+  origin/master that fixes it, arms auto-merge, and closes the issue via `Fixes #N`.
+acceptance: >-
+  A non-draft PR exists off origin/master; its body contains `Fixes #<n>`;
+  auto-merge is armed; the four-step gate is green.
