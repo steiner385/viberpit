@@ -109,6 +109,61 @@ def test_list_github_repos_serves_cached_on_gh_error(tmp_path):
     assert [r["nameWithOwner"] for r in stale.json()] == ["cairnea/KinDash", "acme/widget"]
 
 
+def test_list_github_repos_daemon_down_still_serves_list(tmp_path):
+    """A booting/unreachable daemon must not kill the repo list (startup health).
+
+    The `cloned` annotation is a daemon RPC in remote mode; while the daemon is
+    still coming up after a restart it raises DaemonUnavailable. The dropdown
+    showed "— could not load repos —" because that error was uncaught. The list
+    itself comes from gh on the edge, so it must render, degrading `cloned` to
+    False (cold) — a repo picked in that window just re-clones on start."""
+    from server.ipc.client import DaemonUnavailable
+
+    async def _boom(names):
+        raise DaemonUnavailable("connection refused")
+
+    with temp_env():
+        with patch.dict(os.environ, {"CCSWITCH_REPO_ROOT": str(tmp_path), "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            with patch("ccswitch.gitrepos.list_accessible_repos", return_value=[dict(r) for r in _REPOS]):
+                app, client = _make_app_and_client()
+                with client:
+                    app.state.sessions.cloned_repos = _boom
+                    resp = client.get("/api/github/repos", headers=IDENTITY_HEADERS)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert [r["nameWithOwner"] for r in data] == ["cairnea/KinDash", "acme/widget"]
+    assert all(r["cloned"] is False for r in data)
+
+
+def test_list_github_repos_daemon_down_serves_last_good_cloned_set(tmp_path):
+    """After one healthy annotation, a daemon blip serves the last-good cloned set
+    instead of degrading every repo to un-cloned."""
+    from server.ipc.client import DaemonUnavailable
+
+    clone_git = tmp_path / ".ccswitch" / "clones" / "cairnea" / "KinDash" / ".git"
+    clone_git.mkdir(parents=True)
+
+    async def _boom(names):
+        raise DaemonUnavailable("connection refused")
+
+    with temp_env():
+        with patch.dict(os.environ, {"CCSWITCH_REPO_ROOT": str(tmp_path), "CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            with patch("ccswitch.gitrepos.list_accessible_repos", return_value=[dict(r) for r in _REPOS]):
+                app, client = _make_app_and_client()
+                with client:
+                    ok = client.get("/api/github/repos", headers=IDENTITY_HEADERS)
+                    assert ok.status_code == 200
+                    assert ok.json()[0]["cloned"] is True
+                    app.state.sessions.cloned_repos = _boom
+                    resp = client.get("/api/github/repos", headers=IDENTITY_HEADERS)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data[0]["cloned"] is True    # from the last-good set, not lost to the blip
+    assert data[1]["cloned"] is False
+
+
 # ---------------------------------------------------------------------------
 # GET /api/github/branches
 # ---------------------------------------------------------------------------
