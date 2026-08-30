@@ -173,7 +173,7 @@ def test_every_remote_method_is_classified():
         "active_session_count", "live_session_load", "live_session_counts",
         "copilot_add_start", "copilot_add_status", "copilot_add_cancel", "copilot_usage",
         "subscribe_events", "unsubscribe_events", "x11_metrics", "adopt_session",
-        "daemon_sha", "daemon_pool_stats", "daemon_epoch",
+        "daemon_sha", "daemon_pool_stats", "daemon_epoch", "startup_report",
         "session_queue_positions", "maybe_start_queued",
     }
     public = {n for n, _ in inspect.getmembers(RemoteOrchestrator, callable)
