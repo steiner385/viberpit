@@ -94,7 +94,12 @@ class InProcessOrchestratorAdapter:
     def __init__(self, orch):
         self._orch = orch
 
-    async def create_session(self, *a, **k): return await _maybe_await(self._orch.create_session(*a, **k))
+    async def create_session(self, *a, **k):
+        # In-process is a single host — 'prefer' is a fleet-routing hint that does
+        # not apply here. Pop it before forwarding so the underlying orchestrator
+        # (which does not accept prefer=) never sees it. (Ruling D)
+        k.pop("prefer", None)
+        return await _maybe_await(self._orch.create_session(*a, **k))
     async def send_prompt(self, *a, **k): return await _maybe_await(self._orch.send_prompt(*a, **k))
     async def ensure_driver(self, *a, **k): return await _maybe_await(self._orch.ensure_driver(*a, **k))
     # Local/in-process mode has no daemon replay ring, so the wave-3 cursor catch-up never

@@ -1,5 +1,6 @@
 import * as React from 'react'
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Plus, Settings, HelpCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -45,6 +46,8 @@ import {
 } from '@/api/hooks'
 import { usePageVisible } from '@/hooks/usePageVisible'
 import type { Account } from '@/api/types'
+import { api } from '@/api/client'
+import type { FleetHost } from './settings/FleetSection'
 import { PERMISSION_MODES } from '@/session/permissionModes'
 import { toast } from 'sonner'
 import { setLastRepo } from '@/lib/lastRepo'
@@ -508,6 +511,12 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   const { data: config } = useConfig()
   const reposQuery = useGithubRepos()
   const { data: models = [] } = useModels()
+  const { data: fleetData } = useQuery<{ hosts: FleetHost[] }>({
+    queryKey: ['fleet', 'hosts'],
+    queryFn: () => api.get<{ hosts: FleetHost[] }>('/fleet/hosts'),
+    refetchInterval: 30_000,
+  })
+  const enabledFleetHosts = (fleetData?.hosts ?? []).filter((h) => h.enabled)
 
   const createSession = useCreateSession()
   const renameSession = useRenameSession()
@@ -689,7 +698,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   function handleCollapseHighlighted() { if (highlightedGroupKey) collapseGroup(highlightedGroupKey) }
   function handleToggleHighlighted() { if (highlightedGroupKey) toggleCollapse(highlightedGroupKey) }
 
-  function handleDispatch({ initialPrompt, repo, account, model, attachmentIds }: { initialPrompt: string; repo: string | null; account: string | null; model: string | null; attachmentIds: string[] }): Promise<void> {
+  function handleDispatch({ initialPrompt, repo, account, model, host, attachmentIds }: { initialPrompt: string; repo: string | null; account: string | null; model: string | null; host: string | null; attachmentIds: string[] }): Promise<void> {
     const repoInfo = repo ? (reposQuery.data ?? []).find((r) => r.nameWithOwner === repo) : undefined
     return new Promise((resolve, reject) => {
       createSession.mutate(
@@ -699,6 +708,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
           branch: repoInfo?.defaultBranch ?? undefined,
           account: account ?? undefined,
           model: model ?? undefined,
+          host: host ?? undefined,
           attachmentIds: attachmentIds.length ? attachmentIds : undefined,
         },
         {
@@ -841,6 +851,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
             reposError={reposQuery.isError}
             accounts={accounts}
             models={models}
+            hosts={enabledFleetHosts}
             onDispatch={handleDispatch}
             onNavigate={navigate}
             onOpenHighlighted={handleOpenHighlighted}

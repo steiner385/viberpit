@@ -138,6 +138,33 @@ def test_facade_covers_every_orchestrator_method_the_api_calls():
 
 
 @pytest.mark.asyncio
+async def test_create_session_pops_prefer_kwarg(monkeypatch):
+    """In-process create_session ignores prefer= (Ruling D).
+
+    FleetOrchestrator always passes prefer= through the unified interface.
+    InProcessOrchestratorAdapter must strip it before forwarding so the underlying
+    SessionOrchestrator (which has no prefer= param) never sees it.
+    """
+    orch = _orch()
+    f = InProcessOrchestratorAdapter(orch)
+    # Pass prefer= — must succeed and NOT forward prefer to the underlying orch
+    result = await f.create_session(prefer="rocky", name="S", account="a")
+    assert result == "created"
+    # The underlying create_session must NOT have received prefer=
+    orch.create_session.assert_awaited_once_with(name="S", account="a")
+
+
+@pytest.mark.asyncio
+async def test_create_session_prefer_none_also_works():
+    """prefer=None (the common case) must also be stripped cleanly."""
+    orch = _orch()
+    f = InProcessOrchestratorAdapter(orch)
+    result = await f.create_session(prefer=None, name="S", account="a")
+    assert result == "created"
+    orch.create_session.assert_awaited_once_with(name="S", account="a")
+
+
+@pytest.mark.asyncio
 async def test_note_user_interaction_delegates():
     orch = mock.MagicMock()
     orch.poller = mock.MagicMock(); orch._registry = mock.MagicMock()

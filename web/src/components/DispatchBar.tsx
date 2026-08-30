@@ -19,16 +19,19 @@ export interface DispatchBarProps {
   accounts?: Account[]
   /** Curated model list (server source of truth); empty ⇒ only "Default". */
   models?: ModelOption[]
+  /** Fleet hosts for the Runner dropdown; absent or empty ⇒ no dropdown shown. */
+  hosts?: { name: string }[]
   /**
    * Fired on Enter when the prompt has text or images are attached.
-   * `account`/`model` are already normalized: null means "let the backend
-   * decide" (Auto-select account / account-default model).
+   * `account`/`model`/`host` are already normalized: null means "let the backend
+   * decide" (Auto-select account / account-default model / auto-rank runner).
    */
   onDispatch: (input: {
     initialPrompt: string
     repo: string | null
     account: string | null
     model: string | null
+    host: string | null
     attachmentIds: string[]
   }) => Promise<void>
   /** ↑/↓ at a line boundary (or empty prompt). */
@@ -64,6 +67,7 @@ export function DispatchBar({
   reposError,
   accounts = [],
   models = [],
+  hosts = [],
   onDispatch,
   onNavigate,
   onOpenHighlighted,
@@ -84,6 +88,8 @@ export function DispatchBar({
   // '' = Auto-select (let the backend pick). 'default' = the account's own model.
   const [account, setAccount] = useState('')
   const [model, setModel] = useState('default')
+  // '' = Auto (let FleetOrchestrator rank); a name = prefer that host.
+  const [host, setHost] = useState('')
   // Mobile-only disclosure for the Account/Model selects; desktop always shows all three.
   const [showMore, setShowMore] = useState(false)
   const [assessing, setAssessing] = useState(false)
@@ -146,6 +152,8 @@ export function DispatchBar({
         account: account || null,
         // "default" ⇒ omit so the backend leaves the account's model as-is.
         model: model && model !== 'default' ? model : null,
+        // '' ⇒ null so the backend auto-ranks; a name pins the runner.
+        host: host || null,
         attachmentIds: refs,
       })
       setText('')
@@ -260,9 +268,9 @@ export function DispatchBar({
   )
   const selectLabelClass = 'text-xs text-gray-500 dark:text-gray-400'
 
-  // Account/Model are worth flagging when collapsed on mobile — a hidden
+  // Account/Model/Host are worth flagging when collapsed on mobile — a hidden
   // non-default pick would otherwise silently steer the dispatch.
-  const hasNonDefaultPick = account !== '' || model !== 'default'
+  const hasNonDefaultPick = account !== '' || model !== 'default' || host !== ''
 
   return (
     <div
@@ -276,9 +284,9 @@ export function DispatchBar({
       onDrop={handleDrop}
       onDragOver={(e) => e.preventDefault()}
     >
-      {/* Repo / account / model selector row — 3 across on desktop; on mobile a
-          single line (repo + "more" toggle) with account/model behind the toggle */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+      {/* Repo / account / model / runner selector row — 3–4 across on desktop; on mobile a
+          single line (repo + "more" toggle) with account/model/runner behind the toggle */}
+      <div className={cn('grid grid-cols-1 gap-2', hosts.length > 0 ? 'sm:grid-cols-4' : 'sm:grid-cols-3')}>
         {/* Repository + mobile-only more-options toggle */}
         <div className="flex items-end gap-2">
           <div className="flex min-w-0 flex-1 flex-col gap-1">
@@ -321,7 +329,7 @@ export function DispatchBar({
             type="button"
             aria-label="More options"
             aria-expanded={showMore}
-            aria-controls="dispatch-bar-account dispatch-bar-model"
+            aria-controls="dispatch-bar-account dispatch-bar-model dispatch-bar-runner"
             onClick={() => setShowMore((v) => !v)}
             className={cn(
               'sm:hidden relative flex-shrink-0 rounded-md px-3 py-2 text-sm min-h-[44px]',
@@ -338,7 +346,7 @@ export function DispatchBar({
                   aria-hidden="true"
                   className="absolute top-1 right-1 h-2 w-2 rounded-full bg-blue-500"
                 />
-                <span className="sr-only">Non-default account or model selected</span>
+                <span className="sr-only">Non-default account, model, or runner selected</span>
               </>
             )}
           </button>
@@ -382,6 +390,27 @@ export function DispatchBar({
             ))}
           </select>
         </div>
+
+        {/* Runner — '' = Auto (fleet auto-ranks); a name pins the session to that host. */}
+        {hosts.length > 0 && (
+          <div className={cn('flex-col gap-1', showMore ? 'flex' : 'hidden sm:flex')}>
+            <label htmlFor="dispatch-bar-runner" className={selectLabelClass}>
+              Runner
+            </label>
+            <select
+              id="dispatch-bar-runner"
+              aria-label="Runner"
+              value={host}
+              onChange={(e) => setHost(e.target.value)}
+              className={selectClass}
+            >
+              <option value="">Auto</option>
+              {hosts.map((h) => (
+                <option key={h.name} value={h.name}>{h.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
       <AttachmentChips attachments={att.attachments} onRemove={att.remove} />

@@ -225,6 +225,8 @@ export interface CreateSessionInput {
   permissionMode?: string
   attachmentIds?: string[]
   model?: string
+  /** Optional runner preference. null → auto-rank; a name → that host first. */
+  host?: string | null
 }
 
 export function useCreateSession() {
