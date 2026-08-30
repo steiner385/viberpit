@@ -18,8 +18,15 @@ from __future__ import annotations
 SDLC_DOCS_DIR = "docs/sdlc"
 
 
-def _artifact_path(slug: str, kind: str) -> str:
+def artifact_path(slug: str, kind: str) -> str:
+    """Repo-relative path of an initiative's committed artifact — the one place
+    the intake/synthesizer loops and the prompt builders agree on layout
+    (constitution VI: single source of truth)."""
     return f"{SDLC_DOCS_DIR}/{slug}/{kind}.md"
+
+
+# Internal alias kept for the builders below; ``artifact_path`` is the public name.
+_artifact_path = artifact_path
 
 
 def _common_instructions(slug: str, kind: str, repo: str, default_branch: str) -> str:
