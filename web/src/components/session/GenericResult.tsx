@@ -1,5 +1,6 @@
 import { cn } from '@/lib/utils'
-import { stripAnsi, extractText } from '@/lib/toolContent'
+import { stripAnsi, extractText, splitImages } from '@/lib/toolContent'
+import { ResultImages } from './ResultImages'
 import { StructuredView } from './StructuredView'
 
 interface Props {
@@ -18,22 +19,30 @@ interface Props {
  */
 export function GenericResult({ payload, ok = true }: Props) {
   const hasContent = 'content' in payload
-  const text = hasContent ? extractText(payload.content) : null
+  // Image blocks (e.g. an MCP screenshot tool) render as thumbnails; text is
+  // extracted from the remaining blocks so a rendered image isn't also labelled.
+  const { images, rest } = splitImages(hasContent ? payload.content : null)
+  const text = hasContent ? extractText(rest) : null
 
   if (text != null) {
     const cleaned = stripAnsi(text)
-    if (cleaned.trim() !== '') {
+    if (cleaned.trim() !== '' || images.length > 0) {
       return (
-        <pre
-          className={cn(
-            'max-h-64 overflow-auto rounded p-2 text-xs font-mono md:max-h-96',
-            ok
-              ? 'bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-gray-200'
-              : 'bg-red-50 dark:bg-red-950/30 text-red-800 dark:text-red-300',
+        <div>
+          {cleaned.trim() !== '' && (
+            <pre
+              className={cn(
+                'max-h-64 overflow-auto rounded p-2 text-xs font-mono md:max-h-96',
+                ok
+                  ? 'bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-gray-200'
+                  : 'bg-red-50 dark:bg-red-950/30 text-red-800 dark:text-red-300',
+              )}
+            >
+              {cleaned}
+            </pre>
           )}
-        >
-          {cleaned}
-        </pre>
+          <ResultImages images={images} />
+        </div>
       )
     }
   }

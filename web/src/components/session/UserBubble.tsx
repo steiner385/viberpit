@@ -1,6 +1,6 @@
 import { cn } from '@/lib/utils'
+import type { ImageRef } from '@/lib/toolContent'
 
-interface ImageRef { url: string; mime: string; name: string }
 interface Props { text?: string; images?: ImageRef[] }
 
 export function UserBubble({ text, images }: Props) {
