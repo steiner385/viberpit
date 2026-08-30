@@ -300,7 +300,6 @@ class CicdDoctorLoop:
         from .cicd.findings import (check_transition_findings, flaky_test_findings,
                                     missing_junit_finding)
         from .cicd.gates import check_verdict
-        from .cicd.stats import check_stats, flake_pcts_from_sha_counts
         from .cicd.types import GateThresholds, JobObs
         from .cicd.waste import workflow_waste_findings
 
@@ -350,21 +349,41 @@ class CicdDoctorLoop:
                 select(func.count()).select_from(CiRun)
                 .where(CiRun.repo == repo, CiRun.created_ts >= since_ts))).scalar_one()
         default_branch, required = await self._fetch_repo_meta(repo)
-        job_obs = [JobObs(check=r.name or "", head_sha=r.head_sha or "",
-                          head_branch=r.head_branch or "", conclusion=r.conclusion or "",
-                          duration_s=r.duration_s or 0.0, created_ts=r.created_ts or 0.0)
-                   for r in job_rows]
-        # A representative failure message per test (most recent wins) — attached to
-        # the flaky-test finding so it points at a concrete failure, not just a %.
-        msg_by_test = {r.test_id or "": r.message for r in msg_rows}
-        flake_pcts = flake_pcts_from_sha_counts(
-            [(r[0] or "", int(r[1] or 0), int(r[2] or 0)) for r in flake_rows])
-        stats = check_stats(job_obs, default_branch=default_branch, now_ts=now,
-                            demote_window_days=th.demote_window_days)
-        verdicts = {c: v for c, s in stats.items()
-                    if (v := check_verdict(s, is_required=c in required, th=th))}
-        fresh = flaky_test_findings(repo, flake_pcts, th=th, messages=msg_by_test)
-        fresh += check_transition_findings(repo, verdicts)
+
+        # The pure-Python folds below run in ONE worker thread, not on the loop.
+        # #791 moved the CiTestResult aggregation into SQL, but job_rows stayed
+        # materialized: check_stats over a 90-day CiJob window (292k-row table)
+        # is tens of seconds of uninterruptible CPU, and the stall tracer caught
+        # the loop wedged exactly here (issue #827 — 37.7s/23.1s/21.5s/20.5s in
+        # one day, each freezing every edge request and session socket). All
+        # inputs are detached row tuples and the fold is side-effect-free, so a
+        # thread is safe by construction. Re-binding through the module (not the
+        # function refs imported above) keeps monkeypatched seams honest — the
+        # off-loop regression test spies via the module attribute.
+        def _fold():
+            from .cicd import stats as _stats
+            job_obs = [JobObs(check=r.name or "", head_sha=r.head_sha or "",
+                              head_branch=r.head_branch or "",
+                              conclusion=r.conclusion or "",
+                              duration_s=r.duration_s or 0.0,
+                              created_ts=r.created_ts or 0.0)
+                       for r in job_rows]
+            # A representative failure message per test (most recent wins) —
+            # attached to the flaky-test finding so it points at a concrete
+            # failure, not just a %.
+            msg_by_test = {r.test_id or "": r.message for r in msg_rows}
+            flake_pcts = _stats.flake_pcts_from_sha_counts(
+                [(r[0] or "", int(r[1] or 0), int(r[2] or 0)) for r in flake_rows])
+            stats = _stats.check_stats(job_obs, default_branch=default_branch,
+                                       now_ts=now,
+                                       demote_window_days=th.demote_window_days)
+            verdicts = {c: v for c, s in stats.items()
+                        if (v := check_verdict(s, is_required=c in required, th=th))}
+            out = flaky_test_findings(repo, flake_pcts, th=th, messages=msg_by_test)
+            out += check_transition_findings(repo, verdicts)
+            return out
+
+        fresh = await asyncio.to_thread(_fold)
         for path, text in (await self._fetch_workflows(repo, default_branch)).items():
             fresh += workflow_waste_findings(repo, path, text)
         if run_count and not any_test_row:
