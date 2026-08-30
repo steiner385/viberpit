@@ -357,6 +357,16 @@ class SessionOrchestrator:
         # in-memory by design — a fresh deploy rebuilds it; a crash loses it exactly
         # as the deploy controller loses its own frozen 'failed' list.
         self._resume_recovery: dict[str, int] = {}
+        # Startup health report (2026-08-29): a failed rehydrate() used to vanish into
+        # a log line while the daemon looked healthy with zero sessions. Boot steps
+        # record their outcome here; /api/daemon/health exposes it (RPC-bridged in
+        # remote mode). In-memory by design — it describes THIS process's boot.
+        from datetime import datetime as _dt, timezone as _tz
+        self._startup_report: dict = {
+            "startedAt": _dt.now(_tz.utc).isoformat(),
+            "rehydrated": None, "rehydrateError": None,
+            "rearmed": None, "rearmError": None,
+        }
         # Detached-session next-prompt suggestions: session_id -> (transcript mtime, items).
         # Generated from the on-disk transcript without resuming the driver (see
         # latest_suggestions / _generate_detached_suggestions). Cached even when empty so
@@ -1482,6 +1492,15 @@ class SessionOrchestrator:
         from server.sessions.status import ACTIVITY_STATUSES
         rec = self._records.get(session_id)
         if rec is not None and rec.status == "ended":
+            return
+        # A turn failure surfacing during teardown is our own shutdown dropping the
+        # turn (deploy / watchdog restart / systemctl stop), not a real failure.
+        # Persisting needs_attention here brands the session "Turn failed" across
+        # the restart; leaving the mid-turn row lets the next boot's rehydrate()
+        # normalize it to idle + interruptedByRestart (issue #434). Terminal writes
+        # (ended) and every other status still persist during shutdown.
+        if status == "needs_attention" and self._shutting_down:
+            log.info("persist.skip_needs_attention_during_shutdown session=%s", session_id)
             return
         # Overlay: a turn that finished (`done`) but left the agent parked on an external
         # event — an open background task or an armed self-scheduled wakeup — is "Waiting…",
@@ -4381,6 +4400,7 @@ class SessionOrchestrator:
                     )
         log.info("rehydrate: %d session(s) restored (%d branch backfilled, %d status healed)",
                  added, len(backfilled), len(healed))
+        self._startup_note("rehydrated", added)
         # Reconcile 'queued' rows with no session_queue entry BEFORE draining, so
         # the drain never has to reach a row it structurally cannot see, and a
         # reconciled row (now 'ended') is reflected in the very same pass. Reuse
@@ -4407,6 +4427,8 @@ class SessionOrchestrator:
         pending = [(r.id, r.pending_rearm, r.pending_prompt) for r in rows
                    if (r.pending_rearm or r.pending_prompt) and r.id not in self._rearmed]
         if not pending:
+            # Idempotent re-calls must not reset a prior boot's count to 0.
+            self._startup_note("rearmed", self.startup_report().get("rearmed") or 0)
             return 0
         sem = asyncio.Semaphore(int(os.environ.get("CCSWITCH_REARM_CONCURRENCY", "3")))
 
@@ -4423,6 +4445,7 @@ class SessionOrchestrator:
             *(_one(sid, snap, prompt) for sid, snap, prompt in pending))
         n = sum(1 for ok in results if ok)
         log.info("rearm: re-armed %d/%d session(s)", n, len(pending))
+        self._startup_note("rearmed", (self.startup_report().get("rearmed") or 0) + n)
         return n
 
     async def _rearm_session(self, sid: str, snap: list | None,
@@ -7843,6 +7866,26 @@ class SessionOrchestrator:
         m = RESUME_RECOVERY_MAX_ATTEMPTS
         return {"failed": [s for s, a in self._resume_recovery.items() if a < m],
                 "gaveUp": [s for s, a in self._resume_recovery.items() if a >= m]}
+
+    def startup_report(self) -> dict:
+        """This process's boot outcomes (rehydrate/rearm counts + any step error).
+
+        Surfaced by /api/daemon/health so a boot where rehydrate() failed — which
+        used to be a single swallowed log line while the dashboard showed zero
+        sessions — is observable. Counts are None until the step has run."""
+        return dict(getattr(self, "_startup_report", None) or {})
+
+    def note_startup_failure(self, step: str, exc: BaseException) -> None:
+        """Record a boot-step failure (called by the lifespans that catch them)."""
+        self._startup_note(f"{step}Error", f"{type(exc).__name__}: {exc}"[:500])
+
+    def _startup_note(self, key: str, value) -> None:
+        """Write one startup-report entry. getattr-guarded because rehydrate-shaped
+        tests build orchestrators via SessionOrchestrator.__new__ (no __init__, so
+        no _startup_report) — recording is observability, never load-bearing."""
+        rep = getattr(self, "_startup_report", None)
+        if rep is not None:
+            rep[key] = value
 
 
 def _resolve_git_common_dir(path: str) -> str | None:

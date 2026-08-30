@@ -148,6 +148,19 @@ export function useConfig() {
   })
 }
 
+// Self-heal for the New Session repo dropdown: a fetch that fails while the
+// edge/daemon is still booting after a restart used to strand the dropdown on
+// "— could not load repos —" until a manual reload. Poll ONLY while errored —
+// a healthy query keeps the ordinary staleTime/refetch-on-focus behavior, so
+// this can never turn into a background request storm.
+export const REPOS_ERROR_REFETCH_MS = 15_000
+
+export function reposRefetchInterval(
+  query: { state: { status: 'pending' | 'error' | 'success' } },
+): number | false {
+  return query.state.status === 'error' ? REPOS_ERROR_REFETCH_MS : false
+}
+
 export function useGithubRepos() {
   return useQuery<GithubRepo[]>({
     queryKey: QK.githubRepos,
@@ -157,6 +170,7 @@ export function useGithubRepos() {
     // bound retries anyway (default is 3) so a genuine error can't compound across
     // refetch-on-focus and multiple tabs into a request storm.
     retry: 1,
+    refetchInterval: reposRefetchInterval,
   })
 }
 
