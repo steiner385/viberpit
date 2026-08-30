@@ -252,8 +252,16 @@ async def _run_replay_and_complete(orchestrator, enqueue: "Callable[[dict], None
     return events
 
 
-def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
-    """Return an APIRouter containing the /ws endpoint wired to *orchestrator*."""
+def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
+    """Return an APIRouter whose /ws endpoint resolves the LIVE app.state.sessions.
+
+    *default_orchestrator* is only a fallback: in remote mode the lifespan promotes
+    ``app.state.sessions`` from the provisional ``RemoteOrchestrator`` to a
+    ``FleetOrchestrator`` *after* this factory runs, so a captured build-time
+    reference would pin every attach (ring_covers/ring_tail/subscribe/ensure_driver)
+    to the primary host and bypass fleet dispatch. The endpoint therefore reads the
+    current orchestrator from the socket's app at connect time.
+    """
     router = APIRouter()
 
     @router.websocket("/ws")
@@ -263,6 +271,10 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
     ) -> None:
         await websocket.accept()
         log.debug("ws.connect identity=%s", identity)
+
+        # Live orchestrator (see build_ws_router docstring). Falls back to the
+        # build-time reference only if app.state has no sessions bound yet.
+        orchestrator = getattr(websocket.app.state, "sessions", None) or default_orchestrator
 
         # Single outbound queue of already-wire-format dicts, drained by the batcher.
         out_q: asyncio.Queue[dict] = asyncio.Queue()
