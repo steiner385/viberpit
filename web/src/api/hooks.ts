@@ -19,6 +19,10 @@ import type {
   SessionPreset, PromptTemplate, PermissionProfile, AssessResponse,
 } from './types'
 import { fetchDeployStatus, startDeploy } from './deploy'
+import {
+  fetchInitiatives, advanceInitiative, createInitiative,
+  type Initiative, type CreateInitiativeInput,
+} from './sdlc'
 import type { SessionEvent } from '@/session/events'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { getPendingSessions, subscribePending, addPendingSession, removePendingSession } from '@/lib/pendingSessions'
@@ -57,6 +61,8 @@ export const QK = {
   libraryMcp: ['library', 'mcp'] as const,
   libraryContent: (kind: string, id: string, plugin?: string) =>
     ['library', 'content', kind, id, plugin ?? null] as const,
+  initiatives: ['sdlc', 'initiatives'] as const,
+  initiative: (slug: string) => ['sdlc', 'initiative', slug] as const,
 }
 
 export function useModels() {
@@ -1127,5 +1133,51 @@ export function useDeletePermissionProfile() {
   return useMutation({
     mutationFn: (id: string) => api.del(`/permission-profiles/${id}`),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['permission-profiles'] }),
+  })
+}
+
+// ── SDLC initiatives (issues #802/#803) ──────────────────────────────────────
+
+/** The /api/sdlc endpoints return `detail` as an object (`{error, message}`) on
+ *  4xx, not a bare string, so pull the human-readable `message` when present and
+ *  fall back to a static line otherwise (covers 404 `{error}` and 422 lists). */
+function initiativeErrorMessage(e: ApiRequestError, fallback: string): string {
+  const detail = e.body?.detail
+  if (typeof detail === 'string') return detail
+  const msg = (detail as { message?: unknown } | null | undefined)?.message
+  return typeof msg === 'string' ? msg : fallback
+}
+
+/** The Initiative board's list. Each row already carries its artifact chain, so
+ *  the board renders N tracks from one call. Polled for baseline liveness; the
+ *  board also nudges an invalidation on `/ws` status frames (useInitiativesLive). */
+export function useInitiatives() {
+  return useQuery<Initiative[]>({
+    queryKey: QK.initiatives,
+    queryFn: fetchInitiatives,
+    staleTime: 5_000,
+    refetchInterval: 15_000,
+  })
+}
+
+/** The human-gate tap. On success, refresh the list so the moved node re-renders. */
+export function useAdvanceInitiative() {
+  const qc = useQueryClient()
+  return useMutation<Initiative, ApiRequestError, string>({
+    mutationFn: (slug: string) => advanceInitiative(slug),
+    onSuccess: (updated) => {
+      void qc.invalidateQueries({ queryKey: QK.initiatives })
+      void qc.invalidateQueries({ queryKey: QK.initiative(updated.slug) })
+    },
+    onError: (e) => toast.error(initiativeErrorMessage(e, 'Could not advance initiative')),
+  })
+}
+
+export function useCreateInitiative() {
+  const qc = useQueryClient()
+  return useMutation<Initiative, ApiRequestError, CreateInitiativeInput>({
+    mutationFn: (input) => createInitiative(input),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: QK.initiatives }),
+    onError: (e) => toast.error(initiativeErrorMessage(e, 'Could not create initiative')),
   })
 }
