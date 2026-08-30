@@ -125,6 +125,17 @@ def _next_stage(stage: str) -> str | None:
     return STAGE_SEQUENCE[idx + 1]
 
 
+def advance_stage(stage: str) -> str:
+    """Successor stage for the human-gate advance tap; ``done`` is absorbing.
+
+    Raises ``ValueError`` on an unknown stage so a corrupt row surfaces loudly
+    instead of silently re-entering the sequence."""
+    if stage not in STAGE_SEQUENCE:
+        raise ValueError(f"unknown stage {stage!r}")
+    nxt = _next_stage(stage)
+    return nxt if nxt is not None else "done"
+
+
 def _enter_stage(stage: str, initiative: InitiativeView) -> StageAction:
     """The action to take on *first entering* ``stage`` with no artifact yet.
     Used both for the current stage and (auto-advance) for the next one."""
