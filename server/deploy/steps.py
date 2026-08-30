@@ -344,6 +344,25 @@ def restart_units(*, daemon_changed: bool, daemon_enabled: bool,
                 run(["ssh", daemon_host, "git", "-C", daemon_repo, "merge", "--ff-only",
                      target_sha or "origin/master"],
                     check=True, capture_output=True)
+            # Flush the checkout to disk BEFORE restarting into it. ext4 mounts with
+            # delayed allocation by default (rocky: `ext4 rw,relatime`), so a file git
+            # has just rewritten has its new SIZE journaled while its data blocks sit
+            # unallocated in page cache for tens of seconds. A host that dies inside
+            # that window brings the file back as ZERO BYTES.
+            #
+            # 2026-08-29: this step rewrote six files on rocky at 21:29:42, rocky
+            # hard-reset at 21:30:02 (journal ends mid-line, no shutdown sequence), and
+            # ext4 replay left server/sessions/orchestrator.py — 7,864 lines — empty. An
+            # empty module still imports, so the daemon died on `ImportError: cannot
+            # import name 'SessionOrchestrator'` and crash-looped 57 times. systemd's
+            # Restart=always can never recover that: every restart re-reads the same
+            # empty file, and the health watchdog stands down precisely because it
+            # expects systemd to own recovery. Production was down until the checkout
+            # was restored by hand.
+            #
+            # check=True: restarting into an unflushed checkout is the exact failure
+            # this prevents, so a sync that does not succeed must abort the deploy.
+            run(["ssh", daemon_host, "sync"], check=True, capture_output=True)
             run(["ssh", daemon_host, "sudo", "systemctl", "restart", "ccswitch-daemon.service"],
                 check=True, capture_output=True)
             units.append("ccswitch-daemon.service")
