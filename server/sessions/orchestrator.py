@@ -4400,7 +4400,7 @@ class SessionOrchestrator:
                     )
         log.info("rehydrate: %d session(s) restored (%d branch backfilled, %d status healed)",
                  added, len(backfilled), len(healed))
-        self._startup_report["rehydrated"] = added
+        self._startup_note("rehydrated", added)
         # Reconcile 'queued' rows with no session_queue entry BEFORE draining, so
         # the drain never has to reach a row it structurally cannot see, and a
         # reconciled row (now 'ended') is reflected in the very same pass. Reuse
@@ -4428,7 +4428,7 @@ class SessionOrchestrator:
                    if (r.pending_rearm or r.pending_prompt) and r.id not in self._rearmed]
         if not pending:
             # Idempotent re-calls must not reset a prior boot's count to 0.
-            self._startup_report["rearmed"] = self._startup_report["rearmed"] or 0
+            self._startup_note("rearmed", self.startup_report().get("rearmed") or 0)
             return 0
         sem = asyncio.Semaphore(int(os.environ.get("CCSWITCH_REARM_CONCURRENCY", "3")))
 
@@ -4445,7 +4445,7 @@ class SessionOrchestrator:
             *(_one(sid, snap, prompt) for sid, snap, prompt in pending))
         n = sum(1 for ok in results if ok)
         log.info("rearm: re-armed %d/%d session(s)", n, len(pending))
-        self._startup_report["rearmed"] = (self._startup_report["rearmed"] or 0) + n
+        self._startup_note("rearmed", (self.startup_report().get("rearmed") or 0) + n)
         return n
 
     async def _rearm_session(self, sid: str, snap: list | None,
@@ -7873,11 +7873,19 @@ class SessionOrchestrator:
         Surfaced by /api/daemon/health so a boot where rehydrate() failed — which
         used to be a single swallowed log line while the dashboard showed zero
         sessions — is observable. Counts are None until the step has run."""
-        return dict(self._startup_report)
+        return dict(getattr(self, "_startup_report", None) or {})
 
     def note_startup_failure(self, step: str, exc: BaseException) -> None:
         """Record a boot-step failure (called by the lifespans that catch them)."""
-        self._startup_report[f"{step}Error"] = f"{type(exc).__name__}: {exc}"[:500]
+        self._startup_note(f"{step}Error", f"{type(exc).__name__}: {exc}"[:500])
+
+    def _startup_note(self, key: str, value) -> None:
+        """Write one startup-report entry. getattr-guarded because rehydrate-shaped
+        tests build orchestrators via SessionOrchestrator.__new__ (no __init__, so
+        no _startup_report) — recording is observability, never load-bearing."""
+        rep = getattr(self, "_startup_report", None)
+        if rep is not None:
+            rep[key] = value
 
 
 def _resolve_git_common_dir(path: str) -> str | None:
