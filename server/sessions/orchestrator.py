@@ -1075,8 +1075,25 @@ class SessionOrchestrator:
                 try:
                     await self._spawn_session(sid, preexisting_row=True, **params)
                     started += 1
-                except Exception:
-                    log.warning("session_queue.start_failed id=%s", sid, exc_info=True)
+                except Exception as exc:
+                    # A queued session can lose a race with branch auto-delete on
+                    # merge (#836): its PR lands between enqueue and spawn, the
+                    # remote deletes the head branch, and create_worktree finds no
+                    # ref. That is the pipeline succeeding, not a failure — one
+                    # INFO line and an 'obsolete' note instead of a traceback.
+                    obsolete_pr = self._queued_spawn_merged_pr(exc, params)
+                    if obsolete_pr is not None:
+                        log.info(
+                            "session_queue.obsolete_branch_merged id=%s branch=%s "
+                            "pr=#%d — branch auto-deleted when its PR merged "
+                            "before spawn; ending queued session as obsolete",
+                            sid, params.get("branch"), obsolete_pr.number)
+                    else:
+                        log.warning("session_queue.start_failed id=%s", sid,
+                                    exc_info=True)
+                    resolution = (
+                        f"obsolete: PR #{obsolete_pr.number} merged before start"
+                        if obsolete_pr is not None else None)
                     # Mark the session ended so it does not occupy a cap slot.
                     # Re-seed a minimal in-memory record if _spawn_session raised
                     # before creating one, then persist the status to the DB row
@@ -1103,15 +1120,54 @@ class SessionOrchestrator:
                         )
                     else:
                         self._records[sid].status = "ended"
+                    if resolution is not None:
+                        self._records[sid].pr_resolution = resolution
+                        self._records[sid].pr_resolution_source = "queue-drain"
                     # Persist to DB — the row still exists (was 'queued'); update it.
+                    values: dict = {"status": "ended"}
+                    if resolution is not None:
+                        values["pr_resolution"] = resolution
+                        values["pr_resolution_source"] = "queue-drain"
                     async with db_session() as db:
                         from sqlalchemy import update as sa_update
                         await db.execute(
                             sa_update(DbSession)
                             .where(DbSession.id == sid)
-                            .values(status="ended")
+                            .values(**values)
                         )
         return started
+
+    def _queued_spawn_merged_pr(self, exc: Exception,
+                                params: dict) -> "PullRequestInfo | None":
+        """The merged PR that makes a queue-spawn failure benign, or None (#836).
+
+        Benign means BOTH: the failure's root cause is an unresolvable branch
+        ref (worktrees.BranchRefUnresolvableError — the ref exists nowhere,
+        typical of a PR head branch auto-deleted on merge between enqueue and
+        spawn), AND the daemon's PR caches show a *merged* PR for the queued
+        (repo, branch). Checked against the per-branch poller cache first
+        (it retains merged state — that's how _pr_pairs prunes terminal pairs),
+        then the population cache (which keeps recently merged PRs). Anything
+        else returns None so the caller keeps the real error path: an
+        unresolvable ref with no merged PR behind it is a genuine problem.
+        """
+        if not isinstance(exc, BranchSwitchError) or not isinstance(
+                exc.__cause__, worktrees.BranchRefUnresolvableError):
+            return None
+        repo, branch = params.get("repo"), params.get("branch")
+        if not repo or not branch:
+            return None
+        # Defensive getattr: minimally-constructed orchestrators (some tests
+        # build via __new__) may lack the pollers — mirrors _pr_pairs.
+        info: PullRequestInfo | None = None
+        poller = getattr(self, "_pr_poller", None)
+        if poller is not None:
+            info = poller.cached(repo, branch)
+        if info is None and getattr(self, "_pr_population", None) is not None:
+            info = self._pr_population_pr(repo, branch)
+        if info is not None and info.state == "merged":
+            return info
+        return None
 
     async def _reconcile_orphan_queued(self, candidate_rows=None) -> int:
         """Reconcile 'queued' session rows with no matching session_queue entry.

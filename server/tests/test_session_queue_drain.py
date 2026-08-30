@@ -171,6 +171,114 @@ def test_start_failure_ends_session_and_continues(tmp_path):
     asyncio.run(run())
 
 
+def _raise_branch_gone(branch: str):
+    """Raise BranchSwitchError with a BranchRefUnresolvableError cause, exactly
+    as _spawn_session produces when create_worktree finds no ref (issue #836)."""
+    from ccswitch import worktrees
+    from server.sessions.orchestrator import BranchSwitchError
+    try:
+        raise worktrees.BranchRefUnresolvableError(
+            f"git worktree add failed for {branch!r}: "
+            f"fatal: invalid reference: {branch}")
+    except worktrees.BranchRefUnresolvableError as exc:
+        raise BranchSwitchError(str(exc)) from exc
+
+
+def test_spawn_race_with_merged_pr_ends_benignly(tmp_path, caplog):
+    """Queued session whose branch was auto-deleted when its PR merged (#836):
+    the spawn failure is a benign completion — one INFO line, no traceback,
+    ended with an 'obsolete' pr_resolution note."""
+    import logging
+
+    from server.github.pr_status import PullRequestInfo
+
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'd6.db'}"
+        orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=1)
+        try:
+            a = await orch.create_session("one")
+            gone = await orch.create_session(
+                "gone", cwd=str(tmp_path), repo="steiner385/x", branch="feat-1")
+            # The daemon's per-branch PR cache knows feat-1's PR merged.
+            merged = PullRequestInfo(
+                number=832, url="https://github.com/steiner385/x/pull/832",
+                state="merged", checks="passing", title="landed", merged=True)
+            orch._pr_poller.cached = (  # type: ignore[method-assign]
+                lambda repo, branch: merged
+                if (repo, branch) == ("steiner385/x", "feat-1") else None)
+
+            real = orch._spawn_session
+            async def flaky(session_id, **kw):
+                if session_id == gone.id:
+                    _raise_branch_gone("feat-1")
+                return await real(session_id, **kw)
+            orch._spawn_session = flaky
+
+            with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
+                await orch.close_session(a.id)
+                await asyncio.sleep(0)
+                await orch._maybe_start_queued()
+
+            rec = orch._records[gone.id]
+            assert rec.status == "ended"
+            assert rec.pr_resolution == "obsolete: PR #832 merged before start"
+            assert rec.pr_resolution_source == "queue-drain"
+            # Persisted, not just in-memory.
+            from sqlalchemy import select as sa_select
+            from server.db import db_session
+            from server.db.models import Session as DbSession
+            async with db_session() as db:
+                row = (await db.execute(
+                    sa_select(DbSession).where(DbSession.id == gone.id)
+                )).scalar_one()
+            assert row.status == "ended"
+            assert row.pr_resolution == "obsolete: PR #832 merged before start"
+            # Benign: one INFO line, never the traceback-carrying warning.
+            assert "session_queue.start_failed" not in caplog.text
+            assert "session_queue.obsolete_branch_merged" in caplog.text
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
+def test_spawn_unresolvable_ref_without_merged_pr_keeps_error_path(tmp_path, caplog):
+    """An unresolvable ref with NO merged PR behind it is a real problem —
+    today's warning (with traceback) and plain 'ended' must be preserved."""
+    import logging
+
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'd7.db'}"
+        orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=1)
+        try:
+            a = await orch.create_session("one")
+            bad = await orch.create_session(
+                "bad", cwd=str(tmp_path), repo="steiner385/x", branch="feat-2")
+            orch._pr_poller.cached = lambda repo, branch: None  # type: ignore[method-assign]
+
+            real = orch._spawn_session
+            async def flaky(session_id, **kw):
+                if session_id == bad.id:
+                    _raise_branch_gone("feat-2")
+                return await real(session_id, **kw)
+            orch._spawn_session = flaky
+
+            with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
+                await orch.close_session(a.id)
+                await asyncio.sleep(0)
+                await orch._maybe_start_queued()
+
+            rec = orch._records[bad.id]
+            assert rec.status == "ended"
+            assert rec.pr_resolution is None
+            assert "session_queue.start_failed" in caplog.text
+            assert "session_queue.obsolete_branch_merged" not in caplog.text
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
 def test_rehydrate_preserves_queued_and_drains(tmp_path):
     async def run():
         db_url = f"sqlite+aiosqlite:///{tmp_path / 'd3.db'}"
