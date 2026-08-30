@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import functools
 import logging
 import os
@@ -226,6 +227,13 @@ _STUCK_SESSION_SWEEP_INTERVAL: float = 300.0
 # effect even with no new archive event (the on-archive path covers the fresh-archive case).
 _ARCHIVE_LIMIT_SWEEP_INTERVAL: float = 300.0
 
+# How many consecutive permanent_delete failures for the SAME archived session before
+# the cap-purge gives up on it and skips it in future sweeps (#825). Without this a
+# single un-deletable directory (e.g. a stale sshfs handle, or a containment-guard
+# rejection) is re-selected as "oldest" forever and disk is never reclaimed from any
+# other archived session — observed on rocky as 72 identical failures in 24h.
+_ARCHIVE_PURGE_MAX_STRIKES: int = 3
+
 # Recurring-session dispatch (#603): how often the scheduler evaluates cron-
 # scheduled Automation rows. Sub-minute so a cron minute fires within a tick of
 # its due time; the persisted last_fired_at watermark makes the fire idempotent.
@@ -236,13 +244,12 @@ _RECURRING_TICK_INTERVAL: float = 30.0
 # that a legitimately large transcript still renders.
 #
 # Scope: this ceiling bounds ONLY the replay_window() call — sub-agent sidecar
-# discovery and everything else that happens inside it. It does NOT cover
-# resolve_transcript_path(), which runs before this wait_for and can itself
-# block the event loop via _find_transcript's unbounded glob.glob() fallback
-# (that fallback runs synchronously on the loop, so wrapping it in wait_for
-# would not help — wait_for can cancel a coroutine, not interrupt synchronous
-# work already running). Bounding transcript-path resolution is tracked as a
-# separate task.
+# discovery and everything else that happens inside it. resolve_transcript_path()
+# runs BEFORE this wait_for and does its own stat/glob (_find_transcript) over the
+# account's projects tree — on sshfs that could itself block the loop for seconds,
+# and wait_for can't help (it cancels a coroutine, not synchronous work already on
+# the loop). As of #826 that resolution is offloaded via asyncio.to_thread, so both
+# the path lookup and the replay now run off the event loop.
 #
 # minimum=0.1: a 0 (or negative) override would make wait_for fire immediately and
 # turn EVERY transcript into an empty one — fall back to the default instead.
@@ -419,6 +426,13 @@ class SessionOrchestrator:
         self._pending_initial_prompt: dict[str, str] = {}
         # Deferred attachment ids for the initial prompt, sent on first WS attach.
         self._pending_initial_attachment_ids: dict[str, list[str]] = {}
+        # Cap-purge poison tracking (#825): consecutive permanent_delete failures per
+        # session, and the set that has crossed _ARCHIVE_PURGE_MAX_STRIKES and is now
+        # skipped during selection so one un-deletable archive can't wedge the whole
+        # cap. In-memory by design — a daemon restart re-tries a session that may since
+        # have become deletable (e.g. the sshfs mount recovered).
+        self._archive_purge_strikes: dict[str, int] = {}
+        self._archive_purge_poisoned: set[str] = set()
 
         # Build a live-session-aware usage_fn: when an account has a live session
         # the SDK owns its token family, so the poller must not independently
@@ -7254,23 +7268,52 @@ class SessionOrchestrator:
 
         async with db_session() as db:
             order_key = sa_func.coalesce(DbSession.archived_at, DbSession.created_at)
-            ids = list((await db.execute(
+            stmt = (
                 sa_select(DbSession.id)
                 .where(DbSession.status == "archived")
                 .order_by(order_key.asc())
                 .limit(count)
-            )).scalars().all())
+            )
+            # Skip sessions that have already exhausted their delete strikes, so one
+            # un-deletable oldest archive (stale sshfs handle, containment rejection)
+            # can't monopolise every selection and starve disk reclamation (#825).
+            if self._archive_purge_poisoned:
+                stmt = stmt.where(DbSession.id.notin_(self._archive_purge_poisoned))
+            ids = list((await db.execute(stmt)).scalars().all())
 
         deleted: list[str] = []
         for sid in ids:
             try:
-                if await self.permanent_delete(sid):
-                    deleted.append(sid)
+                ok = await self.permanent_delete(sid)
             except Exception:
                 log.exception("archive_limit: permanent_delete failed id=%s", sid)
+                self._note_purge_failure(sid)
+                continue
+            if ok:
+                self._archive_purge_strikes.pop(sid, None)  # clean delete — reset strikes
+                deleted.append(sid)
+            else:
+                # permanent_delete returned False (e.g. containment guard kept the row):
+                # a soft failure that still re-selects the same session next sweep.
+                self._note_purge_failure(sid)
         if deleted:
             log.info("archive_limit: purged %d oldest archived session(s)", len(deleted))
         return deleted
+
+    def _note_purge_failure(self, sid: str) -> None:
+        """Record a failed permanent_delete for *sid*; poison it (skip in future
+        selections) once it crosses _ARCHIVE_PURGE_MAX_STRIKES, logging one visible
+        WARNING at the transition so the stuck session is diagnosable (#825)."""
+        strikes = self._archive_purge_strikes.get(sid, 0) + 1
+        self._archive_purge_strikes[sid] = strikes
+        if strikes >= _ARCHIVE_PURGE_MAX_STRIKES and sid not in self._archive_purge_poisoned:
+            self._archive_purge_poisoned.add(sid)
+            log.warning(
+                "archive_limit: session id=%s failed permanent_delete %d times — "
+                "marking poisoned and skipping it in future cap-purges so disk can still "
+                "be reclaimed from other archived sessions; investigate its on-disk dir",
+                sid, strikes,
+            )
 
     async def _enforce_archive_limit(self) -> int:
         """Purge oldest archived sessions until the count is within
@@ -7598,7 +7641,8 @@ class SessionOrchestrator:
         if stored_root is None and cwd_path is not None and cwd_path.exists():
             # New-style archive: the worktree is still at cwd (same NULL-root +
             # present-cwd marker as unarchive).
-            await self._delete_worktree_at_cwd(session_id, cwd_path)
+            if not await self._delete_worktree_at_cwd(session_id, cwd_path):
+                return False
         else:
             # Legacy archive (moved into an archive home) — including ancient
             # pre-archive_root rows, whose NULL root resolves to the current home.
@@ -7619,8 +7663,12 @@ class SessionOrchestrator:
         log.info("session.permanent_delete id=%s db row removed", session_id)
         return True
 
-    async def _delete_worktree_at_cwd(self, session_id: str, cwd_path: Path) -> None:
+    async def _delete_worktree_at_cwd(self, session_id: str, cwd_path: Path) -> bool:
         """Delete a new-style archived session's worktree (still at its cwd).
+
+        Returns True when it is safe for the caller to drop the DB row, False when the
+        directory could not be removed and the row must be KEPT so a later sweep retries
+        (e.g. a stale sshfs handle that recovers on remount — #825).
 
         Containment guard: sessions only ever run in ccswitch-created worktrees or
         scratch dirs (both under a ``.ccswitch`` segment — see the create-session
@@ -7635,13 +7683,21 @@ class SessionOrchestrator:
                 "directory — leaving it in place, deleting the row only",
                 session_id, cwd_path,
             )
-            return
+            return True  # nothing we should delete on disk; the row can still go
         # Resolve the shared clone BEFORE the delete, while the worktree is still a
         # valid git dir, so we can scope-deregister exactly this path afterward
         # (never a global prune — issue #177). Off the event loop: git subprocess
         # startup can spike under load.
         repo_top = await asyncio.to_thread(_resolve_git_common_dir, str(cwd_path))
-        await asyncio.to_thread(shutil.rmtree, str(cwd_path), True)
+        err = await asyncio.to_thread(_rmtree_best_effort, str(cwd_path))
+        if err:
+            # Keep the row: deleting it now would strand the worktree on disk (the
+            # 2026-08-21 leak shape). The purge's strike counter retries and eventually
+            # skips it, so one wedged mount can't stall reclamation of other sessions.
+            log.warning("session.permanent_delete id=%s worktree rmtree incomplete at %s: %s "
+                        "— keeping the row to retry on a later sweep",
+                        session_id, cwd_path, err)
+            return False
         if repo_top:
             try:
                 await asyncio.to_thread(
@@ -7652,6 +7708,7 @@ class SessionOrchestrator:
                           session_id, exc_info=True)
         log.info("session.permanent_delete id=%s worktree removed at %s",
                  session_id, cwd_path)
+        return True
 
     async def _delete_legacy_archive_dir(self, session_id: str,
                                          stored_root: str | None) -> bool:
@@ -7676,7 +7733,14 @@ class SessionOrchestrator:
             return False
 
         if candidate.exists():
-            await asyncio.to_thread(shutil.rmtree, str(candidate), True)
+            err = await asyncio.to_thread(_rmtree_best_effort, str(candidate))
+            if err:
+                # Keep the row so a later sweep retries once the mount recovers, rather
+                # than deleting the row and stranding the archive dir on disk (#825).
+                log.warning("session.permanent_delete id=%s archive rmtree incomplete at %s: %s "
+                            "— keeping the row to retry on a later sweep",
+                            session_id, candidate, err)
+                return False
             log.info("session.permanent_delete id=%s archive_path=%s", session_id, candidate)
         else:
             # Never let this pass silently. This used to resolve against the CURRENT
@@ -7701,7 +7765,14 @@ class SessionOrchestrator:
         """
         from sqlalchemy import select as sa_select
 
-        path = self.transcript_path(session_id)
+        # transcript_path()/_find_transcript() stat + glob the account's projects tree,
+        # which on the production host is an sshfs mount — a stalled mount turns this
+        # into a multi-second (observed: 20s) block of the whole daemon loop (#826).
+        # asyncio.wait_for in transcript_window bounds only the threaded replay AFTER
+        # this, and can't interrupt synchronous work already running on the loop, so the
+        # resolution itself must run off the loop. transcript_path only reads _drivers/
+        # _records via .get() (no mutation, GIL-safe), so it is thread-safe to offload.
+        path = await asyncio.to_thread(self.transcript_path, session_id)
         if path is None:
             # For archived sessions the record is not in _records; load from DB.
             async with db_session() as db:
@@ -7709,7 +7780,8 @@ class SessionOrchestrator:
                     sa_select(DbSession).where(DbSession.id == session_id)
                 )).scalars().first()
             if row and row.claude_session_id:
-                path = self._find_transcript(
+                path = await asyncio.to_thread(
+                    self._find_transcript,
                     str(account_cfg_dir(row.account_name)), row.claude_session_id,
                     getattr(row, "cwd", None),
                 )
@@ -7886,6 +7958,34 @@ class SessionOrchestrator:
         rep = getattr(self, "_startup_report", None)
         if rep is not None:
             rep[key] = value
+
+
+def _rmtree_best_effort(path: str) -> str | None:
+    """Recursively delete *path*, guaranteeing the call never raises.
+
+    ``shutil.rmtree(path, ignore_errors=True)`` is NOT sufficient on sshfs: CPython
+    3.12's ``_rmtree_safe_fd`` calls ``os.fstat(dirfd)`` (and ``os.open``) OUTSIDE the
+    region routed through the error handler, so an ``ESTALE`` (Errno 116) stale-handle
+    error escapes anyway. On the production host the archive roots are sshfs mounts
+    whose handles go stale on every reconnect, so this escaped and wedged the cap-purge
+    (#825). Wrapping the whole call swallows that residual escape: a stale handle
+    degrades to a logged skip instead of a raised exception.
+
+    Returns None on success, or a short error string describing what stopped it (so the
+    caller can log which session/path could not be reclaimed). Meant to run inside
+    ``asyncio.to_thread`` — the underlying syscalls block.
+    """
+    try:
+        shutil.rmtree(path, ignore_errors=True)
+    except OSError as exc:
+        code = errno.errorcode.get(exc.errno, str(exc.errno)) if exc.errno is not None else "?"
+        return f"{code}: {exc}"
+    # ignore_errors=True routes per-file failures to a no-op, so a lingering path here
+    # means something (the top-level fstat/open, or a genuinely undeletable entry) kept
+    # it around without raising. os.path.exists itself swallows OSError -> False.
+    if os.path.exists(path):
+        return f"path still present after rmtree: {path}"
+    return None
 
 
 def _resolve_git_common_dir(path: str) -> str | None:
