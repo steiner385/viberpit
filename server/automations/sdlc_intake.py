@@ -12,7 +12,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from server.sdlc.engine import ArtifactState, InitiativeState, Propose, next_action
+from server.sdlc.engine import ArtifactView, InitiativeView, Propose, next_action
 from server.sdlc.prompts import artifact_path
 
 from .base import AutomationStatus, ConfigField
@@ -28,13 +28,19 @@ Spawn = Callable[[dict, str], Awaitable[Any]]
 ReadConfig = Callable[[], Awaitable["tuple[str, dict]"]]
 
 
-def _to_states(ini: dict, artifacts: list[dict]) -> tuple[InitiativeState, list[ArtifactState]]:
+def _to_views(ini: dict, artifacts: list[dict]) -> tuple[InitiativeView, list[ArtifactView]]:
+    """Adapt the injected dict rows into the engine's frozen views. ``issue`` is
+    the origin_ref — the GitHub issue the Build stage hands to backlog_runner."""
     return (
-        InitiativeState(stage=str(ini.get("stage") or ""),
-                        status=str(ini.get("status") or ""),
-                        origin=ini.get("origin"), origin_ref=ini.get("origin_ref")),
-        [ArtifactState(kind=str(a.get("kind") or ""), pr_number=a.get("pr_number"),
-                       commit_sha=a.get("commit_sha")) for a in artifacts],
+        InitiativeView(slug=str(ini.get("slug") or ""),
+                       stage=str(ini.get("stage") or ""),
+                       status=str(ini.get("status") or ""),
+                       repo=str(ini.get("repo") or ""),
+                       issue=ini.get("origin_ref")),
+        [ArtifactView(kind=str(a.get("kind") or ""),
+                      commit_sha=a.get("commit_sha"),
+                      pr_number=a.get("pr_number"),
+                      pr_url=a.get("pr_url")) for a in artifacts],
     )
 
 
@@ -96,7 +102,7 @@ class SdlcIntakeLoop:
         if mode == "off":
             return
         for ini in await self._list_initiatives():
-            state, arts = _to_states(ini, await self._list_artifacts(ini["id"]))
+            state, arts = _to_views(ini, await self._list_artifacts(ini["id"]))
             action = next_action(state, arts, mode, config)
             if action != Propose("intent"):
                 continue

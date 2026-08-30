@@ -19,7 +19,7 @@ from server.sdlc.prompts import artifact_path
 
 from .base import AutomationStatus, ConfigField
 from .model_pick import AUTOMATION_MODEL_CHOICES
-from .sdlc_intake import _to_states  # single source of truth — do NOT copy
+from .sdlc_intake import _to_views  # single source of truth — do NOT copy
 
 log = logging.getLogger(__name__)
 
@@ -98,7 +98,7 @@ class SdlcSynthesizerLoop:
         initiatives = await self._list_initiatives()
         for ini in initiatives:
             artifacts = await self._list_artifacts(ini["id"])
-            state, arts = _to_states(ini, artifacts)
+            state, arts = _to_views(ini, artifacts)
             action = next_action(state, arts, mode, config)
             if isinstance(action, Propose) and action.kind in ("spec", "plan"):
                 rec = await self._spawn(ini, action.kind)

@@ -18,14 +18,16 @@ from __future__ import annotations
 SDLC_DOCS_DIR = "docs/sdlc"
 
 
-def _artifact_path(slug: str, kind: str) -> str:
+def artifact_path(slug: str, kind: str) -> str:
+    """Repo-relative path of an initiative's committed artifact. Public: the SDLC
+    loops and orchestrator record/read artifacts at exactly this path."""
     return f"{SDLC_DOCS_DIR}/{slug}/{kind}.md"
 
 
 def _common_instructions(slug: str, kind: str, repo: str, default_branch: str) -> str:
     """The shared trailer every stage session must obey. Keeping it in one helper
     avoids N parallel copies drifting apart (constitution VI)."""
-    path = _artifact_path(slug, kind)
+    path = artifact_path(slug, kind)
     repo_clause = f" in repository `{repo}`" if repo else ""
     return (
         "Requirements — this is a propose-only SDLC stage, follow them exactly:\n"
@@ -59,7 +61,7 @@ def build_intent_prompt(
         "later stage reads.\n\n"
         "TRIGGER (a brainstorm or triage item):\n"
         f"{trigger}\n\n"
-        f"Produce `{_artifact_path(slug, 'intent')}` with these sections:\n"
+        f"Produce `{artifact_path(slug, 'intent')}` with these sections:\n"
         "- **Problem** — the concrete pain, in the user's terms.\n"
         "- **Desired outcome** — what \"done\" looks like and how we would know.\n"
         "- **Affected systems** — components/services this likely touches.\n"
@@ -95,7 +97,7 @@ def build_spec_prompt(
         "-----8<----------------------8<-----\n\n"
         "ORG SKILLS — treat each as a binding constraint the spec must satisfy:\n"
         f"{skills_block}\n\n"
-        f"Produce `{_artifact_path(slug, 'spec')}` covering: functional behavior, "
+        f"Produce `{artifact_path(slug, 'spec')}` covering: functional behavior, "
         "acceptance criteria, data/API surface, and non-goals. Explicitly **flag "
         "any policy concerns** (security, governance, ToS, data handling) as called-"
         "out spec constraints so a human can resolve them at the gate.\n\n"
@@ -122,7 +124,7 @@ def build_plan_prompt(
         "-----8<----- spec.md -----8<-----\n"
         f"{spec_md}\n"
         "-----8<--------------------8<-----\n\n"
-        f"Produce `{_artifact_path(slug, 'plan')}` with:\n"
+        f"Produce `{artifact_path(slug, 'plan')}` with:\n"
         "- **Files** — every file to add/change, with a one-line purpose each.\n"
         "- **Order** — the sequence of steps (what must land before what).\n"
         "- **Tests** — the tests that prove each step, TDD-first where possible.\n"

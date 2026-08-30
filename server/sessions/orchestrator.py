@@ -2571,14 +2571,16 @@ class SessionOrchestrator:
         except Exception:
             return "master"
 
-    async def _sdlc_spawn_for(self, ini: dict, kind: str, prompt: str):
+    async def _sdlc_spawn_for(self, ini: dict, kind: str, build_prompt):
         """Shared spawn tail for both SDLC loops: resolve the repo clone + model,
         then spawn a de-duped artifact session keyed on ``<slug>:<kind>``.
 
-        Mirrors ``_backlog_spawn``: healthy-account gate, ensure_clone off the loop,
-        ``resolve_model`` for the model, and the same create-kwargs shape through
-        the automation context's de-dup-safe spawner. Returns the SessionRecord or
-        None when no account has headroom (retry next tick)."""
+        ``build_prompt(cwd, default_branch) -> str`` runs off-loop AFTER the clone
+        exists, so synth stages can inline the upstream artifact's committed
+        content. Mirrors ``_backlog_spawn``: healthy-account gate, ensure_clone off
+        the loop, ``resolve_model`` for the model, and the same create-kwargs shape
+        through the automation context's de-dup-safe spawner. Returns the
+        SessionRecord or None when no account has headroom (retry next tick)."""
         from server.automations.model_pick import resolve_model
         repo = str(ini.get("repo") or "")
         slug = str(ini.get("slug") or "")
@@ -2596,6 +2598,8 @@ class SessionOrchestrator:
         url = f"https://github.com/{repo}.git"
         cwd = await asyncio.to_thread(
             gitrepos.ensure_clone, await self._effective_repo_root(), repo, url)
+        default_branch = await self._sdlc_default_branch(repo)
+        prompt = await asyncio.to_thread(build_prompt, cwd, default_branch)
         model, model_source = await resolve_model(
             config, f"{ini.get('title') or slug}  ({kind})")
         detail: dict = {"initiative": slug, "kind": kind}
@@ -2614,35 +2618,61 @@ class SessionOrchestrator:
         )
 
     async def _sdlc_spawn_intake(self, ini: dict, kind: str):
-        """Build the intent prompt and spawn the intake artifact session."""
-        from server.sdlc.prompts import IntentTrigger, build_intent_prompt
-        repo = str(ini.get("repo") or "")
+        """Build the intent prompt from the initiative's trigger text and spawn."""
+        from server.sdlc.prompts import build_intent_prompt
         slug = str(ini.get("slug") or "")
+        repo = str(ini.get("repo") or "")
         title = str(ini.get("title") or "")
-        default_branch = await self._sdlc_default_branch(repo) if repo else "master"
-        trigger = IntentTrigger(slug=slug, repo=repo, title=title,
-                                summary=title, origin=str(ini.get("origin") or "human"))
-        prompt = build_intent_prompt(trigger, default_branch=default_branch)
-        return await self._sdlc_spawn_for(ini, kind, prompt)
+        origin = str(ini.get("origin") or "human")
+        origin_ref = ini.get("origin_ref")
+        trigger = f"{title or slug}\n(origin: {origin}"
+        trigger += f", ref: {origin_ref})" if origin_ref else ")"
+
+        def build(_cwd: str, default_branch: str) -> str:
+            return build_intent_prompt(
+                trigger, slug=slug, repo=repo, default_branch=default_branch)
+
+        return await self._sdlc_spawn_for(ini, kind, build)
 
     async def _sdlc_spawn_synth(self, ini: dict, kind: str):
-        """Build the spec/plan prompt (upstream artifact path per kind) and spawn."""
+        """Read the upstream artifact off ``origin/<default>`` in the clone and
+        spawn the spec/plan session with its content inlined in the seed prompt."""
         from server.sdlc.prompts import (
             artifact_path, build_plan_prompt, build_spec_prompt)
-        repo = str(ini.get("repo") or "")
         slug = str(ini.get("slug") or "")
-        default_branch = await self._sdlc_default_branch(repo) if repo else "master"
-        if kind == "spec":
-            prompt = build_spec_prompt(
-                slug, repo, artifact_path(slug, "intent"),
-                skills=(), default_branch=default_branch)
-        elif kind == "plan":
-            prompt = build_plan_prompt(
-                slug, repo, artifact_path(slug, "spec"),
-                default_branch=default_branch)
-        else:  # pragma: no cover — the loop only ever requests spec/plan here
+        repo = str(ini.get("repo") or "")
+        if kind not in ("spec", "plan"):  # pragma: no cover — loop only asks these
             return None
-        return await self._sdlc_spawn_for(ini, kind, prompt)
+        upstream = artifact_path(slug, "intent" if kind == "spec" else "spec")
+
+        def build(cwd: str, default_branch: str) -> str:
+            content = self._sdlc_show_committed_file(
+                cwd, f"origin/{default_branch}", upstream)
+            if kind == "spec":
+                return build_spec_prompt(
+                    content, [], slug=slug, repo=repo, default_branch=default_branch)
+            return build_plan_prompt(
+                content, slug=slug, repo=repo, default_branch=default_branch)
+
+        return await self._sdlc_spawn_for(ini, kind, build)
+
+    @staticmethod
+    def _sdlc_show_committed_file(cwd: str, ref: str, path: str) -> str:
+        """Contents of *path* at *ref* in the clone at *cwd* (sync — call off-loop).
+
+        Falls back to an instruction to read the file in-repo when unreadable, so
+        a stale clone can never block the stage — the artifact is committed on the
+        default branch by the time the engine proposes the next stage."""
+        try:
+            out = subprocess.run(
+                ["git", "-C", cwd, "show", f"{ref}:{path}"],
+                capture_output=True, text=True, timeout=30, check=False)
+            if out.returncode == 0 and out.stdout.strip():
+                return out.stdout
+        except Exception:
+            log.debug("sdlc.show_artifact_failed", exc_info=True)
+        return (f"(could not inline `{path}` from `{ref}` — read that file from "
+                "the repository before starting)")
 
     async def _sdlc_pr_lookup(self, art: dict) -> dict | None:
         """The artifact session's PR as the Task 5 dict shape, or None.
