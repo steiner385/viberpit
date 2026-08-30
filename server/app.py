@@ -114,6 +114,13 @@ def _daemon_compatible(endpoint, *, attempts: int = 5, interval: float = 0.5) ->
 # so graceful display teardown completes instead of being SIGKILLed (issue #206).
 _SHUTDOWN_CLOSE_TIMEOUT_S = 30.0
 _SHUTDOWN_SWEEP_TIMEOUT_S = 15.0
+# Per-phase budgets for the remaining shutdown awaits (issue #846): ancillary task
+# reaps should be near-instant; orchestrator.stop()/remote aclose() legitimately do
+# real work; dispose_db joins aiosqlite worker threads. Only one phase can wedge per
+# incident in practice, so a single wedge stays well inside the systemd budget.
+_SHUTDOWN_PHASE_TIMEOUT_S = 5.0
+_SHUTDOWN_STOP_TIMEOUT_S = 20.0
+_SHUTDOWN_DB_TIMEOUT_S = 10.0
 
 # Gate the SECURITY/0.0.0.0 warning to at most once per process lifetime.
 # Hot-reload and rapid watchdog restarts can re-enter _lifespan many times within
@@ -366,38 +373,43 @@ async def _lifespan(app: FastAPI):
     )
 
     yield
-    # Shutdown
+    # Shutdown. Every await below is bounded via bounded_wait (issue #846): a single
+    # wedged phase used to hang TestClient exits (CI red for the full job budget) and
+    # systemd stops indefinitely. A wedge now costs its phase budget, gets named in a
+    # CRITICAL log, and every later phase — crucially dispose_db — still runs.
     import contextlib
+
+    from server.aio import bounded_wait
     _pipeline_state = getattr(app.state, "pipeline_state", None)
     if _pipeline_state is not None:
-        with contextlib.suppress(Exception):
-            await _pipeline_state.stop()
-    _lag_task = getattr(app.state, "loop_lag_task", None)
-    if _lag_task is not None:
-        _lag_task.cancel()
-        with contextlib.suppress(Exception, asyncio.CancelledError):
-            await _lag_task
-    _prune_task = getattr(app.state, "app_sessions_prune_task", None)
-    if _prune_task is not None:
-        _prune_task.cancel()
-        with contextlib.suppress(Exception, asyncio.CancelledError):
-            await _prune_task
-    _probe = getattr(app.state, "fleet_probe_task", None)
-    if _probe is not None:
-        _probe.cancel()
-        with contextlib.suppress(Exception, asyncio.CancelledError):
-            await _probe
+        await bounded_wait(_pipeline_state.stop(), timeout=_SHUTDOWN_PHASE_TIMEOUT_S,
+                           phase="shutdown:pipeline-state")
+    for _attr, _phase in (("loop_lag_task", "loop-lag-watchdog"),
+                          ("app_sessions_prune_task", "app-sessions-prune"),
+                          ("fleet_probe_task", "fleet-probe")):
+        _t = getattr(app.state, _attr, None)
+        if _t is not None:
+            _t.cancel()
+            await bounded_wait(_t, timeout=_SHUTDOWN_PHASE_TIMEOUT_S,
+                               phase=f"shutdown:{_phase}")
     with contextlib.suppress(Exception):
         app.state.auth_failure_auditor.stop()
     if getattr(app.state, "daemon_health", None) is not None:
-        with contextlib.suppress(Exception):
-            await app.state.daemon_health.stop()
-        with contextlib.suppress(Exception):
-            await app.state._daemon_health_client.aclose()
-    await app.state.reauth.shutdown()
+        await bounded_wait(app.state.daemon_health.stop(),
+                           timeout=_SHUTDOWN_PHASE_TIMEOUT_S,
+                           phase="shutdown:daemon-health")
+        _dh_close = getattr(app.state, "_daemon_health_client", None)
+        if _dh_close is not None:
+            await bounded_wait(_dh_close.aclose(),
+                               timeout=_SHUTDOWN_PHASE_TIMEOUT_S,
+                               phase="shutdown:daemon-health-client")
+    await bounded_wait(app.state.reauth.shutdown(),
+                       timeout=_SHUTDOWN_PHASE_TIMEOUT_S, phase="shutdown:reauth")
     if remote_mode:
         # Remote mode: the daemon owns sessions/drivers; just close the IPC client.
-        await app.state.sessions.aclose()
+        await bounded_wait(app.state.sessions.aclose(),
+                           timeout=_SHUTDOWN_STOP_TIMEOUT_S,
+                           phase="shutdown:remote-sessions-close")
     else:
         # Close live sessions before stopping orchestrator — triggers stop_display for each.
         if getattr(app.state, "x11", None) is not None:
@@ -444,15 +456,17 @@ async def _lifespan(app: FastAPI):
             except Exception:
                 log.warning("shutdown: reauth x11 sweep incomplete", exc_info=True)
 
-        await app.state.orchestrator.stop()
+        await bounded_wait(app.state.orchestrator.stop(),
+                           timeout=_SHUTDOWN_STOP_TIMEOUT_S,
+                           phase="shutdown:orchestrator-stop")
 
     # Dispose the DB engine LAST — after every DB user (auditor, orchestrator,
     # sessions) has stopped — while this loop is still alive, so the pooled
     # aiosqlite connection's worker thread is joined cleanly instead of leaking a
     # connection bound to a soon-to-close loop (the "Event loop is closed" flood).
     from server.db import dispose_db
-    with contextlib.suppress(Exception):
-        await dispose_db()
+    await bounded_wait(dispose_db(), timeout=_SHUTDOWN_DB_TIMEOUT_S,
+                       phase="shutdown:dispose-db")
 
 
 def _build_reauth_facade(*, remote_mode: bool, x11_getter, timeout_s: float,
