@@ -25,7 +25,7 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m server.deploy")
     p.add_argument("--once", action="store_true", help="run a single deploy and exit")
     p.add_argument("--repo", default=os.getcwd())
-    p.add_argument("--venv-pip", default=None)
+    p.add_argument("--venv-python", default=None)
     p.add_argument("--daemon-enabled", choices=["true", "false"], default=None)
     args = p.parse_args(argv)
 
@@ -35,10 +35,10 @@ def main(argv: list[str] | None = None) -> int:
     host = os.environ.get("CCSWITCH_HOST", "127.0.0.1")
     port = os.environ.get("CCSWITCH_PORT", "8787")
     health_url = f"http://{host}:{port}/healthz"
-    venv_pip = args.venv_pip or os.path.join(args.repo, ".venv", "bin", "pip")
+    venv_python = args.venv_python or os.path.join(args.repo, ".venv", "bin", "python")
     daemon_enabled = (args.daemon_enabled == "true") if args.daemon_enabled else _daemon_enabled()
 
-    controller = DeployController(args.repo, health_url=health_url, venv_pip=venv_pip,
+    controller = DeployController(args.repo, health_url=health_url, venv_python=venv_python,
                                   daemon_enabled=daemon_enabled,
                                   daemon_client_factory=default_daemon_factory(daemon_enabled))
     status = asyncio.run(controller.deploy_once())

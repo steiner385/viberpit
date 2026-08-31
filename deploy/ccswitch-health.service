@@ -12,6 +12,6 @@ SyslogIdentifier=ccswitch-health
 # Optional: CCSWITCH_ALERT_WEBHOOK (ntfy/webhook URL) + threshold overrides.
 EnvironmentFile=-/etc/ccswitch/ccswitch.env
 # On the host this is rewritten to the live deploy worktree path
-# (/mnt/ssk-ssd/tony/GitHub/cc-account-switcher-deploy/scripts/...), matching how
+# (/home/tony/GitHub/cc-account-switcher-deploy/scripts/...), matching how
 # ccswitch-daemon.service is installed. See deploy/README.md.
-ExecStart=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher/scripts/ccswitch-health-check.sh
+ExecStart=/home/tony/GitHub/cc-account-switcher-deploy/scripts/ccswitch-health-check.sh

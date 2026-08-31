@@ -31,7 +31,7 @@ class _ControllerLike(Protocol):
     def deploy_once(self) -> Coroutine[object, object, DeployStatus]: ...
 
 
-def build_controller_app(*, repo: str, health_url: str, venv_pip: str, daemon_enabled: bool,
+def build_controller_app(*, repo: str, health_url: str, venv_python: str, daemon_enabled: bool,
                          detect_loop: DetectLoop | None = None,
                          controller: _ControllerLike | None = None):
     # liveSha comes from the RUNNING edge (/healthz), not the checkout's HEAD — a
@@ -41,7 +41,7 @@ def build_controller_app(*, repo: str, health_url: str, venv_pip: str, daemon_en
         repo, interval_s=_poll_interval(),
         compute=functools.partial(compute_pending,
                                   live_sha_fn=functools.partial(edge_live_sha, health_url)))
-    ctrl = controller or DeployController(repo, health_url=health_url, venv_pip=venv_pip,
+    ctrl = controller or DeployController(repo, health_url=health_url, venv_python=venv_python,
                                           daemon_enabled=daemon_enabled,
                                           daemon_client_factory=default_daemon_factory(daemon_enabled))
 

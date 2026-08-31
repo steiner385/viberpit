@@ -193,7 +193,7 @@ def _make_deploy_controller(*, daemon_enabled=True, daemon_changed=True,
     dc = DeployController(
         repo="/fake/repo",
         health_url="http://localhost/health",
-        venv_pip="/fake/pip",
+        venv_python="/fake/python",
         daemon_client_factory=lambda: client,
         daemon_enabled=daemon_enabled,
         steps_mod=steps_mod,

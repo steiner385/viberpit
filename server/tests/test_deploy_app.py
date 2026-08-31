@@ -29,7 +29,7 @@ def client():
     loop.state = PendingState(behind=True, target_sha="def", commits=[{"sha": "1"}], ci="green")
     ctrl = FakeController()
     app, _, _ = deploy_app.build_controller_app(
-        repo="/r", health_url="http://h", venv_pip="/v", daemon_enabled=False,
+        repo="/r", health_url="http://h", venv_python="/v", daemon_enabled=False,
         detect_loop=loop, controller=ctrl)
     return TestClient(app), ctrl
 
@@ -70,14 +70,14 @@ def test_build_controller_app_wires_daemon_factory_when_enabled():
     from server.deploy import app as deploy_app
 
     _, _, ctrl_enabled = deploy_app.build_controller_app(
-        repo="/r", health_url="http://h", venv_pip="/v", daemon_enabled=True)
+        repo="/r", health_url="http://h", venv_python="/v", daemon_enabled=True)
     assert ctrl_enabled._client_factory is not None
     # The factory must be callable and return a DaemonClient instance.
     client = ctrl_enabled._client_factory()
     assert isinstance(client, DaemonClient)
 
     _, _, ctrl_disabled = deploy_app.build_controller_app(
-        repo="/r", health_url="http://h", venv_pip="/v", daemon_enabled=False)
+        repo="/r", health_url="http://h", venv_python="/v", daemon_enabled=False)
     assert ctrl_disabled._client_factory is None
 
 
@@ -86,7 +86,7 @@ def test_default_detect_loop_probes_edge_healthz_for_live_sha():
     deploy checkout's HEAD, which lies whenever a deploy advanced the checkout without
     restarting the units (#859)."""
     _, loop, _ = deploy_app.build_controller_app(
-        repo="/r", health_url="http://edge/healthz", venv_pip="/v", daemon_enabled=False,
+        repo="/r", health_url="http://edge/healthz", venv_python="/v", daemon_enabled=False,
         controller=FakeController())
     comp = loop._compute
     assert isinstance(comp, functools.partial) and comp.func is detect.compute_pending
