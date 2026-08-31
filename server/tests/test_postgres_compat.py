@@ -152,6 +152,9 @@ _REQUIRED_EXTRAS: dict[str, dict[str, object]] = {
     # endpoint is NOT NULL, and neither has a synthesizable default (a host row
     # without an endpoint is unreachable by definition).
     "hosts": {"name": "dtcheck-host", "endpoint": "unix:///tmp/dtcheck.sock"},
+    # daemon_leases joins the sweep via acquired_at/renewed_at; name is the PK
+    # (holder/fence carry Python-side defaults the insert applies itself).
+    "daemon_leases": {"name": "dtcheck-lease"},
 }
 
 # FK columns that must be filled from a parent row inserted earlier in this

@@ -163,6 +163,16 @@ CCSWITCH_SESSIOND_TLS_CA=/etc/ccswitch/tls/ca.pem
 # Only the edge (CN=edge) may connect
 CCSWITCH_SESSIOND_CLIENT_ALLOWLIST=edge
 
+# Fleet identity (#852): the hosts.name the dispatcher stamps onto sessions sent
+# here. The default (kernel hostname's first label) matches auto-registered
+# tailnet hosts; REQUIRED explicitly whenever the registry row uses another
+# name — a mismatched identity rehydrates ZERO sessions after a restart.
+CCSWITCH_HOST_NAME=<host>
+
+# Daemon role: every runner beyond the fleet's ONE primary must be a worker.
+# Any other value fails the daemon boot loudly (by design).
+CCSWITCH_DAEMON_ROLE=worker
+
 # Xvfb for browser-based reauth
 CCSWITCH_ENABLE_XVFB=true
 EOF
@@ -172,6 +182,21 @@ sudo chmod 640 /etc/ccswitch/daemon.env
 
 - [ ] All placeholder values (`<password>`, `<master-key>`, `<host>`) replaced with real values.
 - [ ] `CCSWITCH_MASTER_KEY` matches the value on the edge and all other daemons exactly.
+- [ ] `CCSWITCH_HOST_NAME` matches this host's row in the fleet registry (Fleet UI / `hosts` table)
+  exactly — it partitions session ownership (#852): a worker rehydrates only rows stamped with
+  its own name, and every daemon's recovery loops (stuck-session sweep, rotation monitor,
+  disabled-account sweep) act only on sessions it owns. Rows with `host = NULL` (pre-fleet
+  legacy + the primary's own automation spawns) belong to the primary, which also adopts rows
+  whose host has been removed/disabled from the registry.
+- [ ] `CCSWITCH_DAEMON_ROLE=worker` is set — exactly one daemon in the fleet (the primary) omits
+  it or sets `primary`. The primary additionally holds the DB-side **primary lease** (#852,
+  `daemon_leases` row): a second daemon booting as primary fails `start()` loudly while the
+  real primary's heartbeat is fresh (renewed every `CCSWITCH_PRIMARY_LEASE_TTL_S`/5, default
+  TTL 300 s). A clean shutdown releases the lease immediately; after a primary crash, a
+  replacement primary on another host waits out at most one TTL. A worker's usage poller runs
+  READ-ONLY (`allow_refresh=False`): it feeds proactive ceiling rotation and dead-account
+  detection for its own sessions without racing the primary over the shared refresh-token
+  files.
 - [ ] File permissions: `640` (root-readable, ccswitch-group readable, not world-readable).
 
 ---

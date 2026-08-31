@@ -876,6 +876,36 @@ class Host(Base):
     active_sessions: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
 
 
+class DaemonLease(Base):
+    """Fleet-wide single-holder leases; today only ``name='primary'`` (#852).
+
+    ``CCSWITCH_DAEMON_ROLE`` is per-host env config — nothing structural stops two
+    hosts both being configured ``primary``, and two primaries double-drive every
+    fleet-global automation with no detection (the 2026-08-30 incident shape). This
+    row turns that runbook invariant into a checked one: a primary daemon must hold
+    the lease to finish ``start()``, renews it on a heartbeat, and a second primary
+    fails its boot loudly instead of silently double-driving.
+
+    ``fence`` increments on every (re-)acquisition; renew/release are conditional on
+    it, so a daemon whose lease was taken over (fenced) cannot resurrect it by
+    heartbeating with the stale fence. Holder identity is the HOST name — same-host
+    re-acquisition is always allowed (systemd guarantees one daemon per host), so a
+    crash restart of the real primary never waits out the TTL.
+    """
+
+    __tablename__ = "daemon_leases"
+
+    name: Mapped[str] = mapped_column(String, primary_key=True)
+    # Writer-side invariants: always set by acquire; defaults exist only so the
+    # SQLite reconcile path could synthesize them (see test_schema_reconcile_coverage).
+    holder: Mapped[str] = mapped_column(String, nullable=False, default="")
+    fence: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    acquired_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow)
+    renewed_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow)
+
+
 # ---------------------------------------------------------------------------
 # AI-native SDLC artifact-chain spine (#795 Phase 1 / #796)
 #
