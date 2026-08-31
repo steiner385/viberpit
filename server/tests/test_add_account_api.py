@@ -11,6 +11,7 @@ is the precondition: the slot must NOT already exist.
 from __future__ import annotations
 
 import os
+import pytest
 import sys
 import time
 from pathlib import Path
@@ -33,6 +34,15 @@ from server.tests.test_reauth_api import (
 # ---------------------------------------------------------------------------
 # POST /api/accounts/add — start
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _fresh_db(isolated_db):
+    """Per-test DB (#728): several tests here exit their CCSWITCH_DB_URL patch
+    before `with client:`, so the app lifespan resolves the AMBIENT env var at
+    init_db time — without this fixture that was the worker-shared session DB,
+    coupling these files to whatever ran (or leaked a writer) before them."""
+
 
 
 def test_add_start_returns_202_with_state():

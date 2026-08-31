@@ -37,7 +37,7 @@ def test_effective_archive_home_uses_db_value(tmp_path):
         from server.db import init_db, db_session
         from server.db.models import AppSettings
 
-        await init_db()
+        await init_db(db_url)
         async with db_session() as db:
             row = AppSettings(id="singleton")
             row.archive_home = str(db_archive)
@@ -68,7 +68,7 @@ def test_effective_archive_home_falls_back_to_env(tmp_path):
 
     async def _run():
         from server.db import init_db
-        await init_db()
+        await init_db(db_url)
         orch = _make_orch_with_db(db_url)
         return await orch._effective_archive_home()
 
@@ -89,7 +89,7 @@ def test_effective_archive_home_falls_back_to_default(tmp_path):
 
     async def _run():
         from server.db import init_db
-        await init_db()
+        await init_db(db_url)
         orch = _make_orch_with_db(db_url)
         return await orch._effective_archive_home()
 
@@ -117,7 +117,7 @@ def test_effective_archive_home_db_wins_over_env(tmp_path):
         from server.db import init_db, db_session
         from server.db.models import AppSettings
 
-        await init_db()
+        await init_db(db_url)
         async with db_session() as db:
             row = AppSettings(id="singleton")
             row.archive_home = str(db_archive)

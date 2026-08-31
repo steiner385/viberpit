@@ -9,17 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import os
-import tempfile
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete
 
 from server.app import create_app
-from server.db import db_session, init_db
-from server.db.models import RepoDeployConfig
+from server.db import init_db
 from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
@@ -27,23 +23,17 @@ _H = {"Tailscale-User-Login": "testuser@example.com"}
 
 
 @pytest.fixture
-def _db_env():
-    d = Path(tempfile.mkdtemp(prefix="deploy-cfg-"))
-    url = f"sqlite+aiosqlite:///{d / 'ccswitch.db'}"
+def _db_env(tmp_path):
+    url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
     env = {
         "CCSWITCH_DB_URL": url,
         "CCSWITCH_DEV": "1",
         "CCSWITCH_TAILNET_ALLOWLIST": "",
     }
     with patch.dict(os.environ, env):
-        asyncio.run(_wipe())
+        # Fresh per-test DB under tmp_path — explicit url, no wiping (#728).
+        asyncio.run(init_db(url))
         yield env
-
-
-async def _wipe():
-    await init_db()
-    async with db_session() as db:
-        await db.execute(delete(RepoDeployConfig))
 
 
 def _make_client(env):
