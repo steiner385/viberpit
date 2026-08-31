@@ -18,13 +18,23 @@ class _Flaky:
 
 
 class FakeGit:
-    def __init__(self, live, remote, commits):
+    def __init__(self, live, remote, commits, resolvable=None):
         self._live, self._remote, self._commits = live, remote, commits
+        # SHAs `short_sha` resolves; None => everything resolves (single-repo reality:
+        # any sha a process of this repo ever ran exists in the checkout's history).
+        self._resolvable = resolvable
         self.fetched = False
+        self.log_ranges: list[tuple[str, str]] = []
     def fetch(self, repo, ref="master", run=None): self.fetched = True
     def current_sha(self, repo, run=None): return self._live
     def remote_sha(self, repo, ref="origin/master", run=None): return self._remote
-    def log_range(self, repo, a, b, run=None): return self._commits
+    def short_sha(self, repo, sha, run=None):
+        if self._resolvable is not None and sha not in self._resolvable:
+            raise RuntimeError(f"unknown revision {sha}")
+        return sha[:7]
+    def log_range(self, repo, a, b, run=None):
+        self.log_ranges.append((a, b))
+        return self._commits
 
 
 def test_up_to_date_is_not_behind():
@@ -57,6 +67,89 @@ def test_diverged_checkout_is_not_behind():
     assert st.behind is False and st.commits == []
     assert st.live_sha == "ahead" and st.target_sha == "behind"
     assert ci_calls == []
+
+
+# --- liveSha comes from the RUNNING edge, not the deploy checkout (#859) ---------------
+#
+# `compute_pending` used to derive liveSha from the checkout's HEAD. A deploy that
+# fast-forwards the checkout but never restarts the units (2026-08-30: checkout f4977c3,
+# edge/daemon still 5516d05) then reported "behind: false" while the deployment was two
+# commits stale — the Upgrade banner vanished with no way back short of rewinding the
+# checkout. "Live" must mean the sha the running edge reports on /healthz, with the
+# checkout HEAD exposed separately as checkoutSha.
+
+
+def test_live_sha_prefers_edge_report_over_checkout():
+    # Checkout already fast-forwarded to B (== origin), but the RUNNING edge still
+    # reports A: the deployment IS behind, and the pending range is A..B.
+    commits = [{"sha": "bbbbbbb2", "subject": "s", "author": "t", "iso": "i"}]
+    g = FakeGit("bbbbbbb2", "bbbbbbb2", commits)
+    st = detect.compute_pending("/r", git_mod=g, ci_fn=lambda s: "green",
+                                live_sha_fn=lambda: "aaaaaaa1")
+    assert st.behind is True
+    assert st.live_sha == "aaaaaaa1"
+    assert st.checkout_sha == "bbbbbbb2"
+    assert g.log_ranges == [("aaaaaaa1", "bbbbbbb2")]
+    d = st.to_dict()
+    assert d["liveSha"] == "aaaaaaa1" and d["checkoutSha"] == "bbbbbbb2"
+
+
+def test_live_sha_falls_back_to_checkout_when_edge_unreachable(caplog):
+    # Edge down => probe returns "" => fall back to checkout HEAD (the old behavior),
+    # loudly: operators must be able to see the signal degraded to the proxy.
+    g = FakeGit("abc", "abc", [])
+    with caplog.at_level(logging.WARNING):
+        st = detect.compute_pending("/r", git_mod=g, ci_fn=lambda s: "green",
+                                    live_sha_fn=lambda: "")
+    assert st.behind is False and st.live_sha == "abc" and st.checkout_sha == "abc"
+    assert any("checkout HEAD" in r.getMessage() for r in caplog.records)
+
+
+def test_short_edge_sha_prefix_matches_full_target():
+    # /healthz reports `git rev-parse --short`; git rev-parse gives the full sha. The
+    # same commit must compare equal despite the length difference (#788 prefix match),
+    # or every tick would claim a freshly-deployed edge is behind.
+    full = "f4977c3" + "0" * 33
+    g = FakeGit(full, full, [{"sha": "x"}])
+    st = detect.compute_pending("/r", git_mod=g, ci_fn=lambda s: "green",
+                                live_sha_fn=lambda: "f4977c3")
+    assert st.behind is False and st.commits == []
+    assert g.log_ranges == [], "prefix-equal shas must short-circuit before git log"
+
+
+def test_unresolvable_edge_sha_falls_back_to_checkout(caplog):
+    # An edge sha that doesn't resolve in the checkout (garbage body, GC'd commit)
+    # must not wedge the poll loop into persistent failure — fall back, loudly.
+    g = FakeGit("abc", "abc", [], resolvable={"abc"})
+    with caplog.at_level(logging.WARNING):
+        st = detect.compute_pending("/r", git_mod=g, ci_fn=lambda s: "green",
+                                    live_sha_fn=lambda: "deadbee")
+    assert st.behind is False and st.live_sha == "abc"
+    assert any("does not resolve" in r.getMessage() for r in caplog.records)
+
+
+def test_default_compute_pending_keeps_checkout_head():
+    # Without a live_sha_fn (CLI callers, existing tests) behavior is unchanged:
+    # liveSha == checkoutSha == checkout HEAD.
+    g = FakeGit("abc", "def", [{"sha": "d1", "subject": "s", "author": "t", "iso": "i"}])
+    st = detect.compute_pending("/r", git_mod=g, ci_fn=lambda s: "green")
+    assert st.live_sha == "abc" and st.checkout_sha == "abc"
+
+
+def test_edge_live_sha_parses_healthz_body():
+    ok = '{"status":"ok","sha":"5516d05","daemonSha":"5516d05"}'
+    assert detect.edge_live_sha("http://h", fetch=lambda url: ok) == "5516d05"
+
+
+@pytest.mark.parametrize("body", [
+    "",                       # edge unreachable (fetch error path returns "")
+    "not json",               # proxy error page
+    "[1,2]",                  # parseable but not an object
+    '{"status":"ok"}',        # sha key absent (edge too old to report it)
+    '{"sha":"unknown"}',      # source tarball / no .git — not a usable sha
+])
+def test_edge_live_sha_unusable_bodies_yield_empty(body):
+    assert detect.edge_live_sha("http://h", fetch=lambda url: body) == ""
 
 
 @pytest.mark.asyncio

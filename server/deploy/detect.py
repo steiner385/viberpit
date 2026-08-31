@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import Callable
@@ -15,30 +16,88 @@ class PendingState:
     behind: bool = False
     live_sha: str = ""
     target_sha: str = ""
+    # The deploy checkout's HEAD. Normally equal to live_sha, but a deploy that
+    # fast-forwards the checkout without restarting the units leaves it AHEAD of the
+    # running process — exposed separately so that state is visible instead of
+    # masquerading as deployed (#859).
+    checkout_sha: str = ""
     commits: list[dict] = field(default_factory=list)
     ci: str = "unavailable"
 
     def to_dict(self) -> dict:
         return {"behind": self.behind, "liveSha": self.live_sha, "targetSha": self.target_sha,
-                "commits": self.commits, "ci": self.ci}
+                "checkoutSha": self.checkout_sha, "commits": self.commits, "ci": self.ci}
 
 
-def compute_pending(repo: str, *, git_mod=_git, ci_fn: Callable[[str], str] = _steps.ci_verdict) -> PendingState:
+def edge_live_sha(health_url: str, fetch: Callable[[str], str] = _steps._default_fetch) -> str:
+    """SHA the RUNNING edge reports on /healthz, or "" when no usable sha is available.
+
+    This is the ground truth for "what is deployed" — the checkout's HEAD is only a
+    proxy that lies whenever a deploy advanced the checkout but the units were never
+    restarted (2026-08-30: checkout f4977c3, edge still 5516d05, banner gone, #859).
+    Note the edge reports a SHORT sha (``running_git_sha``), so callers must compare
+    with a prefix match, never ``==`` against a full sha. A /healthz that answers with
+    schema_error (500) still carries the running sha — that is still the live code.
+    """
+    body = fetch(health_url)
+    if not body:
+        return ""
+    try:
+        doc = json.loads(body)
+    except ValueError:
+        return ""
+    if not isinstance(doc, dict):
+        return ""
+    sha = str(doc.get("sha") or "")
+    # running_git_sha() degrades to "unknown" without a .git dir — not a commit.
+    return "" if sha == "unknown" else sha
+
+
+def _resolve_live_sha(repo: str, checkout: str, *, git_mod,
+                      live_sha_fn: Callable[[], str] | None) -> str:
+    """The sha to treat as live: the edge-reported one when usable, else checkout HEAD.
+
+    Both fallbacks log at WARNING — degrading to the checkout proxy is exactly the
+    blind spot #859 is about, so it must never happen silently.
+    """
+    if live_sha_fn is None:
+        return checkout
+    live = live_sha_fn()
+    if not live:
+        log.warning("edge reported no usable live sha (unreachable?) — "
+                    "falling back to checkout HEAD %s for %s", checkout, repo)
+        return checkout
+    try:
+        git_mod.short_sha(repo, live)  # resolvability check only; value unused
+    except Exception:
+        log.warning("edge-reported live sha %r does not resolve in %s — "
+                    "falling back to checkout HEAD %s", live, repo, checkout)
+        return checkout
+    return live
+
+
+def compute_pending(repo: str, *, git_mod=_git, ci_fn: Callable[[str], str] = _steps.ci_verdict,
+                    live_sha_fn: Callable[[], str] | None = None) -> PendingState:
     git_mod.fetch(repo)
-    live = git_mod.current_sha(repo)
+    checkout = git_mod.current_sha(repo)
     target = git_mod.remote_sha(repo)
+    live = _resolve_live_sha(repo, checkout, git_mod=git_mod, live_sha_fn=live_sha_fn)
     # `behind` must mean "origin/master has commits the deployment lacks", which is exactly
     # the deployable set `git log live..target`. Deriving it from raw SHA inequality instead
     # (live != target) is wrong when the deployed checkout is *ahead of* or diverged from
     # origin/master (e.g. after a squash-merge, force-push, or a rolled-back deploy): the SHAs
     # differ but the range is empty, so the banner showed "Deploy now" over "0 changes pending".
     # A single source of truth (commits) keeps `behind` and the displayed count from disagreeing.
-    if live == target:
-        return PendingState(behind=False, live_sha=live, target_sha=target, commits=[], ci="green")
+    # Prefix match, not ==: the edge abbreviates its sha while git gives the full one (#788).
+    if _steps._short_sha_match(live, target):
+        return PendingState(behind=False, live_sha=live, target_sha=target,
+                            checkout_sha=checkout, commits=[], ci="green")
     commits = git_mod.log_range(repo, live, target)
     if not commits:
-        return PendingState(behind=False, live_sha=live, target_sha=target, commits=[], ci="green")
-    return PendingState(behind=True, live_sha=live, target_sha=target, commits=commits, ci=ci_fn(target))
+        return PendingState(behind=False, live_sha=live, target_sha=target,
+                            checkout_sha=checkout, commits=[], ci="green")
+    return PendingState(behind=True, live_sha=live, target_sha=target,
+                        checkout_sha=checkout, commits=commits, ci=ci_fn(target))
 
 
 class DetectLoop:

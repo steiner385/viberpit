@@ -287,8 +287,13 @@ export interface ModelOption { id: string; label: string }
 
 export interface PendingDeploy {
   behind: boolean
+  /** Sha the RUNNING edge reports on /healthz (short), falling back to the deploy
+   *  checkout's HEAD when the edge is unreachable (#859). */
   liveSha: string
   targetSha: string
+  /** Deploy checkout HEAD — may be ahead of liveSha after a deploy that advanced the
+   *  checkout without restarting the units. Absent from pre-#859 controllers. */
+  checkoutSha?: string
   commits: { sha: string; subject: string; author: string; iso: string }[]
   ci: string
 }

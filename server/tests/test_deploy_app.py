@@ -1,6 +1,9 @@
+import functools
+
 import pytest
 from fastapi.testclient import TestClient
 from server.deploy import app as deploy_app
+from server.deploy import detect
 from server.deploy.detect import DetectLoop, PendingState
 from server.deploy.types import DeployStatus
 
@@ -76,6 +79,20 @@ def test_build_controller_app_wires_daemon_factory_when_enabled():
     _, _, ctrl_disabled = deploy_app.build_controller_app(
         repo="/r", health_url="http://h", venv_pip="/v", daemon_enabled=False)
     assert ctrl_disabled._client_factory is None
+
+
+def test_default_detect_loop_probes_edge_healthz_for_live_sha():
+    """The default DetectLoop must derive liveSha from the edge's /healthz — not the
+    deploy checkout's HEAD, which lies whenever a deploy advanced the checkout without
+    restarting the units (#859)."""
+    _, loop, _ = deploy_app.build_controller_app(
+        repo="/r", health_url="http://edge/healthz", venv_pip="/v", daemon_enabled=False,
+        controller=FakeController())
+    comp = loop._compute
+    assert isinstance(comp, functools.partial) and comp.func is detect.compute_pending
+    probe = comp.keywords["live_sha_fn"]
+    assert isinstance(probe, functools.partial) and probe.func is detect.edge_live_sha
+    assert probe.args == ("http://edge/healthz",)
 
 
 def test_poll_interval_default_and_env(monkeypatch):
