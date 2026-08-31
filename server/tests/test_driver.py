@@ -46,6 +46,51 @@ def test_drain_exception_emits_error_event_with_detail():
     assert "ValueError" in err.message
     assert "token expired mid-stream" in err.message
 
+
+class _ModeRecorder:
+    """Minimal SDK client stand-in that records set_permission_mode calls."""
+    def __init__(self):
+        self.modes = []
+    async def set_permission_mode(self, mode):
+        self.modes.append(mode)
+
+
+def test_exiting_plan_restores_pre_plan_permission_mode():
+    """The web plan toggle sends the 'default' sentinel to turn plan OFF. Exiting
+    plan must return the session to the mode it had BEFORE plan (here full-auto),
+    NOT collapse to the SDK 'default' engine — which the registry treats as
+    "prompt on every dangerous tool", silently breaking a full-auto session."""
+    async def run():
+        rec = _ModeRecorder()
+        d = SessionDriver("sp-plan", "primary", "/tmp/r", "/tmp/cfg", mode="full-auto",
+                          sdk_factory=lambda *a, **k: None, registry=PermissionRegistry(),
+                          identity="me")
+        d._client = rec
+        await d.set_permission_mode("plan")      # toggle plan ON
+        assert d.mode == "plan"
+        await d.set_permission_mode("default")   # toggle plan OFF (UI sentinel)
+        return d
+    d = asyncio.run(run())
+    # The ENFORCED ccswitch mode (what PermissionRegistry.request reads) is back to
+    # full-auto, so tools auto-approve again — not 'default', which would prompt.
+    assert d.mode == "full-auto"
+
+
+def test_default_outside_plan_is_not_hijacked():
+    """A 'default' that does NOT follow plan is a real target and must pass through
+    unchanged — the restore only fires when actually exiting plan."""
+    async def run():
+        rec = _ModeRecorder()
+        d = SessionDriver("sp-nodef", "primary", "/tmp/r", "/tmp/cfg", mode="full-auto",
+                          sdk_factory=lambda *a, **k: None, registry=PermissionRegistry(),
+                          identity="me")
+        d._client = rec
+        await d.set_permission_mode("default")   # not exiting plan → literal 'default'
+        return d
+    d = asyncio.run(run())
+    assert d.mode == "default"
+
+
 def _factory(msgs):
     def make(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *, on_pre_compact=None):
         return FakeSDKClient(msgs, on_can_use_tool=can_use_tool)
