@@ -29,7 +29,7 @@ function makeRuntime(statusState: string, overrides: Partial<SessionRuntime> = {
       openBlockId: null,
       status: { state: statusState, count: 0 },
       title: null, model: 'claude-opus-4-8', usage: null,
-      replaying: false, error: null, queued: [], rotations: [],
+      replaying: false, error: null, queued: [], rotations: [], latestSuggestions: [],
       condense: null,
     },
     mode: 'interactive',
