@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import functools
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -9,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from server.deploy.controller import DeployController, default_daemon_factory
-from server.deploy.detect import DetectLoop
+from server.deploy.detect import DetectLoop, compute_pending, edge_live_sha
 from server.deploy.types import DeployStatus
 
 log = logging.getLogger("server.deploy.app")
@@ -33,7 +34,13 @@ class _ControllerLike(Protocol):
 def build_controller_app(*, repo: str, health_url: str, venv_pip: str, daemon_enabled: bool,
                          detect_loop: DetectLoop | None = None,
                          controller: _ControllerLike | None = None):
-    loop = detect_loop or DetectLoop(repo, interval_s=_poll_interval())
+    # liveSha comes from the RUNNING edge (/healthz), not the checkout's HEAD — a
+    # checkout fast-forwarded without a unit restart must show as behind, not
+    # deployed (#859). edge_live_sha falls back to checkout HEAD when unreachable.
+    loop = detect_loop or DetectLoop(
+        repo, interval_s=_poll_interval(),
+        compute=functools.partial(compute_pending,
+                                  live_sha_fn=functools.partial(edge_live_sha, health_url)))
     ctrl = controller or DeployController(repo, health_url=health_url, venv_pip=venv_pip,
                                           daemon_enabled=daemon_enabled,
                                           daemon_client_factory=default_daemon_factory(daemon_enabled))
