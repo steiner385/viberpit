@@ -48,7 +48,7 @@ function makeRuntime(): SessionRuntime {
       openBlockId: null,
       status: { state: 'idle', count: 0 },
       title: null, model: null, usage: null,
-      replaying: false, error: null, queued: [], rotations: [],
+      replaying: false, error: null, queued: [], rotations: [], latestSuggestions: [],
       subAgents: [],
     },
     mode: 'interactive',

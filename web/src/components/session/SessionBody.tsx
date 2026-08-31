@@ -17,6 +17,7 @@ import { WorkingIndicator } from './WorkingIndicator'
 import { CondensingProgress } from './CondensingProgress'
 import { PendingQuestionPanel } from './PendingQuestionPanel'
 import { PendingPermissionPanel } from './PendingPermissionPanel'
+import { YourTurnPanel } from './YourTurnPanel'
 import { SessionAriaLive } from './SessionAriaLive'
 import { statusTier } from '@/session/statusTier'
 import { selectRunningSubAgentCount } from '@/session/selectors'
@@ -231,6 +232,24 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
               onAnswer={rt.onAnswer}
               onChat={rt.onChat}
               armedQuestionId={rt.armedQuestionId}
+            />
+
+            {/* Pinned "Your turn" call-to-action for a finished turn. The session
+                list flags these sessions loudly, but inside the session the only
+                cue was a calm gray pill and an ask buried in transcript prose —
+                so pin an explicit CTA with the cached suggestions as one-tap
+                replies (see YourTurnPanel). */}
+            <YourTurnPanel
+              statusState={rt.state.status.state}
+              // A detached done session never received a live `suggestions` WS
+              // event, so runtime state is empty — fall back to the record cache
+              // (the same source the session card's chips render from).
+              suggestions={
+                rt.state.latestSuggestions.length > 0
+                  ? rt.state.latestSuggestions
+                  : sessionRecord?.latestSuggestions ?? []
+              }
+              onPrompt={rt.onPrompt}
             />
 
             {/* sr-only aria-live mirror (owns its own ref + effect) */}
