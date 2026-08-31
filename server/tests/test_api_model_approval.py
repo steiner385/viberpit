@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -80,242 +81,120 @@ def _make_harness(tmp_path: Path, extra_env: dict | None = None):
 
 
 # ---------------------------------------------------------------------------
+# Harness — the app lifespan OWNS the orchestrator's start/stop.
+#
+# Pre-starting the orchestrator in a throwaway ``asyncio.run`` loop and then
+# handing it to ``create_app`` double-starts it (the lifespan starts it again)
+# and leaks aiosqlite worker threads bound to the closed loop — which passes in
+# isolation but hangs the full suite at teardown (300s pytest-timeout). Mirror
+# test_api.py / test_settings_model_approval: never pre-start, let ``with
+# client:`` drive the lifespan, and set up session state over HTTP.
+# ---------------------------------------------------------------------------
+
+
+@contextmanager
+def _api(tmp_path, extra_env: dict | None = None):
+    from server.app import create_app
+    from server.sessions.orchestrator import SessionOrchestrator
+
+    env, cfg_dir, store_home, db_url = _make_harness(tmp_path, extra_env)
+    with patch.dict(os.environ, env, clear=False), \
+         patch("server.sessions.orchestrator.select_account", return_value=Picked("alpha")), \
+         patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
+         patch("server.sessions.orchestrator.configdir.trust_project"):
+        _seed_account("alpha", store_home)
+        orch = SessionOrchestrator(
+            sdk_factory=fake_sdk_factory(),
+            poll_interval=9999.0,
+            usage_fn=_fake_usage,
+            repo_root=str(tmp_path / "repos"),
+        )
+        app = create_app(orchestrator=orch)
+        client = TestClient(app, raise_server_exceptions=False)
+        with client:
+            yield client
+
+
+def _create_gated(client) -> str:
+    """Create a fable (gated) session over HTTP → parked pending_approval; return id."""
+    cr = client.post(
+        "/api/sessions", json={"name": "gated", "model": "fable"}, headers=IDENTITY_HEADERS)
+    assert cr.status_code in (200, 201), cr.text
+    body = cr.json()
+    assert body["status"] == "pending_approval", body
+    assert body["pendingModel"] == "fable", body
+    return body["id"]
+
+
+# ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
 
 def test_approve_flow(tmp_path):
-    """POST /model-approval?decision=approve → 200, status != pending_approval."""
-    import asyncio
-    from server.db import init_db
-    from server.sessions.orchestrator import SessionOrchestrator
-    from server.app import create_app
-
-    env, cfg_dir, store_home, db_url = _make_harness(tmp_path)
-
-    with patch.dict(os.environ, env, clear=False), \
-         patch("server.sessions.orchestrator.select_account", return_value=Picked("alpha")), \
-         patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
-         patch("server.sessions.orchestrator.configdir.trust_project"):
-        _seed_account("alpha", store_home)
-        asyncio.run(init_db(db_url=db_url))
-        orch = SessionOrchestrator(
-            sdk_factory=fake_sdk_factory(),
-            poll_interval=9999.0,
-            usage_fn=_fake_usage,
-            repo_root=str(tmp_path / "repos"),
-        )
-        asyncio.run(orch.start())
-        rec = asyncio.run(orch.create_session(name="gated", account=None, model="fable"))
-
-        app = create_app(orchestrator=orch)
-        client = TestClient(app, raise_server_exceptions=False)
-        with client:
-            r = client.post(
-                f"/api/sessions/{rec.id}/model-approval",
-                json={"decision": "approve"},
-                headers=IDENTITY_HEADERS,
-            )
-
+    """approve → 200, status leaves pending_approval."""
+    with _api(tmp_path) as client:
+        sid = _create_gated(client)
+        r = client.post(
+            f"/api/sessions/{sid}/model-approval",
+            json={"decision": "approve"}, headers=IDENTITY_HEADERS)
+        body = r.json()
     assert r.status_code == 200, r.text
-    body = r.json()
     assert body["status"] != "pending_approval"
-    assert body["id"] == rec.id
+    assert body["id"] == sid
 
 
 def test_deny_flow(tmp_path):
-    """POST /model-approval?decision=deny → 200, status=ended."""
-    import asyncio
-    from server.db import init_db
-    from server.sessions.orchestrator import SessionOrchestrator
-    from server.app import create_app
-
-    env, cfg_dir, store_home, db_url = _make_harness(tmp_path)
-
-    with patch.dict(os.environ, env, clear=False), \
-         patch("server.sessions.orchestrator.select_account", return_value=Picked("alpha")), \
-         patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
-         patch("server.sessions.orchestrator.configdir.trust_project"):
-        _seed_account("alpha", store_home)
-        asyncio.run(init_db(db_url=db_url))
-        orch = SessionOrchestrator(
-            sdk_factory=fake_sdk_factory(),
-            poll_interval=9999.0,
-            usage_fn=_fake_usage,
-            repo_root=str(tmp_path / "repos"),
-        )
-        asyncio.run(orch.start())
-        rec = asyncio.run(orch.create_session(name="gated", account=None, model="fable"))
-
-        app = create_app(orchestrator=orch)
-        client = TestClient(app, raise_server_exceptions=False)
-        with client:
-            r = client.post(
-                f"/api/sessions/{rec.id}/model-approval",
-                json={"decision": "deny"},
-                headers=IDENTITY_HEADERS,
-            )
-
+    """deny → 200, status=ended."""
+    with _api(tmp_path) as client:
+        sid = _create_gated(client)
+        r = client.post(
+            f"/api/sessions/{sid}/model-approval",
+            json={"decision": "deny"}, headers=IDENTITY_HEADERS)
+        body = r.json()
     assert r.status_code == 200, r.text
-    body = r.json()
     assert body["status"] == "ended"
 
 
 def test_bad_decision_422(tmp_path):
-    """Invalid decision value → 422 (Literal validation)."""
-    import asyncio
-    from server.db import init_db
-    from server.sessions.orchestrator import SessionOrchestrator
-    from server.app import create_app
-
-    env, cfg_dir, store_home, db_url = _make_harness(tmp_path)
-
-    with patch.dict(os.environ, env, clear=False), \
-         patch("server.sessions.orchestrator.select_account", return_value=Picked("alpha")), \
-         patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
-         patch("server.sessions.orchestrator.configdir.trust_project"):
-        _seed_account("alpha", store_home)
-        asyncio.run(init_db(db_url=db_url))
-        orch = SessionOrchestrator(
-            sdk_factory=fake_sdk_factory(),
-            poll_interval=9999.0,
-            usage_fn=_fake_usage,
-            repo_root=str(tmp_path / "repos"),
-        )
-        asyncio.run(orch.start())
-        rec = asyncio.run(orch.create_session(name="gated", account=None, model="fable"))
-
-        app = create_app(orchestrator=orch)
-        client = TestClient(app, raise_server_exceptions=False)
-        with client:
-            r = client.post(
-                f"/api/sessions/{rec.id}/model-approval",
-                json={"decision": "maybe"},
-                headers=IDENTITY_HEADERS,
-            )
-
+    """Invalid decision value → 422 (Literal validation, before the route body)."""
+    with _api(tmp_path) as client:
+        sid = _create_gated(client)
+        r = client.post(
+            f"/api/sessions/{sid}/model-approval",
+            json={"decision": "maybe"}, headers=IDENTITY_HEADERS)
     assert r.status_code == 422
 
 
 def test_nothing_pending_409(tmp_path):
-    """Approving a session that has no pending approval → 409."""
-    import asyncio
-    from server.db import init_db
-    from server.sessions.orchestrator import SessionOrchestrator
-    from server.app import create_app
-
-    store_home = tmp_path / "store"
-    store_home.mkdir()
-    shared_base = tmp_path / "dot-claude"
-    shared_base.mkdir()
-    (shared_base / "settings.json").write_text("{}")
-    (shared_base / "projects").mkdir()
-    cfg_dir = tmp_path / "cfg" / "alpha"
-    cfg_dir.mkdir(parents=True)
-    db_path = tmp_path / "nothing_pending.db"
-    db_url = f"sqlite+aiosqlite:///{db_path}"
-    env = {
-        "CCSWITCH_HOME": str(store_home),
-        "CLAUDE_CONFIG_DIR": str(shared_base),
-        "CCSWITCH_DB_URL": db_url,
-    }
-
-    with patch.dict(os.environ, env, clear=False), \
-         patch("server.sessions.orchestrator.select_account", return_value=Picked("alpha")), \
-         patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
-         patch("server.sessions.orchestrator.configdir.trust_project"):
-        _seed_account("alpha", store_home)
-        asyncio.run(init_db(db_url=db_url))
-        orch = SessionOrchestrator(
-            sdk_factory=fake_sdk_factory(),
-            poll_interval=9999.0,
-            usage_fn=_fake_usage,
-            repo_root=str(tmp_path / "repos"),
-        )
-        asyncio.run(orch.start())
-        # Create a NORMAL (non-gated) session — no pending approval
-        running_rec = asyncio.run(orch.create_session(name="running", account=None, model=None))
-
-        app = create_app(orchestrator=orch)
-        client = TestClient(app, raise_server_exceptions=False)
-        with client:
-            r = client.post(
-                f"/api/sessions/{running_rec.id}/model-approval",
-                json={"decision": "approve"},
-                headers=IDENTITY_HEADERS,
-            )
-
+    """Approving a session with no pending approval → 409."""
+    with _api(tmp_path) as client:
+        # A non-gated (account-default) session spawns running, no pending hold.
+        cr = client.post(
+            "/api/sessions", json={"name": "running"}, headers=IDENTITY_HEADERS)
+        assert cr.status_code in (200, 201), cr.text
+        assert cr.json()["status"] != "pending_approval"
+        sid = cr.json()["id"]
+        r = client.post(
+            f"/api/sessions/{sid}/model-approval",
+            json={"decision": "approve"}, headers=IDENTITY_HEADERS)
     assert r.status_code == 409
 
 
 def test_unknown_session_404(tmp_path):
     """Approving an unknown session id → 404."""
-    import asyncio
-    from server.db import init_db
-    from server.sessions.orchestrator import SessionOrchestrator
-    from server.app import create_app
-
-    env, cfg_dir, store_home, db_url = _make_harness(tmp_path)
-
-    with patch.dict(os.environ, env, clear=False), \
-         patch("server.sessions.orchestrator.select_account", return_value=Picked("alpha")), \
-         patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
-         patch("server.sessions.orchestrator.configdir.trust_project"):
-        _seed_account("alpha", store_home)
-        asyncio.run(init_db(db_url=db_url))
-        orch = SessionOrchestrator(
-            sdk_factory=fake_sdk_factory(),
-            poll_interval=9999.0,
-            usage_fn=_fake_usage,
-            repo_root=str(tmp_path / "repos"),
-        )
-        asyncio.run(orch.start())
-
-        app = create_app(orchestrator=orch)
-        client = TestClient(app, raise_server_exceptions=False)
-        with client:
-            r = client.post(
-                "/api/sessions/does-not-exist/model-approval",
-                json={"decision": "approve"},
-                headers=IDENTITY_HEADERS,
-            )
-
+    with _api(tmp_path) as client:
+        r = client.post(
+            "/api/sessions/does-not-exist/model-approval",
+            json={"decision": "approve"}, headers=IDENTITY_HEADERS)
     assert r.status_code == 404
 
 
 def test_create_session_blocked_returns_409(tmp_path):
     """POST /api/sessions with a blocked model → 409 (ModelBlockedError→409)."""
-    import asyncio
-    from server.db import init_db
-    from server.sessions.orchestrator import SessionOrchestrator
-    from server.app import create_app
-
-    env, cfg_dir, store_home, db_url = _make_harness(
-        tmp_path, extra_env={"CCSWITCH_MODEL_APPROVAL_ACTION": "block"}
-    )
-
-    with patch.dict(os.environ, env, clear=False), \
-         patch("server.sessions.orchestrator.select_account", return_value=Picked("alpha")), \
-         patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
-         patch("server.sessions.orchestrator.configdir.trust_project"):
-        _seed_account("alpha", store_home)
-        asyncio.run(init_db(db_url=db_url))
-        orch = SessionOrchestrator(
-            sdk_factory=fake_sdk_factory(),
-            poll_interval=9999.0,
-            usage_fn=_fake_usage,
-            repo_root=str(tmp_path / "repos"),
-        )
-        asyncio.run(orch.start())
-
-        app = create_app(orchestrator=orch)
-        client = TestClient(app, raise_server_exceptions=False)
-        with client:
-            r = client.post(
-                "/api/sessions",
-                json={"name": "blocked", "model": "fable"},
-                headers=IDENTITY_HEADERS,
-            )
-
+    with _api(tmp_path, extra_env={"CCSWITCH_MODEL_APPROVAL_ACTION": "block"}) as client:
+        r = client.post(
+            "/api/sessions", json={"name": "blocked", "model": "fable"},
+            headers=IDENTITY_HEADERS)
     assert r.status_code == 409
     assert "blocked" in r.json().get("detail", "").lower()
