@@ -177,6 +177,10 @@ async def daemon_lifespan(app, orchestrator):
         except Exception:
             log.warning("daemon shutdown: reauth shutdown failed", exc_info=True)
         try:
+            await app.state.mcp_auth.shutdown()
+        except Exception:
+            log.warning("daemon shutdown: mcp_auth shutdown failed", exc_info=True)
+        try:
             loop_lag_task = getattr(app.state, "loop_lag_task", None)
         except Exception:
             loop_lag_task = None

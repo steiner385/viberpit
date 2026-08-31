@@ -65,7 +65,9 @@ def test_start_returns_202(client: TestClient) -> None:
 
 
 def test_start_busy_returns_409(client: TestClient) -> None:
-    assert client.post("/api/library/mcp/busy/auth").status_code == 409
+    r = client.post("/api/library/mcp/busy/auth")
+    assert r.status_code == 409
+    assert r.json()["detail"]["error"] == "mcp_auth_busy"
 
 
 def test_status_scoped(client: TestClient) -> None:
