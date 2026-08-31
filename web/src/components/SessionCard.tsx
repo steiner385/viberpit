@@ -7,7 +7,8 @@ import { QUICK_REPLIES } from '@/lib/quickReplies'
 import { cn } from '@/lib/utils'
 import { formatRepoLabel } from '@/lib/repoLabel'
 import { isValidTimestamp, relTime } from '@/lib/relativeTime'
-import { statusPresentation, TIER_ACCENT } from '@/session/statusTier'
+import { TIER_ACCENT } from '@/session/statusTier'
+import { sessionTriage } from '@/session/triageTier'
 import { anyChecksFailing, isActionablePrState } from '@/session/prStatus'
 import { UsageBadge } from './UsageBadge'
 import { PrList } from './PrList'
@@ -99,10 +100,12 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   const [generating, setGenerating] = useState(false)
 
   const suggestions = session.latestSuggestions ?? []
-  // One presentation lookup drives everything status-colored on the card: the
-  // rail, the dot and the line-2 phrase all read the same tier, so they can
-  // never disagree (the restart-stranded relabel included).
-  const presentation = statusPresentation(session.status, { interruptedByRestart: session.interruptedByRestart })
+  // One triage read drives everything status-colored on the card: the rail, the
+  // dot and the line-2 phrase all read the same tier, so they can never disagree
+  // (the restart-stranded relabel included). sessionTriage is the SAME function
+  // the group header / sort use, so a card can never show a calm "Waiting…"/"Your
+  // turn" pill while sitting under the "Needs attention" header (Fix B).
+  const presentation = sessionTriage(session)
   const accent = TIER_ACCENT[presentation.tier]
   const isBusy = presentation.tier === 'busy'
 

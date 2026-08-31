@@ -51,6 +51,15 @@ const INTERRUPTED_BY_RESTART: StatusPresentation = {
 }
 const RESTART_STRANDABLE = new Set(['idle', 'needs_attention'])
 
+// Presentation for a session lifted into the error tier by a failing PR (not by
+// its own status) — see sessionTriage() in triageTier.ts. Lives here, beside
+// PRESENTATION, so every "how does an error-tier session read?" decision has one
+// home. The label names the *cause* so a card in the "Needs attention" group can
+// never sit under a calm "Your turn"/"Ready" pill again.
+export const PR_CHECKS_FAILING: StatusPresentation = {
+  tier: 'error', label: 'Checks failing', Icon: AlertTriangle, textClass: ERROR,
+}
+
 export interface StatusPresentationOpts {
   /** The session's turn was dropped by a daemon restart (Session.interruptedByRestart). */
   interruptedByRestart?: boolean
