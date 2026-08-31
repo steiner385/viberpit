@@ -49,3 +49,13 @@ def test_picker_raises_when_no_account(monkeypatch):
     monkeypatch.setattr(mcp_auth.accounts, "_anthropic_account_names", lambda: [])
     with pytest.raises(McpAuthError):
         default_account_picker("notion")
+
+
+def test_picker_falls_back_to_anthropic_account(monkeypatch, tmp_path):
+    """Server not in _needs_auth_by_server but an anthropic account exists → return it."""
+    monkeypatch.setattr(mcp_auth.scan, "_needs_auth_by_server", lambda: {})
+    monkeypatch.setattr(mcp_auth.accounts, "_anthropic_account_names", lambda: ["alice"])
+    monkeypatch.setattr(mcp_auth.configdir, "compose", lambda n: tmp_path / n)
+    name, cfg = default_account_picker("notion")
+    assert name == "alice"
+    assert cfg == tmp_path / "alice"

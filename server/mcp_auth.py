@@ -395,7 +395,7 @@ class PtyLoginSession:
         try:
             pid, status = os.waitpid(self._pid, os.WNOHANG)
         except ChildProcessError:
-            self._exit_code = 0
+            self._exit_code = -1  # reaped externally; real code unknown → treat as failure
             return self._exit_code
         if pid == 0:
             return None  # still running
@@ -408,6 +408,17 @@ class PtyLoginSession:
                 os.kill(self._pid, signal.SIGTERM)
             except (ProcessLookupError, PermissionError, OSError):
                 pass
+            # Bounded wait for graceful exit, then SIGKILL, then reap — never leave a zombie.
+            for _ in range(10):
+                if self._reap() is not None:
+                    break
+                time.sleep(0.02)
+            else:
+                try:
+                    os.kill(self._pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+                self._reap()
         if self._fd is not None:
             try:
                 os.close(self._fd)
