@@ -11,6 +11,7 @@ import uvicorn
 from server.config import get_settings
 from server.db import init_db
 from server.ipc.daemon import create_daemon_app
+from server.ipc.drain_on_signal import install_drain_on_sigterm
 from server.ipc.orchestrator_rpc import register_orchestrator_rpc
 from server.ipc.reauth_rpc import register_reauth
 from server.ipc.x11_rpc import register_x11
@@ -108,6 +109,10 @@ async def daemon_lifespan(app, orchestrator):
         log.error("daemon rearm_background_tasks() failed", exc_info=True)
         orchestrator.note_startup_failure("rearm", exc)
     await orchestrator.start()
+    # Drain in-flight turns on SIGTERM before uvicorn begins shutting down, whoever
+    # sent it (deploy, watchdog, a bare `systemctl restart`). Needs KillMode=mixed and
+    # a TimeoutStopSec that covers the drain caps — see the unit file.
+    uninstall_drain_on_sigterm = install_drain_on_sigterm(orchestrator)
     # RC1 (blocking sqlite3 on the loop) ran for hours before it was noticed, and only
     # via an external py-spy dump — this makes the same class of saturation
     # self-reporting instead of requiring an audit. Deliberately unguarded: a watchdog
@@ -153,6 +158,7 @@ async def daemon_lifespan(app, orchestrator):
     try:
         yield
     finally:
+        uninstall_drain_on_sigterm()
         # Tear down every virtual display before stopping (issue #206, daemon half).
         # orchestrator.stop() only cancels background tasks — it never freed displays,
         # so the daemon (which owns sessions in remote mode) leaked Xvfb/x11vnc/chrome
