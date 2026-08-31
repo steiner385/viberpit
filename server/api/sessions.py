@@ -507,6 +507,14 @@ async def create_session(
         if not _resolved_model:
             _resolved_model = _acct_defs.get("defaultModel")
 
+    # Global fallback: the Settings-page "Default tool approvals" value. Without
+    # this, any create path that omits permissionMode (the DispatchBar quick-create
+    # bar, API callers) silently collapsed to "interactive" and re-introduced
+    # permission prompts the user had globally turned off (full-auto).
+    if not _resolved_permission_mode:
+        from server.api.settings import get_default_permission_mode
+        _resolved_permission_mode = await get_default_permission_mode(db)
+
     try:
         record = await orch.create_session(
             prefer=getattr(body, "host", None),
