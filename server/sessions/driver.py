@@ -128,6 +128,9 @@ class SessionDriver:
         self.cwd = cwd
         self.config_dir = config_dir
         self.mode = mode
+        # The permission mode active immediately before plan mode was entered, so
+        # exiting plan restores it instead of collapsing to the SDK 'default' engine.
+        self._pre_plan_mode: str | None = None
         self.identity = identity
         self.denylist = denylist
         self.resume = resume
@@ -990,6 +993,16 @@ class SessionDriver:
         await self._emit_status()
 
     async def set_permission_mode(self, mode: str):
+        # Plan mode is a temporary overlay. The web plan toggle turns it OFF by
+        # sending the 'default' sentinel; treat that as "return to the mode the
+        # session had before plan" rather than the SDK 'default' engine, which
+        # PermissionRegistry.request reads as "prompt on every dangerous tool" —
+        # silently dropping a full-auto session into constant approvals.
+        if mode == "plan" and self.mode != "plan":
+            self._pre_plan_mode = self.mode
+        elif mode == "default" and self.mode == "plan":
+            mode = self._pre_plan_mode or "default"
+            self._pre_plan_mode = None
         self.mode = mode
         if self._client:
             await self._client.set_permission_mode(to_sdk_permission_mode(mode))
