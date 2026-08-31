@@ -30,7 +30,12 @@ export function DeployControllerProvider({ children }: { children: ReactNode }) 
     const was = prevRunning.current
     prevRunning.current = running
     if (was && !running) {
-      setIntent(deployOutcome(deploy) === 'success' ? 'held-success' : 'held-failure')
+      // 'idle' means the status was wiped rather than concluded (a controller process
+      // replaced mid-poll reports an empty DeployStatus, #865): there is no outcome to
+      // hold, so dismiss instead of flashing a spurious "Upgrade failed".
+      const outcome = deployOutcome(deploy)
+      setIntent(outcome === 'success' ? 'held-success'
+        : outcome === 'failure' ? 'held-failure' : 'idle')
     }
   }, [running, deploy])
 

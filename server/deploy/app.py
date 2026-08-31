@@ -33,7 +33,8 @@ class _ControllerLike(Protocol):
 
 def build_controller_app(*, repo: str, health_url: str, venv_python: str, daemon_enabled: bool,
                          detect_loop: DetectLoop | None = None,
-                         controller: _ControllerLike | None = None):
+                         controller: _ControllerLike | None = None,
+                         status_path: str | None = None):
     # liveSha comes from the RUNNING edge (/healthz), not the checkout's HEAD — a
     # checkout fast-forwarded without a unit restart must show as behind, not
     # deployed (#859). edge_live_sha falls back to checkout HEAD when unreachable.
@@ -43,7 +44,8 @@ def build_controller_app(*, repo: str, health_url: str, venv_python: str, daemon
                                   live_sha_fn=functools.partial(edge_live_sha, health_url)))
     ctrl = controller or DeployController(repo, health_url=health_url, venv_python=venv_python,
                                           daemon_enabled=daemon_enabled,
-                                          daemon_client_factory=default_daemon_factory(daemon_enabled))
+                                          daemon_client_factory=default_daemon_factory(daemon_enabled),
+                                          status_path=status_path)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -56,9 +58,7 @@ def build_controller_app(*, repo: str, health_url: str, venv_python: str, daemon
     app = FastAPI(lifespan=lifespan)
 
     def _deploy_dict() -> dict:
-        s = ctrl.status
-        return {"running": s.running, "phases": s.phases, "error": s.error,
-                "warnings": s.warnings, "targetSha": s.target_sha, "restore": s.restore}
+        return ctrl.status.to_dict()
 
     @app.get("/status")
     async def status() -> dict:

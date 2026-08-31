@@ -524,3 +524,174 @@ async def test_close_events_connections_called_before_daemon_restart():
     close_idx = order.index("rpc:close_events_connections")
     restart_idx = order.index("restart_units")
     assert close_idx < restart_idx, "close_events_connections must precede restart_units"
+
+
+# --- controller self-refresh timing (issue #865) -------------------------------------
+# The +10s systemd-run used to be scheduled DURING the RESTART phase; resume + publish
+# routinely take longer, so the controller process was replaced mid-deploy, wiping the
+# in-memory DeployStatus and reporting a completed upgrade as "did not complete".
+
+
+@pytest.mark.asyncio
+async def test_controller_refresh_scheduled_only_after_deploy_reports():
+    """The self-restart must be handed to systemd AFTER the deploy is terminal: every
+    phase recorded, publish done, running=False. Scheduling it from the RESTART phase
+    put the +10s timer in the middle of resume/publish (#865)."""
+    g = FakeGit("a", "b", [])
+    s, calls = make_steps(healthy=True)
+    s.deploy_code_changed = lambda changed: True
+    order: list[str] = []
+    snapshot: dict = {}
+
+    orig_publish = s.publish_deployment
+    def publish_spy(sha, gh_api_json=None):
+        order.append("publish")
+        return orig_publish(sha, gh_api_json)
+    s.publish_deployment = publish_spy
+
+    c_ref: list = []
+    def sched_spy(**k):
+        order.append("schedule_refresh")
+        st = c_ref[0].status
+        snapshot["running"] = st.running
+        snapshot["phases"] = dict(st.phases)
+        return True
+    s.schedule_controller_restart = sched_spy
+
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
+                         git_mod=g, steps_mod=s,
+                         changed_files_fn=lambda repo, a, b: ["server/deploy/steps.py"])
+    c_ref.append(c)
+    st = await c.deploy_once()
+    assert st.error is None
+    assert order == ["publish", "schedule_refresh"], (
+        "the refresh must be scheduled after publish, never mid-deploy")
+    assert snapshot["running"] is False, "status must be terminal when the timer starts"
+    assert all(snapshot["phases"][p.value] == PhaseState.DONE.value for p in Phase)
+
+
+@pytest.mark.asyncio
+async def test_no_controller_refresh_after_failed_deploy():
+    """A failed deploy rolls the checkout back to the running code, so there is no new
+    deploy code to pick up — restarting the controller would only wipe live status."""
+    g = FakeGit("a", "b", [])
+    s, calls = make_steps(healthy=False)
+    s.classify_change = lambda files: "daemon_changed"
+    s.deploy_code_changed = lambda changed: True
+    scheduled: list[bool] = []
+    s.schedule_controller_restart = lambda **k: scheduled.append(True) or True
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
+                         git_mod=g, steps_mod=s, daemon_enabled=True,
+                         changed_files_fn=lambda repo, a, b: ["server/deploy/steps.py"])
+    st = await c.deploy_once()
+    assert calls.rolled_back is True and st.error is not None
+    assert scheduled == []
+
+
+@pytest.mark.asyncio
+async def test_unscheduled_controller_refresh_is_a_warning():
+    g = FakeGit("a", "b", [])
+    s, _ = make_steps(healthy=True)
+    s.deploy_code_changed = lambda changed: True
+    s.schedule_controller_restart = lambda **k: False
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
+                         git_mod=g, steps_mod=s,
+                         changed_files_fn=lambda repo, a, b: ["server/deploy/steps.py"])
+    st = await c.deploy_once()
+    assert st.error is None
+    assert any("controller restart" in w for w in st.warnings)
+
+
+# --- status durability across the self-restart (issue #865) --------------------------
+
+
+@pytest.mark.asyncio
+async def test_final_status_survives_controller_restart(tmp_path):
+    """Self-restart after a deploy → /status still reports all phases DONE. The new
+    controller process loads the persisted terminal state instead of starting from an
+    empty DeployStatus that the UI reads as 'Upgrade failed'."""
+    path = str(tmp_path / "deploy-status.json")
+    g = FakeGit("a", "b", [])
+    s, _ = make_steps(healthy=True)
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
+                         git_mod=g, steps_mod=s, status_path=path,
+                         changed_files_fn=lambda repo, a, b: ["web/src/App.tsx"])
+    st = await c.deploy_once()
+    assert st.error is None
+
+    reborn = DeployController("/r", health_url="http://h", venv_python="/v/python",
+                              git_mod=g, steps_mod=s, status_path=path)
+    assert reborn.status.running is False and reborn.status.error is None
+    assert reborn.status.target_sha == "b"
+    assert all(reborn.status.phases[p.value] == PhaseState.DONE.value for p in Phase)
+
+
+@pytest.mark.asyncio
+async def test_failed_status_survives_controller_restart(tmp_path):
+    """The terminal state of a FAILED deploy (error + failed phase + restore result) is
+    just as load-bearing — it is the only place the failure is surfaced."""
+    path = str(tmp_path / "deploy-status.json")
+    g = FakeGit("a", "b", [])
+    s, _ = make_steps(healthy=False)
+    s.classify_change = lambda files: "daemon_changed"
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
+                         git_mod=g, steps_mod=s, daemon_enabled=True, status_path=path,
+                         changed_files_fn=lambda repo, a, b: ["server/sessions/orchestrator.py"])
+    st = await c.deploy_once()
+    assert st.error is not None
+
+    reborn = DeployController("/r", health_url="http://h", venv_python="/v/python",
+                              git_mod=g, steps_mod=s, status_path=path)
+    assert reborn.status.error == st.error
+    assert reborn.status.phases["restart"] == PhaseState.FAILED.value
+    assert reborn.status.running is False
+
+
+def test_interrupted_deploy_loads_as_reported_interruption(tmp_path):
+    """If the process dies while a deploy is mid-flight, the persisted status says
+    running=True with a phase 'running'. Loading that verbatim would freeze the UI
+    spinner forever AND 409-block /start. Sanitize it to a terminal, honest state."""
+    import json
+    path = tmp_path / "deploy-status.json"
+    path.write_text(json.dumps({
+        "running": True, "error": None, "warnings": [], "targetSha": "457730f",
+        "restore": {},
+        "phases": {"preflight": "done", "save": "done", "update": "done",
+                   "report": "done", "restart": "done", "resume": "running"},
+    }))
+    g = FakeGit("a", "b", [])
+    s, _ = make_steps()
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
+                         git_mod=g, steps_mod=s, status_path=str(path))
+    assert c.status.running is False, "a fresh process is not running any deploy"
+    assert c.status.phases["resume"] == PhaseState.FAILED.value
+    assert c.status.error and "restart" in c.status.error
+
+
+def test_missing_or_corrupt_status_file_is_ignored(tmp_path):
+    g = FakeGit("a", "b", [])
+    s, _ = make_steps()
+    fresh = DeployController("/r", health_url="http://h", venv_python="/v/python",
+                             git_mod=g, steps_mod=s,
+                             status_path=str(tmp_path / "nope.json"))
+    assert fresh.status.phases == {} and fresh.status.running is False
+
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json")
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
+                         git_mod=g, steps_mod=s, status_path=str(bad))
+    assert c.status.phases == {} and c.status.error is None
+
+
+@pytest.mark.asyncio
+async def test_unwritable_status_path_does_not_fail_deploy(tmp_path):
+    """Persistence is bookkeeping: a read-only disk must never fail an upgrade."""
+    path = str(tmp_path / "no-such-dir" / "deploy-status.json")
+    g = FakeGit("a", "b", [])
+    s, _ = make_steps(healthy=True)
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
+                         git_mod=g, steps_mod=s, status_path=path,
+                         changed_files_fn=lambda repo, a, b: ["web/src/App.tsx"])
+    st = await c.deploy_once()
+    assert st.error is None
+    assert all(st.phases[p.value] == PhaseState.DONE.value for p in Phase)
