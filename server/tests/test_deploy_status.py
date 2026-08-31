@@ -12,10 +12,9 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import delete
 
-from server.db import db_session, init_db
-from server.db.models import MergedPr, RepoDeployConfig
+from server.db import db_session
+from server.db.models import RepoDeployConfig
 from server.github.pr_status import PipelinePr, PullRequestInfo
 from server.pipeline.deploy_status import compute_repo_deploy
 from server.pipeline.timeline import upsert_merged_pr
@@ -140,13 +139,8 @@ _RECENT_MERGE = (datetime.now(timezone.utc) - timedelta(days=2)).strftime(
 
 
 @pytest.fixture()
-def _clean_deploy_tables():
-    async def wipe():
-        await init_db()
-        async with db_session() as db:
-            await db.execute(delete(RepoDeployConfig))
-            await db.execute(delete(MergedPr))
-    asyncio.run(wipe())
+def _clean_deploy_tables(isolated_db):
+    """Per-test DB (#728) — the deploy tables start empty, nothing to wipe."""
 
 
 class _FakeOrch:

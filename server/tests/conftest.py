@@ -123,6 +123,28 @@ def _reset_helper_call_breakers():
     helper_call.reset_breakers()
 
 
+@pytest.fixture
+def isolated_db(tmp_path, monkeypatch):
+    """Fresh per-test DB under tmp_path — kills cross-file order dependence (#728).
+
+    Bare ``await init_db()`` re-resolves CCSWITCH_DB_URL on every call (settings
+    are uncached), so tests that relied on it shared the per-session redirect DB
+    above with every other bare caller on their worker — visible rows depended
+    on which files ran before them. Pointing the env var at a private file makes
+    all existing bare call sites land here, and the eager init gives tests that
+    never call init_db themselves a schema to talk to. Opt in by name, or via a
+    module-local autouse wrapper in files whose every test needs it.
+    """
+    import asyncio
+
+    from server.db import init_db
+
+    url = f"sqlite+aiosqlite:///{tmp_path / 'test.db'}"
+    monkeypatch.setenv("CCSWITCH_DB_URL", url)
+    asyncio.run(init_db(url))
+    return url
+
+
 # Enable asyncio mode for all tests in this package
 def pytest_configure(config):
     config.addinivalue_line(
