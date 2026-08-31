@@ -62,14 +62,14 @@ def _default_changed_files(repo: str, a: str, b: str) -> list[str] | None:
 
 
 class DeployController:
-    def __init__(self, repo: str, *, health_url: str, venv_pip: str,
+    def __init__(self, repo: str, *, health_url: str, venv_python: str,
                  daemon_client_factory: Callable[[], Any] | None = None,
                  daemon_enabled: bool = False,
                  steps_mod=_steps, git_mod=_git, drain_mod=_drain,
                  changed_files_fn: Callable[[str, str, str], list[str] | None] = _default_changed_files):
         self.repo = repo
         self.health_url = health_url
-        self.venv_pip = venv_pip
+        self.venv_python = venv_python
         self._client_factory = daemon_client_factory
         self.daemon_enabled = daemon_enabled
         self._steps = steps_mod
@@ -137,7 +137,7 @@ class DeployController:
             await asyncio.to_thread(self._steps.guard_working_tree, self.repo)
             await asyncio.to_thread(self._steps.fast_forward, self.repo)
             await asyncio.to_thread(self._steps.sync_deps_if_changed, self.repo, local, remote,
-                                    venv_pip=self.venv_pip)
+                                    venv_python=self.venv_python)
             await asyncio.to_thread(self._steps.build_frontend, self.repo)
             self._set(Phase.UPDATE, PhaseState.DONE)
 
@@ -275,6 +275,26 @@ class DeployController:
             self.status.running = False
             # Roll back only if we already fast-forwarded (preflight failures changed nothing).
             if e.phase != "preflight" and local:
+                await asyncio.to_thread(self._steps.rollback_to, self.repo, local,
+                                        daemon_changed=daemon_changed,
+                                        daemon_enabled=self.daemon_enabled)
+            return self.status
+        except Exception as e:  # noqa: BLE001 — a deploy must always end in a reported state
+            # Anything that is not a DeployError (an OSError from a missing launcher, a
+            # git wrapper raising, ...) used to escape here unhandled: the task died with
+            # "Task exception was never retrieved", `error` stayed None, the running
+            # phase stayed "running", and — because the fast-forward had already moved
+            # the checkout — no rollback ran, leaving the checkout ahead of the running
+            # process with the UI reporting nothing to deploy (2026-08-30 23:19 EDT).
+            failed = next((p for p, st in self.status.phases.items()
+                           if st == PhaseState.RUNNING.value), None)
+            log.error("deploy: unexpected %s in phase %s", type(e).__name__, failed,
+                      exc_info=True)
+            if failed is not None:
+                self._set(Phase(failed), PhaseState.FAILED)
+            self.status.error = f"{failed or 'deploy'}: unexpected {type(e).__name__}: {e}"
+            self.status.running = False
+            if failed not in (None, Phase.PREFLIGHT.value) and local:
                 await asyncio.to_thread(self._steps.rollback_to, self.repo, local,
                                         daemon_changed=daemon_changed,
                                         daemon_enabled=self.daemon_enabled)

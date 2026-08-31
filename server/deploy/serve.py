@@ -25,9 +25,9 @@ def serve(socket_path: str | None = None) -> None:
     repo = os.environ.get("CCSWITCH_DEPLOY_REPO", os.getcwd())
     host = os.environ.get("CCSWITCH_HOST", "127.0.0.1")
     port = os.environ.get("CCSWITCH_PORT", "8787")
-    venv_pip = os.environ.get("CCSWITCH_DEPLOY_VENV_PIP", os.path.join(repo, ".venv", "bin", "pip"))
+    venv_python = os.environ.get("CCSWITCH_DEPLOY_VENV_PYTHON", os.path.join(repo, ".venv", "bin", "python"))
     daemon_enabled = _daemon_enabled()
     app, _, _ = build_controller_app(repo=repo, health_url=f"http://{host}:{port}/healthz",
-                                     venv_pip=venv_pip, daemon_enabled=daemon_enabled)
+                                     venv_python=venv_python, daemon_enabled=daemon_enabled)
     log.info("deploy controller serving on %s", sock)
     uvicorn.run(app, uds=sock, log_level="info")

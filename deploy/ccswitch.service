@@ -9,7 +9,7 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=ccswitch
 User=tony
-WorkingDirectory=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher
+WorkingDirectory=/home/tony/GitHub/cc-account-switcher-deploy
 # Runtime secrets/config (DB url, signing keys, tailnet allowlist) + PATH/HOME so
 # the server can find git/node/claude. Created out-of-band; NOT in the repo.
 EnvironmentFile=/etc/ccswitch/ccswitch.env
@@ -19,7 +19,7 @@ EnvironmentFile=/etc/ccswitch/ccswitch.env
 # server/app.py (session close, X11 sweep, DB dispose — see app.py's shutdown
 # comment block) NEVER runs, and systemd SIGKILLs at TimeoutStopSec on every deploy
 # (transcript audit V4).
-ExecStart=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/uvicorn server.app:app --host 127.0.0.1 --port 8787 --timeout-graceful-shutdown 10
+ExecStart=/home/tony/GitHub/cc-account-switcher-deploy/.venv/bin/uvicorn server.app:app --host 127.0.0.1 --port 8787 --timeout-graceful-shutdown 10
 Restart=on-failure
 RestartSec=3
 # Chromium is slow to exit; cap host resources on the 19GB box

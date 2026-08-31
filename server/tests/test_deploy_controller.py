@@ -21,7 +21,7 @@ def make_steps(*, ci="green", healthy=True, changed=None):
     mod.ci_verdict = lambda sha, gh_api=None: ci
     mod.guard_working_tree = lambda repo, run=None: False
     mod.fast_forward = lambda repo, ref="master", run=None: None
-    mod.sync_deps_if_changed = lambda repo, a, b, *, venv_pip, run=None: []
+    mod.sync_deps_if_changed = lambda repo, a, b, *, venv_python, run=None: []
     mod.build_frontend = lambda repo, run=None: None
     mod.classify_change = lambda files: "daemon_changed" if files and any("orchestrator" in f for f in files) else "edge_only"
     mod._changed_files = changed or []
@@ -62,7 +62,7 @@ def make_steps(*, ci="green", healthy=True, changed=None):
 async def test_up_to_date_is_noop():
     g = FakeGit("same", "same", [])
     s, _ = make_steps()
-    c = DeployController("/r", health_url="http://h", venv_pip="/v/pip",
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
                          git_mod=g, steps_mod=s)
     st = await c.deploy_once()
     assert st.running is False and st.error is None
@@ -78,7 +78,7 @@ async def test_up_to_date_still_rebuilds_frontend():
     s, _ = make_steps()
     built: list[str] = []
     s.build_frontend = lambda repo, run=None: built.append(repo)
-    c = DeployController("/r", health_url="http://h", venv_pip="/v/pip",
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
                          git_mod=g, steps_mod=s)
     st = await c.deploy_once()
     assert st.running is False and st.error is None
@@ -95,7 +95,7 @@ async def test_up_to_date_rebuild_failure_is_warning_not_error():
         from server.deploy.types import DeployError
         raise DeployError("update", "frontend build failed: npm exploded")
     s.build_frontend = boom
-    c = DeployController("/r", health_url="http://h", venv_pip="/v/pip",
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
                          git_mod=g, steps_mod=s)
     st = await c.deploy_once()
     assert st.error is None
@@ -106,7 +106,7 @@ async def test_up_to_date_rebuild_failure_is_warning_not_error():
 async def test_red_ci_refuses_before_any_change():
     g = FakeGit("a", "b", [])
     s, calls = make_steps(ci="red")
-    c = DeployController("/r", health_url="http://h", venv_pip="/v/pip", git_mod=g, steps_mod=s)
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python", git_mod=g, steps_mod=s)
     st = await c.deploy_once()
     assert st.error and "preflight" in st.error
     assert calls.restarted == [] and calls.rolled_back is False
@@ -118,7 +118,7 @@ async def test_health_failure_triggers_rollback():
     s, calls = make_steps(healthy=False)
     # force daemon_changed path so a restart happens
     s.classify_change = lambda files: "daemon_changed"
-    c = DeployController("/r", health_url="http://h", venv_pip="/v/pip",
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
                          git_mod=g, steps_mod=s, daemon_enabled=True,
                          changed_files_fn=lambda repo, a, b: ["server/sessions/orchestrator.py"])
     st = await c.deploy_once()
@@ -127,10 +127,50 @@ async def test_health_failure_triggers_rollback():
 
 
 @pytest.mark.asyncio
+async def test_unexpected_exception_after_fast_forward_is_reported_and_rolled_back():
+    """A non-DeployError escaping a step (here: the OSError of a missing pip launcher,
+    2026-08-30 23:19 EDT) must end the deploy in a REPORTED state — phase FAILED, error
+    text, running=False — and roll the checkout back, because the fast-forward already
+    moved it. Before: the task died with "Task exception was never retrieved", error
+    stayed None, `update` stayed "running", and the checkout sat ahead of the running
+    process with the pending banner saying there was nothing to deploy."""
+    g = FakeGit("a", "b", [])
+    s, calls = make_steps()
+
+    def missing_launcher(repo, a, b, *, venv_python, run=None):
+        raise FileNotFoundError(2, "No such file or directory", "/r/.venv/bin/pip")
+    s.sync_deps_if_changed = missing_launcher
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
+                         git_mod=g, steps_mod=s)
+    st = await c.deploy_once()
+    assert st.phases["update"] == PhaseState.FAILED.value
+    assert st.error and "FileNotFoundError" in st.error and "update" in st.error
+    assert st.running is False
+    assert calls.rolled_back is True, "the fast-forward had happened: must rewind"
+    assert c._lock_acquired is False
+
+
+@pytest.mark.asyncio
+async def test_unexpected_exception_in_preflight_changes_nothing():
+    """Before the fast-forward there is nothing to roll back — mirror the DeployError rule."""
+    g = FakeGit("a", "b", [])
+    s, calls = make_steps()
+    def boom(sha, gh_api=None):
+        raise RuntimeError("gh exploded")
+    s.ci_verdict = boom
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
+                         git_mod=g, steps_mod=s)
+    st = await c.deploy_once()
+    assert st.phases["preflight"] == PhaseState.FAILED.value
+    assert st.error and "RuntimeError" in st.error
+    assert calls.rolled_back is False
+
+
+@pytest.mark.asyncio
 async def test_edge_only_skips_daemon_restart_and_publishes():
     g = FakeGit("a", "b", [])
     s, calls = make_steps(healthy=True)
-    c = DeployController("/r", health_url="http://h", venv_pip="/v/pip",
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
                          git_mod=g, steps_mod=s, daemon_enabled=True,
                          changed_files_fn=lambda repo, a, b: ["web/src/App.tsx"])
     st = await c.deploy_once()
@@ -149,7 +189,7 @@ async def test_edge_only_with_remote_daemon_uses_long_health_window():
     g = FakeGit("a", "b", [])
     s, calls = make_steps(healthy=True)
     s.remote_daemon_configured = lambda: True
-    c = DeployController("/r", health_url="http://h/healthz", venv_pip="/v/pip",
+    c = DeployController("/r", health_url="http://h/healthz", venv_python="/v/python",
                          git_mod=g, steps_mod=s, daemon_enabled=True,
                          changed_files_fn=lambda repo, a, b: ["web/src/App.tsx"])
     st = await c.deploy_once()
@@ -165,7 +205,7 @@ async def test_edge_only_single_host_keeps_short_health_window():
     g = FakeGit("a", "b", [])
     s, calls = make_steps(healthy=True)
     s.remote_daemon_configured = lambda: False
-    c = DeployController("/r", health_url="http://h/healthz", venv_pip="/v/pip",
+    c = DeployController("/r", health_url="http://h/healthz", venv_python="/v/python",
                          git_mod=g, steps_mod=s, daemon_enabled=True,
                          changed_files_fn=lambda repo, a, b: ["web/src/App.tsx"])
     st = await c.deploy_once()
@@ -177,7 +217,7 @@ async def test_edge_only_single_host_keeps_short_health_window():
 async def test_concurrent_deploy_rejected():
     g = FakeGit("a", "b", [])
     s, _ = make_steps()
-    c = DeployController("/r", health_url="http://h", venv_pip="/v/pip",
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
                          git_mod=g, steps_mod=s,
                          changed_files_fn=lambda repo, a, b: ["web/x.tsx"])
     c._lock_acquired = True   # simulate an in-flight deploy
@@ -202,7 +242,7 @@ async def test_daemon_deploy_snapshots_and_restores():
             if method == "close_events_connections": return {"closed": 0}
             raise AssertionError(method)
 
-    c = DeployController("/r", health_url="http://h", venv_pip="/v/pip",
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
                          git_mod=g, steps_mod=s, daemon_enabled=True,
                          daemon_client_factory=lambda: FakeDaemon(),
                          changed_files_fn=lambda repo, a, b: ["server/sessions/orchestrator.py"])
@@ -238,7 +278,7 @@ async def test_every_per_deploy_daemon_client_is_closed():
         async def aclose(self):
             closed.append(self)
 
-    c = DeployController("/r", health_url="http://h", venv_pip="/v/pip",
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
                          git_mod=g, steps_mod=s, daemon_enabled=True,
                          daemon_client_factory=lambda: FakeDaemon(),
                          changed_files_fn=lambda repo, a, b: ["server/sessions/orchestrator.py"])
@@ -268,7 +308,7 @@ async def test_a_daemon_client_without_aclose_does_not_fail_the_deploy():
         async def aclose(self):
             raise RuntimeError("transport already gone")
 
-    c = DeployController("/r", health_url="http://h", venv_pip="/v/pip",
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
                          git_mod=g, steps_mod=s, daemon_enabled=True,
                          daemon_client_factory=lambda: RudeDaemon(),
                          changed_files_fn=lambda repo, a, b: ["server/sessions/orchestrator.py"])
@@ -324,7 +364,7 @@ async def test_edge_only_skips_restore_but_snapshots():
     class FakeDaemon:
         async def call(self, method, **params):
             rpc_calls.append(method); return {}
-    c = DeployController("/r", health_url="http://h", venv_pip="/v/pip",
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
                          git_mod=g, steps_mod=s, daemon_enabled=True,
                          daemon_client_factory=lambda: FakeDaemon(),
                          changed_files_fn=lambda repo, a, b: ["web/src/App.tsx"])
@@ -361,7 +401,7 @@ async def test_blocking_steps_run_off_the_event_loop():
               "build_frontend", "restart_units", "wait_healthy", "publish_deployment"):
         setattr(s, m, rec(m, getattr(s, m)))
 
-    c = DeployController("/r", health_url="http://h", venv_pip="/v/pip",
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
                          git_mod=g, steps_mod=s, daemon_enabled=True,
                          changed_files_fn=lambda repo, a, b: ["web/src/App.tsx"])
     st = await c.deploy_once()
@@ -387,7 +427,7 @@ async def test_rollback_runs_off_the_event_loop():
         seen["rollback_to"] = threading.get_ident()
     s.rollback_to = rollback
 
-    c = DeployController("/r", health_url="http://h", venv_pip="/v/pip",
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
                          git_mod=g, steps_mod=s, daemon_enabled=True,
                          changed_files_fn=lambda repo, a, b: ["server/sessions/orchestrator.py"])
     await c.deploy_once()
@@ -406,7 +446,7 @@ async def test_restart_units_exception_triggers_rollback():
     def bad_restart(*, daemon_changed, daemon_enabled, run=None):
         raise subprocess.CalledProcessError(1, ["systemctl"])
     s.restart_units = bad_restart
-    c = DeployController("/r", health_url="http://h", venv_pip="/v/pip",
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
                          git_mod=g, steps_mod=s, daemon_enabled=True,
                          changed_files_fn=lambda repo, a, b: ["server/sessions/orchestrator.py"])
     st = await c.deploy_once()
@@ -435,7 +475,7 @@ async def test_running_cleared_before_rollback_executes():
                              daemon_enabled=daemon_enabled, run=run)
     s.rollback_to = spy_rollback
 
-    c = DeployController("/r", health_url="http://h", venv_pip="/v/pip",
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
                          git_mod=g, steps_mod=s, daemon_enabled=True,
                          changed_files_fn=lambda repo, a, b: ["server/sessions/orchestrator.py"])
     c_ref.append(c)
@@ -474,7 +514,7 @@ async def test_close_events_connections_called_before_daemon_restart():
             raise AssertionError(method)
         async def aclose(self): pass
 
-    c = DeployController("/r", health_url="http://h", venv_pip="/v/pip",
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
                          git_mod=g, steps_mod=s, daemon_enabled=True,
                          daemon_client_factory=lambda: FakeDaemon(),
                          changed_files_fn=lambda repo, a, b: ["server/sessions/orchestrator.py"])

@@ -206,11 +206,18 @@ def changed_paths(repo: str, a: str, b: str, paths: list[str], run: Run = subpro
     return [p for p in r.stdout.splitlines() if p.strip()]
 
 
-def sync_deps_if_changed(repo: str, a: str, b: str, *, venv_pip: str,
+def sync_deps_if_changed(repo: str, a: str, b: str, *, venv_python: str,
                          run: Run = subprocess.run) -> list[str]:
     done: list[str] = []
     if changed_paths(repo, a, b, ["pyproject.toml", "uv.lock"], run=run):
-        r = run([venv_pip, "install", "-e", ".[server]", "--quiet"],
+        # Invoke pip as a module of the venv's interpreter, never via the `bin/pip`
+        # launcher script: that launcher bakes the venv's ABSOLUTE path into its shebang
+        # at creation time, so a venv that was later moved (or is reached through a
+        # symlink) has a launcher pointing at an interpreter that no longer exists —
+        # exec fails with ENOENT *for the launcher itself*, which looks like "pip is
+        # missing" while `bin/pip` sits right there (2026-08-30 upgrade failure).
+        # `bin/python` is a symlink and survives a move; `-m pip` needs nothing else.
+        r = run([venv_python, "-m", "pip", "install", "-e", ".[server]", "--quiet"],
                 cwd=repo, capture_output=True, text=True)
         if r.returncode != 0:
             raise DeployError("update", f"pip install failed: {r.stderr.strip()}")

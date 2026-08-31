@@ -11,11 +11,11 @@ EnvironmentFile=/etc/ccswitch/ccswitch.env
 # the checkout path at install time if this host's deploy checkout differs (e.g. the
 # live host uses .../cc-account-switcher-deploy). serve.py defaults CCSWITCH_DEPLOY_REPO
 # to WorkingDirectory, so keep the two in sync.
-WorkingDirectory=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher
-Environment=CCSWITCH_DEPLOY_REPO=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher
+WorkingDirectory=/home/tony/GitHub/cc-account-switcher-deploy
+Environment=CCSWITCH_DEPLOY_REPO=/home/tony/GitHub/cc-account-switcher-deploy
 RuntimeDirectory=ccswitch
 RuntimeDirectoryPreserve=yes
-ExecStart=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/python -m server.deploy serve
+ExecStart=/home/tony/GitHub/cc-account-switcher-deploy/.venv/bin/python -m server.deploy serve
 Restart=on-failure
 RestartSec=5
 

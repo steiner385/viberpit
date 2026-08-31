@@ -16,7 +16,7 @@ RuntimeDirectoryPreserve=yes
 # under here; without it the non-root daemon can't create /var/lib/ccswitch and
 # snapshot_deploy fails with PermissionError.
 StateDirectory=ccswitch
-WorkingDirectory=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher
+WorkingDirectory=/home/tony/GitHub/cc-account-switcher-deploy
 EnvironmentFile=/etc/ccswitch/ccswitch.env
 # This entrypoint calls uvicorn.run() programmatically (server/ipc/serve.py) rather
 # than the uvicorn CLI, so --timeout-graceful-shutdown can't be passed here as a
@@ -24,7 +24,7 @@ EnvironmentFile=/etc/ccswitch/ccswitch.env
 # transcript-audit V4 rationale as ccswitch.service: bound SIGTERM so the daemon
 # lifespan shutdown — x11 teardown, reauth shutdown, orchestrator stop — actually
 # runs instead of being SIGKILLed).
-ExecStart=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/python -m server.ipc
+ExecStart=/home/tony/GitHub/cc-account-switcher-deploy/.venv/bin/python -m server.ipc
 # Restart=always, NOT on-failure: an out-of-band SIGTERM (a stray kill/pkill, not a
 # `systemctl stop`) makes the daemon exit with Result=success, which on-failure does
 # NOT restart — the daemon then stays dead, the edge loops on "Connection refused",
