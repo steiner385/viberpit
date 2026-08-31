@@ -4,7 +4,7 @@ from unittest import mock
 import pytest
 
 from server.ipc.paths import (
-    DEFAULT_SOCKET_PATH, Endpoint, parse_endpoint, sessiond_endpoint, sessiond_socket,
+    DEFAULT_SOCKET_PATH, Endpoint, parse_endpoint, sessiond_endpoint,
 )
 
 
@@ -48,9 +48,3 @@ def test_sessiond_endpoint_precedence():
     # nothing set → default unix socket.
     with mock.patch.dict(os.environ, env, clear=True):
         assert sessiond_endpoint() == Endpoint("unix", path=DEFAULT_SOCKET_PATH)
-
-
-def test_sessiond_socket_unchanged():
-    env = {k: v for k, v in os.environ.items() if k != "CCSWITCH_SESSIOND_SOCKET"}
-    with mock.patch.dict(os.environ, env, clear=True):
-        assert sessiond_socket() == DEFAULT_SOCKET_PATH
