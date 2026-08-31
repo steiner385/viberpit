@@ -134,7 +134,10 @@ ssh tony@rocky 'findmnt -t fuse.sshfs'   # confirm both are back
 ```
 
 After remounting, restart the daemon so any process that opened a file handle across the drop picks
-up a fresh view: `ssh tony@rocky 'sudo systemctl restart ccswitch-daemon.service'`.
+up a fresh view: `ssh tony@rocky 'sudo systemctl restart ccswitch-daemon.service'`. The daemon drains
+in-flight turns on SIGTERM before it exits (up to ~3 min, ~10 min if a session is mid-compaction —
+see `deploy/README.md` § "Stopping / restarting the daemon"), so the command blocks while sessions
+finish; that is expected, not a hang.
 
 The `reconnect` sshfs option handles a transient network blip automatically (rocky's daemon unit
 also declares `Requires=tailscaled.service`, so it won't even start before the tailnet is up); the
@@ -165,6 +168,9 @@ ssh <host> git -C <repo> fetch --quiet origin
 ssh <host> git -C <repo> merge --ff-only <deployed-sha>
 ssh <host> sudo systemctl restart ccswitch-daemon.service
 ```
+
+The `systemctl restart` returns only after the remote daemon has drained its in-flight turns
+(SIGTERM drain, bounded by the deploy drain caps) — the ssh step can legitimately take minutes.
 
 Fast-forward only — a diverged remote checkout aborts the deploy rather than losing local commits.
 This requires **`CCSWITCH_DAEMON_SSH_REPO`**, the checkout path on the remote host:
@@ -199,7 +205,7 @@ Then reset the host and restart it:
 
 ```bash
 ssh tony@rocky 'cd /home/tony/GitHub/ccswitch   && git fetch -q origin && git checkout -q master   && git reset --hard origin/master && git branch -D <hotfix-branch>'
-ssh tony@rocky 'sudo systemctl restart ccswitch-daemon'
+ssh tony@rocky 'sudo systemctl restart ccswitch-daemon'   # blocks while in-flight turns drain
 ```
 
 Check for local work first (`git log --branches --not --remotes`, `git stash list`) —
