@@ -26,9 +26,16 @@ export interface Account {
   usage: {
     session: UsageWindow
     weekly: UsageWindow
+    // Whether the PROVIDER has extra usage enabled — read-only, set in the
+    // Anthropic console. Distinct from `allowExtraUsage` below, which is this
+    // app's opt-in. Optional: older payloads predate the field.
+    extraUsageEnabled?: boolean
   } | null
   nickname?: string | null
   weeklyReservePct?: number | null
+  // Opt-in to spending paid extra-usage credits on this account once it is at
+  // its ceiling. Absent means off — spending is never a silent default.
+  allowExtraUsage?: boolean
   liveSessions: LiveSessionCounts
   rank: number | null
   rankReason: string | null
