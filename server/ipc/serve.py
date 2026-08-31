@@ -86,6 +86,8 @@ def build_daemon(orchestrator=None):
         x11=lambda: app.state.x11,
     )
     register_reauth(app, app.state.reauth)
+    from server.mcp_auth import build_default_manager as _build_mcp_auth
+    app.state.mcp_auth = _build_mcp_auth()
     return app, orchestrator
 
 
@@ -174,6 +176,10 @@ async def daemon_lifespan(app, orchestrator):
             await app.state.reauth.shutdown()
         except Exception:
             log.warning("daemon shutdown: reauth shutdown failed", exc_info=True)
+        try:
+            await app.state.mcp_auth.shutdown()
+        except Exception:
+            log.warning("daemon shutdown: mcp_auth shutdown failed", exc_info=True)
         try:
             loop_lag_task = getattr(app.state, "loop_lag_task", None)
         except Exception:
