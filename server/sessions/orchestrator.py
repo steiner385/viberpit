@@ -51,6 +51,7 @@ from server.sessions.archive_move import mountpoint, restore_from_archive
 from server.sessions import attachments as _attachments
 from server.sessions import dispatch
 from server.sessions import events as ev
+from server.sessions import primary_lease
 from server.sessions import push as push_mod
 from server.sessions.commands import catalog as cmd_catalog
 from server.sessions.commands import dispatcher as cmd_dispatcher
@@ -280,6 +281,57 @@ TRANSCRIPT_EXPORT_CEILING_S = env_float("CCSWITCH_TRANSCRIPT_EXPORT_CEILING_S", 
 # race protection entirely — fall back to the default instead.
 DRIVER_RELEASE_WAIT_S = env_float("CCSWITCH_DRIVER_RELEASE_WAIT_S", 20.0, minimum=0.1)
 
+# ---------------------------------------------------------------------------
+# Daemon identity + host-partitioned session ownership (#852)
+# ---------------------------------------------------------------------------
+
+# How stale the primary lease's heartbeat may be before another primary daemon may
+# take it over (fenced). Renewal cadence is TTL/5. Same-host re-acquisition ignores
+# staleness entirely (systemd guarantees one daemon per host), so a crash restart
+# of the real primary is never delayed by this.
+PRIMARY_LEASE_TTL_S = env_float("CCSWITCH_PRIMARY_LEASE_TTL_S", 300.0, minimum=10.0)
+
+# TTL for the cached enabled-hosts registry snapshot that backs session-ownership
+# decisions. Ownership only changes when an operator edits the fleet registry, so
+# a short cache is plenty — this bounds DB reads from the event-driven rotation
+# monitor, not correctness.
+_OWNERSHIP_HOSTS_TTL_S = 60.0
+
+
+def daemon_role() -> str:
+    """Return this daemon's role from ``CCSWITCH_DAEMON_ROLE``.
+
+    ``primary`` (the default) runs every background loop and owns fleet-global
+    automation; ``worker`` serves dispatched sessions only (#840). Any other
+    value raises: silently falling back to ``primary`` would double-drive the
+    fleet on a typo, and silently becoming ``worker`` would quietly stop every
+    automation — both are worse than a loud failed boot.
+    """
+    role = os.environ.get("CCSWITCH_DAEMON_ROLE", "primary").strip().lower()
+    if role not in ("primary", "worker"):
+        raise ValueError(
+            f"CCSWITCH_DAEMON_ROLE={role!r} — expected 'primary' or 'worker'"
+        )
+    return role
+
+
+def self_host_name() -> str:
+    """This daemon's fleet identity — the ``hosts.name`` the dispatcher stamps
+    onto sessions it sends here (``Session.host``).
+
+    ``CCSWITCH_HOST_NAME`` wins when set (operator-managed registries can use any
+    name). The fallback is the kernel hostname's first label, which matches how
+    auto-registered hosts are named (``_derive_host_name`` takes the first label
+    of the tailnet MagicDNS endpoint, and MagicDNS names ARE machine hostnames).
+    A worker whose identity doesn't match its registry row rehydrates zero
+    sessions after a restart — set the env var explicitly on renamed hosts.
+    """
+    name = os.environ.get("CCSWITCH_HOST_NAME", "").strip()
+    if name:
+        return name
+    import socket
+    return socket.gethostname().split(".")[0]
+
 
 class SessionOrchestrator:
     """Orchestrates session lifecycle: creation, rotation, termination.
@@ -441,19 +493,31 @@ class SessionOrchestrator:
         # have become deletable (e.g. the sshfs mount recovered).
         self._archive_purge_strikes: dict[str, int] = {}
         self._archive_purge_poisoned: set[str] = set()
+        # Cached enabled-hosts registry snapshot for _owns_record (#852):
+        # (monotonic_ts, names) — None until the first read. See _enabled_host_names.
+        self._ownership_hosts_cache: tuple[float, frozenset[str]] | None = None
 
         # Build a live-session-aware usage_fn: when an account has a live session
         # the SDK owns its token family, so the poller must not independently
         # refresh.  Pass allow_refresh=False for those accounts so the poller
         # calls sync_back first and returns None on an expired-but-owned token
         # (the SDK will refresh on its next request).
+        #
+        # A WORKER daemon never refreshes at all (#852): the shared refresh-token
+        # files admit exactly one refresher (the primary's poller / token-refresh
+        # monitor — two race the token family), but the rotation monitor and
+        # _account_is_dead/_account_limited read THIS process's poller cache, so
+        # a worker with no poll signal loses proactive ceiling rotation and its
+        # crash recovery can't tell a dead account from a healthy one. Read-only
+        # polling restores that signal without the refresh race.
         if usage_fn is not None:
             _poller_usage_fn = usage_fn
         else:
             def _poller_usage_fn(name: str):
                 return ccswitch_accounts.usage_for(
                     name,
-                    allow_refresh=not self.has_live_session(name),
+                    allow_refresh=(daemon_role() != "worker"
+                                   and not self.has_live_session(name)),
                     path="poller-idle",
                 )
 
@@ -701,6 +765,10 @@ class SessionOrchestrator:
         self._archive_limit_task: asyncio.Task | None = None
         self._janitor_task: asyncio.Task | None = None
         self._pr_branch_task: asyncio.Task | None = None
+        # Primary-lease state (#852): the heartbeat task and the fence acquired at
+        # start(). None on workers and on an orchestrator that never start()ed.
+        self._lease_task: asyncio.Task | None = None
+        self._lease_fence: int | None = None
         # Event bus — WS bridge subscribes here for lifecycle events
         self._event_subscribers: list[asyncio.Queue] = []
         # Serialises the check-build-register critical section in ensure_driver
@@ -778,7 +846,31 @@ class SessionOrchestrator:
         return task
 
     async def start(self) -> None:
-        """Start the usage poller, the rotation monitor and the titling sweep."""
+        """Start the usage poller, the rotation monitor and the titling sweep.
+
+        A PRIMARY daemon must first win the DB-side primary lease (#852): the role
+        is per-host env config, so nothing else stops two hosts both booting as
+        primary and double-driving every fleet-global automation. Failure raises —
+        a loud failed boot, deliberately unguarded in the daemon lifespan, beats a
+        silent second primary. Workers skip the lease entirely.
+        """
+        if daemon_role() == "primary":
+            me = self_host_name()
+            fence = await primary_lease.acquire(me, ttl_s=PRIMARY_LEASE_TTL_S)
+            if fence is None:
+                state = await primary_lease.current()
+                held = (f"held by {state.holder!r}, renewed {state.age_s:.0f}s ago"
+                        if state else "held")
+                raise RuntimeError(
+                    f"primary lease {held} — another primary daemon is alive. "
+                    f"Exactly one daemon in the fleet may run as primary: set "
+                    f"CCSWITCH_DAEMON_ROLE=worker on this host ({me!r}) or stop "
+                    f"the other daemon first."
+                )
+            self._lease_fence = fence
+            self._lease_task = asyncio.create_task(
+                self._primary_lease_heartbeat(), name="primary-lease-heartbeat"
+            )
         await self._poller.start()
         await self._pr_poller.start()
         await self._pr_population.start()
@@ -853,6 +945,38 @@ class SessionOrchestrator:
             name="recurring-session-scheduler",
         )
 
+    async def _primary_lease_heartbeat(self) -> None:
+        """Renew the primary lease every TTL/5; scream on a fenced takeover (#852).
+
+        A failed renew means another daemon took the lease — i.e. TWO primaries
+        are (or were) configured. This loop does not self-demote (stopping live
+        automation loops mid-flight has its own failure modes); it makes the
+        split-brain impossible to miss: a CRITICAL log every beat until an
+        operator fixes the roles. A transient DB error is retried silently — the
+        fence means a delayed renew can never resurrect a lease someone took.
+        """
+        interval = max(PRIMARY_LEASE_TTL_S / 5.0, 2.0)
+        while True:
+            await asyncio.sleep(interval)
+            fence = self._lease_fence
+            if fence is None:  # defensive: heartbeat only starts after acquire
+                continue
+            try:
+                ok = await primary_lease.renew(self_host_name(), fence)
+            except Exception:
+                log.warning("primary-lease: renew failed (DB error) — retrying "
+                            "next beat", exc_info=True)
+                continue
+            if not ok:
+                state = await primary_lease.current()
+                log.critical(
+                    "primary-lease: LOST (fenced takeover by %r) — TWO primary "
+                    "daemons are configured. This daemon keeps running but the "
+                    "fleet is double-driven until CCSWITCH_DAEMON_ROLE is fixed "
+                    "on one host and that daemon restarts.",
+                    state.holder if state else "<released>",
+                )
+
     async def _refresh_idle_tokens_once(self) -> None:
         """Proactively refresh idle accounts' access tokens (best-effort).
 
@@ -917,7 +1041,7 @@ class SessionOrchestrator:
                      "_sdlc_synth_task",
                      "_autopilot_task", "_cicd_task", "_archaudit_task", "_sweep_task",
                      "_archive_limit_task", "_janitor_task", "_recurring_task",
-                     "_drain_timer"):
+                     "_lease_task", "_drain_timer"):
             # Default None: stop() must be safe on an orchestrator that never
             # start()ed (tests build one via __new__/without start).
             task = getattr(self, attr, None)
@@ -957,6 +1081,17 @@ class SessionOrchestrator:
                            phase="stop:pr-population")
         await bounded_wait(self._deploy_watcher.stop(), timeout=_STOP_TASK_TIMEOUT_S,
                            phase="stop:deploy-watcher")
+        # Hand the primary lease back LAST (#852) — after every automation loop
+        # above is genuinely dead — so a planned failover can promote another
+        # primary immediately instead of waiting out the TTL. getattr: stop()
+        # must be safe on a never-start()ed / __new__-built orchestrator. The
+        # fenced release makes releasing after a takeover a harmless no-op.
+        fence = getattr(self, "_lease_fence", None)
+        if fence is not None:
+            self._lease_fence = None
+            await bounded_wait(
+                primary_lease.release(self_host_name(), fence),
+                timeout=_STOP_TASK_TIMEOUT_S, phase="stop:primary-lease-release")
 
     # ------------------------------------------------------------------
     # Session CRUD
@@ -4664,6 +4799,7 @@ class SessionOrchestrator:
             command_catalog=getattr(row, "command_catalog", None),
             pr_resolution=getattr(row, "pr_resolution", None),
             pr_resolution_source=getattr(row, "pr_resolution_source", None),
+            host=getattr(row, "host", None),
         )
         fields.update(overrides)
         return SessionRecord(**fields)
@@ -4681,6 +4817,22 @@ class SessionOrchestrator:
                 DbSession.status.notin_(INACTIVE_SESSION_STATUSES)
             )
             )).scalars().all()
+        # Host partition (#852): a worker daemon loads ONLY the rows the dispatcher
+        # stamped with its own host name. NULL-host rows (pre-fleet legacy + the
+        # primary's own automation spawns, which never pass through the dispatcher)
+        # belong to the primary. The primary itself still loads every row: the fleet
+        # dashboard is served from ITS _records, and it is the recovery actor of last
+        # resort for rows whose host has left the registry — per-row ownership for
+        # its acting loops is enforced by _owns_record, not here.
+        if daemon_role() == "worker":
+            me = self_host_name()
+            foreign = [r for r in rows if r.host != me]
+            if foreign:
+                log.info(
+                    "rehydrate: worker host=%r skipping %d row(s) owned elsewhere "
+                    "(%d with host=NULL -> primary)", me, len(foreign),
+                    sum(1 for r in foreign if r.host is None))
+            rows = [r for r in rows if r.host == me]
         from .background_tasks import is_parked
         added = 0
         backfilled: dict[str, str] = {}
@@ -6872,10 +7024,15 @@ class SessionOrchestrator:
         disabled = await asyncio.to_thread(_read_disabled)
         if not disabled:
             return
+        enabled_hosts = await self._enabled_host_names()
         for record in list(self._records.values()):
             if record.account not in disabled:
                 continue
             if record.status in INACTIVE_SESSION_STATUSES or record.status == "queued":
+                continue
+            # Host ownership (#852): same duplicate-actor shape as the stuck-session
+            # sweep — the owning host's daemon runs this very loop for its rows.
+            if not self._owns_record(record, enabled_hosts):
                 continue
             log.info("disabled_account_sweep: rotating session=%s off disabled account=%s",
                      record.id, record.account)
@@ -6894,6 +7051,62 @@ class SessionOrchestrator:
     # ------------------------------------------------------------------
     # Rotation monitor (background task)
     # ------------------------------------------------------------------
+
+    async def _enabled_host_names(self) -> frozenset[str] | None:
+        """Enabled fleet-registry host names, cached for _OWNERSHIP_HOSTS_TTL_S.
+
+        Ownership input for _owns_record (#852). Returns None when the registry is
+        unreadable AND no prior snapshot exists — "unknown", which _owns_record
+        treats as skip-foreign-stamps: delayed recovery of an orphaned row beats
+        racing a live worker's _rotate_away over the same shared row.
+        """
+        now = time.monotonic()
+        cached = self._ownership_hosts_cache
+        if cached is not None and now - cached[0] < _OWNERSHIP_HOSTS_TTL_S:
+            return cached[1]
+        from sqlalchemy import select as sa_select
+        from server.db.models import Host
+        try:
+            async with db_session() as db:
+                names = frozenset((await db.execute(
+                    sa_select(Host.name).where(Host.enabled.is_(True)))).scalars().all())
+        except Exception:
+            log.warning("ownership: enabled-hosts registry read failed", exc_info=True)
+            return cached[1] if cached is not None else None
+        self._ownership_hosts_cache = (now, names)
+        return names
+
+    def _owns_record(self, record: SessionRecord,
+                     enabled_hosts: frozenset[str] | None) -> bool:
+        """True iff THIS daemon is the recovery/rotation actor for *record* (#852).
+
+        _records is host-partitioned on a worker (rehydrate filters), but the
+        primary deliberately holds every row — the fleet dashboard is served from
+        its _records — so its ACTING loops (stuck-session sweep, rotation monitor)
+        must check per-row ownership or two daemons race duplicate _rotate_away
+        spawns over the same shared rows (the reason the sweep was fleet-global
+        before this).
+        """
+        if record.id in self._drivers:
+            # The live driver is in this process — de facto ours regardless of
+            # what the stamp says (e.g. a mid-flight registry rename).
+            return True
+        host = record.host
+        me = self_host_name()
+        if daemon_role() == "worker":
+            return host == me
+        # Primary owns: unstamped rows (pre-fleet legacy + its own automation
+        # spawns, which never pass through the dispatcher), its own stamp, and
+        # DEFAULT_HOST_NAME — a UDS registry entry is this host by definition
+        # (same rule as the health check's split-brain guard, #844). A row
+        # stamped for another ENABLED host has a live daemon responsible for it;
+        # a stamp that has left the registry is an orphan the primary adopts.
+        from server.sessions.fleet_router import DEFAULT_HOST_NAME
+        if host is None or host == me or host == DEFAULT_HOST_NAME:
+            return True
+        if enabled_hosts is None:  # registry unknown — don't race a live worker
+            return False
+        return host not in enabled_hosts
 
     async def _rotation_monitor(self) -> None:
         """Subscribe to usage events; rotate any session whose account hits ceiling.
@@ -6924,6 +7137,7 @@ class SessionOrchestrator:
                     reason = "session limit reached"
 
                 # Find all live sessions on this account and rotate them.
+                enabled_hosts = await self._enabled_host_names()
                 for record in list(self._records.values()):
                     if record.account != account:
                         continue
@@ -6933,6 +7147,14 @@ class SessionOrchestrator:
                     # started by _maybe_start_queued when a slot frees — skip them so
                     # the rotation monitor cannot bypass the cap.
                     if record.status == "queued":
+                        continue
+                    # Host ownership (#852): never rotate/restart a session whose
+                    # driver lives on another fleet host — its own daemon (which
+                    # also runs this monitor) is the actor; acting here would
+                    # spawn a duplicate driver on the wrong host.
+                    if not self._owns_record(record, enabled_hosts):
+                        log.debug("rotation.skip_foreign session=%s host=%s",
+                                  record.id, record.host)
                         continue
                     if record.id not in self._drivers:
                         # Driver died separately from any turn (e.g. proxy crash while
@@ -7021,9 +7243,17 @@ class SessionOrchestrator:
             await asyncio.sleep(_STUCK_SESSION_SWEEP_INTERVAL)
 
     async def _sweep_needs_attention(self) -> None:
-        """One sweep pass: spawn a rotation attempt for every needs_attention session."""
+        """One sweep pass: spawn a rotation attempt for every OWNED needs_attention
+        session. The ownership check (#852) is what makes this sweep safe to run on
+        every daemon: each recovers its own sessions, none races a duplicate
+        _rotate_away over rows another live host owns."""
+        enabled_hosts = await self._enabled_host_names()
         for record in list(self._records.values()):
             if record.status != "needs_attention":
+                continue
+            if not self._owns_record(record, enabled_hosts):
+                log.debug("stuck-sweep.skip_foreign session=%s host=%s",
+                          record.id, record.host)
                 continue
             log.info(
                 "stuck-sweep.retry session=%s account=%s", record.id, record.account,

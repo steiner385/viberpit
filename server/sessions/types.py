@@ -79,6 +79,11 @@ class SessionRecord:
     # marker from the probabilistic classifier. None until explicitly set.
     pr_resolution: str | None = None
     pr_resolution_source: str | None = None
+    # Fleet host that runs this session, mirroring DB Session.host (stamped at
+    # creation by the dispatcher; None for pre-fleet rows and primary-local spawns).
+    # Ownership input for host-partitioned recovery (#852): a daemon must not
+    # rotate/sweep a session whose driver lives on another live fleet host.
+    host: str | None = None
     # Wall-clock time the user last steered this session (prompt/answer/permission/typing ping).
     # Drives autopilot human-deference + the cooldown badge. In-memory/process-local ONLY: NOT in
     # to_dict/from_dict, NOT a DB column — a 120s window is meaningless across a restart.
@@ -151,6 +156,7 @@ class SessionRecord:
             "autoArchiveOptOut": self.auto_archive_opt_out_reason,
             "prResolution": self.pr_resolution,
             "prResolutionSource": self.pr_resolution_source,
+            "host": self.host,
             "usageUnverified": self.usage_unverified,
             "interruptedByRestart": self.interrupted_by_restart,
             "authoredBranches": list(self.authored_branches),
@@ -188,6 +194,7 @@ class SessionRecord:
             auto_archive_opt_out_reason=d.get("autoArchiveOptOut"),
             pr_resolution=d.get("prResolution"),
             pr_resolution_source=d.get("prResolutionSource"),
+            host=d.get("host"),
             usage_unverified=d.get("usageUnverified", False),
             interrupted_by_restart=d.get("interruptedByRestart", False),
             authored_branches=list(d.get("authoredBranches") or []),

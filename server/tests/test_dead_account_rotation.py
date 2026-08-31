@@ -49,6 +49,17 @@ def _make_orch():
     o._reassign = spy_reassign
     o._restart_driverless = spy_restart
     o._session_uses_setup_token = lambda rec: False
+
+    # _rotation_monitor awaits the fleet-registry read (#852) between q.get()
+    # and _spawn. The real read suspends on DB I/O only when a previously run
+    # test file left the global engine initialised — which breaks the exact
+    # yield-counting in _run_monitor_one_event depending on test order. Stub it
+    # with a non-suspending coroutine: records here are unstamped (host=None),
+    # so the primary owns them whatever the registry says.
+    async def fake_enabled_hosts():
+        return frozenset()
+
+    o._enabled_host_names = fake_enabled_hosts
     return o
 
 
