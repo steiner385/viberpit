@@ -165,15 +165,15 @@ class McpAuthManager:
             # Surface the CLI's own message (e.g. stdio "doesn't support OAuth
             # login") verbatim — this is the graceful-degradation path.
             log.warning("mcp auth: read_auth_url rejected for %r: %s", server, exc)
-            self._terminate_session()
             async with self._lock:
+                self._terminate_session()
                 if self._state.server == server and self._state.state == "starting":
                     self._state.state = "error"
                     self._state.message = str(exc)
         except Exception as exc:  # timeout / EOF / spawn failure
             log.warning("mcp auth: read_auth_url failed for %r: %s", server, exc)
-            self._terminate_session()
             async with self._lock:
+                self._terminate_session()
                 if self._state.server == server and self._state.state == "starting":
                     self._state.state = "error"
                     self._state.message = "Could not obtain an authorization URL."
@@ -190,9 +190,10 @@ class McpAuthManager:
             n_merged = merge_mcp_oauth_from_cfg(session.cfg_dir)
             cleared = clear_needs_auth_cache(server)
             async with self._lock:
-                self._state.state = "success"
-                self._state.accounts = cleared or self._state.accounts
-                self._state.message = None
+                if self._state.server == server and self._state.state == "exchanging":
+                    self._state.state = "success"
+                    self._state.accounts = cleared or self._state.accounts
+                    self._state.message = None
             log.info("mcp auth: %s ok (shared_keys=%d, cleared=%d accounts)",
                      server, n_merged, len(cleared))
         except McpAuthError as exc:
@@ -217,8 +218,9 @@ class McpAuthManager:
             except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
                 pass
         async with self._lock:
-            self._state = McpAuthState(state="cancelled", server=server,
-                                       message="cancelled")
+            if self._state.state not in TERMINAL:
+                self._state = McpAuthState(state="cancelled", server=server,
+                                           message="cancelled")
         return self.status(server)
 
     async def shutdown(self) -> None:

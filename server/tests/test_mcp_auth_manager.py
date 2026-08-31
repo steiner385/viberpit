@@ -93,6 +93,24 @@ async def test_status_scoped_to_active_server(monkeypatch, tmp_path):
     assert mgr.status("railway").state == "idle"  # different server → fresh idle
 
 @pytest.mark.asyncio
+async def test_cancel_does_not_clobber_terminal_success(monkeypatch, tmp_path):
+    """Finding 1 regression: cancel() must not overwrite an already-terminal state."""
+    mgr, sess = make_manager(monkeypatch, tmp_path)
+    await mgr.start("notion")
+    for _ in range(50):
+        if mgr.status("notion").state == "awaiting_redirect":
+            break
+        await asyncio.sleep(0.01)
+    st = await mgr.submit_redirect("notion", "http://localhost/cb?code=ok")
+    assert st.state == "success"
+    # Now cancel races in after the exchange already succeeded.
+    st2 = await mgr.cancel("notion")
+    assert st2.state == "success", (
+        f"cancel() clobbered terminal success → got {st2.state!r}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_read_url_error_surfaces_cli_message(monkeypatch, tmp_path):
     # stdio graceful-degradation: read_auth_url raises McpAuthError with the
     # CLI's verbatim message; the manager lands in error carrying that message.
