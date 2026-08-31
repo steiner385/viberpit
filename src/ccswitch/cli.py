@@ -51,7 +51,7 @@ def _cmd_crypto(args: argparse.Namespace) -> int:
         store = paths.store_dir()
         if store.exists():
             enc = plain = 0
-            for slot in store.glob("*.cred.json"):
+            for slot in accounts.anthropic_slot_paths():
                 try:
                     from .creds import read_json
                     data = read_json(slot)
@@ -94,7 +94,10 @@ def _cmd_crypto(args: argparse.Namespace) -> int:
             print("ccswitch crypto migrate: no store slots found.")
             return 0
         migrated = skipped = errors = 0
-        for slot in sorted(store.glob("*.cred.json")):
+        # Enumerate via the shared helper, not a second `*.cred.json` glob: a stray
+        # dotfile slot would otherwise be "migrated" here and written back, resurrecting
+        # the phantom account this helper exists to filter out.
+        for slot in accounts.anthropic_slot_paths():
             name = slot.name[: -len(".cred.json")]
             try:
                 from .creds import read_json

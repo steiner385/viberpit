@@ -7,9 +7,11 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
 
 from . import copilot, ledger, oauth, paths
+from .account_names import aliases_store_root
 from .config import Config, load_config
 from .creds import merge_keep_later, read_credentials, read_json, split_credentials, write_credentials, write_json_secure
 from .selector import AllAccountsBusy, Picked, select_picked
@@ -147,10 +149,32 @@ def _anthropic_account_names() -> list[str]:
     d = paths.store_dir()
     if not d.exists():
         return []
-    return sorted(p.name[: -len(".cred.json")] for p in d.glob("*.cred.json"))
+    # `Path.glob` — unlike a shell glob — does NOT hide dotfiles, so `*.cred.json`
+    # matches a bare `.cred.json` whose stem is "". Such a slot is not an account:
+    # it is shared state that a caller with an empty account name wrote over the
+    # store root. Enumerating it hands the rotation picker a nameless account.
+    return sorted(
+        stem for stem in (p.name[: -len(".cred.json")] for p in d.glob("*.cred.json"))
+        if not aliases_store_root(stem)
+    )
+
+
+def anthropic_slot_paths() -> list[Path]:
+    """The credential slots in the store that belong to a REAL account.
+
+    The one place the store is enumerated as FILES, mirroring
+    _anthropic_account_names() (the one place it is enumerated as NAMES) so a stray
+    dotfile cannot be picked up by one and skipped by the other.
+    """
+    return [paths.slot_path(n) for n in _anthropic_account_names()]
 
 
 def provider_of(name: str) -> str:
+    # copilot_token_dir("") is the copilot store ROOT, which exists as soon as any
+    # Copilot account is configured — so without this guard a nameless account is
+    # reported as Copilot and the orchestrator tries to start a proxy for it.
+    if aliases_store_root(name):
+        return "anthropic"
     return copilot.PROVIDER if paths.copilot_token_dir(name).exists() else "anthropic"
 
 
