@@ -324,7 +324,8 @@ class PtyLoginSession:
     def _spawn(self) -> None:
         key = resolve_login_key(self._server)
         argv = _claude_argv() + ["mcp", "login", key, "--no-browser"]
-        env = {**os.environ, "CLAUDE_CONFIG_DIR": str(self.cfg_dir)}
+        from server.sessions.account_auth import helper_env
+        env = helper_env(str(self.cfg_dir))
         pid, fd = pty.fork()
         if pid == 0:  # child
             try:

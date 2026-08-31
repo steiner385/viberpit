@@ -405,8 +405,10 @@ async def _lifespan(app: FastAPI):
                                phase="shutdown:daemon-health-client")
     await bounded_wait(app.state.reauth.shutdown(),
                        timeout=_SHUTDOWN_PHASE_TIMEOUT_S, phase="shutdown:reauth")
-    await bounded_wait(app.state.mcp_auth.shutdown(),
-                       timeout=_SHUTDOWN_PHASE_TIMEOUT_S, phase="shutdown:mcp_auth")
+    _mcp_auth = getattr(app.state, "mcp_auth", None)
+    if _mcp_auth is not None:
+        await bounded_wait(_mcp_auth.shutdown(),
+                           timeout=_SHUTDOWN_PHASE_TIMEOUT_S, phase="shutdown:mcp_auth")
     if remote_mode:
         # Remote mode: the daemon owns sessions/drivers; just close the IPC client.
         await bounded_wait(app.state.sessions.aclose(),
