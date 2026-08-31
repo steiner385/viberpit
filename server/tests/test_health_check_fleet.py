@@ -49,6 +49,7 @@ def _make_shims(
     uds_healthz_ok: bool = False,
     https_healthz_ok: bool = False,
     registry_endpoints: str = "",
+    unit_main_pid: int = 0,
 ) -> tuple[Path, Path]:
     """Build the shim bin dir + state dir the script runs against.
 
@@ -71,6 +72,7 @@ if [ "$1" = "show" ]; then
   case "$*" in
     *Environment\\ --value*) echo '{unit_environment}' ;;
     *EnvironmentFiles*)      echo '{env_files_line}' ;;
+    *MainPID*)               echo '{unit_main_pid}' ;;
     *)                       echo '' ;;
   esac
   exit 0
@@ -199,6 +201,46 @@ def test_wedge_restart_still_fires_when_the_https_daemon_is_unresponsive(
     )
     proc = _run(tmp_path, bindir, script_env={"CCSWITCH_SESSIOND_ENDPOINT": LOCAL_HTTPS})
     assert "systemctl restart ccswitch-daemon.service" in _calls(state, "sudo-calls")
+    assert "ALERT[daemon-wedged]" in proc.stdout
+
+
+def test_wedged_daemon_that_ignores_sigterm_is_sigkilled_after_drain_wait(
+    tmp_path: Path,
+) -> None:
+    """The daemon drains its own turns on SIGTERM, which is why the unit's
+    TimeoutStopSec is 660s — but a WEDGED loop never runs that drain, and the watchdog
+    must not sit out 11 minutes on a daemon it already knows is dead. Old MainPID still
+    alive after DRAIN_WAIT → SIGKILL the unit."""
+    import subprocess as sp
+    stuck = sp.Popen(["sleep", "300"])
+    try:
+        bindir, state = _make_shims(
+            tmp_path, unit_active=True, uds_healthz_ok=False, unit_main_pid=stuck.pid
+        )
+        proc = _run(tmp_path, bindir, script_env={})
+        sudo_calls = _calls(state, "sudo-calls")
+        assert "systemctl restart ccswitch-daemon.service" in sudo_calls
+        assert "systemctl kill -s SIGKILL ccswitch-daemon.service" in sudo_calls, proc.stdout
+        assert "SIGKILLing the unit" in proc.stdout
+        assert "ALERT[daemon-wedged]" in proc.stdout
+    finally:
+        stuck.kill()
+        stuck.wait()
+
+
+def test_daemon_that_exits_on_sigterm_is_not_sigkilled(tmp_path: Path) -> None:
+    """A slow-but-alive daemon drains and exits by itself; the escalation must stay
+    holstered so its in-flight turns survive."""
+    import subprocess as sp
+    gone = sp.Popen(["true"])
+    gone.wait()                       # reaped: kill -0 on this pid fails
+    bindir, state = _make_shims(
+        tmp_path, unit_active=True, uds_healthz_ok=False, unit_main_pid=gone.pid
+    )
+    proc = _run(tmp_path, bindir, script_env={})
+    sudo_calls = _calls(state, "sudo-calls")
+    assert "systemctl restart ccswitch-daemon.service" in sudo_calls
+    assert "SIGKILL" not in sudo_calls, proc.stdout
     assert "ALERT[daemon-wedged]" in proc.stdout
 
 
