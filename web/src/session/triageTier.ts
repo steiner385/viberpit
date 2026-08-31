@@ -2,8 +2,18 @@ import type { Session } from '@/api/types'
 import { statusTier, TIER_RANK, type StatusTier } from './statusTier'
 import { anyChecksFailing } from './prStatus'
 
-/** A broken PR is an attention signal even on an otherwise-calm session. */
+/** Tiers at which nothing is already watching the session's PR: it has no live
+ *  turn and no armed Monitor/wakeup. Only these get lifted by a failing PR.
+ *  `waiting` (waiting_external — an armed Monitor/wakeup, see background_tasks.is_parked)
+ *  and `busy` (a live turn) both mean an agent is already on the CI, so a red
+ *  rollup there is that agent's job, not the user's — don't escalate to "Needs
+ *  attention" and contradict the card's own "Waiting…"/"Working…" pill. */
+const AT_REST = new Set<StatusTier>(['your-turn'])
+
+/** A broken PR is an attention signal only on an at-rest session — one that has
+ *  handed nothing off and isn't mid-turn. */
 function prTier(session: Session): StatusTier | null {
+  if (!AT_REST.has(statusTier(session.status))) return null
   return anyChecksFailing(session.prs) ? 'error' : null
 }
 
