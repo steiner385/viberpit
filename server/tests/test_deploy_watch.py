@@ -1,8 +1,8 @@
 """DeployWatcher unit tests (SPEC §3 — health polling, ancestry, qa/prod-live).
 
 The watcher is exercised with injected ``http_get`` and ``gh_run`` so no real
-network or gh subprocess runs. DB assertions use a per-test wipe of the two
-tables the watcher touches (RepoDeployConfig, MergedPr).
+network or gh subprocess runs. DB assertions run against a per-test DB
+(``isolated_db``), so the two tables the watcher touches start empty.
 """
 from __future__ import annotations
 
@@ -12,22 +12,17 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
-from server.db import db_session, init_db
+from server.db import db_session
 from server.db.models import MergedPr, RepoDeployConfig
 from server.pipeline import timeline
 from server.pipeline.deploy_watch import DeployWatcher, _DEPLOY_INTERVAL_S
 
 
 @pytest.fixture(autouse=True)
-def _clean_tables():
-    async def wipe():
-        await init_db()
-        async with db_session() as db:
-            await db.execute(delete(RepoDeployConfig))
-            await db.execute(delete(MergedPr))
-    asyncio.run(wipe())
+def _fresh_db(isolated_db):
+    """Every test gets its own DB — no wiping, no cross-file coupling (#728)."""
 
 
 # Relative anchor: always within the 7-day tracked_merged retention window.

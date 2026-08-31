@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import pytest
 import sys
 import time
 from pathlib import Path
@@ -16,6 +17,15 @@ from tests.helpers import temp_env, usage as make_usage
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
 IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
+
+
+@pytest.fixture(autouse=True)
+def _fresh_db(isolated_db):
+    """Per-test DB (#728): several tests here exit their CCSWITCH_DB_URL patch
+    before `with client:`, so the app lifespan resolves the AMBIENT env var at
+    init_db time — without this fixture that was the worker-shared session DB,
+    coupling these files to whatever ran (or leaked a writer) before them."""
+
 
 
 def _seed_slot(name: str) -> None:
