@@ -33,6 +33,7 @@ from server.sessions.orchestrator import (
     ArchiveMissingError,
     BranchSwitchError,
     InsufficientStorageError,
+    ModelBlockedError,
 )
 from server.ipc.client import DaemonError, DaemonUnavailable
 from server.sessions.facade import call_with_deadline
@@ -100,6 +101,10 @@ class AdoptRequest(BaseModel):
 
 class SendPromptRequest(BaseModel):
     text: str
+
+
+class ModelApprovalBody(BaseModel):
+    decision: Literal["approve", "deny"]
 
 
 class FixPrRequest(BaseModel):
@@ -174,6 +179,10 @@ def _record_to_dict(
         "revAt": record.rev_at,
         "accountPinned": getattr(record, "account_pinned", False),
         "model": getattr(record, "model", None),
+        # Approval-hold model: set when the model-approval gate parks a requested
+        # model pending admin sign-off (status="pending_approval" or a mid-session
+        # hold). Null once approved/denied or for non-gated sessions.
+        "pendingModel": getattr(record, "pending_model", None),
         # True while a "switch after this turn" model change waits for the in-flight
         # turn to end (transient, never persisted) — the picker shows it as pending.
         "modelPending": getattr(record, "model_pending", False),
@@ -574,6 +583,9 @@ async def create_session(
                 },
             },
         )
+    except ModelBlockedError:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="model blocked by policy")
     except AllAccountsBusy as exc:
         if exc.kind == "no_usable_accounts":
             return JSONResponse(
@@ -1292,3 +1304,27 @@ async def export_session_jsonl(
     fname = safe_filename(f"{session_id}") + ".jsonl"
     return StreamingResponse(_iter(), media_type="application/x-ndjson",
                              headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+@router.post("/{session_id}/model-approval")
+async def model_approval(
+    session_id: str,
+    body: ModelApprovalBody,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Approve or deny a parked model-approval hold for a session.
+
+    Returns the updated session record (200), 404 if unknown, 409 if no
+    pending approval to resolve. Bad ``decision`` values yield 422 from the
+    ``Literal`` constraint.
+    """
+    orch = _get_orchestrator(request)
+    try:
+        rec = await orch.resolve_model_approval(session_id, body.decision, identity=identity)
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="no pending model approval")
+    return _record_to_dict(rec)

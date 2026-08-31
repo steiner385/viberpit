@@ -198,3 +198,4 @@ class InProcessOrchestratorAdapter:
     # --- backlog runner manual dispatch ---
     async def backlog_candidates(self, *a, **k): return await _maybe_await(self._orch.backlog_candidates(*a, **k))
     async def backlog_runner_dispatch(self, *a, **k): return await _maybe_await(self._orch.backlog_runner_dispatch(*a, **k))
+    async def resolve_model_approval(self, *a, **k): return await _maybe_await(self._orch.resolve_model_approval(*a, **k))

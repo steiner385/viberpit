@@ -248,6 +248,8 @@ def set_account_defaults(
     clear_model: bool = False,
     default_permission_mode: str | None = None,
     clear_permission_mode: bool = False,
+    model_approval_action: str | None = None,
+    clear_model_approval_action: bool = False,
     env_overrides: dict | None = None,
     clear_env_overrides: bool = False,
 ) -> None:
@@ -261,6 +263,10 @@ def set_account_defaults(
         acct["defaultPermissionMode"] = default_permission_mode
     elif clear_permission_mode:
         acct.pop("defaultPermissionMode", None)
+    if model_approval_action is not None:
+        acct["modelApprovalAction"] = model_approval_action
+    elif clear_model_approval_action:
+        acct.pop("modelApprovalAction", None)
     if env_overrides is not None:
         acct["envOverrides"] = env_overrides
     elif clear_env_overrides:
@@ -273,6 +279,7 @@ def get_account_defaults(led: dict, name: str) -> dict:
     return {
         "defaultModel": acct.get("defaultModel"),
         "defaultPermissionMode": acct.get("defaultPermissionMode"),
+        "modelApprovalAction": acct.get("modelApprovalAction"),
         "envOverrides": acct.get("envOverrides"),
     }
 

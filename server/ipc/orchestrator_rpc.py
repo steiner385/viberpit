@@ -334,10 +334,16 @@ def register_orchestrator_rpc(app, orch) -> None:
             "totalTurns": window.total_turns,
         }
 
+    async def resolve_model_approval(params: dict) -> dict:
+        rec = await orch.resolve_model_approval(
+            params["session_id"], params["decision"], identity=params["identity"])
+        return {"session": rec.to_dict()}
+
     register_rpc(app, "unarchive", unarchive)
     register_rpc(app, "adopt_session", adopt_session)
     register_rpc(app, "transcript_events", transcript_events)
     register_rpc(app, "transcript_window", transcript_window)
+    register_rpc(app, "resolve_model_approval", resolve_model_approval)
 
     async def usage(params: dict) -> dict:
         u = await orch.poller.get(params["name"])

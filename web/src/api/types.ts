@@ -52,6 +52,7 @@ export type SessionStatus =
   | 'limited'
   | 'ended'
   | 'queued'
+  | 'pending_approval'
 
 /** A sub-agent (Task/Agent call) summary, nested under its session in the list. */
 export interface SubAgentSummary {
@@ -86,6 +87,8 @@ export interface Session {
   model?: string | null
   /** True while a "switch after this turn" model change waits for the in-flight turn to end. */
   modelPending?: boolean
+  /** Model id (alias or full id) parked pending human approval; null/absent = no hold. */
+  pendingModel?: string | null
   /** Cached next-prompt suggestions for a live session (empty when none/detached). */
   latestSuggestions?: string[]
   /** One-line LLM status summary of what the session is doing now (empty when none). */
@@ -445,6 +448,8 @@ export interface AccountDefaults {
   defaultModel: string | null
   defaultPermissionMode: string | null
   envOverrides: Record<string, string> | null
+  /** Action to take when a model requires approval: 'approve' | 'deny' | null (ask). */
+  modelApprovalAction: string | null
 }
 
 // Session Preset (#597)

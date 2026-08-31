@@ -1053,7 +1053,8 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                     name = msg.get("name", "")
                     args = msg.get("args", "")
                     try:
-                        result = await orchestrator.run_command(session_id, name, args)
+                        result = await orchestrator.run_command(session_id, name, args,
+                                                                identity=identity)
                     except KeyError:
                         await _send(redact_event({"type": "commandResult", "sessionId": session_id,
                                      "name": name, "ok": False, "error": "unknown command"}))
