@@ -8,14 +8,20 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 
+import pytest
 from sqlalchemy import select
 
-from server.db import db_session, init_db
+from server.db import db_session
 from server.db.models import GroupFailure, GroupRun
 from server.github.pr_population import PrPopulationPoller
 
 REPO = "o/n"
 NOW = datetime(2026, 7, 12, 12, 0, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_db(isolated_db):
+    """Every test gets its own DB — no cross-file order dependence (#728)."""
 
 
 def _pop_resp(number: int) -> dict:
@@ -53,7 +59,6 @@ def _eta_resp_green_group(prs: list[tuple[str, int]], oid: str) -> dict:
 
 def test_population_cycle_records_group_run():
     async def run():
-        await init_db()
         p = PrPopulationPoller(
             query_fn=lambda repo: _pop_resp(42),
             eta_query_fn=lambda prs: _eta_resp_green_group(prs, "batchoid1"),
@@ -76,7 +81,6 @@ def test_population_cycle_records_group_run():
 def test_population_cycle_never_breaks_on_history_error(monkeypatch):
     """A group-history write blowing up must not fail the poll cycle."""
     async def run():
-        await init_db()
         import server.pipeline.group_history as gh
 
         async def boom(*a, **k):

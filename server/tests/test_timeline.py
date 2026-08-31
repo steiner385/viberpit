@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 
-from server.db import db_session, init_db
+from server.db import db_session
 from server.db.models import MergedPr
 from server.github.pr_population import PrPopulationPoller
 from server.pipeline.timeline import (
@@ -18,14 +18,8 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _clean_merged_prs():
-    """Table-wide asserts on a session-shared conftest DB — wipe per test."""
-    async def wipe():
-        from sqlalchemy import delete
-        await init_db()
-        async with db_session() as db:
-            await db.execute(delete(MergedPr))
-    asyncio.run(wipe())
+def _fresh_db(isolated_db):
+    """Every test gets its own DB — table-wide asserts need no wiping (#728)."""
 
 
 # --------------------------------------------------------------------------- #
@@ -35,7 +29,6 @@ def _clean_merged_prs():
 
 def test_upsert_inserts_row_with_all_waypoints():
     async def run():
-        await init_db()
         await upsert_merged_pr(
             "o/r", 7,
             merged_at="2026-07-12T00:00:00Z",
@@ -61,7 +54,6 @@ def test_upsert_inserts_row_with_all_waypoints():
 
 def test_upsert_first_value_wins_per_column():
     async def run():
-        await init_db()
         # First insert leaves first_green_at NULL.
         await upsert_merged_pr(
             "o/r", 7, merged_at="2026-07-12T00:00:00Z", title="orig",
@@ -85,7 +77,6 @@ def test_upsert_first_value_wins_per_column():
 
 def test_upsert_merged_at_is_writer_invariant_unchanged_on_conflict():
     async def run():
-        await init_db()
         await upsert_merged_pr("o/r", 7, merged_at="2026-07-12T00:00:00Z")
         # A later observation with a different merged_at must NOT overwrite it.
         await upsert_merged_pr("o/r", 7, merged_at="2026-07-13T00:00:00Z")
@@ -98,7 +89,6 @@ def test_upsert_merged_at_is_writer_invariant_unchanged_on_conflict():
 
 def test_upsert_normalizes_plus_offset_to_z():
     async def run():
-        await init_db()
         # datetime.isoformat() form (+00:00) must be stored trailing-Z.
         iso = datetime(2026, 7, 12, tzinfo=timezone.utc).isoformat()  # ...+00:00
         assert iso.endswith("+00:00")
@@ -121,7 +111,6 @@ def test_upsert_normalizes_plus_offset_to_z():
 
 def test_mark_env_live_maps_qa_and_prod():
     async def run():
-        await init_db()
         await upsert_merged_pr("o/r", 7, merged_at="2026-07-12T00:00:00Z")
         await mark_env_live("o/r", 7, "qa", "2026-07-12T01:00:00Z")
         await mark_env_live("o/r", 7, "prod", "2026-07-12T02:00:00Z")
@@ -135,7 +124,6 @@ def test_mark_env_live_maps_qa_and_prod():
 
 def test_mark_env_live_production_alias_maps_to_prod():
     async def run():
-        await init_db()
         await upsert_merged_pr("o/r", 7, merged_at="2026-07-12T00:00:00Z")
         await mark_env_live("o/r", 7, "production", "2026-07-12T02:00:00Z")
         async with db_session() as db:
@@ -148,7 +136,6 @@ def test_mark_env_live_production_alias_maps_to_prod():
 
 def test_mark_env_live_first_write_wins():
     async def run():
-        await init_db()
         await upsert_merged_pr("o/r", 7, merged_at="2026-07-12T00:00:00Z")
         await mark_env_live("o/r", 7, "qa", "2026-07-12T01:00:00Z")
         # Later ancestry re-check must NOT overwrite the earliest live timestamp.
@@ -162,7 +149,6 @@ def test_mark_env_live_first_write_wins():
 
 def test_mark_env_live_normalizes_plus_offset():
     async def run():
-        await init_db()
         await upsert_merged_pr("o/r", 7, merged_at="2026-07-12T00:00:00Z")
         iso = datetime(2026, 7, 12, 1, tzinfo=timezone.utc).isoformat()
         await mark_env_live("o/r", 7, "qa", iso)
@@ -180,7 +166,6 @@ def test_mark_env_live_normalizes_plus_offset():
 
 def test_timelines_for_camelcase_keys():
     async def run():
-        await init_db()
         await upsert_merged_pr(
             "o/r", 7, merged_at="2026-07-12T00:00:00Z",
             created_at="2026-07-11T00:00:00Z",
@@ -204,7 +189,6 @@ def test_timelines_for_camelcase_keys():
 
 def test_timelines_for_empty_numbers():
     async def run():
-        await init_db()
         assert await timelines_for("o/r", []) == {}
 
     asyncio.run(run())
@@ -217,7 +201,6 @@ def test_timelines_for_empty_numbers():
 
 def test_tracked_merged_respects_retention_window():
     async def run():
-        await init_db()
         now = datetime(2026, 7, 12, tzinfo=timezone.utc)
         # Inside 7-day window.
         await upsert_merged_pr("o/r", 1, merged_at="2026-07-10T00:00:00Z")
@@ -235,7 +218,6 @@ def test_tracked_merged_respects_retention_window():
 
 def test_tracked_merged_z_form_comparison_with_offset_now():
     async def run():
-        await init_db()
         await upsert_merged_pr("o/r", 1, merged_at="2026-07-10T00:00:00Z")
         # now passed as a tz-aware datetime whose isoformat() is +00:00 — the
         # window boundary must still compare lexicographically against Z-form
@@ -281,7 +263,6 @@ def _pop_resp(number: int, state: str, *, rollup: str, merged_at=None,
 
 def test_poller_captures_first_green_then_merge():
     async def run():
-        await init_db()
         # Cycle scripts: 1) open, CI pending  2) open, passing+ready (green
         # transition)  3) merged.
         cycles = [
@@ -314,7 +295,6 @@ def test_poller_captures_first_green_then_merge():
 
 def test_poller_merge_without_prior_green_leaves_first_green_null():
     async def run():
-        await init_db()
         # PR first observed already merged — no live transition captured.
         cycles = [
             _pop_resp(8, "MERGED", rollup="SUCCESS",
@@ -335,7 +315,6 @@ def test_poller_ci_to_parked_is_not_green():
     FAILS (ci → parked/ci-failed) must NOT record a green waypoint, even if it
     later merges (e.g. admin-merged)."""
     async def run():
-        await init_db()
         cycles = [
             _pop_resp(9, "OPEN", rollup="PENDING", merge_status="BLOCKED"),  # ci
             _pop_resp(9, "OPEN", rollup="FAILURE", merge_status="BLOCKED"),  # parked

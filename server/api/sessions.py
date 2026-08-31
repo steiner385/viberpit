@@ -173,6 +173,9 @@ def _record_to_dict(
         "revAt": record.rev_at,
         "accountPinned": getattr(record, "account_pinned", False),
         "model": getattr(record, "model", None),
+        # True while a "switch after this turn" model change waits for the in-flight
+        # turn to end (transient, never persisted) — the picker shows it as pending.
+        "modelPending": getattr(record, "model_pending", False),
         "latestSuggestions": list(suggestions or []),
         "activeGoal": getattr(record, "active_goal", None),
         "inferredGoal": getattr(record, "inferred_goal", None),
@@ -506,6 +509,14 @@ async def create_session(
             _resolved_permission_mode = _acct_defs.get("defaultPermissionMode")
         if not _resolved_model:
             _resolved_model = _acct_defs.get("defaultModel")
+
+    # Global fallback: the Settings-page "Default tool approvals" value. Without
+    # this, any create path that omits permissionMode (the DispatchBar quick-create
+    # bar, API callers) silently collapsed to "interactive" and re-introduced
+    # permission prompts the user had globally turned off (full-auto).
+    if not _resolved_permission_mode:
+        from server.api.settings import get_default_permission_mode
+        _resolved_permission_mode = await get_default_permission_mode(db)
 
     try:
         record = await orch.create_session(

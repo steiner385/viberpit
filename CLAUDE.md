@@ -83,6 +83,13 @@ is the equivalent. Admins may push directly in emergencies.
   built by `create_all` at cutover). The revisions in `server/db/migrations/versions/` are the reviewable
   record of schema changes; reconcile is what actually applies them. Add a revision for any schema change
   anyway, and chain `down_revision` off the newest one.
+- **`systemctl stop|restart ccswitch-daemon.service` touches every live session.** The daemon owns all
+  running `claude` processes; a restart is never a "brief blip" for them. It drains in-flight turns on
+  SIGTERM first (`server/ipc/drain_on_signal.py`, up to ~3 min / ~10 min mid-compaction), so the
+  command blocks — expected, don't escalate. Prefer the deploy controller for code changes; for an env
+  edit that needs a restart, do it when the Sessions page shows nothing mid-turn. Never restart a daemon
+  whose installed unit still has `KillMode=control-group` while sessions are working — that kills them
+  outright (`deploy/README.md` § "Stopping / restarting the daemon").
 
 ## Working norms
 

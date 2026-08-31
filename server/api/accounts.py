@@ -248,10 +248,15 @@ async def get_accounts(
 
     # Rank for display: ignore transient soft reservations so ranks stay stable
     # (a just-picked account would otherwise vanish for reservation_ttl_sec).
+    # Exclude disabled accounts like the selection path does — otherwise a
+    # disabled account can be labelled "#1 next" while every selectable
+    # account's rank is shifted by the phantom entry.
+    disabled = frozenset(
+        a["name"] for a in accounts_info if not a.get("enabled", True))
     ranked, _earliest = rank_accounts(
         usages, reserved=frozenset(), cfg=load_config(),
         now=datetime.now(timezone.utc), load=load,
-        reserves=reserves,
+        reserves=reserves, exclude=disabled,
     )
     rank_by_name = {r.name: (r.rank, r.reason) for r in ranked}
 

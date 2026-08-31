@@ -30,6 +30,8 @@ server = [
     "pytest",
     "pytest-asyncio",
   "pytest-cov",
+    "pytest-xdist",
+    "pytest-timeout",
     "hypothesis",
     "pyyaml",
     # Pin below 0.16 for reproducible CI: ruff 0.16.0 enables new lint rules

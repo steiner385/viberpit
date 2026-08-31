@@ -1617,6 +1617,8 @@ class SessionOrchestrator:
         rec = self._records.get(session_id)
         if rec is not None and rec.status == "ended":
             return
+        # A "switch after this turn" model change is in force once the turn is over.
+        self._settle_model_pending(session_id, status)
         # A turn failure surfacing during teardown is our own shutdown dropping the
         # turn (deploy / watchdog restart / systemctl stop), not a real failure.
         # Persisting needs_attention here brands the session "Turn failed" across
@@ -6649,14 +6651,30 @@ class SessionOrchestrator:
         # must sit ABOVE the driver guard so a detached session persists the model
         # instead of getting "isn't live" — the picker was a silent no-op there.
         if str(name).lstrip("/") == "model":
-            arg = (args or "").strip()
+            # `/model <alias> [--after-turn]`. The flag is how the picker's "switch
+            # after this turn" choice rides the existing command frame: no
+            # interrupt, the SDK applies the model on the next turn (see
+            # set_model_for_session). Without it a busy session is stopped and
+            # restarted on the new model.
+            tokens = (args or "").split()
+            after_turn = "--after-turn" in tokens
+            arg = " ".join(t for t in tokens if t != "--after-turn").strip()
+            # "default" is the picker's special row, not an alias the SDK knows:
+            # it clears the override so the account default applies again
+            # (mirrors create_session, which treats "default" as None).
+            if arg == "default":
+                arg = ""
             label = arg or "default"
-            has_driver = self._drivers.get(session_id) is not None
-            restarted = await self.set_model_for_session(session_id, arg or None)
-            if not has_driver:
+            driver = self._drivers.get(session_id)
+            was_busy = driver is not None and driver.turn_active
+            restarted = await self.set_model_for_session(
+                session_id, arg or None, when="after_turn" if after_turn else "now")
+            if driver is None:
                 text = f"Model → {label} — saved; applies when the session resumes"
             elif restarted:
                 text = f"Model → {label} — stopped the current activity and restarted it on the new model"
+            elif after_turn and was_busy:
+                text = f"Model → {label} — applies when the current turn finishes"
             else:
                 text = f"Model → {label}"
             return {"name": "model", "render": "notice", "data": {"text": text}}
@@ -7228,28 +7246,42 @@ class SessionOrchestrator:
                 .values(account_pinned=pinned)
             )
 
-    async def set_model_for_session(self, session_id: str, model: str | None) -> bool:
+    async def set_model_for_session(
+        self, session_id: str, model: str | None, *, when: str = "now",
+    ) -> bool:
         """Set the live model AND persist it, so it survives rehydrate and every
         driver rebuild (rotation/recovery re-applies record.model in _reassign).
 
-        A busy driver only picks up set_model on FUTURE turns, so switching mid-turn
-        would leave the in-flight activity running on the old model with no feedback.
-        When the driver is mid-turn (turn_active) the turn is stopped and restarted:
-        interrupt → set_model → re-send the stored last prompt. That's the same
-        stop → switch → replay dance _reassign performs across drivers during
-        rotation, here on the same driver — the driver's FIFO prompt queue runs the
-        resend as a fresh turn once the interrupt unwinds. Returns True iff the turn
-        was actually restarted; with no stored prompt (e.g. the daemon restarted
-        mid-turn) the interrupt + switch still happen but nothing is resent. Record
-        update + persistence run in every case, including driverless (detached),
-        so the model applies when the session resumes."""
+        A busy driver only picks up set_model on FUTURE turns (verified against
+        claude 2.1.251: a mid-turn set_model leaves the in-flight turn on the old
+        model and the next turn runs on the new one). ``when`` picks how a
+        mid-turn switch lands:
+
+        * ``"now"`` — stop and restart: interrupt → set_model → re-send the stored
+          last prompt. That's the same stop → switch → replay dance _reassign
+          performs across drivers during rotation, here on the same driver — the
+          driver's FIFO prompt queue runs the resend as a fresh turn once the
+          interrupt unwinds. Returns True iff the turn was actually restarted; with
+          no stored prompt (e.g. the daemon restarted mid-turn) the interrupt +
+          switch still happen but nothing is resent.
+        * ``"after_turn"`` — hand the model to the SDK without interrupting and let
+          the in-flight turn finish on the old model. ``record.model_pending`` is
+          set so the UI can say "switches after this turn"; _settle_model_pending
+          clears it when the driver reports the turn over.
+
+        Record update + persistence run in every case, including driverless
+        (detached), so the model applies when the session resumes."""
         restarted = False
+        pending = False
         driver = self._drivers.get(session_id)
         if driver is not None:
-            # Stamp BEFORE the interrupt: its status flap fires the autopilot nudge
-            # tick, and autopilot must already see the swap as in flight by then.
-            self._turn_restart_at[session_id] = self._clock()
-            if driver.turn_active:
+            if driver.turn_active and when == "after_turn":
+                await driver.set_model(model)
+                pending = True
+            elif driver.turn_active:
+                # Stamp BEFORE the interrupt: its status flap fires the autopilot nudge
+                # tick, and autopilot must already see the swap as in flight by then.
+                self._turn_restart_at[session_id] = self._clock()
                 await driver.interrupt()
                 await driver.set_model(model)
                 last = self._last_prompt.get(session_id)
@@ -7261,8 +7293,21 @@ class SessionOrchestrator:
         record = self._records.get(session_id)
         if record is not None:
             record.model = model
+            record.model_pending = pending
         await self._persist_model(session_id, model)
         return restarted
+
+    def _settle_model_pending(self, session_id: str, status: str) -> None:
+        """Clear ``record.model_pending`` once the turn it was waiting on is over.
+        Called from the driver's on_status path with the derived status: any status
+        outside the mid-turn set (in_progress / condensing / retrying) means the SDK
+        has handed the turn back, so the next turn runs on ``record.model``."""
+        from server.sessions.status import MID_TURN_STATUSES
+        record = self._records.get(session_id)
+        if record is None or not record.model_pending:
+            return
+        if status not in MID_TURN_STATUSES:
+            record.model_pending = False
 
     async def _persist_model(self, session_id: str, model: str | None) -> None:
         async with db_session() as db:
