@@ -48,7 +48,7 @@ def _client_with_archives(archived_session_ids: list[str]):
         with patch.dict(os.environ, env_patch):
             # Seed DB rows + create on-disk dirs in old_archive
             async def _seed():
-                await init_db()
+                await init_db(db_url)
                 async with db_session() as db:
                     for sid in archived_session_ids:
                         db.add(DbSession(

@@ -84,6 +84,8 @@ export interface Session {
   accountPinned?: boolean
   /** Current model alias/id for the session; null = account default. */
   model?: string | null
+  /** True while a "switch after this turn" model change waits for the in-flight turn to end. */
+  modelPending?: boolean
   /** Cached next-prompt suggestions for a live session (empty when none/detached). */
   latestSuggestions?: string[]
   /** One-line LLM status summary of what the session is doing now (empty when none). */

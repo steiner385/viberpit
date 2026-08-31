@@ -63,7 +63,7 @@ PROBE_RETRIES="${CCSWITCH_PROBE_RETRIES:-3}"
 PROBE_TIMEOUT="${CCSWITCH_PROBE_TIMEOUT:-5}"
 RESTART_COOLDOWN="${CCSWITCH_RESTART_COOLDOWN:-300}"        # >=1 auto-restart per 5 min
 STARTUP_GRACE="${CCSWITCH_STARTUP_GRACE:-60}"              # don't restart a still-booting daemon
-DRAIN_WAIT="${CCSWITCH_DRAIN_WAIT:-20}"                    # best-effort graceful-drain budget before a wedge restart
+DRAIN_WAIT="${CCSWITCH_DRAIN_WAIT:-20}"                    # how long a wedge-restarted daemon gets to exit on its own before SIGKILL
 ALERT_WEBHOOK="${CCSWITCH_ALERT_WEBHOOK:-}"
 STATE_DIR="${CCSWITCH_HEALTH_STATE_DIR:-/var/lib/ccswitch/health}"
 
@@ -226,30 +226,29 @@ curl_daemon() {  # curl_daemon <path> [curl args...] — hit the local daemon's 
 }
 probe_ok() { curl_daemon /healthz | grep -q '"status"'; }
 
-# Best-effort graceful drain before a hard restart. begin_drain snapshots each
-# live session's in-flight prompt + background tasks (pending_rearm) so the
-# post-restart rehydrate can resume them, and refuses new turns; we then wait up
-# to DRAIN_WAIT for in-flight turns to finish (drain_status == "ready"). If the
-# socket is truly wedged these RPCs just fail fast and we restart anyway — so this
-# is strictly an improvement: a merely slow/overloaded daemon (the common near-
-# wedge) keeps its turns instead of orphaning them to needs_attention. The daemon
-# self-clears the drain after ~600s, so a restart that never lands can't wedge it.
-rpc() {  # rpc <method> — POST an empty-param RPC to the sessiond control plane
-  curl_daemon "/rpc/$1" -X POST -H 'content-type: application/json' -d '{}'
-}
-graceful_drain() {
-  rpc begin_drain >/dev/null || return 0   # wedged/unreachable → skip, restart as before
-  local deadline=$(( $(now) + DRAIN_WAIT )) state
-  while [ "$(now)" -lt "$deadline" ]; do
-    state=$(rpc drain_status | python3 -c \
-      'import sys,json; print(json.load(sys.stdin).get("result",{}).get("state",""))' 2>/dev/null)
-    if [ "$state" = "ready" ]; then
-      log "graceful drain reached 'ready' — restarting cleanly"
-      return 0
-    fi
+# Restart the daemon without waiting the unit's full TimeoutStopSec on a wedged loop.
+# The daemon drains its own in-flight turns on SIGTERM (server/ipc/drain_on_signal.py)
+# — a merely slow/overloaded daemon (the common near-wedge) keeps its turns without any
+# help from us, so the old RPC pre-drain here is gone. But that drain runs ON the
+# daemon's event loop: a truly wedged loop never starts it, and systemd would then sit
+# out TimeoutStopSec (660s, sized for the drain) before SIGKILLing. We know the control
+# plane is dead — that is why we are here — so give the old process DRAIN_WAIT to exit
+# on its own and SIGKILL the unit if it has not. Returns non-zero only if systemd
+# refused the restart job itself.
+restart_daemon_bounded() {
+  local old_main
+  old_main=$(systemctl show ccswitch-daemon.service -p MainPID --value 2>/dev/null)
+  case "$old_main" in ''|*[!0-9]*) old_main=0 ;; esac
+  sudo -n systemctl restart ccswitch-daemon.service --no-block 2>/dev/null || return 1
+  local deadline=$(( $(now) + DRAIN_WAIT ))
+  while [ "$old_main" -gt 0 ] && kill -0 "$old_main" 2>/dev/null && [ "$(now)" -lt "$deadline" ]; do
     sleep 2
   done
-  log "graceful drain did not reach 'ready' within ${DRAIN_WAIT}s — restarting anyway"
+  if [ "$old_main" -gt 0 ] && kill -0 "$old_main" 2>/dev/null; then
+    log "old daemon (pid $old_main) still alive ${DRAIN_WAIT}s after SIGTERM — loop wedged, drain can't run; SIGKILLing the unit"
+    sudo -n systemctl kill -s SIGKILL ccswitch-daemon.service 2>/dev/null
+  fi
+  return 0
 }
 # An https-bound daemon can only be probed with the edge's client cert material. With
 # it missing, a probe "failure" says nothing about the daemon — restarting on a probe
@@ -291,9 +290,7 @@ elif [ "$LOCAL_DAEMON_ACTIVE" -eq 1 ]; then
     log "daemon active only ${age}s (< ${STARTUP_GRACE}s grace) — still booting, deferring wedge check"
   elif [ $(( t - last )) -ge "$RESTART_COOLDOWN" ]; then
     log "daemon control plane ($LOCAL_BIND) unresponsive after ${PROBE_RETRIES} probes — restarting ccswitch-daemon.service"
-    # Preserve in-flight turns when the daemon is slow-but-responsive; no-op when truly wedged.
-    graceful_drain
-    if sudo -n systemctl restart ccswitch-daemon.service 2>/dev/null; then
+    if restart_daemon_bounded; then
       echo "$t" > "$rf"
       alert daemon-wedged "control plane was wedged (socket unresponsive); auto-restarted $(date -Is)"
     else

@@ -29,7 +29,10 @@ ExecStart=/home/tony/GitHub/ccswitch/.venv/bin/python -m server.ipc
 # would loop on connection refused. Same rationale as the local unit.
 Restart=always
 RestartSec=3
-TimeoutStopSec=90
+# SIGTERM drains in-flight turns first (server/ipc/drain_on_signal.py): up to the 180s
+# turn cap, or the 570s condense cap, then the ordinary ≤90s shutdown. 570 + 90 = 660.
+# Same rationale and numbers as the local unit.
+TimeoutStopSec=660
 # mixed, NOT control-group: control-group SIGTERMs every live claude child in
 # parallel with the daemon, so their turns die with exit 143 BEFORE stop() can
 # set _shutting_down — each was persisted as needs_attention and survived the

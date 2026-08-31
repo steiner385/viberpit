@@ -34,10 +34,16 @@ ExecStart=/mnt/ssk-ssd/tony/GitHub/cc-account-switcher/.venv/bin/python -m serve
 # StartLimitBurst/Interval still backstops a genuine crash-loop.
 Restart=always
 RestartSec=3
-# Shutdown budget: 10s (uvicorn graceful) + up to 15s (x11.stop_all sweep,
-# _DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S in serve.py) + small overhead for reauth
-# shutdown/orchestrator stop = well under the 90s below.
-TimeoutStopSec=90
+# Shutdown budget. SIGTERM first DRAINS in-flight turns (server/ipc/drain_on_signal.py,
+# 2026-08-30: a bare `systemctl restart` killed five sessions mid-turn) — up to
+# CCSWITCH_DRAIN_TURN_CAP_SEC (180s) for an ordinary turn, or
+# CCSWITCH_DRAIN_CONDENSE_CAP_SEC (570s) while a session is mid-compaction — and only
+# then begins the ordinary shutdown: 10s (uvicorn graceful) + up to 15s (x11.stop_all
+# sweep, _DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S in serve.py) + reauth shutdown/orchestrator
+# stop. 570 + 90 = 660. An idle daemon still stops in seconds; a WEDGED one (loop not
+# running, so the drain never starts) is what the health watchdog escalates with
+# SIGKILL after CCSWITCH_DRAIN_WAIT rather than waiting this out.
+TimeoutStopSec=660
 # mixed, NOT control-group: control-group SIGTERMs every live claude child in
 # parallel with the daemon, so their turns die with exit 143 BEFORE stop() can
 # set _shutting_down — each was persisted as needs_attention and survived the

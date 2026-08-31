@@ -53,3 +53,22 @@ async def test_built_daemon_serves_handshake_and_rpc_over_uds():
             assert [r["id"] for r in listed["sessions"]] == ["s1"]
         finally:
             await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_daemon_lifespan_installs_drain_on_sigterm_and_uninstalls_on_exit():
+    """The daemon must protect in-flight turns on SIGTERM itself (see
+    test_daemon_drain_on_sigterm.py) — wired for the lifetime of the lifespan."""
+    orch = mock.MagicMock()
+    orch.rehydrate = mock.AsyncMock()
+    orch.start = mock.AsyncMock()
+    orch.stop = mock.AsyncMock()
+    with mock.patch("server.ipc.serve.build_x11_manager", return_value=_FAKE_X11):
+        app, _ = build_daemon(orchestrator=orch)
+    uninstall = mock.MagicMock()
+    with mock.patch("server.ipc.serve.init_db", new=mock.AsyncMock()), \
+         mock.patch("server.ipc.serve.install_drain_on_sigterm", return_value=uninstall) as install:
+        async with daemon_lifespan(app, orch):
+            install.assert_called_once_with(orch)
+            uninstall.assert_not_called()
+        uninstall.assert_called_once()

@@ -173,6 +173,9 @@ def _record_to_dict(
         "revAt": record.rev_at,
         "accountPinned": getattr(record, "account_pinned", False),
         "model": getattr(record, "model", None),
+        # True while a "switch after this turn" model change waits for the in-flight
+        # turn to end (transient, never persisted) — the picker shows it as pending.
+        "modelPending": getattr(record, "model_pending", False),
         "latestSuggestions": list(suggestions or []),
         "activeGoal": getattr(record, "active_goal", None),
         "inferredGoal": getattr(record, "inferred_goal", None),

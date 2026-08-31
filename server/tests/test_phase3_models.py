@@ -4,29 +4,20 @@ from __future__ import annotations
 import asyncio
 import json
 
-from server.db import db_session, init_db
+from server.db import db_session
 from server.db.models import GroupFailure, GroupRun, MergedPr, RepoDeployConfig
 
 import pytest
 
 
 @pytest.fixture(autouse=True)
-def _clean_phase3_tables():
-    """Table-wide asserts + the session-shared conftest DB (and sibling suites
-    writing the same repo keys) — wipe the phase-3 tables per test."""
-    async def wipe():
-        from sqlalchemy import delete
-        await init_db()
-        async with db_session() as db:
-            for model in (GroupRun, GroupFailure, MergedPr, RepoDeployConfig):
-                await db.execute(delete(model))
-    asyncio.run(wipe())
+def _fresh_db(isolated_db):
+    """Every test gets its own DB — no sibling suite can write our keys (#728)."""
 
 
 
 def test_merged_pr_upsert_semantics():
     async def run():
-        await init_db()
         async with db_session() as db:
             row = MergedPr(
                 repo="o/r",
@@ -49,7 +40,6 @@ def test_merged_pr_upsert_semantics():
 
 def test_group_run_and_failure_rows():
     async def run():
-        await init_db()
         async with db_session() as db:
             db.add(GroupRun(
                 repo="o/r",
@@ -77,7 +67,6 @@ def test_group_run_and_failure_rows():
 
 def test_repo_deploy_config_roundtrip():
     async def run():
-        await init_db()
         envs = [{"name": "qa", "healthUrl": "https://qa/health", "auto": True, "shaKey": "commitSha"}]
         async with db_session() as db:
             db.add(RepoDeployConfig(repo="o/r", environments=json.dumps(envs)))

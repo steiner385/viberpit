@@ -39,6 +39,14 @@ export interface SessionRuntime {
   /** Where the reckoned goal came from: "explicit" | "inferred" | "initial_prompt". */
   goalSource: string | null
   account: string
+  /** The model the user CHOSE for this session (record alias, e.g. "opus"); null =
+   *  account default. Optimistically reflects a pick until the record catches up. */
+  model: string | null
+  /** True while a "switch after this turn" change waits for the in-flight turn to end. */
+  modelPending: boolean
+  /** The model actually producing (SDK id, e.g. "claude-opus-4-8") — launch model,
+   *  refreshed per turn. Read-only: after a switch it lags `model` by one turn. */
+  liveModel: string | null
   quota: {
     sessionPct: number
     weeklyPct: number
@@ -67,6 +75,9 @@ export interface SessionRuntime {
   commands: Command[]
   commandResult: { render: 'help' | 'context'; data: unknown } | null
   onCommand: (name: string, args: string) => void
+  /** Switch model: 'now' stops + restarts a busy turn on the new model; 'after_turn'
+   *  hands the model to the SDK without interrupting (applies on the next turn). */
+  onSetModel: (id: string, when: 'now' | 'after_turn') => void
   dismissCommandResult: () => void
   /** Fetch and prepend the previous window of older turns (lazy scrollback). */
   onLoadOlder: () => void
@@ -332,6 +343,29 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     state.rotations.length > 0 ? state.rotations[state.rotations.length - 1].to : null
   const account = latestRotation ?? sessionRecord?.accountName ?? '—'
 
+  // Model: the record's chosen alias (same source the dashboard card shows), with the
+  // optimistic pick layered on top until the record catches up. `state.model` is the
+  // SDK's producing model and is exposed separately as `liveModel` — binding the picker
+  // to it is what made every session look pinned to the account default.
+  const recordModel = sessionRecord?.model ?? null
+  // Optimistic model pick: the picker shows the requested alias the moment it is
+  // chosen instead of waiting for the 5s sessions poll (a lagging picker reads as
+  // "snapped back", the very bug this replaces). `seen` is the record's model at pick
+  // time; the override retires as soon as the record moves off it (caught up, or
+  // changed elsewhere — either way the record is fresher).
+  const [modelOverride, setModelOverride] = useState<{ model: string | null; seen: string | null } | null>(null)
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- retire the override once the record moves
+    if (modelOverride && recordModel !== modelOverride.seen) setModelOverride(null)
+  }, [recordModel, modelOverride])
+  const onSetModel = useCallback((id: string, when: 'now' | 'after_turn') => {
+    setModelOverride((cur) => ({ model: id === 'default' ? null : id, seen: cur ? cur.seen : recordModel }))
+    command(sessionId, 'model', when === 'after_turn' ? `${id} --after-turn` : id)
+  }, [sessionId, command, recordModel])
+  const model = modelOverride ? modelOverride.model : recordModel
+  const modelPending = sessionRecord?.modelPending ?? false
+  const liveModel = state.model
+
   const accountUsage = accounts?.find((a) => a.name === account)?.usage ?? null
   const quota = accountUsage
     ? {
@@ -383,6 +417,9 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     goal,
     goalSource,
     account,
+    model,
+    modelPending,
+    liveModel,
     quota,
     contextPct,
     subAgents,
@@ -401,6 +438,7 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     commands,
     commandResult,
     onCommand,
+    onSetModel,
     dismissCommandResult,
     onLoadOlder,
   }

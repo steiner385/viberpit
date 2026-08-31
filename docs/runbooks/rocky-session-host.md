@@ -134,7 +134,10 @@ ssh tony@rocky 'findmnt -t fuse.sshfs'   # confirm both are back
 ```
 
 After remounting, restart the daemon so any process that opened a file handle across the drop picks
-up a fresh view: `ssh tony@rocky 'sudo systemctl restart ccswitch-daemon.service'`.
+up a fresh view: `ssh tony@rocky 'sudo systemctl restart ccswitch-daemon.service'`. The daemon drains
+in-flight turns on SIGTERM before it exits (up to ~3 min, ~10 min if a session is mid-compaction —
+see `deploy/README.md` § "Stopping / restarting the daemon"), so the command blocks while sessions
+finish; that is expected, not a hang.
 
 The `reconnect` sshfs option handles a transient network blip automatically (rocky's daemon unit
 also declares `Requires=tailscaled.service`, so it won't even start before the tailnet is up); the
@@ -165,6 +168,9 @@ ssh <host> git -C <repo> fetch --quiet origin
 ssh <host> git -C <repo> merge --ff-only <deployed-sha>
 ssh <host> sudo systemctl restart ccswitch-daemon.service
 ```
+
+The `systemctl restart` returns only after the remote daemon has drained its in-flight turns
+(SIGTERM drain, bounded by the deploy drain caps) — the ssh step can legitimately take minutes.
 
 Fast-forward only — a diverged remote checkout aborts the deploy rather than losing local commits.
 This requires **`CCSWITCH_DAEMON_SSH_REPO`**, the checkout path on the remote host:
@@ -199,7 +205,7 @@ Then reset the host and restart it:
 
 ```bash
 ssh tony@rocky 'cd /home/tony/GitHub/ccswitch   && git fetch -q origin && git checkout -q master   && git reset --hard origin/master && git branch -D <hotfix-branch>'
-ssh tony@rocky 'sudo systemctl restart ccswitch-daemon'
+ssh tony@rocky 'sudo systemctl restart ccswitch-daemon'   # blocks while in-flight turns drain
 ```
 
 Check for local work first (`git log --branches --not --remotes`, `git stash list`) —
@@ -251,33 +257,33 @@ edge.
 
 ## 6. Certificate renewal
 
-Certs are minted with `scripts/ccswitch-mint-mtls.sh <outdir> <daemon-dns> <daemon-ip>` — server/
-client certs valid **825 days**, the CA **3650 days**. The SAN embedded in the server cert must stay
-the tailnet identity, never `rocky.lan`:
+Server/client certs are valid **825 days**, the CAs **3650 days**. The SAN embedded in the server
+cert must stay the tailnet identity, never `rocky.lan`.
+
+**Do NOT re-run `scripts/ccswitch-mint-mtls.sh` to renew** — it mints a brand-new CA (and since
+issue #841 refuses to run when a fleet CA already exists). Renew by signing a fresh cert with the
+existing signing CA per the onboarding runbook, Step 3 Option A
+(`docs/runbooks/onboarding-a-session-runner.md`) — that runbook's CA table is the source of truth.
+Summary of the fleet CA state (since 2026-08-30, issue #841):
+
+- **Server-cert renewals** (rocky, dobby, any runner): sign with `ca2.key`
+  (`/etc/ccswitch/tls/ca2.key` on dobby, root-only). The edge verifies server certs against
+  `ca-bundle.pem` (original `ca.pem` + `ca2.pem`), so old and new certs coexist.
+- **Client-cert renewal** (`CN=edge`): every daemon verifies it against its
+  `CCSWITCH_SESSIOND_TLS_CA` — currently the ORIGINAL `ca.pem`. Either sign with the original CA
+  key, which is intact at `/mnt/hdd-storage/ccswitch-ca/ca.key` on dobby (a **root-only**
+  directory: a non-root search reports permission denied/nothing — it is NOT lost), or first point
+  every daemon's `CCSWITCH_SESSIOND_TLS_CA` at a ca.pem+ca2.pem bundle and sign with ca2.
+
+Distribute renewed material and clean up:
 
 ```bash
-bash scripts/ccswitch-mint-mtls.sh /tmp/ccswitch-mtls rocky.tail0dd570.ts.net 100.69.70.109
-openssl x509 -in /tmp/ccswitch-mtls/server.pem -noout -text | grep -A1 "Subject Alternative Name"
-# expect: DNS:rocky.tail0dd570.ts.net, IP Address:100.69.70.109
-```
-
-The script needs the **CA key** to sign new certs (`ca.key`). It was deliberately moved off both
-`dobby` and `rocky` after the original mint and lives only at:
-
-```
-/mnt/hdd-storage/ccswitch-ca/ca.key      # root-only, on neither host's TLS directory
-```
-
-To re-mint, copy `ca.key`/`ca.pem` from that path into the script's working dir first (or run the
-script from wherever the CA lives), then redistribute:
-
-```bash
-# server material → rocky
-scp /tmp/ccswitch-mtls/{ca.pem,server.pem,server.key} tony@rocky:/etc/ccswitch/tls/
-# client material → dobby
-sudo cp /tmp/ccswitch-mtls/{ca.pem,client.pem,client.key} /etc/ccswitch/tls/
+# server material → the runner being renewed (e.g. rocky)
+scp /tmp/mtls-rocky/{server.pem,server.key} tony@rocky:/etc/ccswitch/tls/
+# renewed client material → dobby (edge)
+sudo cp /tmp/mtls-edge/{client.pem,client.key} /etc/ccswitch/tls/
 sudo chmod 600 /etc/ccswitch/tls/*.key
-rm -rf /tmp/ccswitch-mtls   # never leave cert material in /tmp
+rm -rf /tmp/mtls-*   # never leave cert material in /tmp
 ```
 
 Then restart both daemons that read TLS material: `ssh tony@rocky 'sudo systemctl restart
