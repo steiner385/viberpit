@@ -68,6 +68,68 @@ async def test_adopt_dead_pid_skips_termination(tmp_path, monkeypatch):
     assert rec.adopted_in_place is True
 
 
+async def _set_global_default_mode(mode: str) -> None:
+    from server.db import db_session
+    from server.db.models import AppSettings
+    async with db_session() as db:
+        db.add(AppSettings(id="singleton", default_permission_mode=mode))
+
+
+def _adopt_harness(tmp_path, monkeypatch, sid):
+    cwd = tmp_path / "repo"
+    cwd.mkdir()
+    cand = _candidate(str(cwd), sid)
+    orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), repo_root=str(tmp_path))
+    monkeypatch.setattr(orch, "_resolve_candidate", lambda s: cand)
+    monkeypatch.setattr("server.sessions.orchestrator.compose", lambda a: tmp_path / "cfg")
+    monkeypatch.setattr("server.sessions.orchestrator.configdir.trust_project",
+                        lambda *a, **k: None)
+    monkeypatch.setattr("server.sessions.orchestrator._adopt.terminate_process_tree",
+                        lambda pid, killer: True)
+    return orch
+
+
+@pytest.mark.asyncio
+async def test_adopt_honours_global_default_permission_mode(tmp_path, monkeypatch):
+    """An adopted session inherits Settings' defaultPermissionMode, not a hardcoded
+    "interactive" — otherwise a full-auto operator gets a permission prompt on every
+    tool call of a session they just took over. The mode must land on the driver
+    (what gates tools now), the record (what the UI shows) and the DB row (what a
+    daemon restart rehydrates)."""
+    await init_db(db_url="sqlite+aiosqlite:///:memory:")
+    await _set_global_default_mode("full-auto")
+    sid = "66666666-6666-6666-6666-666666666666"
+    orch = _adopt_harness(tmp_path, monkeypatch, sid)
+
+    rec, _ = await orch.adopt_session(sid, identity="t@e.com")
+
+    assert orch._drivers[rec.id].mode == "full-auto"
+    assert rec.permission_mode == "full-auto"
+    from sqlalchemy import select
+    from server.db import db_session
+    from server.db.models import Session as DbSession
+    async with db_session() as db:
+        row = (await db.execute(select(DbSession).where(DbSession.id == rec.id))).scalar_one()
+    assert row.permission_mode == "full-auto"
+
+
+@pytest.mark.asyncio
+async def test_adopt_account_default_beats_global_default(tmp_path, monkeypatch):
+    """The adopted candidate's own account default outranks the global setting —
+    the same precedence the create endpoint applies."""
+    await init_db(db_url="sqlite+aiosqlite:///:memory:")
+    await _set_global_default_mode("full-auto")
+    monkeypatch.setattr("ccswitch.ledger.get_account_defaults",
+                        lambda led, name: {"defaultPermissionMode": "auto"})
+    sid = "77777777-7777-7777-7777-777777777777"
+    orch = _adopt_harness(tmp_path, monkeypatch, sid)
+
+    rec, _ = await orch.adopt_session(sid, identity="t@e.com")
+
+    assert orch._drivers[rec.id].mode == "auto"
+    assert rec.permission_mode == "auto"
+
+
 @pytest.mark.asyncio
 async def test_adopt_rejects_unmapped(monkeypatch):
     orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())

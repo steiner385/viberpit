@@ -55,7 +55,7 @@ from server.sessions import push as push_mod
 from server.sessions.commands import catalog as cmd_catalog
 from server.sessions.commands import dispatcher as cmd_dispatcher
 from server.sessions.driver import SessionDriver
-from server.sessions.permissions import PermissionRegistry
+from server.sessions.permissions import PermissionRegistry, resolve_permission_mode
 from server.sessions.sdk_factory import real_sdk_factory, real_suggestion_factory, real_summary_factory
 from server.sessions.replay import replay_events
 from server.sessions.suggestions import SuggestionService, last_turn_context
@@ -5820,10 +5820,16 @@ class SessionOrchestrator:
         if self._copilot is not None and _provider_of(cand.account) == _copilot_mod.PROVIDER:
             await self._copilot.ensure(cand.account)
 
+        # Same precedence as POST /api/sessions (account default → global Settings
+        # default → interactive): a full-auto operator must not get a permission
+        # prompt on every tool call of a session they just took over.
+        async with db_session() as db:
+            permission_mode = await resolve_permission_mode(db, account=cand.account)
+
         def _build(resume_arg):
             return SessionDriver(
                 session_id, cand.account, cand.cwd, str(cfg_dir),
-                mode="interactive", sdk_factory=self._session_factory(session_id), registry=self._registry,
+                mode=permission_mode, sdk_factory=self._session_factory(session_id), registry=self._registry,
                 identity=identity, resume=resume_arg,
                 on_session_id=self._persist_claude_session_id,
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, cand.account),
@@ -5860,7 +5866,7 @@ class SessionOrchestrator:
             db.add(DbSession(
                 id=session_id, name=cand.name, account_name=cand.account,
                 claude_session_id=claude_session_id, status="idle", pid=None,
-                cwd=cand.cwd, repo=None, permission_mode="interactive",
+                cwd=cand.cwd, repo=None, permission_mode=permission_mode,
                 name_is_auto=True, adopted_in_place=True, last_turn_at=adopted_last_turn,
             ))
             await record_audit(
@@ -5874,6 +5880,7 @@ class SessionOrchestrator:
             id=session_id, name=cand.name, account=cand.account,
             claude_session_id=claude_session_id, cols=80, rows=24,
             cwd=cand.cwd, repo=None, status="idle", adopted_in_place=True,
+            permission_mode=permission_mode,
             updated_at=datetime.utcnow(),  # row-write time
             last_turn_at=adopted_last_turn,  # real last-response time from the transcript
         )
