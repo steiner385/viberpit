@@ -36,7 +36,9 @@ if TYPE_CHECKING:
 from ccswitch import accounts as ccswitch_accounts
 from ccswitch import configdir, copilot as _copilot_mod, crypto, gitrepos, worktrees
 from ccswitch.accounts import provider_of as _provider_of
-from ccswitch.account_names import assert_valid_account_name, InvalidAccountName
+from ccswitch.account_names import (
+    assert_valid_account_name, validate_account_name, InvalidAccountName,
+)
 from ccswitch.config import load_config
 from ccswitch.configdir import compose
 from ccswitch.paths import account_cfg_dir, shared_base
@@ -7624,6 +7626,17 @@ class SessionOrchestrator:
         (e.g. the driver died while the session was idle — in that case params are
         derived from the SessionRecord instead of the old driver).
         """
+        # Validate BEFORE touching anything. switch_account_manual() validated its own
+        # argument, but _rotate_away() did not — so a phantom account name out of
+        # select_account() reached here, the working driver was closed, and the
+        # relaunch then failed, leaving the session driverless and silent. See
+        # docs/superpowers/fix-patterns/2026-08-31-empty-name-aliases-store-root.md
+        # The guard belongs in the shared primitive, not in one of its callers.
+        if not validate_account_name(new_account):
+            log.error("reassign.invalid_account session=%s account=%r reason=%s — "
+                      "keeping the current driver", record.id, new_account, reason)
+            await self._pause_session(record, reason="invalid_rotation_target")
+            return
         # Same defer contract as a model swap: the dance below flips the session
         # through actionable statuses autopilot would otherwise act on mid-restart.
         self._turn_restart_at[record.id] = self._clock()
@@ -7708,6 +7721,14 @@ class SessionOrchestrator:
                       from_account=old, to_account=new_account, reason=reason)
         except Exception:
             log.exception("reassign.error session=%s", record.id)
+            # The old driver is already closed by this point, so the session now has
+            # NO driver. Logging alone left it silently stranded: the UI kept showing
+            # a live-looking session and every prompt the user sent spun forever with
+            # no reply. Flag it so it surfaces as needing attention instead.
+            try:
+                await self._pause_session(record, reason=f"reassign_failed:{reason}")
+            except Exception:
+                log.warning("reassign.pause_failed session=%s", record.id, exc_info=True)
 
     # ------------------------------------------------------------------
     # Archive / unarchive / permanent-delete
