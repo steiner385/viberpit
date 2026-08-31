@@ -415,6 +415,12 @@ class RemoteOrchestrator:
         daemon — the single source of truth for which sessions are still not live."""
         return await self._client.call("resume_recovery_status")
 
+    async def startup_report(self) -> "dict":
+        """The daemon's boot outcomes (rehydrate/rearm counts + step errors) for
+        /api/daemon/health — a failed rehydrate must be observable from the edge."""
+        r = await self._client.call("startup_report")
+        return r if isinstance(r, dict) else {}
+
     async def automation_actionable(self, automation_id: str) -> "list[dict]":
         """Actionable items for *automation_id*, via the daemon."""
         r = await self._client.call("automation_actionable", automation_id=automation_id)

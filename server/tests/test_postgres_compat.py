@@ -511,3 +511,78 @@ async def test_reconcile_adds_missing_column_on_postgres(pg_engine, pg_url):
     async with pg_engine.connect() as conn:
         assert col in await conn.run_sync(cols), (
             "init_db must reconcile a missing model column on Postgres, not only on SQLite")
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_rollup_passed_sql_fold_on_postgres(pg_engine, pg_url):
+    """#833: _rollup_passed now folds in SQL — INSERT..SELECT..ON CONFLICT with
+    a per-dialect day-bucket expression. The Postgres branch (to_char over
+    timezone('UTC', to_timestamp(...))) never runs under the SQLite suite, so
+    pin the whole contract here: UTC-midnight boundary timestamps bucket like
+    the Python reference, passed+skipped for one (repo, test, day) collapse to
+    ONE row (two source rows on the same conflict target is a hard Postgres
+    error), an existing bucket with NULL counts accumulates via COALESCE, and
+    folded rows are deleted while failed rows stay raw."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import delete, select
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from server.automations.cicd_doctor import CicdDoctorLoop
+    from server.db.models import CiTestDaily, CiTestResult
+
+    now = 1_800_000_000.0
+    old = now - 10 * 86400.0            # older than the 7-day raw window
+    midnight = old - (old % 86400.0)    # a UTC day boundary, still stale
+
+    def day(ts: float) -> str:
+        return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d")
+
+    repo = "pg/rollup-833"
+    rows = [
+        ("bound", midnight - 1.0, "passed"),    # previous UTC day
+        ("bound", midnight - 0.25, "passed"),   # fractional second, same day
+        ("bound", midnight + 0.25, "passed"),   # next UTC day
+        ("mixed", old, "passed"),
+        ("mixed", old, "skipped"),
+        ("keep", old, "failed"),
+    ]
+    from sqlalchemy import update
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as s:
+        # An existing bucket with NULL counts: reconcile-added columns are
+        # nullable, and NULL + n is NULL in SQL — the upsert must COALESCE.
+        # (Constructor kwargs of None still trigger the model's default=0, so
+        # the NULLs are forced with an UPDATE after the insert.)
+        s.add(CiTestDaily(repo=repo, test_id="mixed", day=day(old)))
+        for i, (tid, ts, outcome) in enumerate(rows, start=1):
+            s.add(CiTestResult(repo=repo, run_id=833_000 + i, suite="s",
+                               test_id=tid, outcome=outcome, created_ts=ts))
+        await s.commit()
+        await s.execute(update(CiTestDaily).where(CiTestDaily.repo == repo)
+                        .values(passed=None, failed=None, skipped=None))
+        await s.commit()
+
+    engine = CicdDoctorLoop.__new__(CicdDoctorLoop)
+    engine._clock = lambda: now
+    try:
+        async with _pg_module_engine(pg_url):
+            await engine._rollup_passed({})
+    finally:
+        async with Session() as s:
+            daily = (await s.execute(select(CiTestDaily).where(
+                CiTestDaily.repo == repo))).scalars().all()
+            raw = (await s.execute(select(CiTestResult).where(
+                CiTestResult.repo == repo))).scalars().all()
+            await s.execute(delete(CiTestDaily).where(CiTestDaily.repo == repo))
+            await s.execute(delete(CiTestResult).where(CiTestResult.repo == repo))
+            await s.commit()
+
+    got = {(d.test_id, d.day): (d.passed, d.skipped) for d in daily}
+    assert got == {
+        ("bound", day(midnight - 1.0)): (2, 0),
+        ("bound", day(midnight + 0.25)): (1, 0),
+        ("mixed", day(old)): (1, 1),
+    }, "SQL day bucketing must match the Python reference and upsert per bucket"
+    assert [r.test_id for r in raw] == ["keep"], (
+        "failed rows must survive the fold; every folded row must be deleted")

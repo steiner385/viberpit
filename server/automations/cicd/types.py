@@ -70,6 +70,33 @@ class CheckStats:
 
 
 @dataclass(frozen=True)
+class CheckAgg:
+    """One row of the SQL check-stability aggregate (``cicd_doctor.check_stats_stmt``).
+
+    The database collapses a whole job window to ONE ROW PER CHECK — see
+    ``flake_counts_stmt`` for why the raw-row fold on the event loop had to go
+    (#791, #827). ``check_stats_from_agg`` turns these pre-aggregated counts into
+    the same ``CheckStats`` the in-memory ``check_stats`` fold produces; the two
+    share the arithmetic so the SQL path and the Python path cannot drift. Every
+    field is a raw count/extremum — the ratios (``flake_pct``, ``window_days``,
+    ``flake_rising``) are derived once, in ``check_stats_from_agg``."""
+    check: str
+    runs_total: int          # jobs after dropping cancelled/skipped
+    min_ts: float            # earliest / latest job timestamp -> window_days
+    max_ts: float
+    p95_duration_s: float    # already the picked p95 value, not a count
+    shas_total: int          # distinct head_shas
+    flaky_shas: int          # shas showing BOTH a pass and a fail
+    recent_total: int        # shas with a job inside demote_window_days
+    recent_flaky: int        # of those, shas showing both a pass and a fail
+    default_branch_failures: int
+    first_total: int         # shas whose earliest job is before the median ts
+    first_flaky: int
+    second_total: int        # shas whose earliest job is at/after the median ts
+    second_flaky: int
+
+
+@dataclass(frozen=True)
 class Finding:
     """One diagnostic finding. fingerprint dedupes across ticks; the DB row and
     GitHub issue lifecycles (Plan C) key off it."""

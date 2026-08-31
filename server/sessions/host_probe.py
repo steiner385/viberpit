@@ -40,18 +40,36 @@ async def default_fetch(endpoint: str) -> dict:
 
 async def probe_host(name: str, endpoint: str, *, fetch: Fetch) -> dict:
     """Probe one host and write the outcome. Never raises."""
+    from server.ipc.protocol import PROTOCOL_VERSION
     values: dict = {"last_probe_at": datetime.utcnow()}
     try:
         info = await fetch(endpoint)
-        values.update(
-            healthy=True,
-            last_error=None,
-            sha=info.get("sha"),
-            protocol=info.get("protocol"),
-            load_avg=info.get("loadAvg"),
-            mem_available_mb=info.get("memAvailableMb"),
-            active_sessions=info.get("activeSessions"),
-        )
+        daemon_proto = info.get("protocol")
+        # Gate on protocol version: if the daemon reports a version and it differs
+        # from ours, mark unhealthy so the ranker never dispatches to it. A missing
+        # protocol field (older daemons) is treated as unknown, not mismatched.
+        if daemon_proto is not None and daemon_proto != PROTOCOL_VERSION:
+            values.update(
+                healthy=False,
+                last_error=(
+                    f"protocol mismatch: daemon={daemon_proto} edge={PROTOCOL_VERSION}"
+                ),
+                sha=info.get("sha"),
+                protocol=daemon_proto,
+                load_avg=info.get("loadAvg"),
+                mem_available_mb=info.get("memAvailableMb"),
+                active_sessions=info.get("activeSessions"),
+            )
+        else:
+            values.update(
+                healthy=True,
+                last_error=None,
+                sha=info.get("sha"),
+                protocol=daemon_proto,
+                load_avg=info.get("loadAvg"),
+                mem_available_mb=info.get("memAvailableMb"),
+                active_sessions=info.get("activeSessions"),
+            )
     except Exception as exc:
         # Record the failure; do NOT leave a previous healthy=True in place.
         values.update(healthy=False, last_error=f"{type(exc).__name__}: {exc}"[:500])

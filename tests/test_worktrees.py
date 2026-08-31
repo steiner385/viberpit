@@ -144,6 +144,17 @@ class WorktreeTests(unittest.TestCase):
             worktrees.create_worktree(str(self.repo), "-evil", "abc12345-0000", str(self.root))
         self.assertIn("invalid branch name", str(ctx.exception))
 
+    def test_nonexistent_branch_raises_unresolvable(self) -> None:
+        """A branch that resolves to no ref at all (deleted on merge between
+        enqueue and spawn — issue #836) raises the distinct
+        BranchRefUnresolvableError so the orchestrator can treat the race as
+        benign. Still a WorktreeError subclass for existing catch-sites."""
+        with self.assertRaises(worktrees.BranchRefUnresolvableError) as ctx:
+            worktrees.create_worktree(
+                str(self.repo), "gone-on-merge", "abc12345-0000", str(self.root))
+        self.assertIsInstance(ctx.exception, worktrees.WorktreeError)
+        self.assertIn("invalid reference", str(ctx.exception))
+
 
 class WorktreeLockingTests(unittest.TestCase):
     """Regression tests for #177 — a sibling session's cleanup must never reap a

@@ -44,7 +44,10 @@ jobs:
       - name: Server tests
         env:
           CCSWITCH_TEST_PG_URL: postgresql+asyncpg://ccswitch_test:test@127.0.0.1:5432/ccswitch_test
-        run: python -m pytest server/tests/ -q --junitxml=test-results/server.xml
+        # faulthandler_timeout dumps every thread's traceback if any single test
+        # runs >300s, so a hang names itself in the log instead of silently eating
+        # the 45-min job budget; the `timeout` guard then fails the step fast.
+        run: timeout --signal=SIGTERM 1500 python -m pytest server/tests/ -q -o faulthandler_timeout=300 --junitxml=test-results/server.xml
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4

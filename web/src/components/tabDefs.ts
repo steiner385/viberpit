@@ -20,6 +20,7 @@ export const TAB_DEFS: { id: TabId; label: string }[] = [
   { id: 'sessions', label: 'Sessions' },
   { id: 'pipeline', label: 'Pipeline' },
   { id: 'automations', label: 'Automations' },
+  { id: 'initiatives', label: 'Initiatives' },
   { id: 'archived', label: 'Archived' },
   { id: 'insights', label: 'Insights' },
   { id: 'settings', label: 'Settings' },

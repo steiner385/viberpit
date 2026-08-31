@@ -94,7 +94,12 @@ class InProcessOrchestratorAdapter:
     def __init__(self, orch):
         self._orch = orch
 
-    async def create_session(self, *a, **k): return await _maybe_await(self._orch.create_session(*a, **k))
+    async def create_session(self, *a, **k):
+        # In-process is a single host — 'prefer' is a fleet-routing hint that does
+        # not apply here. Pop it before forwarding so the underlying orchestrator
+        # (which does not accept prefer=) never sees it. (Ruling D)
+        k.pop("prefer", None)
+        return await _maybe_await(self._orch.create_session(*a, **k))
     async def send_prompt(self, *a, **k): return await _maybe_await(self._orch.send_prompt(*a, **k))
     async def ensure_driver(self, *a, **k): return await _maybe_await(self._orch.ensure_driver(*a, **k))
     # Local/in-process mode has no daemon replay ring, so the wave-3 cursor catch-up never
@@ -164,6 +169,7 @@ class InProcessOrchestratorAdapter:
     async def request_pr_fix(self, *a, **k): return await _maybe_await(self._orch.request_pr_fix(*a, **k))
     async def automation_statuses(self, *a, **k): return await _maybe_await(self._orch.automation_statuses(*a, **k))
     async def resume_recovery_status(self, *a, **k): return await _maybe_await(self._orch.resume_recovery_status(*a, **k))
+    async def startup_report(self, *a, **k): return await _maybe_await(self._orch.startup_report(*a, **k))
     async def automation_actionable(self, *a, **k): return await _maybe_await(self._orch.automation_actionable(*a, **k))
     async def automation_trigger(self, *a, **k): return await _maybe_await(self._orch.automation_trigger(*a, **k))
     async def pr_doctor_job(self, *a, **k): return await _maybe_await(self._orch.pr_doctor_job(*a, **k))

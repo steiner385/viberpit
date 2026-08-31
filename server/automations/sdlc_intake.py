@@ -1,127 +1,182 @@
-"""SDLC Intake automation (#799): trigger → committed ``intent.md`` PR.
+"""SDLC Intake — the front-of-loop automation that turns a trigger into a
+proposed ``intent.md`` PR.
 
-v1 triggers are human-created Initiatives (``POST /api/sdlc/initiatives``);
-Phase 2 (#804) adds triage items. Propose-only: after spawning the artifact
-session the Initiative parks at ``awaiting_human`` until the human advance tap.
-All I/O is injected (fakes in tests, orchestrator in prod) — the
-``BacklogRunnerLoop`` idiom."""
+Two objects, following the ``BacklogRunner`` mold exactly (constitution VI —
+one substrate, no parallel engine):
+
+* ``SdlcIntake`` — the ``Automation`` contract surface (id/name/modes/config +
+  ``status``/``on_state_change``). Metadata only; it holds no I/O.
+* ``SdlcIntakeLoop`` — the supervised control loop. Every I/O dependency is
+  INJECTED (read config, read pending triggers, ensure the Initiative row,
+  record the intent artifact, spawn the session, clock) so the loop runs with no
+  network and no real DB in tests. The loop never *decides* the stage itself: it
+  delegates to the pure ``sdlc.engine.next_action`` and seeds the session with
+  the pure ``sdlc.prompts.build_intent_prompt``.
+
+**Propose-only v1 (design §3.4):** the loop turns each pending trigger into one
+committed ``intent.md`` PR (the spawned session does the commit + non-draft PR),
+records the artifact, and stops. Advancing the Initiative to the next stage is a
+human tap — the engine returns ``AwaitApproval`` for any initiative whose intent
+artifact already exists, so a re-tick never re-proposes.
+"""
 from __future__ import annotations
 
-import asyncio
-import logging
-from collections.abc import Awaitable, Callable
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Awaitable, Callable
 
-from server.sdlc.engine import ArtifactView, InitiativeView, Propose, next_action
-from server.sdlc.prompts import artifact_path
+from server.sdlc import engine
+from server.sdlc.prompts import artifact_path, build_intent_prompt
 
 from .base import AutomationStatus, ConfigField
-from .model_pick import AUTOMATION_MODEL_CHOICES
 
-log = logging.getLogger(__name__)
-
-ListInitiatives = Callable[[], Awaitable[list[dict]]]
-ListArtifacts = Callable[[str], Awaitable[list[dict]]]
-RecordArtifact = Callable[..., Awaitable[None]]
-SetStatus = Callable[[str, str], Awaitable[None]]
-Spawn = Callable[[dict, str], Awaitable[Any]]
-ReadConfig = Callable[[], Awaitable["tuple[str, dict]"]]
+# A trigger's per-day spawn ceiling is enforced over a rolling 24h window.
+_DAY_SECONDS = 24 * 60 * 60
 
 
-def _to_views(ini: dict, artifacts: list[dict]) -> tuple[InitiativeView, list[ArtifactView]]:
-    """Adapt the injected dict rows into the engine's frozen views. ``issue`` is
-    the origin_ref — the GitHub issue the Build stage hands to backlog_runner."""
-    return (
-        InitiativeView(slug=str(ini.get("slug") or ""),
-                       stage=str(ini.get("stage") or ""),
-                       status=str(ini.get("status") or ""),
-                       repo=str(ini.get("repo") or ""),
-                       issue=ini.get("origin_ref")),
-        [ArtifactView(kind=str(a.get("kind") or ""),
-                      commit_sha=a.get("commit_sha"),
-                      pr_number=a.get("pr_number"),
-                      pr_url=a.get("pr_url")) for a in artifacts],
-    )
+# --------------------------------------------------------------------------- #
+# Trigger — the loop's input view (constructed by the orchestrator from a       #
+# brainstorm session or, in Phase 2, a triage item; NOT an ORM model).          #
+# --------------------------------------------------------------------------- #
 
+@dataclass(frozen=True)
+class Trigger:
+    """A pending intake trigger. ``slug`` is the stable Initiative identity;
+    ``text`` is the brainstorm/triage content that seeds the intent prompt."""
+    slug: str
+    text: str
+    title: str = ""
+    repo: str = ""
+    origin: str = "human"
+    origin_ref: str | None = None
+
+
+# --------------------------------------------------------------------------- #
+# Automation contract surface                                                   #
+# --------------------------------------------------------------------------- #
 
 class SdlcIntake:
     id = "sdlc-intake"
     name = "SDLC Intake"
-    description = "Turns triggers into committed intent.md artifact PRs (propose-only v1)."
+    description = (
+        "Turns a brainstorm/triage trigger into a proposed intent.md PR — the "
+        "front of the AI-native SDLC loop. Propose-only: a human advance is the gate.")
     modes: tuple[str, ...] = ("off", "propose", "auto")
     config_schema = [
-        ConfigField(key="default_model", label="Model", type="enum",
-                    default="default", choices=list(AUTOMATION_MODEL_CHOICES),
-                    help="Model for spawned intent sessions ('auto' assesses per task)."),
+        ConfigField("enabled_repos", "Repositories", "repo-multiselect", [],
+                    help="Repositories this intake automation may open intent PRs in."),
+        ConfigField("max_spawns_per_day", "Max intent sessions / day", "int", 10,
+                    help="Safety cap on intent-generation sessions spawned per rolling 24h."),
     ]
 
     def status(self, ctx: Any) -> AutomationStatus:
-        return AutomationStatus(text="proposes intent.md artifacts for new initiatives")
+        counts = getattr(ctx, "sdlc_intake_counts", None) if ctx else None
+        if not counts:
+            return AutomationStatus(text="idle", level="idle")
+        pending = counts.get("pending", 0)
+        awaiting = counts.get("awaiting", 0)
+        text = f"{pending} pending · {awaiting} awaiting approval"
+        return AutomationStatus(text=text, level="active" if pending else "idle",
+                                counts=counts)
 
     async def on_state_change(self, *, enabled: bool, mode: str | None,
                               config: dict, ctx: Any) -> None:
+        # No side effects on toggle; the loop reacts on its next tick.
         return None
 
 
+# --------------------------------------------------------------------------- #
+# Injected-seam type aliases (mirror BacklogRunnerLoop's typed seams)           #
+# --------------------------------------------------------------------------- #
+
+ReadConfig = Callable[[], Awaitable[tuple[str, dict]]]
+ReadTriggers = Callable[[], Awaitable[list[Trigger]]]
+EnsureInitiative = Callable[[Trigger], Awaitable[tuple[engine.InitiativeView,
+                                                       list[engine.ArtifactView]]]]
+RecordIntent = Callable[[str, str, str | None], Awaitable[None]]
+Spawn = Callable[[Trigger, str], Awaitable[Any]]
+
+
 class SdlcIntakeLoop:
-    """One tick: for every Initiative the engine wants an ``intent`` proposed
-    for, spawn the artifact session (deduped downstream on ``<slug>:intent``),
-    record the artifact index row, and park at ``awaiting_human``."""
+    """The Intake control loop. One ``tick()`` reads pending triggers and, for
+    each one the pure engine says to ``Propose('intent')``, spawns an intent
+    session and records the artifact. All I/O is injected."""
 
     def __init__(
         self,
         ctx: Any,
         *,
-        list_initiatives: ListInitiatives,
-        list_artifacts: ListArtifacts,
-        record_artifact: RecordArtifact,
-        set_status: SetStatus,
-        spawn: Spawn,
         read_config: ReadConfig,
+        read_triggers: ReadTriggers,
+        ensure_initiative: EnsureInitiative,
+        record_intent: RecordIntent,
+        spawn: Spawn,
         clock: Callable[[], float],
     ) -> None:
         self._ctx = ctx
-        self._list_initiatives = list_initiatives
-        self._list_artifacts = list_artifacts
-        self._record_artifact = record_artifact
-        self._set_status = set_status
-        self._spawn = spawn
         self._read_config = read_config
+        self._read_triggers = read_triggers
+        self._ensure_initiative = ensure_initiative
+        self._record_intent = record_intent
+        self._spawn = spawn
         self._clock = clock
-        self._lock = asyncio.Lock()
+        # Rolling-window spawn timestamps (in-memory, like BacklogRunnerLoop).
+        self._spawns_today: list[float] = []
 
     async def tick(self) -> None:
-        async with self._lock:
-            try:
-                await self._run()
-            except Exception:
-                log.warning("sdlc_intake.tick_failed", exc_info=True)
+        """One control-loop iteration. Best-effort: swallows exceptions so a
+        transient failure never crashes the supervising driver."""
+        try:
+            await self._run()
+        except Exception:  # pragma: no cover — belt+braces, mirrors the mold
+            import logging
+            logging.getLogger(__name__).warning("sdlc_intake.tick_error", exc_info=True)
 
     async def _run(self) -> None:
         mode, config = await self._read_config()
         if mode == "off":
+            self._stash_counts(0, 0)
             return
-        for ini in await self._list_initiatives():
-            state, arts = _to_views(ini, await self._list_artifacts(ini["id"]))
-            action = next_action(state, arts, mode, config)
-            if action != Propose("intent"):
-                continue
-            rec = await self._spawn(ini, "intent")
-            if rec is None:
-                continue
-            slug = str(ini.get("slug") or "")
-            await self._record_artifact(
-                initiative_id=ini["id"], kind="intent",
-                repo_path=artifact_path(slug, "intent"),
-                session_id=getattr(rec, "id", None),
-                model=getattr(rec, "model", None))
-            await self._set_status(ini["id"], "awaiting_human")
-            await self._emit_proposed(slug, rec)
 
-    async def _emit_proposed(self, slug: str, rec: Any) -> None:
-        try:
-            await self._ctx.emit("info", f"proposed intent for {slug}",
-                                 kind="proposed", target=slug,
-                                 session_id=getattr(rec, "id", None))
-        except Exception:  # best-effort — the feed must not break the loop
-            log.debug("sdlc_intake.emit_failed", exc_info=True)
+        triggers = await self._read_triggers()
+        self._prune_day()
+        cap = int(config.get("max_spawns_per_day", 10))
+        awaiting = 0
+
+        for trigger in triggers:
+            view, artifacts = await self._ensure_initiative(trigger)
+            action = engine.next_action(view, artifacts, mode, config)
+
+            if isinstance(action, engine.Propose) and action.kind == "intent":
+                if len(self._spawns_today) >= cap:
+                    await self._ctx.emit(
+                        "info", "daily intent-session cap reached; deferring",
+                        kind="ceiling", target=trigger.slug)
+                    continue
+                await self._propose_intent(trigger)
+            elif isinstance(action, engine.AwaitApproval):
+                awaiting += 1
+            # Any other action (Done / HandoffToBuild / NeedsHuman) is not the
+            # intake stage's concern — leave it for the human / later stages.
+
+        self._stash_counts(len(triggers), awaiting)
+
+    async def _propose_intent(self, trigger: Trigger) -> None:
+        prompt = build_intent_prompt(trigger.text, slug=trigger.slug, repo=trigger.repo)
+        session = await self._spawn(trigger, prompt)
+        session_id = getattr(session, "id", None)
+        path = artifact_path(trigger.slug, "intent")
+        await self._record_intent(trigger.slug, path, session_id)
+        self._spawns_today.append(self._clock())
+        await self._ctx.emit(
+            "info", f"proposed intent for {trigger.slug}",
+            kind="proposed", target=trigger.slug, session_id=session_id,
+            detail={"path": path})
+
+    def _prune_day(self) -> None:
+        """Drop spawn timestamps older than the rolling 24h window."""
+        cutoff = self._clock() - _DAY_SECONDS
+        self._spawns_today = [t for t in self._spawns_today if t >= cutoff]
+
+    def _stash_counts(self, pending: int, awaiting: int) -> None:
+        # Surfaced by SdlcIntake.status() on the automation card.
+        self._ctx.sdlc_intake_counts = {"pending": pending, "awaiting": awaiting}

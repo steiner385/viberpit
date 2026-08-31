@@ -14,12 +14,11 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from server.sdlc.engine import Propose, next_action
+from server.sdlc.engine import ArtifactView, InitiativeView, Propose, next_action
 from server.sdlc.prompts import artifact_path
 
 from .base import AutomationStatus, ConfigField
 from .model_pick import AUTOMATION_MODEL_CHOICES
-from .sdlc_intake import _to_views  # single source of truth — do NOT copy
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +30,22 @@ Spawn = Callable[[dict, str], Awaitable[Any]]
 PrLookup = Callable[[dict], Awaitable["dict | None"]]
 UpdateArtifact = Callable[..., Awaitable[None]]
 ReadConfig = Callable[[], Awaitable["tuple[str, dict]"]]
+
+
+def _to_views(ini: dict, artifacts: list[dict]) -> tuple[InitiativeView, list[ArtifactView]]:
+    """Adapt the injected dict rows into the engine's frozen views. ``issue`` is
+    the origin_ref — the GitHub issue the Build stage hands to backlog_runner."""
+    return (
+        InitiativeView(slug=str(ini.get("slug") or ""),
+                       stage=str(ini.get("stage") or ""),
+                       status=str(ini.get("status") or ""),
+                       repo=str(ini.get("repo") or ""),
+                       issue=ini.get("origin_ref")),
+        [ArtifactView(kind=str(a.get("kind") or ""),
+                      commit_sha=a.get("commit_sha"),
+                      pr_number=a.get("pr_number"),
+                      pr_url=a.get("pr_url")) for a in artifacts],
+    )
 
 
 class SdlcSynthesizer:

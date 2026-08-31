@@ -37,10 +37,11 @@ import { PipelineTab } from '@/pipeline/PipelineTab'
 import { AdoptPanel } from './AdoptPanel'
 import { InsightsView } from './InsightsView'
 import { AutomationsTab } from '@/automations/AutomationsTab'
+import { InitiativesTab } from '@/initiatives/InitiativesTab'
 import { ReviewView } from './ReviewView'
 import { SidebarResizer } from './SidebarResizer'
 import { useSidebarWidth } from '@/lib/useSidebarWidth'
-import { RenameDialog } from './Dashboard'
+import { RenameDialog, type TabId } from './Dashboard'
 import { PermanentDeleteDialog } from '@/components/PermanentDeleteDialog'
 import { SessionRuntimeProvider, useSessionRuntimeContext } from './session/SessionRuntimeProvider'
 import { SessionBody } from './session/SessionBody'
@@ -72,7 +73,8 @@ import { useSessionSearch } from '@/session/useSessionSearch'
 import { useListNavigation } from '@/session/useListNavigation'
 import { nextSessionAfterClose } from '@/session/nextAfterArchive'
 
-type TabId = 'sessions' | 'archived' | 'pipeline' | 'automations' | 'insights' | 'settings'
+// TabId is the single source of truth in ./Dashboard (constitution VI) — imported,
+// not redeclared, so a new tab (e.g. 'initiatives') can't drift between layouts.
 type Target = { type: 'new' } | { type: 'session'; id: string; initialPrompt?: string }
 
 // ── Session subtree (rendered only under SessionRuntimeProvider) ──────────────
@@ -536,6 +538,8 @@ export function DesktopShell() {
     mainPane = <div className="flex flex-col h-full"><PipelineTab onOpenInsights={() => setTab('insights')} /></div>
   } else if (tab === 'automations') {
     mainPane = <div className="overflow-y-auto h-full"><AutomationsTab onOpenSession={focusSession} onReviewSession={setReviewId} /></div>
+  } else if (tab === 'initiatives') {
+    mainPane = <div className="flex flex-col h-full"><InitiativesTab /></div>
   } else if (tab === 'insights') {
     mainPane = <div className="p-4 overflow-y-auto h-full"><InsightsView /></div>
   } else if (tab === 'settings') {

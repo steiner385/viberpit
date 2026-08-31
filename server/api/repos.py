@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from ccswitch import gitrepos
 from server.auth.middleware import current_identity
+from server.ipc.client import DaemonError, DaemonUnavailable
 
 router = APIRouter(prefix="/api/github", tags=["github"])
 log = logging.getLogger(__name__)
@@ -57,9 +58,22 @@ async def list_github_repos(
     # edge process, whose filesystem has no clones once daemon and edge are split
     # (#709 finding 6). orchestrator.cloned_repos resolves the daemon's own
     # clones_base and returns the subset present there.
+    #
+    # Best-effort: while the daemon is booting after a restart this RPC raises
+    # DaemonUnavailable; uncaught, it killed the whole endpoint and the New Session
+    # dropdown showed "— could not load repos —" (2026-08-29 startup-health
+    # incident). The list itself comes from gh on the edge, so serve it and degrade
+    # `cloned` to the last-good set (else all-False — a repo picked in that window
+    # just re-clones on start, which ensure_clone treats as a no-op when it exists).
     orch = request.app.state.sessions
     names = [repo.get("nameWithOwner") or "" for repo in repos]
-    cloned = set(await orch.cloned_repos(names))
+    try:
+        cloned = set(await orch.cloned_repos(names))
+        state.cloned_repos_cache = cloned
+    except (DaemonUnavailable, DaemonError) as exc:
+        cloned = getattr(state, "cloned_repos_cache", set())
+        log.warning("github/repos: cloned_repos RPC failed (%s) — serving list with "
+                    "%d cached cloned flag(s)", exc, len(cloned))
     for repo in repos:
         repo["cloned"] = (repo.get("nameWithOwner") or "") in cloned
     return repos

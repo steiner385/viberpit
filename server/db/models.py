@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer,
-                        String, UniqueConstraint)
+                        String, UniqueConstraint, text)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import JSON
 
@@ -225,12 +225,26 @@ class AppSession(Base):
     """Server-side login/identity session (signed cookie → row lookup)."""
 
     __tablename__ = "app_sessions"
+    # Composite partial index for the auth-reuse hot path: every cookie-less request
+    # (API polls, WS upgrades) runs SELECT … WHERE identity=? AND revoked_at IS NULL
+    # AND expires_at>? ORDER BY created_at DESC LIMIT 1.  The old single-column
+    # ix_app_sessions_identity had near-zero selectivity (42k rows, ~4 identities),
+    # so Postgres seq-scanned on every call.  This index descends straight to the one
+    # live row without touching revoked/expired history. (#830)
+    # NOTE: on a live Postgres DB this MUST be created with CREATE INDEX CONCURRENTLY
+    # (see migration 0010_app_sessions_composite_index) — it cannot self-apply.
+    __table_args__ = (
+        Index(
+            "ix_app_sessions_identity_created_at",
+            "identity",
+            text("created_at DESC"),
+            postgresql_where=text("revoked_at IS NULL"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
-    # Verified Tailscale identity string (e.g. user@example.com). Indexed: the
-    # auth reuse query filters on identity and sorts by created_at on every
-    # authenticated request (see server/auth/middleware.py).
-    identity: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    # Verified Tailscale identity string (e.g. user@example.com).
+    identity: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -618,8 +632,10 @@ class CiTestDaily(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     repo: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     test_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
-    # 'YYYY-MM-DD' UTC. A string, not a Date: it is bucketed in Python so the value is
-    # identical on SQLite and Postgres (see the plan's portability constraint).
+    # 'YYYY-MM-DD' UTC. A string, not a Date. Bucketed in SQL by the fold
+    # (cicd_doctor.rollup_day_expr, per-dialect) — pinned to the Python reference
+    # datetime.fromtimestamp(ts, utc).strftime('%Y-%m-%d') by an oracle test, so
+    # the value is identical on SQLite and Postgres (#833).
     day: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     passed: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
     # Reserved: no writer currently populates this. Failed rows are kept raw

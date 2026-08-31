@@ -97,12 +97,16 @@ async def daemon_lifespan(app, orchestrator):
     await init_db(db_url=db_url)
     try:
         await orchestrator.rehydrate()
-    except Exception:
+    except Exception as exc:
         log.error("daemon rehydrate() failed — starting with no sessions restored", exc_info=True)
+        # Feed the startup report (surfaced via /api/daemon/health on the edge) so a
+        # boot that silently restored nothing is observable, not just a log line.
+        orchestrator.note_startup_failure("rehydrate", exc)
     try:
         await orchestrator.rearm_background_tasks()
-    except Exception:
+    except Exception as exc:
         log.error("daemon rearm_background_tasks() failed", exc_info=True)
+        orchestrator.note_startup_failure("rearm", exc)
     await orchestrator.start()
     # RC1 (blocking sqlite3 on the loop) ran for hours before it was noticed, and only
     # via an external py-spy dump — this makes the same class of saturation

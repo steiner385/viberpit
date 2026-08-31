@@ -66,6 +66,19 @@ class DiskSpaceError(WorktreeError):
     """
 
 
+class BranchRefUnresolvableError(WorktreeError):
+    """Raised when the requested branch resolves to no ref at all — git's
+    "fatal: invalid reference": not a local branch and not on origin.
+
+    Typical cause is a lost race, not a broken repo: the branch was a PR head
+    the remote auto-deleted on merge between session enqueue and spawn, and
+    the pre-add fetch pruned the remote-tracking ref too (issue #836). The
+    distinct type lets the orchestrator pair it with a merged PR and treat
+    the failure as a benign completion; subclasses WorktreeError so existing
+    catch-sites keep working.
+    """
+
+
 # Single source of truth for "this failure is disk exhaustion" detection.
 # The git ENOSPC string appears in captured stderr of a failed checkout;
 # the headroom string is ours. server/automations/backlog_runner.py imports
@@ -311,6 +324,8 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
 
     Raises:
         WorktreeError: if `repo_path` is not a git repo, or worktree creation fails.
+        BranchRefUnresolvableError: when `branch` resolves to no ref anywhere
+            (e.g. a PR head branch auto-deleted on merge — issue #836).
     """
     # Argument-injection guard: reject branch names starting with '-' so they
     # cannot be interpreted as git options even with the '--' separator below.
@@ -403,10 +418,14 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
                      repo_name, branch, child, dest)
             return WorktreeInfo(str(dest), child, is_child=True, repo=repo_top)
 
-        raise WorktreeError(
-            f"git worktree add failed for {branch!r}: "
-            f"{r.stderr.strip()} / {r2.stderr.strip()}"
-        )
+        msg = (f"git worktree add failed for {branch!r}: "
+               f"{r.stderr.strip()} / {r2.stderr.strip()}")
+        # r2 is the deciding attempt: `-b <child> -- <branch>` needs only that
+        # <branch> resolves as a commit-ish, so "invalid reference" there means
+        # the ref exists nowhere (deleted-on-merge race), not merely "busy".
+        if "invalid reference" in r2.stderr:
+            raise BranchRefUnresolvableError(msg)
+        raise WorktreeError(msg)
 
 
 def remove_worktree(worktree_path: str, force: bool = False) -> bool:

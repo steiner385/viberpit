@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import functools
 import logging
 import os
@@ -39,6 +40,7 @@ from ccswitch.account_names import assert_valid_account_name, InvalidAccountName
 from ccswitch.config import load_config
 from ccswitch.configdir import compose
 from ccswitch.paths import account_cfg_dir, shared_base
+from server.aio import bounded_wait
 from server.audit import record_audit
 from server.db import db_session
 from server.db.models import AUTO_ARCHIVE_PROVENANCE, CAPACITY_EXEMPT_STATUSES, INACTIVE_SESSION_STATUSES, Session as DbSession
@@ -226,6 +228,13 @@ _STUCK_SESSION_SWEEP_INTERVAL: float = 300.0
 # effect even with no new archive event (the on-archive path covers the fresh-archive case).
 _ARCHIVE_LIMIT_SWEEP_INTERVAL: float = 300.0
 
+# How many consecutive permanent_delete failures for the SAME archived session before
+# the cap-purge gives up on it and skips it in future sweeps (#825). Without this a
+# single un-deletable directory (e.g. a stale sshfs handle, or a containment-guard
+# rejection) is re-selected as "oldest" forever and disk is never reclaimed from any
+# other archived session — observed on rocky as 72 identical failures in 24h.
+_ARCHIVE_PURGE_MAX_STRIKES: int = 3
+
 # Recurring-session dispatch (#603): how often the scheduler evaluates cron-
 # scheduled Automation rows. Sub-minute so a cron minute fires within a tick of
 # its due time; the persisted last_fired_at watermark makes the fire idempotent.
@@ -236,17 +245,23 @@ _RECURRING_TICK_INTERVAL: float = 30.0
 # that a legitimately large transcript still renders.
 #
 # Scope: this ceiling bounds ONLY the replay_window() call — sub-agent sidecar
-# discovery and everything else that happens inside it. It does NOT cover
-# resolve_transcript_path(), which runs before this wait_for and can itself
-# block the event loop via _find_transcript's unbounded glob.glob() fallback
-# (that fallback runs synchronously on the loop, so wrapping it in wait_for
-# would not help — wait_for can cancel a coroutine, not interrupt synchronous
-# work already running). Bounding transcript-path resolution is tracked as a
-# separate task.
+# discovery and everything else that happens inside it. resolve_transcript_path()
+# runs BEFORE this wait_for and does its own stat/glob (_find_transcript) over the
+# account's projects tree — on sshfs that could itself block the loop for seconds,
+# and wait_for can't help (it cancels a coroutine, not synchronous work already on
+# the loop). As of #826 that resolution is offloaded via asyncio.to_thread, so both
+# the path lookup and the replay now run off the event loop.
 #
 # minimum=0.1: a 0 (or negative) override would make wait_for fire immediately and
 # turn EVERY transcript into an empty one — fall back to the default instead.
 _TRANSCRIPT_WINDOW_CEILING_S = env_float("CCSWITCH_TRANSCRIPT_WINDOW_CEILING_S", 10.0, minimum=0.1)
+
+# stop() runs inside the app lifespan shutdown; every await in it is bounded so a
+# single cancel-ignoring task or wedged driver close can't hang teardown (#846).
+# Per-item budgets: reaping a cancelled task should be near-instant; a driver close
+# legitimately takes up to ~10s (interrupt flush + subprocess terminate).
+_STOP_TASK_TIMEOUT_S = 5.0
+_STOP_DRIVER_CLOSE_TIMEOUT_S = 10.0
 
 # The export path (/export.md) replays the FULL transcript with limit=None, so a
 # legitimately huge session can exceed the interactive ceiling above. Exporting is a
@@ -357,6 +372,16 @@ class SessionOrchestrator:
         # in-memory by design — a fresh deploy rebuilds it; a crash loses it exactly
         # as the deploy controller loses its own frozen 'failed' list.
         self._resume_recovery: dict[str, int] = {}
+        # Startup health report (2026-08-29): a failed rehydrate() used to vanish into
+        # a log line while the daemon looked healthy with zero sessions. Boot steps
+        # record their outcome here; /api/daemon/health exposes it (RPC-bridged in
+        # remote mode). In-memory by design — it describes THIS process's boot.
+        from datetime import datetime as _dt, timezone as _tz
+        self._startup_report: dict = {
+            "startedAt": _dt.now(_tz.utc).isoformat(),
+            "rehydrated": None, "rehydrateError": None,
+            "rearmed": None, "rearmError": None,
+        }
         # Detached-session next-prompt suggestions: session_id -> (transcript mtime, items).
         # Generated from the on-disk transcript without resuming the driver (see
         # latest_suggestions / _generate_detached_suggestions). Cached even when empty so
@@ -409,6 +434,13 @@ class SessionOrchestrator:
         self._pending_initial_prompt: dict[str, str] = {}
         # Deferred attachment ids for the initial prompt, sent on first WS attach.
         self._pending_initial_attachment_ids: dict[str, list[str]] = {}
+        # Cap-purge poison tracking (#825): consecutive permanent_delete failures per
+        # session, and the set that has crossed _ARCHIVE_PURGE_MAX_STRIKES and is now
+        # skipped during selection so one un-deletable archive can't wedge the whole
+        # cap. In-memory by design — a daemon restart re-tries a session that may since
+        # have become deletable (e.g. the sshfs mount recovered).
+        self._archive_purge_strikes: dict[str, int] = {}
+        self._archive_purge_poisoned: set[str] = set()
 
         # Build a live-session-aware usage_fn: when an account has a live session
         # the SDK owns its token family, so the poller must not independently
@@ -544,6 +576,46 @@ class SessionOrchestrator:
             credential_alerts=self._backlog_credential_alerts,
         )
         self._backlog_task: asyncio.Task | None = None
+        # SDLC Intake control loop: turns pending triggers into proposed intent.md
+        # PRs (propose-only). Same injected-seam mold as BacklogRunnerLoop; the
+        # trigger source (read_triggers) stays empty until a triage queue (#804) or
+        # the /api/sdlc intake path (#802) feeds it, so today each tick is a cheap
+        # no-op sweep.
+        from server.automations.sdlc_intake import SdlcIntakeLoop
+        self._sdlc_intake_ctx = AutomationContext(
+            "sdlc-intake", create_session=self.create_session)
+        self._sdlc_intake_loop = SdlcIntakeLoop(
+            self._sdlc_intake_ctx,
+            read_config=self._sdlc_intake_read_config,
+            read_triggers=self._sdlc_intake_read_triggers,
+            ensure_initiative=self._sdlc_intake_ensure_initiative,
+            record_intent=self._sdlc_intake_record_intent,
+            spawn=self._sdlc_intake_spawn,
+            clock=time.monotonic,
+        )
+        self._sdlc_intake_task: asyncio.Task | None = None
+        # SDLC Synthesizer control loop (#800): carries initiatives intent→spec→
+        # plan by proposing each stage's artifact PR and enriching artifact index
+        # rows with PR metadata (number/url, then merge sha). Same injected-seam
+        # mold as the intake loop; every seam is a thin adapter over db_session()
+        # + the shared backlog helpers (healthy-account, ensure_clone, PR-poller).
+        from server.automations.sdlc_synthesizer import SdlcSynthesizerLoop
+        self._sdlc_synth_ctx = AutomationContext(
+            "sdlc-synthesizer", create_session=self.create_session)
+        self._sdlc_synthesizer_loop = SdlcSynthesizerLoop(
+            self._sdlc_synth_ctx,
+            list_initiatives=self._sdlc_list_initiatives,
+            list_artifacts=self._sdlc_list_artifacts,
+            record_artifact=self._sdlc_record_artifact,
+            set_status=self._sdlc_set_status,
+            spawn=self._sdlc_spawn_synth,
+            pr_lookup=self._sdlc_pr_lookup,
+            update_artifact=self._sdlc_update_artifact,
+            read_config=self._sdlc_synth_read_config,
+            clock=time.monotonic,
+        )
+        self._sdlc_synth_task: asyncio.Task | None = None
+        self._recurring_task: asyncio.Task | None = None
         # Autopilot control loop: advances every governed session through its stuck
         # states each tick (also nudged from _persist_status). All seams injected so
         # the loop stays testable; the seam methods live on this orchestrator.
@@ -608,42 +680,6 @@ class SessionOrchestrator:
             clock=time.time,
         )
         self._archaudit_task: asyncio.Task | None = None
-        # SDLC control loops (#799/#800): intake (trigger→intent.md PR) and
-        # synthesizer (intent→spec→plan PRs). Every I/O seam is a thin adapter over
-        # db_session() + the same orchestrator helpers the backlog loop uses
-        # (healthy-account, resolve_model, default-branch, spawn_session de-dup,
-        # PR-poller cache). Propose-only v1 — the loops park initiatives at
-        # awaiting_human after spawning each artifact session.
-        from server.automations.sdlc_intake import SdlcIntakeLoop
-        from server.automations.sdlc_synthesizer import SdlcSynthesizerLoop
-        self._sdlc_intake_ctx = AutomationContext(
-            "sdlc-intake", create_session=self.create_session)
-        self._sdlc_synth_ctx = AutomationContext(
-            "sdlc-synthesizer", create_session=self.create_session)
-        self._sdlc_intake_loop = SdlcIntakeLoop(
-            self._sdlc_intake_ctx,
-            list_initiatives=self._sdlc_list_initiatives,
-            list_artifacts=self._sdlc_list_artifacts,
-            record_artifact=self._sdlc_record_artifact,
-            set_status=self._sdlc_set_status,
-            spawn=self._sdlc_spawn_intake,
-            read_config=self._sdlc_intake_read_config,
-            clock=time.monotonic,
-        )
-        self._sdlc_synthesizer_loop = SdlcSynthesizerLoop(
-            self._sdlc_synth_ctx,
-            list_initiatives=self._sdlc_list_initiatives,
-            list_artifacts=self._sdlc_list_artifacts,
-            record_artifact=self._sdlc_record_artifact,
-            set_status=self._sdlc_set_status,
-            spawn=self._sdlc_spawn_synth,
-            pr_lookup=self._sdlc_pr_lookup,
-            update_artifact=self._sdlc_update_artifact,
-            read_config=self._sdlc_synth_read_config,
-            clock=time.monotonic,
-        )
-        self._sdlc_intake_task: asyncio.Task | None = None
-        self._sdlc_synth_task: asyncio.Task | None = None
         # Fire-and-forget task registry (issue #405). Every detached ``create_task``
         # (persist, rotation, recovery, summary/proposal refresh, backlog nudge …) is
         # routed through ``_spawn`` so ``stop()`` can cancel+await ALL of them. An
@@ -768,6 +804,16 @@ class SessionOrchestrator:
         self._backlog_task = asyncio.create_task(
             self._backlog_tick_loop(interval=60.0), name="backlog-runner-loop"
         )
+        # SDLC Intake control loop: one tick per interval (propose intent for each
+        # pending trigger). A disabled/absent row makes each tick a cheap no-op.
+        self._sdlc_intake_task = asyncio.create_task(
+            self._sdlc_intake_tick_loop(interval=60.0), name="sdlc-intake-loop"
+        )
+        # SDLC Synthesizer control loop: one tick per interval (propose spec/plan
+        # artifacts + enrich PR metadata). A disabled row makes each tick cheap.
+        self._sdlc_synth_task = asyncio.create_task(
+            self._sdlc_synth_tick_loop(interval=60.0), name="sdlc-synthesizer-loop"
+        )
         # Autopilot control loop: one tick per interval plus status-change nudges.
         self._autopilot_task = asyncio.create_task(
             self._autopilot_tick_loop(interval=20.0), name="autopilot-loop"
@@ -781,18 +827,6 @@ class SessionOrchestrator:
         self._archaudit_task = asyncio.create_task(
             self._archaudit_tick_loop(interval=21600.0), name="archive-audit-loop"
         )
-        # SDLC intake + synthesizer: one tick per minute (propose artifact PRs and
-        # enrich PR metadata). A disabled row makes each tick a cheap read.
-        self._sdlc_intake_task = self._spawn(
-            self._sdlc_tick_loop(
-                "sdlc-intake", self._sdlc_intake_loop,
-                self._sdlc_intake_read_config, interval=60.0),
-            name="sdlc-intake-loop")
-        self._sdlc_synth_task = self._spawn(
-            self._sdlc_tick_loop(
-                "sdlc-synthesizer", self._sdlc_synthesizer_loop,
-                self._sdlc_synth_read_config, interval=60.0),
-            name="sdlc-synthesizer-loop")
         # Stuck-session sweep: retry rotation for needs_attention sessions every 5 min.
         # The rotation monitor is event-driven (fires on degradation); this covers
         # the recovery side — sessions paused due to all_accounts_busy get a chance
@@ -857,29 +891,40 @@ class SessionOrchestrator:
             await asyncio.sleep(self._poll_interval)
 
     async def stop(self) -> None:
-        """Stop the titling sweep, rotation monitor and usage poller."""
+        """Stop the titling sweep, rotation monitor and usage poller.
+
+        Every await here is bounded (issue #846): stop() runs inside the app
+        lifespan shutdown, so a single task or driver that ignores cancellation
+        used to wedge TestClient exits (and systemd stop) indefinitely.
+        """
         # Mark teardown FIRST, before any driver is closed below: a turn dropped by
         # our own aclose() must not trip failure recovery → needs_attention. Leave the
         # row for rehydrate() to normalize to idle (resumable) on the next boot.
         self._shutting_down = True
         if self._pr_branch_task is not None:
             self._pr_branch_task.cancel()
-            try:
-                await self._pr_branch_task
-            except asyncio.CancelledError:
-                pass
+            await bounded_wait(self._pr_branch_task, timeout=_STOP_TASK_TIMEOUT_S,
+                               phase="stop:pr-branch")
             self._pr_branch_task = None
+        # EVERY loop start() creates must appear here. Two were missing — the
+        # recurring-session scheduler and the SDLC intake tick — and outlived
+        # stop() as orphan tasks, reaped only by the runner's final loop shutdown
+        # after the DB engine was disposed (#405's contamination vector; a live
+        # suspect in the #846 teardown stalls). test_orchestrator_stop_completeness
+        # pins the full set by task name.
         for attr in ("_titling_task", "_goal_task", "_rotation_task", "_stall_task",
-                     "_token_refresh_task", "_backlog_task", "_autopilot_task",
-                     "_cicd_task", "_archaudit_task", "_sweep_task",
-                     "_archive_limit_task", "_janitor_task", "_drain_timer"):
-            task = getattr(self, attr)
+                     "_token_refresh_task", "_backlog_task", "_sdlc_intake_task",
+                     "_sdlc_synth_task",
+                     "_autopilot_task", "_cicd_task", "_archaudit_task", "_sweep_task",
+                     "_archive_limit_task", "_janitor_task", "_recurring_task",
+                     "_drain_timer"):
+            # Default None: stop() must be safe on an orchestrator that never
+            # start()ed (tests build one via __new__/without start).
+            task = getattr(self, attr, None)
             if task is not None:
                 task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
+                await bounded_wait(task, timeout=_STOP_TASK_TIMEOUT_S,
+                                   phase=f"stop:{attr}")
                 setattr(self, attr, None)
         # Cancel+await every tracked fire-and-forget task (#405) so none survives to
         # write into a later app/test's DB. Snapshot first: a task's done-callback
@@ -888,8 +933,8 @@ class SessionOrchestrator:
         for t in pending:
             t.cancel()
         for t in pending:
-            with contextlib.suppress(asyncio.CancelledError):
-                await t
+            await bounded_wait(t, timeout=_STOP_TASK_TIMEOUT_S,
+                               phase=f"stop:bg:{t.get_name()}")
         self._bg_tasks.clear()
         # Close any still-live driver so its stream/pump (which invokes the persist
         # callbacks that write to the DB) cannot outlive teardown. In production the
@@ -898,12 +943,20 @@ class SessionOrchestrator:
         for sid in list(self._drivers.keys()):
             driver = self._drivers.pop(sid, None)
             if driver is not None:
+                # suppress() covers the synchronous aclose() call itself (a stand-in
+                # without the method); bounded_wait never raises once awaited.
                 with contextlib.suppress(Exception):
-                    await driver.aclose()
-        await self._poller.stop()
-        await self._pr_poller.stop()
-        await self._pr_population.stop()
-        await self._deploy_watcher.stop()
+                    await bounded_wait(driver.aclose(),
+                                       timeout=_STOP_DRIVER_CLOSE_TIMEOUT_S,
+                                       phase=f"stop:driver-close:{sid}")
+        await bounded_wait(self._poller.stop(), timeout=_STOP_TASK_TIMEOUT_S,
+                           phase="stop:usage-poller")
+        await bounded_wait(self._pr_poller.stop(), timeout=_STOP_TASK_TIMEOUT_S,
+                           phase="stop:pr-poller")
+        await bounded_wait(self._pr_population.stop(), timeout=_STOP_TASK_TIMEOUT_S,
+                           phase="stop:pr-population")
+        await bounded_wait(self._deploy_watcher.stop(), timeout=_STOP_TASK_TIMEOUT_S,
+                           phase="stop:deploy-watcher")
 
     # ------------------------------------------------------------------
     # Session CRUD
@@ -1076,8 +1129,25 @@ class SessionOrchestrator:
                 try:
                     await self._spawn_session(sid, preexisting_row=True, **params)
                     started += 1
-                except Exception:
-                    log.warning("session_queue.start_failed id=%s", sid, exc_info=True)
+                except Exception as exc:
+                    # A queued session can lose a race with branch auto-delete on
+                    # merge (#836): its PR lands between enqueue and spawn, the
+                    # remote deletes the head branch, and create_worktree finds no
+                    # ref. That is the pipeline succeeding, not a failure — one
+                    # INFO line and an 'obsolete' note instead of a traceback.
+                    obsolete_pr = self._queued_spawn_merged_pr(exc, params)
+                    if obsolete_pr is not None:
+                        log.info(
+                            "session_queue.obsolete_branch_merged id=%s branch=%s "
+                            "pr=#%d — branch auto-deleted when its PR merged "
+                            "before spawn; ending queued session as obsolete",
+                            sid, params.get("branch"), obsolete_pr.number)
+                    else:
+                        log.warning("session_queue.start_failed id=%s", sid,
+                                    exc_info=True)
+                    resolution = (
+                        f"obsolete: PR #{obsolete_pr.number} merged before start"
+                        if obsolete_pr is not None else None)
                     # Mark the session ended so it does not occupy a cap slot.
                     # Re-seed a minimal in-memory record if _spawn_session raised
                     # before creating one, then persist the status to the DB row
@@ -1104,15 +1174,54 @@ class SessionOrchestrator:
                         )
                     else:
                         self._records[sid].status = "ended"
+                    if resolution is not None:
+                        self._records[sid].pr_resolution = resolution
+                        self._records[sid].pr_resolution_source = "queue-drain"
                     # Persist to DB — the row still exists (was 'queued'); update it.
+                    values: dict = {"status": "ended"}
+                    if resolution is not None:
+                        values["pr_resolution"] = resolution
+                        values["pr_resolution_source"] = "queue-drain"
                     async with db_session() as db:
                         from sqlalchemy import update as sa_update
                         await db.execute(
                             sa_update(DbSession)
                             .where(DbSession.id == sid)
-                            .values(status="ended")
+                            .values(**values)
                         )
         return started
+
+    def _queued_spawn_merged_pr(self, exc: Exception,
+                                params: dict) -> "PullRequestInfo | None":
+        """The merged PR that makes a queue-spawn failure benign, or None (#836).
+
+        Benign means BOTH: the failure's root cause is an unresolvable branch
+        ref (worktrees.BranchRefUnresolvableError — the ref exists nowhere,
+        typical of a PR head branch auto-deleted on merge between enqueue and
+        spawn), AND the daemon's PR caches show a *merged* PR for the queued
+        (repo, branch). Checked against the per-branch poller cache first
+        (it retains merged state — that's how _pr_pairs prunes terminal pairs),
+        then the population cache (which keeps recently merged PRs). Anything
+        else returns None so the caller keeps the real error path: an
+        unresolvable ref with no merged PR behind it is a genuine problem.
+        """
+        if not isinstance(exc, BranchSwitchError) or not isinstance(
+                exc.__cause__, worktrees.BranchRefUnresolvableError):
+            return None
+        repo, branch = params.get("repo"), params.get("branch")
+        if not repo or not branch:
+            return None
+        # Defensive getattr: minimally-constructed orchestrators (some tests
+        # build via __new__) may lack the pollers — mirrors _pr_pairs.
+        info: PullRequestInfo | None = None
+        poller = getattr(self, "_pr_poller", None)
+        if poller is not None:
+            info = poller.cached(repo, branch)
+        if info is None and getattr(self, "_pr_population", None) is not None:
+            info = self._pr_population_pr(repo, branch)
+        if info is not None and info.state == "merged":
+            return info
+        return None
 
     async def _reconcile_orphan_queued(self, candidate_rows=None) -> int:
         """Reconcile 'queued' session rows with no matching session_queue entry.
@@ -1507,6 +1616,15 @@ class SessionOrchestrator:
         from server.sessions.status import ACTIVITY_STATUSES
         rec = self._records.get(session_id)
         if rec is not None and rec.status == "ended":
+            return
+        # A turn failure surfacing during teardown is our own shutdown dropping the
+        # turn (deploy / watchdog restart / systemctl stop), not a real failure.
+        # Persisting needs_attention here brands the session "Turn failed" across
+        # the restart; leaving the mid-turn row lets the next boot's rehydrate()
+        # normalize it to idle + interruptedByRestart (issue #434). Terminal writes
+        # (ended) and every other status still persist during shutdown.
+        if status == "needs_attention" and self._shutting_down:
+            log.info("persist.skip_needs_attention_during_shutdown session=%s", session_id)
             return
         # Overlay: a turn that finished (`done`) but left the agent parked on an external
         # event — an open background task or an armed self-scheduled wakeup — is "Waiting…",
@@ -2453,64 +2571,169 @@ class SessionOrchestrator:
             log.debug("backlog_runner.bump_active_failed", exc_info=True)
 
     # ------------------------------------------------------------------
-    # SDLC control-loop dependencies (injected into SdlcIntakeLoop / ...Synthesizer)
+    # SDLC Intake control-loop dependencies (injected into SdlcIntakeLoop)
     # ------------------------------------------------------------------
 
-    async def _sdlc_tick_loop(self, automation_id: str, loop, read_config,
-                              *, interval: float) -> None:
-        """Periodic driver for an SDLC loop: one tick per *interval* seconds plus
-        an enabled-only ``last_active_at`` heartbeat (mirrors ``_cicd_tick_once``).
-        A disabled row makes each tick a cheap read (the loop returns on mode=off)."""
-        while True:
-            if await self._schedule_allows_tick(automation_id):
-                await loop.tick()
-                try:
-                    mode, _ = await read_config()
-                    if mode != "off":
-                        await self._bump_automation_active(automation_id)
-                except Exception:  # pragma: no cover — heartbeat must not stall
-                    log.debug("sdlc.%s.heartbeat_failed", automation_id, exc_info=True)
-            await asyncio.sleep(interval)
+    async def _sdlc_intake_read_config(self) -> tuple[str, dict]:
+        """The sdlc-intake row's (mode, config) merged onto schema defaults.
 
-    async def _sdlc_read_config(self, automation_id: str, schema) -> tuple[str, dict]:
-        """(effective mode, validated config) for an SDLC automation row; off +
-        defaults on any bad/absent row so a corrupt config can never spawn. Mirrors
-        ``_backlog_read_config`` for the 3-mode (off/propose/auto) SDLC automations."""
+        Mode is ``off`` unless the row is enabled AND carries propose/auto — an
+        absent/invalid row falls back to ``off`` + pure defaults so a bad config
+        never spawns. Mirrors ``_backlog_read_config`` (single source of truth)."""
         from sqlalchemy import select
         from server.automations.base import validate_config
+        from server.automations.sdlc_intake import SdlcIntake
         from server.db.models import Automation
         enabled, mode, raw = False, None, {}
         try:
             async with db_session() as db:
                 row = (await db.execute(select(Automation).where(
-                    Automation.id == automation_id))).scalar_one_or_none()
+                    Automation.id == "sdlc-intake"))).scalar_one_or_none()
                 if row is not None:
                     enabled = bool(row.enabled)
                     mode = row.mode
                     raw = dict(row.config) if row.config else {}
         except Exception:
-            log.debug("sdlc.%s.config.load_failed", automation_id, exc_info=True)
+            log.debug("sdlc_intake.config.load_failed", exc_info=True)
         try:
-            config = validate_config(schema, raw)
+            config = validate_config(SdlcIntake.config_schema, raw)
         except ValueError:
-            config = validate_config(schema, {})
+            config = validate_config(SdlcIntake.config_schema, {})
         effective = mode if (enabled and mode in ("propose", "auto")) else "off"
         return effective, config
 
-    async def _sdlc_intake_read_config(self) -> tuple[str, dict]:
-        from server.automations.sdlc_intake import SdlcIntake
-        return await self._sdlc_read_config("sdlc-intake", SdlcIntake.config_schema)
+    async def _sdlc_intake_read_triggers(self) -> list:
+        """Pending intake triggers. Empty until a trigger source is wired: the
+        Phase-2 triage queue (#804) and the /api/sdlc intake path (#802) feed
+        this seam. Returning [] keeps every tick a cheap no-op today."""
+        return []
+
+    async def _sdlc_intake_ensure_initiative(self, trigger):
+        """Find-or-create the Initiative for *trigger* (idempotent by slug) at the
+        intake stage, and return its pure view + committed-or-proposed artifacts."""
+        from sqlalchemy import select
+        from server.db.models import Initiative, InitiativeArtifact
+        from server.sdlc.engine import ArtifactView, InitiativeView
+        async with db_session() as db:
+            row = (await db.execute(select(Initiative).where(
+                Initiative.slug == trigger.slug))).scalar_one_or_none()
+            if row is None:
+                row = Initiative(
+                    slug=trigger.slug, repo=trigger.repo or None,
+                    title=trigger.title or None, stage="intake", status="active",
+                    origin=trigger.origin, origin_ref=trigger.origin_ref)
+                db.add(row)
+                await db.flush()
+            arts = (await db.execute(select(InitiativeArtifact).where(
+                InitiativeArtifact.initiative_id == row.id))).scalars().all()
+            view = InitiativeView(
+                slug=row.slug or trigger.slug, stage=row.stage or "intake",
+                status=row.status or "active", repo=row.repo or "")
+            artifacts = [
+                ArtifactView(kind=a.kind or "", commit_sha=a.commit_sha,
+                             pr_number=a.pr_number, pr_url=a.pr_url) for a in arts]
+        return view, artifacts
+
+    async def _sdlc_intake_record_intent(self, slug: str, repo_path: str,
+                                         session_id: str | None) -> None:
+        """Insert the intent artifact row for *slug* (kind=intent, PR pending)."""
+        from sqlalchemy import select
+        from server.db.models import Initiative, InitiativeArtifact
+        async with db_session() as db:
+            row = (await db.execute(select(Initiative).where(
+                Initiative.slug == slug))).scalar_one_or_none()
+            if row is None:
+                log.warning("sdlc_intake.record_intent.no_initiative slug=%s", slug)
+                return
+            db.add(InitiativeArtifact(
+                initiative_id=row.id, kind="intent", repo_path=repo_path,
+                session_id=session_id))
+
+    async def _sdlc_intake_spawn(self, trigger, prompt: str):
+        """Spawn a de-duped intent session for *trigger*, seeded with *prompt*.
+
+        Resolves the repo clone cwd + a healthy account off the event loop, then
+        spawns via the de-dup-safe context spawner (origin_ref=``<slug>:intent``);
+        ``create_session`` falls back to its own account/cwd if these are None."""
+        account = await self._backlog_healthy_account()
+        cwd = None
+        if trigger.repo:
+            url = f"https://github.com/{trigger.repo}.git"
+            try:
+                cwd = await asyncio.to_thread(
+                    gitrepos.ensure_clone, await self._effective_repo_root(),
+                    trigger.repo, url)
+            except Exception:
+                log.warning("sdlc_intake.spawn.clone_failed repo=%s", trigger.repo,
+                            exc_info=True)
+        return await self._sdlc_intake_ctx.spawn_session(
+            origin_ref=f"{trigger.slug}:intent",
+            dedupe_key=f"{trigger.slug}:intent",
+            repo=trigger.repo or None,
+            cwd=cwd,
+            account=account,
+            name=f"sdlc intake {trigger.slug}",
+            initial_prompt=prompt,
+            detail={"slug": trigger.slug, "kind": "intent"},
+        )
+
+    async def _sdlc_intake_tick_loop(self, interval: float) -> None:
+        """Periodic driver for the intake control loop (mirrors _backlog_tick_loop)."""
+        while True:
+            await self._sdlc_intake_tick_once()
+            await asyncio.sleep(interval)
+
+    async def _sdlc_intake_tick_once(self) -> None:
+        """One intake tick + an enabled-only ``last_active_at`` heartbeat.
+        Best-effort — neither the tick nor the heartbeat may crash the loop."""
+        if not await self._schedule_allows_tick("sdlc-intake"):
+            return
+        try:
+            await self._sdlc_intake_loop.tick()
+        except Exception:  # pragma: no cover — tick() already swallows; belt+braces
+            log.warning("sdlc_intake.tick_loop_error", exc_info=True)
+        try:
+            mode, _ = await self._sdlc_intake_read_config()
+            if mode != "off":
+                await self._bump_automation_active("sdlc-intake")
+        except Exception:  # pragma: no cover — a heartbeat failure must not stall
+            log.debug("sdlc_intake.bump_active_failed", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # SDLC Synthesizer control-loop dependencies (injected into SdlcSynthesizerLoop)
+    # ------------------------------------------------------------------
 
     async def _sdlc_synth_read_config(self) -> tuple[str, dict]:
+        """The sdlc-synthesizer row's (mode, config) merged onto schema defaults.
+        Mirrors ``_sdlc_intake_read_config``: off + pure defaults on any absent
+        or invalid row so a bad config never spawns."""
+        from sqlalchemy import select
+        from server.automations.base import validate_config
         from server.automations.sdlc_synthesizer import SdlcSynthesizer
-        return await self._sdlc_read_config(
-            "sdlc-synthesizer", SdlcSynthesizer.config_schema)
+        from server.db.models import Automation
+        enabled, mode, raw = False, None, {}
+        try:
+            async with db_session() as db:
+                row = (await db.execute(select(Automation).where(
+                    Automation.id == "sdlc-synthesizer"))).scalar_one_or_none()
+                if row is not None:
+                    enabled = bool(row.enabled)
+                    mode = row.mode
+                    raw = dict(row.config) if row.config else {}
+        except Exception:
+            log.debug("sdlc_synthesizer.config.load_failed", exc_info=True)
+        try:
+            config = validate_config(SdlcSynthesizer.config_schema, raw)
+        except ValueError:
+            config = validate_config(SdlcSynthesizer.config_schema, {})
+        effective = mode if (enabled and mode in ("propose", "auto")) else "off"
+        return effective, config
 
     async def _sdlc_list_initiatives(self) -> list[dict]:
-        """Every non-done Initiative as a plain dict (the Task 4 seam shape).
+        """Every non-done Initiative as a plain dict (the loop's seam shape).
 
         An initiative is 'done' when EITHER its status or its stage is ``done`` —
-        both terminal signals drop it from the loops' candidate pool."""
+        both terminal signals drop it from the loop's candidate pool."""
         from sqlalchemy import select
         from server.db.models import Initiative
         async with db_session() as db:
@@ -2571,78 +2794,32 @@ class SessionOrchestrator:
         except Exception:
             return "master"
 
-    async def _sdlc_spawn_for(self, ini: dict, kind: str, build_prompt):
-        """Shared spawn tail for both SDLC loops: resolve the repo clone + model,
-        then spawn a de-duped artifact session keyed on ``<slug>:<kind>``.
+    async def _sdlc_spawn_synth(self, ini: dict, kind: str):
+        """Spawn a de-duped spec/plan session for *ini*, seeding the prompt with
+        the upstream artifact's committed content read off ``origin/<default>``.
 
-        ``build_prompt(cwd, default_branch) -> str`` runs off-loop AFTER the clone
-        exists, so synth stages can inline the upstream artifact's committed
-        content. Mirrors ``_backlog_spawn``: healthy-account gate, ensure_clone off
-        the loop, ``resolve_model`` for the model, and the same create-kwargs shape
-        through the automation context's de-dup-safe spawner. Returns the
-        SessionRecord or None when no account has headroom (retry next tick)."""
+        Mirrors ``_backlog_spawn``: healthy-account gate, ensure_clone off the
+        loop, ``resolve_model`` for the model, and the same create-kwargs shape
+        through the de-dup-safe context spawner (origin_ref=``<slug>:<kind>``).
+        Returns the SessionRecord or None when no account has headroom (retry
+        next tick)."""
         from server.automations.model_pick import resolve_model
+        from server.sdlc.prompts import (
+            artifact_path, build_plan_prompt, build_spec_prompt)
         repo = str(ini.get("repo") or "")
         slug = str(ini.get("slug") or "")
         if not repo or not slug:
             return None
+        if kind not in ("spec", "plan"):  # pragma: no cover — loop only asks these
+            return None
         account = await self._backlog_healthy_account()
         if account is None:
             return None
-        if kind == "intent":
-            ctx = self._sdlc_intake_ctx
-            _mode, config = await self._sdlc_intake_read_config()
-        else:
-            ctx = self._sdlc_synth_ctx
-            _mode, config = await self._sdlc_synth_read_config()
+        _mode, config = await self._sdlc_synth_read_config()
         url = f"https://github.com/{repo}.git"
         cwd = await asyncio.to_thread(
             gitrepos.ensure_clone, await self._effective_repo_root(), repo, url)
         default_branch = await self._sdlc_default_branch(repo)
-        prompt = await asyncio.to_thread(build_prompt, cwd, default_branch)
-        model, model_source = await resolve_model(
-            config, f"{ini.get('title') or slug}  ({kind})")
-        detail: dict = {"initiative": slug, "kind": kind}
-        if model is not None:
-            detail.update(model=model, model_source=model_source)
-        return await ctx.spawn_session(
-            origin_ref=f"{slug}:{kind}",
-            dedupe_key=f"{slug}:{kind}",
-            repo=repo,
-            cwd=cwd,
-            account=account,
-            name=f"sdlc {kind} {slug}",
-            initial_prompt=prompt,
-            model=model,
-            detail=detail,
-        )
-
-    async def _sdlc_spawn_intake(self, ini: dict, kind: str):
-        """Build the intent prompt from the initiative's trigger text and spawn."""
-        from server.sdlc.prompts import build_intent_prompt
-        slug = str(ini.get("slug") or "")
-        repo = str(ini.get("repo") or "")
-        title = str(ini.get("title") or "")
-        origin = str(ini.get("origin") or "human")
-        origin_ref = ini.get("origin_ref")
-        trigger = f"{title or slug}\n(origin: {origin}"
-        trigger += f", ref: {origin_ref})" if origin_ref else ")"
-
-        def build(_cwd: str, default_branch: str) -> str:
-            return build_intent_prompt(
-                trigger, slug=slug, repo=repo, default_branch=default_branch)
-
-        return await self._sdlc_spawn_for(ini, kind, build)
-
-    async def _sdlc_spawn_synth(self, ini: dict, kind: str):
-        """Read the upstream artifact off ``origin/<default>`` in the clone and
-        spawn the spec/plan session with its content inlined in the seed prompt."""
-        from server.sdlc.prompts import (
-            artifact_path, build_plan_prompt, build_spec_prompt)
-        slug = str(ini.get("slug") or "")
-        repo = str(ini.get("repo") or "")
-        if kind not in ("spec", "plan"):  # pragma: no cover — loop only asks these
-            return None
         upstream = artifact_path(slug, "intent" if kind == "spec" else "spec")
 
         def build(cwd: str, default_branch: str) -> str:
@@ -2654,7 +2831,23 @@ class SessionOrchestrator:
             return build_plan_prompt(
                 content, slug=slug, repo=repo, default_branch=default_branch)
 
-        return await self._sdlc_spawn_for(ini, kind, build)
+        prompt = await asyncio.to_thread(build, cwd, default_branch)
+        model, model_source = await resolve_model(
+            config, f"{ini.get('title') or slug}  ({kind})")
+        detail: dict = {"initiative": slug, "kind": kind}
+        if model is not None:
+            detail.update(model=model, model_source=model_source)
+        return await self._sdlc_synth_ctx.spawn_session(
+            origin_ref=f"{slug}:{kind}",
+            dedupe_key=f"{slug}:{kind}",
+            repo=repo,
+            cwd=cwd,
+            account=account,
+            name=f"sdlc {kind} {slug}",
+            initial_prompt=prompt,
+            model=model,
+            detail=detail,
+        )
 
     @staticmethod
     def _sdlc_show_committed_file(cwd: str, ref: str, path: str) -> str:
@@ -2675,7 +2868,7 @@ class SessionOrchestrator:
                 "the repository before starting)")
 
     async def _sdlc_pr_lookup(self, art: dict) -> dict | None:
-        """The artifact session's PR as the Task 5 dict shape, or None.
+        """The artifact session's PR as the enrichment dict shape, or None.
 
         Resolves the artifact's ``session_id`` to its repo + branch(es) and reads
         the PR-poller cache — the SAME session→PR source of truth
@@ -2716,6 +2909,28 @@ class SessionOrchestrator:
             return {"number": info.number, "url": info.url,
                     "state": state, "sha": sha if state == "merged" else None}
         return None
+
+    async def _sdlc_synth_tick_loop(self, interval: float) -> None:
+        """Periodic driver for the synthesizer loop (mirrors _sdlc_intake_tick_loop)."""
+        while True:
+            await self._sdlc_synth_tick_once()
+            await asyncio.sleep(interval)
+
+    async def _sdlc_synth_tick_once(self) -> None:
+        """One synthesizer tick + an enabled-only ``last_active_at`` heartbeat.
+        Best-effort — neither the tick nor the heartbeat may crash the loop."""
+        if not await self._schedule_allows_tick("sdlc-synthesizer"):
+            return
+        try:
+            await self._sdlc_synthesizer_loop.tick()
+        except Exception:  # pragma: no cover — tick() already swallows; belt+braces
+            log.warning("sdlc_synthesizer.tick_loop_error", exc_info=True)
+        try:
+            mode, _ = await self._sdlc_synth_read_config()
+            if mode != "off":
+                await self._bump_automation_active("sdlc-synthesizer")
+        except Exception:  # pragma: no cover — a heartbeat failure must not stall
+            log.debug("sdlc_synthesizer.bump_active_failed", exc_info=True)
 
     # ------------------------------------------------------------------
     # CI/CD Doctor control-loop dependencies (injected into CicdDoctorLoop)
@@ -4542,6 +4757,7 @@ class SessionOrchestrator:
                     )
         log.info("rehydrate: %d session(s) restored (%d branch backfilled, %d status healed)",
                  added, len(backfilled), len(healed))
+        self._startup_note("rehydrated", added)
         # Reconcile 'queued' rows with no session_queue entry BEFORE draining, so
         # the drain never has to reach a row it structurally cannot see, and a
         # reconciled row (now 'ended') is reflected in the very same pass. Reuse
@@ -4568,6 +4784,8 @@ class SessionOrchestrator:
         pending = [(r.id, r.pending_rearm, r.pending_prompt) for r in rows
                    if (r.pending_rearm or r.pending_prompt) and r.id not in self._rearmed]
         if not pending:
+            # Idempotent re-calls must not reset a prior boot's count to 0.
+            self._startup_note("rearmed", self.startup_report().get("rearmed") or 0)
             return 0
         sem = asyncio.Semaphore(int(os.environ.get("CCSWITCH_REARM_CONCURRENCY", "3")))
 
@@ -4584,6 +4802,7 @@ class SessionOrchestrator:
             *(_one(sid, snap, prompt) for sid, snap, prompt in pending))
         n = sum(1 for ok in results if ok)
         log.info("rearm: re-armed %d/%d session(s)", n, len(pending))
+        self._startup_note("rearmed", (self.startup_report().get("rearmed") or 0) + n)
         return n
 
     async def _rearm_session(self, sid: str, snap: list | None,
@@ -7392,23 +7611,52 @@ class SessionOrchestrator:
 
         async with db_session() as db:
             order_key = sa_func.coalesce(DbSession.archived_at, DbSession.created_at)
-            ids = list((await db.execute(
+            stmt = (
                 sa_select(DbSession.id)
                 .where(DbSession.status == "archived")
                 .order_by(order_key.asc())
                 .limit(count)
-            )).scalars().all())
+            )
+            # Skip sessions that have already exhausted their delete strikes, so one
+            # un-deletable oldest archive (stale sshfs handle, containment rejection)
+            # can't monopolise every selection and starve disk reclamation (#825).
+            if self._archive_purge_poisoned:
+                stmt = stmt.where(DbSession.id.notin_(self._archive_purge_poisoned))
+            ids = list((await db.execute(stmt)).scalars().all())
 
         deleted: list[str] = []
         for sid in ids:
             try:
-                if await self.permanent_delete(sid):
-                    deleted.append(sid)
+                ok = await self.permanent_delete(sid)
             except Exception:
                 log.exception("archive_limit: permanent_delete failed id=%s", sid)
+                self._note_purge_failure(sid)
+                continue
+            if ok:
+                self._archive_purge_strikes.pop(sid, None)  # clean delete — reset strikes
+                deleted.append(sid)
+            else:
+                # permanent_delete returned False (e.g. containment guard kept the row):
+                # a soft failure that still re-selects the same session next sweep.
+                self._note_purge_failure(sid)
         if deleted:
             log.info("archive_limit: purged %d oldest archived session(s)", len(deleted))
         return deleted
+
+    def _note_purge_failure(self, sid: str) -> None:
+        """Record a failed permanent_delete for *sid*; poison it (skip in future
+        selections) once it crosses _ARCHIVE_PURGE_MAX_STRIKES, logging one visible
+        WARNING at the transition so the stuck session is diagnosable (#825)."""
+        strikes = self._archive_purge_strikes.get(sid, 0) + 1
+        self._archive_purge_strikes[sid] = strikes
+        if strikes >= _ARCHIVE_PURGE_MAX_STRIKES and sid not in self._archive_purge_poisoned:
+            self._archive_purge_poisoned.add(sid)
+            log.warning(
+                "archive_limit: session id=%s failed permanent_delete %d times — "
+                "marking poisoned and skipping it in future cap-purges so disk can still "
+                "be reclaimed from other archived sessions; investigate its on-disk dir",
+                sid, strikes,
+            )
 
     async def _enforce_archive_limit(self) -> int:
         """Purge oldest archived sessions until the count is within
@@ -7736,7 +7984,8 @@ class SessionOrchestrator:
         if stored_root is None and cwd_path is not None and cwd_path.exists():
             # New-style archive: the worktree is still at cwd (same NULL-root +
             # present-cwd marker as unarchive).
-            await self._delete_worktree_at_cwd(session_id, cwd_path)
+            if not await self._delete_worktree_at_cwd(session_id, cwd_path):
+                return False
         else:
             # Legacy archive (moved into an archive home) — including ancient
             # pre-archive_root rows, whose NULL root resolves to the current home.
@@ -7757,8 +8006,12 @@ class SessionOrchestrator:
         log.info("session.permanent_delete id=%s db row removed", session_id)
         return True
 
-    async def _delete_worktree_at_cwd(self, session_id: str, cwd_path: Path) -> None:
+    async def _delete_worktree_at_cwd(self, session_id: str, cwd_path: Path) -> bool:
         """Delete a new-style archived session's worktree (still at its cwd).
+
+        Returns True when it is safe for the caller to drop the DB row, False when the
+        directory could not be removed and the row must be KEPT so a later sweep retries
+        (e.g. a stale sshfs handle that recovers on remount — #825).
 
         Containment guard: sessions only ever run in ccswitch-created worktrees or
         scratch dirs (both under a ``.ccswitch`` segment — see the create-session
@@ -7773,13 +8026,21 @@ class SessionOrchestrator:
                 "directory — leaving it in place, deleting the row only",
                 session_id, cwd_path,
             )
-            return
+            return True  # nothing we should delete on disk; the row can still go
         # Resolve the shared clone BEFORE the delete, while the worktree is still a
         # valid git dir, so we can scope-deregister exactly this path afterward
         # (never a global prune — issue #177). Off the event loop: git subprocess
         # startup can spike under load.
         repo_top = await asyncio.to_thread(_resolve_git_common_dir, str(cwd_path))
-        await asyncio.to_thread(shutil.rmtree, str(cwd_path), True)
+        err = await asyncio.to_thread(_rmtree_best_effort, str(cwd_path))
+        if err:
+            # Keep the row: deleting it now would strand the worktree on disk (the
+            # 2026-08-21 leak shape). The purge's strike counter retries and eventually
+            # skips it, so one wedged mount can't stall reclamation of other sessions.
+            log.warning("session.permanent_delete id=%s worktree rmtree incomplete at %s: %s "
+                        "— keeping the row to retry on a later sweep",
+                        session_id, cwd_path, err)
+            return False
         if repo_top:
             try:
                 await asyncio.to_thread(
@@ -7790,6 +8051,7 @@ class SessionOrchestrator:
                           session_id, exc_info=True)
         log.info("session.permanent_delete id=%s worktree removed at %s",
                  session_id, cwd_path)
+        return True
 
     async def _delete_legacy_archive_dir(self, session_id: str,
                                          stored_root: str | None) -> bool:
@@ -7814,7 +8076,14 @@ class SessionOrchestrator:
             return False
 
         if candidate.exists():
-            await asyncio.to_thread(shutil.rmtree, str(candidate), True)
+            err = await asyncio.to_thread(_rmtree_best_effort, str(candidate))
+            if err:
+                # Keep the row so a later sweep retries once the mount recovers, rather
+                # than deleting the row and stranding the archive dir on disk (#825).
+                log.warning("session.permanent_delete id=%s archive rmtree incomplete at %s: %s "
+                            "— keeping the row to retry on a later sweep",
+                            session_id, candidate, err)
+                return False
             log.info("session.permanent_delete id=%s archive_path=%s", session_id, candidate)
         else:
             # Never let this pass silently. This used to resolve against the CURRENT
@@ -7839,7 +8108,14 @@ class SessionOrchestrator:
         """
         from sqlalchemy import select as sa_select
 
-        path = self.transcript_path(session_id)
+        # transcript_path()/_find_transcript() stat + glob the account's projects tree,
+        # which on the production host is an sshfs mount — a stalled mount turns this
+        # into a multi-second (observed: 20s) block of the whole daemon loop (#826).
+        # asyncio.wait_for in transcript_window bounds only the threaded replay AFTER
+        # this, and can't interrupt synchronous work already running on the loop, so the
+        # resolution itself must run off the loop. transcript_path only reads _drivers/
+        # _records via .get() (no mutation, GIL-safe), so it is thread-safe to offload.
+        path = await asyncio.to_thread(self.transcript_path, session_id)
         if path is None:
             # For archived sessions the record is not in _records; load from DB.
             async with db_session() as db:
@@ -7847,7 +8123,8 @@ class SessionOrchestrator:
                     sa_select(DbSession).where(DbSession.id == session_id)
                 )).scalars().first()
             if row and row.claude_session_id:
-                path = self._find_transcript(
+                path = await asyncio.to_thread(
+                    self._find_transcript,
                     str(account_cfg_dir(row.account_name)), row.claude_session_id,
                     getattr(row, "cwd", None),
                 )
@@ -8004,6 +8281,54 @@ class SessionOrchestrator:
         m = RESUME_RECOVERY_MAX_ATTEMPTS
         return {"failed": [s for s, a in self._resume_recovery.items() if a < m],
                 "gaveUp": [s for s, a in self._resume_recovery.items() if a >= m]}
+
+    def startup_report(self) -> dict:
+        """This process's boot outcomes (rehydrate/rearm counts + any step error).
+
+        Surfaced by /api/daemon/health so a boot where rehydrate() failed — which
+        used to be a single swallowed log line while the dashboard showed zero
+        sessions — is observable. Counts are None until the step has run."""
+        return dict(getattr(self, "_startup_report", None) or {})
+
+    def note_startup_failure(self, step: str, exc: BaseException) -> None:
+        """Record a boot-step failure (called by the lifespans that catch them)."""
+        self._startup_note(f"{step}Error", f"{type(exc).__name__}: {exc}"[:500])
+
+    def _startup_note(self, key: str, value) -> None:
+        """Write one startup-report entry. getattr-guarded because rehydrate-shaped
+        tests build orchestrators via SessionOrchestrator.__new__ (no __init__, so
+        no _startup_report) — recording is observability, never load-bearing."""
+        rep = getattr(self, "_startup_report", None)
+        if rep is not None:
+            rep[key] = value
+
+
+def _rmtree_best_effort(path: str) -> str | None:
+    """Recursively delete *path*, guaranteeing the call never raises.
+
+    ``shutil.rmtree(path, ignore_errors=True)`` is NOT sufficient on sshfs: CPython
+    3.12's ``_rmtree_safe_fd`` calls ``os.fstat(dirfd)`` (and ``os.open``) OUTSIDE the
+    region routed through the error handler, so an ``ESTALE`` (Errno 116) stale-handle
+    error escapes anyway. On the production host the archive roots are sshfs mounts
+    whose handles go stale on every reconnect, so this escaped and wedged the cap-purge
+    (#825). Wrapping the whole call swallows that residual escape: a stale handle
+    degrades to a logged skip instead of a raised exception.
+
+    Returns None on success, or a short error string describing what stopped it (so the
+    caller can log which session/path could not be reclaimed). Meant to run inside
+    ``asyncio.to_thread`` — the underlying syscalls block.
+    """
+    try:
+        shutil.rmtree(path, ignore_errors=True)
+    except OSError as exc:
+        code = errno.errorcode.get(exc.errno, str(exc.errno)) if exc.errno is not None else "?"
+        return f"{code}: {exc}"
+    # ignore_errors=True routes per-file failures to a no-op, so a lingering path here
+    # means something (the top-level fstat/open, or a genuinely undeletable entry) kept
+    # it around without raising. os.path.exists itself swallows OSError -> False.
+    if os.path.exists(path):
+        return f"path still present after rmtree: {path}"
+    return None
 
 
 def _resolve_git_common_dir(path: str) -> str | None:
