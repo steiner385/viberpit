@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useLibraryMcp } from '@/api/hooks'
 import type { LibraryMcpServer } from '@/api/types'
 import { McpServerDialog } from './McpServerDialog'
+import { McpAuthFlow } from './McpAuthFlow'
 
 export function McpSection() {
   const { data, isLoading } = useLibraryMcp()
@@ -44,6 +45,10 @@ export function McpSection() {
                 )}
               </div>
             </button>
+            {/* Inline auth flow — rendered as sibling below the card button to avoid nesting interactive elements */}
+            {s.needsAuth.length > 0 && (
+              <McpAuthFlow server={s.name} accounts={s.needsAuth} />
+            )}
           </li>
         ))}
         {servers.length === 0 && (
