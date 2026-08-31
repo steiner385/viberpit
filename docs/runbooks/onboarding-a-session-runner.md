@@ -12,9 +12,12 @@ Placeholders: `<host>` = the new runner's short hostname (e.g. `rocky`), `<cap>`
 
 > **WARNING — CA reuse is mandatory for additional hosts.**
 >
-> `scripts/ccswitch-mint-mtls.sh` generates a **brand-new CA** on every invocation. If you run it
-> for a second (or third) host it will create a fresh CA that the edge does not trust, and every
-> existing host's server cert and the edge's client cert will stop working immediately.
+> `scripts/ccswitch-mint-mtls.sh` generates a **brand-new CA** on every invocation. A fresh CA is
+> one the edge does not trust, so minting one for a second (or third) host would break every
+> existing host's server cert and the edge's client cert immediately. The script now guards this
+> itself: it refuses to run when a CA already exists in `/etc/ccswitch/tls/` (override dir via
+> `CCSWITCH_TLS_DIR`), and it installs `ca.pem` + `ca.key` (0600) there durably on a first mint
+> instead of leaving the key behind in the outdir (issue #841).
 >
 > **For an additional host you must mint only a new server cert signed by the existing fleet CA.**
 > See Step 3 for the exact commands. Only run `ccswitch-mint-mtls.sh` in full for the very first
@@ -68,7 +71,20 @@ Placeholders: `<host>` = the new runner's short hostname (e.g. `rocky`), `<cap>`
 
 > **Read the CA reuse warning at the top before running any command here.**
 
-The fleet has one CA (`/etc/ccswitch/tls/ca.pem` + `ca.key` on dobby or your secure offline store).
+The fleet runs on **two CAs** since the 2026-08-30 onboarding (issue #841 — the original CA key was
+believed lost mid-onboarding, so a second durable CA was minted and bridged in via a bundle):
+
+| Material | Location | Role |
+|---|---|---|
+| `ca2.pem` + `ca2.key` | `/etc/ccswitch/tls/` on dobby (key 0600, root) | **The signing CA for all new server certs — use this one.** |
+| `ca-bundle.pem` | `/etc/ccswitch/tls/` on dobby | `ca.pem` + `ca2.pem` concatenated; what the edge verifies daemon server certs against (`CCSWITCH_SESSIOND_CLIENT_CA`). |
+| `ca.pem` (original CA cert) | `/etc/ccswitch/tls/` on dobby and every runner | Verifies the edge's client cert (`client.pem` is original-CA-signed); still backs rocky's server cert via the bundle. |
+| `ca.key` (original CA key) | `/mnt/hdd-storage/ccswitch-ca/ca.key` on dobby — **root-only directory** | Kept offline. Not used for new mints — sign with ca2. |
+
+> The root-only directory matters: searching for `ca.key` as a non-root user reports permission
+> denied / nothing, which reads exactly like the key being gone — that is how it was mis-declared
+> lost on 2026-08-30. `sudo ls /mnt/hdd-storage/ccswitch-ca/` before concluding a key is lost.
+
 You need a server cert with:
 - `CN=sessiond`
 - `subjectAltName=DNS:<host>.tail0dd570.ts.net,IP:<tailnet-ip>`
@@ -79,7 +95,7 @@ the top documented footgun and will produce a TLS handshake failure.
 #### Option A — mint with openssl directly (preferred for additional hosts)
 
 ```bash
-# On a machine that has ca.pem + ca.key (dobby or offline key store)
+# On dobby (has ca2.pem + ca2.key; run the signing step with sudo — ca2.key is root-only)
 OUTDIR=/tmp/mtls-<host>
 mkdir -p "$OUTDIR"
 
@@ -92,18 +108,18 @@ openssl req -new \
   -subj "/CN=sessiond" \
   -out "$OUTDIR/server.csr"
 
-# 3. Sign with the EXISTING CA (do NOT regenerate the CA)
-openssl x509 -req \
+# 3. Sign with the EXISTING signing CA — ca2, NOT a fresh one and NOT the original ca.pem
+sudo openssl x509 -req \
   -in "$OUTDIR/server.csr" \
-  -CA /etc/ccswitch/tls/ca.pem \
-  -CAkey /etc/ccswitch/tls/ca.key \
+  -CA /etc/ccswitch/tls/ca2.pem \
+  -CAkey /etc/ccswitch/tls/ca2.key \
   -CAcreateserial \
   -days 825 \
   -addext "subjectAltName=DNS:<host>.tail0dd570.ts.net,IP:<tailnet-ip>" \
   -out "$OUTDIR/server.pem"
 
-# Verify
-openssl verify -CAfile /etc/ccswitch/tls/ca.pem "$OUTDIR/server.pem"
+# Verify against what the edge actually trusts (the bundle)
+openssl verify -CAfile /etc/ccswitch/tls/ca-bundle.pem "$OUTDIR/server.pem"
 openssl x509 -in "$OUTDIR/server.pem" -noout -text | grep -A2 "Subject Alternative"
 ```
 
@@ -111,8 +127,9 @@ openssl x509 -in "$OUTDIR/server.pem" -noout -text | grep -A2 "Subject Alternati
 
 ```bash
 # ONLY for the very first host in a brand-new fleet.
-# This generates a new CA — do NOT run for an additional host.
-bash scripts/ccswitch-mint-mtls.sh /tmp/mtls <host>.tail0dd570.ts.net <tailnet-ip>
+# Generates a new CA — refuses to run if /etc/ccswitch/tls/ already holds one, and
+# installs ca.pem + ca.key (0600) there durably (needs sudo for that reason).
+sudo bash scripts/ccswitch-mint-mtls.sh /tmp/mtls <host>.tail0dd570.ts.net <tailnet-ip>
 # Emits: ca.pem, server.pem, server.key (CN=sessiond), client.pem, client.key (CN=edge)
 ```
 
@@ -125,13 +142,28 @@ sudo mkdir -p /etc/ccswitch/tls
 # Copy from where you minted them:
 sudo install -m 640 server.pem /etc/ccswitch/tls/server.pem
 sudo install -m 600 server.key /etc/ccswitch/tls/server.key
-# Copy the SHARED fleet CA (not the one just minted, if using Option A):
-scp dobby:/etc/ccswitch/tls/ca.pem /tmp/ca.pem && sudo install -m 644 /tmp/ca.pem /etc/ccswitch/tls/ca.pem   # copy the shared fleet CA from dobby
+# Copy the ORIGINAL fleet CA cert (not ca2): the daemon uses it to verify the edge's
+# client cert, and client.pem is original-CA-signed.
+scp dobby:/etc/ccswitch/tls/ca.pem /tmp/ca.pem && sudo install -m 644 /tmp/ca.pem /etc/ccswitch/tls/ca.pem
 ```
 
 - [ ] `server.pem` and `server.key` installed at `/etc/ccswitch/tls/` on `<host>`.
-- [ ] `ca.pem` (the shared fleet CA) installed at `/etc/ccswitch/tls/ca.pem` on `<host>`.
-- [ ] Verify: `openssl verify -CAfile /etc/ccswitch/tls/ca.pem /etc/ccswitch/tls/server.pem` exits 0.
+- [ ] `ca.pem` (the ORIGINAL fleet CA cert) installed at `/etc/ccswitch/tls/ca.pem` on `<host>`.
+- [ ] Verify the server cert against the SIGNING CA: `openssl verify -CAfile <(cat /etc/ccswitch/tls/ca.pem <path-to>/ca2.pem) /etc/ccswitch/tls/server.pem` exits 0 (a ca2-signed cert will NOT verify against `ca.pem` alone — that is expected).
+
+#### Lost or rotated CA — the bundle pattern
+
+If the signing CA key is ever genuinely unavailable, do NOT re-key existing hosts. Bridge in a new
+CA instead (this is exactly how ca2 was introduced on 2026-08-30):
+
+1. Mint a new durable CA on dobby: `caN.pem` + `caN.key` (0600) in `/etc/ccswitch/tls/`.
+2. Sign all NEW hosts' server certs with `caN`. Existing hosts keep their certs untouched.
+3. Concatenate what the edge trusts: `cat ca.pem caN.pem | sudo tee /etc/ccswitch/tls/ca-bundle.pem`
+   and point `CCSWITCH_SESSIOND_CLIENT_CA` at the bundle in the edge's `ccswitch.env`, then restart
+   the edge.
+4. Leave each daemon's `CCSWITCH_SESSIOND_TLS_CA` pointing at the CA that signed the edge's
+   *client* cert (the original `ca.pem` today) — daemons verify the edge, not each other, so they
+   only need the client cert's CA.
 
 ---
 
@@ -158,6 +190,8 @@ CCSWITCH_SESSIOND_ENDPOINT=https://<host>.tail0dd570.ts.net:9443
 # mTLS — server identity
 CCSWITCH_SESSIOND_TLS_CERT=/etc/ccswitch/tls/server.pem
 CCSWITCH_SESSIOND_TLS_KEY=/etc/ccswitch/tls/server.key
+# TLS_CA verifies the EDGE'S CLIENT CERT — keep it on the ORIGINAL ca.pem (which signed
+# client.pem), even though the server cert above is ca2-signed. See Step 3's CA table.
 CCSWITCH_SESSIOND_TLS_CA=/etc/ccswitch/tls/ca.pem
 
 # Only the edge (CN=edge) may connect
@@ -244,6 +278,11 @@ Add the new host to the fleet registry. Choose one method:
    - `enabled`: `true`
    - `max_sessions`: `<cap>`
 
+> **Updates are `PUT`, not `PATCH`.** Host mutation is `PUT /api/fleet/hosts/{name}` — partial
+> bodies are fine (omitted/`null` fields are left alone, not nulled). `PATCH` is not routed and
+> returns a 405 whose body is easy to mis-parse as success when scripting — check the status code.
+> `maxSessions` can be set on the create `POST`; on-the-fly changes go through `PUT`.
+
 **Environment seed (alternative):**
 ```bash
 # Add to the edge's ccswitch.env alongside the existing CCSWITCH_FLEET_HOSTS entry,
@@ -310,32 +349,11 @@ collision must be avoided:
 
 ### What is missing on dobby
 
-**Server cert** — dobby currently holds only a CA cert and a client cert (CN=edge). It has no server
-cert to bind on port 9443. Mint one using Option A above:
+**Server cert** — *done 2026-08-30*: dobby's `/etc/ccswitch/tls/server.pem` + `server.key` exist
+and are **ca2-signed**. For renewal, mint with Option A above (sign with `ca2.key`, verify against
+`ca-bundle.pem`), then:
 
 ```bash
-# On dobby (has ca.pem + ca.key locally)
-OUTDIR=/tmp/mtls-dobby
-mkdir -p "$OUTDIR"
-
-openssl genrsa -out "$OUTDIR/server.key" 4096
-
-openssl req -new \
-  -key "$OUTDIR/server.key" \
-  -subj "/CN=sessiond" \
-  -out "$OUTDIR/server.csr"
-
-openssl x509 -req \
-  -in "$OUTDIR/server.csr" \
-  -CA /etc/ccswitch/tls/ca.pem \
-  -CAkey /etc/ccswitch/tls/ca.key \
-  -CAcreateserial \
-  -days 825 \
-  -addext "subjectAltName=DNS:dobby.tail0dd570.ts.net,IP:100.102.11.121" \
-  -out "$OUTDIR/server.pem"
-
-openssl verify -CAfile /etc/ccswitch/tls/ca.pem "$OUTDIR/server.pem"
-
 sudo install -m 640 "$OUTDIR/server.pem" /etc/ccswitch/tls/server.pem
 sudo install -m 600 "$OUTDIR/server.key" /etc/ccswitch/tls/server.key
 ```

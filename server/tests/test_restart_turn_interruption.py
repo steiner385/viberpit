@@ -159,3 +159,29 @@ def test_daemon_units_use_killmode_mixed():
         assert "KillMode=control-group" not in text, (
             f"{unit} must not SIGTERM the whole cgroup — that races stop()'s "
             f"_shutting_down flag and brands interrupted turns needs_attention")
+
+
+# ---------------------------------------------------------------------------
+# Layer 4 — the stop budget must cover the SIGTERM drain, or systemd SIGKILLs
+# the daemon mid-drain and the turns die anyway
+# ---------------------------------------------------------------------------
+
+# Defaults from server/deploy/drain.py (CCSWITCH_DRAIN_CONDENSE_CAP_SEC) plus the
+# pre-existing ≤90s shutdown budget the unit comment itemises.
+_DRAIN_CONDENSE_CAP_S = 570
+_SHUTDOWN_BUDGET_S = 90
+
+
+def test_daemon_units_stop_budget_covers_the_sigterm_drain():
+    """2026-08-30: a bare `systemctl restart` killed five sessions mid-turn. The daemon
+    now drains on SIGTERM (server/ipc/drain_on_signal.py) — pointless unless systemd
+    waits for it: TimeoutStopSec must be at least the longest drain ceiling (a session
+    mid-compaction) plus the ordinary shutdown budget."""
+    for unit in ("ccswitch-daemon.service", "ccswitch-daemon-remote.service"):
+        text = (REPO_ROOT / "deploy" / unit).read_text()
+        values = [int(line.split("=", 1)[1]) for line in text.splitlines()
+                  if line.startswith("TimeoutStopSec=")]
+        assert len(values) == 1, f"{unit} must set TimeoutStopSec exactly once"
+        assert values[0] >= _DRAIN_CONDENSE_CAP_S + _SHUTDOWN_BUDGET_S, (
+            f"{unit}: TimeoutStopSec={values[0]} < condense cap + shutdown budget — "
+            f"systemd would SIGKILL the daemon mid-drain")

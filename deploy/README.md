@@ -106,6 +106,36 @@ sudo systemctl daemon-reload
 changed, but only when `systemctl is-enabled ccswitch-daemon.service` succeeds — making
 the block a complete no-op on hosts where the unit is not yet enabled.
 
+### Stopping / restarting the daemon (`systemctl stop|restart ccswitch-daemon.service`)
+
+The daemon owns every live `claude` session. **Any** stop or restart — the deploy
+controller, the health watchdog, or you typing it after an env edit — is the same
+SIGTERM, and until 2026-08-30 it ended every in-flight turn (five sessions at once,
+each left "Interrupted — re-send to resume").
+
+The daemon now drains itself on SIGTERM (`server/ipc/drain_on_signal.py`): it refuses
+new turns, snapshots pending work, tells the UI "update pending", keeps serving while
+in-flight turns finish, and only then runs the ordinary shutdown. The wait is bounded by
+the same caps as the deploy drain — `CCSWITCH_DRAIN_TURN_CAP_SEC` (180 s) per ordinary
+turn, `CCSWITCH_DRAIN_CONDENSE_CAP_SEC` (570 s) while a session is mid-compaction — so an
+idle daemon still stops in seconds and a busy one makes `systemctl restart` block for
+up to a few minutes. That is the feature. Two unit settings make it work and are pinned
+by `test_restart_turn_interruption.py`:
+
+- `KillMode=mixed` — SIGTERM reaches only the daemon; control-group delivery would kill
+  the `claude` children in parallel and leave nothing to drain.
+- `TimeoutStopSec=660` — the 570 s condense cap plus the ≤90 s shutdown budget. Lower
+  it and systemd SIGKILLs the daemon mid-drain.
+
+Escape hatches: a second SIGTERM (`sudo systemctl kill -s TERM ccswitch-daemon.service`)
+skips the wait; `systemctl kill -s SIGKILL` is what the health watchdog does to a
+daemon whose loop is wedged (it can't run the drain, so waiting 660 s is pointless).
+
+**These are unit-file settings — deploys do not re-install unit files** (see the note
+above). After pulling this change, re-run the Install steps and `daemon-reload` on each
+daemon host, or the installed unit keeps its old `control-group` / 60 s behaviour and
+the drain is defeated before it starts.
+
 ## Deploy controller (`ccswitch-deploy-controller.service`)
 
 Long-lived service that polls `origin/master` (notify-only) and runs user-triggered deploys.
