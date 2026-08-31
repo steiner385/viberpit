@@ -205,6 +205,8 @@ class TestSelector(unittest.TestCase):
 
 # --- rank_accounts() tests ---
 
+import pytest
+
 from ccswitch.config import Config
 from ccswitch.oauth import Usage
 
@@ -430,3 +432,136 @@ def test_no_reserves_behavior_unchanged():
     empty, _ = rank_accounts(usages, set(), _cfg(), NOW, reserves={})
     under, _ = rank_accounts(usages, set(), _cfg(), NOW, reserves={"a": 99.0})
     assert [r.name for r in base] == [r.name for r in empty] == [r.name for r in under]
+
+
+# --- per-account extra-usage credits (final at-ceiling tier) ---
+#
+# An at-ceiling account is normally dropped from the ranking outright. Opting it in
+# (ledger flag) AND having extra usage enabled upstream (Usage.extra_usage_enabled)
+# demotes it to a final tier instead — ranked below every other candidate, so credits
+# are only ever spent when nothing free is left.
+
+EXTRA_REASON = "at ceiling — burning extra usage credits"
+
+
+def test_extra_usage_opt_in_demotes_at_ceiling_account_to_last():
+    from ccswitch.selector import rank_accounts
+    usages = {
+        "maxed": Usage(100.0, SOON, 20.0, SOON, True),   # at session ceiling, extra ON upstream
+        "ok": Usage(10.0, LATER, 20.0, LATER, False),
+    }
+    # WITHOUT the opt-in, the at-ceiling account is excluded entirely…
+    base, base_earliest = rank_accounts(usages, set(), _cfg(), NOW)
+    assert [r.name for r in base] == ["ok"]
+    assert base_earliest == SOON
+    # …so its appearance below is attributable to the opt-in alone.
+    ranked, earliest = rank_accounts(usages, set(), _cfg(), NOW,
+                                     extra_usage_allowed={"maxed"})
+    assert [r.name for r in ranked] == ["ok", "maxed"]
+    assert ranked[1].reason == EXTRA_REASON
+    assert ranked[1].optimistic is False
+    assert [r.rank for r in ranked] == [1, 2]
+    # Nothing is busy any more — the account is usable, so no reset to wait on.
+    assert earliest is None
+
+
+def test_extra_usage_requires_upstream_enabled():
+    """Opting in cannot conjure credits: if Anthropic reports extra usage OFF for the
+    account, it stays excluded. Otherwise the selector would hand out a session that
+    immediately dies on rate limits."""
+    from ccswitch.selector import rank_accounts, select_best, AllAccountsBusy
+    usages = {"maxed": Usage(100.0, SOON, 20.0, SOON, False)}  # extra OFF upstream
+    ranked, earliest = rank_accounts(usages, set(), _cfg(), NOW,
+                                     extra_usage_allowed={"maxed"})
+    assert ranked == []
+    assert earliest == SOON
+    with pytest.raises(AllAccountsBusy):
+        select_best(usages, set(), _cfg(), NOW, extra_usage_allowed={"maxed"})
+
+
+def test_extra_usage_without_opt_in_stays_excluded():
+    """The upstream flag alone is not consent — ccswitch must not spend money on an
+    account the user never toggled on."""
+    from ccswitch.selector import rank_accounts
+    usages = {"maxed": Usage(100.0, SOON, 20.0, SOON, True)}  # extra ON upstream, not opted in
+    ranked, earliest = rank_accounts(usages, set(), _cfg(), NOW)
+    assert ranked == []
+    assert earliest == SOON
+
+
+def test_extra_usage_tier_is_below_reserve_and_optimistic():
+    """Full tier order: normal → optimistic → over-reserve → extra-usage."""
+    from ccswitch.selector import rank_accounts
+    usages = {
+        "normal": Usage(10.0, SOON, 20.0, SOON, False),
+        "optimistic": None,
+        "reserved": Usage(10.0, SOON, 95.0, SOON, False),
+        "extra": Usage(100.0, SOON, 20.0, SOON, True),
+    }
+    ranked, _ = rank_accounts(usages, set(), _cfg(), NOW, optimistic_fallback=True,
+                              reserves={"reserved": 90.0},
+                              extra_usage_allowed={"extra"})
+    assert [r.name for r in ranked] == ["normal", "optimistic", "reserved", "extra"]
+    assert [r.rank for r in ranked] == [1, 2, 3, 4]
+
+
+def test_extra_usage_selected_only_when_nothing_else_left():
+    from ccswitch.selector import select_picked, Picked
+    at_ceiling = Usage(100.0, SOON, 20.0, SOON, True)
+    free = Usage(90.0, SOON, 20.0, SOON, False)  # nearly maxed, but still under ceiling
+    # A free account, however hot, beats spending credits.
+    assert select_picked({"extra": at_ceiling, "free": free}, set(), _cfg(), NOW,
+                         extra_usage_allowed={"extra"}) == Picked(name="free")
+    # Remove it and the credits tier carries the pick.
+    assert select_picked({"extra": at_ceiling}, set(), _cfg(), NOW,
+                         extra_usage_allowed={"extra"}) == Picked(name="extra")
+
+
+def test_extra_usage_weekly_ceiling_also_qualifies():
+    """Either dimension hitting the ceiling routes to the tier, not just session."""
+    from ccswitch.selector import rank_accounts
+    usages = {"maxed": Usage(10.0, SOON, 100.0, SOON, True)}
+    ranked, _ = rank_accounts(usages, set(), _cfg(), NOW, extra_usage_allowed={"maxed"})
+    assert [r.name for r in ranked] == ["maxed"]
+    assert ranked[0].reason == EXTRA_REASON
+
+
+def test_extra_usage_respects_exclude_and_reserved():
+    """The tier is a demotion, not an escape hatch: an explicitly excluded or
+    session-reserved account must stay out however its credits are configured."""
+    from ccswitch.selector import rank_accounts
+    usages = {
+        "excluded": Usage(100.0, SOON, 20.0, SOON, True),
+        "held": Usage(100.0, SOON, 20.0, SOON, True),
+    }
+    ranked, _ = rank_accounts(usages, {"held"}, _cfg(), NOW, exclude={"excluded"},
+                              extra_usage_allowed={"excluded", "held"})
+    assert ranked == []
+
+
+def test_extra_usage_partial_opt_in_leaves_others_busy():
+    """One opted-in account does not rescue its at-ceiling neighbours, and the
+    earliest_reset still reports the accounts that really are stuck."""
+    from ccswitch.selector import rank_accounts
+    stuck_reset = NOW + timedelta(hours=3)
+    usages = {
+        "opted": Usage(100.0, SOON, 20.0, SOON, True),
+        "stuck": Usage(100.0, stuck_reset, 20.0, stuck_reset, True),  # extra ON, not opted in
+    }
+    ranked, earliest = rank_accounts(usages, set(), _cfg(), NOW,
+                                     extra_usage_allowed={"opted"})
+    assert [r.name for r in ranked] == ["opted"]
+    assert earliest == stuck_reset
+
+
+def test_no_extra_usage_behavior_unchanged():
+    """Default/empty/irrelevant opt-in sets must all reproduce the legacy ranking."""
+    from ccswitch.selector import rank_accounts
+    usages = {
+        "a": Usage(40.0, SOON, 20.0, SOON, True),
+        "b": Usage(10.0, SOON, 95.0, SOON, True),
+    }
+    base, _ = rank_accounts(usages, set(), _cfg(), NOW)
+    empty, _ = rank_accounts(usages, set(), _cfg(), NOW, extra_usage_allowed=frozenset())
+    other, _ = rank_accounts(usages, set(), _cfg(), NOW, extra_usage_allowed={"nobody"})
+    assert [r.name for r in base] == [r.name for r in empty] == [r.name for r in other]

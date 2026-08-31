@@ -399,6 +399,7 @@ export interface AccountUpdate {
   name: string
   nickname?: string | null
   weeklyReservePct?: number | null
+  allowExtraUsage?: boolean
 }
 
 export function useUpdateAccount() {
