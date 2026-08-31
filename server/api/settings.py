@@ -78,18 +78,6 @@ def _cap_raised(old_cap: int | None, new_cap: int) -> bool:
     return new_cap > effective_old
 
 
-async def get_default_permission_mode(db) -> str | None:
-    """The global default permission mode from the singleton Settings row.
-
-    Read-only lookup (never creates the row) so callers on hot paths — e.g. the
-    session-create endpoint resolving a fallback mode — don't write. Returns
-    ``None`` when the row is absent; the caller applies its own final default.
-    """
-    row = (await db.execute(
-        select(AppSettings).where(AppSettings.id == "singleton"))).scalar_one_or_none()
-    return row.default_permission_mode if row is not None else None
-
-
 async def _get_or_create(db) -> AppSettings:
     row = (await db.execute(select(AppSettings).where(AppSettings.id == "singleton"))).scalar_one_or_none()
     if row is None:

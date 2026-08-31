@@ -36,6 +36,7 @@ from server.sessions.orchestrator import (
 )
 from server.ipc.client import DaemonError, DaemonUnavailable
 from server.sessions.facade import call_with_deadline
+from server.sessions.permissions import resolve_permission_mode
 from server.sessions.selection import AllAccountsBusy
 from server.sessions.fleet_router import UnknownHost, NoHostAvailable
 from server.time_iso import iso_utc
@@ -498,25 +499,18 @@ async def create_session(
     # why ensure_clone is daemon-owned). Passing repo= through and leaving cwd
     # unset lets create_session resolve it wherever it actually runs.
 
-    # Resolve per-account defaults as fallbacks (only when account is explicitly pinned)
-    _resolved_permission_mode = body.permissionMode
+    # Permission mode: explicit → pinned-account default → global Settings default
+    # → interactive. One resolver shared with adopt_session (see permissions.py) so
+    # no create path can drift back to a hardcoded "interactive".
+    _resolved_permission_mode = await resolve_permission_mode(
+        db, explicit=body.permissionMode, account=body.account)
+    # Model: the pinned account's own default is the only fallback (only when the
+    # account is explicitly pinned); "account default" otherwise.
     _resolved_model = body.model
-    if body.account:
+    if body.account and not _resolved_model:
         from ccswitch import ledger as _ledger
         with _ledger.locked_ledger() as _led:
-            _acct_defs = _ledger.get_account_defaults(_led, body.account)
-        if not _resolved_permission_mode:
-            _resolved_permission_mode = _acct_defs.get("defaultPermissionMode")
-        if not _resolved_model:
-            _resolved_model = _acct_defs.get("defaultModel")
-
-    # Global fallback: the Settings-page "Default tool approvals" value. Without
-    # this, any create path that omits permissionMode (the DispatchBar quick-create
-    # bar, API callers) silently collapsed to "interactive" and re-introduced
-    # permission prompts the user had globally turned off (full-auto).
-    if not _resolved_permission_mode:
-        from server.api.settings import get_default_permission_mode
-        _resolved_permission_mode = await get_default_permission_mode(db)
+            _resolved_model = _ledger.get_account_defaults(_led, body.account).get("defaultModel")
 
     try:
         record = await orch.create_session(
