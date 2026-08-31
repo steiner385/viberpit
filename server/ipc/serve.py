@@ -86,6 +86,8 @@ def build_daemon(orchestrator=None):
         x11=lambda: app.state.x11,
     )
     register_reauth(app, app.state.reauth)
+    from server.mcp_auth import build_default_manager as _build_mcp_auth
+    app.state.mcp_auth = _build_mcp_auth()
     return app, orchestrator
 
 

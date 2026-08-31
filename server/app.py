@@ -405,6 +405,8 @@ async def _lifespan(app: FastAPI):
                                phase="shutdown:daemon-health-client")
     await bounded_wait(app.state.reauth.shutdown(),
                        timeout=_SHUTDOWN_PHASE_TIMEOUT_S, phase="shutdown:reauth")
+    await bounded_wait(app.state.mcp_auth.shutdown(),
+                       timeout=_SHUTDOWN_PHASE_TIMEOUT_S, phase="shutdown:mcp_auth")
     if remote_mode:
         # Remote mode: the daemon owns sessions/drivers; just close the IPC client.
         await bounded_wait(app.state.sessions.aclose(),
@@ -600,6 +602,12 @@ def create_app(
         timeout_s=_reauth_gs().reauth_timeout_s,
         reauth_manager=reauth_manager,
     )
+    # NOTE: McpAuthManager runs in-process on whichever side owns the cfg filesystem
+    # (the daemon/master and the single-host edge). Remote-mode edge→daemon proxying
+    # is out of scope for the current single-host deployment; if ever needed, mirror
+    # server/ipc/reauth_rpc.py.
+    from server.mcp_auth import build_default_manager as _build_mcp_auth
+    app.state.mcp_auth = _build_mcp_auth()
 
     # Middleware stack (Starlette runs last-added outermost): RequestContextMiddleware
     # wraps IdentityMiddleware wraps the routes, so request_id is set before identity.

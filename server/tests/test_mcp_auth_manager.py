@@ -1,6 +1,5 @@
 # server/tests/test_mcp_auth_manager.py
 import asyncio
-from pathlib import Path
 import pytest
 from server import mcp_auth
 from server.mcp_auth import McpAuthManager, McpAuthError
