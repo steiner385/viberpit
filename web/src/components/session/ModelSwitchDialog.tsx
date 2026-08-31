@@ -1,21 +1,24 @@
 /**
- * ModelSwitchDialog — confirm switching model on a BUSY session.
+ * ModelSwitchDialog — choose HOW to switch model on a BUSY session.
  *
- * The backend stops the in-flight turn, switches model, and restarts the turn,
- * so the picker must confirm before firing. Patterned on PermanentDeleteDialog
- * (overlay, focus trap, Esc/backdrop close) but non-destructive: the confirm
- * action is a primary blue "Stop & switch". Focus starts on Cancel; Esc closes;
- * Tab is focus-trapped.
+ * A model change can land two ways on a session mid-turn: stop the in-flight
+ * turn and restart it on the new model ("now"), or hand the model to the SDK
+ * without interrupting so the current turn finishes first and the next turn
+ * runs on the new model ("after this turn"). Cancel keeps the current model.
+ * Patterned on PermanentDeleteDialog (overlay, focus trap, Esc/backdrop close)
+ * but non-destructive. Focus starts on Cancel; Esc closes; Tab is focus-trapped.
  */
 import { useEffect, useRef } from 'react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 
+export type ModelSwitchWhen = 'now' | 'after_turn'
+
 interface ModelSwitchDialogProps {
   /** Human label of the target model (falls back to the raw id at the call site). */
   modelLabel: string
   onClose: () => void
-  onConfirm: () => void
+  onConfirm: (when: ModelSwitchWhen) => void
 }
 
 export function ModelSwitchDialog({ modelLabel, onClose, onConfirm }: ModelSwitchDialogProps) {
@@ -58,7 +61,7 @@ export function ModelSwitchDialog({ modelLabel, onClose, onConfirm }: ModelSwitc
       <div
         ref={dialogRef}
         className={cn(
-          'w-full max-w-sm rounded-xl',
+          'w-full max-w-md rounded-xl',
           'bg-white dark:bg-gray-800',
           'border border-gray-200 dark:border-gray-600',
           'shadow-xl p-6 space-y-4',
@@ -72,11 +75,12 @@ export function ModelSwitchDialog({ modelLabel, onClose, onConfirm }: ModelSwitc
         </h2>
 
         <p className="text-sm text-gray-700 dark:text-gray-300">
-          This session is working. Switching to <span className="font-medium">{modelLabel}</span>{' '}
-          will stop the current activity and restart it on the new model.
+          This session is working. Switch to <span className="font-medium">{modelLabel}</span>{' '}
+          now — stopping the current activity and restarting it on the new model — or let
+          the current turn finish first and switch for the next one.
         </p>
 
-        <div className="flex gap-3 justify-end pt-2">
+        <div className="flex flex-col sm:flex-row gap-3 sm:justify-end pt-2">
           <Button
             ref={cancelRef}
             type="button"
@@ -87,7 +91,15 @@ export function ModelSwitchDialog({ modelLabel, onClose, onConfirm }: ModelSwitc
           </Button>
           <Button
             type="button"
-            onClick={onConfirm}
+            variant="outline"
+            onClick={() => onConfirm('after_turn')}
+            className="min-h-[44px]"
+          >
+            Switch after this turn
+          </Button>
+          <Button
+            type="button"
+            onClick={() => onConfirm('now')}
             className={cn(
               'min-h-[44px]',
               'bg-blue-600 hover:bg-blue-700 text-white',
@@ -95,7 +107,7 @@ export function ModelSwitchDialog({ modelLabel, onClose, onConfirm }: ModelSwitc
               'focus-visible:ring-blue-500',
             )}
           >
-            Stop &amp; switch
+            Stop &amp; switch now
           </Button>
         </div>
       </div>

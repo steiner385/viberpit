@@ -40,9 +40,10 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
   // Active tab: 'conversation' (default) or 'browser'
   const [activeTab, setActiveTab] = useState<'conversation' | 'browser'>('conversation')
 
-  // Model id awaiting confirmation: switching model on a BUSY session stops the
-  // in-flight turn and restarts it on the new model, so the picker gates on a
-  // confirm dialog instead of firing immediately. Non-busy tiers fire directly.
+  // Model id awaiting confirmation: switching model on a BUSY session either stops
+  // the in-flight turn and restarts it on the new model, or waits for the turn to
+  // finish — so the picker gates on a choice dialog instead of firing immediately.
+  // Non-busy tiers switch directly.
   const [pendingModelId, setPendingModelId] = useState<string | null>(null)
 
   useEffect(() => {
@@ -70,7 +71,9 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
       <div className="flex-shrink-0">
         <SessionMeta
           account={rt.account}
-          model={rt.state.model}
+          model={rt.model}
+          liveModel={rt.liveModel}
+          modelPending={rt.modelPending}
           mode={rt.mode}
           contextPct={rt.contextPct}
           quota={rt.quota}
@@ -83,7 +86,7 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
           accountPinned={pinned}
           onSelectModel={(id) => {
             if (statusTier(rt.state.status.state) === 'busy') setPendingModelId(id)
-            else rt.onCommand('model', id)
+            else rt.onSetModel(id, 'now')
           }}
           onSelectAccount={(name) => rt.onCommand('account', name)}
           onSetMode={rt.onSetMode}
@@ -258,15 +261,15 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
         return <div {...convoWrapperProps}>{conversationPanel}</div>
       })()}
 
-      {/* Confirm stop-and-restart before switching model on a busy session. Cancel
-          just closes: the <select> is controlled by the record model, so it snaps
-          back on its own. */}
+      {/* Choose stop-now vs after-this-turn before switching model on a busy
+          session. Cancel just closes: the <select> is controlled by rt.model (the
+          record's chosen alias), so it snaps back on its own. */}
       {pendingModelId !== null && (
         <ModelSwitchDialog
           modelLabel={models.find((m) => m.id === pendingModelId)?.label ?? pendingModelId}
           onClose={() => setPendingModelId(null)}
-          onConfirm={() => {
-            rt.onCommand('model', pendingModelId)
+          onConfirm={(when) => {
+            rt.onSetModel(pendingModelId, when)
             setPendingModelId(null)
           }}
         />

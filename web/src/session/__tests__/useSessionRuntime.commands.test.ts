@@ -43,6 +43,33 @@ describe('runtime commands', () => {
     expect(command).toHaveBeenCalledWith('s1', 'model', 'sonnet')
   })
 
+  it('onSetModel sends /model now or --after-turn and reflects the choice optimistically', () => {
+    const { result } = renderHook(() => useSessionRuntime('s1'))
+    expect(result.current.model).toBeNull()          // no record → account default
+    expect(result.current.modelPending).toBe(false)
+    act(() => result.current.onSetModel('sonnet', 'now'))
+    expect(command).toHaveBeenCalledWith('s1', 'model', 'sonnet')
+    // The picker shows the REQUESTED alias immediately, not the 5s-polled record.
+    expect(result.current.model).toBe('sonnet')
+    act(() => result.current.onSetModel('opus', 'after_turn'))
+    expect(command).toHaveBeenCalledWith('s1', 'model', 'opus --after-turn')
+    expect(result.current.model).toBe('opus')
+    // "default" clears the override → null, the wire form of "account default".
+    act(() => result.current.onSetModel('default', 'now'))
+    expect(command).toHaveBeenCalledWith('s1', 'model', 'default')
+    expect(result.current.model).toBeNull()
+  })
+
+  it('liveModel tracks the producing model from sessionMeta / turnModel, separate from the picker', () => {
+    const { result } = renderHook(() => useSessionRuntime('s1'))
+    act(() => emit('sessionEvent', { type: 'sessionMeta', sessionId: 's1', model: 'claude-fable-5' }))
+    expect(result.current.liveModel).toBe('claude-fable-5')
+    expect(result.current.model).toBeNull()            // the launch model is NOT a user choice
+    act(() => emit('sessionEvent', { type: 'turnStart', sessionId: 's1', turnId: 't1' }))
+    act(() => emit('sessionEvent', { type: 'turnModel', sessionId: 's1', turnId: 't1', model: 'claude-opus-4-8' }))
+    expect(result.current.liveModel).toBe('claude-opus-4-8')
+  })
+
   it('notice result appends to transcript; help result opens overlay', () => {
     const { result } = renderHook(() => useSessionRuntime('s1'))
     act(() => emit('commandResult', { type: 'commandResult', sessionId: 's1', ok: true, render: 'notice', data: { text: 'Model → sonnet' } }))

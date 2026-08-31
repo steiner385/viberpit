@@ -60,6 +60,12 @@ class SessionRecord:
     adopted_in_place: bool = False   # resumed in original cwd, no worktree (adopted session)
     sub_agents: list | None = None   # [{agentId,parentAgentId,agentType,description,status}], refreshed at status changes
     model: str | None = None         # persisted model alias/id; None = account default
+    # transient: a "switch after this turn" model change has been handed to the SDK
+    # (set_model without an interrupt) but the in-flight turn is still on the old model —
+    # the binary applies it on the NEXT turn. Cleared when the turn ends (see
+    # SessionOrchestrator._settle_model_pending). Never a DB column: a daemon restart
+    # drops the turn anyway and resume re-applies `model` before any new turn.
+    model_pending: bool = False
     account_pinned: bool = False      # user pinned the account (skips usage-ceiling rotation)
     active_goal: str | None = None    # active /goal condition; None = no goal
     inferred_goal: str | None = None  # LLM-inferred goal (middle effective_goal tier)
@@ -137,6 +143,7 @@ class SessionRecord:
             "revAt": self.rev_at,
             "adoptedInPlace": self.adopted_in_place,
             "model": self.model,
+            "modelPending": self.model_pending,
             "accountPinned": self.account_pinned,
             "activeGoal": self.active_goal,
             "inferredGoal": self.inferred_goal,
@@ -173,6 +180,7 @@ class SessionRecord:
             updated_at=datetime.fromisoformat(rev) if rev else None,
             adopted_in_place=d.get("adoptedInPlace", False),
             model=d.get("model"),
+            model_pending=bool(d.get("modelPending", False)),
             account_pinned=d.get("accountPinned", False),
             active_goal=d.get("activeGoal"),
             inferred_goal=d.get("inferredGoal"),

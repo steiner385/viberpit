@@ -84,12 +84,16 @@ describe('SessionView status strip', () => {
     expect(quota).toHaveTextContent('18%')
   })
 
-  it('shows the model after a sessionMeta event', async () => {
+  it('shows the live model after a sessionMeta event, while the picker stays on the record choice', async () => {
     render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
     emitSessionEvent({ type: 'sessionMeta', model: 'claude-sonnet-4-5', sessionId: 's1' })
     await waitFor(() => {
-      expect(screen.getByLabelText(/select model/i)).toHaveValue('claude-sonnet-4-5')
+      expect(screen.getByLabelText(/model in use/i)).toHaveTextContent('Sonnet 4.5')
     })
+    // The SDK's launch model is what the account defaulted to, not a user choice:
+    // the picker reflects the session record (no model → "Default"). Binding the
+    // picker to sessionMeta is what made every session look pinned to the default.
+    expect(screen.getByLabelText(/select model/i)).toHaveValue('default')
   })
 
   it('shows remaining context after a turnEnd with usage', async () => {
