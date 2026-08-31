@@ -108,6 +108,7 @@ describe('useMcpAuthStatus', () => {
   })
 
   it('stops polling on terminal state (success)', async () => {
+    vi.mocked(api.get).mockClear()
     vi.mocked(api.get).mockResolvedValue(MCP_SUCCESS_STATE)
 
     const { result } = renderHook(
@@ -117,11 +118,18 @@ describe('useMcpAuthStatus', () => {
 
     await waitFor(() => expect(result.current.data?.state).toBe('success'))
 
-    // Verify data reached the terminal state
-    expect(result.current.data?.state).toBe('success')
-  })
+    // Once in a terminal state, refetchInterval must return false — no further GETs
+    // should fire. Wait 2000ms (past the 1500ms refetch interval) and confirm the
+    // call count did not increase beyond the single initial fetch.
+    const callsBefore = vi.mocked(api.get).mock.calls.length
+    await new Promise((r) => setTimeout(r, 2000))
+    expect(vi.mocked(api.get).mock.calls.length).toBe(callsBefore)
+    // Exactly one GET call total (the initial fetch)
+    expect(callsBefore).toBe(1)
+  }, 10000)
 
   it('stops polling on terminal state (error)', async () => {
+    vi.mocked(api.get).mockClear()
     vi.mocked(api.get).mockResolvedValue({ ...MCP_SUCCESS_STATE, state: 'error' })
 
     const { result } = renderHook(
@@ -130,10 +138,15 @@ describe('useMcpAuthStatus', () => {
     )
 
     await waitFor(() => expect(result.current.data?.state).toBe('error'))
-    expect(result.current.data?.state).toBe('error')
-  })
+
+    const callsBefore = vi.mocked(api.get).mock.calls.length
+    await new Promise((r) => setTimeout(r, 2000))
+    expect(vi.mocked(api.get).mock.calls.length).toBe(callsBefore)
+    expect(callsBefore).toBe(1)
+  }, 10000)
 
   it('stops polling on terminal state (cancelled)', async () => {
+    vi.mocked(api.get).mockClear()
     vi.mocked(api.get).mockResolvedValue({ ...MCP_SUCCESS_STATE, state: 'cancelled' })
 
     const { result } = renderHook(
@@ -142,8 +155,12 @@ describe('useMcpAuthStatus', () => {
     )
 
     await waitFor(() => expect(result.current.data?.state).toBe('cancelled'))
-    expect(result.current.data?.state).toBe('cancelled')
-  })
+
+    const callsBefore = vi.mocked(api.get).mock.calls.length
+    await new Promise((r) => setTimeout(r, 2000))
+    expect(vi.mocked(api.get).mock.calls.length).toBe(callsBefore)
+    expect(callsBefore).toBe(1)
+  }, 10000)
 
   it('URL-encodes the server name', async () => {
     const { result } = renderHook(

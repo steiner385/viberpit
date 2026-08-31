@@ -1237,5 +1237,7 @@ export function useSubmitMcpRedirect() {
 export function useCancelMcpAuth() {
   return useMutation<McpAuthState, ApiRequestError, string>({
     mutationFn: (name) => api.post<McpAuthState>(`/library/mcp/${encodeURIComponent(name)}/auth/cancel`),
+    // fire-and-forget cancel: never toast on error (see queryClient global handler)
+    meta: { suppressErrorToast: true },
   })
 }
