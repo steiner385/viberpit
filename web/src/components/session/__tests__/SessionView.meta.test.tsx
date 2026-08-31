@@ -40,6 +40,7 @@ vi.mock('@/api/hooks', () => ({
   usePermanentDeleteSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useRenameSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSessionsViewing: vi.fn(),
+  useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
   useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
   useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),

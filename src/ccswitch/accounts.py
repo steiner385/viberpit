@@ -610,6 +610,8 @@ def set_account_defaults(
     clear_model: bool = False,
     default_permission_mode: str | None = None,
     clear_permission_mode: bool = False,
+    model_approval_action: str | None = None,
+    clear_model_approval_action: bool = False,
     env_overrides: dict | None = None,
     clear_env_overrides: bool = False,
 ) -> None:
@@ -621,6 +623,8 @@ def set_account_defaults(
             clear_model=clear_model,
             default_permission_mode=default_permission_mode,
             clear_permission_mode=clear_permission_mode,
+            model_approval_action=model_approval_action,
+            clear_model_approval_action=clear_model_approval_action,
             env_overrides=env_overrides,
             clear_env_overrides=clear_env_overrides,
         )

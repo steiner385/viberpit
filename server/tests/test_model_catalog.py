@@ -182,3 +182,28 @@ def test_refresh_clears_cache(monkeypatch):
     monkeypatch.setattr(mc, "_cache", ["opus"])
     mc.refresh()
     assert mc._cache is None
+
+
+# --------------------------------------------------------------------------- #
+# model_tier() — tier extraction helper                                       #
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("model,expected", [
+    (None, None),
+    ("", None),
+    ("fable", "fable"),
+    ("Fable", "fable"),
+    ("fable[1m]", "fable"),
+    ("claude-fable-5", "fable"),
+    ("opus", "opus"),
+    ("opus[1m]", "opus"),
+    ("opusplan", "opus"),
+    ("claude-opus-4-8", "opus"),
+    ("sonnet", "sonnet"),
+    ("haiku", "haiku"),
+    ("default", None),
+    ("best", None),
+    ("something-unknown", None),
+])
+def test_model_tier(model, expected):
+    assert mc.model_tier(model) == expected

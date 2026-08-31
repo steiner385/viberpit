@@ -198,6 +198,10 @@ export interface AppSettings {
   // App-wide toggle: when false, completed sessions are not auto-archived (they linger
   // like a per-session manual opt-out). The server's NULL default surfaces here as true.
   autoArchiveEnabled: boolean
+  // Global model-approval policy: 'require_approval' | 'block' | 'allow' | null (server default).
+  modelApprovalAction: string | null
+  // Comma-separated model ids/tiers that require approval; null = server default (fable).
+  modelApprovalDenylist: string | null
 }
 
 export function useSettings() {
@@ -301,6 +305,15 @@ export function useQueueCancel() {
   })
 }
 
+export function useModelApproval() {
+  const qc = useQueryClient()
+  return useMutation<Session, ApiRequestError, { id: string; decision: 'approve' | 'deny' }>({
+    mutationFn: ({ id, decision }) =>
+      api.post<Session>(`/sessions/${id}/model-approval`, { decision }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
+  })
+}
+
 export function useFixPr() {
   const qc = useQueryClient()
   return useMutation<Session, ApiRequestError, { id: string; number: number }>({
@@ -399,6 +412,8 @@ export interface AccountUpdate {
   name: string
   nickname?: string | null
   weeklyReservePct?: number | null
+  /** Per-account model-approval override: 'require_approval' | 'block' | 'allow' | null (inherit global). */
+  modelApprovalAction?: string | null
   allowExtraUsage?: boolean
 }
 

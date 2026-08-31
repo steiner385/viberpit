@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { SessionList } from './SessionList'
 import { QueuedSection } from './QueuedSection'
+import { PendingApprovalSection } from './PendingApprovalSection'
 import { AdoptPanel } from './AdoptPanel'
 import { AllLimitedBanner } from './AllLimitedBanner'
 import { UpdatePendingBanner } from './UpdatePendingBanner'
@@ -49,6 +50,7 @@ import type { Account } from '@/api/types'
 import { api } from '@/api/client'
 import type { FleetHost } from './settings/FleetSection'
 import { PERMISSION_MODES } from '@/session/permissionModes'
+import { isGatedTier, modelName as modelDisplayName } from '@/session/modelName'
 import { toast } from 'sonner'
 import { setLastRepo } from '@/lib/lastRepo'
 import { SessionListControls } from './SessionListControls'
@@ -322,6 +324,11 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending, externalErro
                     <option key={m.id} value={m.id}>{m.label}</option>
                   ))}
                 </select>
+                {isGatedTier(model) && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400">
+                    {modelDisplayName(model) || model} requires approval — this session will be held until approved.
+                  </p>
+                )}
               </div>
             </div>
           </fieldset>
@@ -499,8 +506,14 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
       .sort((a, b) => (a.queuePosition ?? 0) - (b.queuePosition ?? 0)),
     [sessions],
   )
+  // Pending-approval sessions (launch-time model gate) are also surfaced separately
+  // so they never enter the grouped list and always have visible Approve/Deny controls.
+  const pendingApprovalSessions = useMemo(
+    () => sessions.filter(s => s.status === 'pending_approval'),
+    [sessions],
+  )
   const nonQueuedSessions = useMemo(
-    () => sessions.filter(s => s.status !== 'queued'),
+    () => sessions.filter(s => s.status !== 'queued' && s.status !== 'pending_approval'),
     [sessions],
   )
   const { groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions: liveSessions, navItems, collapsedKeys, toggleCollapse, expandGroup, collapseGroup } =
@@ -817,6 +830,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
           {/* Scroll region: only the session list scrolls; the controls above
               and the DispatchBar below stay fixed within the viewport. */}
           <div className="flex-1 min-h-0 overflow-y-auto space-y-3">
+          <PendingApprovalSection sessions={pendingApprovalSessions} onOpen={handleOpen} />
           <QueuedSection sessions={queuedSessions} onOpen={handleOpen} />
           <SessionList
             sessions={liveSessions}

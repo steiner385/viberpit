@@ -87,10 +87,13 @@ def _run_create(tmp_path, *, model):
 
 
 def test_create_session_applies_and_persists_model(tmp_path):
-    rec, row_model, driver_model = _run_create(tmp_path, model="fable")
-    assert driver_model == "fable"   # applied to the live driver before the first turn
-    assert row_model == "fable"      # persisted onto the DB row
-    assert rec.model == "fable"      # mirrored on the in-memory record
+    # A non-gated tier: the model-approval gate parks gated models (e.g. fable) as
+    # pending_approval with no driver instead of applying them — that path is covered
+    # by test_orchestrator_model_gate. Here we assert the ordinary apply+persist path.
+    rec, row_model, driver_model = _run_create(tmp_path, model="opus")
+    assert driver_model == "opus"    # applied to the live driver before the first turn
+    assert row_model == "opus"       # persisted onto the DB row
+    assert rec.model == "opus"       # mirrored on the in-memory record
 
 
 def test_create_session_default_model_is_account_default(tmp_path):

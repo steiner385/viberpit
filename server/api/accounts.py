@@ -193,7 +193,7 @@ def _account_response(
         "rankReason": rank_reason,
         "weeklyReservePct": weekly_reserve_pct,
         "allowExtraUsage": allow_extra_usage,
-        "accountDefaults": account_defaults or {"defaultModel": None, "defaultPermissionMode": None, "envOverrides": None},
+        "accountDefaults": account_defaults or {"defaultModel": None, "defaultPermissionMode": None, "modelApprovalAction": None, "envOverrides": None},
         "enabled": enabled,
     }
 
@@ -359,6 +359,7 @@ class AccountPatchBody(BaseModel):
     defaultModel: str | None = None
     defaultPermissionMode: str | None = None
     envOverrides: dict | None = None
+    modelApprovalAction: str | None = None
 
 
 @router.patch("/{name}")
@@ -380,10 +381,22 @@ async def update_account(
         set_nickname(name, (body.nickname or "").strip() or None)
     if "weeklyReservePct" in body.model_fields_set:
         set_weekly_reserve(name, body.weeklyReservePct)
+    if "modelApprovalAction" in body.model_fields_set and body.modelApprovalAction is not None:
+        from server.sessions.model_policy import VALID_ACTIONS
+        if body.modelApprovalAction not in VALID_ACTIONS:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "invalid_model_approval_action",
+                    "value": body.modelApprovalAction,
+                    "allowed": sorted(VALID_ACTIONS),
+                    "message": f"modelApprovalAction must be one of: {', '.join(sorted(VALID_ACTIONS))}",
+                },
+            )
     if "allowExtraUsage" in body.model_fields_set:
         # Explicit null and false both mean "off" — there is no third state.
         set_allow_extra_usage(name, bool(body.allowExtraUsage))
-    if any(f in body.model_fields_set for f in ("defaultModel", "defaultPermissionMode", "envOverrides")):
+    if any(f in body.model_fields_set for f in ("defaultModel", "defaultPermissionMode", "envOverrides", "modelApprovalAction")):
         _validate_env_overrides(body.envOverrides)
         from ccswitch.accounts import set_account_defaults
         set_account_defaults(
@@ -392,6 +405,8 @@ async def update_account(
             clear_model="defaultModel" in body.model_fields_set and body.defaultModel is None,
             default_permission_mode=body.defaultPermissionMode if "defaultPermissionMode" in body.model_fields_set else None,
             clear_permission_mode="defaultPermissionMode" in body.model_fields_set and body.defaultPermissionMode is None,
+            model_approval_action=body.modelApprovalAction if "modelApprovalAction" in body.model_fields_set else None,
+            clear_model_approval_action="modelApprovalAction" in body.model_fields_set and body.modelApprovalAction is None,
             env_overrides=body.envOverrides if "envOverrides" in body.model_fields_set else None,
             clear_env_overrides="envOverrides" in body.model_fields_set and body.envOverrides is None,
         )

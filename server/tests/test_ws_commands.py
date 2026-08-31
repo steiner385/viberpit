@@ -96,7 +96,7 @@ class FakeOrch:
     async def command_catalog(self, session_id):
         return [{"name": "help", "description": "Show help", "argumentHint": None, "kind": "client"}]
 
-    async def run_command(self, session_id, name, args):
+    async def run_command(self, session_id, name, args, identity=None):
         self.ran.append((name, args))
         if name == "model":
             return {"name": "model", "render": "notice", "data": {"text": "Model → sonnet"}}

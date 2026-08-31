@@ -10,7 +10,7 @@ def test_status_sets_and_default_cap():
                                   DEFAULT_MAX_ACTIVE_SESSIONS,
                                   INACTIVE_SESSION_STATUSES)
     assert INACTIVE_SESSION_STATUSES == frozenset({"ended", "archived"})
-    assert CAPACITY_EXEMPT_STATUSES == INACTIVE_SESSION_STATUSES | {"queued", "complete"}
+    assert CAPACITY_EXEMPT_STATUSES == INACTIVE_SESSION_STATUSES | {"queued", "complete", "pending_approval"}
     assert DEFAULT_MAX_ACTIVE_SESSIONS == 5
 
 

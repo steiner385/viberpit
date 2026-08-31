@@ -261,11 +261,16 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
   // Code input for awaiting_code state
   const [code, setCode] = useState('')
 
+  const [modelApprovalDraft, setModelApprovalDraft] = useState<string>(
+    account.accountDefaults?.modelApprovalAction ?? '',
+  )
+
   const qc = useQueryClient()
   const reauthAccount = useReauthAccount()
   const cancelReauth = useCancelReauth()
   const submitCode = useSubmitReauthCode()
   const setEnabled = useSetAccountEnabled()
+  const updateAccount = useUpdateAccount()
 
   // Absent `enabled` (older payloads) means enabled — only an explicit false disables.
   const isDisabled = account.enabled === false
@@ -737,6 +742,42 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
         <p className="text-xs text-red-600 dark:text-red-400" role="alert">
           {reauthStatus.message}
         </p>
+      )}
+
+      {/* Per-account model approval override — always visible, saves immediately on change */}
+      {!editing && (
+        <div className="flex items-center gap-2 pt-1">
+          <label
+            htmlFor={`account-model-approval-${account.name}`}
+            className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap"
+          >
+            Model approval:
+          </label>
+          <select
+            id={`account-model-approval-${account.name}`}
+            aria-label={`Model approval action for ${account.name}`}
+            value={modelApprovalDraft}
+            onChange={(e) => {
+              const val = e.target.value
+              setModelApprovalDraft(val)
+              updateAccount.mutate({
+                name: account.name,
+                modelApprovalAction: val || null,
+              })
+            }}
+            className={cn(
+              'flex-1 min-w-0 rounded border border-gray-300 dark:border-gray-600',
+              'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100',
+              'px-2 py-1 text-xs',
+              'focus:outline-none focus:ring-2 focus:ring-blue-500',
+            )}
+          >
+            <option value="">Inherit (global default)</option>
+            <option value="require_approval">Require approval</option>
+            <option value="block">Block</option>
+            <option value="allow">Allow</option>
+          </select>
+        </div>
       )}
     </div>
   )

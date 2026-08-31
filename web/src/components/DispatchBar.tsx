@@ -6,6 +6,7 @@ import { useAssessDispatch } from '@/api/hooks'
 import type { Account, ModelOption } from '@/api/types'
 import { getLastRepo, setLastRepo } from '@/lib/lastRepo'
 import { caretLineEdges } from '@/lib/caretLineEdges'
+import { isGatedTier, modelName } from '@/session/modelName'
 import { useImageAttachments } from './session/useImageAttachments'
 import { AttachmentChips } from './session/AttachmentChips'
 import { MicButton } from './session/MicButton'
@@ -128,7 +129,8 @@ export function DispatchBar({
     try {
       const result = await assess(text.trim())
       if (result) {
-        if (result.model && model === 'default') setModel(result.model)
+        // Never auto-select a gated tier from assess — leave it for the user to pick explicitly.
+        if (result.model && model === 'default' && !isGatedTier(result.model)) setModel(result.model)
         setRefinedPrompt(result.refined_prompt)
       }
     } catch {
@@ -389,6 +391,11 @@ export function DispatchBar({
               <option key={m.id} value={m.id}>{m.label}</option>
             ))}
           </select>
+          {isGatedTier(model) && (
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              {modelName(model) || model} requires approval — this session will be held until approved.
+            </p>
+          )}
         </div>
 
         {/* Runner — '' = Auto (fleet auto-ranks); a name pins the session to that host. */}

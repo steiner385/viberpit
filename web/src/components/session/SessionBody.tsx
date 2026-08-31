@@ -18,11 +18,12 @@ import { CondensingProgress } from './CondensingProgress'
 import { PendingQuestionPanel } from './PendingQuestionPanel'
 import { PendingPermissionPanel } from './PendingPermissionPanel'
 import { YourTurnPanel } from './YourTurnPanel'
+import { PendingModelApprovalPanel } from './PendingModelApprovalPanel'
 import { SessionAriaLive } from './SessionAriaLive'
 import { statusTier } from '@/session/statusTier'
 import { selectRunningSubAgentCount } from '@/session/selectors'
 import { BrowserTab } from '../BrowserTab'
-import { useModels, useAccounts, useSessions } from '@/api/hooks'
+import { useModels, useAccounts, useSessions, useModelApproval } from '@/api/hooks'
 import { ExportMenu } from './ExportMenu'
 import { ModelSwitchDialog } from './ModelSwitchDialog'
 
@@ -33,6 +34,7 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
   const { data: sessions = [] } = useSessions()
   const sessionRecord = sessions.find((s) => s.id === rt.sessionId)
   const pinned = sessionRecord?.accountPinned ?? false
+  const { mutate: modelApproval } = useModelApproval()
 
   // Whether the x11/browser feature is available on this server.
   // Starts as false (unknown); set to true only when /api/x11/metrics returns
@@ -221,6 +223,18 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
               permissionMode={rt.mode}
               onDecision={rt.onDecision}
             />
+
+            {/* Pinned model-approval panel for a mid-session gated model switch.
+                `pendingModel` is read from the session record (server source of truth for
+                approval state) — not the reducer, which tracks transcript model events only. */}
+            {sessionRecord?.pendingModel && (
+              <PendingModelApprovalPanel
+                model={sessionRecord.pendingModel}
+                onDecision={(decision) =>
+                  modelApproval({ id: rt.sessionId, decision })
+                }
+              />
+            )}
 
             {/* Pinned answer panel for the live open question (answer in place). Lives
                 here in SessionBody so BOTH the mobile SessionView and the desktop

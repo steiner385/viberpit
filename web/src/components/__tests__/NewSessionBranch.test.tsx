@@ -8,6 +8,7 @@ import * as hooks from '@/api/hooks'
 vi.mock('@/api/hooks', () => ({
   useQueueMove: vi.fn(() => ({ mutate: vi.fn() })),
   useQueueCancel: vi.fn(() => ({ mutate: vi.fn() })),
+  useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
   useAllPrs: vi.fn(() => ({ data: [] })),
   useDaemonHealth: vi.fn(() => ({ data: { available: false } })),  // issue #434 indicator
   useGenerateSuggestions: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(() => Promise.resolve([])), isPending: false })),
@@ -180,6 +181,46 @@ describe('New Session dialog — branch default selection', () => {
     const toolApprovals = dialog.getByLabelText(/tool approvals/i)
     // Model was previously buried below Tool approvals; it now precedes it.
     expect(model.compareDocumentPosition(toolApprovals) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('never preselects a gated (fable) tier as the default model', async () => {
+    const user = userEvent.setup()
+    render(<Dashboard />, { wrapper })
+
+    await user.click(screen.getAllByRole('button', { name: /new session/i })[0])
+    const dialog = within(screen.getByRole('dialog', { name: /new session/i }))
+
+    const modelSelect = dialog.getByLabelText(/^model/i) as HTMLSelectElement
+    // fable is a gated tier — it must not be the default selected value
+    expect(modelSelect.value).not.toBe('fable')
+  })
+
+  it('shows an approval note when a gated (fable) model is selected', async () => {
+    const user = userEvent.setup()
+    render(<Dashboard />, { wrapper })
+
+    await user.click(screen.getAllByRole('button', { name: /new session/i })[0])
+    const dialog = within(screen.getByRole('dialog', { name: /new session/i }))
+
+    // No note before selecting fable
+    expect(dialog.queryByText(/requires approval/i)).not.toBeInTheDocument()
+
+    await user.selectOptions(dialog.getByLabelText(/^model/i), 'fable')
+    expect(dialog.getByText(/requires approval/i)).toBeInTheDocument()
+  })
+
+  it('hides the approval note when a non-gated model is selected', async () => {
+    const user = userEvent.setup()
+    render(<Dashboard />, { wrapper })
+
+    await user.click(screen.getAllByRole('button', { name: /new session/i })[0])
+    const dialog = within(screen.getByRole('dialog', { name: /new session/i }))
+
+    await user.selectOptions(dialog.getByLabelText(/^model/i), 'fable')
+    expect(dialog.getByText(/requires approval/i)).toBeInTheDocument()
+
+    await user.selectOptions(dialog.getByLabelText(/^model/i), 'opus')
+    expect(dialog.queryByText(/requires approval/i)).not.toBeInTheDocument()
   })
 
   it('submits the chosen model, and omits it when left on "Default"', async () => {

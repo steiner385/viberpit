@@ -121,6 +121,14 @@ try:
         # two-host expansion (fleet plan Task 13); the ranking/routing code is already
         # N-host, so this is a config flip, not a code change.
         fleet_hosts: str = Field(default="", alias="CCSWITCH_FLEET_HOSTS")
+        # Model-approval gate. Which model TIERS require human approval (comma list,
+        # matched via model_catalog.model_tier), and the action a gated tier triggers.
+        # Overridable per-install by AppSettings and per-account by the ledger; this is
+        # the ops-level default (see server/sessions/model_policy.resolve_model_policy).
+        model_approval_action: str = Field(
+            default="require_approval", alias="CCSWITCH_MODEL_APPROVAL_ACTION")
+        model_approval_denylist: str = Field(
+            default="fable", alias="CCSWITCH_MODEL_APPROVAL_DENYLIST")
 
         model_config = {"populate_by_name": True, "env_file": ".env", "extra": "ignore"}
 
@@ -267,6 +275,12 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         fleet_hosts: str = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_FLEET_HOSTS", "")
+        )
+        model_approval_action: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_MODEL_APPROVAL_ACTION", "require_approval")
+        )
+        model_approval_denylist: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_MODEL_APPROVAL_DENYLIST", "fable")
         )
 
         @property
