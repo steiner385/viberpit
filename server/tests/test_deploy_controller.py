@@ -1,7 +1,7 @@
 import pytest
 import threading
 from types import SimpleNamespace
-from server.deploy.controller import DeployController
+from server.deploy.controller import DeployController, default_daemon_factory
 from server.deploy.types import Phase, PhaseState
 
 
@@ -275,6 +275,45 @@ async def test_a_daemon_client_without_aclose_does_not_fail_the_deploy():
     st = await c.deploy_once()
     assert st.error is None
     assert all(p == PhaseState.DONE.value for p in st.phases.values())
+
+
+def _spy_daemon_client(monkeypatch):
+    """Capture the endpoint DaemonClient is built with, without opening any transport."""
+    from server.ipc import client as client_mod
+    seen = []
+    class SpyClient:
+        def __init__(self, endpoint, *, client_tls=None):
+            seen.append(endpoint)
+    monkeypatch.setattr(client_mod, "DaemonClient", SpyClient)
+    return seen
+
+
+def test_default_daemon_factory_uses_the_configured_https_endpoint(monkeypatch):
+    """The controller must resolve the daemon exactly as the edge does. Hard-wiring the
+    legacy UDS path meant an https-only daemon (dobby, 2026-08-30) got every pre-deploy
+    RPC — snapshot, drain, close_events_connections — failing, and a daemon-changing
+    deploy restarted the daemon without draining in-flight turns."""
+    monkeypatch.setenv("CCSWITCH_SESSIOND_ENDPOINT", "https://runner.example:9443")
+    monkeypatch.delenv("CCSWITCH_SESSIOND_SOCKET", raising=False)
+    seen = _spy_daemon_client(monkeypatch)
+    factory = default_daemon_factory(True)
+    assert factory is not None
+    factory()
+    assert len(seen) == 1
+    ep = seen[0]
+    assert not ep.is_unix and ep.host == "runner.example" and ep.port == 9443
+
+
+def test_default_daemon_factory_keeps_the_legacy_socket_when_no_endpoint_is_set(monkeypatch):
+    monkeypatch.delenv("CCSWITCH_SESSIOND_ENDPOINT", raising=False)
+    monkeypatch.setenv("CCSWITCH_SESSIOND_SOCKET", "/run/x/sessiond.sock")
+    seen = _spy_daemon_client(monkeypatch)
+    default_daemon_factory(True)()
+    assert seen[0].is_unix and seen[0].path == "/run/x/sessiond.sock"
+
+
+def test_default_daemon_factory_is_none_when_daemon_disabled():
+    assert default_daemon_factory(False) is None
 
 
 @pytest.mark.asyncio
