@@ -352,6 +352,15 @@ export interface CopilotAddState {
   verificationUri: string | null
 }
 
+export interface McpAuthState {
+  state: 'idle' | 'starting' | 'awaiting_redirect' | 'exchanging' | 'success' | 'error' | 'cancelled'
+  server?: string | null
+  message?: string | null
+  authUrl?: string | null
+  accounts: string[]
+  startedAt?: number | null
+}
+
 // --- Library (plugins / skills / commands / MCP) ---
 
 export interface LibraryComponentCounts {
