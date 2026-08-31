@@ -922,6 +922,25 @@ def test_reattach_reemits_queue(ws_env):
     client.portal.call(orch.close_session, session_id)
 
 
+def test_attach_reemits_empty_queue(ws_env):
+    """Attach re-emits the queue even when it is EMPTY. A client that missed the
+    live QueueUpdate([]) when the queue drained (WS gap mid-dequeue) otherwise
+    renders its stale queued chip forever — nothing else ever clears it."""
+    _app, orch, client = ws_env([])
+    session = client.portal.call(orch.create_session, "q-empty")
+    session_id = session.id
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        events = _drain_events(ws, until_type="queueUpdate", timeout=8.0)
+
+    qu = [e for e in events if e.get("type") == "queueUpdate"]
+    assert qu, f"no queueUpdate on attach with empty queue; saw {[e.get('type') for e in events]}"
+    assert qu[-1]["items"] == []
+
+    client.portal.call(orch.close_session, session_id)
+
+
 # ---------------------------------------------------------------------------
 # Frame larger than 256KB is rejected, socket stays open
 # ---------------------------------------------------------------------------

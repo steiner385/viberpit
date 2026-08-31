@@ -492,6 +492,26 @@ def _window(path: str, before: int | None, limit: int | None, drop_incomplete_tu
     slice_lo = 0 if start == 0 else ends[start - 1] + 1
     slice_hi = starts[end] if end < total else len(out)
     window = out[slice_lo:slice_hi]
+    # A "turn" here is one assistant JSONL entry, so a tool-heavy LOGICAL turn
+    # spans many of them — a window whose head lands mid-logical-turn carries the
+    # turn's content with NO owning UserMessage at all. Client-side that leaves
+    # the sent-prompt buffer unconsumed, and every reconnect re-asserts the
+    # prompt at the very bottom of the transcript ("last prompt stuck at the
+    # bottom"). Prepend the nearest preceding UserMessage so the turn's prompt
+    # always travels with its content. Detection: no UserMessage between the
+    # slice head and the window's first TurnStart (a boundary-start window has
+    # its user entry in that gap). A drop_incomplete trim removed the open
+    # turn's prompt from `out` entirely, so it can never be re-added here — the
+    # nearest preceding UserMessage then belongs to a completed turn, which is
+    # exactly the prompt its sliced content needs.
+    if start > 0 and end > start:
+        first_ts = starts[start]
+        head_has_user = any(isinstance(e, ev.UserMessage) for e in out[slice_lo:first_ts])
+        if not head_has_user:
+            owner = next((e for e in reversed(out[:slice_lo])
+                          if isinstance(e, ev.UserMessage)), None)
+            if owner is not None:
+                window = [owner] + window
     if include_subagents:
         # Reconstruct sub-agent threads for exactly the Task calls in THIS window
         # (scoping to the window naturally excludes sub-agents of trimmed turns).
