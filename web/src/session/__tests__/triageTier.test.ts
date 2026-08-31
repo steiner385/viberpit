@@ -30,4 +30,14 @@ describe('triageTier', () => {
   it('does NOT elevate a done session for a MERGED PR with frozen failing checks', () => {
     expect(triageTier(s('done', 'failing', 'merged'))).toBe('your-turn')
   })
+  it('does NOT elevate a waiting_external session for a failing PR (an agent is monitoring it)', () => {
+    // A session with an armed Monitor/wakeup (waiting_external, "Waiting…") is
+    // already watching its CI — a red rollup is that agent's job, not the user's.
+    // It must stay in the Waiting group, not jump to Needs attention.
+    expect(triageTier(s('waiting_external', 'failing'))).toBe('waiting')
+  })
+  it('does NOT elevate a live (in_progress) session for a failing PR', () => {
+    // A turn is actively running — likely fixing the very failure. Not user-facing.
+    expect(triageTier(s('in_progress', 'failing'))).toBe('busy')
+  })
 })
