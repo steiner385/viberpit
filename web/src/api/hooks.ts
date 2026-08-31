@@ -13,7 +13,7 @@ import {
 import type {
   Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption, BatchResult,
   DeployStatusResponse, PendingDeploy, DeployProgress, PipelinePr, StageModel, CheckInsights,
-  DaemonHealth, CopilotAddState,
+  DaemonHealth, CopilotAddState, McpAuthState,
   LibraryPluginDetail, LibraryPluginsResponse, LibrarySkill, LibraryCommand,
   LibraryMcpServer, McpServerConfig, LibraryContent,
   SessionPreset, PromptTemplate, PermissionProfile, AssessResponse,
@@ -414,6 +414,7 @@ export interface AccountUpdate {
   weeklyReservePct?: number | null
   /** Per-account model-approval override: 'require_approval' | 'block' | 'allow' | null (inherit global). */
   modelApprovalAction?: string | null
+  allowExtraUsage?: boolean
 }
 
 export function useUpdateAccount() {
@@ -1210,5 +1211,49 @@ export function useCreateInitiative() {
     mutationFn: (input) => createInitiative(input),
     onSuccess: () => void qc.invalidateQueries({ queryKey: QK.initiatives }),
     onError: (e) => toast.error(initiativeErrorMessage(e, 'Could not create initiative')),
+  })
+}
+
+// MCP OAuth auth flow — mirrors the reauth hooks pattern.
+// useStartMcpAuth: initiates OAuth for a named MCP server.
+export function useStartMcpAuth() {
+  return useMutation<McpAuthState, ApiRequestError, string>({
+    mutationFn: (name) => api.post<McpAuthState>(`/library/mcp/${encodeURIComponent(name)}/auth`),
+  })
+}
+
+// useMcpAuthStatus: polls the auth state; stops automatically at terminal states.
+export function useMcpAuthStatus(name: string, enabled: boolean) {
+  return useQuery<McpAuthState>({
+    queryKey: ['mcp-auth-status', name],
+    queryFn: () => api.get<McpAuthState>(`/library/mcp/${encodeURIComponent(name)}/auth`),
+    enabled,
+    // Poll while auth is in flight; stop on terminal states to avoid unnecessary requests.
+    refetchInterval: (query) => {
+      const s = query.state.data?.state
+      return s === 'success' || s === 'error' || s === 'cancelled' ? false : 1500
+    },
+    refetchOnWindowFocus: false,
+    staleTime: 0,
+  })
+}
+
+// useSubmitMcpRedirect: submits the OAuth redirect URL once the user completes the flow.
+// Invalidates libraryMcp so the needs-auth badge refreshes.
+export function useSubmitMcpRedirect() {
+  const qc = useQueryClient()
+  return useMutation<McpAuthState, ApiRequestError, { name: string; redirectUrl: string }>({
+    mutationFn: ({ name, redirectUrl }) =>
+      api.post<McpAuthState>(`/library/mcp/${encodeURIComponent(name)}/auth/redirect`, { redirectUrl }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: QK.libraryMcp }),
+  })
+}
+
+// useCancelMcpAuth: cancels an in-flight MCP auth flow.
+export function useCancelMcpAuth() {
+  return useMutation<McpAuthState, ApiRequestError, string>({
+    mutationFn: (name) => api.post<McpAuthState>(`/library/mcp/${encodeURIComponent(name)}/auth/cancel`),
+    // fire-and-forget cancel: never toast on error (see queryClient global handler)
+    meta: { suppressErrorToast: true },
   })
 }

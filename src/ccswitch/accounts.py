@@ -480,9 +480,11 @@ def pick_account_detailed(cfg: Config, exclude: set[str] = frozenset(),
         reserved = {n for n in names if ledger.reservation_active(led, n, now_ts)}
         unhealthy = frozenset(n for n in names if ledger.get_status(led, n) == "needs-reauth")
         reserves = ledger.weekly_reserves(led)
+        extra_allowed = ledger.extra_usage_allowed(led)
         def _pick(excl, rsv):
             return select_picked(usages, rsv, cfg, now, excl, load or {},
-                                 unhealthy, optimistic_fallback=True, reserves=reserves)
+                                 unhealthy, optimistic_fallback=True, reserves=reserves,
+                                 extra_usage_allowed=extra_allowed)
         try:
             picked = _pick(exclude, reserved)
         except AllAccountsBusy as _first_exc:
@@ -572,6 +574,7 @@ def list_accounts() -> list[dict]:
                 "nickname": acct.get("nickname"),
                 "provider": provider_of(name),
                 "weeklyReservePct": ledger.get_weekly_reserve(led, name),
+                "allowExtraUsage": ledger.get_allow_extra_usage(led, name),
                 "accountDefaults": ledger.get_account_defaults(led, name),
                 "enabled": ledger.is_account_enabled(led, name),
             })
@@ -586,6 +589,12 @@ def set_nickname(name: str, nickname: str | None) -> None:
 def set_weekly_reserve(name: str, pct: float | None) -> None:
     with ledger.locked_ledger() as led:
         ledger.set_weekly_reserve(led, name, pct)
+
+
+def set_allow_extra_usage(name: str, allow: bool) -> None:
+    """Opt an account in/out of spending paid extra-usage credits past its ceiling."""
+    with ledger.locked_ledger() as led:
+        ledger.set_allow_extra_usage(led, name, allow)
 
 
 def set_account_enabled(name: str, enabled: bool) -> None:

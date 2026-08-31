@@ -237,6 +237,34 @@ def weekly_reserves(led: dict) -> dict[str, float]:
     return out
 
 
+def set_allow_extra_usage(led: dict, name: str, allow: bool) -> None:
+    """Opt an account in/out of spending paid extra-usage credits past its ceiling.
+
+    Off is stored as *absent* rather than ``false`` so the ledger stays clean and
+    the default is unambiguous — see ``get_allow_extra_usage``.
+    """
+    acct = _acct(led, name)
+    if allow:
+        acct["allowExtraUsage"] = True
+    else:
+        acct.pop("allowExtraUsage", None)
+
+
+def get_allow_extra_usage(led: dict, name: str) -> bool:
+    """False unless the account is explicitly opted in.
+
+    This is the inverse default of ``is_account_enabled``, and deliberately so:
+    spending money must be opt-in, so a missing key (every pre-upgrade ledger)
+    means off. Anything that is not literally ``True`` is treated as off.
+    """
+    return led["accounts"].get(name, {}).get("allowExtraUsage") is True
+
+
+def extra_usage_allowed(led: dict) -> set[str]:
+    """Names of every account opted into extra-usage credits (selector input)."""
+    return {name for name in led["accounts"] if get_allow_extra_usage(led, name)}
+
+
 _BLOCKED_ENV_KEYS = frozenset({"CLAUDE_CONFIG_DIR", "CREDENTIALS_DIR", "HOME"})
 
 

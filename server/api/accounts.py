@@ -24,7 +24,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from ccswitch.accounts import (list_accounts, provider_of, remove_account,
-                               set_account_enabled, set_nickname, set_weekly_reserve)
+                               set_account_enabled, set_allow_extra_usage, set_nickname,
+                               set_weekly_reserve)
 from ccswitch import paths
 from ccswitch.account_names import assert_valid_account_name, InvalidAccountName
 from ccswitch.config import load_config
@@ -160,6 +161,10 @@ def _usage_to_dict(usage) -> dict[str, Any] | None:
             "pct": usage.weekly_pct,
             "resetsAt": iso_utc(usage.weekly_resets_at),
         },
+        # Whether the PROVIDER has extra usage enabled — not the local opt-in
+        # (that is the account-level ``allowExtraUsage``). The UI warns when the
+        # opt-in is on but this is false, since credits then cannot be spent.
+        "extraUsageEnabled": usage.extra_usage_enabled,
     }
 
 
@@ -174,6 +179,7 @@ def _account_response(
     weekly_reserve_pct: float | None = None,
     account_defaults: dict | None = None,  # NEW
     enabled: bool = True,
+    allow_extra_usage: bool = False,
 ) -> dict[str, Any]:
     """Build the account wire format — never includes tokens."""
     return {
@@ -186,9 +192,31 @@ def _account_response(
         "rank": rank,
         "rankReason": rank_reason,
         "weeklyReservePct": weekly_reserve_pct,
+        "allowExtraUsage": allow_extra_usage,
         "accountDefaults": account_defaults or {"defaultModel": None, "defaultPermissionMode": None, "modelApprovalAction": None, "envOverrides": None},
         "enabled": enabled,
     }
+
+
+def _account_response_from_info(acct: dict, usage=None, **kw) -> dict[str, Any]:
+    """Build the wire response from one ``list_accounts()`` entry.
+
+    Single source of truth for the ledger-backed fields (reserve, defaults,
+    enabled, extra-usage opt-in): every route that echoes an account back goes
+    through here, so adding a field is one edit rather than four call sites that
+    silently drift apart.
+    """
+    return _account_response(
+        acct["name"],
+        acct.get("status", "unknown"),
+        usage,
+        acct.get("nickname"),
+        weekly_reserve_pct=acct.get("weeklyReservePct"),
+        account_defaults=acct.get("accountDefaults"),
+        enabled=acct.get("enabled", True),
+        allow_extra_usage=bool(acct.get("allowExtraUsage")),
+        **kw,
+    )
 
 
 def _get_orchestrator(request: Request) -> "InProcessOrchestratorAdapter":
@@ -245,6 +273,8 @@ async def get_accounts(
     # Build per-account weekly reserve map for display ranking.
     reserves = {a["name"]: a["weeklyReservePct"] for a in accounts_info
                 if a.get("weeklyReservePct") is not None}
+    extra_allowed = frozenset(a["name"] for a in accounts_info
+                              if a.get("allowExtraUsage"))
 
     # Rank for display: ignore transient soft reservations so ranks stay stable
     # (a just-picked account would otherwise vanish for reservation_ttl_sec).
@@ -257,6 +287,7 @@ async def get_accounts(
         usages, reserved=frozenset(), cfg=load_config(),
         now=datetime.now(timezone.utc), load=load,
         reserves=reserves, exclude=disabled,
+        extra_usage_allowed=extra_allowed,
     )
     rank_by_name = {r.name: (r.rank, r.reason) for r in ranked}
 
@@ -264,17 +295,12 @@ async def get_accounts(
     for acct in accounts_info:
         name = acct["name"]
         rank, reason = rank_by_name.get(name, (None, None))
-        result.append(_account_response(
-            name,
-            acct.get("status", "unknown"),
+        result.append(_account_response_from_info(
+            acct,
             usages[name],
-            acct.get("nickname"),
             live_sessions=counts.get(name) or {"active": 0, "idle": 0},
             rank=rank,
             rank_reason=reason,
-            weekly_reserve_pct=acct.get("weeklyReservePct"),
-            account_defaults=acct.get("accountDefaults"),
-            enabled=acct.get("enabled", True),
         ))
     return result
 
@@ -297,30 +323,14 @@ async def refresh_account(
     # Bounded + isolated: a wedged daemon degrades this to None rather than 500.
     usage = await _safe_usage(orch, name, USAGE_FETCH_TIMEOUT)
 
-    # Determine status and nickname from the ledger
-    accounts_info = list_accounts()
-    status_str = "unknown"
-    nickname = None
-    weekly_reserve = None
-    account_defaults = None
-    enabled = True
-    for acct in accounts_info:
-        if acct["name"] == name:
-            status_str = acct.get("status", "unknown")
-            nickname = acct.get("nickname")
-            weekly_reserve = acct.get("weeklyReservePct")
-            account_defaults = acct.get("accountDefaults")
-            enabled = acct.get("enabled", True)
-            break
+    # Ledger-backed fields (status, nickname, reserve, defaults, toggles).
+    acct = next((a for a in list_accounts() if a["name"] == name), None)
 
     counts = await orch.live_session_counts()
-    return _account_response(
-        name, status_str, usage, nickname,
-        live_sessions=counts.get(name) or {"active": 0, "idle": 0},
-        weekly_reserve_pct=weekly_reserve,
-        account_defaults=account_defaults,
-        enabled=enabled,
-    )
+    live = counts.get(name) or {"active": 0, "idle": 0}
+    if acct is None:
+        return _account_response(name, "unknown", usage, live_sessions=live)
+    return _account_response_from_info(acct, usage, live_sessions=live)
 
 
 @router.delete("/{name}", status_code=status.HTTP_204_NO_CONTENT)
@@ -345,6 +355,7 @@ async def delete_account(
 class AccountPatchBody(BaseModel):
     nickname: str | None = None
     weeklyReservePct: float | None = Field(default=None, ge=1.0, le=100.0)
+    allowExtraUsage: bool | None = None
     defaultModel: str | None = None
     defaultPermissionMode: str | None = None
     envOverrides: dict | None = None
@@ -357,7 +368,8 @@ async def update_account(
     body: AccountPatchBody,
     _identity: str = Depends(current_identity),
 ) -> dict:
-    """Update per-account settings: nickname and/or weekly usage reserve.
+    """Update per-account settings: nickname, weekly usage reserve, extra-usage
+    opt-in, and/or launch defaults.
 
     Fields absent from the body are left untouched; an explicit ``null`` clears.
     A blank or whitespace-only nickname clears the existing nickname.
@@ -381,6 +393,9 @@ async def update_account(
                     "message": f"modelApprovalAction must be one of: {', '.join(sorted(VALID_ACTIONS))}",
                 },
             )
+    if "allowExtraUsage" in body.model_fields_set:
+        # Explicit null and false both mean "off" — there is no third state.
+        set_allow_extra_usage(name, bool(body.allowExtraUsage))
     if any(f in body.model_fields_set for f in ("defaultModel", "defaultPermissionMode", "envOverrides", "modelApprovalAction")):
         _validate_env_overrides(body.envOverrides)
         from ccswitch.accounts import set_account_defaults
@@ -398,12 +413,7 @@ async def update_account(
 
     for acct in list_accounts():
         if acct["name"] == name:
-            return _account_response(
-                name, acct.get("status", "unknown"), None, acct.get("nickname"),
-                weekly_reserve_pct=acct.get("weeklyReservePct"),
-                account_defaults=acct.get("accountDefaults"),
-                enabled=acct.get("enabled", True),
-            )
+            return _account_response_from_info(acct)
     return _account_response(name, "unknown", None, None)
 
 
@@ -438,12 +448,7 @@ async def set_enabled(
 
     for acct in list_accounts():
         if acct["name"] == name:
-            return _account_response(
-                name, acct.get("status", "unknown"), None, acct.get("nickname"),
-                weekly_reserve_pct=acct.get("weeklyReservePct"),
-                account_defaults=acct.get("accountDefaults"),
-                enabled=acct.get("enabled", True),
-            )
+            return _account_response_from_info(acct)
     return _account_response(name, "unknown", None, None, enabled=body.enabled)
 
 

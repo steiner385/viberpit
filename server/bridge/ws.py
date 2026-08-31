@@ -557,11 +557,13 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
 
             # Re-emit the live queue so a reattach repopulates the queued-prompt
             # chips (with their images). The driver holds the queue across attaches;
-            # without this, a navigate-away/back showed an empty strip. Best-effort.
+            # without this, a navigate-away/back showed an empty strip. Emitted even
+            # when EMPTY: a client that missed the live QueueUpdate([]) as the queue
+            # drained (WS gap mid-dequeue) otherwise renders its stale chip forever —
+            # this re-emit is the only thing that ever corrects it. Best-effort.
             try:
-                if driver.queued():
-                    out_q.put_nowait({**ev.QueueUpdate(driver.queue_wire()).to_wire(),
-                                      "sessionId": session_id})
+                out_q.put_nowait({**ev.QueueUpdate(driver.queue_wire()).to_wire(),
+                                  "sessionId": session_id})
             except Exception:
                 log.warning("ws.attach: queue re-emit failed for %s", session_id, exc_info=True)
 

@@ -1,7 +1,7 @@
 """Pure account selection: exclude accounts at/above ceiling, rank by perishability."""
 from collections.abc import Mapping, Set as AbstractSet
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 from .config import Config
 from .oauth import Usage
@@ -10,6 +10,9 @@ from .oauth import Usage
 # produce a runaway score; one minute keeps near-reset accounts strongly preferred
 # without the ranking becoming numerically unstable.
 _TIME_FLOOR_HOURS = 1.0 / 60.0
+
+# Sorts an at-ceiling account with no known reset behind every account that has one.
+_NO_RESET = datetime.max.replace(tzinfo=timezone.utc)
 
 
 @dataclass
@@ -87,6 +90,7 @@ def rank_accounts(usages: dict[str, Usage | None], reserved: AbstractSet[str],
                   unhealthy: AbstractSet[str] = frozenset(),
                   optimistic_fallback: bool = False,
                   reserves: Mapping[str, float] | None = None,
+                  extra_usage_allowed: AbstractSet[str] = frozenset(),
                   ) -> tuple[list[RankedAccount], datetime | None]:
     """Rank all eligible accounts in selection-priority order.
 
@@ -104,12 +108,22 @@ def rank_accounts(usages: dict[str, Usage | None], reserved: AbstractSet[str],
     ceiling) is demoted to a final last-resort tier — ranked after every normal
     and optimistic candidate, least weekly-used first — so the reserve alone can
     never make selection fail (soft fallback).
+
+    ``extra_usage_allowed`` names the accounts the user has opted into spending
+    paid "extra usage" credits on. An at-ceiling account in that set whose
+    ``Usage.extra_usage_enabled`` is also true upstream is demoted to the FINAL
+    tier rather than excluded, so credits are spent only once every free
+    candidate — including over-reserve ones — is exhausted. Both halves are
+    required: the opt-in without the provider flag would hand out a session that
+    dies immediately on rate limits, and the provider flag without the opt-in
+    would spend money the user never authorized.
     """
     load = load or {}
     ceiling = cfg.hard_ceiling * 100.0
     candidates: list[tuple[float, float, float, float, str]] = []
     optimistic: list[tuple[float, str]] = []   # (load, name) — last-resort tier
-    reserve_blocked: list[tuple[float, str]] = []  # (weekly_pct, name) — final tier
+    reserve_blocked: list[tuple[float, str]] = []  # (weekly_pct, name) — soft-fallback tier
+    extra_paid: list[tuple[datetime, str]] = []    # (binding reset, name) — final paid tier
     busy_resets: list[datetime] = []
     for name, u in usages.items():
         if name in exclude or name in reserved:
@@ -127,6 +141,12 @@ def rank_accounts(usages: dict[str, Usage | None], reserved: AbstractSet[str],
                 resets.append(u.session_resets_at)
             if u.weekly_pct >= ceiling and u.weekly_resets_at is not None:
                 resets.append(u.weekly_resets_at)
+            # Opted into extra usage AND the provider actually has it enabled: the
+            # account is spendable, so demote it to the paid tier instead of dropping
+            # it — and do NOT count it as busy, since it is a usable candidate.
+            if name in extra_usage_allowed and u.extra_usage_enabled:
+                extra_paid.append((min(resets) if resets else _NO_RESET, name))
+                continue
             if resets:
                 busy_resets.append(min(resets))
             continue
@@ -156,6 +176,15 @@ def rank_accounts(usages: dict[str, Usage | None], reserved: AbstractSet[str],
                       reason="over weekly reserve — fallback")
         for i, (_, name) in enumerate(reserve_blocked)
     ]
+    # Soonest free-quota reset first: a session stays pinned to the account it was
+    # launched on, so the account that returns to free quota soonest spends the
+    # fewest paid credits before it does. (Ties broken by name for determinism.)
+    extra_paid.sort()
+    ranked += [
+        RankedAccount(name=name, rank=len(ranked) + i + 1,
+                      reason="at ceiling — burning extra usage credits")
+        for i, (_, name) in enumerate(extra_paid)
+    ]
     return ranked, earliest
 
 
@@ -164,9 +193,11 @@ def select_picked(usages: dict[str, Usage | None], reserved: AbstractSet[str],
                   load: dict[str, float] | None = None,
                   unhealthy: AbstractSet[str] = frozenset(),
                   optimistic_fallback: bool = False,
-                  reserves: Mapping[str, float] | None = None) -> Picked:
+                  reserves: Mapping[str, float] | None = None,
+                  extra_usage_allowed: AbstractSet[str] = frozenset()) -> Picked:
     ranked, earliest = rank_accounts(usages, reserved, cfg, now, exclude, load,
-                                     unhealthy, optimistic_fallback, reserves=reserves)
+                                     unhealthy, optimistic_fallback, reserves=reserves,
+                                     extra_usage_allowed=extra_usage_allowed)
     if not ranked:
         kind = "at_ceiling" if earliest is not None else "no_usable_accounts"
         raise AllAccountsBusy(earliest, kind)
@@ -177,6 +208,8 @@ def select_picked(usages: dict[str, Usage | None], reserved: AbstractSet[str],
 def select_best(usages: dict[str, Usage | None], reserved: AbstractSet[str],
                 cfg: Config, now: datetime, exclude: AbstractSet[str] = frozenset(),
                 load: dict[str, float] | None = None,
-                reserves: Mapping[str, float] | None = None) -> str:
+                reserves: Mapping[str, float] | None = None,
+                extra_usage_allowed: AbstractSet[str] = frozenset()) -> str:
     return select_picked(usages, reserved, cfg, now, exclude, load,
-                         reserves=reserves).name
+                         reserves=reserves,
+                         extra_usage_allowed=extra_usage_allowed).name

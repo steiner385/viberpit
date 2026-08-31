@@ -210,7 +210,7 @@ describe('AccountsStrip — nickname display & edit', () => {
     await user.type(input, 'Personal')
     await user.click(screen.getByRole('button', { name: /save account settings/i }))
 
-    expect(nicknameMutate).toHaveBeenCalledWith({ name: 'work', nickname: 'Personal', weeklyReservePct: null })
+    expect(nicknameMutate).toHaveBeenCalledWith({ name: 'work', nickname: 'Personal', weeklyReservePct: null, allowExtraUsage: false })
   })
 
   it('pressing Enter in the input saves the nickname', async () => {
@@ -228,7 +228,7 @@ describe('AccountsStrip — nickname display & edit', () => {
     await user.clear(input)
     await user.type(input, 'Freelance{Enter}')
 
-    expect(nicknameMutate).toHaveBeenCalledWith({ name: 'work', nickname: 'Freelance', weeklyReservePct: null })
+    expect(nicknameMutate).toHaveBeenCalledWith({ name: 'work', nickname: 'Freelance', weeklyReservePct: null, allowExtraUsage: false })
   })
 
   it('pressing Escape cancels edit without calling mutation', async () => {
@@ -267,7 +267,7 @@ describe('AccountsStrip — nickname display & edit', () => {
     await user.clear(input)
     await user.click(screen.getByRole('button', { name: /save account settings/i }))
 
-    expect(nicknameMutate).toHaveBeenCalledWith({ name: 'work', nickname: null, weeklyReservePct: null })
+    expect(nicknameMutate).toHaveBeenCalledWith({ name: 'work', nickname: null, weeklyReservePct: null, allowExtraUsage: false })
   })
 })
 
