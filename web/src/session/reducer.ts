@@ -691,6 +691,9 @@ export function transcriptReducer(
     }
 
     // ── sessionMeta ───────────────────────────────────────────────────────────
+    // The SDK's LAUNCH model (system/init). It is the account default whenever the
+    // session was created without an explicit pick, and it is never re-emitted
+    // after a /model switch — so it seeds `model` but must not own it (see turnModel).
     case 'sessionMeta': {
       return { ...state, model: ev.model }
     }
@@ -698,7 +701,8 @@ export function transcriptReducer(
     // ── turnModel ─────────────────────────────────────────────────────────────
     // The actual producing model for a turn (from AssistantMessage.model). A pid
     // routes it to the spawning Task's sub-thread; otherwise it stamps the
-    // main-thread turn. Display ("only when changed") is decided at render time.
+    // main-thread turn AND refreshes `model`, the live "model in use" readout —
+    // the truth after a switch. Display ("only when changed") is decided at render time.
     case 'turnModel': {
       const pid = ev.parentToolUseId
       if (pid) {
@@ -708,8 +712,12 @@ export function transcriptReducer(
       }
       const idx = findTurnIdx(state.turns, ev.turnId)
       if (idx === -1) return state
-      if (state.turns[idx].model === ev.model) return state
-      return { ...state, turns: replaceTurn(state.turns, idx, (t) => ({ ...t, model: ev.model })) }
+      if (state.turns[idx].model === ev.model && state.model === ev.model) return state
+      return {
+        ...state,
+        model: ev.model,
+        turns: replaceTurn(state.turns, idx, (t) => ({ ...t, model: ev.model })),
+      }
     }
 
     // ── title ─────────────────────────────────────────────────────────────────

@@ -32,6 +32,31 @@ describe('SessionMeta', () => {
     expect(screen.getByLabelText('Select model')).toHaveValue('claude-sonnet-4-5')
   })
 
+  it('binds the picker to the chosen alias and shows the live model as a separate readout', () => {
+    render(
+      <SessionMeta
+        {...baseProps}
+        model="opus"
+        liveModel="claude-fable-5"
+        models={[{ id: 'default', label: 'Default' }, { id: 'opus', label: 'Opus' }]}
+      />,
+    )
+    // The picker never snaps to the SDK-reported id — that is what pinned it.
+    expect(screen.getByLabelText('Select model')).toHaveValue('opus')
+    expect(screen.getByLabelText('Model in use')).toHaveTextContent('Fable 5')
+  })
+
+  it('selects Default for a null model even before the catalog has loaded', () => {
+    render(<SessionMeta {...baseProps} model={null} models={[]} />)
+    expect(screen.getByLabelText('Select model')).toHaveValue('default')
+    expect(screen.queryByLabelText('Model in use')).not.toBeInTheDocument()
+  })
+
+  it('flags a switch that waits for the current turn to finish', () => {
+    render(<SessionMeta {...baseProps} model="claude-sonnet-4-5" modelPending />)
+    expect(screen.getByLabelText('Model switch pending')).toHaveTextContent(/after this turn/i)
+  })
+
   it('labels the account option with the nickname but keeps the slug as its value', () => {
     render(
       <SessionMeta
