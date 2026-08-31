@@ -1,11 +1,7 @@
 /**
- * Mobile overflow menu — the `…` button that surfaces Rename, Archive, Delete
- * (and Autopilot when applicable) on viewports below lg (1024px).
- *
- * In jsdom `lg:` viewport breakpoints never fire, so `lg:hidden` elements are
- * always rendered and `hidden lg:contents` elements are always hidden. Tests
- * therefore exercise the mobile path by default — the overflow button is always
- * present and the desktop secondary group is always hidden in jsdom.
+ * Unified `…` menu — the single overflow that surfaces Quick Replies plus
+ * Rename, Archive, Delete (and Autopilot when applicable) on EVERY device.
+ * There is no desktop/mobile split: one trigger, one menu, all breakpoints.
  */
 import { render, screen, fireEvent, within } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
@@ -172,27 +168,27 @@ describe('SessionCard mobile overflow menu', () => {
     })
   })
 
-  describe('Quick Replies always visible', () => {
-    it('Quick Replies button is present regardless of overflow state', () => {
+  describe('Quick Replies inside the menu', () => {
+    it('surfaces the canned quick replies at the top of the menu for a resumable session', () => {
       renderCard({ status: 'done' })
-      // Always-visible button outside the secondary group.
-      expect(screen.getByRole('button', { name: /quick replies/i })).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: /more actions for session/i }))
+      expect(screen.getByRole('menuitem', { name: 'continue' })).toBeInTheDocument()
     })
 
-    it('Quick Replies is NOT inside the desktop secondary-actions group', () => {
+    it('there is no separate quick-replies trigger button', () => {
       renderCard({ status: 'done' })
-      const secondary = screen.getByTestId('card-secondary-actions')
-      const quickReplies = screen.getByRole('button', { name: /quick replies/i })
-      expect(secondary).not.toContainElement(quickReplies)
+      expect(screen.queryByRole('button', { name: /quick replies/i })).not.toBeInTheDocument()
     })
   })
 
-  describe('overflow button visibility class', () => {
-    it('overflow wrapper has lg:hidden so it disappears at the desktop breakpoint', () => {
+  describe('one menu for all breakpoints', () => {
+    it('the overflow trigger is not gated behind a viewport breakpoint', () => {
       renderCard()
       const trigger = screen.getByRole('button', { name: /more actions for session/i })
-      // The overflow button lives inside a div.relative.lg:hidden wrapper.
-      expect(trigger.parentElement).toHaveClass('lg:hidden')
+      // The unified menu replaces the old lg:hidden mobile-only overflow and the
+      // hidden lg:contents desktop icon row — nothing about it is viewport-gated.
+      expect(trigger.parentElement).not.toHaveClass('lg:hidden')
+      expect(screen.queryByTestId('card-secondary-actions')).not.toBeInTheDocument()
     })
   })
 })

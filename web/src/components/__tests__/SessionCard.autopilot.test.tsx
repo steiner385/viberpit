@@ -25,18 +25,21 @@ function renderCard(session: Session, onToggleAutopilot: (id: string, paused: bo
   )
 }
 
+function openMenu() {
+  fireEvent.click(screen.getByRole('button', { name: /more actions for session/i }))
+}
+
 describe('SessionCard autopilot toggle', () => {
-  it('shows a governed (on) toggle for a non-paused session, pressed', () => {
+  it('offers "Pause autopilot" in the ⋯ menu for a non-paused session', () => {
     renderCard({ ...base, autopilotPaused: false })
-    const btn = screen.getByLabelText(/autopilot on/i)
-    expect(btn).toBeInTheDocument()
-    expect(btn).toHaveAttribute('aria-pressed', 'true')
+    openMenu()
+    expect(screen.getByTestId('card-overflow-autopilot')).toHaveTextContent('Pause autopilot')
   })
 
-  it('reflects the paused state in the toggle and shows a Manual badge', () => {
+  it('reflects the paused state in the menu item and shows a Manual marker', () => {
     renderCard({ ...base, autopilotPaused: true })
-    const btn = screen.getByLabelText(/autopilot paused/i)
-    expect(btn).toHaveAttribute('aria-pressed', 'false')
+    openMenu()
+    expect(screen.getByTestId('card-overflow-autopilot')).toHaveTextContent('Resume autopilot')
     expect(screen.getByTestId('card-autopilot-badge')).toHaveTextContent('Manual')
   })
 
@@ -56,7 +59,8 @@ describe('SessionCard autopilot toggle', () => {
   it('requests the opposite state on click', () => {
     const onToggle = vi.fn()
     renderCard({ ...base, autopilotPaused: false }, onToggle)
-    fireEvent.click(screen.getByTestId('card-autopilot'))
+    openMenu()
+    fireEvent.click(screen.getByTestId('card-overflow-autopilot'))
     expect(onToggle).toHaveBeenCalledWith('1', true)
   })
 
@@ -67,7 +71,8 @@ describe('SessionCard autopilot toggle', () => {
           onOpen={noop} onRename={noop} onClose={noop} onDelete={noop} />
       </MemoryRouter>,
     )
-    expect(screen.queryByTestId('card-autopilot')).not.toBeInTheDocument()
+    openMenu()
+    expect(screen.queryByTestId('card-overflow-autopilot')).not.toBeInTheDocument()
   })
 })
 
@@ -77,15 +82,16 @@ describe('SessionCard autopilot active indicator', () => {
     expect(screen.getByTestId('card-autopilot-active')).toBeInTheDocument()
   })
 
-  it('adds an emerald edge accent to the card when guided by autopilot', () => {
-    const { container } = renderCard({ ...base, assistedBy: 'autopilot' })
-    expect(container.querySelector('article')?.className).toMatch(/border-l-emerald/)
+  it('does not repurpose the status rail for autopilot (the rail belongs to the status tier)', () => {
+    // The old card used an emerald border-l for "guided by autopilot"; the rail
+    // now encodes status tier, so the ONLY autopilot signal is the Bot marker.
+    renderCard({ ...base, assistedBy: 'autopilot' }) // status 'done' → calm tier
+    expect(screen.getByTestId('card-status-rail').className).not.toMatch(/emerald/)
   })
 
-  it('vetoes the marker and edge accent when autopilot is paused', () => {
-    const { container } = renderCard({ ...base, assistedBy: 'autopilot', autopilotPaused: true })
+  it('vetoes the marker when autopilot is paused', () => {
+    renderCard({ ...base, assistedBy: 'autopilot', autopilotPaused: true })
     expect(screen.queryByTestId('card-autopilot-active')).not.toBeInTheDocument()
-    expect(container.querySelector('article')?.className).not.toMatch(/border-l-emerald/)
   })
 
   it('shows no marker when the session was not assisted by autopilot', () => {

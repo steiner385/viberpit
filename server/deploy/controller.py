@@ -1,6 +1,8 @@
 from __future__ import annotations
 import asyncio
+import json
 import logging
+import os
 import subprocess
 from typing import Any, Callable
 
@@ -66,7 +68,8 @@ class DeployController:
                  daemon_client_factory: Callable[[], Any] | None = None,
                  daemon_enabled: bool = False,
                  steps_mod=_steps, git_mod=_git, drain_mod=_drain,
-                 changed_files_fn: Callable[[str, str, str], list[str] | None] = _default_changed_files):
+                 changed_files_fn: Callable[[str, str, str], list[str] | None] = _default_changed_files,
+                 status_path: str | None = None):
         self.repo = repo
         self.health_url = health_url
         self.venv_python = venv_python
@@ -77,10 +80,50 @@ class DeployController:
         self._drain = drain_mod
         self._changed_files = changed_files_fn
         self._lock_acquired = False
-        self.status = DeployStatus(target_sha="")
+        self._status_path = status_path
+        # A deploy that changes deploy code schedules a restart of THIS process, so a
+        # fresh controller may be born seconds after a deploy finished. Starting from an
+        # empty DeployStatus made /status report that completed upgrade as "did not
+        # complete" (#865) — load the persisted terminal state instead.
+        self.status = self._load_status() or DeployStatus(target_sha="")
+
+    def _load_status(self) -> DeployStatus | None:
+        if not self._status_path:
+            return None
+        try:
+            with open(self._status_path, encoding="utf-8") as f:
+                st = DeployStatus.from_dict(json.load(f))
+        except (OSError, ValueError):
+            return None
+        if st.running:
+            # The previous process died mid-deploy. This process is not running any
+            # deploy, so serving running=True would freeze the UI spinner and 409-block
+            # /start forever. Report the interruption as a terminal failure instead.
+            st.running = False
+            for phase, state in st.phases.items():
+                if state == PhaseState.RUNNING.value:
+                    st.phases[phase] = PhaseState.FAILED.value
+            if st.error is None:
+                st.error = "deploy interrupted: the controller process was restarted mid-deploy"
+        return st
+
+    def _persist_status(self) -> None:
+        """Best-effort atomic write of the current status — bookkeeping must never fail
+        (or slow) a deploy, so any OSError is swallowed after a debug log."""
+        if not self._status_path:
+            return
+        try:
+            tmp = f"{self._status_path}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self.status.to_dict(), f)
+            os.replace(tmp, self._status_path)
+        except OSError:
+            log.debug("deploy: could not persist status to %s", self._status_path,
+                      exc_info=True)
 
     def _set(self, phase: Phase, state: PhaseState) -> None:
         self.status.phases[phase.value] = state.value
+        self._persist_status()
 
     async def deploy_once(self) -> DeployStatus:
         if self._lock_acquired:
@@ -90,6 +133,7 @@ class DeployController:
         self._deploy_id = new_request_id()
         local = ""
         daemon_changed = False
+        controller_changed = False
         try:
             # --- preflight ---
             # Every synchronous step below runs via asyncio.to_thread so the controller's
@@ -146,7 +190,8 @@ class DeployController:
             changed = await asyncio.to_thread(self._changed_files, self.repo, local, remote)
             daemon_changed = self._steps.classify_change(changed) == "daemon_changed"
             # The controller cannot restart itself inline — it is the process running
-            # this deploy — so note it now and schedule a deferred restart at the end.
+            # this deploy — so note it now; the deferred restart is scheduled in the
+            # finally, once the status is terminal.
             controller_changed = self._steps.deploy_code_changed(changed)
             self._set(Phase.REPORT, PhaseState.DONE)
 
@@ -217,22 +262,6 @@ class DeployController:
             base = self.health_url.rsplit("/healthz", 1)[0] or self.health_url
             await asyncio.to_thread(self._steps.require_endpoints_healthy, base)
             log_event(log, logging.INFO, "deploy.edge.cutover", deploy_id=self._deploy_id)
-
-            # This deploy changed the controller's own code. Hand a restart to
-            # systemd so it lands AFTER this deploy reports, rather than killing it.
-            # Without this the controller keeps executing the code it started with:
-            # on 2026-08-21 that left a stale remote daemon because #719's fix was on
-            # disk but not in the running process.
-            if controller_changed:
-                scheduled = await asyncio.to_thread(
-                    self._steps.schedule_controller_restart)
-                if scheduled:
-                    log_event(log, logging.INFO, "deploy.controller.refresh_scheduled",
-                              deploy_id=self._deploy_id)
-                else:
-                    self.status.warnings.append(
-                        "deploy code changed but the controller restart could not be "
-                        "scheduled — it is still running the previous code")
             self._set(Phase.RESTART, PhaseState.DONE)
 
             # --- resume (eager re-launch; only when the daemon actually restarted) ---
@@ -311,4 +340,23 @@ class DeployController:
             return self.status
         finally:
             self.status.running = False
+            # This deploy changed the controller's own code: hand a restart to systemd.
+            # Without it the controller keeps executing the code it started with (on
+            # 2026-08-21 that left a stale remote daemon: #719's fix was on disk but not
+            # in the running process). Scheduled HERE — after the status is terminal —
+            # because the +10s timer used to be armed in the RESTART phase, where
+            # resume/publish routinely outlast it: the process was replaced mid-deploy
+            # and a completed upgrade was reported as "did not complete" (#865). A
+            # failed deploy schedules nothing: the rollback already restored the code
+            # this process is running.
+            if controller_changed and self.status.error is None:
+                scheduled = await asyncio.to_thread(self._steps.schedule_controller_restart)
+                if scheduled:
+                    log_event(log, logging.INFO, "deploy.controller.refresh_scheduled",
+                              deploy_id=self._deploy_id)
+                else:
+                    self.status.warnings.append(
+                        "deploy code changed but the controller restart could not be "
+                        "scheduled — it is still running the previous code")
+            self._persist_status()
             self._lock_acquired = False
