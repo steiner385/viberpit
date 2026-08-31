@@ -85,6 +85,19 @@ describe('deployController', () => {
     expect(screen.getByTestId('visible').textContent).toBe('true')
   })
 
+  it('a status wiped by the controller self-restart dismisses instead of held-failure', () => {
+    // Incident shape (#865): poll N reports running with resume in flight; poll N+1 hits
+    // the freshly restarted controller process, which reports an EMPTY status. The
+    // running true→false edge must not classify that wipe as a failed upgrade.
+    setStart()
+    setStatus({ running: true, phases: { restart: 'done', resume: 'running' } })
+    const rerender = renderProbe()
+    setStatus({ running: false, phases: {}, error: null })
+    act(() => { rerender.rerender(<DeployControllerProvider><Probe /></DeployControllerProvider>) })
+    expect(screen.getByTestId('intent').textContent).toBe('idle')
+    expect(screen.getByTestId('visible').textContent).toBe('false')
+  })
+
   it('mutation error sends intent to held-failure', () => {
     setStatus({ running: false, phases: {} })
     setStart(vi.fn((_: unknown, opts?: { onError?: () => void }) => opts?.onError?.()))
