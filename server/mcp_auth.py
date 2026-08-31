@@ -9,13 +9,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import pty
+import re
+import select
+import shlex
+import signal
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Protocol
 
-from ccswitch import paths
+from ccswitch import accounts, configdir, paths
+from ccswitch.config import load_config
 from ccswitch.creds import write_json_secure
+from server.library import scan
 from server.library.scan import read_json_safe
 
 log = logging.getLogger(__name__)
@@ -241,3 +249,175 @@ class McpAuthManager:
                 s.terminate()
             except Exception:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# URL extraction helpers
+# ---------------------------------------------------------------------------
+
+# Exclude whitespace, quotes, angle brackets AND control chars (\x00-\x20) so
+# the OSC-8 escape bytes (\x1b ... \x07) that wrap the real URL aren't captured.
+_URL_RE = re.compile(r"https://[^\s\"'<>\x00-\x20]+")
+
+
+def _extract_url(text: str) -> str | None:
+    m = _URL_RE.search(text)
+    return m.group(0) if m else None
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\]8;;[^\x07]*\x07")
+
+
+def _clean(raw: bytes) -> str:
+    return _ANSI_RE.sub("", raw.decode(errors="replace")).replace("\r", "").strip()
+
+
+# ---------------------------------------------------------------------------
+# PTY session + account picker
+# ---------------------------------------------------------------------------
+
+def _claude_argv() -> list[str]:
+    cfg = load_config()
+    return shlex.split(os.environ.get("CCSWITCH_CLAUDE_BIN", cfg.claude_bin))
+
+
+def resolve_login_key(server: str) -> str:
+    """Map a short server name to the FULL key `claude mcp login` expects.
+
+    The authoritative source is the raw key in each account's
+    mcp-needs-auth-cache.json (e.g. `plugin:railway:railway`). Falls back to the
+    short name for user-scope servers not present in any cache.
+    """
+    root = paths.cfg_root()
+    if root.is_dir():
+        for acct_dir in sorted(root.iterdir()):
+            cache = read_json_safe(acct_dir / "mcp-needs-auth-cache.json")
+            if not isinstance(cache, dict):
+                continue
+            for key in cache:
+                if _bare(key) == server:
+                    return key
+    return server
+
+
+def default_account_picker(server: str) -> tuple[str, Path]:
+    flagged = scan._needs_auth_by_server().get(server) or []
+    candidates = list(flagged) + accounts._anthropic_account_names()
+    for name in candidates:
+        return name, configdir.compose(name)
+    raise McpAuthError("No authenticated account is available to authorize with.")
+
+
+class PtyLoginSession:
+    """Runs `claude mcp login <full-key> --no-browser` under a PTY (required —
+    a pipe stdin makes claude self-terminate as non-interactive)."""
+
+    def __init__(self, server: str, account: str, cfg_dir: Path) -> None:
+        self.account = account
+        self.cfg_dir = cfg_dir
+        self._server = server
+        self._pid: int | None = None
+        self._fd: int | None = None
+        self._buf = b""
+        self._exit_code: int | None = None  # cached on first reap (never waitpid twice)
+
+    def _spawn(self) -> None:
+        key = resolve_login_key(self._server)
+        argv = _claude_argv() + ["mcp", "login", key, "--no-browser"]
+        env = {**os.environ, "CLAUDE_CONFIG_DIR": str(self.cfg_dir)}
+        pid, fd = pty.fork()
+        if pid == 0:  # child
+            try:
+                os.execvpe(argv[0], argv, env)
+            except Exception:
+                os._exit(127)
+        self._pid, self._fd = pid, fd
+
+    async def _read_chunk(self, timeout: float) -> bytes:
+        assert self._fd is not None
+        fd = self._fd
+        loop = asyncio.get_running_loop()
+
+        def _blocking() -> bytes:
+            r, _, _ = select.select([fd], [], [], timeout)
+            if not r:
+                return b""
+            try:
+                return os.read(fd, 4096)
+            except OSError:
+                return b""
+
+        return await loop.run_in_executor(None, _blocking)
+
+    async def read_auth_url(self, timeout: float) -> str:
+        if self._pid is None:
+            self._spawn()
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
+            chunk = await self._read_chunk(1.0)
+            if chunk:
+                self._buf += chunk
+                url = _extract_url(self._buf.decode(errors="replace"))
+                if url:
+                    return url
+            elif self._reap() is not None:
+                # Process exited before emitting any URL — stdio servers do this
+                # ("doesn't support OAuth login"). Surface the message verbatim.
+                msg = _clean(self._buf) or "Authentication is not supported for this server."
+                raise McpAuthError(msg)
+        raise McpAuthError("Timed out waiting for the authorization URL.")
+
+    async def complete(self, redirect_url: str, timeout: float) -> None:
+        assert self._fd is not None
+        os.write(self._fd, (redirect_url.strip() + "\n").encode())
+        deadline = asyncio.get_running_loop().time() + timeout
+        tail = b""
+        while asyncio.get_running_loop().time() < deadline:
+            chunk = await self._read_chunk(1.0)
+            if chunk:
+                tail += chunk
+            elif (code := self._reap()) is not None:
+                low = _clean(tail).lower()
+                if code != 0 or "error" in low or "failed" in low or "invalid" in low:
+                    raise McpAuthError(_clean(tail) or "MCP server rejected the authorization.")
+                return
+        raise McpAuthError("Timed out completing authorization.")
+
+    def _reap(self) -> int | None:
+        """Return the exit code once, caching it. None while still running.
+
+        Reaps at most once — a second os.waitpid would raise ChildProcessError
+        and lose the code (the bug the pre-flight scan flagged)."""
+        if self._exit_code is not None:
+            return self._exit_code
+        if self._pid is None:
+            return None
+        try:
+            pid, status = os.waitpid(self._pid, os.WNOHANG)
+        except ChildProcessError:
+            self._exit_code = 0
+            return self._exit_code
+        if pid == 0:
+            return None  # still running
+        self._exit_code = os.waitstatus_to_exitcode(status)
+        return self._exit_code
+
+    def terminate(self) -> None:
+        if self._pid is not None and self._exit_code is None:
+            try:
+                os.kill(self._pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        if self._fd is not None:
+            try:
+                os.close(self._fd)
+            except OSError:
+                pass
+            self._fd = None
+
+
+def build_default_manager() -> McpAuthManager:
+    return McpAuthManager(
+        session_factory=lambda server, account, cfg_dir: PtyLoginSession(server, account, cfg_dir),
+        account_picker=default_account_picker,
+    )
