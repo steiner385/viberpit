@@ -126,6 +126,54 @@ describe('McpAuthFlow', () => {
     expect(screen.getByRole('button', { name: /fix auth/i })).toBeTruthy()
   })
 
+  // (f) awaiting_redirect with no authUrl shows the unavailable fallback
+  it('shows unavailable fallback when awaiting_redirect and authUrl is null', () => {
+    vi.mocked(useMcpAuthStatus).mockReturnValue({
+      data: {
+        state: 'awaiting_redirect',
+        server: 'notion',
+        message: null,
+        authUrl: null,
+        accounts: [],
+        startedAt: 123,
+      },
+      isLoading: false,
+    } as ReturnType<typeof useMcpAuthStatus>)
+
+    render(
+      <McpAuthFlow server="notion" accounts={['acct1']} />,
+      { wrapper: makeWrapper() },
+    )
+
+    expect(screen.getByText(/authorization link unavailable/i)).toBeTruthy()
+    // Paste input still renders so the user can still submit if they have the URL
+    expect(screen.getByPlaceholderText(/redirect url/i)).toBeTruthy()
+  })
+
+  // (g) error state with null message shows the fallback "Authentication failed."
+  it('shows fallback text when error state has no message', () => {
+    vi.mocked(useMcpAuthStatus).mockReturnValue({
+      data: {
+        state: 'error',
+        server: 'notion',
+        message: null,
+        authUrl: null,
+        accounts: [],
+        startedAt: 123,
+      },
+      isLoading: false,
+    } as ReturnType<typeof useMcpAuthStatus>)
+
+    render(
+      <McpAuthFlow server="notion" accounts={['acct1']} />,
+      { wrapper: makeWrapper() },
+    )
+
+    expect(screen.getByRole('alert')).toBeTruthy()
+    expect(screen.getByText('Authentication failed.')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /retry/i })).toBeTruthy()
+  })
+
   // (e) clicking Fix auth calls startMcpAuth.mutate
   it('clicking Fix auth calls mutate with the server name', async () => {
     const startMutate = vi.fn()

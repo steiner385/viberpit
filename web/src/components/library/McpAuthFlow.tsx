@@ -32,6 +32,7 @@ export function McpAuthFlow({ server, accounts }: McpAuthFlowProps) {
   }
 
   function handleCancel() {
+    setStarted(false)
     cancelMcpAuth.mutate(server)
   }
 
@@ -116,7 +117,7 @@ export function McpAuthFlow({ server, accounts }: McpAuthFlowProps) {
         <p className="text-xs text-amber-600 dark:text-amber-400">
           Open the link below and approve access.
         </p>
-        {status?.authUrl && (
+        {status?.authUrl ? (
           <div className="flex items-center gap-2 min-w-0">
             <a
               href={status.authUrl}
@@ -130,6 +131,7 @@ export function McpAuthFlow({ server, accounts }: McpAuthFlowProps) {
             </a>
             <button
               type="button"
+              aria-label="Copy authorization URL"
               className={cn(
                 'rounded px-2 py-1 text-xs flex-shrink-0',
                 'border border-gray-300 dark:border-gray-600',
@@ -144,6 +146,8 @@ export function McpAuthFlow({ server, accounts }: McpAuthFlowProps) {
               Copy
             </button>
           </div>
+        ) : (
+          <p className="text-xs text-red-500">Authorization link unavailable — cancel and retry.</p>
         )}
         <p className="text-xs text-gray-500 dark:text-gray-400">
           Open the link and approve. Your browser will redirect to a localhost address that may fail
@@ -172,7 +176,7 @@ export function McpAuthFlow({ server, accounts }: McpAuthFlowProps) {
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
               'disabled:opacity-40',
             )}
-            disabled={!redirectUrl.trim()}
+            disabled={!redirectUrl.trim() || submitMcpRedirect.isPending}
             onClick={handleSubmit}
           >
             Submit
@@ -233,11 +237,9 @@ export function McpAuthFlow({ server, accounts }: McpAuthFlowProps) {
   if (state === 'error') {
     return (
       <div className="mt-1 px-3 pb-2 flex flex-col gap-1">
-        {status?.message && (
-          <p className="text-xs text-red-600 dark:text-red-400" role="alert">
-            {status.message}
-          </p>
-        )}
+        <p className="text-xs text-red-600 dark:text-red-400" role="alert">
+          {status?.message ?? 'Authentication failed.'}
+        </p>
         <button
           type="button"
           onClick={handleStart}
