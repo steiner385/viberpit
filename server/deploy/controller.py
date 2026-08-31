@@ -14,12 +14,20 @@ log = logging.getLogger("server.deploy.controller")
 
 
 def default_daemon_factory(daemon_enabled: bool) -> "Callable[[], Any] | None":
-    """Return a factory that constructs a DaemonClient, or None if daemon is disabled."""
+    """Return a factory that constructs a DaemonClient, or None if daemon is disabled.
+
+    Resolves the daemon the same way the edge does (``sessiond_endpoint``: the
+    ``CCSWITCH_SESSIOND_ENDPOINT`` URL, else the legacy socket path). It used to take the
+    legacy UDS path unconditionally, so on a host whose daemon listens only on https
+    (dobby, 2026-08-30: no ``sessiond.sock`` exists) every pre-deploy RPC failed —
+    "session snapshot failed (continuing)" on each upgrade, and on a daemon-changing
+    deploy the drain could not run either: the daemon was restarted "anyway", mid-turn.
+    """
     if not daemon_enabled:
         return None
     from server.ipc.client import DaemonClient
-    from server.ipc.paths import sessiond_socket
-    return lambda: DaemonClient(sessiond_socket())
+    from server.ipc.paths import sessiond_endpoint
+    return lambda: DaemonClient(sessiond_endpoint())
 
 
 async def _aclose_quietly(client: Any) -> None:

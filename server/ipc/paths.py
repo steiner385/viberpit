@@ -73,10 +73,3 @@ def sessiond_endpoint() -> Endpoint:
     if sock:
         return parse_endpoint(sock if "://" in sock else f"unix://{sock}")
     return Endpoint("unix", path=DEFAULT_SOCKET_PATH)
-
-
-def sessiond_socket() -> str:
-    """The daemon UDS path: CCSWITCH_SESSIOND_SOCKET if set, else the well-known default.
-
-    Unchanged legacy accessor (same-host callers, e.g. the deploy controller)."""
-    return os.environ.get("CCSWITCH_SESSIOND_SOCKET", DEFAULT_SOCKET_PATH)
