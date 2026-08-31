@@ -59,6 +59,7 @@ from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry, resolve_permission_mode
 from server.sessions.sdk_factory import real_sdk_factory, real_suggestion_factory, real_summary_factory
 from server.sessions.replay import replay_events
+from server.sessions import status as _status_mod
 from server.sessions.suggestions import SuggestionService, last_turn_context
 from server.sessions.summaries import SummaryService, should_regenerate
 from server.sessions.recovery import (
@@ -85,6 +86,15 @@ log = logging.getLogger(__name__)
 # statuses (idle / done / limited / ended / archived) are restart-safe: resume +
 # transcript replay recover them.
 _ACTIVE_STATUSES = frozenset({"in_progress", "working", "waiting_input", "condensing"})
+
+# Statuses where the SDK owned an in-flight turn when the deploy snapshot was taken.
+# The restart kills that turn (ensure_driver only resumes the transcript), so
+# restore_deploy re-issues the snapshotted prompt to continue it (issue #864).
+# Deliberately EXCLUDES the awaiting-user statuses (waiting_input / waiting_question /
+# ready_review): replaying there would redo work the user was asked to approve —
+# rehydrate()'s interrupted_by_restart flag (#434) covers those instead. "working"
+# is the legacy pre-crash spelling of an active turn (see rehydrate()).
+_REPLAY_STATUSES = _status_mod.MID_TURN_STATUSES | frozenset({"working"})
 
 # Statuses derived purely from the live driver's in-memory registries — a mid-turn
 # turn, or a pending permission / question / plan approval (see status.derive_status
@@ -8496,33 +8506,66 @@ class SessionOrchestrator:
 
     def snapshot_deploy(self, *, path: str | None = None) -> dict:
         """SAVE step: record sessions with a live driver so a daemon-affecting restart
-        can eagerly re-launch them (rehydrate alone is lazy + flattens 'working'→'idle')."""
-        live = [{"id": sid, "status": getattr(self._records.get(sid), "status", "idle")}
-                for sid in list(self._drivers.keys())]
+        can eagerly re-launch them (rehydrate alone is lazy + flattens 'working'→'idle').
+
+        A mid-turn session also records its interrupted prompt: ``_last_prompt`` is
+        in-memory and dies with this process, so the snapshot is the only way the
+        post-restart daemon can re-issue the killed turn (issue #864)."""
+        live = []
+        for sid in list(self._drivers.keys()):
+            status = getattr(self._records.get(sid), "status", "idle")
+            entry = {"id": sid, "status": status}
+            last = self._last_prompt.get(sid)
+            if last and status in _REPLAY_STATUSES:
+                entry["lastPrompt"] = last
+            live.append(entry)
         _deploy_snapshot.write_snapshot(live, path=path)
         return {"live": live}
 
     async def restore_deploy(self, *, path: str | None = None) -> dict:
         """RESUME step: eagerly re-launch each snapshotted session in the fresh daemon.
 
-        A session that fails this first attempt is enrolled in ``_resume_recovery``
-        so the daemon keeps retrying it (see _recover_resume_failures_once) instead
-        of leaving it stuck behind a sticky 'open to retry' banner."""
+        ensure_driver only resumes the transcript — it does NOT continue a turn the
+        restart killed — so a session snapshotted mid-turn gets its recorded prompt
+        re-issued on the resumed driver (``replayed``); without that the driver sits
+        idle, is released again, and the session dangles at in_progress with no
+        driver behind it. A session that fails this first attempt is enrolled in
+        ``_resume_recovery`` so the daemon keeps retrying it (see
+        _recover_resume_failures_once) instead of leaving it stuck behind a sticky
+        'open to retry' banner. The outcome is logged here as well as returned:
+        the controller's status object — previously the only surface for it — is
+        wiped by the controller's own scheduled self-restart (issue #864)."""
         restored: list[str] = []
         failed: list[str] = []
+        replayed: list[str] = []
         for entry in _deploy_snapshot.read_snapshot(path=path):
             sid = entry["id"]
             try:
                 driver = await self.ensure_driver(sid, SYSTEM_IDENTITY)
             except Exception:
                 driver = None
-            if driver is not None:
-                restored.append(sid)
-            else:
+            if driver is None:
                 failed.append(sid)
                 self._resume_recovery[sid] = 0   # enroll for daemon-side retry
+                continue
+            restored.append(sid)
+            last = entry.get("lastPrompt")
+            if last and entry.get("status") in _REPLAY_STATUSES:
+                # Seed this process's prompt memory BEFORE the send so the 429/401
+                # replay machinery can re-drive the turn again later if needed.
+                self._last_prompt[sid] = last
+                try:
+                    await driver.send_prompt(last)
+                    replayed.append(sid)
+                except Exception:
+                    # Best-effort: the session is still restored (live driver);
+                    # the user can re-send. Never fail the whole restore for it.
+                    log.warning("deploy.restore: replay of interrupted turn failed "
+                                "session=%s", sid, exc_info=True)
         _deploy_snapshot.clear_snapshot(path=path)
-        return {"restored": restored, "failed": failed}
+        log_event(log, logging.INFO, "deploy.restore",
+                  restored=restored, failed=failed, replayed=replayed)
+        return {"restored": restored, "failed": failed, "replayed": replayed}
 
     def _prune_recovered(self) -> None:
         """Drop any enrolled id that now has a live driver — covers a session a human

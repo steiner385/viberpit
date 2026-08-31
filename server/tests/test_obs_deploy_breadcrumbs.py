@@ -266,6 +266,32 @@ async def test_deploy_sessions_reattach_breadcrumb(caplog):
     rec = reattach_recs[0]
     assert rec.fields["recovered"] == 2
     assert rec.fields["lost"] == 1
+    # The full RPC result must land in the controller's journal: the status
+    # object is wiped by the controller's own scheduled self-restart (issue #864).
+    assert rec.fields["restored"] == ["s1", "s2"]
+    assert rec.fields["failed"] == ["s3"]
+
+
+@pytest.mark.asyncio
+async def test_deploy_restore_rpc_failure_is_logged(caplog):
+    """A failed restore_deploy RPC must leave a durable log line, not just a
+    status warning that the controller's self-restart wipes (issue #864)."""
+    dc = _make_deploy_controller(daemon_enabled=True, daemon_changed=True)
+
+    async def _call(method, **kw):
+        if method == "restore_deploy":
+            raise RuntimeError("daemon went away")
+        return None
+
+    # Rewire the shared mock client the factory hands out.
+    dc._client_factory().call = AsyncMock(side_effect=_call)
+
+    with caplog.at_level(logging.INFO, logger="server.deploy"):
+        st = await dc.deploy_once()
+
+    assert any("session restore call failed" in w for w in st.warnings)
+    assert any("restore_deploy" in r.getMessage() for r in caplog.records
+               if r.levelno >= logging.WARNING)
 
 
 @pytest.mark.asyncio
