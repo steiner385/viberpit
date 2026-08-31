@@ -13,6 +13,7 @@ from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
 from claude_agent_sdk._errors import CLIConnectionError
 from ccswitch import copilot as _copilot_mod
 from ccswitch.accounts import provider_of as _provider_of
+from server.aio import bounded_wait
 from . import events as ev
 from .failure import classify, TurnFailure
 from .translator import Translator
@@ -44,6 +45,11 @@ _TURN_CONTENT = (ev.UserMessage, ev.TurnStart, ev.TurnModel, ev.SessionMeta,
 # How long aclose() waits for the CLI to flush its synthetic interrupt result for a
 # turn wedged mid-tool-call before giving up and cancelling the drain.
 _CLOSE_GRACE_SEC = 5.0
+
+# Budget for the SDK client's __aexit__ during aclose(): the real client runs two
+# 5s subprocess-terminate timeouts internally, so 15s covers it with headroom while
+# still keeping a wedged exit from hanging teardown (#846).
+_CLOSE_AEXIT_TIMEOUT_S = 15.0
 
 # Soft notice text surfaced when a dropped turn is being auto-resent.
 _RECOVERING_MSG = "Recovering the dropped turn…"
@@ -1037,15 +1043,19 @@ class SessionDriver:
         clearing == dropping the resume handle and reconnecting. Resets per-turn
         and titling state so the new session behaves like a brand-new one.
         """
+        grace = getattr(self, "_close_grace", _CLOSE_GRACE_SEC)
         if self._pump is not None and not self._pump.done():
             self._pump.cancel()
-            try:
-                await self._pump
-            except asyncio.CancelledError:
-                pass
+            # Same bounded reap as aclose(): a cancel-immune pump must wedge only
+            # this /clear, not the driver forever (#846).
+            await bounded_wait(self._pump, timeout=grace,
+                               phase=f"driver.reconnect-pump:{self.session_id}",
+                               cancel_grace=grace)
         self._pump = None
         if self._client is not None:
-            await self._client.__aexit__(None, None, None)
+            await bounded_wait(self._client.__aexit__(None, None, None),
+                               timeout=_CLOSE_AEXIT_TIMEOUT_S,
+                               phase=f"driver.reconnect-aexit:{self.session_id}")
             await self._call_sync_back()
         self.resume = None
         self.claude_session_id = None
@@ -1066,6 +1076,7 @@ class SessionDriver:
         self._cancel_suggest()
         self._reg.deny_all(self.session_id)
         self._qreg.deny_all(self.session_id)
+        grace = getattr(self, "_close_grace", _CLOSE_GRACE_SEC)
         if self._pump is not None and not self._pump.done():
             # A turn wedged mid-tool-call must not be abandoned: hard-cancelling the
             # drain kills the subprocess before the CLI writes its synthetic
@@ -1076,24 +1087,27 @@ class SessionDriver:
             # can't launch a fresh turn while we're closing.
             self._queue.clear()
             if self._turn_active and self._client is not None:
-                try:
-                    await self._client.interrupt()
-                except Exception:
-                    log.warning("driver.aclose: interrupt failed session=%s",
-                                self.session_id, exc_info=True)
-            grace = getattr(self, "_close_grace", _CLOSE_GRACE_SEC)
+                # interrupt() awaits a control-channel reply from the CLI — a wedged
+                # subprocess left it blocked forever, hanging every close (#846).
+                await bounded_wait(self._client.interrupt(), timeout=grace,
+                                   phase=f"driver.interrupt:{self.session_id}",
+                                   cancel_grace=grace)
             try:
                 await asyncio.wait_for(asyncio.shield(self._pump), timeout=grace)
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 pass
             if not self._pump.done():
                 self._pump.cancel()
-                try:
-                    await self._pump
-                except asyncio.CancelledError:
-                    pass
+                # The reap must be bounded too: a pump wedged in an uncancellable
+                # region (mid-to_thread, or a stream that swallows the cancel)
+                # otherwise blocks close forever (#846).
+                await bounded_wait(self._pump, timeout=grace,
+                                   phase=f"driver.pump:{self.session_id}",
+                                   cancel_grace=grace)
         if self._client:
-            await self._client.__aexit__(None, None, None)
+            await bounded_wait(self._client.__aexit__(None, None, None),
+                               timeout=_CLOSE_AEXIT_TIMEOUT_S,
+                               phase=f"driver.aexit:{self.session_id}")
         # Final sync_back: capture any token rotation that occurred during the
         # session (e.g. a long-running session where the SDK refreshed but the
         # drain's finally sync_back already ran before the close was requested).
