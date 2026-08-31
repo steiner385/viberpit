@@ -217,26 +217,7 @@ describe('SessionList', () => {
     expect(screen.getByLabelText('Loading sessions')).toBeInTheDocument()
   })
 
-  it('shows rename, archive, and delete buttons on each session', () => {
-    render(
-      <SessionList
-        sessions={[SESSIONS[0]]}
-        accounts={ACCOUNTS}
-        onNew={onNew}
-        onOpen={onOpen}
-        onRename={onRename}
-        onClose={onClose}
-        onDelete={onDelete}
-      />,
-      { wrapper },
-    )
-
-    expect(screen.getByRole('button', { name: /rename session work session/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /archive session work session/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /delete session work session/i })).toBeInTheDocument()
-  })
-
-  it('calls onRename when the rename button is clicked', async () => {
+  it('offers rename, archive, and delete in each session’s ⋯ menu', async () => {
     const user = userEvent.setup()
     render(
       <SessionList
@@ -251,11 +232,33 @@ describe('SessionList', () => {
       { wrapper },
     )
 
-    await user.click(screen.getByRole('button', { name: /rename session work session/i }))
+    await user.click(screen.getByRole('button', { name: /more actions for session work session/i }))
+    expect(screen.getByRole('menuitem', { name: /rename/i })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: /archive/i })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: /delete/i })).toBeInTheDocument()
+  })
+
+  it('calls onRename when the rename menu item is clicked', async () => {
+    const user = userEvent.setup()
+    render(
+      <SessionList
+        sessions={[SESSIONS[0]]}
+        accounts={ACCOUNTS}
+        onNew={onNew}
+        onOpen={onOpen}
+        onRename={onRename}
+        onClose={onClose}
+        onDelete={onDelete}
+      />,
+      { wrapper },
+    )
+
+    await user.click(screen.getByRole('button', { name: /more actions for session work session/i }))
+    await user.click(screen.getByRole('menuitem', { name: /rename/i }))
     expect(onRename).toHaveBeenCalledWith('sess-1')
   })
 
-  it('calls onClose when the archive button is clicked', async () => {
+  it('calls onClose when the archive menu item is clicked', async () => {
     const user = userEvent.setup()
     render(
       <SessionList
@@ -270,11 +273,12 @@ describe('SessionList', () => {
       { wrapper },
     )
 
-    await user.click(screen.getByRole('button', { name: /archive session work session/i }))
+    await user.click(screen.getByRole('button', { name: /more actions for session work session/i }))
+    await user.click(screen.getByRole('menuitem', { name: /archive/i }))
     expect(onClose).toHaveBeenCalledWith('sess-1')
   })
 
-  it('calls onDelete when the delete button is clicked', async () => {
+  it('calls onDelete when the delete menu item is clicked', async () => {
     const user = userEvent.setup()
     render(
       <SessionList
@@ -289,7 +293,8 @@ describe('SessionList', () => {
       { wrapper },
     )
 
-    await user.click(screen.getByRole('button', { name: /delete session work session/i }))
+    await user.click(screen.getByRole('button', { name: /more actions for session work session/i }))
+    await user.click(screen.getByRole('menuitem', { name: /delete/i }))
     expect(onDelete).toHaveBeenCalledWith('sess-1')
   })
 
