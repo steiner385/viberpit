@@ -48,6 +48,15 @@ IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _fresh_db(isolated_db):
+    """Per-test DB (#728): several tests here exit their CCSWITCH_DB_URL patch
+    before `with client:`, so the app lifespan resolves the AMBIENT env var at
+    init_db time — without this fixture that was the worker-shared session DB,
+    coupling these files to whatever ran (or leaked a writer) before them."""
+
+
+
 def _make_usage_fn(accounts: dict):
     """Return a usage_fn that returns fake Usage for named accounts."""
     def usage_fn(name: str):
