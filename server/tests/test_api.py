@@ -483,6 +483,128 @@ def test_create_optimistic_sets_usage_unverified():
     assert resp.json()["usageUnverified"] is True
 
 
+def _create_harness_ctx(d):
+    """Shared patch stack for create-session tests that need a healthy picked account."""
+    from contextlib import ExitStack
+    stack = ExitStack()
+    _seed_slot("acct-a")
+    usage_fn = _make_usage_fn({"acct-a": make_usage(session=10.0, weekly=20.0)})
+    stack.enter_context(patch("ccswitch.accounts.usage_for", side_effect=usage_fn))
+    stack.enter_context(patch("server.sessions.selection.pick_account_detailed",
+                              return_value=Picked(name="acct-a", optimistic=False)))
+    stack.enter_context(patch("server.sessions.orchestrator.compose",
+                              return_value=d / "cfg" / "acct-a"))
+    # File-backed DB, NOT :memory: — these tests PUT /api/settings, and an
+    # in-memory DB shares one connection with the orchestrator's startup poll,
+    # which races the settings write (see server/tests/test_settings.py).
+    stack.enter_context(patch.dict(
+        os.environ, {"CCSWITCH_DB_URL": f"sqlite+aiosqlite:///{d / 'api-test.db'}"}))
+    (d / "cfg" / "acct-a").mkdir(parents=True, exist_ok=True)
+    return stack, usage_fn
+
+
+def _spy_create(orch):
+    """Wrap orch.create_session, recording the kwargs the API resolved."""
+    captured: dict = {}
+    orig = orch.create_session
+
+    async def spy(*args, **kwargs):
+        captured.update(kwargs)
+        return await orig(*args, **kwargs)
+
+    orch.create_session = spy
+    return captured
+
+
+def test_create_without_mode_uses_global_default_permission_mode():
+    """POST /api/sessions with no permissionMode honours Settings' defaultPermissionMode.
+
+    The DispatchBar quick-create path sends no permissionMode at all; before this
+    fix the endpoint fell straight through to "interactive", silently ignoring the
+    global "Default tool approvals" setting (e.g. full-auto) and re-introducing
+    permission prompts the user had turned off.
+    """
+    with temp_env() as d:
+        stack, usage_fn = _create_harness_ctx(d)
+        with stack:
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.app import create_app
+            orch = SessionOrchestrator(
+                sdk_factory=fake_sdk_factory(), usage_fn=usage_fn, poll_interval=9999.0)
+            captured = _spy_create(orch)
+            app = create_app(orchestrator=orch)
+            client = TestClient(app, raise_server_exceptions=True)
+            with client:
+                put = client.put("/api/settings",
+                                 json={"defaultPermissionMode": "full-auto"},
+                                 headers=IDENTITY_HEADERS)
+                assert put.status_code == 200, put.text
+                resp = client.post("/api/sessions", json={"name": "QuickCreate"},
+                                   headers=IDENTITY_HEADERS)
+
+    assert resp.status_code == 201, resp.text
+    assert captured["permission_mode"] == "full-auto"
+
+
+def test_create_explicit_mode_beats_global_default():
+    """An explicit body permissionMode always wins over the global default."""
+    with temp_env() as d:
+        stack, usage_fn = _create_harness_ctx(d)
+        with stack:
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.app import create_app
+            orch = SessionOrchestrator(
+                sdk_factory=fake_sdk_factory(), usage_fn=usage_fn, poll_interval=9999.0)
+            captured = _spy_create(orch)
+            app = create_app(orchestrator=orch)
+            client = TestClient(app, raise_server_exceptions=True)
+            with client:
+                put = client.put("/api/settings",
+                                 json={"defaultPermissionMode": "full-auto"},
+                                 headers=IDENTITY_HEADERS)
+                assert put.status_code == 200, put.text
+                resp = client.post("/api/sessions",
+                                   json={"name": "Explicit", "permissionMode": "allowlist"},
+                                   headers=IDENTITY_HEADERS)
+
+    assert resp.status_code == 201, resp.text
+    assert captured["permission_mode"] == "allowlist"
+
+
+def test_create_account_default_beats_global_default():
+    """A pinned account's own defaultPermissionMode outranks the global default."""
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _fake_ledger():
+        yield {}
+
+    with temp_env() as d:
+        stack, usage_fn = _create_harness_ctx(d)
+        with stack, \
+             patch("ccswitch.ledger.locked_ledger", _fake_ledger), \
+             patch("ccswitch.ledger.get_account_defaults",
+                   return_value={"defaultPermissionMode": "auto"}):
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.app import create_app
+            orch = SessionOrchestrator(
+                sdk_factory=fake_sdk_factory(), usage_fn=usage_fn, poll_interval=9999.0)
+            captured = _spy_create(orch)
+            app = create_app(orchestrator=orch)
+            client = TestClient(app, raise_server_exceptions=True)
+            with client:
+                put = client.put("/api/settings",
+                                 json={"defaultPermissionMode": "full-auto"},
+                                 headers=IDENTITY_HEADERS)
+                assert put.status_code == 200, put.text
+                resp = client.post("/api/sessions",
+                                   json={"name": "AcctDefault", "account": "acct-a"},
+                                   headers=IDENTITY_HEADERS)
+
+    assert resp.status_code == 201, resp.text
+    assert captured["permission_mode"] == "auto"
+
+
 def test_create_all_unusable_returns_needs_reauth():
     """All accounts need reauth → 409 accounts_need_reauth, no earliestReset."""
     from server.sessions.selection import AllAccountsBusy
