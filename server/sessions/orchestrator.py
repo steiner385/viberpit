@@ -594,6 +594,7 @@ class SessionOrchestrator:
             clock=time.monotonic,
         )
         self._sdlc_intake_task: asyncio.Task | None = None
+        self._recurring_task: asyncio.Task | None = None
         # Autopilot control loop: advances every governed session through its stuck
         # states each tick (also nudged from _persist_status). All seams injected so
         # the loop stays testable; the seam methods live on this orchestrator.
@@ -879,11 +880,20 @@ class SessionOrchestrator:
             await bounded_wait(self._pr_branch_task, timeout=_STOP_TASK_TIMEOUT_S,
                                phase="stop:pr-branch")
             self._pr_branch_task = None
+        # EVERY loop start() creates must appear here. Two were missing — the
+        # recurring-session scheduler and the SDLC intake tick — and outlived
+        # stop() as orphan tasks, reaped only by the runner's final loop shutdown
+        # after the DB engine was disposed (#405's contamination vector; a live
+        # suspect in the #846 teardown stalls). test_orchestrator_stop_completeness
+        # pins the full set by task name.
         for attr in ("_titling_task", "_goal_task", "_rotation_task", "_stall_task",
-                     "_token_refresh_task", "_backlog_task", "_autopilot_task",
-                     "_cicd_task", "_archaudit_task", "_sweep_task",
-                     "_archive_limit_task", "_janitor_task", "_drain_timer"):
-            task = getattr(self, attr)
+                     "_token_refresh_task", "_backlog_task", "_sdlc_intake_task",
+                     "_autopilot_task", "_cicd_task", "_archaudit_task", "_sweep_task",
+                     "_archive_limit_task", "_janitor_task", "_recurring_task",
+                     "_drain_timer"):
+            # Default None: stop() must be safe on an orchestrator that never
+            # start()ed (tests build one via __new__/without start).
+            task = getattr(self, attr, None)
             if task is not None:
                 task.cancel()
                 await bounded_wait(task, timeout=_STOP_TASK_TIMEOUT_S,
