@@ -18,10 +18,13 @@ interface UsageBadgeProps {
   resetsAt?: string | null
   /** Reserve marker position (0–100); renders a vertical line on the bar when set. */
   markerPct?: number | null
+  /** Dense inline variant: micro-bar + % on one line, no uppercase label (the
+   *  label still names the window in the tooltip/aria-label). */
+  compact?: boolean
   className?: string
 }
 
-export function UsageBadge({ pct, label, resetsAt, markerPct, className }: UsageBadgeProps) {
+export function UsageBadge({ pct, label, resetsAt, markerPct, compact, className }: UsageBadgeProps) {
   const clampedPct = Math.min(100, Math.max(0, pct))
   // Color classes supplementary only — text carries the info
   const barColor =
@@ -39,6 +42,27 @@ export function UsageBadge({ pct, label, resetsAt, markerPct, className }: Usage
   const resetText = formatResetTime(resetsAt)
   const resetPhrase = resetText ? `resets ${resetText}` : 'no active window'
   const title = `${windowName} · ${resetPhrase}`
+
+  if (compact) {
+    return (
+      <span
+        className={cn('items-center gap-1', className)}
+        title={title}
+        aria-label={`${ariaLabel} — ${resetPhrase}`}
+      >
+        <span className="relative h-1 w-10 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+          <span
+            className={cn('h-full block rounded-full', barColor)}
+            style={{ width: `${clampedPct}%` }}
+            aria-hidden="true"
+          />
+        </span>
+        <span className="text-[10px] font-medium tabular-nums text-gray-500 dark:text-gray-400">
+          {clampedPct}%
+        </span>
+      </span>
+    )
+  }
 
   return (
     <span

@@ -110,10 +110,11 @@ describe('DesktopShell — advance on archive', () => {
     await user.click(screen.getByRole('button', { name: /open session first/i }))
     expect(document.getElementById('row-sess-1')).toHaveAttribute('data-selected', 'true')
 
-    // Archive sess-2 via its sidebar card archive button — handleClose('sess-2') fires,
+    // Archive sess-2 via its sidebar card ⋯ menu — handleClose('sess-2') fires,
     // but the guard (cur.id === id) is false because cur.id is 'sess-1', so selection
     // must remain on sess-1.
-    await user.click(screen.getByRole('button', { name: /archive session second/i }))
+    await user.click(screen.getByRole('button', { name: /more actions for session second/i }))
+    await user.click(screen.getByRole('menuitem', { name: /archive/i }))
 
     expect(document.getElementById('row-sess-1')).toHaveAttribute('data-selected', 'true')
     expect(document.getElementById('row-sess-2')).not.toHaveAttribute('data-selected', 'true')

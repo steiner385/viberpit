@@ -148,7 +148,8 @@ describe('DesktopShell', () => {
     )
     render(<DesktopShell />, { wrapper })
 
-    await user.click(screen.getByRole('button', { name: /delete session one/i }))
+    await user.click(screen.getByRole('button', { name: /more actions for session one/i }))
+    await user.click(screen.getByRole('menuitem', { name: /delete/i }))
 
     // Destructive: the confirm dialog appears and nothing is deleted yet.
     const dialog = screen.getByRole('dialog')
