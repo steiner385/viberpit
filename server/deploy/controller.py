@@ -273,11 +273,21 @@ class DeployController:
                     failed = self.status.restore.get("failed", [])
                     recovered = len(self.status.restore.get("restored", []))
                     lost = len(failed)
+                    # Log the full RPC result, not just counts: this status object is
+                    # the only other surface for it, and the controller's scheduled
+                    # self-restart wipes it seconds later (issue #864).
                     log_event(log, logging.INFO, "deploy.sessions.reattach",
-                              deploy_id=self._deploy_id, recovered=recovered, lost=lost)
+                              deploy_id=self._deploy_id, recovered=recovered, lost=lost,
+                              restored=self.status.restore.get("restored", []),
+                              failed=failed,
+                              replayed=self.status.restore.get("replayed", []))
                     if failed:
                         self.status.warnings.append(f"resume failed for {len(failed)} session(s): {', '.join(failed)}")
                 except Exception:
+                    # Durable trace of the failure — the warning below lives on the
+                    # status object, which the self-restart wipes (issue #864).
+                    log.warning("deploy: restore_deploy RPC failed — restore outcome "
+                                "unknown", exc_info=True)
                     self.status.warnings.append("session restore call failed")
                 finally:
                     await _aclose_quietly(client)

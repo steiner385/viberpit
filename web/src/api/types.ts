@@ -307,7 +307,9 @@ export interface DeployProgress {
   // `failed`/`gaveUp` are the daemon's LIVE unresolved set (reconciled edge-side),
   // not the controller's frozen deploy-time list — so the banner clears as autopilot
   // recovers sessions. `gaveUp` = capped-out recovery, kept visible for a human.
-  restore?: { restored?: string[]; failed: string[]; gaveUp?: string[] }
+  // `replayed` = mid-turn sessions whose interrupted prompt was re-issued after
+  // the restart (issue #864) — a subset of `restored`.
+  restore?: { restored?: string[]; failed: string[]; gaveUp?: string[]; replayed?: string[] }
 }
 
 export interface DeployStatusResponse {
