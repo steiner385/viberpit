@@ -185,7 +185,11 @@ def test_prompt_after_completion_release_still_reaches_the_session(tmp_path):
                 assert _wait_until(lambda: sid in orch._drivers), (
                     "a prompt on an open socket must resume the released session — "
                     "it was silently dropped")
-                assert orch._last_prompt.get(sid) == "keep going", (
+                # Delivery is a separate step from registration: _ensure_live
+                # registers the rebuilt driver BEFORE the bridge calls send_prompt,
+                # so an immediate read here races the send on a loaded runner
+                # (CI, 2026-08-31). Wait for it like the registration wait above.
+                assert _wait_until(lambda: orch._last_prompt.get(sid) == "keep going"), (
                     "the prompt must actually be delivered to the driver")
                 # C4's invariant, observed end to end: the resumed session left
                 # `complete`, so it counts against the cap again.

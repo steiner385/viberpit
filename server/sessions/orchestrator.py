@@ -40,6 +40,7 @@ from ccswitch.account_names import assert_valid_account_name, InvalidAccountName
 from ccswitch.config import load_config
 from ccswitch.configdir import compose
 from ccswitch.paths import account_cfg_dir, shared_base
+from server.aio import bounded_wait
 from server.audit import record_audit
 from server.db import db_session
 from server.db.models import AUTO_ARCHIVE_PROVENANCE, CAPACITY_EXEMPT_STATUSES, INACTIVE_SESSION_STATUSES, Session as DbSession
@@ -254,6 +255,13 @@ _RECURRING_TICK_INTERVAL: float = 30.0
 # minimum=0.1: a 0 (or negative) override would make wait_for fire immediately and
 # turn EVERY transcript into an empty one — fall back to the default instead.
 _TRANSCRIPT_WINDOW_CEILING_S = env_float("CCSWITCH_TRANSCRIPT_WINDOW_CEILING_S", 10.0, minimum=0.1)
+
+# stop() runs inside the app lifespan shutdown; every await in it is bounded so a
+# single cancel-ignoring task or wedged driver close can't hang teardown (#846).
+# Per-item budgets: reaping a cancelled task should be near-instant; a driver close
+# legitimately takes up to ~10s (interrupt flush + subprocess terminate).
+_STOP_TASK_TIMEOUT_S = 5.0
+_STOP_DRIVER_CLOSE_TIMEOUT_S = 10.0
 
 # The export path (/export.md) replays the FULL transcript with limit=None, so a
 # legitimately huge session can exceed the interactive ceiling above. Exporting is a
@@ -586,6 +594,7 @@ class SessionOrchestrator:
             clock=time.monotonic,
         )
         self._sdlc_intake_task: asyncio.Task | None = None
+        self._recurring_task: asyncio.Task | None = None
         # Autopilot control loop: advances every governed session through its stuck
         # states each tick (also nudged from _persist_status). All seams injected so
         # the loop stays testable; the seam methods live on this orchestrator.
@@ -856,29 +865,39 @@ class SessionOrchestrator:
             await asyncio.sleep(self._poll_interval)
 
     async def stop(self) -> None:
-        """Stop the titling sweep, rotation monitor and usage poller."""
+        """Stop the titling sweep, rotation monitor and usage poller.
+
+        Every await here is bounded (issue #846): stop() runs inside the app
+        lifespan shutdown, so a single task or driver that ignores cancellation
+        used to wedge TestClient exits (and systemd stop) indefinitely.
+        """
         # Mark teardown FIRST, before any driver is closed below: a turn dropped by
         # our own aclose() must not trip failure recovery → needs_attention. Leave the
         # row for rehydrate() to normalize to idle (resumable) on the next boot.
         self._shutting_down = True
         if self._pr_branch_task is not None:
             self._pr_branch_task.cancel()
-            try:
-                await self._pr_branch_task
-            except asyncio.CancelledError:
-                pass
+            await bounded_wait(self._pr_branch_task, timeout=_STOP_TASK_TIMEOUT_S,
+                               phase="stop:pr-branch")
             self._pr_branch_task = None
+        # EVERY loop start() creates must appear here. Two were missing — the
+        # recurring-session scheduler and the SDLC intake tick — and outlived
+        # stop() as orphan tasks, reaped only by the runner's final loop shutdown
+        # after the DB engine was disposed (#405's contamination vector; a live
+        # suspect in the #846 teardown stalls). test_orchestrator_stop_completeness
+        # pins the full set by task name.
         for attr in ("_titling_task", "_goal_task", "_rotation_task", "_stall_task",
-                     "_token_refresh_task", "_backlog_task", "_autopilot_task",
-                     "_cicd_task", "_archaudit_task", "_sweep_task",
-                     "_archive_limit_task", "_janitor_task", "_drain_timer"):
-            task = getattr(self, attr)
+                     "_token_refresh_task", "_backlog_task", "_sdlc_intake_task",
+                     "_autopilot_task", "_cicd_task", "_archaudit_task", "_sweep_task",
+                     "_archive_limit_task", "_janitor_task", "_recurring_task",
+                     "_drain_timer"):
+            # Default None: stop() must be safe on an orchestrator that never
+            # start()ed (tests build one via __new__/without start).
+            task = getattr(self, attr, None)
             if task is not None:
                 task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
+                await bounded_wait(task, timeout=_STOP_TASK_TIMEOUT_S,
+                                   phase=f"stop:{attr}")
                 setattr(self, attr, None)
         # Cancel+await every tracked fire-and-forget task (#405) so none survives to
         # write into a later app/test's DB. Snapshot first: a task's done-callback
@@ -887,8 +906,8 @@ class SessionOrchestrator:
         for t in pending:
             t.cancel()
         for t in pending:
-            with contextlib.suppress(asyncio.CancelledError):
-                await t
+            await bounded_wait(t, timeout=_STOP_TASK_TIMEOUT_S,
+                               phase=f"stop:bg:{t.get_name()}")
         self._bg_tasks.clear()
         # Close any still-live driver so its stream/pump (which invokes the persist
         # callbacks that write to the DB) cannot outlive teardown. In production the
@@ -897,12 +916,20 @@ class SessionOrchestrator:
         for sid in list(self._drivers.keys()):
             driver = self._drivers.pop(sid, None)
             if driver is not None:
+                # suppress() covers the synchronous aclose() call itself (a stand-in
+                # without the method); bounded_wait never raises once awaited.
                 with contextlib.suppress(Exception):
-                    await driver.aclose()
-        await self._poller.stop()
-        await self._pr_poller.stop()
-        await self._pr_population.stop()
-        await self._deploy_watcher.stop()
+                    await bounded_wait(driver.aclose(),
+                                       timeout=_STOP_DRIVER_CLOSE_TIMEOUT_S,
+                                       phase=f"stop:driver-close:{sid}")
+        await bounded_wait(self._poller.stop(), timeout=_STOP_TASK_TIMEOUT_S,
+                           phase="stop:usage-poller")
+        await bounded_wait(self._pr_poller.stop(), timeout=_STOP_TASK_TIMEOUT_S,
+                           phase="stop:pr-poller")
+        await bounded_wait(self._pr_population.stop(), timeout=_STOP_TASK_TIMEOUT_S,
+                           phase="stop:pr-population")
+        await bounded_wait(self._deploy_watcher.stop(), timeout=_STOP_TASK_TIMEOUT_S,
+                           phase="stop:deploy-watcher")
 
     # ------------------------------------------------------------------
     # Session CRUD
