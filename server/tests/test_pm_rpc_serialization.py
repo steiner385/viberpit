@@ -14,6 +14,7 @@ The fix:
 - ``pm_classify_run`` stays in ``_SIMPLE`` (returns int — JSON-native).
 """
 import json
+from typing import Any
 from unittest import mock
 
 from fastapi.testclient import TestClient
@@ -25,7 +26,7 @@ from server.sessions.orchestrator import SessionOrchestrator
 
 
 def _make_view(**overrides) -> ProjectOnboardingView:
-    defaults = dict(
+    defaults: dict[str, Any] = dict(
         state="syncing",
         repo_count=2,
         backfill_done_count=1,
