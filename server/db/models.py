@@ -1109,3 +1109,143 @@ class ProjectEdge(Base):
     note: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
+# Feature lifecycle (spec §3, "feature doc convention").
+FEATURE_LIFECYCLE_STATES: tuple[str, ...] = (
+    "proposed", "discovery", "delivering", "live", "sunset")
+
+# Feature→feature relationship kinds (cross-project allowed).
+FEATURE_LINK_KINDS: tuple[str, ...] = ("powered_by", "integrates_with")
+
+WORK_ITEM_KINDS: tuple[str, ...] = ("issue", "pr")
+
+# Approved-overlay triage states on WorkItem (proposals live in TriageProposal).
+WORK_ITEM_TRIAGE_STATES: tuple[str, ...] = (
+    "unclassified", "proposed", "classified", "needs_human")
+
+TRIAGE_PROPOSAL_STATUSES: tuple[str, ...] = ("pending", "accepted", "rejected")
+
+
+class Feature(Base):
+    """Index row for one ``docs/product/features/<slug>.md`` in the project's
+    primary repo. Truth is the merged markdown: ``commit_sha`` is stamped by
+    sync once the doc is on the default branch (NULL while only proposed) —
+    the InitiativeArtifact pointer pattern. ``orphaned`` marks a doc that
+    disappeared from the repo (row kept so FeatureLinks never dangle)."""
+
+    __tablename__ = "features"
+    __table_args__ = (UniqueConstraint("project_id", "slug", name="uq_feature_slug"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    project_id: Mapped[str] = mapped_column(
+        String, ForeignKey("projects.id"), nullable=True, index=True)
+    slug: Mapped[str | None] = mapped_column(String, nullable=True)
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    state: Mapped[str | None] = mapped_column(String, nullable=True)  # FEATURE_LIFECYCLE_STATES
+    summary: Mapped[str | None] = mapped_column(String, nullable=True)
+    repo_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    commit_sha: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    pr_url: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    orphaned: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+
+
+class FeatureLink(Base):
+    """Feature→feature edge (spec §3): powered_by | integrates_with."""
+
+    __tablename__ = "feature_links"
+    __table_args__ = (
+        UniqueConstraint("src_feature_id", "dst_feature_id", "kind", name="uq_feature_link"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    src_feature_id: Mapped[str] = mapped_column(
+        String, ForeignKey("features.id"), nullable=True, index=True)
+    dst_feature_id: Mapped[str] = mapped_column(
+        String, ForeignKey("features.id"), nullable=True, index=True)
+    kind: Mapped[str | None] = mapped_column(String, nullable=True)  # FEATURE_LINK_KINDS
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
+class WorkItem(Base):
+    """Read-only mirror of one GitHub issue or PR, plus the ccswitch-owned
+    overlay. Mirror columns are disposable (rebuildable by re-sync); overlay
+    columns (feature_id, scores, triage_state) are the approved truth ccswitch
+    owns. Keyed by (repo, number, kind) so a dropped-and-resynced mirror keeps
+    the same identity."""
+
+    __tablename__ = "work_items"
+    __table_args__ = (
+        UniqueConstraint("repo", "number", "kind", name="uq_work_item_identity"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    # --- mirror (GitHub truth) ---
+    repo: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    kind: Mapped[str | None] = mapped_column(String, nullable=True)  # WORK_ITEM_KINDS
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    body: Mapped[str | None] = mapped_column(String, nullable=True)
+    state: Mapped[str | None] = mapped_column(String, nullable=True)  # open|closed|merged
+    labels: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    author: Mapped[str | None] = mapped_column(String, nullable=True)
+    url: Mapped[str | None] = mapped_column(String, nullable=True)
+    # PR→issue closing references (list of ints), from closingIssuesReferences.
+    linked_issue_numbers: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    gh_created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    gh_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True)
+    gh_closed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    # --- overlay (ccswitch truth) ---
+    feature_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("features.id"), nullable=True, index=True)
+    reach: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    impact: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    effort: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    confidence: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    triage_state: Mapped[str | None] = mapped_column(
+        String, nullable=True, default="unclassified", index=True)
+    classified_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    classified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+
+
+class TriageProposal(Base):
+    """One AI classification proposal awaiting the human gate (spec §3).
+    ``proposed_feature_id`` is NULL for a ``no_fit`` answer, which instead
+    carries ``no_fit_suggestion`` (the suggested new-feature name). Accepting
+    copies values onto the WorkItem overlay; this row remains as audit."""
+
+    __tablename__ = "triage_proposals"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    work_item_id: Mapped[str] = mapped_column(
+        String, ForeignKey("work_items.id"), nullable=True, index=True)
+    proposed_feature_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("features.id"), nullable=True)
+    no_fit_suggestion: Mapped[str | None] = mapped_column(String, nullable=True)
+    reach: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    impact: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    effort: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    confidence: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rationale: Mapped[str | None] = mapped_column(String, nullable=True)
+    confidence_level: Mapped[str | None] = mapped_column(String, nullable=True)  # low|medium|high
+    status: Mapped[str | None] = mapped_column(
+        String, nullable=True, default="pending", index=True)  # TRIAGE_PROPOSAL_STATUSES
+    session_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)

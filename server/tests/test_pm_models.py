@@ -5,12 +5,19 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from server.db.models import (
+    FEATURE_LIFECYCLE_STATES,
     PROJECT_EDGE_KINDS,
     PROJECT_ONBOARDING_STATES,
+    TRIAGE_PROPOSAL_STATUSES,
+    WORK_ITEM_TRIAGE_STATES,
     Base,
+    Feature,
+    FeatureLink,
     Project,
     ProjectEdge,
     ProjectRepo,
+    TriageProposal,
+    WorkItem,
 )
 
 
@@ -55,3 +62,46 @@ async def test_project_repo_and_edge(db_session):
 def test_state_constants_are_ordered():
     assert PROJECT_ONBOARDING_STATES[0] == "registered"
     assert PROJECT_ONBOARDING_STATES[-1] == "live"
+
+
+@pytest.mark.asyncio
+async def test_feature_is_an_index_row(db_session):
+    p = Project(slug="ccswitch", name="ccswitch")
+    db_session.add(p)
+    await db_session.flush()
+    f = Feature(project_id=p.id, slug="sessions", title="Session manager",
+                state="live", repo_path="docs/product/features/sessions.md")
+    db_session.add(f)
+    await db_session.flush()
+    assert f.commit_sha is None          # not merged yet — pointer semantics
+    assert f.orphaned is False or f.orphaned is None
+    assert f.state in FEATURE_LIFECYCLE_STATES
+
+
+@pytest.mark.asyncio
+async def test_work_item_overlay_and_proposal(db_session):
+    w = WorkItem(repo="steiner385/ccswitch", number=42, kind="issue",
+                 title="Fix the thing", state="open")
+    db_session.add(w)
+    await db_session.flush()
+    assert w.triage_state == "unclassified"
+    assert w.triage_state in WORK_ITEM_TRIAGE_STATES
+    assert w.feature_id is None
+    t = TriageProposal(work_item_id=w.id, rationale="looks like sessions work")
+    db_session.add(t)
+    await db_session.flush()
+    assert t.status == "pending"
+    assert t.status in TRIAGE_PROPOSAL_STATUSES
+
+
+@pytest.mark.asyncio
+async def test_feature_link(db_session):
+    p = Project(slug="p1", name="P1")
+    db_session.add(p)
+    await db_session.flush()
+    f1 = Feature(project_id=p.id, slug="a", title="A", state="live")
+    f2 = Feature(project_id=p.id, slug="b", title="B", state="live")
+    db_session.add_all([f1, f2])
+    await db_session.flush()
+    db_session.add(FeatureLink(src_feature_id=f1.id, dst_feature_id=f2.id, kind="powered_by"))
+    await db_session.flush()
