@@ -4,6 +4,14 @@ import pytest
 from server.deploy import detect
 
 
+@pytest.fixture(autouse=True)
+def _fresh_verdict_cache():
+    """The module-level CI-verdict cache is process-global; isolate every test."""
+    detect._verdict_cache.clear()
+    yield
+    detect._verdict_cache.clear()
+
+
 class _Flaky:
     """A ``compute`` callable whose behavior the test flips between ticks: assign a
     ``PendingState`` to succeed, or an ``Exception`` instance to raise it."""
@@ -150,6 +158,97 @@ def test_edge_live_sha_parses_healthz_body():
 ])
 def test_edge_live_sha_unusable_bodies_yield_empty(body):
     assert detect.edge_live_sha("http://h", fetch=lambda url: body) == ""
+
+
+# --- green frontier: deploy the newest GREEN commit when the tip is red ----------------
+#
+# `ci` keeps meaning "what the UI's Deploy button can act on"; `tip_ci` is the tip's own
+# verdict. When the tip is not green, the pending commits are walked newest→oldest for the
+# first green one (`deployable_sha`, covering `deployable_count` of the pending commits).
+
+
+def _commits(*shas):
+    return [{"sha": s, "subject": f"s {s}", "author": "t", "iso": "i"} for s in shas]
+
+
+def _counting_ci(verdicts, default="red"):
+    calls: list[str] = []
+
+    def ci_fn(sha: str) -> str:
+        calls.append(sha)
+        return verdicts.get(sha, default)
+    return ci_fn, calls
+
+
+def test_red_tip_with_an_older_green_is_deployable():
+    # Pending (newest first): c3(red tip), c2(green), c1 — the frontier is c2 and it
+    # covers 2 of the 3 pending commits (c2 and c1).
+    g = FakeGit("d0", "c3", _commits("c3", "c2", "c1"))
+    ci_fn, calls = _counting_ci({"c3": "red", "c2": "green"})
+    st = detect.compute_pending("/r", git_mod=g, ci_fn=ci_fn)
+    assert st.behind is True
+    assert st.tip_ci == "red"
+    assert st.ci == "green", "a deployable frontier exists — the UI can act"
+    assert st.deployable_sha == "c2"
+    assert st.deployable_count == 2
+    assert calls == ["c3", "c2"], "the walk stops at the first green"
+    d = st.to_dict()
+    assert d["tipCi"] == "red" and d["deployableSha"] == "c2" and d["deployableCount"] == 2
+
+
+def test_all_red_pending_has_no_deployable():
+    g = FakeGit("d0", "c3", _commits("c3", "c2", "c1"))
+    ci_fn, calls = _counting_ci({})
+    st = detect.compute_pending("/r", git_mod=g, ci_fn=ci_fn)
+    assert st.ci == "red" and st.tip_ci == "red"
+    assert st.deployable_sha == "" and st.deployable_count == 0
+    assert calls == ["c3", "c2", "c1"]
+
+
+def test_green_tip_behaviour_unchanged_and_covers_everything():
+    g = FakeGit("d0", "c3", _commits("c3", "c2", "c1"))
+    ci_fn, calls = _counting_ci({}, default="green")
+    st = detect.compute_pending("/r", git_mod=g, ci_fn=ci_fn)
+    assert st.behind is True and st.ci == "green" and st.tip_ci == "green"
+    assert st.deployable_sha == "c3" and st.deployable_count == 3
+    assert calls == ["c3"], "a green tip never walks the backlog"
+
+
+def test_green_walk_is_capped():
+    # A deep all-red backlog must not burn one GitHub round-trip per commit: the walk
+    # is capped at 10 lookups beyond the tip.
+    shas = [f"c{i:02d}" for i in range(20, 0, -1)]     # c20 (tip) .. c01
+    g = FakeGit("d0", "c20", _commits(*shas))
+    ci_fn, calls = _counting_ci({})
+    st = detect.compute_pending("/r", git_mod=g, ci_fn=ci_fn)
+    assert st.deployable_sha == ""
+    assert len(calls) == 11, "tip + at most 10 walked lookups"
+
+
+def test_completed_verdicts_are_cached_across_ticks():
+    # green/red are immutable for a given sha: the second tick must serve both from
+    # the cache — ci_fn is called once per sha across ticks, not once per tick.
+    ci_fn, calls = _counting_ci({"c2": "green"})       # c3 red, c2 green
+    for _ in range(2):
+        g = FakeGit("d0", "c3", _commits("c3", "c2", "c1"))
+        st = detect.compute_pending("/r", git_mod=g, ci_fn=ci_fn)
+        assert st.deployable_sha == "c2" and st.tip_ci == "red"
+    assert calls == ["c3", "c2"]
+
+
+def test_pending_verdicts_are_requeried_every_tick():
+    ci_fn, calls = _counting_ci({}, default="pending")
+    for _ in range(2):
+        g = FakeGit("d0", "c1", _commits("c1"))
+        st = detect.compute_pending("/r", git_mod=g, ci_fn=ci_fn)
+        assert st.ci == "pending" and st.tip_ci == "pending"
+    assert calls == ["c1", "c1"], "a non-terminal verdict must be re-checked"
+
+
+def test_verdict_cache_is_bounded():
+    for i in range(detect._VERDICT_CACHE_MAX + 8):
+        detect._cached_ci(f"s{i}", lambda s: "green")
+    assert len(detect._verdict_cache) == detect._VERDICT_CACHE_MAX
 
 
 @pytest.mark.asyncio

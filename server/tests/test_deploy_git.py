@@ -27,6 +27,24 @@ def test_abs_git_dir_points_into_repo(repo):
     assert git.abs_git_dir(str(repo)).startswith(str(repo))
 
 
+def test_is_ancestor(repo):
+    base = git.current_sha(str(repo))
+    (repo / "b.txt").write_text("2")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "second"], check=True,
+                   capture_output=True,
+                   env={**__import__("os").environ, "GIT_AUTHOR_NAME": "t",
+                        "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+                        "GIT_COMMITTER_EMAIL": "t@t"})
+    head = git.current_sha(str(repo))
+    assert git.is_ancestor(str(repo), base, head) is True
+    assert git.is_ancestor(str(repo), head, base) is False
+    assert git.is_ancestor(str(repo), head, head) is True, "a commit is its own ancestor"
+    # An unknown rev is "not an ancestor", never an exception — preflight turns
+    # this into a clean DeployError instead of a stack trace.
+    assert git.is_ancestor(str(repo), "0" * 40, head) is False
+
+
 def test_log_range_lists_new_commits(repo):
     base = git.current_sha(str(repo))
     (repo / "b.txt").write_text("2")

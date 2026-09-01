@@ -144,13 +144,14 @@ def guard_working_tree(repo: str, run: Run = subprocess.run) -> bool:
     return dirty
 
 
-def _clear_incoming_untracked_collisions(repo: str, ref: str, run: Run = subprocess.run) -> list[str]:
-    """Remove untracked working-tree files that collide with paths tracked in origin/<ref>.
+def _clear_incoming_untracked_collisions(repo: str, rev: str, run: Run = subprocess.run) -> list[str]:
+    """Remove untracked working-tree files that collide with paths tracked in *rev*
+    (the fast-forward's merge target: ``origin/<ref>`` or an explicit sha).
 
     A file created out-of-band on the deploy host (untracked) but later committed upstream
     blocks `git merge --ff-only` ("untracked working tree files would be overwritten by
-    merge"). Such a file is safe to drop: origin/<ref> carries the canonical tracked version
-    that the merge is about to install. Only paths that exist in origin/<ref> are removed —
+    merge"). Such a file is safe to drop: *rev* carries the canonical tracked version
+    that the merge is about to install. Only paths that exist in *rev* are removed —
     unrelated untracked state (SQLite DB, .venv, web/dist) is left untouched.
 
     Returns the list of removed paths.
@@ -159,8 +160,8 @@ def _clear_incoming_untracked_collisions(repo: str, ref: str, run: Run = subproc
                  capture_output=True, text=True)
     removed: list[str] = []
     for path in (p for p in others.stdout.split("\0") if p):
-        # Only delete if the path is tracked in the incoming ref (i.e. will be replaced).
-        present = run(["git", "-C", repo, "cat-file", "-e", f"origin/{ref}:{path}"],
+        # Only delete if the path is tracked in the incoming rev (i.e. will be replaced).
+        present = run(["git", "-C", repo, "cat-file", "-e", f"{rev}:{path}"],
                       capture_output=True, text=True)
         if present.returncode == 0:
             run(["git", "-C", repo, "clean", "-f", "-q", "--", path],
@@ -170,31 +171,40 @@ def _clear_incoming_untracked_collisions(repo: str, ref: str, run: Run = subproc
 
 
 def fast_forward(repo: str, ref: str = "master", run: Run = subprocess.run) -> None:
-    """Fast-forward the local branch to origin/<ref>.
+    """Fast-forward the local branch to origin/<ref>, or to an explicit commit sha.
+
+    *ref* may be a branch name (the default deploy: fast-forward to ``origin/<ref>``)
+    or a hex commit sha (green-frontier deploy: fast-forward to exactly that commit,
+    stopping short of a red ``origin/master`` tip — ``git merge --ff-only <sha>`` works
+    the same). A sha cannot be fetched by name, so the fetch still targets ``master``.
 
     Deliberately fetches and then fast-forwards to the *tracking ref* (origin/<ref>)
     rather than using `git pull` (which merges the shared FETCH_HEAD). The deploy
     controller and the 30s DetectLoop both fetch this same worktree's FETCH_HEAD;
     two concurrent `git fetch origin <ref>` duplicate the for-merge line, so a
     `git pull --ff-only` intermittently dies with "Cannot fast-forward to multiple
-    branches". origin/<ref> is a single unambiguous ref, immune to that race.
+    branches". origin/<ref> is a single unambiguous ref, immune to that race — and an
+    explicit sha is immune by construction.
 
-    If an untracked file collides with a path newly tracked in origin/<ref>, the
+    If an untracked file collides with a path newly tracked in the merge target, the
     ff-merge aborts ("untracked working tree files would be overwritten by merge");
     that file is removed and the merge retried once (#320: a health-check script was
     placed out-of-band before its commit landed, wedging every deploy permanently).
 
     Raises DeployError("update", ...) if the fetch or the fast-forward fails.
     """
-    f = run(["git", "-C", repo, "fetch", "--quiet", "origin", ref],
+    is_sha = bool(_SHA_RE.match(ref))
+    fetch_ref = "master" if is_sha else ref
+    target_rev = ref if is_sha else f"origin/{ref}"
+    f = run(["git", "-C", repo, "fetch", "--quiet", "origin", fetch_ref],
             capture_output=True, text=True)
     if f.returncode != 0:
         raise DeployError("update", f"fetch failed: {f.stderr.strip()}")
-    m = run(["git", "-C", repo, "merge", "--ff-only", f"origin/{ref}"],
+    m = run(["git", "-C", repo, "merge", "--ff-only", target_rev],
             capture_output=True, text=True)
     if m.returncode != 0 and "untracked working tree files would be overwritten" in m.stderr:
-        if _clear_incoming_untracked_collisions(repo, ref, run):
-            m = run(["git", "-C", repo, "merge", "--ff-only", f"origin/{ref}"],
+        if _clear_incoming_untracked_collisions(repo, target_rev, run):
+            m = run(["git", "-C", repo, "merge", "--ff-only", target_rev],
                     capture_output=True, text=True)
     if m.returncode != 0:
         raise DeployError("update", f"fast-forward failed: {m.stderr.strip()}")

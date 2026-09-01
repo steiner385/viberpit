@@ -11,7 +11,9 @@ export interface DeployControllerValue {
   visible: boolean
   starting: boolean
   startError: string | null
-  start: () => void
+  /** Start a deploy. Pass a sha to deploy the green frontier (the newest CI-green
+   *  pending commit) instead of origin/master's tip; omit for the tip. */
+  start: (targetSha?: string) => void
   dismiss: () => void
 }
 
@@ -56,9 +58,9 @@ export function DeployControllerProvider({ children }: { children: ReactNode }) 
     return () => clearTimeout(t)
   }, [intent])
 
-  const doStart = useCallback(() => {
+  const doStart = useCallback((targetSha?: string) => {
     setIntent('starting')
-    start.mutate(undefined, { onError: () => setIntent('held-failure') })
+    start.mutate(targetSha, { onError: () => setIntent('held-failure') })
   }, [start])
 
   const dismiss = useCallback(() => setIntent('idle'), [])

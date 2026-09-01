@@ -806,8 +806,10 @@ export function useDeployStatus() {
 
 export function useStartDeploy() {
   const qc = useQueryClient()
-  return useMutation<{ started: boolean; reason?: string }, ApiRequestError, void>({
-    mutationFn: () => startDeploy(),
+  // The variable is an optional explicit target sha (green-frontier deploy);
+  // undefined deploys origin/master's tip as always.
+  return useMutation<{ started: boolean; reason?: string }, ApiRequestError, string | undefined>({
+    mutationFn: (targetSha) => startDeploy(targetSha),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['deploy', 'status'] }),
   })
 }

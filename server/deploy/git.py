@@ -26,6 +26,19 @@ def short_sha(repo: str, sha: str, run: Run = subprocess.run) -> str:
     return _out(repo, "rev-parse", "--short", sha, run=run)
 
 
+def is_ancestor(repo: str, ancestor: str, descendant: str, run: Run = subprocess.run) -> bool:
+    """True when *ancestor* is an ancestor of (or equal to) *descendant*.
+
+    Backs the explicit-target preflight gate: a deploy target must sit inside
+    ``live..origin/master`` (live is an ancestor of it, and it an ancestor of the tip).
+    Any failure — including an unknown rev — is "not an ancestor", never an exception,
+    so preflight can refuse cleanly instead of stack-tracing.
+    """
+    r = run(["git", "-C", repo, "merge-base", "--is-ancestor", ancestor, descendant],
+            capture_output=True, text=True)
+    return r.returncode == 0
+
+
 def fetch(repo: str, ref: str = "master", run: Run = subprocess.run) -> None:
     run(["git", "-C", repo, "fetch", "--quiet", "origin", ref], check=True,
         capture_output=True, text=True)
