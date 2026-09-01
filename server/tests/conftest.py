@@ -35,13 +35,60 @@ from pathlib import Path
 _REAL_HOME = (Path.home() / ".claude-accounts").resolve()
 
 
+def _db_is_production(db: str | None) -> bool:
+    """True if ``db`` (a CCSWITCH_DB_URL) could be the PRODUCTION database.
+
+    The redirect below rewrites CCSWITCH_DB_URL to a throwaway SQLite file
+    whenever this returns True, so it must err on the side of "yes, prod".
+
+    - ``None`` — unset; ``server.config.Settings`` would default to the real
+      store → production.
+    - In-memory SQLite — ephemeral, never production.
+    - File SQLite — production only if it IS the real ``~/.claude-accounts``
+      store (a tmp-dir file is a test's own isolated DB).
+    - Any networked URL (Postgres, …) — production UNLESS the *database name*
+      contains "test". This mirrors the ``pg_url`` guard's naming convention
+      and is the case the original ``str(_REAL_HOME) in db`` check missed once
+      production moved from a SQLite file to Postgres: the prod URL contains no
+      filesystem path, so it was silently classified non-prod and the whole
+      suite ran against live Postgres.
+    """
+    if db is None:
+        return True
+    if db.startswith("sqlite"):
+        if ":memory:" in db:
+            return False
+        return str(_REAL_HOME) in db
+    from urllib.parse import urlsplit
+    db_name = urlsplit(db).path.lstrip("/")
+    return "test" not in db_name.lower()
+
+
+def _archive_home_is_production(archive: str | None) -> bool:
+    """True if ``archive`` (a CCSWITCH_ARCHIVE_HOME) is a production location.
+
+    ``paths.archive_dir()`` reads this env var and, when unset, falls back to
+    ``$CCSWITCH_HOME/archive``. A dev/deploy shell exports it at the real
+    archive disk (e.g. ``/mnt/hdd-storage/ccswitch-archives``); inherited into
+    a test process it overrides the per-test ``$CCSWITCH_HOME/archive`` and
+    points archive/unarchive at the live archive tree. A test's OWN isolated
+    archive lives under the system temp dir (``tmp_path``), so treat anything
+    outside it as production. Unset is fine — it means "use the fallback".
+    """
+    if archive is None:
+        return False
+    return not str(Path(archive).resolve()).startswith(tempfile.gettempdir())
+
+
 def _redirect_state_off_production():
     home = os.environ.get("CCSWITCH_HOME")
     db = os.environ.get("CCSWITCH_DB_URL")
+    archive = os.environ.get("CCSWITCH_ARCHIVE_HOME")
     home_is_prod = home is None or Path(home).resolve() == _REAL_HOME
-    db_is_prod = db is None or str(_REAL_HOME) in db
-    if not home_is_prod and not db_is_prod:
-        return  # caller already isolated both — respect it
+    db_is_prod = _db_is_production(db)
+    archive_is_prod = _archive_home_is_production(archive)
+    if not home_is_prod and not db_is_prod and not archive_is_prod:
+        return  # caller already isolated everything — respect it
 
     session_home = Path(tempfile.mkdtemp(prefix="ccswitch-tests-"))
     atexit.register(shutil.rmtree, session_home, ignore_errors=True)
@@ -51,6 +98,11 @@ def _redirect_state_off_production():
         os.environ["CCSWITCH_DB_URL"] = (
             f"sqlite+aiosqlite:///{session_home / 'ccswitch.db'}"
         )
+    if archive_is_prod:
+        # Unset (not redirect): archive_dir() then falls back to
+        # $CCSWITCH_HOME/archive, tracking each test's own (isolated)
+        # CCSWITCH_HOME, which per-test patch.dict overrides freely.
+        os.environ.pop("CCSWITCH_ARCHIVE_HOME", None)
 
 
 _redirect_state_off_production()
