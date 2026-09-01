@@ -192,14 +192,14 @@ describe('Dashboard — Archived tab', () => {
     expect(document.activeElement).toBe(screen.getByRole('tab', { name: /insights/i }))
   })
 
-  it('ArrowLeft from Archived moves focus to Initiatives', async () => {
+  it('ArrowLeft from Archived moves focus to Products', async () => {
     const user = userEvent.setup()
     render(<Dashboard />, { wrapper })
 
     screen.getByRole('tab', { name: /archived/i }).focus()
     await user.keyboard('{ArrowLeft}')
 
-    expect(document.activeElement).toBe(screen.getByRole('tab', { name: /initiatives/i }))
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: /products/i }))
   })
 
   // ── Archived list rows ───────────────────────────────────────────────────────

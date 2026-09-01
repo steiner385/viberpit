@@ -22,6 +22,7 @@ import { PipelineTab } from '@/pipeline/PipelineTab'
 import { InsightsView } from './InsightsView'
 import { AutomationsTab } from '@/automations/AutomationsTab'
 import { InitiativesTab } from '@/initiatives/InitiativesTab'
+import { ProjectsTab } from '@/projects/ProjectsTab'
 import { TabBar } from './TabBar'
 import { buildTabs } from './tabDefs'
 import { inFlightPrCount } from '@/session/prStatus'
@@ -470,7 +471,7 @@ export function RenameDialog({ sessionId, currentName, onClose, onSubmit, isPend
 
 // ── Dashboard ────────────────────────────────────────────────────────────────
 
-export type TabId = 'sessions' | 'archived' | 'pipeline' | 'automations' | 'initiatives' | 'insights' | 'settings'
+export type TabId = 'sessions' | 'archived' | 'pipeline' | 'automations' | 'initiatives' | 'projects' | 'insights' | 'settings'
 
 interface DashboardProps {
   /** Called when the user opens a session (navigates to Terminal view).
@@ -933,6 +934,18 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
           className="flex flex-col flex-1 min-h-0"
         >
           <InitiativesTab />
+        </div>
+      )}
+
+      {/* Products panel — PM phase-1 project registry */}
+      {activeTab === 'projects' && (
+        <div
+          id="tabpanel-projects"
+          role="tabpanel"
+          aria-labelledby="tab-projects"
+          className="flex flex-col flex-1 min-h-0"
+        >
+          <ProjectsTab />
         </div>
       )}
 
