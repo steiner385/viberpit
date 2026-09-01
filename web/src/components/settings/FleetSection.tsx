@@ -2,6 +2,15 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { api } from '@/api/client'
+import { usePendingDeploy } from '@/api/hooks'
+
+export interface HostUpgrade {
+  state: 'idle' | 'running' | 'failed' | 'done'
+  step: string | null
+  error: string | null
+  startedAt: string | null
+  target: string | null
+}
 
 export interface FleetHost {
   name: string
@@ -17,6 +26,15 @@ export interface FleetHost {
   protocol: number | null
   lastProbeAt: string | null
   lastError: string | null
+  sshHost: string | null
+  repoPath: string | null
+  upgrade: HostUpgrade | null
+}
+
+/** Prefix match, not ===: hosts abbreviate the same commit to different
+ *  lengths (mirrors server.deploy.steps.short_sha_match, #788). */
+function shaMatch(a: string, b: string): boolean {
+  return a.length > 0 && b.length > 0 && (a.startsWith(b) || b.startsWith(a))
 }
 
 /** Tri-state on purpose: null means "never probed", NOT "down". */
@@ -47,6 +65,11 @@ export function FleetSection() {
     queryFn: () => api.get<{ hosts: FleetHost[] }>('/fleet/hosts'),
     refetchInterval: 15_000,
   })
+  // Newest known sha: the deploy's pending target when it reports one, else the
+  // edge's own live sha. A host whose sha trails it (and that has ssh config)
+  // can be updated in place.
+  const { data: pending } = usePendingDeploy()
+  const newestSha = pending?.targetSha || pending?.liveSha || null
 
   const [draft, setDraft] = useState({ name: '', endpoint: '' })
   const [addError, setAddError] = useState<string | null>(null)
@@ -75,6 +98,17 @@ export function FleetSection() {
     mutationFn: (name: string) => api.del(`/fleet/hosts/${encodeURIComponent(name)}`),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['fleet', 'hosts'] }),
   })
+
+  const upgrade = useMutation({
+    mutationFn: (name: string) =>
+      api.post<{ started: boolean }>(`/fleet/hosts/${encodeURIComponent(name)}/upgrade`, {}),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['fleet', 'hosts'] }),
+  })
+
+  /** Outdated (sha trails the newest known one) AND upgradable in-app (ssh config set). */
+  const canUpdate = (h: FleetHost): boolean =>
+    Boolean(h.sshHost && h.repoPath && h.sha && newestSha && !shaMatch(h.sha, newestSha)) &&
+    h.upgrade?.state !== 'running'
 
   if (isError) {
     return <p className="text-sm text-red-600 dark:text-red-400">Could not load the fleet.</p>
@@ -134,7 +168,43 @@ export function FleetSection() {
                   <td className="pr-2">
                     {h.memAvailableMb ? `${Math.round(h.memAvailableMb / 1024)} GB` : '—'}
                   </td>
-                  <td className="pr-2 font-mono text-xs">{h.sha ?? '—'}</td>
+                  <td className="pr-2 font-mono text-xs">
+                    {h.sha ?? '—'}
+                    {canUpdate(h) && (
+                      <button
+                        type="button"
+                        aria-label={`update ${h.name}`}
+                        title={`Update ${h.name} to ${newestSha}`}
+                        disabled={upgrade.isPending}
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              `Update ${h.name} to ${newestSha}? Its daemon will restart.`,
+                            )
+                          )
+                            upgrade.mutate(h.name)
+                        }}
+                        className="ml-2 rounded border border-blue-600 px-1.5 py-0.5 font-sans text-xs text-blue-600 hover:bg-blue-600 hover:text-white disabled:opacity-40 dark:border-blue-400 dark:text-blue-400"
+                      >
+                        Update
+                      </button>
+                    )}
+                    {h.upgrade?.state === 'running' && (
+                      <div className="font-sans text-xs text-blue-600 dark:text-blue-400">
+                        updating… {h.upgrade.step ?? ''}
+                      </div>
+                    )}
+                    {h.upgrade?.state === 'failed' && (
+                      <div className="font-sans text-xs text-red-600 dark:text-red-400 break-all">
+                        update failed: {h.upgrade.error}
+                      </div>
+                    )}
+                    {h.upgrade?.state === 'done' && (
+                      <div className="font-sans text-xs text-green-600 dark:text-green-400">
+                        updated
+                      </div>
+                    )}
+                  </td>
                   <td className="pr-2">
                     <input
                       type="number"

@@ -89,7 +89,7 @@ def compute_pending(repo: str, *, git_mod=_git, ci_fn: Callable[[str], str] = _s
     # differ but the range is empty, so the banner showed "Deploy now" over "0 changes pending".
     # A single source of truth (commits) keeps `behind` and the displayed count from disagreeing.
     # Prefix match, not ==: the edge abbreviates its sha while git gives the full one (#788).
-    if _steps._short_sha_match(live, target):
+    if _steps.short_sha_match(live, target):
         return PendingState(behind=False, live_sha=live, target_sha=target,
                             checkout_sha=checkout, commits=[], ci="green")
     commits = git_mod.log_range(repo, live, target)
