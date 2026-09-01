@@ -2,7 +2,6 @@
 import pytest
 
 from server.pm.featuredoc import (
-    FeatureDoc,
     FeatureDocError,
     FeatureLinkRef,
     parse_feature_doc,

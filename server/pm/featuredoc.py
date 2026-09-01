@@ -37,10 +37,6 @@ class FeatureDoc:
 def parse_feature_doc(text: str) -> FeatureDoc:
     if not text.startswith("---"):
         raise FeatureDocError("missing frontmatter fence")
-    parts = text.split("\n---", 2)
-    # parts[0] is the opening "---" line (possibly with trailing yaml on next
-    # lines), parts[1] the rest of the yaml block only when the fence sits on
-    # its own line; the robust split: find the closing fence line.
     lines = text.splitlines()
     try:
         close = next(i for i, ln in enumerate(lines[1:], start=1) if ln.strip() == "---")
