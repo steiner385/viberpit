@@ -131,9 +131,19 @@ async def create_project(
             is_primary=(i == primary_idx),
         ))
     await db.flush()
+    # Fetch the repos we just created so we can return the full shape (repos,
+    # edges, featureCount, workItemCount) that the frontend Project type requires.
+    repos_created = (await db.execute(
+        select(ProjectRepo).where(ProjectRepo.project_id == project.id)
+    )).scalars().all()
     await record_audit(db=db, type="pm.project.create", identity=identity,
                        detail={"slug": slug, "name": body.name})
-    return _project_to_dict(project)
+    d = _project_to_dict(project)
+    d["repos"] = [_repo_to_dict(r) for r in repos_created]
+    d["edges"] = []
+    d["featureCount"] = 0
+    d["workItemCount"] = 0
+    return d
 
 
 @router.get("/projects")
@@ -264,7 +274,9 @@ async def delete_edge(
         )
     )).scalar_one_or_none()
     if edge is None:
-        raise HTTPException(status_code=404, detail={"error": "not_found"})
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "not_found", "message": f"Edge '{edge_id}' not found"})
     await db.delete(edge)
     await record_audit(db=db, type="pm.edge.delete", identity=identity,
                        detail={"src": slug, "edgeId": edge_id})

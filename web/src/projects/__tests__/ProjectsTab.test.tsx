@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
 import { ProjectsTab } from '../ProjectsTab'
@@ -14,6 +15,14 @@ vi.mock('@/api/pm', async (importOriginal) => ({
               backfillDone: false, lastSyncedAt: null }],
     edges: [], featureCount: 0, workItemCount: 12,
   }]),
+  createProject: vi.fn().mockResolvedValue({
+    id: '2', slug: 'myapp', name: 'MyApp', description: null, status: 'active',
+    portfolioTags: [], onboardingState: 'registered',
+    createdAt: null, updatedAt: null,
+    repos: [{ id: 'r2', repo: 'org/my-app', isPrimary: true,
+              backfillDone: false, lastSyncedAt: null }],
+    edges: [], featureCount: 0, workItemCount: 0,
+  }),
 }))
 
 function renderTab() {
@@ -40,5 +49,25 @@ describe('ProjectsTab', () => {
     renderTab()
     await waitFor(() =>
       expect(screen.getByText(/no projects yet/i)).toBeInTheDocument())
+  })
+
+  it('calls createProject with name and repo when the form is submitted', async () => {
+    const user = userEvent.setup()
+    const pm = await import('@/api/pm')
+    renderTab()
+
+    await user.click(screen.getByRole('button', { name: /new project/i }))
+
+    await user.type(screen.getByPlaceholderText('KinDash'), 'MyApp')
+    await user.type(screen.getByPlaceholderText('owner/repo'), 'org/my-app')
+
+    await user.click(screen.getByRole('button', { name: /add project/i }))
+
+    await waitFor(() =>
+      expect(vi.mocked(pm.createProject)).toHaveBeenCalledWith({
+        name: 'MyApp',
+        repos: [{ repo: 'org/my-app', isPrimary: true }],
+      }),
+    )
   })
 })

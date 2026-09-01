@@ -59,6 +59,11 @@ def test_project_lifecycle():
         body = resp.json()
         assert body["slug"] == "kindash"
         assert body["onboardingState"] == "registered"
+        # create must return the full Project shape the frontend type requires
+        assert body["repos"][0]["repo"] == "steiner385/KinDash"
+        assert body["edges"] == []
+        assert body["featureCount"] == 0
+        assert body["workItemCount"] == 0
 
         # duplicate slug conflicts
         resp = c.post("/api/pm/projects", json={
