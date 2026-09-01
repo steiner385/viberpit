@@ -360,3 +360,104 @@ def test_triage_accept_unknown_404():
     with _client_with_stubbed_seams() as c:
         r = c.post("/api/pm/triage/nope/accept", headers=IDENTITY_HEADERS)
         assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Regression: phase-2 routes must work when app.state.orchestrator is None
+# (i.e. remote/edge mode where app.state.sessions is the only adapter).
+# ---------------------------------------------------------------------------
+
+def test_phase2_routes_work_when_orchestrator_is_none():
+    """Regression: phase-2 routes must NOT raise AttributeError when
+    app.state.orchestrator is None (remote/edge mode). Before the fix all three
+    routes accessed request.app.state.orchestrator and 500'd on the edge.
+
+    The lifespan must complete before we can null out orchestrator, so we use
+    _client_with_stubbed_seams (which passes a real SessionOrchestrator) and then
+    set app.state.orchestrator=None INSIDE the 'with' block (after startup), which
+    is the exact runtime state of a remote/edge process mid-request."""
+    with _client_with_stubbed_seams() as c:
+        # Null out orchestrator to simulate remote/edge mid-request state.
+        # The TestClient is already running; lifespan completed successfully.
+        # The three phase-2 routes previously read app.state.orchestrator directly
+        # and would raise AttributeError here — now they must read app.state.sessions.
+        app = c.app  # type: ignore[attr-defined]
+        saved_orch = app.state.orchestrator
+        app.state.orchestrator = None  # type: ignore[assignment]
+        try:
+            # Create a project via the session-agnostic phase-1 route.
+            resp = c.post("/api/pm/projects", json={
+                "name": "Edge Test",
+                "repos": [{"repo": "o/edge-test", "isPrimary": True}],
+            }, headers=IDENTITY_HEADERS)
+            assert resp.status_code == 201, resp.text
+            proj_slug = resp.json()["slug"]  # let the server derive the slug
+
+            # GET /onboarding — before fix: AttributeError('NoneType' has no attribute
+            # 'pm_onboarding_counts') → 500; after fix: 200 from app.state.sessions.
+            r = c.get(f"/api/pm/projects/{proj_slug}/onboarding", headers=IDENTITY_HEADERS)
+            assert r.status_code == 200, (
+                f"Expected 200 from /onboarding with orchestrator=None but got "
+                f"{r.status_code}: {r.text}"
+            )
+            body = r.json()
+            assert "state" in body and "action" in body and "counts" in body
+
+            # POST /propose-map — before fix: same AttributeError → 500; after fix: 409
+            # (backfill_incomplete) because no repos have backfill_done=True.
+            r = c.post(f"/api/pm/projects/{proj_slug}/propose-map", headers=IDENTITY_HEADERS)
+            assert r.status_code == 409, (
+                f"Expected 409 backfill_incomplete with orchestrator=None but got "
+                f"{r.status_code}: {r.text}"
+            )
+            assert r.json()["detail"]["error"] == "backfill_incomplete"
+
+            # POST /classify — before fix: AttributeError → 500; after fix: 409
+            # (map_not_merged) because onboarding_state is 'registered'.
+            r = c.post(f"/api/pm/projects/{proj_slug}/classify", headers=IDENTITY_HEADERS)
+            assert r.status_code == 409, (
+                f"Expected 409 map_not_merged with orchestrator=None but got "
+                f"{r.status_code}: {r.text}"
+            )
+            assert r.json()["detail"]["error"] == "map_not_merged"
+        finally:
+            # Restore the orchestrator so the lifespan shutdown path can clean up.
+            app.state.orchestrator = saved_orch
+
+
+def test_remote_pm_onboarding_counts_returns_dataclass():
+    """Regression: RemoteOrchestrator.pm_onboarding_counts must return a
+    ProjectOnboardingView (not a raw dict). Before the fix, the API consumed
+    view.state / view.repo_count via attribute access → AttributeError on a dict."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+    from server.sessions.remote import RemoteOrchestrator
+    from server.pm.onboarding import ProjectOnboardingView
+
+    rpc_result = {
+        "state": "syncing",
+        "repo_count": 2,
+        "backfill_done_count": 1,
+        "feature_count": 0,
+        "open_unclassified_count": 0,
+        "pending_proposal_count": 0,
+        "map_pr_open": False,
+        "map_pr_merged": False,
+    }
+
+    client = MagicMock()
+    client.call = AsyncMock(return_value=rpc_result)
+    remote = RemoteOrchestrator(client)
+
+    view = asyncio.run(remote.pm_onboarding_counts("proj-123"))
+
+    assert isinstance(view, ProjectOnboardingView), (
+        f"Expected ProjectOnboardingView, got {type(view).__name__} — "
+        "dict was returned (the pre-fix bug)"
+    )
+    assert view.state == "syncing"
+    assert view.repo_count == 2
+    assert view.backfill_done_count == 1
+    # Verify attribute access works — this is what the API does; a dict would raise
+    # AttributeError here, which is exactly the second defect being fixed.
+    assert view.map_pr_open is False

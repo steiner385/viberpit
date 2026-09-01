@@ -338,7 +338,7 @@ async def get_onboarding(
     """The wizard's view over the onboarding engine (spec §5): current state,
     the next action to offer, and the counts behind the decision."""
     p = await _load_project(db, slug)
-    orch = request.app.state.orchestrator
+    orch = request.app.state.sessions
     view = await orch.pm_onboarding_counts(p.id)
     return {
         "state": view.state,
@@ -357,7 +357,7 @@ async def propose_map(
     """Spawn the archaeology map-synthesis session (idempotent). 409 if backfill
     is incomplete or the map step is already past/in flight."""
     p = await _load_project(db, slug)
-    orch = request.app.state.orchestrator
+    orch = request.app.state.sessions
     view = await orch.pm_onboarding_counts(p.id)
     if view.repo_count == 0 or view.backfill_done_count < view.repo_count:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
@@ -392,7 +392,7 @@ async def classify(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
             "error": "map_not_merged",
             "message": "merge the feature map before classifying the backlog"})
-    orch = request.app.state.orchestrator
+    orch = request.app.state.sessions
     dispatched = await orch.pm_classify_run(slug)
     await record_audit(db=db, type="pm.onboard.classify", identity=identity,
                        detail={"slug": slug, "dispatched": dispatched})
