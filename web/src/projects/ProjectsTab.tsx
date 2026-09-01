@@ -8,6 +8,8 @@ import { useState } from 'react'
 import { useCreateProject, useProjects, useSyncProject } from '@/api/hooks'
 import type { Project } from '@/api/pm'
 
+import { OnboardingWizard } from './OnboardingWizard'
+import { TriageReviewList } from './TriageReviewList'
 import './projects.css'
 
 function NewProjectForm({ onClose }: { onClose: () => void }) {
@@ -70,6 +72,7 @@ function ProjectCard({ project }: { project: Project }) {
         <span>{project.workItemCount} work items</span>
         <span>{project.featureCount} features</span>
       </div>
+      {project.slug && <OnboardingWizard slug={project.slug} />}
       <div className="pm-card-actions">
         <button
           onClick={() => project.slug && sync.mutate(project.slug)}
@@ -101,6 +104,7 @@ export function ProjectsTab() {
       <div className="pm-project-grid">
         {(projects ?? []).map((p) => <ProjectCard key={p.id} project={p} />)}
       </div>
+      <TriageReviewList />
     </div>
   )
 }
