@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from server.github.pr_status import PipelinePr
     from server.pipeline.merge_train import MergeTrainState
     from server.pipeline.track import StageModel
+    from server.pm.onboarding import ProjectOnboardingView
 
 from ccswitch import accounts as ccswitch_accounts
 from ccswitch import configdir, copilot as _copilot_mod, crypto, gitrepos, worktrees
@@ -3539,9 +3540,14 @@ class SessionOrchestrator:
             url = f"https://github.com/{repo}.git"
             cwd = await asyncio.to_thread(
                 gitrepos.ensure_clone, await self._effective_repo_root(), repo, url)
+        import hashlib as _hashlib
+        _chunk_key = _hashlib.sha1(
+            ",".join(f"{w.repo}#{w.number}" for w in sorted(
+                chunk, key=lambda w: (w.repo or "", w.number or 0))
+            ).encode()).hexdigest()[:12]
         rec = await self._pm_classify_ctx.spawn_session(
-            origin_ref=f"{slug}:classify:{chunk[0].number}",
-            dedupe_key=f"{slug}:classify:{chunk[0].number}",
+            origin_ref=f"{slug}:classify:{_chunk_key}",
+            dedupe_key=f"{slug}:classify:{_chunk_key}",
             repo=repo or None, cwd=cwd, account=account,
             name=f"pm classify {slug}", initial_prompt=prompt,
             detail={"slug": slug, "kind": "classify", "count": len(chunk)})
@@ -3561,7 +3567,13 @@ class SessionOrchestrator:
         """Turn a classify session's output into TriageProposal rows. Resolves
         each feature_slug to a Feature.id within the project; skips a row whose
         work item is missing or already has a pending proposal (idempotent
-        re-ingest). Returns rows written. Propose-only: NEVER touches overlays."""
+        re-ingest). Returns rows written.
+
+        For each written row, sets ``WorkItem.triage_state = "proposed"`` as a
+        scheduling marker (mirrors the fact that a proposal now exists). NEVER
+        touches the SCORE overlay columns (``feature_id``, ``reach``, ``impact``,
+        ``effort``, ``confidence``, ``classified_by``, ``classified_at``) — those
+        are written only when a human accepts the proposal."""
         from sqlalchemy import select
         from server.db.models import (
             Feature, Project, ProjectRepo, TriageProposal, WorkItem)
@@ -3611,7 +3623,7 @@ class SessionOrchestrator:
                 await db.commit()
         return written
 
-    async def _pm_onboarding_counts(self, project_id: str):
+    async def _pm_onboarding_counts(self, project_id: str) -> ProjectOnboardingView:
         """Build the onboarding engine's view for a project in one grouped read
         (used by the API's wizard-state endpoint)."""
         from sqlalchemy import func, select

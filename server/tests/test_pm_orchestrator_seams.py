@@ -177,6 +177,31 @@ async def test_classify_ingest_writes_pending_proposals(db_env):
         assert by_num[101].proposed_feature_id is None       # no_fit
         assert by_num[101].no_fit_suggestion == "billing"
 
+        # Fix 1: _pm_classify_ingest sets triage_state="proposed" as a scheduling
+        # marker on every written WorkItem, but NEVER touches the SCORE overlay.
+        wi_100 = (await db.execute(select(WorkItem).where(
+            WorkItem.repo == "steiner385/ccswitch",
+            WorkItem.number == 100))).scalar_one()
+        wi_101 = (await db.execute(select(WorkItem).where(
+            WorkItem.repo == "steiner385/ccswitch",
+            WorkItem.number == 101))).scalar_one()
+        # Both touched items advance to "proposed"
+        assert wi_100.triage_state == "proposed"
+        assert wi_101.triage_state == "proposed"
+        # Un-touched item (102) stays "unclassified"
+        wi_102 = (await db.execute(select(WorkItem).where(
+            WorkItem.repo == "steiner385/ccswitch",
+            WorkItem.number == 102))).scalar_one()
+        assert wi_102.triage_state == "unclassified"
+        # Score-overlay columns are all still None (human-gate intact)
+        _score_overlay = ("feature_id", "reach", "impact", "effort",
+                          "confidence", "classified_by", "classified_at")
+        for wi in (wi_100, wi_101):
+            for col in _score_overlay:
+                assert getattr(wi, col) is None, (
+                    f"WorkItem #{wi.number}.{col} should be None before human accept"
+                )
+
 
 @pytest.mark.asyncio
 async def test_classify_ingest_is_idempotent(db_env):
