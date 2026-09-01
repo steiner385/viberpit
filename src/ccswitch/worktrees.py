@@ -28,6 +28,8 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+from ccswitch.gitrepos import git_env_for_remote
+
 log = logging.getLogger(__name__)
 
 # Per-clone serialization. Every worktree creation for one shared clone mutates
@@ -131,13 +133,21 @@ class WorktreeInfo:
     repo: str             # absolute toplevel of the main repo the worktree belongs to
 
 
-def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, capture_output=True, text=True)
+def _run(
+    args: list[str], env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(args, capture_output=True, text=True, env=env)
+
+
+def _origin_url(repo_top: str) -> str:
+    """The repo's ``origin`` URL, or "" when it has no origin."""
+    r = _run(["git", "-C", repo_top, "remote", "get-url", "origin"])
+    return r.stdout.strip() if r.returncode == 0 else ""
 
 
 def _has_origin(repo_top: str) -> bool:
     """True if the repo has an `origin` remote configured."""
-    return _run(["git", "-C", repo_top, "remote", "get-url", "origin"]).returncode == 0
+    return bool(_origin_url(repo_top))
 
 
 def _remote_default_ref(repo_top: str) -> str | None:
@@ -158,12 +168,18 @@ def _remote_default_ref(repo_top: str) -> str | None:
 def _try_fetch_origin(repo_top: str) -> bool:
     """Fetch `origin`; return True on success.
 
-    A fetch failure is best-effort, NOT fatal: many real origins are not fetchable
-    non-interactively (private repos with no cached credentials, the credential-less
-    deploy box, offline). On failure we log a warning and return False so the caller
-    bases the session on the local ref rather than refusing to start it.
+    Authenticates with the same per-owner App installation token as
+    ``gitrepos.ensure_clone`` (issue #887) — this is a NETWORK call, and leaving it
+    on the machine's ambient credential helper is what made "private repos with no
+    cached credentials" look like an unavoidable fact rather than a bug. Falls back
+    to ambient auth when no App token is available (CLI usage, non-GitHub remote).
+
+    A fetch failure is still best-effort, NOT fatal: the credential-less deploy box
+    and plain offline both hit it. On failure we log a warning and return False so
+    the caller bases the session on the local ref rather than refusing to start it.
     """
-    r = _run(["git", "-C", repo_top, "fetch", "origin"])
+    r = _run(["git", "-C", repo_top, "fetch", "origin"],
+             env=git_env_for_remote(_origin_url(repo_top)))
     if r.returncode != 0:
         log.warning("worktree.fetch_failed repo=%s — basing on local ref: %s",
                     repo_top, r.stderr.strip())
