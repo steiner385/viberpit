@@ -12,12 +12,14 @@ class FakeController:
     def __init__(self):
         self.status = DeployStatus(target_sha="def", running=False)
         self.started = 0
+        self.target_shas: list[str | None] = []
         self._running = False
 
-    async def deploy_once(self):
+    async def deploy_once(self, target_sha=None):
         if self._running:
             raise RuntimeError("deploy already in progress")
         self.started += 1
+        self.target_shas.append(target_sha)
         self.status = DeployStatus(target_sha="def", running=False, phases={"update": "done"})
         return self.status
 
@@ -48,6 +50,25 @@ def test_start_triggers_deploy(client):
     assert r.status_code == 200 and r.json()["started"] is True
     # background task ran
     assert ctrl.started == 1
+
+
+def test_start_forwards_target_sha_from_body(client):
+    c, ctrl = client
+    r = c.post("/start", json={"targetSha": "abc1234"})
+    assert r.status_code == 200 and r.json()["started"] is True
+    assert ctrl.target_shas == ["abc1234"]
+
+
+def test_start_without_body_passes_no_target(client):
+    c, ctrl = client
+    assert c.post("/start").status_code == 200
+    assert ctrl.target_shas == [None]
+
+
+def test_start_with_empty_json_body_passes_no_target(client):
+    c, ctrl = client
+    assert c.post("/start", json={}).status_code == 200
+    assert ctrl.target_shas == [None]
 
 
 def test_start_conflict_when_running(client):

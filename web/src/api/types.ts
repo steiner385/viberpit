@@ -305,7 +305,16 @@ export interface PendingDeploy {
    *  checkout without restarting the units. Absent from pre-#859 controllers. */
   checkoutSha?: string
   commits: { sha: string; subject: string; author: string; iso: string }[]
+  /** What the Deploy button can act on: "green" whenever something pending is
+   *  deployable — the tip, or an older green commit when the tip is red/pending. */
   ci: string
+  /** The tip's own CI verdict. Absent from pre-green-frontier controllers. */
+  tipCi?: string
+  /** Newest pending commit with green CI (equals targetSha when the tip is green);
+   *  ""/absent when nothing pending is deployable. A partial deploy targets this. */
+  deployableSha?: string
+  /** How many of the pending commits a deploy of deployableSha ships. */
+  deployableCount?: number
 }
 
 export interface DeployProgress {

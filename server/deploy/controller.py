@@ -125,7 +125,13 @@ class DeployController:
         self.status.phases[phase.value] = state.value
         self._persist_status()
 
-    async def deploy_once(self) -> DeployStatus:
+    async def deploy_once(self, target_sha: str | None = None) -> DeployStatus:
+        """Run one deploy. Without *target_sha* the deploy targets origin/master's tip,
+        exactly as always. With *target_sha* — the green-frontier path, used when the tip
+        is red but an older pending commit is green — preflight additionally validates
+        that the sha lies inside ``live..origin/master`` and is itself CI-green, and then
+        the WHOLE deploy (fast-forward, dep-sync, classification, restarts, publish)
+        targets that sha instead of the tip."""
         if self._lock_acquired:
             raise RuntimeError("deploy already in progress")
         self._lock_acquired = True
@@ -144,6 +150,25 @@ class DeployController:
             await asyncio.to_thread(self._git.fetch, self.repo)
             local = await asyncio.to_thread(self._git.current_sha, self.repo)
             remote = await asyncio.to_thread(self._git.remote_sha, self.repo)
+            if target_sha is not None:
+                # The sha lands in git argv (merge --ff-only <sha>): refuse anything that
+                # is not plain hex before running ANY git command with it.
+                if not _steps._SHA_RE.match(target_sha):
+                    raise DeployError("preflight",
+                                      f"targetSha {target_sha!r} is not a hex git sha")
+                # The target must sit inside live..origin/master: an ancestor of the tip
+                # (it has been merged) that the current checkout can fast-forward to.
+                if not await asyncio.to_thread(self._git.is_ancestor, self.repo,
+                                               target_sha, remote):
+                    raise DeployError("preflight",
+                                      f"targetSha {target_sha} is not an ancestor of "
+                                      "origin/master")
+                if not await asyncio.to_thread(self._git.is_ancestor, self.repo,
+                                               local, target_sha):
+                    raise DeployError("preflight",
+                                      f"targetSha {target_sha} is not reachable from the "
+                                      f"deployed commit {local} (cannot fast-forward)")
+                remote = target_sha
             self.status.target_sha = remote
             if local == remote:
                 # No new commits, but the built web/dist can still be stale relative to the
@@ -179,7 +204,12 @@ class DeployController:
             # --- update ---
             self._set(Phase.UPDATE, PhaseState.RUNNING)
             await asyncio.to_thread(self._steps.guard_working_tree, self.repo)
-            await asyncio.to_thread(self._steps.fast_forward, self.repo)
+            if target_sha is None:
+                await asyncio.to_thread(self._steps.fast_forward, self.repo)
+            else:
+                # remote == target_sha here: fast-forward to exactly that commit,
+                # stopping short of the (red) origin/master tip.
+                await asyncio.to_thread(self._steps.fast_forward, self.repo, remote)
             await asyncio.to_thread(self._steps.sync_deps_if_changed, self.repo, local, remote,
                                     venv_python=self.venv_python)
             await asyncio.to_thread(self._steps.build_frontend, self.repo)

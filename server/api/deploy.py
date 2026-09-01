@@ -3,6 +3,7 @@ import os
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from server.auth.middleware import current_identity
 from server.deploy.client import DeployControllerClient, DeployControllerUnavailable
@@ -56,13 +57,20 @@ async def deploy_status(
         return JSONResponse({"reason": "controller unavailable"}, status_code=503)
 
 
+class DeployStartBody(BaseModel):
+    """Optional start body: deploy an explicit sha (the newest GREEN pending commit,
+    when origin/master's tip is red). Absent means the tip — today's behaviour."""
+    targetSha: str | None = None
+
+
 @router.post("/start")
 async def deploy_start(
+    body: DeployStartBody | None = None,
     _identity: str = Depends(current_identity),
     client: DeployControllerClient = Depends(get_deploy_client),
 ) -> JSONResponse:
     try:
-        code, body = await client.start()
-        return JSONResponse(body, status_code=code)
+        code, resp = await client.start(body.targetSha if body is not None else None)
+        return JSONResponse(resp, status_code=code)
     except DeployControllerUnavailable:
         return JSONResponse({"started": False, "reason": "controller unavailable"}, status_code=503)

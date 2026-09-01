@@ -20,6 +20,12 @@ export function DeployPanel() {
   const unresolved = failed.length + gaveUp.length
   const count = pending?.commits.length ?? 0
   const ci = pending?.ci ?? 'unavailable'
+  // Green frontier: the tip is red/pending but an older pending commit is green — the
+  // Deploy button targets that sha and the banner says honestly how much it covers.
+  const tipCi = pending?.tipCi ?? ci
+  const deployableSha = pending?.deployableSha ?? ''
+  const deployableCount = pending?.deployableCount ?? 0
+  const partial = ci === 'green' && tipCi !== 'green' && !!deployableSha && deployableCount > 0
 
   // A prior deploy that failed only at the preflight CI gate is stale once CI is green again.
   const preflightStale = !running && phases.preflight === 'failed' && ci === 'green'
@@ -32,7 +38,9 @@ export function DeployPanel() {
 
   if (!behind && !showFailure) return null
   const canDeploy = behind && !running && ci === 'green'
-  const reason = running ? 'deploying…' : ci !== 'green' ? `CI ${ci}` : ''
+  const reason = running ? 'deploying…'
+    : partial ? `${deployableCount} of ${count} deployable (tip CI ${tipCi})`
+    : ci !== 'green' ? `CI ${ci}` : ''
 
   return (
     <div className="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/30 p-3 text-sm">
@@ -49,7 +57,7 @@ export function DeployPanel() {
                          focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400
                          disabled:opacity-50 disabled:hover:bg-amber-600 disabled:active:scale-100"
               disabled={!canDeploy || starting}
-              onClick={() => start()}
+              onClick={() => start(partial ? deployableSha : undefined)}
             >{starting ? 'Starting…' : 'Deploy now'}</button>
           </div>
         </div>

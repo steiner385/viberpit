@@ -18,7 +18,11 @@ export function DeployOverlay() {
   const { done, total } = deployProgress(deploy)
   const pct = Math.round((done / total) * 100)
   const count = pending?.commits.length ?? 0
-  const shortSha = (pending?.targetSha ?? deploy?.targetSha ?? '').slice(0, 7)
+  // Prefer the controller's actual deploy target: a green-frontier deploy targets an
+  // OLDER sha than pending.targetSha (origin/master's red tip), and the overlay must
+  // report what is really being shipped. pending.targetSha remains the fallback for
+  // the pre-start instant, before the controller has recorded its target.
+  const shortSha = (deploy?.targetSha || pending?.targetSha || '').slice(0, 7)
   const reconnecting = (running || intent === 'starting') && isError && failureCount > 0
   // Only highlight the phase that is actively running, never a failed one — a failed phase
   // should show its red dot, not the amber pulse that implies "in progress" (issue #741).

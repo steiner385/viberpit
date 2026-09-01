@@ -6,13 +6,19 @@ from server.deploy.types import Phase, PhaseState
 
 
 class FakeGit:
-    def __init__(self, local, remote, changed):
+    def __init__(self, local, remote, changed, ancestors=None):
         self._local, self._remote, self._changed = local, remote, changed
         self.reset_to = None
+        # (ancestor, descendant) pairs is_ancestor answers True for; None => always True.
+        self._ancestors = ancestors
+        self.ancestor_checks: list[tuple[str, str]] = []
     def fetch(self, repo, ref="master", run=None): pass
     def current_sha(self, repo, run=None): return self._local
     def remote_sha(self, repo, ref="origin/master", run=None): return self._remote
     def short_sha(self, repo, sha, run=None): return sha[:7]
+    def is_ancestor(self, repo, ancestor, descendant, run=None):
+        self.ancestor_checks.append((ancestor, descendant))
+        return self._ancestors is None or (ancestor, descendant) in self._ancestors
 
 
 def make_steps(*, ci="green", healthy=True, changed=None):
@@ -211,6 +217,137 @@ async def test_edge_only_single_host_keeps_short_health_window():
     st = await c.deploy_once()
     assert calls.health_kwargs["attempts"] == s.HEALTH_ATTEMPTS_EDGE_ONLY
     assert st.error is None
+
+
+# --- explicit target sha: deploy the newest GREEN commit when the tip is red ----------
+
+
+def _spy_steps_for_target(s, seen):
+    """Instrument every sha-consuming step so the test can assert the WHOLE deploy
+    targets the explicit sha, never origin/master's tip."""
+    def ci(sha, gh_api=None):
+        seen.setdefault("ci", []).append(sha)
+        return "green"
+    s.ci_verdict = ci
+    def ff(repo, ref="master", run=None):
+        seen["fast_forward_ref"] = ref
+    s.fast_forward = ff
+    def deps(repo, a, b, *, venv_python, run=None):
+        seen["deps_range"] = (a, b)
+        return []
+    s.sync_deps_if_changed = deps
+    def restart(*, daemon_changed, daemon_enabled, target_sha=None, run=None):
+        seen["restart_target"] = target_sha
+        return ["ccswitch.service"]
+    s.restart_units = restart
+    def publish(sha, gh_api_json=None):
+        seen["published"] = sha
+        return None
+    s.publish_deployment = publish
+
+
+@pytest.mark.asyncio
+async def test_deploy_once_targets_an_explicit_green_ancestor_sha():
+    """deploy_once(target_sha=...) with a green sha inside live..origin/master succeeds,
+    and EVERY step — verdict, fast-forward, dep-sync range, changed-files range, unit
+    restart, publish — sees that sha, not the (red) origin/master tip."""
+    g = FakeGit("1111111", "9999999", [])
+    s, calls = make_steps()
+    seen: dict = {}
+    _spy_steps_for_target(s, seen)
+    c = DeployController(
+        "/r", health_url="http://h", venv_python="/v/python", git_mod=g, steps_mod=s,
+        changed_files_fn=lambda repo, a, b: seen.setdefault("changed_range", (a, b)) and ["web/src/App.tsx"])
+    st = await c.deploy_once(target_sha="5555555")
+    assert st.error is None
+    assert st.target_sha == "5555555"
+    assert seen["ci"] == ["5555555"], "CI is gated on the TARGET, never the tip"
+    assert seen["fast_forward_ref"] == "5555555"
+    assert seen["deps_range"] == ("1111111", "5555555")
+    assert seen["changed_range"] == ("1111111", "5555555")
+    assert seen["restart_target"] == "5555555"
+    assert seen["published"] == "5555555"
+    # Ancestry validated both ways: target inside origin/master, live inside target.
+    assert g.ancestor_checks == [("5555555", "9999999"), ("1111111", "5555555")]
+
+
+@pytest.mark.asyncio
+async def test_non_ancestor_target_sha_refused_in_preflight():
+    """A target outside live..origin/master (not an ancestor of the tip) is refused in
+    preflight — nothing fast-forwarded, nothing restarted, nothing rolled back."""
+    g = FakeGit("1111111", "9999999", [],
+                ancestors={("1111111", "5555555")})   # target NOT ancestor of tip
+    s, calls = make_steps()
+    seen: dict = {}
+    _spy_steps_for_target(s, seen)
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
+                         git_mod=g, steps_mod=s,
+                         changed_files_fn=lambda repo, a, b: ["web/src/App.tsx"])
+    st = await c.deploy_once(target_sha="5555555")
+    assert st.error and "preflight" in st.error
+    assert st.phases["preflight"] == PhaseState.FAILED.value
+    assert "fast_forward_ref" not in seen and "restart_target" not in seen
+    assert calls.rolled_back is False
+
+
+@pytest.mark.asyncio
+async def test_target_sha_not_reachable_from_live_refused_in_preflight():
+    """A target BEHIND the live sha (or on a rolled-back branch) fails the second
+    ancestry leg: live must be an ancestor of the target or the ff-merge cannot land."""
+    g = FakeGit("1111111", "9999999", [],
+                ancestors={("5555555", "9999999")})   # live NOT ancestor of target
+    s, calls = make_steps()
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
+                         git_mod=g, steps_mod=s,
+                         changed_files_fn=lambda repo, a, b: ["web/src/App.tsx"])
+    st = await c.deploy_once(target_sha="5555555")
+    assert st.error and "preflight" in st.error
+    assert calls.restarted == [] and calls.rolled_back is False
+
+
+@pytest.mark.asyncio
+async def test_red_target_sha_refused_in_preflight():
+    g = FakeGit("1111111", "9999999", [])
+    s, calls = make_steps(ci="red")
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
+                         git_mod=g, steps_mod=s,
+                         changed_files_fn=lambda repo, a, b: ["web/src/App.tsx"])
+    st = await c.deploy_once(target_sha="5555555")
+    assert st.error and "preflight" in st.error
+    assert calls.restarted == [] and calls.rolled_back is False
+
+
+@pytest.mark.asyncio
+async def test_malformed_target_sha_refused_before_any_git_command():
+    """The sha lands in git argv (merge --ff-only <sha>): a non-hex value is refused
+    outright, before even the ancestry checks run."""
+    g = FakeGit("1111111", "9999999", [])
+    s, calls = make_steps()
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
+                         git_mod=g, steps_mod=s)
+    st = await c.deploy_once(target_sha="--upload-pack=evil")
+    assert st.error and "preflight" in st.error
+    assert g.ancestor_checks == []
+    assert calls.restarted == [] and calls.rolled_back is False
+
+
+@pytest.mark.asyncio
+async def test_no_target_sha_keeps_default_tip_behaviour():
+    """Without target_sha nothing consults ancestry and the deploy targets origin/master
+    exactly as before."""
+    g = FakeGit("1111111", "9999999", [])
+    s, calls = make_steps()
+    seen: dict = {}
+    _spy_steps_for_target(s, seen)
+    c = DeployController("/r", health_url="http://h", venv_python="/v/python",
+                         git_mod=g, steps_mod=s,
+                         changed_files_fn=lambda repo, a, b: ["web/src/App.tsx"])
+    st = await c.deploy_once()
+    assert st.error is None and st.target_sha == "9999999"
+    assert g.ancestor_checks == []
+    assert seen["ci"] == ["9999999"]
+    assert seen["fast_forward_ref"] == "master", "the default path keeps the branch ref"
+    assert seen["published"] == "9999999"
 
 
 @pytest.mark.asyncio

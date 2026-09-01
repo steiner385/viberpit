@@ -52,6 +52,49 @@ def test_fast_forward_merges_tracking_ref_not_fetch_head():
     assert ["git", "-C", "/repo", "merge", "--ff-only", "origin/master"] in calls, calls
 
 
+def test_fast_forward_to_explicit_sha_merges_that_sha():
+    """A hex sha as *ref* fast-forwards to exactly that commit (green-frontier deploys:
+    the newest GREEN commit when origin/master's tip is red). The fetch still targets
+    the master branch — a sha is not fetchable by name — and the merge names the sha."""
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    steps.fast_forward("/repo", "abc1234", run=fake_run)
+    assert ["git", "-C", "/repo", "fetch", "--quiet", "origin", "master"] in calls, calls
+    assert ["git", "-C", "/repo", "merge", "--ff-only", "abc1234"] in calls, calls
+    assert not any("origin/abc1234" in c for c in calls), calls
+
+
+def test_fast_forward_to_sha_stops_short_of_the_tip(tmp_path):
+    """Functional: with origin two commits ahead, fast-forwarding to the MIDDLE sha
+    lands exactly there — not on the (possibly red) tip."""
+    origin = tmp_path / "origin"
+    origin.mkdir()
+
+    def go(*a):
+        subprocess.run(["git", "-C", str(origin), *a], check=True, capture_output=True, env=_ENV)
+
+    def sha_of(repo):
+        return subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True,
+                              capture_output=True, text=True, env=_ENV).stdout.strip()
+
+    go("init", "-q", "-b", "master")
+    (origin / "a.txt").write_text("1"); go("add", "."); go("commit", "-qm", "c1")
+    local = tmp_path / "local"
+    subprocess.run(["git", "clone", "-q", str(origin), str(local)], check=True,
+                   capture_output=True, env=_ENV)
+    (origin / "a.txt").write_text("2"); go("add", "."); go("commit", "-qm", "c2 (green)")
+    middle = sha_of(origin)
+    (origin / "a.txt").write_text("3"); go("add", "."); go("commit", "-qm", "c3 (red tip)")
+
+    steps.fast_forward(str(local), middle)
+
+    assert sha_of(local) == middle
+
+
 def test_fast_forward_advances_repo_behind_origin(tmp_path):
     """Functional: a clone one commit behind origin/master is fast-forwarded to the tip."""
     origin = tmp_path / "origin"

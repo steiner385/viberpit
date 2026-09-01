@@ -45,6 +45,46 @@ describe('DeployPanel', () => {
     expect(mutate).toHaveBeenCalled()   // mutate is wired as controller.start in mockHooks
   })
 
+  it('offers a partial deploy of the green frontier when the tip is red', () => {
+    // 5 commits pending, tip CI red, but the 3 oldest are covered by a green commit:
+    // show the honest count and deploy THAT sha, not the tip.
+    const mutate = vi.fn()
+    const commits = ['c5', 'c4', 'c3', 'c2', 'c1'].map(sha => (
+      { sha, subject: `s ${sha}`, author: 't', iso: 'i' }))
+    mockHooks(
+      { behind: true, commits, ci: 'green', tipCi: 'red', deployableSha: 'c3', deployableCount: 3 },
+      { running: false, phases: {} }, mutate)
+    render(<DeployPanel />)
+    expect(screen.getByText(/3 of 5 deployable \(tip CI red\)/i)).toBeInTheDocument()
+    const btn = screen.getByRole('button', { name: /deploy now/i })
+    expect(btn).toBeEnabled()
+    fireEvent.click(btn)
+    expect(mutate).toHaveBeenCalledWith('c3')
+  })
+
+  it('keeps the red banner when nothing pending is deployable', () => {
+    const mutate = vi.fn()
+    mockHooks(
+      { behind: true, commits: [{ sha: 'c1', subject: 's', author: 't', iso: 'i' }],
+        ci: 'red', tipCi: 'red', deployableSha: '', deployableCount: 0 },
+      { running: false, phases: {} }, mutate)
+    render(<DeployPanel />)
+    expect(screen.getByRole('button', { name: /deploy now/i })).toBeDisabled()
+    expect(screen.getByText(/CI red/i)).toBeInTheDocument()
+    expect(screen.queryByText(/deployable/i)).not.toBeInTheDocument()
+  })
+
+  it('deploys the tip (no explicit target) when tip CI is green', () => {
+    const mutate = vi.fn()
+    mockHooks(
+      { behind: true, commits: [{ sha: 'c1', subject: 's', author: 't', iso: 'i' }],
+        ci: 'green', tipCi: 'green', deployableSha: 'c1', deployableCount: 1 },
+      { running: false, phases: {} }, mutate)
+    render(<DeployPanel />)
+    fireEvent.click(screen.getByRole('button', { name: /deploy now/i }))
+    expect(mutate).toHaveBeenCalledWith(undefined)
+  })
+
   it('disables Deploy with reason when CI not green', () => {
     mockHooks({ behind: true, commits: [{ sha: 'a', subject: 's', author: 't', iso: 'i' }], ci: 'pending' },
               { running: false, phases: {} })
