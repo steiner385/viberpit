@@ -68,7 +68,7 @@ async def test_spawn_map_sets_state_and_dedup(db_env):
     orch._effective_repo_root = _mk_async("/tmp/root")
     orch._sdlc_default_branch = _mk_async("master")
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
-        out = await orch._pm_onboard_spawn_map("ccswitch")
+        out = await orch.pm_onboard_spawn_map("ccswitch")
     assert out is not None
     assert rec.calls[0]["origin_ref"] == "ccswitch:feature-map"
     assert rec.calls[0]["dedupe_key"] == "ccswitch:feature-map"
@@ -88,7 +88,7 @@ async def test_spawn_map_no_account_returns_none(db_env):
     orch._effective_repo_root = _mk_async("/tmp/root")
     orch._sdlc_default_branch = _mk_async("master")
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
-        assert await orch._pm_onboard_spawn_map("ccswitch") is None
+        assert await orch.pm_onboard_spawn_map("ccswitch") is None
 
 
 @pytest.mark.asyncio
@@ -100,7 +100,7 @@ async def test_classify_run_dispatches_open_items(db_env):
     orch._backlog_healthy_account = _mk_async("acct1")
     orch._effective_repo_root = _mk_async("/tmp/root")
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
-        n = await orch._pm_classify_run("ccswitch")
+        n = await orch.pm_classify_run("ccswitch")
     assert n == 3
     assert rec.calls[0]["origin_ref"].startswith("ccswitch:classify")
     async with db_session() as db:
@@ -122,7 +122,7 @@ async def test_spawn_map_diff_scope_dedup_and_no_state_change(db_env):
     orch._effective_repo_root = _mk_async("/tmp/root")
     orch._sdlc_default_branch = _mk_async("master")
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
-        out = await orch._pm_onboard_spawn_map(
+        out = await orch.pm_onboard_spawn_map(
             "ccswitch", scope="diff", suggestion="billing",
             item_numbers=(100, 101), repo="steiner385/ccswitch")
     assert out is not None
@@ -144,7 +144,7 @@ async def test_classify_run_accepts_injected_batch(db_env):
     orch._backlog_healthy_account = _mk_async("acct1")
     orch._effective_repo_root = _mk_async("/tmp/root")
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
-        n = await orch._pm_classify_run(
+        n = await orch.pm_classify_run(
             "ccswitch",
             items=[("steiner385/ccswitch", 100, "issue"),
                    ("steiner385/ccswitch", 101, "issue")])

@@ -819,6 +819,22 @@ class RemoteOrchestrator:
     async def x11_open_browser(self, session_id: str, url: str | None = None) -> dict:
         return await self._client.call("x11_open_browser", session_id=session_id, url=url)
 
+    # --- pm onboarding seams (phase 2, 2026-08-31) ---
+    async def pm_onboarding_counts(self, project_id: str) -> dict:
+        """Build the onboarding engine's view for a project, via the daemon."""
+        return await self._client.call("pm_onboarding_counts", project_id=project_id)
+
+    async def pm_onboard_spawn_map(self, slug: str, **kwargs) -> dict | None:
+        """Spawn the archaeology map-synthesis session, via the daemon."""
+        return await self._client.call("pm_onboard_spawn_map", slug=slug, **kwargs,
+                                       timeout=AUTOMATION_RPC_TIMEOUT)
+
+    async def pm_classify_run(self, slug: str, **kwargs) -> int:
+        """Spawn one backlog-classification session, via the daemon."""
+        r = await self._client.call("pm_classify_run", slug=slug, **kwargs,
+                                    timeout=AUTOMATION_RPC_TIMEOUT)
+        return int(r) if r is not None else 0
+
     async def aclose(self) -> None:
         if self._global_pump is not None and not self._global_pump.done():
             self._global_pump.cancel()

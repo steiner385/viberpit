@@ -199,3 +199,7 @@ class InProcessOrchestratorAdapter:
     async def backlog_candidates(self, *a, **k): return await _maybe_await(self._orch.backlog_candidates(*a, **k))
     async def backlog_runner_dispatch(self, *a, **k): return await _maybe_await(self._orch.backlog_runner_dispatch(*a, **k))
     async def resolve_model_approval(self, *a, **k): return await _maybe_await(self._orch.resolve_model_approval(*a, **k))
+    # --- pm onboarding seams (phase 2, 2026-08-31) ---
+    async def pm_onboarding_counts(self, *a, **k): return await _maybe_await(self._orch.pm_onboarding_counts(*a, **k))
+    async def pm_onboard_spawn_map(self, *a, **k): return await _maybe_await(self._orch.pm_onboard_spawn_map(*a, **k))
+    async def pm_classify_run(self, *a, **k): return await _maybe_await(self._orch.pm_classify_run(*a, **k))

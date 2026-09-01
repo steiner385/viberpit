@@ -339,7 +339,7 @@ async def get_onboarding(
     the next action to offer, and the counts behind the decision."""
     p = await _load_project(db, slug)
     orch = request.app.state.orchestrator
-    view = await orch._pm_onboarding_counts(p.id)
+    view = await orch.pm_onboarding_counts(p.id)
     return {
         "state": view.state,
         "action": _onboarding_action_to_dict(next_onboarding_action(view)),
@@ -358,7 +358,7 @@ async def propose_map(
     is incomplete or the map step is already past/in flight."""
     p = await _load_project(db, slug)
     orch = request.app.state.orchestrator
-    view = await orch._pm_onboarding_counts(p.id)
+    view = await orch.pm_onboarding_counts(p.id)
     if view.repo_count == 0 or view.backfill_done_count < view.repo_count:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
             "error": "backfill_incomplete",
@@ -367,7 +367,7 @@ async def propose_map(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
             "error": "in_flight",
             "message": f"map step already past in state '{p.onboarding_state}'"})
-    rec = await orch._pm_onboard_spawn_map(slug)
+    rec = await orch.pm_onboard_spawn_map(slug)
     if rec is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
             "error": "no_capacity",
@@ -393,7 +393,7 @@ async def classify(
             "error": "map_not_merged",
             "message": "merge the feature map before classifying the backlog"})
     orch = request.app.state.orchestrator
-    dispatched = await orch._pm_classify_run(slug)
+    dispatched = await orch.pm_classify_run(slug)
     await record_audit(db=db, type="pm.onboard.classify", identity=identity,
                        detail={"slug": slug, "dispatched": dispatched})
     return {"dispatched": dispatched}

@@ -169,8 +169,8 @@ def _client_with_stubbed_seams():
                 async def _fake_classify_run(slug, **_kwargs):
                     return 3
 
-                orch._pm_onboard_spawn_map = _fake_spawn_map   # type: ignore[method-assign]
-                orch._pm_classify_run = _fake_classify_run     # type: ignore[method-assign]
+                orch.pm_onboard_spawn_map = _fake_spawn_map   # type: ignore[method-assign]
+                orch.pm_classify_run = _fake_classify_run     # type: ignore[method-assign]
                 app = create_app(orchestrator=orch)
                 with TestClient(app, raise_server_exceptions=False) as c:
                     yield c

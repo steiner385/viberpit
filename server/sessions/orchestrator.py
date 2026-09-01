@@ -3388,7 +3388,7 @@ class SessionOrchestrator:
 
     # ---------------------- pm onboarding seams (2026-08-31) --------------- #
 
-    async def _pm_onboard_spawn_map(
+    async def pm_onboard_spawn_map(
             self, slug: str, *, scope: str = "initial",
             suggestion: str | None = None,
             item_numbers: tuple[int, ...] = (),
@@ -3468,7 +3468,7 @@ class SessionOrchestrator:
                     await db.commit()
         return rec
 
-    async def _pm_classify_run(
+    async def pm_classify_run(
             self, slug: str, *,
             items: list[tuple[str, int, str]] | None = None) -> int:
         """One classify-spawn seam (phase 3 reuses it with an injected batch).
@@ -3623,7 +3623,7 @@ class SessionOrchestrator:
                 await db.commit()
         return written
 
-    async def _pm_onboarding_counts(self, project_id: str) -> ProjectOnboardingView:
+    async def pm_onboarding_counts(self, project_id: str) -> ProjectOnboardingView:
         """Build the onboarding engine's view for a project in one grouped read
         (used by the API's wizard-state endpoint)."""
         from sqlalchemy import func, select
