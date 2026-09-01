@@ -188,7 +188,7 @@ def _register(c, name, repo="o/r", primary=True):
     return r.json()
 
 
-def _seed_map_merged(db_url, slug):
+def _seed_map_merged(slug):
     """Drive a project to map_merged with a feature + open unclassified items."""
     from server.db import db_session
     from sqlalchemy import select
@@ -228,13 +228,20 @@ def test_propose_map_conflicts_when_backfill_incomplete():
         assert r.json()["detail"]["error"] == "backfill_incomplete"
 
 
+def test_classify_409_when_not_eligible():
+    """Classify guard: 409 with error=map_not_merged when state is 'registered'."""
+    with _client_with_stubbed_seams() as c:
+        _register(c, "Ccswitch", repo="o/r")
+        r = c.post("/api/pm/projects/ccswitch/classify", headers=IDENTITY_HEADERS)
+        assert r.status_code == 409
+        assert r.json()["detail"]["error"] == "map_not_merged"
+
+
 def test_classify_dispatches_and_is_idempotent():
     # Full narrated flow: register → force map_merged → classify → accept.
     with _client_with_stubbed_seams() as c:
         _register(c, "Ccswitch", repo="o/r")
-        # Reach into the DB the app is using (same env DB_URL).
-        db_url = os.environ["CCSWITCH_DB_URL"]
-        _seed_map_merged(db_url, "ccswitch")
+        _seed_map_merged("ccswitch")
 
         r = c.post("/api/pm/projects/ccswitch/classify", headers=IDENTITY_HEADERS)
         assert r.status_code == 202, r.text
