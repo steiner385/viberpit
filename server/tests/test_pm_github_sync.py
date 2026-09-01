@@ -72,3 +72,98 @@ def test_parse_pr_page_normalizes_state_and_links():
 def test_parse_garbage_is_empty():
     assert parse_page({}, "o/r", "issue") == ([], None, False)
     assert parse_page({"data": None}, "o/r", "pr") == ([], None, False)
+
+
+def test_parse_malformed_conn_non_dict_list():
+    """conn resolves to list (truthy) instead of dict — must skip gracefully."""
+    payload = {"data": {"repository": {"issues": [1, 2, 3]}}}
+    assert parse_page(payload, "o/r", "issue") == ([], None, False)
+
+
+def test_parse_malformed_conn_non_dict_string():
+    """conn resolves to string (truthy) instead of dict — must skip gracefully."""
+    payload = {"data": {"repository": {"issues": "oops"}}}
+    assert parse_page(payload, "o/r", "issue") == ([], None, False)
+
+
+def test_parse_malformed_node_is_int():
+    """A node is an int (truthy) instead of dict — must skip gracefully."""
+    payload = {"data": {"repository": {"issues": {
+        "pageInfo": {"endCursor": None, "hasNextPage": False},
+        "nodes": [42]
+    }}}}
+    assert parse_page(payload, "o/r", "issue") == ([], None, False)
+
+
+def test_parse_malformed_node_is_string():
+    """A node is a string (truthy) instead of dict — must skip gracefully."""
+    payload = {"data": {"repository": {"issues": {
+        "pageInfo": {"endCursor": None, "hasNextPage": False},
+        "nodes": ["oops"]
+    }}}}
+    assert parse_page(payload, "o/r", "issue") == ([], None, False)
+
+
+def test_parse_malformed_node_number_non_int():
+    """Node has a non-integer number field — must skip gracefully."""
+    payload = {"data": {"repository": {"issues": {
+        "pageInfo": {"endCursor": None, "hasNextPage": False},
+        "nodes": [{
+            "number": "seven",
+            "title": "Bad",
+            "body": "",
+            "state": "OPEN",
+            "url": "https://github.com/o/r/issues/7",
+            "createdAt": "2026-01-02T03:04:05Z",
+            "updatedAt": "2026-01-03T00:00:00Z",
+            "closedAt": None,
+            "author": {"login": "tony"},
+            "labels": {"nodes": []},
+        }]
+    }}}}
+    assert parse_page(payload, "o/r", "issue") == ([], None, False)
+
+
+def test_parse_malformed_linked_issue_ref_is_int():
+    """A linked-issue ref is an int (truthy) instead of dict — must skip gracefully."""
+    payload = {"data": {"repository": {"pullRequests": {
+        "pageInfo": {"endCursor": None, "hasNextPage": False},
+        "nodes": [{
+            "number": 9,
+            "title": "Fix",
+            "body": "",
+            "state": "MERGED",
+            "url": "https://github.com/o/r/pull/9",
+            "createdAt": "2026-01-04T00:00:00Z",
+            "updatedAt": "2026-01-05T00:00:00Z",
+            "closedAt": "2026-01-05T00:00:00Z",
+            "author": {"login": "tony"},
+            "labels": {"nodes": []},
+            "closingIssuesReferences": {"nodes": [42]},
+        }],
+    }}}}
+    items, _, _ = parse_page(payload, "o/r", "pr")
+    assert len(items) == 1
+    assert items[0].linked_issue_numbers == ()
+
+
+def test_parse_malformed_label_is_string():
+    """A label is a string (truthy) instead of dict — must skip gracefully."""
+    payload = {"data": {"repository": {"issues": {
+        "pageInfo": {"endCursor": None, "hasNextPage": False},
+        "nodes": [{
+            "number": 7,
+            "title": "Bug",
+            "body": "",
+            "state": "OPEN",
+            "url": "https://github.com/o/r/issues/7",
+            "createdAt": "2026-01-02T03:04:05Z",
+            "updatedAt": "2026-01-03T00:00:00Z",
+            "closedAt": None,
+            "author": {"login": "tony"},
+            "labels": {"nodes": ["bug", {"name": "critical"}]},
+        }]
+    }}}}
+    items, _, _ = parse_page(payload, "o/r", "issue")
+    assert len(items) == 1
+    assert items[0].labels == ("critical",)

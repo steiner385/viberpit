@@ -88,26 +88,37 @@ def parse_page(payload: dict, repo: str, kind: str) -> tuple[list[WorkItemView],
         conn = (payload.get("data") or {}).get("repository", {}).get(field) or {}
     except AttributeError:
         return [], None, False
+    # conn must be a dict; if it's any other truthy type, bail
+    if not isinstance(conn, dict):
+        return [], None, False
     info = conn.get("pageInfo") or {}
     items: list[WorkItemView] = []
     for node in conn.get("nodes") or []:
-        if not node or node.get("number") is None:
+        # node must be a dict; skip non-dict nodes
+        if not isinstance(node, dict):
+            continue
+        if node.get("number") is None:
+            continue
+        # Try to convert number to int; skip if it fails
+        try:
+            number = int(node["number"])
+        except (ValueError, TypeError):
             continue
         refs = tuple(
             n["number"]
             for n in ((node.get("closingIssuesReferences") or {}).get("nodes") or [])
-            if n and n.get("number") is not None
+            if isinstance(n, dict) and n.get("number") is not None
         ) if kind == "pr" else ()
         items.append(WorkItemView(
             repo=repo,
-            number=int(node["number"]),
+            number=number,
             kind=kind,
             title=str(node.get("title") or ""),
             body=str(node.get("body") or ""),
             state=str(node.get("state") or "").lower(),
             labels=tuple(
                 lbl["name"] for lbl in ((node.get("labels") or {}).get("nodes") or [])
-                if lbl and lbl.get("name")),
+                if isinstance(lbl, dict) and lbl.get("name")),
             author=str(((node.get("author") or {}).get("login")) or ""),
             url=str(node.get("url") or ""),
             gh_created_at=_parse_dt(node.get("createdAt")),
