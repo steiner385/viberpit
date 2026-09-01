@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from server.github.pr_status import PipelinePr
     from server.pipeline.merge_train import MergeTrainState
     from server.pipeline.track import StageModel
+    from server.pm.onboarding import ProjectOnboardingView
 
 from ccswitch import accounts as ccswitch_accounts
 from ccswitch import configdir, copilot as _copilot_mod, crypto, gitrepos, worktrees
@@ -718,6 +719,14 @@ class SessionOrchestrator:
             now_utc=self._pm_sync_now_utc,
         )
         self._pm_sync_task: asyncio.Task | None = None
+        # PM archaeology onboarding (design 2026-08-31 §5): the map-synthesis and
+        # classification sessions ride the SAME spawn seam as the SDLC loops.
+        # No polling loop in phase 2 — the /propose-map and /classify API routes
+        # invoke these seams directly (phase 3 adds the pm-triage cadence).
+        self._pm_onboard_ctx = AutomationContext(
+            "pm-onboard", create_session=self.create_session)
+        self._pm_classify_ctx = AutomationContext(
+            "pm-classify", create_session=self.create_session)
         # SDLC Synthesizer control loop (#800): carries initiatives intent→spec→
         # plan by proposing each stage's artifact PR and enriching artifact index
         # rows with PR metadata (number/url, then merge sha). Same injected-seam
@@ -3389,6 +3398,285 @@ class SessionOrchestrator:
                 await self._bump_automation_active("pm-sync")
         except Exception:  # pragma: no cover — a heartbeat failure must not stall
             log.debug("pm_sync.bump_active_failed", exc_info=True)
+
+    # ---------------------- pm onboarding seams (2026-08-31) --------------- #
+
+    async def pm_onboard_spawn_map(
+            self, slug: str, *, scope: str = "initial",
+            suggestion: str | None = None,
+            item_numbers: tuple[int, ...] = (),
+            repo: str | None = None):
+        """ONE parameterised map-synthesis spawn seam (phase 3 reuses it with
+        ``scope="diff"`` — there is no separate diff-spawn method).
+
+        ``scope="initial"`` (default): spawn ONE archaeology map-synthesis
+        session for *slug*'s primary repo and move the project to
+        ``map_proposed``. Deduped on ``<slug>:feature-map`` so a re-tap does not
+        double-spawn.
+
+        ``scope="diff"``: spawn a diff-scoped session whose prompt names
+        ``suggestion`` + ``item_numbers``, deduped ``<slug>:map-diff:<suggestion>``,
+        and does NOT touch ``onboarding_state`` (phase-3 drift path). ``repo``
+        overrides the resolved primary repo when supplied.
+
+        Returns the SessionRecord, or None when no repo / no healthy account.
+        Propose-only: the spawned session opens ONE non-draft PR and NEVER arms
+        auto-merge — the merge is the human curation gate."""
+        from sqlalchemy import func, select
+        from server.db.models import Project, ProjectRepo, WorkItem
+        from server.pm.classification import build_map_synthesis_prompt
+        async with db_session() as db:
+            proj = (await db.execute(select(Project).where(
+                Project.slug == slug))).scalar_one_or_none()
+            if proj is None:
+                return None
+            resolved_repo = repo
+            if resolved_repo is None:
+                repo_row = (await db.execute(select(ProjectRepo).where(
+                    ProjectRepo.project_id == proj.id,
+                    ProjectRepo.is_primary.is_(True)))).scalar_one_or_none()
+                if repo_row is None or not repo_row.repo:
+                    return None
+                resolved_repo = repo_row.repo
+            open_count = (await db.execute(select(func.count(WorkItem.id)).where(
+                WorkItem.repo == resolved_repo,
+                WorkItem.state == "open"))).scalar_one()
+            closed_count = (await db.execute(select(func.count(WorkItem.id)).where(
+                WorkItem.repo == resolved_repo,
+                WorkItem.state != "open"))).scalar_one()
+            project_id = proj.id
+        repo = resolved_repo
+        account = await self._backlog_healthy_account()
+        if account is None:
+            return None
+        url = f"https://github.com/{repo}.git"
+        cwd = await asyncio.to_thread(
+            gitrepos.ensure_clone, await self._effective_repo_root(), repo, url)
+        default_branch = await self._sdlc_default_branch(repo)
+        prompt = build_map_synthesis_prompt(
+            slug=slug, repo=repo, default_branch=default_branch,
+            open_count=int(open_count), closed_count=int(closed_count),
+            scope=scope, suggestion=suggestion, item_numbers=item_numbers)
+        if scope == "diff":
+            origin_ref = f"{slug}:map-diff:{suggestion}"
+            name = f"pm map-diff {slug}"
+            detail: dict = {"slug": slug, "kind": "feature-map-diff",
+                            "suggestion": suggestion,
+                            "itemNumbers": list(item_numbers)}
+        else:
+            origin_ref = f"{slug}:feature-map"
+            name = f"pm map {slug}"
+            detail = {"slug": slug, "kind": "feature-map"}
+        rec = await self._pm_onboard_ctx.spawn_session(
+            origin_ref=origin_ref,
+            dedupe_key=origin_ref,
+            repo=repo, cwd=cwd, account=account,
+            name=name, initial_prompt=prompt, detail=detail)
+        if rec is not None and scope == "initial":
+            async with db_session() as db:
+                proj = (await db.execute(select(Project).where(
+                    Project.id == project_id))).scalar_one_or_none()
+                if proj is not None:
+                    proj.onboarding_state = "map_proposed"
+                    await db.commit()
+        return rec
+
+    async def pm_classify_run(
+            self, slug: str, *,
+            items: list[tuple[str, int, str]] | None = None) -> int:
+        """One classify-spawn seam (phase 3 reuses it with an injected batch).
+
+        With ``items=None`` (default, phase-2 onboarding path) it self-selects up
+        to CLASSIFY_CHUNK_SIZE open, unclassified items with no pending proposal.
+        With ``items=[(repo, number, kind), ...]`` it classifies exactly that
+        caller-supplied set (phase-3 loop path). Moves the project to
+        ``classifying``. Returns the item count dispatched (0 if none/no account).
+        Closed history is evidence, not classified (spec §5)."""
+        from sqlalchemy import select, tuple_ as sa_tuple
+        from server.db.models import (
+            Feature, Project, ProjectRepo, TriageProposal, WorkItem)
+        from server.pm.classification import (
+            CLASSIFY_CHUNK_SIZE, FeatureBrief, WorkItemBrief,
+            build_classification_prompt)
+        async with db_session() as db:
+            proj = (await db.execute(select(Project).where(
+                Project.slug == slug))).scalar_one_or_none()
+            if proj is None:
+                return 0
+            repos = (await db.execute(select(ProjectRepo.repo).where(
+                ProjectRepo.project_id == proj.id))).scalars().all()
+            repo_names = [r for r in repos if r]
+            primary = (await db.execute(select(ProjectRepo).where(
+                ProjectRepo.project_id == proj.id,
+                ProjectRepo.is_primary.is_(True)))).scalar_one_or_none()
+            if items is not None:
+                # Phase-3 injected batch: classify exactly the caller's set.
+                if not items:
+                    return 0
+                keys = [(r, n) for (r, n, _k) in items]
+                chunk = (await db.execute(select(WorkItem).where(
+                    sa_tuple(WorkItem.repo, WorkItem.number).in_(keys)
+                ))).scalars().all()
+                if not chunk:
+                    return 0
+            else:
+                pending_ids = set((await db.execute(select(
+                    TriageProposal.work_item_id).where(
+                        TriageProposal.status == "pending"))).scalars().all())
+                selected = (await db.execute(select(WorkItem).where(
+                    WorkItem.repo.in_(repo_names), WorkItem.state == "open",
+                    WorkItem.triage_state == "unclassified"
+                ).order_by(WorkItem.gh_updated_at.desc()).limit(
+                    CLASSIFY_CHUNK_SIZE * 2))).scalars().all()
+                chunk = [w for w in selected
+                         if w.id not in pending_ids][:CLASSIFY_CHUNK_SIZE]
+                if not chunk:
+                    return 0
+            features = (await db.execute(select(Feature).where(
+                Feature.project_id == proj.id,
+                Feature.orphaned.isnot(True)))).scalars().all()
+            briefs = [WorkItemBrief(
+                number=w.number or 0, kind=w.kind or "issue",
+                title=w.title or "", body=w.body or "",
+                labels=tuple(w.labels or []), url=w.url or "") for w in chunk]
+            feat_briefs = [FeatureBrief(
+                slug=f.slug or "", title=f.title or "",
+                summary=f.summary or "") for f in features]
+            repo = (primary.repo if primary else repo_names[0]) if repo_names else ""
+            project_id = proj.id
+        account = await self._backlog_healthy_account()
+        if account is None:
+            return 0
+        prompt = build_classification_prompt(items=briefs, features=feat_briefs)
+        cwd = None
+        if repo:
+            url = f"https://github.com/{repo}.git"
+            cwd = await asyncio.to_thread(
+                gitrepos.ensure_clone, await self._effective_repo_root(), repo, url)
+        import hashlib as _hashlib
+        _chunk_key = _hashlib.sha1(
+            ",".join(f"{w.repo}#{w.number}" for w in sorted(
+                chunk, key=lambda w: (w.repo or "", w.number or 0))
+            ).encode()).hexdigest()[:12]
+        rec = await self._pm_classify_ctx.spawn_session(
+            origin_ref=f"{slug}:classify:{_chunk_key}",
+            dedupe_key=f"{slug}:classify:{_chunk_key}",
+            repo=repo or None, cwd=cwd, account=account,
+            name=f"pm classify {slug}", initial_prompt=prompt,
+            detail={"slug": slug, "kind": "classify", "count": len(chunk)})
+        if rec is None:
+            return 0
+        async with db_session() as db:
+            proj = (await db.execute(select(Project).where(
+                Project.id == project_id))).scalar_one_or_none()
+            if proj is not None and proj.onboarding_state in (
+                    "map_merged", "map_proposed"):
+                proj.onboarding_state = "classifying"
+                await db.commit()
+        return len(chunk)
+
+    async def _pm_classify_ingest(
+            self, session_id: str, project_slug: str, output_text: str) -> int:
+        """Turn a classify session's output into TriageProposal rows. Resolves
+        each feature_slug to a Feature.id within the project; skips a row whose
+        work item is missing or already has a pending proposal (idempotent
+        re-ingest). Returns rows written.
+
+        For each written row, sets ``WorkItem.triage_state = "proposed"`` as a
+        scheduling marker (mirrors the fact that a proposal now exists). NEVER
+        touches the SCORE overlay columns (``feature_id``, ``reach``, ``impact``,
+        ``effort``, ``confidence``, ``classified_by``, ``classified_at``) — those
+        are written only when a human accepts the proposal."""
+        from sqlalchemy import select
+        from server.db.models import (
+            Feature, Project, ProjectRepo, TriageProposal, WorkItem)
+        from server.pm.classification import (
+            ClassificationParseError, parse_classification_output)
+        try:
+            rows = parse_classification_output(output_text)
+        except ClassificationParseError:
+            log.warning("pm_classify.parse_failed session=%s", session_id,
+                        exc_info=True)
+            return 0
+        written = 0
+        async with db_session() as db:
+            proj = (await db.execute(select(Project).where(
+                Project.slug == project_slug))).scalar_one_or_none()
+            if proj is None:
+                return 0
+            repo_names = [r for r in (await db.execute(select(
+                ProjectRepo.repo).where(
+                    ProjectRepo.project_id == proj.id))).scalars().all() if r]
+            feat_by_slug = {f.slug: f.id for f in (await db.execute(select(
+                Feature).where(Feature.project_id == proj.id))).scalars().all()}
+            for row in rows:
+                wi = (await db.execute(select(WorkItem).where(
+                    WorkItem.repo.in_(repo_names),
+                    WorkItem.number == row.number,
+                    WorkItem.kind == row.kind))).scalar_one_or_none()
+                if wi is None:
+                    continue
+                dup = (await db.execute(select(TriageProposal.id).where(
+                    TriageProposal.work_item_id == wi.id,
+                    TriageProposal.status == "pending"))).scalar_one_or_none()
+                if dup is not None:
+                    continue
+                db.add(TriageProposal(
+                    work_item_id=wi.id,
+                    proposed_feature_id=feat_by_slug.get(row.feature_slug)
+                    if row.feature_slug else None,
+                    no_fit_suggestion=row.no_fit_suggestion,
+                    reach=row.reach, impact=row.impact, effort=row.effort,
+                    confidence=row.confidence, rationale=row.rationale,
+                    confidence_level=row.confidence_level,
+                    status="pending", session_id=session_id))
+                wi.triage_state = "proposed"
+                written += 1
+            if written:
+                await db.commit()
+        return written
+
+    async def pm_onboarding_counts(self, project_id: str) -> ProjectOnboardingView:
+        """Build the onboarding engine's view for a project in one grouped read
+        (used by the API's wizard-state endpoint)."""
+        from sqlalchemy import func, select
+        from server.db.models import (
+            Feature, Project, ProjectRepo, TriageProposal, WorkItem)
+        from server.pm.onboarding import ProjectOnboardingView
+        async with db_session() as db:
+            repos = (await db.execute(select(ProjectRepo).where(
+                ProjectRepo.project_id == project_id))).scalars().all()
+            repo_names = [r.repo for r in repos if r.repo]
+            feature_count = (await db.execute(select(func.count(Feature.id)).where(
+                Feature.project_id == project_id,
+                Feature.orphaned.isnot(True)))).scalar_one()
+            open_unclassified = 0
+            pending = 0
+            if repo_names:
+                open_unclassified = (await db.execute(select(
+                    func.count(WorkItem.id)).where(
+                        WorkItem.repo.in_(repo_names), WorkItem.state == "open",
+                        WorkItem.triage_state == "unclassified"))).scalar_one()
+                pending = (await db.execute(select(func.count(
+                    TriageProposal.id)).join(
+                    WorkItem, WorkItem.id == TriageProposal.work_item_id).where(
+                        WorkItem.repo.in_(repo_names),
+                        TriageProposal.status == "pending"))).scalar_one()
+            proj = (await db.execute(select(Project).where(
+                Project.id == project_id))).scalar_one()
+        return ProjectOnboardingView(
+            state=proj.onboarding_state or "registered",
+            repo_count=len(repos),
+            backfill_done_count=sum(1 for r in repos if r.backfill_done),
+            feature_count=int(feature_count),
+            open_unclassified_count=int(open_unclassified),
+            pending_proposal_count=int(pending),
+            map_pr_open=False, map_pr_merged=False)
+
+    # NOTE on map_pr_open / map_pr_merged: phase 2 does not correlate the map PR's
+    # live state into the counts view. They are left False — the engine treats
+    # map_proposed with neither flag as "re-offer ProposeMap", which is the correct
+    # resumable behavior. Wiring PR-state correlation is a phase-3 enrichment.
 
     # ------------------------------------------------------------------
     # SDLC Synthesizer control-loop dependencies (injected into SdlcSynthesizerLoop)

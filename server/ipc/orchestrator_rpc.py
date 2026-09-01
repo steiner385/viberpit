@@ -289,6 +289,8 @@ def register_orchestrator_rpc(app, orch) -> None:
         "session_queue_move", "session_queue_cancel", "session_queue_positions", "maybe_start_queued",
         "git_credential_alerts", "dismiss_git_credential_alert",
         "list_adoptable_candidates", "migrate_archive_home", "cloned_repos",
+        # pm onboarding seams (phase 2, 2026-08-31)
+        "pm_onboarding_counts", "pm_onboard_spawn_map", "pm_classify_run",
     ]
 
     def _make_simple(method_name):

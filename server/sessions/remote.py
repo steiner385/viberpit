@@ -16,6 +16,7 @@ from server.sessions.selection import AllAccountsBusy
 
 if TYPE_CHECKING:
     from server.github.pr_status import PipelinePr
+    from server.pm.onboarding import ProjectOnboardingView
 from server.github.pr_status import PullRequestInfo
 from server.sessions.types import SessionRecord, SYSTEM_IDENTITY
 
@@ -818,6 +819,42 @@ class RemoteOrchestrator:
 
     async def x11_open_browser(self, session_id: str, url: str | None = None) -> dict:
         return await self._client.call("x11_open_browser", session_id=session_id, url=url)
+
+    # --- pm onboarding seams (phase 2, 2026-08-31) ---
+    async def pm_onboarding_counts(self, project_id: str) -> "ProjectOnboardingView":
+        """Build the onboarding engine's view for a project, via the daemon.
+
+        The daemon returns a flat dict matching ``ProjectOnboardingView``'s fields;
+        reconstruct the dataclass here so all callers (API routes, tests) receive the
+        same type regardless of whether the orchestrator is in-process or remote."""
+        from server.pm.onboarding import ProjectOnboardingView
+        result = await self._client.call("pm_onboarding_counts", project_id=project_id)
+        if result is None:
+            # Daemon error: return a safe zero-state view rather than raising an
+            # AttributeError later — consistent with other remote seams that return
+            # empty collections on None (e.g. backlog_candidates, automation_statuses).
+            return ProjectOnboardingView(
+                state="registered",
+                repo_count=0,
+                backfill_done_count=0,
+                feature_count=0,
+                open_unclassified_count=0,
+                pending_proposal_count=0,
+                map_pr_open=False,
+                map_pr_merged=False,
+            )
+        return ProjectOnboardingView(**result)
+
+    async def pm_onboard_spawn_map(self, slug: str, **kwargs) -> dict | None:
+        """Spawn the archaeology map-synthesis session, via the daemon."""
+        return await self._client.call("pm_onboard_spawn_map", slug=slug, **kwargs,
+                                       timeout=AUTOMATION_RPC_TIMEOUT)
+
+    async def pm_classify_run(self, slug: str, **kwargs) -> int:
+        """Spawn one backlog-classification session, via the daemon."""
+        r = await self._client.call("pm_classify_run", slug=slug, **kwargs,
+                                    timeout=AUTOMATION_RPC_TIMEOUT)
+        return int(r) if r is not None else 0
 
     async def aclose(self) -> None:
         if self._global_pump is not None and not self._global_pump.done():

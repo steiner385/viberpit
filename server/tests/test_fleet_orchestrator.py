@@ -175,6 +175,7 @@ def test_every_remote_method_is_classified():
         "subscribe_events", "unsubscribe_events", "x11_metrics", "adopt_session",
         "daemon_sha", "daemon_pool_stats", "daemon_epoch", "startup_report",
         "session_queue_positions", "maybe_start_queued",
+        "pm_onboarding_counts", "pm_onboard_spawn_map", "pm_classify_run",
     }
     public = {n for n, _ in inspect.getmembers(RemoteOrchestrator, callable)
               if not n.startswith("_")}
