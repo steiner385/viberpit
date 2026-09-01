@@ -13,6 +13,9 @@ from server.db.models import (
     Base,
     Feature,
     FeatureLink,
+    Initiative,
+    InitiativeFeature,
+    InitiativeRepo,
     Project,
     ProjectEdge,
     ProjectRepo,
@@ -105,3 +108,20 @@ async def test_feature_link(db_session):
     await db_session.flush()
     db_session.add(FeatureLink(src_feature_id=f1.id, dst_feature_id=f2.id, kind="powered_by"))
     await db_session.flush()
+
+
+@pytest.mark.asyncio
+async def test_initiative_pm_extensions(db_session):
+    p = Project(slug="px", name="PX")
+    db_session.add(p)
+    await db_session.flush()
+    f = Feature(project_id=p.id, slug="fx", title="FX", state="delivering")
+    ini = Initiative(slug="do-fx", repo="steiner385/ccswitch", title="Do FX",
+                     project_id=p.id, reach=3, impact=2, effort=1, confidence=2)
+    db_session.add_all([f, ini])
+    await db_session.flush()
+    db_session.add(InitiativeRepo(initiative_id=ini.id, repo="steiner385/ccswitch",
+                                  is_primary=True))
+    db_session.add(InitiativeFeature(initiative_id=ini.id, feature_id=f.id))
+    await db_session.flush()
+    assert ini.project_id == p.id

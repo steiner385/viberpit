@@ -988,6 +988,15 @@ class Initiative(Base):
     status: Mapped[str | None] = mapped_column(String, nullable=True, default="proposed")
     origin: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     origin_ref: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # --- PM product layer (phase 1 groundwork; design 2026-08-31) ---
+    # Owning project; nullable so pre-PM initiatives keep working unlinked.
+    project_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("projects.id"), nullable=True, index=True)
+    # RICE-lite score inputs (spec §8: score = reach×impact×confidence/effort).
+    reach: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    impact: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    effort: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    confidence: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # timezone=True to match the newer tables: both default to _utcnow() (AWARE),
     # which asyncpg rejects into a naive `timestamp without time zone` column.
     created_at: Mapped[datetime] = mapped_column(
@@ -1247,5 +1256,38 @@ class TriageProposal(Base):
     session_id: Mapped[str | None] = mapped_column(String, nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
+class InitiativeRepo(Base):
+    """Initiative↔repo M2M — phase-1 groundwork for cross-project initiatives
+    (spec §3). ``Initiative.repo`` remains the primary repo until phase 4
+    folds it in; rows here are additive."""
+
+    __tablename__ = "initiative_repos"
+    __table_args__ = (UniqueConstraint("initiative_id", "repo", name="uq_initiative_repo"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    initiative_id: Mapped[str] = mapped_column(
+        String, ForeignKey("initiatives.id"), nullable=True, index=True)
+    repo: Mapped[str | None] = mapped_column(String, nullable=True)
+    is_primary: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
+class InitiativeFeature(Base):
+    """Which features an initiative creates/changes (spec §3)."""
+
+    __tablename__ = "initiative_features"
+    __table_args__ = (
+        UniqueConstraint("initiative_id", "feature_id", name="uq_initiative_feature"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    initiative_id: Mapped[str] = mapped_column(
+        String, ForeignKey("initiatives.id"), nullable=True, index=True)
+    feature_id: Mapped[str] = mapped_column(
+        String, ForeignKey("features.id"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow)
