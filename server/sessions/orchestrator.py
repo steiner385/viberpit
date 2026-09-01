@@ -249,6 +249,15 @@ _UNREACHABLE_ROTATION_THRESHOLD: int = 3
 # events, not recovery, so paused sessions need a separate periodic retry.
 _STUCK_SESSION_SWEEP_INTERVAL: float = 300.0
 
+# Consecutive mirror-reconcile passes a FOREIGN _records entry may be missing from
+# the DB before the primary evicts it (#895-adjacent). A worker deleting a session
+# pops its own _records + the shared DB row, but nothing pops the primary's mirror
+# copy — so autopilot proposes for the ghost and every insert fails the session_id
+# FK (and a dashboard reload re-shows the deleted card). Two strikes so a session
+# a just-dispatched worker is mid-creating (row not yet committed) is never dropped
+# on a single-tick race.
+_MIRROR_EVICT_STRIKES: int = 2
+
 # Periodic re-check of the archived-session cap, so a limit LOWERED via settings takes
 # effect even with no new archive event (the on-archive path covers the fresh-archive case).
 _ARCHIVE_LIMIT_SWEEP_INTERVAL: float = 300.0
@@ -448,6 +457,10 @@ class SessionOrchestrator:
         # in-memory by design — a fresh deploy rebuilds it; a crash loses it exactly
         # as the deploy controller loses its own frozen 'failed' list.
         self._resume_recovery: dict[str, int] = {}
+        # session_id -> consecutive mirror-reconcile passes its DB row was missing.
+        # Drives _reconcile_mirror_once's two-strike eviction of ghosts left behind
+        # when a session is deleted on another fleet host (#895-adjacent).
+        self._mirror_missing_strikes: dict[str, int] = {}
         # Startup health report (2026-08-29): a failed rehydrate() used to vanish into
         # a log line while the daemon looked healthy with zero sessions. Boot steps
         # record their outcome here; /api/daemon/health exposes it (RPC-bridged in
@@ -4363,6 +4376,13 @@ class SessionOrchestrator:
                 await self._recover_resume_failures_once()
             except Exception:  # pragma: no cover — recovery must never stall the loop
                 log.warning("deploy.resume.recover_failed", exc_info=True)
+            try:
+                # Also always-on (not mode-gated): evict mirror records for sessions
+                # deleted on another fleet host, so autopilot never proposes for a
+                # ghost row (FK-violation insert spam) — see _reconcile_mirror_once.
+                await self._reconcile_mirror_once()
+            except Exception:  # pragma: no cover — reconcile must never stall the loop
+                log.warning("mirror.reconcile_failed", exc_info=True)
             try:
                 await self._autopilot_loop.tick()
             except Exception:  # pragma: no cover — tick() already swallows; belt+braces
@@ -9197,6 +9217,58 @@ class SessionOrchestrator:
                 log_event(log, logging.INFO, "deploy.resume.recovered", session_id=sid)
             else:
                 self._resume_recovery[sid] = attempts + 1
+
+    async def _existing_session_ids(self, ids: list[str]) -> set[str]:
+        """Which of *ids* still have a row in the sessions table (source of truth).
+
+        Split out as a seam so _reconcile_mirror_once's eviction logic is unit-
+        testable without a live DB."""
+        if not ids:
+            return set()
+        from sqlalchemy import select as sa_select
+        async with db_session() as db:
+            return set((await db.execute(
+                sa_select(DbSession.id).where(DbSession.id.in_(ids)))).scalars().all())
+
+    async def _reconcile_mirror_once(self) -> None:
+        """Evict _records entries whose session row was deleted on another fleet host.
+
+        The primary holds a record for EVERY fleet session (its _records feeds the
+        dashboard and its fleet-global automation). When a session is permanently
+        deleted, that runs on the OWNING host — which pops its own _records and the
+        shared DB row — but never touches the primary's mirror copy. The ghost then
+        drives autopilot to propose for a session whose row is gone, so every
+        automation_event / triage_proposal insert fails the session_id foreign key
+        (and a dashboard reload re-shows the deleted card) until the next restart.
+
+        Only FOREIGN entries (not owned by this daemon per _owns_record) are
+        candidates: this daemon's own delete path pops _records synchronously, so an
+        owned entry missing a row is a mid-creation race, never a real delete. A live
+        driver here also means it's ours (ensure_driver adopted it) — _owns_record
+        already treats that as owned. Two-strike (see _MIRROR_EVICT_STRIKES) so a
+        session a worker is mid-creating (row not yet committed) is never dropped."""
+        enabled_hosts = await self._enabled_host_names()
+        foreign = [sid for sid, rec in list(self._records.items())
+                   if not self._owns_record(rec, enabled_hosts)]
+        if not foreign:
+            self._mirror_missing_strikes.clear()
+            return
+        present = await self._existing_session_ids(foreign)
+        for sid in foreign:
+            if sid in present:
+                self._mirror_missing_strikes.pop(sid, None)
+                continue
+            strikes = self._mirror_missing_strikes.get(sid, 0) + 1
+            if strikes >= _MIRROR_EVICT_STRIKES:
+                self._records.pop(sid, None)
+                self._mirror_missing_strikes.pop(sid, None)
+                log_event(log, logging.INFO, "mirror.evict_deleted", session_id=sid)
+            else:
+                self._mirror_missing_strikes[sid] = strikes
+        # Drop strike bookkeeping for ids that are no longer tracked foreign records
+        # (evicted above, or adopted as a live driver since the last pass).
+        for sid in [s for s in self._mirror_missing_strikes if s not in self._records]:
+            self._mirror_missing_strikes.pop(sid, None)
 
     def resume_recovery_status(self) -> dict:
         """Live view of unresolved deploy-resume failures for the banner.
