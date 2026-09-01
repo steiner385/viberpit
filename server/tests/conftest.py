@@ -233,13 +233,27 @@ _install_real_store_write_guard()
 # (WebSocket bridge + orchestrator background loops) hard enough to hit it.    #
 #                                                                              #
 # `server.db._make_engine` is the SOLE engine factory, so wrapping it here     #
-# redirects every in-memory URL to a unique temp FILE, pinned to StaticPool so #
-# it keeps the SAME single-connection semantics a `:memory:` DB has (one       #
-# shared connection — uncommitted writes visible to later reads, no QueuePool  #
-# cross-connection visibility surprises) while being durable across connection #
-# close. Each init_db still gets its own empty DB (per-init isolation), but a   #
-# late write reopens the same file with its tables intact and is harmless      #
-# instead of crashing. Production is unaffected (real file DB, never this shim).#
+# redirects every in-memory URL to a unique temp FILE (durable across          #
+# connection close). Each init_db still gets its own empty DB (per-init         #
+# isolation); a late write reopens the same file with its tables intact and is  #
+# harmless instead of crashing. Production is unaffected (real file DB, never   #
+# this shim).                                                                   #
+#                                                                              #
+# Pool choice — NullPool, NOT StaticPool (issue #890). A StaticPool engine      #
+# holds ONE shared DBAPI connection for every operation. Under `-n auto`        #
+# contention, when any bounded_wait teardown phase (dispose-db,                 #
+# `stop:primary-lease-release`, …) is abandoned mid-query, that single          #
+# connection's aiosqlite worker thread is left wedged — and because the engine  #
+# keeps a handle to it, `engine.dispose()` / asyncio loop-close must await its  #
+# close, hanging TestClient.__exit__'s portal-thread join to the 300s pytest-   #
+# timeout (#846/#881/#882). #882 file-backed the DB but kept StaticPool, so the #
+# shared wedge-able connection survived and the hang merely migrated phases.    #
+# NullPool retains NO connection: it opens a fresh one per operation and closes #
+# it on return, so the engine never holds a reusable handle to a checked-out    #
+# (possibly wedged) connection — teardown has nothing to await and the flake's  #
+# substrate is gone regardless of which phase overruns its budget. The file     #
+# backing keeps the schema durable, and WAL keeps COMMITTED writes visible      #
+# across the now-separate connections (db_session/get_db always commit).        #
 # --------------------------------------------------------------------------- #
 def _cleanup_sqlite_file(path: str) -> None:
     for suffix in ("", "-wal", "-shm"):
@@ -251,7 +265,7 @@ def _cleanup_sqlite_file(path: str) -> None:
 
 def _install_durable_inmemory_db():
     import server.db as _db
-    from sqlalchemy.pool import StaticPool
+    from sqlalchemy.pool import NullPool
 
     _orig_make_engine = _db._make_engine
     if getattr(_orig_make_engine, "_durable_inmemory_shim", False):
@@ -263,7 +277,9 @@ def _install_durable_inmemory_db():
             os.close(fd)
             atexit.register(_cleanup_sqlite_file, path)
             db_url = f"sqlite+aiosqlite:///{path}"
-            poolclass = StaticPool  # keep the one-connection semantics of :memory:
+            # NullPool, not StaticPool: no single shared wedge-able connection,
+            # so no abandoned teardown phase can hang loop-close (issue #890).
+            poolclass = NullPool
         return _orig_make_engine(db_url, poolclass=poolclass)
 
     _durable_make_engine._durable_inmemory_shim = True

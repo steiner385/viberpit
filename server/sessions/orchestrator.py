@@ -7060,7 +7060,7 @@ class SessionOrchestrator:
 
         The cache is stored IN MEMORY only here — deliberately NOT a DB write. This runs
         inside the WS attach coroutine, which a client disconnect can cancel mid-write;
-        a cancelled write corrupts the shared (StaticPool) connection. Durability is
+        a cancelled write can corrupt the SQLite connection it was using. Durability is
         folded into the next _persist_status write (a driver-loop callback that is safe
         to write from), so the catalog still reaches the DB row for cross-restart replay."""
         d = self._drivers.get(session_id)
