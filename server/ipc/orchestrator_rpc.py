@@ -289,8 +289,8 @@ def register_orchestrator_rpc(app, orch) -> None:
         "session_queue_move", "session_queue_cancel", "session_queue_positions", "maybe_start_queued",
         "git_credential_alerts", "dismiss_git_credential_alert",
         "list_adoptable_candidates", "migrate_archive_home", "cloned_repos",
-        # pm onboarding seams (phase 2, 2026-08-31)
-        "pm_onboarding_counts", "pm_onboard_spawn_map", "pm_classify_run",
+        # pm onboarding seams (phase 2, 2026-08-31) — pm_classify_run returns int
+        "pm_classify_run",
     ]
 
     def _make_simple(method_name):
@@ -300,6 +300,26 @@ def register_orchestrator_rpc(app, orch) -> None:
 
     for _m in _SIMPLE:
         register_rpc(app, _m, _make_simple(_m))
+
+    import dataclasses
+
+    async def pm_onboarding_counts(params: dict) -> dict:
+        # pm_onboarding_counts returns a ProjectOnboardingView frozen dataclass —
+        # NOT JSON-native. Convert via dataclasses.asdict before the transport's
+        # json.dumps sees it (the _SIMPLE path would raise TypeError here).
+        view = await _maybe_await(orch.pm_onboarding_counts(**params))
+        return dataclasses.asdict(view)
+
+    async def pm_onboard_spawn_map(params: dict) -> dict | None:
+        # pm_onboard_spawn_map returns a session-record OBJECT (or None) — also
+        # not JSON-native. Strip to {"id": ...} which is all the API layer needs.
+        rec = await _maybe_await(orch.pm_onboard_spawn_map(**params))
+        if rec is None:
+            return None
+        return {"id": getattr(rec, "id", None)}
+
+    register_rpc(app, "pm_onboarding_counts", pm_onboarding_counts)
+    register_rpc(app, "pm_onboard_spawn_map", pm_onboard_spawn_map)
 
     async def permanent_delete(params: dict):
         result = await orch.permanent_delete(params["session_id"])
