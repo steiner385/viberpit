@@ -72,3 +72,26 @@ async def test_daemon_lifespan_installs_drain_on_sigterm_and_uninstalls_on_exit(
             install.assert_called_once_with(orch)
             uninstall.assert_not_called()
         uninstall.assert_called_once()
+
+
+def test_build_daemon_registers_the_app_token_provider():
+    """The daemon is where ensure_clone runs, so it owns the git token provider.
+
+    Without this wiring git fetch falls back to the machine's ambient credential
+    helper — the failure mode that pauses the backlog with a stale-credential
+    banner (issue #887)."""
+    from ccswitch import gitrepos
+    gitrepos.set_token_provider(None)
+    try:
+        orch = mock.MagicMock()
+        with mock.patch("server.ipc.serve.build_x11_manager", return_value=_FAKE_X11):
+            build_daemon(orchestrator=orch)
+        assert gitrepos._token_provider is not None
+        # Delegates to the App-installation minting path, per owner.
+        with mock.patch(
+            "server.github.app_auth.token_for_owner", return_value="ghs_x"
+        ) as mint:
+            assert gitrepos._app_token("cairnea") == "ghs_x"
+        mint.assert_called_once_with("cairnea")
+    finally:
+        gitrepos.set_token_provider(None)
