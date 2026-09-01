@@ -25,6 +25,7 @@ import {
   useSubmitReauthCode,
   QK,
 } from '@/api/hooks'
+import type { AccountUpdate } from '@/api/hooks'
 import { AddAccountDialog } from './AddAccountDialog'
 import { ReauthBrowserPanel } from './ReauthBrowserPanel'
 import type { Account, LiveSessionCounts, Session } from '@/api/types'
@@ -206,13 +207,41 @@ function OverReserveChip() {
   )
 }
 
+function ExtraUsageChip() {
+  return (
+    <span
+      className={cn(
+        'text-xs font-medium rounded px-1.5 py-0.5 whitespace-nowrap',
+        'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+      )}
+      title="At its ceiling, this account keeps being selected and spends paid extra-usage credits — but only once every other account is exhausted"
+    >
+      extra usage
+    </span>
+  )
+}
+
+function ExtraUsageUnavailableChip() {
+  return (
+    <span
+      className={cn(
+        'text-xs font-medium rounded px-1.5 py-0.5 whitespace-nowrap',
+        'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
+      )}
+      title="Extra usage is switched on here but off in the Anthropic console, so no credits can be spent. Enable it there, or turn this off."
+    >
+      not enabled upstream
+    </span>
+  )
+}
+
 // ── Account Row ──────────────────────────────────────────────────────────────
 
 interface AccountRowProps {
   account: Account
   onRefresh: (name: string) => void
   refreshing: boolean
-  onSave: (update: { name: string; nickname?: string | null; weeklyReservePct?: number | null }) => void
+  onSave: (update: AccountUpdate) => void
   onDelete: (account: Account) => void
   /** Called when a Copilot account's reauth button is clicked — opens the device-flow dialog. */
   onCopilotReauth?: (account: Account) => void
@@ -222,6 +251,7 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   const [reserveDraft, setReserveDraft] = useState('')
+  const [extraUsageDraft, setExtraUsageDraft] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
   // Reauth state: track whether we've started a reauth (controls polling)
@@ -231,11 +261,16 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
   // Code input for awaiting_code state
   const [code, setCode] = useState('')
 
+  const [modelApprovalDraft, setModelApprovalDraft] = useState<string>(
+    account.accountDefaults?.modelApprovalAction ?? '',
+  )
+
   const qc = useQueryClient()
   const reauthAccount = useReauthAccount()
   const cancelReauth = useCancelReauth()
   const submitCode = useSubmitReauthCode()
   const setEnabled = useSetAccountEnabled()
+  const updateAccount = useUpdateAccount()
 
   // Absent `enabled` (older payloads) means enabled — only an explicit false disables.
   const isDisabled = account.enabled === false
@@ -283,6 +318,7 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
   function startEdit() {
     setDraft(account.nickname ?? '')
     setReserveDraft(account.weeklyReservePct != null ? String(account.weeklyReservePct) : '')
+    setExtraUsageDraft(account.allowExtraUsage === true)
     setEditing(true)
     setTimeout(() => inputRef.current?.focus(), 0)
   }
@@ -291,6 +327,7 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
     setEditing(false)
     setDraft('')
     setReserveDraft('')
+    setExtraUsageDraft(false)
   }
 
   function saveEdit() {
@@ -300,10 +337,16 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
       const parsed = Number(trimmed)
       if (Number.isFinite(parsed) && parsed > 0) reserve = Math.min(100, Math.max(1, parsed))
     }
-    onSave({ name: account.name, nickname: draft.trim() || null, weeklyReservePct: reserve })
+    onSave({
+      name: account.name,
+      nickname: draft.trim() || null,
+      weeklyReservePct: reserve,
+      allowExtraUsage: extraUsageDraft,
+    })
     setEditing(false)
     setDraft('')
     setReserveDraft('')
+    setExtraUsageDraft(false)
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -361,6 +404,26 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
                 'focus:outline-none focus:ring-2 focus:ring-blue-500',
               )}
             />
+            {/* Behind the edit form rather than a one-click row button (unlike the
+                enable/disable Power toggle): opting in spends real money, so it
+                gets a deliberate save step. */}
+            <label
+              className={cn(
+                'flex items-center gap-1.5 text-xs whitespace-nowrap',
+                'text-gray-600 dark:text-gray-300',
+              )}
+              title="When every other account is at its usage ceiling, keep selecting this one and spend paid extra-usage credits"
+            >
+              <input
+                type="checkbox"
+                checked={extraUsageDraft}
+                onChange={(e) => setExtraUsageDraft(e.target.checked)}
+                onKeyDown={handleKeyDown}
+                aria-label={`Allow extra usage credits for ${account.name}`}
+                className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 accent-amber-600"
+              />
+              extra credits
+            </label>
             <button
               type="button"
               onClick={saveEdit}
@@ -484,6 +547,12 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
           <RankBadge rank={account.rank} reason={account.rankReason} />
           {account.weeklyReservePct != null && account.usage != null &&
             account.usage.weekly.pct >= account.weeklyReservePct && <OverReserveChip />}
+          {account.allowExtraUsage === true && <ExtraUsageChip />}
+          {/* Opted in, but the provider has extra usage off — the toggle cannot
+              take effect, so say so rather than let it look armed. Usage is only
+              checked when known: a failed fetch is not evidence it is disabled. */}
+          {account.allowExtraUsage === true && account.usage != null &&
+            account.usage.extraUsageEnabled === false && <ExtraUsageUnavailableChip />}
           {account.usage && (
             <>
               <UsageBadge
@@ -674,6 +743,42 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
           {reauthStatus.message}
         </p>
       )}
+
+      {/* Per-account model approval override — always visible, saves immediately on change */}
+      {!editing && (
+        <div className="flex items-center gap-2 pt-1">
+          <label
+            htmlFor={`account-model-approval-${account.name}`}
+            className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap"
+          >
+            Model approval:
+          </label>
+          <select
+            id={`account-model-approval-${account.name}`}
+            aria-label={`Model approval action for ${account.name}`}
+            value={modelApprovalDraft}
+            onChange={(e) => {
+              const val = e.target.value
+              setModelApprovalDraft(val)
+              updateAccount.mutate({
+                name: account.name,
+                modelApprovalAction: val || null,
+              })
+            }}
+            className={cn(
+              'flex-1 min-w-0 rounded border border-gray-300 dark:border-gray-600',
+              'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100',
+              'px-2 py-1 text-xs',
+              'focus:outline-none focus:ring-2 focus:ring-blue-500',
+            )}
+          >
+            <option value="">Inherit (global default)</option>
+            <option value="require_approval">Require approval</option>
+            <option value="block">Block</option>
+            <option value="allow">Allow</option>
+          </select>
+        </div>
+      )}
     </div>
   )
 }
@@ -684,7 +789,7 @@ interface AccountsStripProps {
   accounts: Account[]
   onRefresh: (name: string) => void
   refreshingName: string | null
-  onSave: (update: { name: string; nickname?: string | null; weeklyReservePct?: number | null }) => void
+  onSave: (update: AccountUpdate) => void
   onDelete: (account: Account) => void
   onCopilotReauth: (account: Account) => void
 }
@@ -731,7 +836,7 @@ export function AccountsManager() {
     })
   }
 
-  function handleSave(update: { name: string; nickname?: string | null; weeklyReservePct?: number | null }) {
+  function handleSave(update: AccountUpdate) {
     updateAccount.mutate(update)
   }
 

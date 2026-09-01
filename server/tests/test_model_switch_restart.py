@@ -34,6 +34,14 @@ class _FakeDriver:
         self.calls.append(("send_prompt", p))
 
 
+async def _init_mini_db():
+    """set_model_for_session now consults resolve_model_policy (the mid-session
+    model-approval gate), which opens a db_session(); init an in-memory DB (on the
+    caller's own loop) so these driver-mechanics tests reach the apply path. Default
+    policy = allow for the un-gated tiers (opus/sonnet) these tests switch to."""
+    await init_db(db_url="sqlite+aiosqlite:///:memory:")
+
+
 def _mini_orch(driver=None, last_prompt=None, session_id="s1"):
     """Minimal orchestrator: record + optional driver, persistence patched to memory."""
     orch = SessionOrchestrator.__new__(SessionOrchestrator)
@@ -60,6 +68,7 @@ def _mini_orch(driver=None, last_prompt=None, session_id="s1"):
 async def test_busy_session_interrupts_switches_and_resends():
     driver = _FakeDriver(turn_active=True)
     orch, rec, persisted = _mini_orch(driver, last_prompt="do the thing")
+    await _init_mini_db()
 
     restarted = await orch.set_model_for_session("s1", "opus")
 
@@ -78,6 +87,7 @@ async def test_busy_session_interrupts_switches_and_resends():
 async def test_busy_session_without_last_prompt_does_not_resend():
     driver = _FakeDriver(turn_active=True)
     orch, rec, persisted = _mini_orch(driver, last_prompt=None)
+    await _init_mini_db()
 
     restarted = await orch.set_model_for_session("s1", "opus")
 
@@ -96,6 +106,7 @@ async def test_idle_session_switches_without_interrupt():
     driver = _FakeDriver(turn_active=False)
     # A stored last prompt must NOT be replayed when the session is idle.
     orch, rec, persisted = _mini_orch(driver, last_prompt="old prompt")
+    await _init_mini_db()
 
     restarted = await orch.set_model_for_session("s1", "sonnet")
 
@@ -153,6 +164,7 @@ def test_run_command_model_on_detached_session_persists(tmp_path):
 async def test_run_command_model_on_busy_session_reports_restart():
     driver = _FakeDriver(turn_active=True)
     orch, rec, persisted = _mini_orch(driver, last_prompt="keep going")
+    await _init_mini_db()
 
     res = await orch.run_command("s1", "model", "opus")
 
@@ -167,6 +179,7 @@ async def test_run_command_model_on_busy_session_reports_restart():
 async def test_run_command_model_on_idle_session_keeps_plain_notice():
     driver = _FakeDriver(turn_active=False)
     orch, rec, persisted = _mini_orch(driver)
+    await _init_mini_db()
 
     res = await orch.run_command("s1", "model", "opus")
 
@@ -262,6 +275,7 @@ def test_ensure_driver_no_persisted_model_skips_set_model(tmp_path):
 async def test_after_turn_on_busy_session_switches_without_interrupt():
     driver = _FakeDriver(turn_active=True)
     orch, rec, persisted = _mini_orch(driver, last_prompt="do the thing")
+    await _init_mini_db()
 
     restarted = await orch.set_model_for_session("s1", "opus", when="after_turn")
 
@@ -276,6 +290,7 @@ async def test_after_turn_on_busy_session_switches_without_interrupt():
 async def test_after_turn_on_idle_session_is_not_pending():
     driver = _FakeDriver(turn_active=False)
     orch, rec, _ = _mini_orch(driver)
+    await _init_mini_db()
 
     await orch.set_model_for_session("s1", "opus", when="after_turn")
 
@@ -287,6 +302,7 @@ async def test_after_turn_on_idle_session_is_not_pending():
 async def test_switch_now_clears_an_earlier_pending_switch():
     driver = _FakeDriver(turn_active=True)
     orch, rec, _ = _mini_orch(driver, last_prompt="p")
+    await _init_mini_db()
     await orch.set_model_for_session("s1", "opus", when="after_turn")
     assert rec.model_pending is True
 
@@ -315,6 +331,7 @@ def test_pending_switch_settles_when_the_turn_ends():
 async def test_run_command_model_after_turn_flag_on_busy_session():
     driver = _FakeDriver(turn_active=True)
     orch, rec, _ = _mini_orch(driver, last_prompt="p")
+    await _init_mini_db()
 
     res = await orch.run_command("s1", "model", "opus --after-turn")
 
@@ -329,6 +346,7 @@ async def test_run_command_model_after_turn_flag_on_busy_session():
 async def test_run_command_model_default_alias_means_account_default():
     driver = _FakeDriver(turn_active=False)
     orch, rec, persisted = _mini_orch(driver)
+    await _init_mini_db()
 
     res = await orch.run_command("s1", "model", "default")
 

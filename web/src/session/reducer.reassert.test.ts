@@ -111,6 +111,43 @@ describe('transcriptReducer — re-assert on replay', () => {
     expect(s.pendingSentSeq).toBe(1)
   })
 
+  it('a live echo ADOPTS a re-asserted pending turn instead of duplicating it', () => {
+    // Mid-turn heal: the disk replay trimmed the open turn, so replayComplete
+    // re-asserted the prompt as pending:0. The open-turn resupply then re-emits
+    // the real user echo LIVE — it must re-key the pending turn in place, not
+    // append a second bubble with the same text.
+    let s = transcriptReducer(initialTranscript, { type: '_trackSentPrompt', text: 'hello' })
+    s = transcriptReducer(s, DONE)
+    s = reduce(s, [RESET, DONE])              // re-asserted as pending:0
+    expect(s.turns[s.turns.length - 1].id).toBe('pending:0')
+    s = transcriptReducer(s, userEv('real-1', 'hello'))   // live resupply echo
+    expect(userTexts(s)).toEqual(['hello'])   // exactly one bubble
+    expect(s.turns[s.turns.length - 1].id).toBe('real-1') // re-keyed in place
+    expect(s.pendingSent).toHaveLength(1)     // durability buffer untouched (live ≠ durable)
+  })
+
+  it('adoption matches by text — a different live prompt still appends', () => {
+    let s = transcriptReducer(initialTranscript, { type: '_trackSentPrompt', text: 'hello' })
+    s = transcriptReducer(s, DONE)
+    s = reduce(s, [RESET, DONE])              // pending:0 'hello' re-asserted
+    s = transcriptReducer(s, userEv('real-2', 'other'))
+    expect(userTexts(s)).toEqual(['hello', 'other'])
+  })
+
+  it('a disk-replay echo also adopts a lingering pending turn (no duplicate)', () => {
+    // pending:0 was re-asserted, then a NON-wiping replay (no replayReset) brings
+    // the prompt from disk: adopt the pending turn AND consume the buffer.
+    let s = transcriptReducer(initialTranscript, { type: '_trackSentPrompt', text: 'hello' })
+    s = transcriptReducer(s, DONE)
+    s = reduce(s, [RESET, DONE])              // pending:0 re-asserted
+    s = reduce(s, [RESET, DONE])              // wiped + re-asserted again (still pending:0)
+    s = transcriptReducer(s, { type: 'replayReset' })
+    s = transcriptReducer(s, userEv('disk-9', 'hello'))   // replaying=true
+    s = transcriptReducer(s, DONE)
+    expect(userTexts(s)).toEqual(['hello'])
+    expect(s.pendingSent).toHaveLength(0)
+  })
+
   it('initial replayComplete (no reset) does not re-assert even with a populated buffer', () => {
     // A prompt is tracked but no replayReset has occurred (hadReset stays false);
     // the initial/empty-transcript replayComplete must not synthesize a turn before

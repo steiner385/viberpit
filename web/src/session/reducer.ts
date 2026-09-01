@@ -473,6 +473,26 @@ export function transcriptReducer(
         return { ...state, turns: nextTurns, openBlockId: null, latestSuggestions: [], pendingSent }
       }
 
+      // Adopt a re-asserted pending turn with the same text: after a mid-turn
+      // heal, replayComplete re-asserts a sent-but-unconfirmed prompt as a
+      // `pending:N` turn; the open-turn resupply (or a later replay) then
+      // re-emits the real user echo. Re-key the pending turn in place instead of
+      // appending a duplicate bubble. Adoption is display-only — it deliberately
+      // does NOT consume pendingSent (only the replaying=true path above proves
+      // durability), so the buffer still re-asserts if the next replay lacks it.
+      const pendIdx = state.turns.findIndex(
+        (t) => t.role === 'user' && t.id.startsWith('pending:')
+          && t.blocks.some((b) => b.kind === 'text' && b.text === text),
+      )
+      if (pendIdx !== -1) {
+        const nextTurns = replaceTurn(state.turns, pendIdx, () => ({
+          id: turnId,
+          role: 'user' as const,
+          blocks,
+        }))
+        return { ...state, turns: nextTurns, openBlockId: null, latestSuggestions: [], pendingSent }
+      }
+
       const idx = findTurnIdx(state.turns, turnId)
       let nextTurns: Turn[]
       if (idx === -1) {

@@ -171,3 +171,27 @@ def is_known_alias(name: str) -> bool:
     regardless of which binary version is running.
     """
     return name in ALIASES
+
+
+# Canonical model tiers. The server mirror of web/src/session/modelName.ts TIERS
+# (constitution VI: one tier definition, not three). Used by the model-approval
+# policy to match a requested model against the gated-tier denylist regardless of
+# whether it arrives as an alias ("fable", "fable[1m]") or a pinned id
+# ("claude-fable-5").
+_TIER_ALIASES: frozenset[str] = frozenset({"opus", "sonnet", "haiku", "fable"})
+
+
+def model_tier(model: str | None) -> str | None:
+    """The tier of a model alias or pinned id, or None when it has no fixed tier
+    (None / "" / "default" / "best" / unknown ids)."""
+    if not model:
+        return None
+    base = model.strip().lower().split("[", 1)[0]  # drop context tag like [1m]
+    m = re.match(r"^claude-(opus|sonnet|haiku|fable)-", base)
+    if m:
+        return m.group(1)
+    if base in _TIER_ALIASES:
+        return base
+    if base == "opusplan":
+        return "opus"
+    return None

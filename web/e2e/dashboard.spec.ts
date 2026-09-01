@@ -108,9 +108,13 @@ test.describe('T044 — Dashboard', () => {
 
     // Session list loads. Scope the account-badge check to the session card —
     // the DispatchBar's Account dropdown also renders an "alice" <option>, so a
-    // page-wide getByText('alice') trips Playwright's strict mode.
+    // page-wide getByText('alice') trips Playwright's strict mode. The account
+    // chip is a SIBLING of the open-session button (interactive chips must not
+    // nest inside it), so scope to the card <article> that contains the button.
     await expect(page.getByText('Work session')).toBeVisible()
-    const sessionCard = page.getByRole('button', { name: /open session work session/i })
+    const sessionCard = page.locator('article', {
+      has: page.getByRole('button', { name: /open session work session/i }),
+    })
     await expect(sessionCard.getByText('alice')).toBeVisible()
   })
 

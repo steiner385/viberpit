@@ -11,7 +11,9 @@ class _FakeDriver:
 
 
 @pytest.mark.asyncio
-async def test_set_model_for_session_updates_record_and_driver(orchestrator_with_session):
+async def test_set_model_for_session_updates_record_and_driver(orchestrator_with_session, isolated_db):
+    # `isolated_db` gives set_model_for_session's model-approval policy check a
+    # schema to read (it queries AppSettings before applying a non-gated model).
     orch, sid, driver = orchestrator_with_session
     await orch.set_model_for_session(sid, "opus")
     assert driver.model == "opus"

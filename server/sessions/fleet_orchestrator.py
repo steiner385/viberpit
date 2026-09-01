@@ -28,7 +28,7 @@ _PER_SESSION: frozenset[str] = frozenset({
     "command_catalog", "run_command", "latest_suggestions", "generate_suggestions_now",
     "latest_summary", "pop_pending_initial_prompt", "pop_pending_initial_attachment_ids",
     "request_pr_fix", "prs_for", "ring_covers", "ring_tail", "unarchive",
-    "x11_open_browser",
+    "x11_open_browser", "resolve_model_approval",
 })
 
 

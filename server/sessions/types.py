@@ -60,6 +60,11 @@ class SessionRecord:
     adopted_in_place: bool = False   # resumed in original cwd, no worktree (adopted session)
     sub_agents: list | None = None   # [{agentId,parentAgentId,agentType,description,status}], refreshed at status changes
     model: str | None = None         # persisted model alias/id; None = account default
+    # Requested model held pending human approval while status == "pending_approval"
+    # (the launch gate parks a gated tier here rather than spawning it — see
+    # SessionOrchestrator._hold_for_approval). Mirrors DB Session.pending_model; None
+    # once approved/rejected. Distinct from `model` (which stays None until approval).
+    pending_model: str | None = None
     # transient: a "switch after this turn" model change has been handed to the SDK
     # (set_model without an interrupt) but the in-flight turn is still on the old model —
     # the binary applies it on the NEXT turn. Cleared when the turn ends (see
@@ -148,6 +153,7 @@ class SessionRecord:
             "revAt": self.rev_at,
             "adoptedInPlace": self.adopted_in_place,
             "model": self.model,
+            "pendingModel": self.pending_model,
             "modelPending": self.model_pending,
             "accountPinned": self.account_pinned,
             "activeGoal": self.active_goal,
@@ -186,6 +192,7 @@ class SessionRecord:
             updated_at=datetime.fromisoformat(rev) if rev else None,
             adopted_in_place=d.get("adoptedInPlace", False),
             model=d.get("model"),
+            pending_model=d.get("pendingModel"),
             model_pending=bool(d.get("modelPending", False)),
             account_pinned=d.get("accountPinned", False),
             active_goal=d.get("activeGoal"),

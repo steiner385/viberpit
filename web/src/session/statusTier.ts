@@ -51,6 +51,15 @@ const INTERRUPTED_BY_RESTART: StatusPresentation = {
 }
 const RESTART_STRANDABLE = new Set(['idle', 'needs_attention'])
 
+// Presentation for a session lifted into the error tier by a failing PR (not by
+// its own status) — see sessionTriage() in triageTier.ts. Lives here, beside
+// PRESENTATION, so every "how does an error-tier session read?" decision has one
+// home. The label names the *cause* so a card in the "Needs attention" group can
+// never sit under a calm "Your turn"/"Ready" pill again.
+export const PR_CHECKS_FAILING: StatusPresentation = {
+  tier: 'error', label: 'Checks failing', Icon: AlertTriangle, textClass: ERROR,
+}
+
 export interface StatusPresentationOpts {
   /** The session's turn was dropped by a daemon restart (Session.interruptedByRestart). */
   interruptedByRestart?: boolean
@@ -80,6 +89,19 @@ export function statusPresentation(
 
 export function statusTier(state: string): StatusTier {
   return statusPresentation(state).tier
+}
+
+/**
+ * Per-tier accent colors for the session card's status rail and dot. Lives next
+ * to the presentation table so status → color stays a single source of truth.
+ * `pulse` marks the action-required tiers whose dot animates (motion-safe).
+ */
+export const TIER_ACCENT: Record<StatusTier, { rail: string; dot: string; pulse: boolean }> = {
+  busy: { rail: 'bg-emerald-500 dark:bg-emerald-400', dot: 'bg-emerald-500 dark:bg-emerald-400', pulse: false },
+  'needs-you': { rail: 'bg-amber-500 dark:bg-amber-400', dot: 'bg-amber-500 dark:bg-amber-400', pulse: true },
+  error: { rail: 'bg-red-500 dark:bg-red-400', dot: 'bg-red-500 dark:bg-red-400', pulse: true },
+  'your-turn': { rail: 'bg-gray-300 dark:bg-gray-600', dot: 'bg-gray-400 dark:bg-gray-500', pulse: false },
+  waiting: { rail: 'bg-slate-300 dark:bg-slate-600', dot: 'bg-slate-400 dark:bg-slate-500', pulse: false },
 }
 
 export const TIER_RANK: Record<StatusTier, number> = {

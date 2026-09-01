@@ -58,7 +58,7 @@ INACTIVE_SESSION_STATUSES: frozenset[str] = frozenset({"ended", "archived"})
 #
 # _ACTIVE_STATUSES in orchestrator.py is a separate allow-list counter with its own
 # consumers (/info, deploy drain) and is intentionally not unified with this set.
-CAPACITY_EXEMPT_STATUSES: frozenset[str] = INACTIVE_SESSION_STATUSES | {"queued", "complete"}
+CAPACITY_EXEMPT_STATUSES: frozenset[str] = INACTIVE_SESSION_STATUSES | {"queued", "complete", "pending_approval"}
 
 # Session.archived_by values written by an AUTOMATIC archive (vs a manual "user"
 # archive). Only these are eligible for auto-unarchive by the Archive Audit — a human's
@@ -131,6 +131,15 @@ class Session(Base):
     # like "claude-haiku-4-5"). NULL = account/binary default. Nullable so init_db
     # backfills on the dev SQLite DB without a migration.
     model: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # Model-approval gate. When a gated model (see model_policy) is requested, the
+    # requested model is parked here pending human approval — for a launch-time hold
+    # the row's status is "pending_approval" (capacity-exempt, no driver); for a
+    # running session it stays live on its current `model` while `pending_model`
+    # holds the requested switch. All nullable so init_db backfills without a hand
+    # migration on both dialects.
+    pending_model: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    pending_model_requested_by: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    pending_model_requested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
     # Active /goal condition for this session (the built-in Claude Code goal feature).
     # NULL = no active goal. Nullable so init_db backfills on dev SQLite without a migration.
     active_goal: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
@@ -368,6 +377,12 @@ class AppSettings(Base):
     # session lingers exactly like a per-session manual opt-out. Nullable (three-state:
     # NULL means "unset → default enabled") so init_db backfills it without a migration.
     auto_archive_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
+    # Model-approval policy. `model_approval_action` is the action to take when a
+    # gated model is requested ("approve" | "deny" | NULL = prompt). `model_approval_denylist`
+    # is a JSON-encoded list of model aliases that are always denied without a prompt.
+    # Both nullable so init_db backfills them without a migration on both dialects.
+    model_approval_action: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    model_approval_denylist: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
 
 class SessionQueue(Base):

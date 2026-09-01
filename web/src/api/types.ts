@@ -26,9 +26,16 @@ export interface Account {
   usage: {
     session: UsageWindow
     weekly: UsageWindow
+    // Whether the PROVIDER has extra usage enabled — read-only, set in the
+    // Anthropic console. Distinct from `allowExtraUsage` below, which is this
+    // app's opt-in. Optional: older payloads predate the field.
+    extraUsageEnabled?: boolean
   } | null
   nickname?: string | null
   weeklyReservePct?: number | null
+  // Opt-in to spending paid extra-usage credits on this account once it is at
+  // its ceiling. Absent means off — spending is never a silent default.
+  allowExtraUsage?: boolean
   liveSessions: LiveSessionCounts
   rank: number | null
   rankReason: string | null
@@ -52,6 +59,7 @@ export type SessionStatus =
   | 'limited'
   | 'ended'
   | 'queued'
+  | 'pending_approval'
 
 /** A sub-agent (Task/Agent call) summary, nested under its session in the list. */
 export interface SubAgentSummary {
@@ -86,6 +94,8 @@ export interface Session {
   model?: string | null
   /** True while a "switch after this turn" model change waits for the in-flight turn to end. */
   modelPending?: boolean
+  /** Model id (alias or full id) parked pending human approval; null/absent = no hold. */
+  pendingModel?: string | null
   /** Cached next-prompt suggestions for a live session (empty when none/detached). */
   latestSuggestions?: string[]
   /** One-line LLM status summary of what the session is doing now (empty when none). */
@@ -307,7 +317,9 @@ export interface DeployProgress {
   // `failed`/`gaveUp` are the daemon's LIVE unresolved set (reconciled edge-side),
   // not the controller's frozen deploy-time list — so the banner clears as autopilot
   // recovers sessions. `gaveUp` = capped-out recovery, kept visible for a human.
-  restore?: { restored?: string[]; failed: string[]; gaveUp?: string[] }
+  // `replayed` = mid-turn sessions whose interrupted prompt was re-issued after
+  // the restart (issue #864) — a subset of `restored`.
+  restore?: { restored?: string[]; failed: string[]; gaveUp?: string[]; replayed?: string[] }
 }
 
 export interface DeployStatusResponse {
@@ -348,6 +360,15 @@ export interface CopilotAddState {
   state: 'pending' | 'awaiting_authorization' | 'authorized' | 'failed'
   userCode: string | null
   verificationUri: string | null
+}
+
+export interface McpAuthState {
+  state: 'idle' | 'starting' | 'awaiting_redirect' | 'exchanging' | 'success' | 'error' | 'cancelled'
+  server?: string | null
+  message?: string | null
+  authUrl?: string | null
+  accounts: string[]
+  startedAt?: number | null
 }
 
 // --- Library (plugins / skills / commands / MCP) ---
@@ -443,6 +464,8 @@ export interface AccountDefaults {
   defaultModel: string | null
   defaultPermissionMode: string | null
   envOverrides: Record<string, string> | null
+  /** Action to take when a model requires approval: 'approve' | 'deny' | null (ask). */
+  modelApprovalAction: string | null
 }
 
 // Session Preset (#597)

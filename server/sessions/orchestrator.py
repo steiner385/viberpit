@@ -36,7 +36,9 @@ if TYPE_CHECKING:
 from ccswitch import accounts as ccswitch_accounts
 from ccswitch import configdir, copilot as _copilot_mod, crypto, gitrepos, worktrees
 from ccswitch.accounts import provider_of as _provider_of
-from ccswitch.account_names import assert_valid_account_name, InvalidAccountName
+from ccswitch.account_names import (
+    assert_valid_account_name, validate_account_name, InvalidAccountName,
+)
 from ccswitch.config import load_config
 from ccswitch.configdir import compose
 from ccswitch.paths import account_cfg_dir, shared_base
@@ -59,6 +61,7 @@ from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry, resolve_permission_mode
 from server.sessions.sdk_factory import real_sdk_factory, real_suggestion_factory, real_summary_factory
 from server.sessions.replay import replay_events
+from server.sessions import status as _status_mod
 from server.sessions.suggestions import SuggestionService, last_turn_context
 from server.sessions.summaries import SummaryService, should_regenerate
 from server.sessions.recovery import (
@@ -85,6 +88,15 @@ log = logging.getLogger(__name__)
 # statuses (idle / done / limited / ended / archived) are restart-safe: resume +
 # transcript replay recover them.
 _ACTIVE_STATUSES = frozenset({"in_progress", "working", "waiting_input", "condensing"})
+
+# Statuses where the SDK owned an in-flight turn when the deploy snapshot was taken.
+# The restart kills that turn (ensure_driver only resumes the transcript), so
+# restore_deploy re-issues the snapshotted prompt to continue it (issue #864).
+# Deliberately EXCLUDES the awaiting-user statuses (waiting_input / waiting_question /
+# ready_review): replaying there would redo work the user was asked to approve —
+# rehydrate()'s interrupted_by_restart flag (#434) covers those instead. "working"
+# is the legacy pre-crash spelling of an active turn (see rehydrate()).
+_REPLAY_STATUSES = _status_mod.MID_TURN_STATUSES | frozenset({"working"})
 
 # Statuses derived purely from the live driver's in-memory registries — a mid-turn
 # turn, or a pending permission / question / plan approval (see status.derive_status
@@ -195,6 +207,18 @@ def _rethread_identity(driver, identity: str) -> None:
     the attached user)."""
     if identity != SYSTEM_IDENTITY and driver.identity == SYSTEM_IDENTITY:
         driver.identity = identity
+
+
+class ModelBlockedError(Exception):
+    """A model whose approval policy is 'block' was requested at create_session.
+
+    The launch gate refuses it outright — no row, no driver, no capacity slot.
+    Carries the requested model on `.model` for the API/automation caller to report.
+    """
+
+    def __init__(self, model: str | None):
+        super().__init__(f"model {model!r} is blocked by policy")
+        self.model = model
 
 
 class BranchSwitchError(Exception):
@@ -570,6 +594,11 @@ class SessionOrchestrator:
         }
         # In-memory map: session_id → SessionRecord
         self._records: dict[str, SessionRecord] = {}
+        # session_id → full spawn kwargs for a model-gated session parked at
+        # 'pending_approval' (see _hold_for_approval). The approve path (Task 10)
+        # spawns from these. In-memory only; a restart rebuilds the row-backed view
+        # via rehydrate() (attachments excluded — rebuilt from the row if lost).
+        self._pending_approvals: dict[str, dict] = {}
         # Sessions whose cwd has vanished — warned once so the titling sweep doesn't
         # spam "Working directory does not exist" every interval (see _generate_fallback_title).
         self._missing_cwd_warned: set[str] = set()
@@ -1147,6 +1176,24 @@ class SessionOrchestrator:
 
         session_id = str(uuid.uuid4())
 
+        # Model-approval gate. The single chokepoint for BOTH the API and
+        # automations (which call this method directly). A gated model is parked
+        # here (status 'pending_approval', no driver, no capacity slot) rather than
+        # spawned; a blocked one is refused outright. Runs BEFORE the capacity check
+        # so a parked session never has to compete for a runtime slot it won't use.
+        from server.sessions.model_policy import resolve_model_policy
+        async with db_session() as _db:
+            _policy = await resolve_model_policy(_db, model=model, account=account)
+        if _policy == "block":
+            raise ModelBlockedError(model)
+        if _policy == "require_approval":
+            return await self._hold_for_approval(
+                session_id, name=name, account=account, initial_prompt=initial_prompt,
+                cols=cols, rows=rows, cwd=cwd, branch=branch, repo=repo,
+                identity=identity, permission_mode=permission_mode,
+                attachment_ids=attachment_ids, name_is_auto=name_is_auto,
+                origin=origin, origin_ref=origin_ref, model=model)
+
         # Global active-session cap: at/over the cap the session is created as a
         # queued row (real session, no worktree/account/driver yet) and started
         # later by _maybe_start_queued in (priority, enqueued_at) order. Applies
@@ -1211,6 +1258,247 @@ class SessionOrchestrator:
         log.info("session.queued id=%s priority=%d origin=%s",
                  session_id, priority, origin)
         return rec
+
+    async def _hold_for_approval(self, session_id: str, *, name, account,
+                                 initial_prompt, cols, rows, cwd, branch, repo,
+                                 identity, permission_mode, attachment_ids,
+                                 name_is_auto, origin, origin_ref, model) -> SessionRecord:
+        """Park a model-gated session at 'pending_approval': persist a driverless row
+        with the requested model in `pending_model`, no queue entry, no capacity slot.
+
+        Mirrors _enqueue_session's persistence shape (same DbSession/SessionRecord
+        kwargs) but status 'pending_approval', model=None, pending_model=<model>, and
+        the requested_by/at provenance columns set. The full spawn kwargs are kept in
+        self._pending_approvals so the approve path (Task 10) can spawn cleanly; that
+        map is in-memory only — a restart rebuilds the row-backed record via rehydrate.
+        """
+        from datetime import datetime
+        now = datetime.utcnow()
+        async with db_session() as db:
+            db.add(DbSession(
+                id=session_id, name=name, account_name=account or "",
+                claude_session_id=None, status="pending_approval", pid=None,
+                cwd=cwd or "", repo=repo, branch=None,
+                permission_mode=permission_mode, name_is_auto=name_is_auto,
+                origin=origin, origin_ref=origin_ref,
+                model=None, pending_model=model,
+                pending_model_requested_by=identity, pending_model_requested_at=now,
+                initial_prompt=initial_prompt))
+            await record_audit(db, type="model_approval.requested", identity=identity,
+                               detail={"session_id": session_id, "model": model,
+                                       "account": account})
+        # Keep full spawn kwargs for a clean approve path (attachments included).
+        # Restart-durable minus attachments: rebuilt from the row if lost.
+        self._pending_approvals[session_id] = dict(
+            name=name, account=account, initial_prompt=initial_prompt, cols=cols,
+            rows=rows, cwd=cwd, branch=branch, repo=repo, identity=identity,
+            permission_mode=permission_mode, attachment_ids=attachment_ids,
+            name_is_auto=name_is_auto, origin=origin, origin_ref=origin_ref, model=model)
+        rec = SessionRecord(
+            id=session_id, name=name, account=account or "", claude_session_id="",
+            cols=cols, rows=rows, cwd=cwd or "", repo=repo, branch=None,
+            status="pending_approval", name_is_auto=name_is_auto,
+            updated_at=now, origin=origin, origin_ref=origin_ref,
+            model=None, pending_model=model)
+        self._records[session_id] = rec
+        log.info("session.pending_approval id=%s model=%s origin=%s",
+                 session_id, model, origin)
+        return rec
+
+    async def resolve_model_approval(self, session_id: str, decision: str, *,
+                                     identity: str) -> SessionRecord:
+        """Approve or deny a parked model selection for BOTH hold kinds.
+
+        LAUNCH-TIME hold (a driverless 'pending_approval' row): approve spawns or
+        enqueues the parked model reusing the SAME session_id (delete the placeholder
+        row first — _spawn_session/_enqueue_session INSERT their own); deny closes it
+        to 'ended'. The in-memory _pending_approvals spawn kwargs are lost on a daemon
+        restart, so approve rebuilds them from the persisted row via _rebuild_hold_kwargs.
+
+        MID-SESSION hold (a live session with record.pending_model): approve applies
+        driver.set_model(pending_model) and promotes record.model; deny leaves the
+        driver and current model untouched. Either resolution fully clears pending
+        state on both the record and the row.
+
+        Raises:
+            KeyError: unknown session id.
+            ValueError: bad decision, or nothing pending to resolve.
+        """
+        if decision not in ("approve", "deny"):
+            raise ValueError(f"bad decision: {decision!r}")
+        rec = self._records.get(session_id)
+        if rec is None:
+            raise KeyError(session_id)
+
+        # Launch-time hold — a not-yet-spawned pending_approval row.
+        if rec.status == "pending_approval":
+            approved_model = rec.pending_model
+            kwargs = self._pending_approvals.pop(session_id, None)
+            if kwargs is None:
+                kwargs = await self._rebuild_hold_kwargs(session_id)
+            async with db_session() as db:
+                await record_audit(
+                    db, type=f"model_approval.{decision}", identity=identity,
+                    detail={"session_id": session_id, "model": approved_model})
+            if decision == "deny":
+                async with db_session() as db:
+                    from sqlalchemy import update as sa_update
+                    await db.execute(
+                        sa_update(DbSession).where(DbSession.id == session_id).values(
+                            status="ended", pending_model=None,
+                            pending_model_requested_by=None,
+                            pending_model_requested_at=None))
+                rec.status = "ended"
+                rec.pending_model = None
+                log.info("session.model_approval_denied id=%s (launch)", session_id)
+                return rec
+            # approve: drop the placeholder row + record, then run the normal
+            # spawn/enqueue tail with the parked model, reusing the same session_id.
+            # _spawn_session/_enqueue_session INSERT their own row, so the placeholder
+            # must go first to avoid a duplicate-PK insert. If the spawn then raises
+            # (BranchSwitchError from worktree checkout, driver.start() failure, a
+            # credential error, …) the session would otherwise vanish completely —
+            # deleted row, popped record, popped kwargs. Mirror _maybe_start_queued's
+            # durability philosophy: on failure, RESTORE the pending_approval hold so
+            # the human can retry the approval, then re-raise so the API surfaces the
+            # error. We snapshot the provenance the row needs to be rebuilt first.
+            requested_by = None
+            requested_at = None
+            async with db_session() as db:
+                row = await db.get(DbSession, session_id)
+                if row is not None:
+                    requested_by = row.pending_model_requested_by
+                    requested_at = row.pending_model_requested_at
+                    await db.delete(row)
+            self._records.pop(session_id, None)
+            spawn_kwargs = dict(kwargs)
+            spawn_kwargs.pop("model", None)
+            log.info("session.model_approval_approved id=%s model=%s (launch)",
+                     session_id, approved_model)
+            try:
+                if self._active_session_count() >= await self._max_active_sessions():
+                    return await self._enqueue_session(
+                        session_id, model=approved_model, **spawn_kwargs)
+                return await self._spawn_session(
+                    session_id, model=approved_model, **spawn_kwargs)
+            except Exception:
+                # Spawn/enqueue failed after the placeholder was already deleted.
+                # Restore the pending_approval hold (row + in-memory record + the
+                # in-memory spawn kwargs) so the approval can be retried instead of
+                # the session being silently lost, then re-raise.
+                log.warning(
+                    "session.model_approval_spawn_failed id=%s model=%s — restoring "
+                    "pending_approval hold for retry", session_id, approved_model,
+                    exc_info=True)
+                await self._restore_hold_after_failed_approve(
+                    session_id, model=approved_model, kwargs=kwargs,
+                    requested_by=requested_by, requested_at=requested_at)
+                raise
+
+        # Mid-session hold — a live session with a parked switch.
+        if rec.pending_model:
+            pending = rec.pending_model
+            async with db_session() as db:
+                from sqlalchemy import update as sa_update
+                await record_audit(
+                    db, type=f"model_approval.{decision}", identity=identity,
+                    detail={"session_id": session_id, "model": pending})
+                values: dict = {
+                    "pending_model": None,
+                    "pending_model_requested_by": None,
+                    "pending_model_requested_at": None,
+                }
+                if decision == "approve":
+                    values["model"] = pending
+                await db.execute(
+                    sa_update(DbSession).where(DbSession.id == session_id).values(**values))
+            if decision == "approve":
+                driver = self._drivers.get(session_id)
+                if driver is not None:
+                    await driver.set_model(pending)
+                rec.model = pending
+            rec.pending_model = None
+            # Live-push a status frame (unchanged status) so the dashboard reconciles
+            # and drops the pending badge — the same lifecycle-frame mechanism the
+            # park path in set_model_for_session uses.
+            self._publish_event({
+                "type": "status", "sessionId": session_id, "status": rec.status,
+                "updatedAt": rec.updated_at_iso, "revAt": rec.rev_at})
+            log.info("session.model_approval_%s id=%s model=%s (mid-session)",
+                     "approved" if decision == "approve" else "denied",
+                     session_id, pending)
+            return rec
+
+        raise ValueError(f"session {session_id} has no pending model approval")
+
+    async def _rebuild_hold_kwargs(self, session_id: str) -> dict:
+        """Reconstruct spawn kwargs from the persisted 'pending_approval' row when the
+        in-memory _pending_approvals entry was lost to a daemon restart. Attachment ids
+        are NOT persisted on the row, so they default to None (a re-launched approval
+        forgoes the original attachments — acceptable vs. failing the approve)."""
+        async with db_session() as db:
+            row = await db.get(DbSession, session_id)
+            if row is None:
+                raise KeyError(session_id)
+            return dict(
+                name=row.name, account=row.account_name or None,
+                initial_prompt=row.initial_prompt, cols=80, rows=24,
+                cwd=row.cwd or None, branch=row.branch, repo=row.repo,
+                identity=row.pending_model_requested_by or SYSTEM_IDENTITY,
+                permission_mode=row.permission_mode, attachment_ids=None,
+                name_is_auto=row.name_is_auto, origin=row.origin,
+                origin_ref=row.origin_ref)
+
+    async def _restore_hold_after_failed_approve(
+            self, session_id: str, *, model, kwargs: dict,
+            requested_by, requested_at) -> None:
+        """Re-park a launch-time approval whose spawn/enqueue raised after the
+        placeholder row was already deleted, so the session is never silently lost.
+
+        Re-INSERTs the driverless 'pending_approval' row (model=None,
+        pending_model=<model>, provenance restored), re-seeds the in-memory
+        SessionRecord, and restores the self._pending_approvals spawn kwargs so a
+        second approval can retry cleanly. Mirrors _hold_for_approval's persistence
+        shape; deliberately does NOT re-audit (the original 'model_approval.approve'
+        stands — this is recovery, not a new decision). Any failure here is swallowed
+        so it cannot mask the original spawn exception the caller re-raises."""
+        from datetime import datetime
+        try:
+            async with db_session() as db:
+                # The failed spawn may or may not have INSERTed a row before raising;
+                # remove any partial row first so the re-INSERT can't collide on PK.
+                existing = await db.get(DbSession, session_id)
+                if existing is not None:
+                    await db.delete(existing)
+                await db.flush()
+                db.add(DbSession(
+                    id=session_id, name=kwargs.get("name"),
+                    account_name=kwargs.get("account") or "",
+                    claude_session_id=None, status="pending_approval", pid=None,
+                    cwd=kwargs.get("cwd") or "", repo=kwargs.get("repo"), branch=None,
+                    permission_mode=kwargs.get("permission_mode"),
+                    name_is_auto=kwargs.get("name_is_auto"),
+                    origin=kwargs.get("origin"), origin_ref=kwargs.get("origin_ref"),
+                    model=None, pending_model=model,
+                    pending_model_requested_by=requested_by,
+                    pending_model_requested_at=requested_at,
+                    initial_prompt=kwargs.get("initial_prompt")))
+            restored = dict(kwargs)
+            restored["model"] = model
+            self._pending_approvals[session_id] = restored
+            self._records[session_id] = SessionRecord(
+                id=session_id, name=kwargs.get("name") or session_id,
+                account=kwargs.get("account") or "", claude_session_id="",
+                cols=kwargs.get("cols", 80), rows=kwargs.get("rows", 24),
+                cwd=kwargs.get("cwd") or "", repo=kwargs.get("repo"), branch=None,
+                status="pending_approval", name_is_auto=kwargs.get("name_is_auto", True),
+                updated_at=datetime.utcnow(), origin=kwargs.get("origin"),
+                origin_ref=kwargs.get("origin_ref"),
+                model=None, pending_model=model)
+        except Exception:
+            # Never let the recovery path mask the real spawn error.
+            log.exception("session.model_approval_hold_restore_failed id=%s",
+                          session_id)
 
     async def _maybe_start_queued(self) -> int:
         """Start queued sessions while capacity allows. Serialised by a lock so
@@ -4788,6 +5076,7 @@ class SessionOrchestrator:
             last_turn_at=getattr(row, "last_turn_at", None),
             adopted_in_place=bool(getattr(row, "adopted_in_place", False)),
             model=getattr(row, "model", None),
+            pending_model=getattr(row, "pending_model", None),
             account_pinned=bool(getattr(row, "account_pinned", False)),
             active_goal=getattr(row, "active_goal", None),
             inferred_goal=getattr(row, "inferred_goal", None),
@@ -6789,7 +7078,8 @@ class SessionOrchestrator:
                 rec.command_catalog = catalog
         return catalog
 
-    async def run_command(self, session_id, name, args) -> dict | None:
+    async def run_command(self, session_id, name, args,
+                          identity: str = SYSTEM_IDENTITY) -> dict | None:
         """Dispatch a slash command. Raises KeyError if the command is unknown."""
         # /account is an orchestrator-level operation: it doesn't touch the driver
         # subprocess at all, so it must work even when no driver exists (e.g. the
@@ -6827,7 +7117,15 @@ class SessionOrchestrator:
             driver = self._drivers.get(session_id)
             was_busy = driver is not None and driver.turn_active
             restarted = await self.set_model_for_session(
-                session_id, arg or None, when="after_turn" if after_turn else "now")
+                session_id, arg or None, when="after_turn" if after_turn else "now",
+                identity=identity)
+            # A model-gated switch is parked (pending_model set), not applied: the
+            # session keeps running on its current model until approved. Say so
+            # instead of the misleading "Model → <alias>" (which reads as "applied").
+            rec = self._records.get(session_id)
+            if rec is not None and rec.pending_model == (arg or None) and (arg or None) is not None:
+                text = f"Model → {label} — needs approval; the session keeps its current model until approved"
+                return {"name": "model", "render": "notice", "data": {"text": text}}
             if driver is None:
                 text = f"Model → {label} — saved; applies when the session resumes"
             elif restarted:
@@ -7485,6 +7783,7 @@ class SessionOrchestrator:
 
     async def set_model_for_session(
         self, session_id: str, model: str | None, *, when: str = "now",
+        identity: str = SYSTEM_IDENTITY,
     ) -> bool:
         """Set the live model AND persist it, so it survives rehydrate and every
         driver rebuild (rotation/recovery re-applies record.model in _reassign).
@@ -7508,6 +7807,47 @@ class SessionOrchestrator:
 
         Record update + persistence run in every case, including driverless
         (detached), so the model applies when the session resumes."""
+        # Model-approval gate (mid-session). Mirrors create_session's launch gate,
+        # the other point resolve_model_policy guards, so no path onto a session can
+        # drift. A gated switch is PARKED here — pending_model recorded + persisted,
+        # the driver NOT touched, the session keeps running on its current model —
+        # rather than applied; a blocked one is refused. `identity` defaults to
+        # SYSTEM_IDENTITY so rotation/recovery/automation callers are unaffected.
+        # NB: rotation re-applies an already-approved model via the LOW-LEVEL
+        # driver.set_model() in _reassign, NOT this method, so it never re-triggers
+        # approval.
+        record = self._records.get(session_id)
+        _account = record.account if record is not None else None
+        from server.sessions.model_policy import resolve_model_policy
+        async with db_session() as _db:
+            _policy = await resolve_model_policy(_db, model=model, account=_account)
+        if _policy == "block":
+            raise ModelBlockedError(model)
+        if _policy == "require_approval":
+            from datetime import datetime
+            now = datetime.utcnow()
+            if record is not None:
+                record.pending_model = model
+            async with db_session() as db:
+                from sqlalchemy import update as sa_update
+                await db.execute(
+                    sa_update(DbSession).where(DbSession.id == session_id).values(
+                        pending_model=model,
+                        pending_model_requested_by=identity,
+                        pending_model_requested_at=now))
+                await record_audit(db, type="model_approval.requested", identity=identity,
+                                   detail={"session_id": session_id, "model": model,
+                                           "account": _account})
+            # Live-push a status frame (unchanged status) so the dashboard reconciles
+            # and picks up pendingModel without waiting for the poll — the same
+            # lifecycle-frame mechanism _persist_status uses for a session-record change.
+            if record is not None:
+                self._publish_event({
+                    "type": "status", "sessionId": session_id, "status": record.status,
+                    "updatedAt": record.updated_at_iso, "revAt": record.rev_at})
+            log.info("session.model_approval_requested id=%s model=%s by=%s",
+                     session_id, model, identity)
+            return False
         restarted = False
         pending = False
         driver = self._drivers.get(session_id)
@@ -7614,6 +7954,17 @@ class SessionOrchestrator:
         (e.g. the driver died while the session was idle — in that case params are
         derived from the SessionRecord instead of the old driver).
         """
+        # Validate BEFORE touching anything. switch_account_manual() validated its own
+        # argument, but _rotate_away() did not — so a phantom account name out of
+        # select_account() reached here, the working driver was closed, and the
+        # relaunch then failed, leaving the session driverless and silent. See
+        # docs/superpowers/fix-patterns/2026-08-31-empty-name-aliases-store-root.md
+        # The guard belongs in the shared primitive, not in one of its callers.
+        if not validate_account_name(new_account):
+            log.error("reassign.invalid_account session=%s account=%r reason=%s — "
+                      "keeping the current driver", record.id, new_account, reason)
+            await self._pause_session(record, reason="invalid_rotation_target")
+            return
         # Same defer contract as a model swap: the dance below flips the session
         # through actionable statuses autopilot would otherwise act on mid-restart.
         self._turn_restart_at[record.id] = self._clock()
@@ -7698,6 +8049,14 @@ class SessionOrchestrator:
                       from_account=old, to_account=new_account, reason=reason)
         except Exception:
             log.exception("reassign.error session=%s", record.id)
+            # The old driver is already closed by this point, so the session now has
+            # NO driver. Logging alone left it silently stranded: the UI kept showing
+            # a live-looking session and every prompt the user sent spun forever with
+            # no reply. Flag it so it surfaces as needing attention instead.
+            try:
+                await self._pause_session(record, reason=f"reassign_failed:{reason}")
+            except Exception:
+                log.warning("reassign.pause_failed session=%s", record.id, exc_info=True)
 
     # ------------------------------------------------------------------
     # Archive / unarchive / permanent-delete
@@ -8496,33 +8855,66 @@ class SessionOrchestrator:
 
     def snapshot_deploy(self, *, path: str | None = None) -> dict:
         """SAVE step: record sessions with a live driver so a daemon-affecting restart
-        can eagerly re-launch them (rehydrate alone is lazy + flattens 'working'→'idle')."""
-        live = [{"id": sid, "status": getattr(self._records.get(sid), "status", "idle")}
-                for sid in list(self._drivers.keys())]
+        can eagerly re-launch them (rehydrate alone is lazy + flattens 'working'→'idle').
+
+        A mid-turn session also records its interrupted prompt: ``_last_prompt`` is
+        in-memory and dies with this process, so the snapshot is the only way the
+        post-restart daemon can re-issue the killed turn (issue #864)."""
+        live = []
+        for sid in list(self._drivers.keys()):
+            status = getattr(self._records.get(sid), "status", "idle")
+            entry = {"id": sid, "status": status}
+            last = self._last_prompt.get(sid)
+            if last and status in _REPLAY_STATUSES:
+                entry["lastPrompt"] = last
+            live.append(entry)
         _deploy_snapshot.write_snapshot(live, path=path)
         return {"live": live}
 
     async def restore_deploy(self, *, path: str | None = None) -> dict:
         """RESUME step: eagerly re-launch each snapshotted session in the fresh daemon.
 
-        A session that fails this first attempt is enrolled in ``_resume_recovery``
-        so the daemon keeps retrying it (see _recover_resume_failures_once) instead
-        of leaving it stuck behind a sticky 'open to retry' banner."""
+        ensure_driver only resumes the transcript — it does NOT continue a turn the
+        restart killed — so a session snapshotted mid-turn gets its recorded prompt
+        re-issued on the resumed driver (``replayed``); without that the driver sits
+        idle, is released again, and the session dangles at in_progress with no
+        driver behind it. A session that fails this first attempt is enrolled in
+        ``_resume_recovery`` so the daemon keeps retrying it (see
+        _recover_resume_failures_once) instead of leaving it stuck behind a sticky
+        'open to retry' banner. The outcome is logged here as well as returned:
+        the controller's status object — previously the only surface for it — is
+        wiped by the controller's own scheduled self-restart (issue #864)."""
         restored: list[str] = []
         failed: list[str] = []
+        replayed: list[str] = []
         for entry in _deploy_snapshot.read_snapshot(path=path):
             sid = entry["id"]
             try:
                 driver = await self.ensure_driver(sid, SYSTEM_IDENTITY)
             except Exception:
                 driver = None
-            if driver is not None:
-                restored.append(sid)
-            else:
+            if driver is None:
                 failed.append(sid)
                 self._resume_recovery[sid] = 0   # enroll for daemon-side retry
+                continue
+            restored.append(sid)
+            last = entry.get("lastPrompt")
+            if last and entry.get("status") in _REPLAY_STATUSES:
+                # Seed this process's prompt memory BEFORE the send so the 429/401
+                # replay machinery can re-drive the turn again later if needed.
+                self._last_prompt[sid] = last
+                try:
+                    await driver.send_prompt(last)
+                    replayed.append(sid)
+                except Exception:
+                    # Best-effort: the session is still restored (live driver);
+                    # the user can re-send. Never fail the whole restore for it.
+                    log.warning("deploy.restore: replay of interrupted turn failed "
+                                "session=%s", sid, exc_info=True)
         _deploy_snapshot.clear_snapshot(path=path)
-        return {"restored": restored, "failed": failed}
+        log_event(log, logging.INFO, "deploy.restore",
+                  restored=restored, failed=failed, replayed=replayed)
+        return {"restored": restored, "failed": failed, "replayed": replayed}
 
     def _prune_recovered(self) -> None:
         """Drop any enrolled id that now has a live driver — covers a session a human

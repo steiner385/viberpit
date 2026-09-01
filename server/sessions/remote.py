@@ -627,7 +627,7 @@ class RemoteOrchestrator:
     async def command_catalog(self, session_id):
         return await self._client.call("command_catalog", session_id=session_id)
 
-    async def run_command(self, session_id, name, args):
+    async def run_command(self, session_id, name, args, identity=SYSTEM_IDENTITY):
         """Proxy run_command, faithfully reconstituting the in-process error contract.
 
         The daemon-side orchestrator.run_command raises ``KeyError(name)`` for an
@@ -638,11 +638,31 @@ class RemoteOrchestrator:
         KeyError so the remote path renders identically to the local one; any other
         DaemonError propagates unchanged (still the generic-failure branch)."""
         try:
-            return await self._client.call("run_command", session_id=session_id, name=name, args=args)
+            return await self._client.call("run_command", session_id=session_id, name=name, args=args,
+                                           identity=identity)
         except DaemonError as exc:
             if exc.err_type == "KeyError":
                 raise KeyError(exc.message) from exc
             raise
+
+    async def resolve_model_approval(self, session_id: str, decision: str, *,
+                                     identity: str) -> "SessionRecord":
+        """Proxy resolve_model_approval, reconstituting the in-process error contract.
+
+        The orchestrator raises ``KeyError`` (unknown session) or ``ValueError``
+        (nothing pending / bad decision). Both collapse to a DaemonError at the RPC
+        boundary; re-raise the original types so the API endpoint sees the same
+        exceptions on both code paths."""
+        try:
+            r = await self._client.call("resolve_model_approval", session_id=session_id,
+                                        decision=decision, identity=identity)
+        except DaemonError as exc:
+            if exc.err_type == "KeyError":
+                raise KeyError(exc.message) from exc
+            if exc.err_type == "ValueError":
+                raise ValueError(exc.message) from exc
+            raise
+        return SessionRecord.from_dict(r["session"])
 
     @rpc_deadline
     async def latest_suggestions(self, session_id: str, *,

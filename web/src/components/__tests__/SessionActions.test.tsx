@@ -8,6 +8,7 @@ import * as hooks from '@/api/hooks'
 vi.mock('@/api/hooks', () => ({
   useQueueMove: vi.fn(() => ({ mutate: vi.fn() })),
   useQueueCancel: vi.fn(() => ({ mutate: vi.fn() })),
+  useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
   useAllPrs: vi.fn(() => ({ data: [] })),
   useDaemonHealth: vi.fn(() => ({ data: { available: false } })),  // issue #434 indicator
   useGenerateSuggestions: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(() => Promise.resolve([])), isPending: false })),
@@ -201,36 +202,29 @@ describe('SessionActions (via Dashboard)', () => {
     })
   })
 
-  it('exposes rename, archive, and delete buttons directly on each session', () => {
-    render(<Dashboard />, { wrapper })
-
-    expect(screen.getByRole('button', { name: /rename session alpha session/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /archive session alpha session/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /delete session alpha session/i })).toBeInTheDocument()
-  })
-
-  it('renders a mobile overflow (`…`) button for secondary actions on each session card', () => {
-    // Below lg viewport (default jsdom), Rename/Archive/Delete are in the `…`
-    // overflow menu; at lg+ they appear as direct icon buttons.
+  it('renders a `…` menu button for session actions on each card', () => {
+    // Rename/Archive/Delete live in the unified `…` menu on every breakpoint.
     render(<Dashboard />, { wrapper })
 
     expect(screen.getAllByRole('button', { name: /more actions for session/i }).length).toBeGreaterThan(0)
   })
 
-  it('clicking rename shows a rename dialog', async () => {
+  it('clicking rename in the ⋯ menu shows a rename dialog', async () => {
     const user = userEvent.setup()
     render(<Dashboard />, { wrapper })
 
-    await user.click(screen.getByRole('button', { name: /rename session alpha session/i }))
+    await user.click(screen.getByRole('button', { name: /more actions for session alpha session/i }))
+    await user.click(screen.getByRole('menuitem', { name: /rename/i }))
 
     expect(screen.getByRole('dialog', { name: /rename session/i })).toBeInTheDocument()
   })
 
-  it('clicking delete shows a permanent-delete confirmation dialog', async () => {
+  it('clicking delete in the ⋯ menu shows a permanent-delete confirmation dialog', async () => {
     const user = userEvent.setup()
     render(<Dashboard />, { wrapper })
 
-    await user.click(screen.getByRole('button', { name: /delete session alpha session/i }))
+    await user.click(screen.getByRole('button', { name: /more actions for session alpha session/i }))
+    await user.click(screen.getByRole('menuitem', { name: /delete/i }))
 
     expect(screen.getByRole('dialog', { name: /permanently delete session/i })).toBeInTheDocument()
   })
@@ -245,7 +239,8 @@ describe('SessionActions (via Dashboard)', () => {
     const user = userEvent.setup()
     render(<Dashboard />, { wrapper })
 
-    await user.click(screen.getByRole('button', { name: /delete session alpha session/i }))
+    await user.click(screen.getByRole('button', { name: /more actions for session alpha session/i }))
+    await user.click(screen.getByRole('menuitem', { name: /delete/i }))
     await user.click(screen.getByRole('button', { name: /delete permanently/i }))
 
     expect(permanentDelete).toHaveBeenCalledWith('sess-1', expect.anything())

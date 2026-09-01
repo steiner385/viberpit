@@ -36,6 +36,7 @@ vi.mock('@/ws/client', async (importOriginal) => {
 vi.mock('@/api/hooks', () => ({
   useQueueMove: vi.fn(() => ({ mutate: vi.fn() })),
   useQueueCancel: vi.fn(() => ({ mutate: vi.fn() })),
+  useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
   useAllPrs: vi.fn(() => ({ data: [] })),
   useGenerateSuggestions: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(() => Promise.resolve([])), isPending: false })),
   useAccounts: vi.fn(), useSessions: vi.fn(), useCreateSession: vi.fn(),
@@ -148,7 +149,8 @@ describe('DesktopShell', () => {
     )
     render(<DesktopShell />, { wrapper })
 
-    await user.click(screen.getByRole('button', { name: /delete session one/i }))
+    await user.click(screen.getByRole('button', { name: /more actions for session one/i }))
+    await user.click(screen.getByRole('menuitem', { name: /delete/i }))
 
     // Destructive: the confirm dialog appears and nothing is deleted yet.
     const dialog = screen.getByRole('dialog')

@@ -44,4 +44,15 @@ describe('deployPhases', () => {
       .toBe('success')
     expect(deployOutcome(D({ phases: { preflight: 'done' } }))).toBe('failure') // incomplete
   })
+
+  it('deployOutcome is idle for an empty, non-running, error-free status', () => {
+    // A controller process replaced mid-poll (its post-deploy self-restart, #865)
+    // starts with phases:{} and running:false. That is "no deploy in progress" —
+    // reading it as failure showed a red "Upgrade failed" after a completed upgrade.
+    expect(deployOutcome(D({}))).toBe('idle')
+    expect(deployOutcome(undefined)).toBe('idle')
+    // ...but an error or any started phase still classifies as before.
+    expect(deployOutcome(D({ error: 'boom' }))).toBe('failure')
+    expect(deployOutcome(D({ phases: { preflight: 'running' } }))).toBe('failure')
+  })
 })

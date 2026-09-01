@@ -9,7 +9,7 @@ import re
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
@@ -24,6 +24,7 @@ from server.library.names import (
     valid_plugin_id,
     valid_skill_name,
 )
+from server.mcp_auth import McpAuthBusy
 
 router = APIRouter(prefix="/api/library", tags=["library"])
 
@@ -191,6 +192,76 @@ async def delete_mcp(name: str,
     await record_audit(db=db, type="library_mcp_deleted", identity=identity,
                        detail={"name": name})
     return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# MCP OAuth auth flow (one-at-a-time, via McpAuthManager on app.state)
+# ---------------------------------------------------------------------------
+
+
+class RedirectBody(BaseModel):
+    redirectUrl: str
+
+
+def _mcp_auth(request: Request):  # noqa: ANN201
+    mgr = getattr(request.app.state, "mcp_auth", None)
+    if mgr is None:
+        raise HTTPException(status_code=503, detail={"error": "mcp_auth_unavailable"})
+    return mgr
+
+
+@router.post("/mcp/{name}/auth", status_code=202)
+async def mcp_auth_start(
+    name: str,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> Any:
+    if not valid_mcp_name(name):
+        raise _bad("invalid server name")
+    try:
+        state = await _mcp_auth(request).start(name)
+    except McpAuthBusy as exc:
+        raise HTTPException(status_code=409, detail={"error": "mcp_auth_busy", "server": exc.server})
+    # Audit name only — never log the redirect URL or tokens.
+    await record_audit(db=db, type="library_mcp_auth_started", identity=identity,
+                       detail={"name": name})
+    return state.to_dict()
+
+
+@router.get("/mcp/{name}/auth")
+async def mcp_auth_status(
+    name: str,
+    request: Request,
+    _identity: str = Depends(current_identity),
+) -> Any:
+    if not valid_mcp_name(name):
+        raise _bad("invalid server name")
+    return _mcp_auth(request).status(name).to_dict()
+
+
+@router.post("/mcp/{name}/auth/redirect")
+async def mcp_auth_redirect(
+    name: str,
+    body: RedirectBody,
+    request: Request,
+    _identity: str = Depends(current_identity),
+) -> Any:
+    if not valid_mcp_name(name):
+        raise _bad("invalid server name")
+    state = await _mcp_auth(request).submit_redirect(name, body.redirectUrl)
+    return state.to_dict()
+
+
+@router.post("/mcp/{name}/auth/cancel")
+async def mcp_auth_cancel(
+    name: str,
+    request: Request,
+    _identity: str = Depends(current_identity),
+) -> Any:
+    if not valid_mcp_name(name):
+        raise _bad("invalid server name")
+    return (await _mcp_auth(request).cancel(name)).to_dict()
 
 
 # ---------------------------------------------------------------------------

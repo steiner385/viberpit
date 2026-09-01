@@ -165,7 +165,7 @@ describe('AccountRow — weekly reserve', () => {
     await user.click(screen.getByRole('button', { name: /save account settings/i }))
 
     expect(updateMutate).toHaveBeenCalledWith({
-      name: 'work', nickname: null, weeklyReservePct: 85,
+      name: 'work', nickname: null, weeklyReservePct: 85, allowExtraUsage: false,
     })
   })
 
@@ -183,7 +183,7 @@ describe('AccountRow — weekly reserve', () => {
     await user.click(screen.getByRole('button', { name: /save account settings/i }))
 
     expect(updateMutate).toHaveBeenCalledWith({
-      name: 'work', nickname: null, weeklyReservePct: null,
+      name: 'work', nickname: null, weeklyReservePct: null, allowExtraUsage: false,
     })
   })
 
@@ -203,7 +203,7 @@ describe('AccountRow — weekly reserve', () => {
     await user.click(screen.getByRole('button', { name: /save account settings/i }))
 
     expect(updateMutate).toHaveBeenCalledWith({
-      name: 'work', nickname: null, weeklyReservePct: null,
+      name: 'work', nickname: null, weeklyReservePct: null, allowExtraUsage: false,
     })
   })
 
