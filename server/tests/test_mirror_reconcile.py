@@ -1,4 +1,4 @@
-"""Tests for the primary's fleet-mirror reconcile (#895-adjacent).
+"""Tests for the primary's fleet-mirror reconcile (#895-adjacent, #898).
 
 The primary holds a _records entry for every fleet session. When a session is
 permanently deleted, that runs on the OWNING host — which pops its own _records
@@ -7,7 +7,8 @@ drives autopilot to propose for a row that's gone, so every automation_event /
 triage_proposal insert fails the session_id foreign key until the next restart.
 
 _reconcile_mirror_once evicts such ghosts: FOREIGN (not-owned) records whose DB row
-has vanished, two-strike so a mid-creation worker session is never dropped.
+has vanished or whose status is inactive (archived/ended), two-strike so a
+mid-creation worker session is never dropped.
 """
 import pytest
 
@@ -105,3 +106,43 @@ async def test_reappearing_row_resets_strikes(monkeypatch):
     await o._reconcile_mirror_once()               # miss → back to 1, not evicted
     assert o._mirror_missing_strikes.get("flap") == 1
     assert "flap" in o._records
+
+
+@pytest.mark.asyncio
+async def test_archived_foreign_session_evicted_after_two_strikes(monkeypatch):
+    """A foreign session whose DB row is archived (status inactive) is evicted.
+
+    _existing_session_ids now excludes archived/ended rows so archived sessions
+    on a worker host fall through to the same two-strike eviction path as deleted
+    ones (#898). The primary mirror must not keep showing sessions the owning
+    daemon has archived.
+    """
+    # present_ids = active IDs only; the archived session is absent just like a
+    # deleted one from the perspective of _existing_session_ids after the fix.
+    o = _make_orch(monkeypatch, present_ids=set())  # archived → not in active set
+    _rec(o, "archived-on-rocky", host="rocky")
+
+    for _ in range(_MIRROR_EVICT_STRIKES - 1):
+        await o._reconcile_mirror_once()
+        assert "archived-on-rocky" in o._records, "must not evict before the strike cap"
+
+    await o._reconcile_mirror_once()
+    assert "archived-on-rocky" not in o._records, "archived foreign session must be evicted"
+    assert "archived-on-rocky" not in o._mirror_missing_strikes
+
+
+@pytest.mark.asyncio
+async def test_active_foreign_session_not_evicted_after_fix(monkeypatch):
+    """A foreign session that is still ACTIVE (in present_ids) is never evicted.
+
+    Regression guard: _existing_session_ids's new status filter must not affect
+    active sessions — only archived/ended ones are excluded from present_ids.
+    """
+    o = _make_orch(monkeypatch, present_ids={"active-on-rocky"})
+    _rec(o, "active-on-rocky", host="rocky")
+
+    for _ in range(_MIRROR_EVICT_STRIKES + 2):
+        await o._reconcile_mirror_once()
+
+    assert "active-on-rocky" in o._records
+    assert "active-on-rocky" not in o._mirror_missing_strikes

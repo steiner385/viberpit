@@ -1113,3 +1113,58 @@ def test_batch_archive_oversized_ids_returns_422():
             ids = [f"x{i}" for i in range(201)]
             resp = client.post("/api/sessions/batch/archive", json={"ids": ids}, headers=IDENTITY_HEADERS)
             assert resp.status_code == 422
+
+
+def test_delete_orphaned_session_returns_204():
+    """DELETE /api/sessions/{id} returns 204 even when the session is not in the
+    orchestrator's _records (orphaned — daemon restarted or worktree removed on a
+    fleet worker host, #898).
+
+    Simulates the bug scenario: the session row exists in DB (status='idle'), but
+    the owning daemon's _records no longer has it. The fix falls back to a DB check
+    and proceeds with archive_session, which updates the DB without needing an
+    in-memory record.
+    """
+    with temp_env() as d:
+        _seed_slot("account1")
+        usage_fn = _make_usage_fn({"account1": make_usage(session=10.0, weekly=20.0)})
+        db_path = d / "ccswitch.db"
+
+        with patch("ccswitch.accounts.usage_for", side_effect=usage_fn), \
+             patch("server.sessions.orchestrator.select_account", return_value=Picked("account1")), \
+             patch("server.sessions.orchestrator.compose", return_value=d / "cfg" / "account1"), \
+             patch.dict(os.environ, {"CCSWITCH_DB_URL": f"sqlite+aiosqlite:///{db_path}"}):
+            (d / "cfg" / "account1").mkdir(parents=True, exist_ok=True)
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.app import create_app
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), usage_fn=usage_fn, poll_interval=9999.0)
+            app = create_app(orchestrator=orch)
+            client = TestClient(app, raise_server_exceptions=False)
+
+            with client:
+                # Create a session (lands in DB and _records).
+                create_resp = client.post(
+                    "/api/sessions",
+                    json={"name": "Orphaned Session", "account": "account1"},
+                    headers=IDENTITY_HEADERS,
+                )
+                assert create_resp.status_code == 201, create_resp.text
+                session_id = create_resp.json()["id"]
+                assert session_id in orch._records
+
+                # Simulate orphan: remove from _records (like a daemon restart that
+                # lost in-memory state, but left the DB row intact).
+                del orch._records[session_id]
+                assert session_id not in orch._records
+
+                # DELETE should still succeed via the DB fallback (#898).
+                del_resp = client.delete(
+                    f"/api/sessions/{session_id}", headers=IDENTITY_HEADERS
+                )
+                assert del_resp.status_code == 204, del_resp.text
+
+                # Verify the session is now archived in DB.
+                archived = client.get("/api/sessions/archived", headers=IDENTITY_HEADERS)
+                assert archived.status_code == 200
+                archived_ids = [s["id"] for s in archived.json()]
+                assert session_id in archived_ids, "orphaned session must be archived in DB after DELETE"
