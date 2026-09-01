@@ -687,6 +687,24 @@ class SessionOrchestrator:
             clock=time.monotonic,
         )
         self._sdlc_intake_task: asyncio.Task | None = None
+        # PM Sync control loop (design 2026-08-31 §4): mirrors onboarded repos'
+        # issues/PRs into work_items and refreshes the feature index. Same
+        # injected-seam mold as the SDLC loops; GitHub I/O rides the gh seam.
+        from server.automations.pm_sync import PmSyncLoop
+        self._pm_sync_ctx = AutomationContext("pm-sync")
+        self._pm_sync_loop = PmSyncLoop(
+            self._pm_sync_ctx,
+            read_config=self._pm_sync_read_config,
+            list_repos=self._pm_sync_list_repos,
+            fetch=self._pm_sync_fetch,
+            upsert_items=self._pm_sync_upsert_items,
+            save_sync_state=self._pm_sync_save_state,
+            read_feature_docs=self._pm_sync_read_feature_docs,
+            list_feature_rows=self._pm_sync_list_feature_rows,
+            apply_feature_plan=self._pm_sync_apply_feature_plan,
+            now_utc=self._pm_sync_now_utc,
+        )
+        self._pm_sync_task: asyncio.Task | None = None
         # SDLC Synthesizer control loop (#800): carries initiatives intent→spec→
         # plan by proposing each stage's artifact PR and enriching artifact index
         # rows with PR metadata (number/url, then merge sha). Same injected-seam
@@ -930,6 +948,11 @@ class SessionOrchestrator:
         self._sdlc_intake_task = asyncio.create_task(
             self._sdlc_intake_tick_loop(interval=60.0), name="sdlc-intake-loop"
         )
+        # PM Sync control loop: one tick per interval (backfill or incremental pass
+        # per onboarded repo + feature index refresh). Off by default; DB row enables.
+        self._pm_sync_task = asyncio.create_task(
+            self._pm_sync_tick_loop(interval=60.0), name="pm-sync-loop"
+        )
         # SDLC Synthesizer control loop: one tick per interval (propose spec/plan
         # artifacts + enrich PR metadata). A disabled row makes each tick cheap.
         self._sdlc_synth_task = asyncio.create_task(
@@ -1067,6 +1090,7 @@ class SessionOrchestrator:
         # pins the full set by task name.
         for attr in ("_titling_task", "_goal_task", "_rotation_task", "_stall_task",
                      "_token_refresh_task", "_backlog_task", "_sdlc_intake_task",
+                     "_pm_sync_task",
                      "_sdlc_synth_task",
                      "_autopilot_task", "_cicd_task", "_archaudit_task", "_sweep_task",
                      "_archive_limit_task", "_janitor_task", "_recurring_task",
@@ -3123,6 +3147,235 @@ class SessionOrchestrator:
                 await self._bump_automation_active("sdlc-intake")
         except Exception:  # pragma: no cover — a heartbeat failure must not stall
             log.debug("sdlc_intake.bump_active_failed", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # PM Sync control-loop dependencies (injected into PmSyncLoop)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _pm_sync_now_utc():
+        """Return the current UTC time (injectable seam for tests)."""
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc)
+
+    async def _pm_sync_read_config(self) -> tuple[str, dict]:
+        """The pm-sync row's (mode, config) merged onto schema defaults.
+
+        Mode is ``off`` unless the row is enabled AND carries ``on`` — an
+        absent/invalid row falls back to ``off`` + pure defaults so a bad config
+        never starts syncing. Mirrors ``_sdlc_intake_read_config`` exactly."""
+        from sqlalchemy import select
+        from server.automations.base import validate_config
+        from server.automations.pm_sync import PmSync
+        from server.db.models import Automation
+        enabled, mode, raw = False, None, {}
+        try:
+            async with db_session() as db:
+                row = (await db.execute(select(Automation).where(
+                    Automation.id == "pm-sync"))).scalar_one_or_none()
+                if row is not None:
+                    enabled = bool(row.enabled)
+                    mode = row.mode
+                    raw = dict(row.config) if row.config else {}
+        except Exception:
+            log.debug("pm_sync.config.load_failed", exc_info=True)
+        try:
+            config = validate_config(PmSync.config_schema, raw)
+        except ValueError:
+            config = validate_config(PmSync.config_schema, {})
+        effective = mode if (enabled and mode == "on") else "off"
+        return effective, config
+
+    async def _pm_sync_list_repos(self) -> list:
+        """Query every ProjectRepo (+ owning Project slug) and return views."""
+        from sqlalchemy import select
+        from server.automations.pm_sync import RepoSyncView
+        from server.db.models import Project, ProjectRepo
+        async with db_session() as db:
+            rows = (await db.execute(
+                select(ProjectRepo, Project.slug)
+                .join(Project, Project.id == ProjectRepo.project_id)
+            )).all()
+        return [RepoSyncView(
+            project_id=pr.project_id, project_slug=slug or "",
+            repo=pr.repo or "", is_primary=bool(pr.is_primary),
+            backfill_done=bool(pr.backfill_done),
+            backfill_phase=pr.backfill_phase or "issues",
+            backfill_cursor=pr.backfill_cursor, watermark=pr.watermark,
+            last_synced_at=pr.last_synced_at,
+            sync_requested_at=pr.sync_requested_at,
+        ) for pr, slug in rows]
+
+    async def _pm_sync_fetch(self, query: str) -> dict:
+        """Run a GraphQL query via the gh seam. GraphQL only — never REST."""
+        import json
+        proc = await asyncio.to_thread(
+            self._gh_run, ["api", "graphql", "-f", f"query={query}"])
+        if getattr(proc, "returncode", 1) != 0:
+            raise RuntimeError(
+                f"gh graphql failed: {(getattr(proc, 'stderr', '') or '').strip()[:500]}")
+        return json.loads(getattr(proc, "stdout", "") or "{}")
+
+    async def _pm_sync_upsert_items(self, items: list) -> None:
+        """Idempotent upsert into work_items keyed by (repo, number, kind)."""
+        from datetime import datetime, timezone
+        from sqlalchemy import select
+        from server.db.models import WorkItem
+        async with db_session() as db:
+            for item in items:
+                existing = (await db.execute(
+                    select(WorkItem).where(
+                        WorkItem.repo == item.repo,
+                        WorkItem.number == item.number,
+                        WorkItem.kind == item.kind,
+                    )
+                )).scalar_one_or_none()
+                now = datetime.now(timezone.utc)
+                if existing is None:
+                    existing = WorkItem(repo=item.repo, number=item.number,
+                                       kind=item.kind)
+                    db.add(existing)
+                existing.title = item.title
+                existing.body = item.body
+                existing.state = item.state
+                existing.labels = list(item.labels)
+                existing.author = item.author
+                existing.url = item.url
+                existing.linked_issue_numbers = list(item.linked_issue_numbers)
+                existing.gh_created_at = item.gh_created_at
+                existing.gh_updated_at = item.gh_updated_at
+                existing.gh_closed_at = item.gh_closed_at
+                existing.last_synced_at = now
+
+    async def _pm_sync_save_state(self, view, **updates) -> None:
+        """Map keyword updates onto the ProjectRepo row for *view*."""
+        from sqlalchemy import select
+        from server.db.models import ProjectRepo
+        async with db_session() as db:
+            row = (await db.execute(
+                select(ProjectRepo).where(
+                    ProjectRepo.project_id == view.project_id,
+                    ProjectRepo.repo == view.repo,
+                )
+            )).scalar_one_or_none()
+            if row is None:
+                return
+            for key, value in updates.items():
+                setattr(row, key, value)
+
+    async def _pm_sync_read_feature_docs(self, repo: str) -> list[tuple[str, str]]:
+        """List docs/product/features/*.md at origin's default branch in the
+        shared clone. Uses git plumbing only — no GitHub API cost."""
+
+        async def _read() -> list[tuple[str, str]]:
+            import subprocess
+            repo_root = await self._effective_repo_root()
+            url = f"https://github.com/{repo}.git"
+            try:
+                clone = await asyncio.to_thread(
+                    gitrepos.ensure_clone, repo_root, repo, url)
+            except Exception:
+                log.warning("pm_sync.read_feature_docs.clone_failed repo=%s", repo,
+                            exc_info=True)
+                return []
+            await asyncio.to_thread(
+                subprocess.run,
+                ["git", "-C", clone, "fetch", "origin", "--quiet"],
+                check=False, capture_output=True, timeout=120,
+            )
+            head = await asyncio.to_thread(
+                subprocess.run,
+                ["git", "-C", clone, "symbolic-ref", "--quiet",
+                 "refs/remotes/origin/HEAD"],
+                capture_output=True, text=True, timeout=30,
+            )
+            ref = head.stdout.strip() or "refs/remotes/origin/master"
+            ls = await asyncio.to_thread(
+                subprocess.run,
+                ["git", "-C", clone, "ls-tree", "-r", "--name-only", ref,
+                 "docs/product/features/"],
+                capture_output=True, text=True, timeout=30,
+            )
+            out: list[tuple[str, str]] = []
+            for path in ls.stdout.splitlines():
+                if not path.endswith(".md"):
+                    continue
+                show = await asyncio.to_thread(
+                    subprocess.run,
+                    ["git", "-C", clone, "show", f"{ref}:{path}"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if show.returncode == 0:
+                    out.append((path, show.stdout))
+            return out
+
+        return await _read()
+
+    async def _pm_sync_list_feature_rows(self, project_id: str) -> list:
+        """Return FeatureRowView for every Feature belonging to *project_id*."""
+        from sqlalchemy import select
+        from server.db.models import Feature
+        from server.pm.feature_index import FeatureRowView
+        async with db_session() as db:
+            rows = (await db.execute(
+                select(Feature).where(Feature.project_id == project_id)
+            )).scalars().all()
+        return [FeatureRowView(slug=f.slug or "", orphaned=bool(f.orphaned))
+                for f in rows]
+
+    async def _pm_sync_apply_feature_plan(
+        self, project_id: str, plan, by_slug: dict
+    ) -> None:
+        """Write upserts/orphans from *plan* into the Feature table."""
+        from sqlalchemy import select
+        from server.db.models import Feature
+        async with db_session() as db:
+            for up in plan.upserts:
+                row = (await db.execute(
+                    select(Feature).where(
+                        Feature.project_id == project_id,
+                        Feature.slug == up.slug,
+                    )
+                )).scalar_one_or_none()
+                if row is None:
+                    row = Feature(project_id=project_id, slug=up.slug)
+                    db.add(row)
+                row.title = up.title
+                row.state = up.state
+                row.summary = up.summary
+                row.repo_path = up.repo_path
+                row.orphaned = False
+            for slug in plan.orphan_slugs:
+                row = (await db.execute(
+                    select(Feature).where(
+                        Feature.project_id == project_id,
+                        Feature.slug == slug,
+                    )
+                )).scalar_one_or_none()
+                if row is not None:
+                    row.orphaned = True
+
+    async def _pm_sync_tick_loop(self, interval: float) -> None:
+        """Periodic driver for the pm-sync control loop (mirrors _sdlc_intake_tick_loop)."""
+        while True:
+            await self._pm_sync_tick_once()
+            await asyncio.sleep(interval)
+
+    async def _pm_sync_tick_once(self) -> None:
+        """One pm-sync tick + an enabled-only ``last_active_at`` heartbeat.
+        Best-effort — neither the tick nor the heartbeat may crash the loop."""
+        if not await self._schedule_allows_tick("pm-sync"):
+            return
+        try:
+            await self._pm_sync_loop.tick()
+        except Exception:  # pragma: no cover — tick() already swallows; belt+braces
+            log.warning("pm_sync.tick_loop_error", exc_info=True)
+        try:
+            mode, _ = await self._pm_sync_read_config()
+            if mode != "off":
+                await self._bump_automation_active("pm-sync")
+        except Exception:  # pragma: no cover — a heartbeat failure must not stall
+            log.debug("pm_sync.bump_active_failed", exc_info=True)
 
     # ------------------------------------------------------------------
     # SDLC Synthesizer control-loop dependencies (injected into SdlcSynthesizerLoop)
