@@ -1020,3 +1020,92 @@ class InitiativeArtifact(Base):
     model: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
+# ---------------------------------------------------------------------------
+# PM product layer (design: docs/superpowers/specs/2026-08-31-pm-product-layer-design.md)
+#
+# Truth model is layered: GitHub owns work items (WorkItem is a disposable
+# mirror), repo markdown owns feature definitions (Feature is an index row,
+# like InitiativeArtifact), and these tables own ONLY what has no other home:
+# relationships, the classification/score overlay, and AI triage proposals.
+# Every non-key column is nullable so _reconcile_columns can ALTER-ADD it
+# (same rule as the SDLC block above).
+# ---------------------------------------------------------------------------
+
+# Onboarding wizard states, in order (spec §5). Single source of truth.
+PROJECT_ONBOARDING_STATES: tuple[str, ...] = (
+    "registered", "syncing", "map_proposed", "map_merged", "classifying", "live")
+
+# Typed project→project relationship kinds (spec §3).
+PROJECT_EDGE_KINDS: tuple[str, ...] = ("depends_on", "deploys_via", "integrates_with")
+
+
+class Project(Base):
+    """One product under PM management. ``slug`` is the stable identity;
+    repos attach via ProjectRepo (the primary repo hosts the feature docs)."""
+
+    __tablename__ = "projects"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    # Writer-side invariant: always set (nullable for reconcile, like Initiative.slug).
+    slug: Mapped[str | None] = mapped_column(String, nullable=True, unique=True, index=True)
+    name: Mapped[str | None] = mapped_column(String, nullable=True)
+    description: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str | None] = mapped_column(String, nullable=True, default="active")
+    portfolio_tags: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # First PROJECT_ONBOARDING_STATES entry; advanced by sync/onboarding flows.
+    onboarding_state: Mapped[str | None] = mapped_column(
+        String, nullable=True, default="registered")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+
+
+class ProjectRepo(Base):
+    """A repo attached to a project, carrying that repo's sync state.
+
+    ``backfill_cursor``/``backfill_done`` drive resumable history import;
+    ``watermark`` is the incremental-sync high-water mark and advances ONLY
+    after a fully successful pass (spec §4). ``sync_requested_at`` is the
+    sync-now signal set by the API and cleared by the loop."""
+
+    __tablename__ = "project_repos"
+    __table_args__ = (UniqueConstraint("project_id", "repo", name="uq_project_repo"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    project_id: Mapped[str] = mapped_column(
+        String, ForeignKey("projects.id"), nullable=True, index=True)
+    repo: Mapped[str | None] = mapped_column(String, nullable=True)  # "owner/name"
+    is_primary: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
+    backfill_cursor: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Which phase the cursor belongs to: "issues" then "prs" (backfill order).
+    backfill_phase: Mapped[str | None] = mapped_column(String, nullable=True, default="issues")
+    backfill_done: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
+    watermark: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sync_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
+class ProjectEdge(Base):
+    """Typed project→project relationship (spec §3): depends_on | deploys_via |
+    integrates_with, with an optional free-text note."""
+
+    __tablename__ = "project_edges"
+    __table_args__ = (
+        UniqueConstraint("src_project_id", "dst_project_id", "kind", name="uq_project_edge"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    src_project_id: Mapped[str] = mapped_column(
+        String, ForeignKey("projects.id"), nullable=True, index=True)
+    dst_project_id: Mapped[str] = mapped_column(
+        String, ForeignKey("projects.id"), nullable=True, index=True)
+    kind: Mapped[str | None] = mapped_column(String, nullable=True)  # PROJECT_EDGE_KINDS
+    note: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
