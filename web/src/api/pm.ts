@@ -62,3 +62,42 @@ export function createProject(input: CreateProjectInput): Promise<Project> {
 export function requestProjectSync(slug: string): Promise<{ requested: boolean }> {
   return api.post<{ requested: boolean }>(`/pm/projects/${encodeURIComponent(slug)}/sync`)
 }
+
+// --- phase 2: onboarding wizard (design §5) ---
+
+export interface OnboardingAction {
+  type:
+    | 'register' | 'await_backfill' | 'propose_map' | 'await_map_pr'
+    | 'classify' | 'await_triage' | 'live' | 'needs_human' | 'unknown'
+  reason?: string
+}
+
+export interface OnboardingCounts {
+  repoCount: number
+  backfillDoneCount: number
+  featureCount: number
+  openUnclassifiedCount: number
+  pendingProposalCount: number
+}
+
+export interface OnboardingView {
+  state: OnboardingState | string
+  action: OnboardingAction
+  counts: OnboardingCounts
+}
+
+export function fetchOnboarding(slug: string): Promise<OnboardingView> {
+  return api.get<OnboardingView>(
+    `/pm/projects/${encodeURIComponent(slug)}/onboarding`)
+}
+
+export function proposeMap(slug: string): Promise<{ sessionId: string | null }> {
+  return api.post<{ sessionId: string | null }>(
+    `/pm/projects/${encodeURIComponent(slug)}/propose-map`)
+}
+
+// Also exported as `classify` from the triage module (single spawn fetcher).
+export function runClassify(slug: string): Promise<{ dispatched: number }> {
+  return api.post<{ dispatched: number }>(
+    `/pm/projects/${encodeURIComponent(slug)}/classify`)
+}

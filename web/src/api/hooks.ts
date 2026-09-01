@@ -25,8 +25,13 @@ import {
 } from './sdlc'
 import {
   fetchProjects, createProject, requestProjectSync,
-  type Project, type CreateProjectInput,
+  fetchOnboarding, proposeMap, runClassify,
+  type Project, type CreateProjectInput, type OnboardingView,
 } from './pm'
+import {
+  fetchTriage, acceptProposal, rejectProposal,
+  type TriageProposal, type OverlayEdits,
+} from './triage'
 import type { SessionEvent } from '@/session/events'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { getPendingSessions, subscribePending, addPendingSession, removePendingSession } from '@/lib/pendingSessions'
@@ -68,6 +73,8 @@ export const QK = {
   initiatives: ['sdlc', 'initiatives'] as const,
   initiative: (slug: string) => ['sdlc', 'initiative', slug] as const,
   projects: ['pm', 'projects'] as const,
+  triage: ['pm', 'triage'] as const,          // phase 2 OWNS this key
+  onboarding: (slug: string) => ['pm', 'onboarding', slug] as const,
 }
 
 export function useModels() {
@@ -1248,6 +1255,82 @@ export function useSyncProject() {
     mutationFn: (slug) => requestProjectSync(slug),
     onSuccess: () => void qc.invalidateQueries({ queryKey: QK.projects }),
     onError: (e) => toast.error(initiativeErrorMessage(e, 'Could not request sync')),
+  })
+}
+
+// ── PM product layer (phase 2) — onboarding + triage hooks ───────────────────
+
+/** Onboarding-wizard state for one project (a view over the engine). */
+export function useOnboarding(slug: string) {
+  return useQuery<OnboardingView>({
+    queryKey: QK.onboarding(slug),
+    queryFn: () => fetchOnboarding(slug),
+    enabled: !!slug,
+    staleTime: 5_000,
+    refetchInterval: 15_000,
+  })
+}
+
+export function useProposeMap() {
+  const qc = useQueryClient()
+  return useMutation<{ sessionId: string | null }, ApiRequestError, string>({
+    mutationFn: (slug) => proposeMap(slug),
+    onSuccess: (_d, slug) => {
+      void qc.invalidateQueries({ queryKey: QK.onboarding(slug) })
+      void qc.invalidateQueries({ queryKey: QK.projects })
+    },
+    onError: (e) => toast.error(initiativeErrorMessage(e, 'Could not propose the map')),
+  })
+}
+
+export function useClassify() {
+  const qc = useQueryClient()
+  return useMutation<{ dispatched: number }, ApiRequestError, string>({
+    mutationFn: (slug) => runClassify(slug),
+    onSuccess: (_d, slug) => {
+      void qc.invalidateQueries({ queryKey: QK.onboarding(slug) })
+      void qc.invalidateQueries({ queryKey: QK.triage })
+    },
+    onError: (e) => toast.error(initiativeErrorMessage(e, 'Could not start classification')),
+  })
+}
+
+export function useTriage(projectSlug?: string) {
+  return useQuery<TriageProposal[]>({
+    queryKey: [...QK.triage, projectSlug ?? null],
+    queryFn: () => fetchTriage(projectSlug),
+    staleTime: 5_000,
+    refetchInterval: 15_000,
+  })
+}
+
+export function useAcceptProposal(projectSlug?: string) {
+  const qc = useQueryClient()
+  return useMutation<
+    { id: string; status: string },
+    ApiRequestError,
+    { id: string; edits?: OverlayEdits }
+  >({
+    mutationFn: ({ id, edits }) => acceptProposal(id, edits),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: [...QK.triage, projectSlug ?? null] })
+      void qc.invalidateQueries({ queryKey: QK.projects })
+    },
+    onError: (e) => toast.error(initiativeErrorMessage(e, 'Could not accept proposal')),
+  })
+}
+
+export function useRejectProposal(projectSlug?: string) {
+  const qc = useQueryClient()
+  return useMutation<
+    { id: string; status: string },
+    ApiRequestError,
+    { id: string }
+  >({
+    mutationFn: ({ id }) => rejectProposal(id),
+    onSuccess: () =>
+      void qc.invalidateQueries({ queryKey: [...QK.triage, projectSlug ?? null] }),
+    onError: (e) => toast.error(initiativeErrorMessage(e, 'Could not reject proposal')),
   })
 }
 
