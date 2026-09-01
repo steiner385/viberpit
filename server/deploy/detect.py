@@ -49,7 +49,18 @@ class PendingState:
 # calls steps.ci_verdict directly (uncached), so a red commit later re-run to green can
 # still be deployed even while a stale banner verdict ages out of relevance.
 _VERDICT_CACHE_MAX = 64
-_verdict_cache: OrderedDict[str, str] = OrderedDict()
+_verdict_cache: OrderedDict[str, tuple[str, float]] = OrderedDict()
+
+# A "red" verdict is NOT immutable in this repo: flaky master runs are routinely
+# re-run to green (the #846 teardown hang reddened several). Cache red only this
+# long so a re-run's green verdict surfaces within minutes; green stays cached
+# for the process lifetime (a completed green run never turns red).
+_RED_TTL_S = 600.0
+
+
+def _now() -> float:
+    import time
+    return time.monotonic()
 
 # Cap on how many commits beyond the tip the green-frontier walk may evaluate per tick:
 # a deep all-red backlog must not burn one GitHub round-trip per pending commit.
@@ -59,11 +70,14 @@ _GREEN_WALK_MAX = 10
 def _cached_ci(sha: str, ci_fn: Callable[[str], str]) -> str:
     cached = _verdict_cache.get(sha)
     if cached is not None:
-        _verdict_cache.move_to_end(sha)
-        return cached
+        verdict, stored_at = cached
+        if verdict == "green" or _now() - stored_at < _RED_TTL_S:
+            _verdict_cache.move_to_end(sha)
+            return verdict
+        del _verdict_cache[sha]   # red past its TTL: re-query (re-runs go green)
     verdict = ci_fn(sha)
     if verdict in ("green", "red"):
-        _verdict_cache[sha] = verdict
+        _verdict_cache[sha] = (verdict, _now())
         while len(_verdict_cache) > _VERDICT_CACHE_MAX:
             _verdict_cache.popitem(last=False)
     return verdict

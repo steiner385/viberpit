@@ -245,6 +245,23 @@ def test_pending_verdicts_are_requeried_every_tick():
     assert calls == ["c1", "c1"], "a non-terminal verdict must be re-checked"
 
 
+def test_red_verdicts_expire_after_the_ttl(monkeypatch):
+    """Master reds are often flaky runs later re-run to green (#846 victims): a red
+    verdict must be re-queried once its TTL passes, while green stays cached."""
+    clock = {"t": 0.0}
+    monkeypatch.setattr(detect, "_now", lambda: clock["t"])
+    ci_fn, calls = _counting_ci({"c2": "green"})       # c3 red, c2 green
+    assert detect._cached_ci("c3", ci_fn) == "red"
+    assert detect._cached_ci("c2", ci_fn) == "green"
+    clock["t"] = detect._RED_TTL_S - 1
+    assert detect._cached_ci("c3", ci_fn) == "red"      # inside TTL: cached
+    clock["t"] = detect._RED_TTL_S + 1
+    ci_fn2, calls2 = _counting_ci({"c3": "green"})      # the re-run went green
+    assert detect._cached_ci("c3", ci_fn2) == "green"   # TTL passed: re-queried
+    assert detect._cached_ci("c2", ci_fn2) == "green"   # green: cached forever
+    assert calls == ["c3", "c2"] and calls2 == ["c3"]
+
+
 def test_verdict_cache_is_bounded():
     for i in range(detect._VERDICT_CACHE_MAX + 8):
         detect._cached_ci(f"s{i}", lambda s: "green")
