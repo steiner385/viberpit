@@ -116,6 +116,30 @@ async def test_watermark_not_advanced_when_pass_fails():
 
 
 @pytest.mark.asyncio
+async def test_watermark_not_advanced_when_incremental_fails():
+    """Incremental watermark must NOT advance when _fetch raises mid-pass.
+
+    This guards the spec's correctness crux: the watermark is written ONCE
+    after a fully successful pass.  A failure mid-pass must leave it untouched
+    so the next tick re-fetches the missed window (at-least-once semantics).
+    """
+    ctx = Ctx()
+    wm = datetime(2026, 1, 15, tzinfo=timezone.utc)
+    view = _view(backfill_done=True, watermark=wm, sync_requested_at=wm)
+    loop, saved, upserted, applied = _loop(ctx, [view], [])
+
+    async def boom(_q):
+        raise RuntimeError("network error")
+
+    loop._fetch = boom
+    await loop.tick()
+    # Watermark must NOT appear in any saved update
+    assert all("watermark" not in u for _, u in saved)
+    # A warning event must have been emitted for the failed repo
+    assert any(level == "warning" for level, _, _ in ctx.events)
+
+
+@pytest.mark.asyncio
 async def test_incremental_prs_stop_at_watermark():
     ctx = Ctx()
     wm = datetime(2026, 1, 15, tzinfo=timezone.utc)

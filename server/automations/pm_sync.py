@@ -23,6 +23,8 @@ from .base import AutomationStatus, ConfigField
 
 log = logging.getLogger(__name__)
 
+NowUtc = Callable[[], datetime]
+
 # Bound one tick's backfill work so a huge history spreads across ticks
 # (the saved cursor makes each continuation cheap).
 _MAX_PAGES_PER_TICK = 20
@@ -98,7 +100,7 @@ class PmSyncLoop:
         read_feature_docs: ReadFeatureDocs,
         list_feature_rows: ListFeatureRows,
         apply_feature_plan: ApplyFeaturePlan,
-        now_utc: Callable[[], datetime],
+        now_utc: NowUtc,
     ) -> None:
         self._ctx = ctx
         self._read_config = read_config
@@ -157,6 +159,12 @@ class PmSyncLoop:
         cursor after every page; returns True when both phases complete."""
         phase = view.backfill_phase or "issues"
         cursor = view.backfill_cursor
+        # max_seen resets to None each tick intentionally: a backfill spanning
+        # >_MAX_PAGES_PER_TICK ticks derives its final watermark from only the
+        # last tick's pages.  This is safe — any under-set watermark is
+        # self-healing: the first incremental pass idempotently re-fetches the
+        # missed window.  Do NOT accumulate across ticks (would require
+        # persisting an intermediate watermark, adding complexity for no gain).
         max_seen: datetime | None = None
         for _ in range(_MAX_PAGES_PER_TICK):
             if phase == "issues":
