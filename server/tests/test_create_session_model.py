@@ -74,6 +74,16 @@ def _run_create(tmp_path, *, model):
             await orch.start()
             try:
                 rec = await orch.create_session("auto", model=model)
+                # A session that came back without a driver was parked (queued /
+                # pending_approval) rather than spawned — e.g. the requested
+                # model tier landed on the approval denylist. Name that outcome
+                # instead of failing with a bare KeyError on the driver lookup
+                # (the failure shape run 33400666371 hit while this test still
+                # requested the gated "fable" tier).
+                assert rec.id in orch._drivers, (
+                    f"session was not spawned with a driver: status={rec.status!r} "
+                    f"(model {model!r} gated or capacity-queued?)"
+                )
                 driver_model = orch._drivers[rec.id]._client.model
                 async with db_session() as db:
                     row = (await db.execute(

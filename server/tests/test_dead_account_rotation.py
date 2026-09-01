@@ -104,19 +104,53 @@ def test_consecutive_failures_reflects_fail_count():
 # _rotation_monitor: proactive dead-account rotation
 # ---------------------------------------------------------------------------
 
+async def _poll(predicate, *, timeout: float = 5.0) -> bool:
+    """Async poll-until — the bounded-wait pattern from test_ws_prompt_after_release.
+
+    Replaces exact `await asyncio.sleep(0)` yield-counting, which broke whenever
+    the monitor's iteration gained an await (e.g. the #852 fleet-registry read)
+    or the loaded `-n auto` CI runner scheduled tasks differently — `.calls`
+    was then still empty at assert time (red masters on 3 rotation tests).
+    """
+    import time
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(0.005)
+    return True
+
+
+# A benign event the monitor consumes without side effects: usage=None with zero
+# consecutive failures for an account no record uses → the `continue` branch.
+_SENTINEL_EVENT = {"account": "zz-sentinel-does-not-exist", "usage": None}
+
+
 async def _run_monitor_one_event(orch, event: dict):
-    """Start the rotation monitor, inject one event, wait for it to be processed."""
+    """Start the rotation monitor, inject one event, wait until it is FULLY
+    processed (spawned side-effect tasks included), then stop the monitor.
+
+    Determinism without yield-counting:
+    1. poll until the monitor has subscribed (its queue is in _subscribers);
+    2. enqueue the real event plus a no-op sentinel — the monitor handles one
+       event per loop iteration, so once the sentinel is dequeued (qsize()==0)
+       iteration 1, including its synchronous _spawn calls, has completed;
+    3. poll until every spawned bg task (spy_rotate etc.) has finished.
+    Works for negative tests too: after (2)+(3) the monitor provably decided
+    NOT to act, rather than not having run yet.
+    """
     task = asyncio.create_task(orch._rotation_monitor())
-    # Let the monitor start and reach its first `await q.get()` — at this point
-    # it has subscribed and the poller's _subscribers list has its queue.
-    await asyncio.sleep(0)
-    # Push the event into every subscriber queue (the monitor just added one).
+    assert await _poll(lambda: orch._poller._subscribers), \
+        "rotation monitor never subscribed to the poller"
     for q in list(orch._poller._subscribers):
         q.put_nowait(event)
-    # Two more yields: one for the monitor to process the event and call _spawn,
-    # one for the spawned task (e.g. spy_rotate) to run.
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
+        q.put_nowait(_SENTINEL_EVENT)
+    assert await _poll(
+        lambda: all(q.qsize() == 0 for q in orch._poller._subscribers)
+    ), "rotation monitor never consumed the injected events"
+    assert await _poll(
+        lambda: all(t.done() for t in orch._bg_tasks)
+    ), "a task spawned by the rotation monitor never finished"
     task.cancel()
     try:
         await task
