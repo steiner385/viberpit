@@ -167,6 +167,18 @@ _FK_LINKS: dict[str, dict[str, str]] = {
     # at a real initiatives row (inserted earlier — sorted_tables orders parents
     # first) so the artifact references a live initiative rather than NULL.
     "initiative_artifacts": {"initiative_id": "initiatives"},
+    # PM product layer (design 2026-08-31): point every FK at a live parent row
+    # (sorted_tables orders parents first), matching the initiative_artifacts
+    # precedent above. No _REQUIRED_EXTRAS entries needed — every PM table's
+    # NOT NULL columns are the UUID PK and created_at/updated_at, all defaulted.
+    "project_repos": {"project_id": "projects"},
+    "project_edges": {"src_project_id": "projects", "dst_project_id": "projects"},
+    "features": {"project_id": "projects"},
+    "feature_links": {"src_feature_id": "features", "dst_feature_id": "features"},
+    "work_items": {"feature_id": "features"},
+    "triage_proposals": {"work_item_id": "work_items", "proposed_feature_id": "features"},
+    "initiative_repos": {"initiative_id": "initiatives"},
+    "initiative_features": {"initiative_id": "initiatives", "feature_id": "features"},
 }
 
 
