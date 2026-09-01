@@ -182,3 +182,38 @@ class TestComposeClaudioJson(unittest.TestCase):
             self._seed_per_account("alpha", {"userID": "u"})
             configdir.compose("alpha")
             self.assertFalse(backups.exists(), "backups/ must be removed by compose()")
+
+    def test_compose_tolerates_backups_vanishing_midcleanup(self):
+        """compose() must not propagate a concurrent-deletion error from backups/ cleanup.
+
+        The account cfg dir can be a shared (sshfs) mount whose backups/ is rewritten by
+        other live claude processes on the same account: a .claude.json.backup.* is created
+        and its predecessor unlinked between rmtree's readdir and unlink, so rmtree raises
+        FileNotFoundError. That cleanup is best-effort (backups/ is claude's throwaway
+        artifact) and MUST NOT abort compose() — a raise here strands every driver launch,
+        resume, and titling pass on the mounted host (the rocky session-stuck incident)."""
+        import shutil
+        with temp_env():
+            from ccswitch import configdir, paths
+            self._seed_slot("alpha")
+            self._seed_per_account("alpha", {"userID": "u"})
+            cfg_dir = paths.account_cfg_dir("alpha")
+            cfg_dir.mkdir(parents=True, exist_ok=True)
+            backups = cfg_dir / "backups"
+            backups.mkdir()
+            (backups / ".claude.json.backup.1").write_text("{}")
+
+            # Simulate the sshfs readdir-vs-unlink race: rmtree sees an entry that a
+            # concurrent writer has already removed by the time it unlinks it.
+            orig_rmtree = shutil.rmtree
+            def racing_rmtree(*a, **k):  # noqa: ANN001,ANN002,ANN003
+                raise FileNotFoundError(2, "No such file or directory",
+                                        ".claude.json.backup.1")
+            configdir.shutil.rmtree = racing_rmtree
+            try:
+                result = configdir.compose("alpha")  # must not raise
+            finally:
+                configdir.shutil.rmtree = orig_rmtree
+            self.assertEqual(result, cfg_dir)
+            self.assertTrue((cfg_dir / ".claude.json").exists(),
+                            "compose() must complete despite the backups cleanup race")
