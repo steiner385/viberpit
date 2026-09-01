@@ -441,12 +441,23 @@ async def test_success_writes_audit_row_no_token_material():
 
     assert m.status("primary").state == "success", "manager must reach success state"
 
-    # Query the audit_events table directly
-    async with db_session() as db:
-        result = await db.execute(
-            select(AuditEvent).where(AuditEvent.type == "account.reauth.success")
-        )
-        rows = result.scalars().all()
+    # The success audit row is committed by the background _run task AFTER it
+    # flips state to "success" (ReauthManager._run), so a read fired the instant
+    # state turns "success" can race ahead of that commit. Poll for the row to
+    # land — mirroring the state poll above. (The old shared-connection StaticPool
+    # test DB masked this race; the file-backed NullPool DB from #890 gives each
+    # connection its own view, so the read must wait for the commit rather than
+    # observing an in-flight write on a shared connection.)
+    rows: list = []
+    for _ in range(100):
+        async with db_session() as db:
+            result = await db.execute(
+                select(AuditEvent).where(AuditEvent.type == "account.reauth.success")
+            )
+            rows = result.scalars().all()
+        if rows:
+            break
+        await asyncio.sleep(0.02)
 
     assert len(rows) == 1, f"expected 1 account.reauth.success row, got {len(rows)}"
     detail = rows[0].detail

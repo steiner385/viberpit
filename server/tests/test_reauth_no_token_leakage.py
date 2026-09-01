@@ -117,14 +117,25 @@ async def test_capture_login_no_token_leakage_in_audit(tmp_path, monkeypatch):
 
     assert m.status("primary").state == "success"
 
-    # Query all audit rows and verify no token material
-    async with db_session() as db:
-        result = await db.execute(
-            select(AuditEvent).where(
-                AuditEvent.type.in_(["account.reauth.start", "account.reauth.success"])
+    # The success audit row is written by the background _run task AFTER it flips
+    # state to "success" (ReauthManager._run), so a read fired the instant state
+    # turns "success" can race ahead of the audit commit. Poll for the rows to
+    # land — mirroring the state poll above. (The old shared-connection StaticPool
+    # test DB masked this race; the file-backed NullPool DB from #890 gives each
+    # connection its own view, so the read must wait for the commit rather than
+    # observing an in-flight write on a shared connection.)
+    rows: list = []
+    for _ in range(100):
+        async with db_session() as db:
+            result = await db.execute(
+                select(AuditEvent).where(
+                    AuditEvent.type.in_(["account.reauth.start", "account.reauth.success"])
+                )
             )
-        )
-        rows = result.scalars().all()
+            rows = result.scalars().all()
+        if rows:
+            break
+        await asyncio.sleep(0.02)
 
     assert len(rows) > 0, "expected at least one audit row"
 
