@@ -170,11 +170,11 @@ test.describe('T044 — Dashboard', () => {
     // Wait for the shell to settle.
     await expect(page.getByText('Work session')).toBeVisible()
 
-    // All seven sections render as tabs in the strip — nothing is dropped on a
+    // All eight sections render as tabs in the strip — nothing is dropped on a
     // narrow viewport. (Accounts/Library live inside Settings now.)
     const tablist = page.getByRole('tablist', { name: /dashboard sections/i })
-    await expect(tablist.getByRole('tab')).toHaveCount(7)
-    for (const name of [/sessions/i, /pipeline/i, /automations/i, /initiatives/i, /archived/i, /insights/i, /settings/i]) {
+    await expect(tablist.getByRole('tab')).toHaveCount(8)
+    for (const name of [/sessions/i, /pipeline/i, /automations/i, /initiatives/i, /products/i, /archived/i, /insights/i, /settings/i]) {
       await expect(tablist.getByRole('tab', { name })).toHaveCount(1)
     }
 

@@ -21,6 +21,7 @@ export const TAB_DEFS: { id: TabId; label: string }[] = [
   { id: 'pipeline', label: 'Pipeline' },
   { id: 'automations', label: 'Automations' },
   { id: 'initiatives', label: 'Initiatives' },
+  { id: 'projects', label: 'Products' },
   { id: 'archived', label: 'Archived' },
   { id: 'insights', label: 'Insights' },
   { id: 'settings', label: 'Settings' },

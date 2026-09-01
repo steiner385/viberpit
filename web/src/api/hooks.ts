@@ -23,6 +23,10 @@ import {
   fetchInitiatives, advanceInitiative, createInitiative,
   type Initiative, type CreateInitiativeInput,
 } from './sdlc'
+import {
+  fetchProjects, createProject, requestProjectSync,
+  type Project, type CreateProjectInput,
+} from './pm'
 import type { SessionEvent } from '@/session/events'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { getPendingSessions, subscribePending, addPendingSession, removePendingSession } from '@/lib/pendingSessions'
@@ -63,6 +67,7 @@ export const QK = {
     ['library', 'content', kind, id, plugin ?? null] as const,
   initiatives: ['sdlc', 'initiatives'] as const,
   initiative: (slug: string) => ['sdlc', 'initiative', slug] as const,
+  projects: ['pm', 'projects'] as const,
 }
 
 export function useModels() {
@@ -1213,6 +1218,36 @@ export function useCreateInitiative() {
     mutationFn: (input) => createInitiative(input),
     onSuccess: () => void qc.invalidateQueries({ queryKey: QK.initiatives }),
     onError: (e) => toast.error(initiativeErrorMessage(e, 'Could not create initiative')),
+  })
+}
+
+// ── PM product layer (phase 1) ────────────────────────────────────────────────
+
+/** Projects registry list. Polled like initiatives (baseline liveness). */
+export function useProjects() {
+  return useQuery<Project[]>({
+    queryKey: QK.projects,
+    queryFn: fetchProjects,
+    staleTime: 5_000,
+    refetchInterval: 15_000,
+  })
+}
+
+export function useCreateProject() {
+  const qc = useQueryClient()
+  return useMutation<Project, ApiRequestError, CreateProjectInput>({
+    mutationFn: (input) => createProject(input),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: QK.projects }),
+    onError: (e) => toast.error(initiativeErrorMessage(e, 'Could not create project')),
+  })
+}
+
+export function useSyncProject() {
+  const qc = useQueryClient()
+  return useMutation<{ requested: boolean }, ApiRequestError, string>({
+    mutationFn: (slug) => requestProjectSync(slug),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: QK.projects }),
+    onError: (e) => toast.error(initiativeErrorMessage(e, 'Could not request sync')),
   })
 }
 

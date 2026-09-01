@@ -38,6 +38,7 @@ import { AdoptPanel } from './AdoptPanel'
 import { InsightsView } from './InsightsView'
 import { AutomationsTab } from '@/automations/AutomationsTab'
 import { InitiativesTab } from '@/initiatives/InitiativesTab'
+import { ProjectsTab } from '@/projects/ProjectsTab'
 import { ReviewView } from './ReviewView'
 import { SidebarResizer } from './SidebarResizer'
 import { useSidebarWidth } from '@/lib/useSidebarWidth'
@@ -540,6 +541,8 @@ export function DesktopShell() {
     mainPane = <div className="overflow-y-auto h-full"><AutomationsTab onOpenSession={focusSession} onReviewSession={setReviewId} /></div>
   } else if (tab === 'initiatives') {
     mainPane = <div className="flex flex-col h-full"><InitiativesTab /></div>
+  } else if (tab === 'projects') {
+    mainPane = <div className="flex flex-col h-full"><ProjectsTab /></div>
   } else if (tab === 'insights') {
     mainPane = <div className="p-4 overflow-y-auto h-full"><InsightsView /></div>
   } else if (tab === 'settings') {
