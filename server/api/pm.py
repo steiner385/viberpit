@@ -347,6 +347,14 @@ async def get_onboarding(
     }
 
 
+def _rec_id(rec: object) -> str | None:
+    """Extract the session id from a spawn result that is either an ORM/dataclass
+    object (in-process orchestrator) or a plain dict (remote RPC serialized form)."""
+    if isinstance(rec, dict):
+        return rec.get("id")
+    return getattr(rec, "id", None)
+
+
 @router.post("/projects/{slug}/propose-map", status_code=status.HTTP_202_ACCEPTED)
 async def propose_map(
     slug: str,
@@ -373,8 +381,8 @@ async def propose_map(
             "error": "no_capacity",
             "message": "no healthy account or primary repo to spawn the session"})
     await record_audit(db=db, type="pm.onboard.propose_map", identity=identity,
-                       detail={"slug": slug, "sessionId": getattr(rec, "id", None)})
-    return {"sessionId": getattr(rec, "id", None)}
+                       detail={"slug": slug, "sessionId": _rec_id(rec)})
+    return {"sessionId": _rec_id(rec)}
 
 
 @router.post("/projects/{slug}/classify", status_code=status.HTTP_202_ACCEPTED)
