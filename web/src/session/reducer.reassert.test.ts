@@ -148,6 +148,25 @@ describe('transcriptReducer — re-assert on replay', () => {
     expect(s.pendingSent).toHaveLength(0)
   })
 
+  it('does not re-assert an older durable prompt once a newer one is confirmed on disk', () => {
+    // The user-reported symptom: an OLD prompt reappears (untimestamped) at the
+    // very bottom after a reconnect. 'old' was confirmed by a LIVE echo only (so
+    // the buffer never drained it) and has since scrolled out of the replay's
+    // tail window. A newer 'recent' prompt IS in the window. On reconnect the
+    // replay re-emits 'recent', proving it is on disk — and FIFO write order means
+    // 'old' (sent earlier) is necessarily on disk too. So 'old' must be dropped,
+    // not resurrected below newer content.
+    let s = transcriptReducer(initialTranscript, { type: '_trackSentPrompt', text: 'old' })    // pending:0
+    s = transcriptReducer(s, { type: '_trackSentPrompt', text: 'recent' })                      // pending:1
+    s = transcriptReducer(s, DONE)                              // go live
+    s = transcriptReducer(s, userEv('live-old', 'old'))         // live echo — buffer NOT drained
+    s = transcriptReducer(s, userEv('live-recent', 'recent'))
+    // reconnect: wipe; replay window returns only the newer prompt ('old' scrolled out)
+    s = reduce(s, [RESET, userEv('disk-recent', 'recent'), DONE])
+    expect(userTexts(s)).toEqual(['recent'])   // 'old' NOT resurrected at the bottom
+    expect(s.pendingSent).toHaveLength(0)      // both proven durable via FIFO order
+  })
+
   it('initial replayComplete (no reset) does not re-assert even with a populated buffer', () => {
     // A prompt is tracked but no replayReset has occurred (hadReset stays false);
     // the initial/empty-transcript replayComplete must not synthesize a turn before

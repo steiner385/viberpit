@@ -7,6 +7,12 @@ import { clientLogger } from '@/obs/logger'
 /** Sentinel id for the optimistic user turn seeded before the SDK echoes the prompt. */
 export const OPTIMISTIC_USER_ID = 'optimistic:user'
 
+// Synthetic id prefix for sent-but-unconfirmed prompts in `pendingSent`. The
+// trailing integer is the monotonic send-order sequence (`pendingSentSeq`), which
+// the drain path relies on to enforce FIFO durability.
+const PENDING_ID_PREFIX = 'pending:'
+const pendingSeq = (p: { id: string }): number => Number(p.id.slice(PENDING_ID_PREFIX.length))
+
 // ── Block types ───────────────────────────────────────────────────────────────
 
 export type Block =
@@ -451,12 +457,22 @@ export function transcriptReducer(
       const blocks = userTurnBlocks(turnId, text, ev.images, ev.ts)
 
       // A disk replay (replaying=true) re-emitting this prompt proves it is durably
-      // on disk → drop the first matching pending entry. A live echo (replaying=false)
+      // on disk → drop the matching pending entry. A live echo (replaying=false)
       // does NOT confirm durability, so it must not consume the buffer.
+      //
+      // Durability is MONOTONIC in send order: the daemon appends UserMessages in
+      // the order it receives them, so a confirmed prompt proves every prompt sent
+      // BEFORE it is on disk too. Drop the match AND every older (lower-seq) entry —
+      // otherwise a long-since-durable prompt that scrolled out of the replay's tail
+      // window lingers in the buffer and replayComplete resurrects it as an
+      // untimestamped bubble at the very bottom.
       let pendingSent = state.pendingSent
       if (state.replaying) {
         const pi = pendingSent.findIndex((p) => p.text === text)
-        if (pi !== -1) pendingSent = [...pendingSent.slice(0, pi), ...pendingSent.slice(pi + 1)]
+        if (pi !== -1) {
+          const drainedSeq = pendingSeq(pendingSent[pi])
+          pendingSent = pendingSent.filter((p) => pendingSeq(p) > drainedSeq)
+        }
       }
 
       // Adopt an optimistic seed turn if present: re-key it in place to the real
@@ -481,7 +497,7 @@ export function transcriptReducer(
       // does NOT consume pendingSent (only the replaying=true path above proves
       // durability), so the buffer still re-asserts if the next replay lacks it.
       const pendIdx = state.turns.findIndex(
-        (t) => t.role === 'user' && t.id.startsWith('pending:')
+        (t) => t.role === 'user' && t.id.startsWith(PENDING_ID_PREFIX)
           && t.blocks.some((b) => b.kind === 'text' && b.text === text),
       )
       if (pendIdx !== -1) {
@@ -958,7 +974,7 @@ export function transcriptReducer(
 
     case '_trackSentPrompt': {
       const MAX = 20
-      const entry = { id: `pending:${state.pendingSentSeq}`, text: ev.text }
+      const entry = { id: `${PENDING_ID_PREFIX}${state.pendingSentSeq}`, text: ev.text }
       const next = [...state.pendingSent, entry]
       const capped = next.length > MAX ? next.slice(next.length - MAX) : next
       return { ...state, pendingSent: capped, pendingSentSeq: state.pendingSentSeq + 1 }
