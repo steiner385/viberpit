@@ -483,13 +483,13 @@ class StaleCredentialRegistryTests(unittest.TestCase):
         # Now make the refresh fetch fail with an auth error.
         real_run = gitrepos._run_git
 
-        def fake_run(args):
+        def fake_run(args, owner=None):
             if "fetch" in args:
                 return subprocess.CompletedProcess(
                     args, 1, stdout="",
                     stderr="remote: Invalid username or token. "
                            "Password authentication is not supported")
-            return real_run(args)
+            return real_run(args, owner=owner)
 
         with mock.patch.object(gitrepos, "_run_git", side_effect=fake_run):
             with self.assertLogs("ccswitch.gitrepos", level="ERROR") as cm:
@@ -511,6 +511,272 @@ class StaleCredentialRegistryTests(unittest.TestCase):
             "acme/widget", ok=False, stderr="Authentication failed")
         gitrepos.ensure_clone(str(root), "acme/widget", str(remote))
         self.assertFalse(gitrepos.has_stale_credentials("acme/widget"))
+
+
+# ---------------------------------------------------------------------------
+# App-installation-token injection for git network operations (issue #887)
+# ---------------------------------------------------------------------------
+
+
+class GitTokenProviderTests(unittest.TestCase):
+    """``_git_env`` turns a registered provider's token into git credential env.
+
+    The token must reach git via the ENVIRONMENT only — never argv (world-readable
+    via ``ps``) and never the on-disk remote URL.
+    """
+
+    def tearDown(self) -> None:
+        gitrepos.set_token_provider(None)
+
+    def test_no_provider_registered_inherits_ambient_env(self) -> None:
+        # CLI usage: nothing registered, so git keeps whatever credential helper
+        # the user's machine configures. Returning None means "inherit".
+        gitrepos.set_token_provider(None)
+        self.assertIsNone(gitrepos._git_env("acme"))
+
+    def test_provider_token_injects_credential_helper(self) -> None:
+        gitrepos.set_token_provider(lambda owner: "ghs_tok123")
+        env = gitrepos._git_env("acme")
+        assert env is not None
+        self.assertEqual(env["CCSWITCH_GIT_TOKEN"], "ghs_tok123")
+        # Two entries: clear the ambient helper list, then install ours.
+        self.assertEqual(env["GIT_CONFIG_COUNT"], "2")
+        self.assertEqual(env["GIT_CONFIG_KEY_0"], "credential.helper")
+        self.assertEqual(env["GIT_CONFIG_VALUE_0"], "")
+        self.assertEqual(env["GIT_CONFIG_KEY_1"], "credential.helper")
+        self.assertIn("x-access-token", env["GIT_CONFIG_VALUE_1"])
+
+    def test_helper_value_does_not_embed_the_token(self) -> None:
+        # The helper reads the token from CCSWITCH_GIT_TOKEN at call time; baking
+        # it into the config value would leak it anywhere config is echoed.
+        gitrepos.set_token_provider(lambda owner: "ghs_secret")
+        env = gitrepos._git_env("acme")
+        assert env is not None
+        self.assertNotIn("ghs_secret", env["GIT_CONFIG_VALUE_1"])
+
+    def test_ambient_github_tokens_are_stripped(self) -> None:
+        # Mirrors _gh_env: a poisoned ambient token must never win over the
+        # App token we just minted.
+        gitrepos.set_token_provider(lambda owner: "ghs_tok123")
+        with mock.patch.dict(
+            os.environ, {"GITHUB_TOKEN": "ghp_bad", "GH_TOKEN": "ghp_worse"}
+        ):
+            env = gitrepos._git_env("acme")
+        assert env is not None
+        self.assertNotIn("GITHUB_TOKEN", env)
+        self.assertNotIn("GH_TOKEN", env)
+
+    def test_provider_returning_none_falls_back_to_ambient(self) -> None:
+        # Owner has no App installation — keep working via the ambient helper
+        # rather than failing closed.
+        gitrepos.set_token_provider(lambda owner: None)
+        self.assertIsNone(gitrepos._git_env("acme"))
+
+    def test_provider_exception_falls_back_to_ambient(self) -> None:
+        # A broken provider (network blip minting the token) must degrade to the
+        # previous behavior, not break every fetch in the daemon.
+        def boom(owner: str) -> str | None:
+            raise RuntimeError("mint failed")
+
+        gitrepos.set_token_provider(boom)
+        self.assertIsNone(gitrepos._git_env("acme"))
+
+    def test_provider_receives_the_repo_owner(self) -> None:
+        seen: list[str] = []
+
+        def provider(owner: str) -> str | None:
+            seen.append(owner)
+            return None
+
+        gitrepos.set_token_provider(provider)
+        gitrepos._git_env("cairnea")
+        self.assertEqual(seen, ["cairnea"])
+
+
+class OwnerFromRemoteUrlTests(unittest.TestCase):
+    """Deriving the App-installation owner from a remote URL.
+
+    Call sites that hold a checkout path rather than an ``<owner>/<name>`` (the
+    worktree fetch) need this to reach the same credential env.
+    """
+
+    def test_https_url(self) -> None:
+        self.assertEqual(
+            gitrepos.owner_from_remote_url("https://github.com/cairnea/KinDash.git"),
+            "cairnea",
+        )
+
+    def test_scp_style_url(self) -> None:
+        self.assertEqual(
+            gitrepos.owner_from_remote_url("git@github.com:cairnea/KinDash.git"),
+            "cairnea",
+        )
+
+    def test_non_github_remote_has_no_owner(self) -> None:
+        # A local path or self-hosted remote has no App installation behind it.
+        self.assertIsNone(gitrepos.owner_from_remote_url("/tmp/fixtures/remote.git"))
+        self.assertIsNone(
+            gitrepos.owner_from_remote_url("https://gitlab.com/acme/widget.git")
+        )
+
+    def test_empty_url(self) -> None:
+        self.assertIsNone(gitrepos.owner_from_remote_url(""))
+
+
+class GitEnvForRemoteTests(unittest.TestCase):
+    """The single entry point other modules use for credentialed git env."""
+
+    def tearDown(self) -> None:
+        gitrepos.set_token_provider(None)
+
+    def test_returns_none_without_a_provider(self) -> None:
+        gitrepos.set_token_provider(None)
+        self.assertIsNone(
+            gitrepos.git_env_for_remote("https://github.com/cairnea/KinDash.git")
+        )
+
+    def test_builds_credential_env_from_the_url_owner(self) -> None:
+        seen: list[str] = []
+
+        def provider(owner: str) -> str | None:
+            seen.append(owner)
+            return "ghs_tok"
+
+        gitrepos.set_token_provider(provider)
+        env = gitrepos.git_env_for_remote("https://github.com/cairnea/KinDash.git")
+        assert env is not None
+        self.assertEqual(seen, ["cairnea"])
+        self.assertEqual(env["CCSWITCH_GIT_TOKEN"], "ghs_tok")
+
+    def test_non_github_remote_gets_ambient_env(self) -> None:
+        gitrepos.set_token_provider(lambda owner: "ghs_tok")
+        self.assertIsNone(gitrepos.git_env_for_remote("/tmp/fixtures/remote.git"))
+
+
+class GitTokenPlumbingTests(unittest.TestCase):
+    """``ensure_clone`` passes the repo owner to the network git calls only."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.base = Path(self._tmp.name)
+        self.root = self.base / "GitHub"
+        self.root.mkdir()
+        self.remote = self.base / "remote.git"
+        _make_remote(self.remote)
+        self.addCleanup(gitrepos.set_token_provider, None)
+
+    def test_clone_and_fetch_receive_the_owner(self) -> None:
+        real = gitrepos._run_git
+        calls: list[tuple[list[str], str | None]] = []
+
+        def spy(args, owner=None):
+            calls.append((list(args), owner))
+            return real(args, owner=owner)
+
+        with mock.patch.object(gitrepos, "_run_git", spy):
+            gitrepos.ensure_clone(str(self.root), "acme/widget", str(self.remote))
+            gitrepos.ensure_clone(str(self.root), "acme/widget", str(self.remote))
+
+        clones = [c for c in calls if c[0] and c[0][0] == "clone"]
+        fetches = [c for c in calls if "fetch" in c[0]]
+        self.assertTrue(clones and fetches)
+        for _args, owner in clones + fetches:
+            self.assertEqual(owner, "acme")
+
+    def test_local_git_calls_do_not_get_a_token(self) -> None:
+        # `checkout --detach` and `remote get-url` touch no network; handing them
+        # a credential would widen the token's blast radius for no reason.
+        real = gitrepos._run_git
+        calls: list[tuple[list[str], str | None]] = []
+
+        def spy(args, owner=None):
+            calls.append((list(args), owner))
+            return real(args, owner=owner)
+
+        with mock.patch.object(gitrepos, "_run_git", spy):
+            gitrepos.ensure_clone(str(self.root), "acme/widget", str(self.remote))
+
+        local = [c for c in calls if "checkout" in c[0] or "get-url" in c[0]]
+        self.assertTrue(local, "expected at least one local git call")
+        for _args, owner in local:
+            self.assertIsNone(owner)
+
+    def test_token_never_appears_in_argv(self) -> None:
+        gitrepos.set_token_provider(lambda owner: "ghs_supersecret")
+        real = gitrepos._run_git
+        seen: list[str] = []
+
+        def spy(args, owner=None):
+            seen.extend(args)
+            return real(args, owner=owner)
+
+        with mock.patch.object(gitrepos, "_run_git", spy):
+            gitrepos.ensure_clone(str(self.root), "acme/widget", str(self.remote))
+
+        for arg in seen:
+            self.assertNotIn("ghs_supersecret", arg)
+
+    def test_token_never_written_to_the_clone_config(self) -> None:
+        gitrepos.set_token_provider(lambda owner: "ghs_supersecret")
+        dest = gitrepos.ensure_clone(str(self.root), "acme/widget", str(self.remote))
+        config = (Path(dest) / ".git" / "config").read_text()
+        self.assertNotIn("ghs_supersecret", config)
+
+
+class TokenSettingsUrlTests(unittest.TestCase):
+    """The banner's "fix this" link must name the credential that actually failed."""
+
+    def test_defaults_to_the_pat_page(self) -> None:
+        # No App in play: the failing credential really is a PAT/gh login.
+        self.assertEqual(
+            gitrepos.token_settings_url("acme/widget"),
+            "https://github.com/settings/tokens",
+        )
+
+    def test_app_backed_failure_links_to_installations(self) -> None:
+        # An App-token fetch failed, so refreshing a PAT fixes nothing — the
+        # actionable page is the App installation.
+        self.assertEqual(
+            gitrepos.token_settings_url("acme/widget", via_app=True),
+            "https://github.com/settings/installations",
+        )
+
+    def test_registry_reports_the_app_url_for_an_app_backed_failure(self) -> None:
+        gitrepos.clear_stale_credentials("acme/widget")
+        self.addCleanup(gitrepos.clear_stale_credentials, "acme/widget")
+        gitrepos.record_fetch_result(
+            "acme/widget", ok=False, stderr="remote: Forbidden", via_app=True
+        )
+        rows = [r for r in gitrepos.stale_credential_repos() if r["repo"] == "acme/widget"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(
+            rows[0]["settingsUrl"], "https://github.com/settings/installations"
+        )
+
+    def test_registry_exposes_via_app_for_the_banner(self) -> None:
+        # The banner's wording/label depends on which credential failed. The
+        # server decides it; the client must not re-derive it from the URL.
+        gitrepos.clear_stale_credentials("acme/widget")
+        self.addCleanup(gitrepos.clear_stale_credentials, "acme/widget")
+        gitrepos.record_fetch_result(
+            "acme/widget", ok=False, stderr="remote: Forbidden", via_app=True
+        )
+        row = next(
+            r for r in gitrepos.stale_credential_repos() if r["repo"] == "acme/widget"
+        )
+        self.assertIs(row["viaApp"], True)
+
+    def test_registry_via_app_defaults_false(self) -> None:
+        gitrepos.clear_stale_credentials("acme/plain")
+        self.addCleanup(gitrepos.clear_stale_credentials, "acme/plain")
+        gitrepos.record_fetch_result(
+            "acme/plain", ok=False, stderr="Authentication failed")
+        row = next(
+            r for r in gitrepos.stale_credential_repos() if r["repo"] == "acme/plain"
+        )
+        self.assertIs(row["viaApp"], False)
+        self.assertEqual(row["settingsUrl"], "https://github.com/settings/tokens")
 
 
 if __name__ == "__main__":
