@@ -879,6 +879,13 @@ class Host(Base):
     weight: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
     # Hard cap on concurrent sessions; NULL = uncapped.
     max_sessions: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    # --- operator-set upgrade config (NULL = in-app upgrade not configured) ---
+    # ssh destination ([user@]host, validated against server.deploy.steps.SSH_HOST_RE)
+    # and the absolute checkout path on that host (SSH_REPO_RE). Both feed argv of a
+    # sudo-capable ssh command, so the API validates them with the SAME patterns the
+    # deploy controller uses for CCSWITCH_DAEMON_SSH_HOST/_REPO.
+    ssh_host: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    repo_path: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
     # --- probe-written state (nullable = "not yet known") ---
     healthy: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)

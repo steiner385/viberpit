@@ -243,10 +243,13 @@ def build_frontend(repo: str, run: Run = subprocess.run) -> None:
 # arbitrary ssh flags — e.g. "-oProxyCommand=...|sh" — into a sudo-privileged deploy command.
 # Require the optional user and the host to each START with an alphanumeric so a leading
 # '-' (or any other flag-introducing character) is structurally impossible.
-_SSH_HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*(@[A-Za-z0-9][A-Za-z0-9_.-]*)?$")
+# Public: the fleet host-upgrade path (server/sessions/host_upgrade.py and the
+# /api/fleet PATCH validation) builds ssh commands from operator-supplied values and
+# MUST validate with these same patterns — one source of truth for "safe ssh argv".
+SSH_HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*(@[A-Za-z0-9][A-Za-z0-9_.-]*)?$")
 # The remote checkout path also lands in an argv position on the far side of ssh.
 # Absolute, and no shell metacharacters, separators or leading '-' (option smuggling).
-_SSH_REPO_RE = re.compile(r"^/[A-Za-z0-9._/-]+$")
+SSH_REPO_RE = re.compile(r"^/[A-Za-z0-9._/-]+$")
 # A git rev passed to `git merge --ff-only`. Hex only, never a ref expression.
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
@@ -293,7 +296,7 @@ def restart_units(*, daemon_changed: bool, daemon_enabled: bool,
     """
     units: list[str] = []
     daemon_host = os.environ.get("CCSWITCH_DAEMON_SSH_HOST")
-    if daemon_host and not _SSH_HOST_RE.match(daemon_host):
+    if daemon_host and not SSH_HOST_RE.match(daemon_host):
         # Fail loud, before issuing ANY command (including the edge restart below) — a
         # deploy that cannot safely restart the remote daemon must stop, not silently fall
         # back to a local restart. Falling back would resurrect the exact silent-no-op
@@ -314,7 +317,7 @@ def restart_units(*, daemon_changed: bool, daemon_enabled: bool,
                 "refusing to restart a remote daemon whose code this deploy cannot update "
                 "(a restarted-but-stale daemon serves the previous commit's RPC surface)",
             )
-        if not _SSH_REPO_RE.match(daemon_repo):
+        if not SSH_REPO_RE.match(daemon_repo):
             raise DeployError(
                 "restart",
                 f"CCSWITCH_DAEMON_SSH_REPO={daemon_repo!r} is not a safe absolute path; "
@@ -487,7 +490,7 @@ def wait_healthy(expected_sha: str, *, url: str, attempts: int = 15, sleep_s: fl
     return False
 
 
-def _short_sha_match(a: str, b: str) -> bool:
+def short_sha_match(a: str, b: str) -> bool:
     """True if two git short-SHAs denote the same commit despite differing length.
 
     ``git rev-parse --short`` emits the shortest prefix that is UNIQUE within a
@@ -526,7 +529,7 @@ def _daemon_ok(body: str, expected_sha: str, *, require_sha: bool = True) -> boo
         return False
     if require_sha:
         daemon_sha = doc.get("daemonSha")
-        if daemon_sha and not _short_sha_match(str(daemon_sha), expected_sha):
+        if daemon_sha and not short_sha_match(str(daemon_sha), expected_sha):
             return False
     return True
 
