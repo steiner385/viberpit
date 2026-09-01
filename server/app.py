@@ -472,6 +472,19 @@ async def _lifespan(app: FastAPI):
     await bounded_wait(dispose_db(), timeout=_SHUTDOWN_DB_TIMEOUT_S,
                        phase="shutdown:dispose-db")
 
+    # FINAL phase (issue #846): cancel-and-reap any task still parked inside
+    # sqlalchemy/aiosqlite frames. bounded_wait above abandons a wedged phase,
+    # but an abandoned task parked in the async DB stack absorbs the single
+    # cancel the loop's own close (_cancel_all_tasks) will deliver — SQLAlchemy
+    # converts it into a shielded graceful close, and aiosqlite's close()
+    # awaits its stop-future in a `finally` — then pends forever, hanging
+    # TestClient.__exit__'s portal join (the ~300s CI teardown timeout) and
+    # systemd stop in prod. Repeated cancel rounds peel each absorb layer;
+    # internally bounded (rounds x grace), logs CRITICAL with coroutine stacks
+    # if anything survives.
+    from server.aio import reap_lingering_db_tasks
+    await reap_lingering_db_tasks()
+
 
 def _build_reauth_facade(*, remote_mode: bool, x11_getter, timeout_s: float,
                          reauth_manager=None):
