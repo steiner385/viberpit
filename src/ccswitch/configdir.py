@@ -176,11 +176,25 @@ def compose(name: str) -> Path:
 
     # Remove backups/ if present — it's claude's corruption-recovery artifact from an unstable
     # compose; a clean stable .claude.json makes it unnecessary and it can confuse reloads.
+    #
+    # This is best-effort and MUST be race-tolerant: the account cfg dir can be a shared
+    # (sshfs) mount whose backups/ is concurrently rewritten by other live claude processes
+    # on the same account — a fresh .claude.json.backup.* is written and its predecessor
+    # unlinked between rmtree's readdir and its unlink, so a plain rmtree raises
+    # FileNotFoundError. A vanished entry is exactly the desired end-state, so ignore it;
+    # letting this cleanup abort compose() strands EVERY driver launch / resume / titling
+    # pass on the mounted host (the "session stuck, re-send does nothing" incident). We do
+    # NOT extend this swallow to reconcile_links() above: those unlinks manage ccswitch's
+    # own symlinks and are correctness-critical, so an error there must still surface.
     backups = cfg_dir / "backups"
-    if backups.exists():
+    try:
         if backups.is_symlink():
             backups.unlink()
-        else:
-            shutil.rmtree(backups)
+        elif backups.is_dir():
+            # ignore_errors drains what it can and skips entries a concurrent writer
+            # removed mid-walk; the outer guard covers the top-level path racing too.
+            shutil.rmtree(backups, ignore_errors=True)
+    except FileNotFoundError:
+        pass
 
     return cfg_dir
