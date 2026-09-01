@@ -336,6 +336,50 @@ _install_no_real_grouping_guard()
 
 
 # --------------------------------------------------------------------------- #
+# Teardown watchdog on every TestClient exit (issue #846).                     #
+#                                                                              #
+# The dominant CI flake is a random test dying at pytest-timeout's 300s inside #
+# TestClient.__exit__ (lifespan shutdown → anyio portal join). faulthandler    #
+# shows only thread stacks — the portal loop "idle in select" — because the    #
+# never-completing thing is a coroutine. Wrapping __exit__ HERE covers every   #
+# TestClient in the suite with one installer: grab the app loop through the    #
+# portal while it is still healthy, arm a threading.Timer, and if teardown     #
+# overruns ~45s dump every asyncio task (name + coroutine await-chain frames)  #
+# to the real stderr so the hang names its culprit. Happy path: timer          #
+# cancelled, zero overhead. Tune via CCSWITCH_TEARDOWN_WATCHDOG_S.             #
+# --------------------------------------------------------------------------- #
+def _install_testclient_teardown_watchdog():
+    import asyncio as _asyncio
+
+    from fastapi.testclient import TestClient as _TestClient
+
+    from server.tests.teardown_watchdog import TeardownWatchdog
+
+    _orig_exit = _TestClient.__exit__
+    if getattr(_orig_exit, "_teardown_watchdog_shim", False):
+        return  # already wrapped (conftest re-imported)
+
+    def _watched_exit(self, *exc):
+        loop = None
+        portal = getattr(self, "portal", None)
+        if portal is not None:
+            try:
+                loop = portal.call(_asyncio.get_running_loop)
+            except Exception:
+                loop = None
+        if loop is None:  # client never entered / portal gone — nothing to watch
+            return _orig_exit(self, *exc)
+        with TeardownWatchdog(loop, label="TestClient.__exit__"):
+            return _orig_exit(self, *exc)
+
+    _watched_exit._teardown_watchdog_shim = True
+    _TestClient.__exit__ = _watched_exit
+
+
+_install_testclient_teardown_watchdog()
+
+
+# --------------------------------------------------------------------------- #
 # mTLS cert fixture for testing mutual TLS scenarios                         #
 # --------------------------------------------------------------------------- #
 import dataclasses
