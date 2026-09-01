@@ -536,3 +536,38 @@ def test_merge_env_deployments_restores_prod_liveness():
     merge_env_deployments(repo_node, env_node)
     (pr,) = parse_population_response(response, "o/r")
     assert pr.deployed is True
+
+
+def test_parse_population_tolerates_null_check_contexts():
+    """A GitHub App lacking `checks: read` gets null CheckRun context nodes in
+    statusCheckRollup (permission-forbidden contexts null out). Parsing must skip
+    the nulls and keep the accessible checks — never crash the whole repo's parse.
+    """
+    pr_node = {
+        "number": 811, "url": "u", "title": "t", "state": "OPEN", "isDraft": False,
+        "updatedAt": "2026-09-01T10:00:00Z",
+        "commits": {"nodes": [{"commit": {"statusCheckRollup": {
+            "state": None,
+            "contexts": {"nodes": [
+                None, None,
+                {"__typename": "CheckRun", "name": "ci", "conclusion": "SUCCESS"},
+            ]},
+        }}}]},
+    }
+    resp = {"data": {"repo": {"pullRequests": {"nodes": [pr_node]}},
+                     "merged": {"nodes": []}}}
+    (pr,) = parse_population_response(resp, "o/r")
+    assert pr.number == 811
+    assert CheckDetail(name="ci", conclusion="success") in pr.checks_detail
+
+
+def test_build_population_query_isolates_deploy_fields():
+    """deployments/environments must live in a SEPARATE aliased repository block so
+    a forbidden Deployments/Environments permission null-propagates only that alias,
+    not the `repo:` block that carries the PR population (issue: blank pipeline)."""
+    q = build_population_query("o/r", "2026-06-18")
+    assert "deploys: repository(" in q
+    repo_block = q[q.index("repo: repository("):q.index("deploys: repository(")]
+    assert "pullRequests" in repo_block
+    assert "deployments" not in repo_block
+    assert "environments" not in repo_block
