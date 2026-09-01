@@ -9507,7 +9507,12 @@ class SessionOrchestrator:
                 self._resume_recovery[sid] = attempts + 1
 
     async def _existing_session_ids(self, ids: list[str]) -> set[str]:
-        """Which of *ids* still have a row in the sessions table (source of truth).
+        """Which of *ids* have an ACTIVE (non-archived, non-ended) row in sessions.
+
+        Archived/ended rows are treated as absent for mirror-eviction purposes: once
+        the owning daemon archives a session, the primary should drop its mirror copy
+        so the session no longer appears in list_sessions (#898). Permanently deleted
+        rows (no row at all) are also absent, as before.
 
         Split out as a seam so _reconcile_mirror_once's eviction logic is unit-
         testable without a live DB."""
@@ -9516,18 +9521,23 @@ class SessionOrchestrator:
         from sqlalchemy import select as sa_select
         async with db_session() as db:
             return set((await db.execute(
-                sa_select(DbSession.id).where(DbSession.id.in_(ids)))).scalars().all())
+                sa_select(DbSession.id)
+                .where(DbSession.id.in_(ids))
+                .where(DbSession.status.notin_(INACTIVE_SESSION_STATUSES))
+            )).scalars().all())
 
     async def _reconcile_mirror_once(self) -> None:
-        """Evict _records entries whose session row was deleted on another fleet host.
+        """Evict _records entries for sessions deleted or archived on another fleet host.
 
         The primary holds a record for EVERY fleet session (its _records feeds the
         dashboard and its fleet-global automation). When a session is permanently
         deleted, that runs on the OWNING host — which pops its own _records and the
-        shared DB row — but never touches the primary's mirror copy. The ghost then
-        drives autopilot to propose for a session whose row is gone, so every
-        automation_event / triage_proposal insert fails the session_id foreign key
-        (and a dashboard reload re-shows the deleted card) until the next restart.
+        shared DB row — but never touches the primary's mirror copy. Similarly, when a
+        session is archived on the owning host (status='archived'), the primary's
+        in-memory record stays stale, keeping the session visible in list_sessions (#898).
+
+        _existing_session_ids now returns only ACTIVE (non-archived, non-ended) IDs, so
+        both deleted and archived foreign sessions fall through to the two-strike eviction.
 
         Only FOREIGN entries (not owned by this daemon per _owns_record) are
         candidates: this daemon's own delete path pops _records synchronously, so an

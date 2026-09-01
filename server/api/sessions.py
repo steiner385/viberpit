@@ -970,13 +970,24 @@ async def close_session(
     Returns 404 if unknown. Disk is reclaimed later, when the
     max_archived_sessions cap purges the row.
     """
+    from server.db.models import INACTIVE_SESSION_STATUSES, Session as _DbSession
+
     orch = _get_orchestrator(request)
     record = await orch.get_session(session_id)
     if record is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
-        )
+        # Orphaned-session fallback (#898): the owning daemon has lost the in-memory
+        # record (process exited, daemon restarted, worktree removed) but the DB row
+        # may still exist. A fleet primary loads ALL sessions into _records, but a
+        # worker's get_session only sees its own. Verify via DB before returning 404
+        # so orphaned sessions don't become permanently undeletable through the UI.
+        _db_row = await db.get(_DbSession, session_id)
+        if _db_row is None or _db_row.status in INACTIVE_SESSION_STATUSES:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
+            )
+        # Session is known to DB but not to the owning daemon (orphaned). Proceed:
+        # archive_session handles a missing _records entry gracefully (DB-only update).
     try:
         await orch.archive_session(session_id)
     except DaemonUnavailable:
