@@ -6,6 +6,13 @@ export interface CredentialAlert {
   since: number
   error: string
   settingsUrl: string
+  /**
+   * The failing fetch authenticated with a GitHub App installation token rather
+   * than a personal access token, so "refresh your token" is the wrong advice.
+   * The server decides this (it knows which credential it used) — never re-derive
+   * it from `settingsUrl`.
+   */
+  viaApp: boolean
 }
 
 interface CredentialAlertsResponse {

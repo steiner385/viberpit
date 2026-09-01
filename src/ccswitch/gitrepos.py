@@ -32,6 +32,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from typing import Callable
 
 log = logging.getLogger(__name__)
 
@@ -80,10 +81,57 @@ _AUTH_ERROR_MARKERS = (
 )
 
 _TOKEN_SETTINGS_URL = "https://github.com/settings/tokens"
+_APP_SETTINGS_URL = "https://github.com/settings/installations"
 
 _cred_lock = threading.Lock()
-# name_with_owner -> {"since": float, "error": str}
+# name_with_owner -> {"since": float, "error": str, "via_app": bool}
 _stale_credentials: dict[str, dict] = {}
+
+
+# ---------------------------------------------------------------------------
+# App-installation-token provider (issue #887)
+# ---------------------------------------------------------------------------
+#
+# git network operations authenticate with a GitHub App *installation* token
+# minted per owner, rather than whatever the machine's ambient credential helper
+# happens to hold. The core cannot import the minting code: ``server.github``
+# depends on httpx/cryptography and the src/ -> server/ direction is never
+# imported (the CLI must run with no daemon). So the daemon registers a provider
+# at startup, exactly as it registers ``accounts.set_auth_failure_sink`` and
+# ``accounts.set_copilot_usage_reader``.
+
+_token_provider: "Callable[[str], str | None] | None" = None
+
+
+def set_token_provider(fn: "Callable[[str], str | None] | None") -> None:
+    """Register (or clear) the provider that mints a git token for a repo owner.
+
+    The core stays HTTP-free: the daemon registers
+    ``server.github.app_auth.token_for_owner`` at startup. When unset (CLI usage)
+    git keeps using the machine's ambient credential helper.
+
+    The provider is called once per network git invocation, so it MUST be cheap
+    and idempotent — ``token_for_owner`` caches the installation token until near
+    expiry, which is what makes that true.
+    """
+    global _token_provider
+    _token_provider = fn
+
+
+def _app_token(owner: str) -> str | None:
+    """The registered provider's token for ``owner``, or None to use ambient auth.
+
+    Never raises: a provider that fails (no installation, a blip minting the
+    token) must degrade to the previous ambient-credential behavior rather than
+    break every fetch in the daemon."""
+    fn = _token_provider
+    if fn is None:
+        return None
+    try:
+        return fn(owner) or None
+    except Exception:
+        log.warning("git.token_provider_failed owner=%s", owner, exc_info=True)
+        return None
 
 
 def is_auth_error(stderr: str | None) -> bool:
@@ -96,16 +144,25 @@ def is_auth_error(stderr: str | None) -> bool:
     return any(marker in low for marker in _AUTH_ERROR_MARKERS)
 
 
-def token_settings_url(name_with_owner: str = "") -> str:
-    """The GitHub page where the user refreshes the credential behind a fetch.
+def token_settings_url(name_with_owner: str = "", *, via_app: bool = False) -> str:
+    """The GitHub page where the user fixes the credential behind a failed fetch.
 
-    ``name_with_owner`` is accepted for a future per-owner deep-link but is
-    unused today — personal access tokens live at a single settings page."""
+    The link must name the credential that ACTUALLY failed. When the fetch
+    authenticated with a GitHub App installation token (``via_app``), no personal
+    access token is involved and sending the user to the PAT page is a dead end —
+    the actionable page is the App installation.
+
+    ``name_with_owner`` is accepted for a future per-owner deep-link but stays
+    unused: the org-scoped page (``/organizations/<owner>/settings/installations``)
+    404s for a user-owned repo, and telling org from user needs an API call, so we
+    emit the one URL that resolves for both."""
+    if via_app:
+        return _APP_SETTINGS_URL
     return _TOKEN_SETTINGS_URL
 
 
 def record_fetch_result(
-    name_with_owner: str, *, ok: bool, stderr: str = ""
+    name_with_owner: str, *, ok: bool, stderr: str = "", via_app: bool = False
 ) -> None:
     """Update the stale-credential registry from a fetch/clone outcome.
 
@@ -113,7 +170,12 @@ def record_fetch_result(
     failure records/refreshes an alert ONLY when ``stderr`` is auth-class — a
     transient (offline) failure leaves the registry untouched. The ``since``
     timestamp is preserved across repeated auth failures so the notification
-    reflects when the problem first appeared, not the latest retry."""
+    reflects when the problem first appeared, not the latest retry.
+
+    ``via_app`` records whether the failing fetch authenticated with an App
+    installation token, so the notification can link to the page that actually
+    fixes it. Unlike ``since`` it is NOT preserved across retries — it describes
+    the most recent attempt, and the credential in play can change between them."""
     with _cred_lock:
         if ok:
             _stale_credentials.pop(name_with_owner, None)
@@ -127,6 +189,7 @@ def record_fetch_result(
         _stale_credentials[name_with_owner] = {
             "since": existing["since"] if existing else time.time(),
             "error": first_line,
+            "via_app": via_app,
         }
 
 
@@ -147,7 +210,10 @@ def stale_credential_repos() -> list[dict]:
                 "repo": repo,
                 "since": info["since"],
                 "error": info["error"],
-                "settingsUrl": token_settings_url(repo),
+                "settingsUrl": token_settings_url(
+                    repo, via_app=bool(info.get("via_app"))
+                ),
+                "viaApp": bool(info.get("via_app")),
             }
             for repo, info in sorted(_stale_credentials.items())
         ]
@@ -236,8 +302,75 @@ def _run_gh(
         raise GhError("the `gh` CLI is not installed or not on PATH") from exc
 
 
-def _run_git(args: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", *args], capture_output=True, text=True)
+# A git credential helper that answers from the environment. The token is read
+# from $CCSWITCH_GIT_TOKEN at call time and is deliberately NOT baked into the
+# config value, which git echoes back in traces and `git config --list`.
+_CRED_HELPER = (
+    '!f() { echo username=x-access-token; echo "password=$CCSWITCH_GIT_TOKEN"; }; f'
+)
+
+
+def _git_env(owner: str | None) -> dict[str, str] | None:
+    """Environment for a git subprocess that authenticates as ``owner``'s App install.
+
+    Returns None when there is no App token to use — no provider registered (CLI
+    usage), the owner has no installation, or minting failed. None means "inherit
+    the ambient environment", i.e. exactly the behavior that predates this.
+
+    When a token IS available the token reaches git through the environment ONLY:
+
+    * NOT argv — ``git -c credential.helper=...`` puts the value in the command
+      line, which is world-readable via ``ps``.
+    * NOT the remote URL — embedding it would persist the token to
+      ``.git/config`` on disk, outliving the hour it is valid for.
+
+    ``GIT_CONFIG_COUNT`` first RESETS the helper list (an empty ``credential.helper``
+    is git's documented reset) so a broken or hijacked ambient helper cannot answer
+    first, then installs ours. ``GITHUB_TOKEN``/``GH_TOKEN`` are stripped for the
+    same reason :func:`_gh_env` strips them — a stale bot token in the environment
+    must never outrank the token we just minted.
+    """
+    if not owner:
+        return None
+    token = _app_token(owner)
+    if token is None:
+        return None
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("GITHUB_TOKEN", "GH_TOKEN")
+    }
+    env["GIT_CONFIG_COUNT"] = "2"
+    env["GIT_CONFIG_KEY_0"] = "credential.helper"
+    env["GIT_CONFIG_VALUE_0"] = ""
+    env["GIT_CONFIG_KEY_1"] = "credential.helper"
+    env["GIT_CONFIG_VALUE_1"] = _CRED_HELPER
+    env["CCSWITCH_GIT_TOKEN"] = token
+    return env
+
+
+def git_env_for_remote(url: str) -> dict[str, str] | None:
+    """Credential env for a network git op against ``url`` (None = use ambient auth).
+
+    The entry point for callers that hold a remote URL rather than an
+    ``<owner>/<name>`` — notably the worktree fetch in :mod:`ccswitch.worktrees`.
+    Routes through the same :func:`_git_env` so there is one definition of how a
+    token reaches git, not one per call site.
+    """
+    return _git_env(owner_from_remote_url(url))
+
+
+def _run_git(
+    args: list[str], owner: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run a ``git`` command, authenticated as ``owner``'s App installation.
+
+    Pass ``owner`` for NETWORK operations (clone, fetch) only. Local operations
+    (``remote get-url``, ``checkout``) need no credential, and handing them one
+    would widen the token's blast radius for nothing."""
+    return subprocess.run(
+        ["git", *args], capture_output=True, text=True, env=_git_env(owner)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +409,21 @@ def _normalize_remote_url(url: str) -> str:
     if normalized.endswith(".git"):
         normalized = normalized[: -len(".git")]
     return normalized
+
+
+def owner_from_remote_url(url: str) -> str | None:
+    """The GitHub owner behind a remote URL, or None if there isn't one.
+
+    None for a non-GitHub remote (a local path fixture, a self-hosted host): those
+    have no App installation, so the caller falls back to ambient credentials.
+    """
+    normalized = _normalize_remote_url(url)
+    if not normalized:
+        return None
+    parts = normalized.split("/")
+    if len(parts) < 3 or parts[0] != "github.com":
+        return None
+    return parts[1] or None
 
 
 def repo_at_path(path: str) -> str | None:
@@ -345,6 +493,10 @@ def ensure_clone(repo_root: str, name_with_owner: str, clone_url: str) -> str:
         CloneError: if the clone fails.
     """
     dest = clone_path(repo_root, name_with_owner)
+    owner = name_with_owner.partition("/")[0]
+    # Recorded on the alert so the notification links to the page that fixes the
+    # credential actually in use (App installation vs. personal access token).
+    via_app = _app_token(owner) is not None
 
     if (dest / ".git").exists():
         # Best-effort refresh; ignore failures (offline, etc.). Fetch ONLY
@@ -354,7 +506,7 @@ def ensure_clone(repo_root: str, name_with_owner: str, clone_url: str) -> str:
         # remote points at a since-deleted path, makes the fetch fail on every
         # future automation spawn (issue #567). `origin` is the only remote
         # ensure_clone itself creates.
-        fetch = _run_git(["-C", str(dest), "fetch", "--prune", "origin"])
+        fetch = _run_git(["-C", str(dest), "fetch", "--prune", "origin"], owner=owner)
         if fetch.returncode != 0:
             if is_auth_error(fetch.stderr):
                 # Auth-class failure (revoked/expired token) — log at ERROR so it
@@ -368,7 +520,8 @@ def ensure_clone(repo_root: str, name_with_owner: str, clone_url: str) -> str:
                     "needed for %s", dest, fetch.stderr.strip(), name_with_owner)
             else:
                 log.warning("clone.fetch_failed path=%s err=%s", dest, fetch.stderr.strip())
-            record_fetch_result(name_with_owner, ok=False, stderr=fetch.stderr)
+            record_fetch_result(
+                name_with_owner, ok=False, stderr=fetch.stderr, via_app=via_app)
         else:
             record_fetch_result(name_with_owner, ok=True)
         return str(dest)
@@ -382,7 +535,7 @@ def ensure_clone(repo_root: str, name_with_owner: str, clone_url: str) -> str:
         args += ["--reference-if-able", reference, "--dissociate"]
     args += [clone_url, str(dest)]
 
-    r = _run_git(args)
+    r = _run_git(args, owner=owner)
     if r.returncode != 0:
         raise CloneError(
             f"git clone failed for {name_with_owner!r}: {r.stderr.strip()}"

@@ -6,9 +6,14 @@ import { useCredentialAlerts, useDismissCredentialAlert } from '@/hooks/useCrede
 /**
  * App-level banner: when a ccswitch clone can no longer fetch because its git
  * credentials are stale (issue #670), surface a prominent, actionable warning
- * with a link to refresh the token. Renders nothing until at least one repo is
- * flagged. Backlog Runner pauses those repos server-side until a fetch
+ * linking to the page that actually fixes it. Renders nothing until at least one
+ * repo is flagged. Backlog Runner pauses those repos server-side until a fetch
  * succeeds, at which point the alert auto-clears and this banner disappears.
+ *
+ * Two failure shapes, and the wording must match (issue #887): a personal access
+ * token that expired, or a GitHub App installation that lost access. `viaApp`
+ * comes from the server, which knows which credential the failing fetch used —
+ * sending someone to Personal Access Tokens for an App failure is a dead end.
  *
  * Dismiss is client-local (this session) — the underlying pause persists until
  * the credential actually works, so hiding the banner never hides the fix.
@@ -39,7 +44,7 @@ export function GitCredentialBanner() {
             aria-hidden="true"
           />
           <span className="text-sm font-medium text-rose-900 dark:text-rose-100">
-            Git credential refresh needed for{' '}
+            {alert.viaApp ? 'GitHub App access needs attention for' : 'Git credential refresh needed for'}{' '}
             <span className="font-mono">{alert.repo}</span> — backlog paused for this repo
           </span>
           <a
@@ -51,7 +56,7 @@ export function GitCredentialBanner() {
               'hover:bg-rose-700 focus:outline-none focus:ring-2 focus:ring-rose-400',
             )}
           >
-            Refresh token
+            {alert.viaApp ? 'Review App access' : 'Refresh token'}
           </a>
           <button
             type="button"
