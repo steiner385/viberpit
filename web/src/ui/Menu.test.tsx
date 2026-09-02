@@ -1,0 +1,142 @@
+import { describe, it, expect, vi } from 'vitest'
+import { render, screen, fireEvent } from '@testing-library/react'
+import { useRef, useState } from 'react'
+import { Menu, type MenuItem } from './Menu'
+
+function Host({ onSelect, items }: { onSelect: (id: string) => void; items: MenuItem[] }) {
+  const ref = useRef<HTMLButtonElement>(null)
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <button ref={ref} onClick={() => setOpen(true)}>Mode</button>
+      <Menu open={open} onClose={() => setOpen(false)} anchorRef={ref} label="Permission mode" onSelect={onSelect} items={items} />
+    </>
+  )
+}
+
+const BASE_ITEMS: MenuItem[] = [
+  { id: 'manual', label: 'Manual' },
+  { id: 'accept', label: 'Accept edits', disabled: true },
+  { id: 'plan', label: 'Plan' },
+]
+
+// Four items, one disabled in the middle: enabled positions are Alpha(1),
+// Charlie(2), Delta(3) — Bravo consumes neither a digit nor a badge number.
+const FOUR_ITEMS: MenuItem[] = [
+  { id: 'a', label: 'Alpha' },
+  { id: 'b', label: 'Bravo', disabled: true },
+  { id: 'c', label: 'Charlie' },
+  { id: 'd', label: 'Delta' },
+]
+
+describe('Menu', () => {
+  it('opens with focus on the first item, arrows skip disabled, digit picks the Nth enabled item', () => {
+    const onSelect = vi.fn()
+    render(<Host onSelect={onSelect} items={BASE_ITEMS} />)
+    fireEvent.click(screen.getByText('Mode'))
+    const menu = screen.getByRole('menu', { name: 'Permission mode' })
+    expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: /Manual/ }))
+    fireEvent.keyDown(menu, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: /Plan/ }))
+    fireEvent.keyDown(menu, { key: '2' })
+    expect(onSelect).toHaveBeenCalledWith('plan')
+  })
+
+  it('Escape closes and returns focus to the anchor', () => {
+    render(<Host onSelect={() => {}} items={BASE_ITEMS} />)
+    const anchor = screen.getByText('Mode')
+    fireEvent.click(anchor)
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(document.activeElement).toBe(anchor)
+  })
+
+  it('clicking outside the menu closes it and returns focus to the anchor', () => {
+    render(<Host onSelect={() => {}} items={BASE_ITEMS} />)
+    const anchor = screen.getByText('Mode')
+    fireEvent.click(anchor)
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+    fireEvent.pointerDown(document.body)
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(document.activeElement).toBe(anchor)
+  })
+
+  it('Home/End jump to the first/last enabled item, skipping disabled ones', () => {
+    render(<Host onSelect={() => {}} items={FOUR_ITEMS} />)
+    fireEvent.click(screen.getByText('Mode'))
+    const menu = screen.getByRole('menu')
+    expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: /Alpha/ }))
+    fireEvent.keyDown(menu, { key: 'End' })
+    expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: /Delta/ }))
+    fireEvent.keyDown(menu, { key: 'Home' })
+    expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: /Alpha/ }))
+  })
+
+  it('Enter and Space select the active item, close the menu, and return focus to the anchor', () => {
+    const onSelect = vi.fn()
+    render(<Host onSelect={onSelect} items={FOUR_ITEMS} />)
+    const anchor = screen.getByText('Mode')
+    fireEvent.click(anchor)
+    let menu = screen.getByRole('menu')
+    fireEvent.keyDown(menu, { key: 'ArrowDown' }) // Alpha -> Charlie
+    fireEvent.keyDown(menu, { key: 'Enter' })
+    expect(onSelect).toHaveBeenCalledWith('c')
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(document.activeElement).toBe(anchor)
+
+    onSelect.mockClear()
+    fireEvent.click(anchor)
+    menu = screen.getByRole('menu')
+    fireEvent.keyDown(menu, { key: ' ' })
+    expect(onSelect).toHaveBeenCalledWith('a')
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(document.activeElement).toBe(anchor)
+  })
+
+  it('numbers each enabled item in order and gives the disabled item no badge; a disabled item consumes no digit', () => {
+    const onSelect = vi.fn()
+    render(<Host onSelect={onSelect} items={FOUR_ITEMS} />)
+    fireEvent.click(screen.getByText('Mode'))
+    const menu = screen.getByRole('menu')
+
+    const alpha = screen.getByRole('menuitem', { name: /Alpha/ })
+    const bravo = screen.getByRole('menuitem', { name: /Bravo/ })
+    const charlie = screen.getByRole('menuitem', { name: /Charlie/ })
+    const delta = screen.getByRole('menuitem', { name: /Delta/ })
+
+    // Badge numbers follow enabled-only order: Alpha=1, Charlie=2, Delta=3.
+    expect(alpha).toHaveTextContent('1')
+    expect(bravo.textContent).not.toMatch(/[1-9]/)
+    expect(charlie).toHaveTextContent('2')
+    expect(delta).toHaveTextContent('3')
+
+    // Digit 3 selects Delta (the 3rd *enabled* item), matching its badge.
+    fireEvent.keyDown(menu, { key: '3' })
+    expect(onSelect).toHaveBeenCalledWith('d')
+  })
+
+  it('a digit beyond the number of enabled items selects nothing', () => {
+    const onSelect = vi.fn()
+    render(<Host onSelect={onSelect} items={FOUR_ITEMS} />)
+    fireEvent.click(screen.getByText('Mode'))
+    const menu = screen.getByRole('menu')
+    // Only 3 enabled items exist; '4' must not select anything.
+    fireEvent.keyDown(menu, { key: '4' })
+    expect(onSelect).not.toHaveBeenCalled()
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+  })
+
+  it('typeahead moves the active item to the next enabled item whose label starts with the typed letter', () => {
+    const items: MenuItem[] = [
+      { id: 'apple', label: 'Apple' },
+      { id: 'banana', label: 'Banana' },
+      { id: 'cherry', label: 'Cherry' },
+    ]
+    render(<Host onSelect={() => {}} items={items} />)
+    fireEvent.click(screen.getByText('Mode'))
+    const menu = screen.getByRole('menu')
+    expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: /Apple/ }))
+    fireEvent.keyDown(menu, { key: 'c' })
+    expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: /Cherry/ }))
+  })
+})
