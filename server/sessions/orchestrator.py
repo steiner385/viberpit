@@ -3555,6 +3555,29 @@ class SessionOrchestrator:
                     await db.commit()
         return rec
 
+    async def _pm_onboard_spawn_critic(self, slug: str, repo: str,
+                                       branch: str):
+        """Independent completeness-critic session on the open map PR branch
+        (design §3.2). Internal-only — spawned by the chain after synthesis; never
+        reached by the request layer, so it stays private (no facade/RPC forward).
+        Propose-only: augments the SAME PR, never opens a new one."""
+        from server.pm.classification import build_coverage_critic_prompt
+        account = await self._backlog_healthy_account()
+        if account is None:
+            return None
+        url = f"https://github.com/{repo}.git"
+        cwd = await asyncio.to_thread(
+            gitrepos.ensure_clone, await self._effective_repo_root(), repo, url)
+        default_branch = await self._sdlc_default_branch(repo)
+        prompt = build_coverage_critic_prompt(
+            slug=slug, repo=repo, default_branch=default_branch, branch=branch,
+            open_count=0, closed_count=0)
+        origin_ref = f"{slug}:feature-map-critic"
+        return await self._pm_onboard_ctx.spawn_session(
+            origin_ref=origin_ref, dedupe_key=origin_ref, repo=repo, cwd=cwd,
+            account=account, name=f"pm map-critic {slug}", initial_prompt=prompt,
+            detail={"slug": slug, "kind": "feature-map-critic", "branch": branch})
+
     async def pm_classify_run(
             self, slug: str, *,
             items: list[tuple[str, int, str]] | None = None) -> int:

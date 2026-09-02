@@ -392,3 +392,35 @@ async def test_read_feature_docs_raises_on_partial_read(db_env, monkeypatch):
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
         with pytest.raises(RuntimeError):
             await orch._pm_sync_read_feature_docs("o/r")
+
+
+@pytest.mark.asyncio
+async def test_spawn_critic_dedupes_and_builds_prompt(db_env):
+    orch = _bare_orch()
+    orch._backlog_healthy_account = _mk_async("acct1")
+    orch._effective_repo_root = _mk_async("/tmp/root")
+    orch._sdlc_default_branch = _mk_async("master")
+    rec = _SpawnRec()
+    orch._pm_onboard_ctx = rec
+    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+        out = await orch._pm_onboard_spawn_critic(
+            "ccswitch", "steiner385/cc-account-switcher", "pm/feature-map-ccswitch")
+    assert out is not None
+    assert len(rec.calls) == 1
+    call = rec.calls[0]
+    assert call["origin_ref"] == "ccswitch:feature-map-critic"
+    assert call["dedupe_key"] == "ccswitch:feature-map-critic"
+    assert call["detail"]["kind"] == "feature-map-critic"
+    assert "pm/feature-map-ccswitch" in call["initial_prompt"]
+
+
+@pytest.mark.asyncio
+async def test_spawn_critic_returns_none_without_account(db_env):
+    orch = _bare_orch()
+    orch._backlog_healthy_account = _mk_async(None)
+    orch._effective_repo_root = _mk_async("/tmp/root")
+    orch._sdlc_default_branch = _mk_async("master")
+    orch._pm_onboard_ctx = _SpawnRec()
+    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+        out = await orch._pm_onboard_spawn_critic("ccswitch", "o/r", "pm/feature-map-ccswitch")
+    assert out is None
