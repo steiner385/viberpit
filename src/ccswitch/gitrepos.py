@@ -118,6 +118,51 @@ def set_token_provider(fn: "Callable[[str], str | None] | None") -> None:
     _token_provider = fn
 
 
+_installations_provider: "Callable[[], list[str] | None] | None" = None
+
+
+def set_installations_provider(fn: "Callable[[], list[str] | None] | None") -> None:
+    """Register (or clear) the provider listing owners the App is installed on.
+
+    Companion to :func:`set_token_provider`, which resolves a token *for a given
+    owner* and so cannot discover owners in the first place. Repo enumeration
+    needs the owner list up front: a GitHub App installation token authenticates
+    as the installation, not as a user, so ``viewer.repositories`` — which asks
+    "what can this *person* see" — returns nothing useful for it. The App-native
+    equivalent is ``/installation/repositories`` once per installation.
+
+    Registered by the daemon and the edge process; left unset for CLI usage,
+    which keeps the viewer-scoped listing backed by the user's own gh login.
+    """
+    global _installations_provider
+    _installations_provider = fn
+
+
+def _installation_owners() -> list[str] | None:
+    """Owners the App is installed on, or None to use the viewer path.
+
+    Three outcomes, and the difference between the last two matters:
+
+    * **None** — no provider registered (CLI), or one registered by a process
+      that has no App configured. Selects the viewer path, backed by the
+      operator's own gh login. Both processes register at startup, before the App
+      config is known, so "registered" alone must not commit to the App path.
+    * **[]** — an App IS configured but exposes no installations, or the provider
+      raised. That is a broken credential, and it must surface loudly rather than
+      silently downgrade to an ambient token that may be long dead.
+    * **non-empty** — enumerate these installations.
+    """
+    fn = _installations_provider
+    if fn is None:
+        return None
+    try:
+        owners = fn()
+    except Exception:
+        log.warning("repos.installations_provider_failed", exc_info=True)
+        return []
+    return None if owners is None else list(owners)
+
+
 def _app_token(owner: str) -> str | None:
     """The registered provider's token for ``owner``, or None to use ambient auth.
 
@@ -646,6 +691,100 @@ def _repo_node_to_dict(node: dict | None) -> dict | None:
     }
 
 
+def _installation_repo_to_dict(raw: dict | None) -> dict | None:
+    """Map a REST ``/installation/repositories`` element to the chooser dict.
+
+    Mirrors :func:`_repo_node_to_dict` (same output keys, same archived rule) for
+    REST's snake_case shape, so both listing paths hand callers one contract.
+    """
+    if not raw or raw.get("archived"):
+        return None
+    name_with_owner = raw.get("full_name")
+    if not name_with_owner:
+        return None
+    return {
+        "nameWithOwner": name_with_owner,
+        "name": raw.get("name"),
+        "owner": (raw.get("owner") or {}).get("login"),
+        "isPrivate": bool(raw.get("private")),
+        "url": raw.get("html_url"),
+        "defaultBranch": raw.get("default_branch"),
+        "pushedAt": raw.get("pushed_at"),
+    }
+
+
+def _list_installation_repos(owner: str) -> list[dict]:
+    """Repos the App installation for ``owner`` can act on.
+
+    ``--jq '.repositories[]'`` streams one repo per line across every page, which
+    sidesteps ``--paginate``'s concatenated-objects output for REST envelopes.
+
+    Raises:
+        GhError: if no token can be minted for ``owner``, or gh fails.
+    """
+    token = _app_token(owner)
+    if token is None:
+        # Running gh with no token would fall back to the ambient credential and,
+        # if that is dead, to *anonymous* requests capped at 60/hour — the failure
+        # mode this path exists to eliminate. Refuse instead.
+        raise GhError(f"no GitHub App installation token available for {owner!r}")
+    r = _run_gh(
+        ["api", "--paginate", "/installation/repositories", "--jq", ".repositories[]"],
+        token=token,
+    )
+    if r.returncode != 0:
+        raise GhError(
+            f"gh api /installation/repositories failed for {owner}: "
+            f"{r.stderr.strip() or r.stdout.strip()}"
+        )
+    repos: list[dict] = []
+    for line in r.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            raw = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise GhError(f"could not parse gh installation-repos response: {exc}") from exc
+        repo = _installation_repo_to_dict(raw)
+        if repo:
+            repos.append(repo)
+    return repos
+
+
+def _list_repos_via_app(owners: list[str]) -> list[dict]:
+    """Union the installation repo lists for ``owners``.
+
+    Per-owner failures are tolerated (one unreachable installation must not blank
+    the chooser, matching the org-enumeration rule on the viewer path), but if
+    EVERY owner fails the error is raised: that is a broken App credential, and
+    reporting it beats rendering an empty dropdown.
+
+    Raises:
+        GhError: if ``owners`` is empty, or every owner failed.
+    """
+    if not owners:
+        raise GhError(
+            "the GitHub App has no installations — install it on the accounts "
+            "whose repos should be listed (App settings -> Install App)"
+        )
+    by_name: dict[str, dict] = {}
+    errors: list[str] = []
+    for owner in owners:
+        try:
+            for repo in _list_installation_repos(owner):
+                by_name.setdefault(repo["nameWithOwner"], repo)
+        except GhError as exc:
+            errors.append(f"{owner}: {exc}")
+            log.warning("repos.installation_enum_failed owner=%s err=%s", owner, exc)
+    if errors and len(errors) == len(owners):
+        raise GhError(
+            "could not list repos from any GitHub App installation — "
+            + "; ".join(errors)
+        )
+    return list(by_name.values())
+
+
 def _paginate_graphql(query: str, extra_args: list[str], path: list[str]):
     """Yield ``nodes`` from a paginated GraphQL connection at ``data.<path>``.
 
@@ -695,9 +834,19 @@ def _list_viewer_orgs() -> list[str]:
 
 
 def list_accessible_repos() -> list[dict]:
-    """List repos the user's gh creds can access, most-recently-pushed first.
+    """List the repos ccswitch can act on, most-recently-pushed first.
 
-    Sources are unioned (deduped by ``nameWithOwner``):
+    Two paths, selected by whether a GitHub App is registered
+    (:func:`set_installations_provider`):
+
+    **App path** (daemon and edge) — ``/installation/repositories`` for every
+    installation. This lists exactly the repos ccswitch can clone, branch and open
+    PRs against, which is the honest set to offer in a chooser; a repo the App is
+    not installed on would fail at clone time anyway. No user credential is
+    involved at any point.
+
+    **Viewer path** (standalone CLI, no daemon) — the user's own gh login, with
+    sources unioned (deduped by ``nameWithOwner``):
 
     1. ``viewer.repositories`` — repos the user owns or has an *explicit* tie to
        (added collaborator / team member).
@@ -719,6 +868,18 @@ def list_accessible_repos() -> list[dict]:
         GhError: if the primary ``viewer.repositories`` query fails or the
             response can't be parsed.
     """
+    owners = _installation_owners()
+    if owners is not None:
+        # App path (daemon + edge): enumerate per installation. Deliberately does
+        # NOT fall back to the viewer path on failure — a silent downgrade to the
+        # machine's gh login is what let an expired user token surface as an empty
+        # chooser instead of a credential error.
+        return sorted(
+            _list_repos_via_app(owners),
+            key=lambda r: r.get("pushedAt") or "",
+            reverse=True,
+        )
+
     by_name: dict[str, dict] = {}
 
     for node in _paginate_graphql(_REPOS_QUERY, [], ["viewer", "repositories"]):
@@ -753,8 +914,13 @@ def list_remote_branches(name_with_owner: str) -> dict:
     if not owner or not name:
         raise ValueError(f"expected '<owner>/<name>', got {name_with_owner!r}")
 
+    # Authenticate as the App installation for this owner when one is registered;
+    # None (CLI usage) leaves _run_gh on the ambient gh credential as before.
+    token = _app_token(owner)
+
     branches_r = _run_gh(
-        ["api", f"repos/{owner}/{name}/branches", "--paginate", "-q", ".[].name"]
+        ["api", f"repos/{owner}/{name}/branches", "--paginate", "-q", ".[].name"],
+        token=token,
     )
     if branches_r.returncode != 0:
         raise GhError(
@@ -764,7 +930,9 @@ def list_remote_branches(name_with_owner: str) -> dict:
     branches = [b.strip() for b in branches_r.stdout.splitlines() if b.strip()]
 
     default: str | None = None
-    default_r = _run_gh(["api", f"repos/{owner}/{name}", "-q", ".default_branch"])
+    default_r = _run_gh(
+        ["api", f"repos/{owner}/{name}", "-q", ".default_branch"], token=token
+    )
     if default_r.returncode == 0:
         default = default_r.stdout.strip() or None
 

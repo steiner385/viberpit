@@ -136,6 +136,13 @@ async def _lifespan(app: FastAPI):
     # ids and credential redaction. Idempotent; installs the redacting filter too.
     configure_logging()
 
+    # Repo and branch listing run in THIS process (server/api/repos.py), not the
+    # daemon, so the App credential has to be registered here as well — without it
+    # gitrepos falls through to the machine's ambient gh login, and an expired one
+    # surfaces as an empty chooser rather than an error (issue #912).
+    from server.github import app_auth as _app_auth
+    _app_auth.register_gitrepos_providers()
+
     # An app not built by create_app (e.g. tests constructing FastAPI(lifespan=_lifespan)
     # directly) never sets app.state.remote_mode — default it to in-process. The local
     # persists across the yield, so the shutdown branch reads it too.

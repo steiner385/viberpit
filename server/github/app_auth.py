@@ -126,6 +126,10 @@ class InstallationRegistry:
     def installation_for(self, owner: str) -> int | None:
         return self._by_login.get(owner.lower())
 
+    def owners(self) -> list[str]:
+        """Every owner login with an installation (lowercased, load order)."""
+        return list(self._by_login)
+
 
 class AppTokenSource:
     """Caches an installation token until close to expiry; mirrors Plotroom."""
@@ -201,23 +205,82 @@ def _load_app_config() -> tuple[int, int | None, str] | None:
     return int(app_id), getattr(s, "github_app_installation_id", None), pem
 
 
+def _loaded_signer_and_registry(
+    cfg: tuple[int, int | None, str],
+) -> tuple[AppJwtSigner, InstallationRegistry]:
+    """The singleton signer + registry, built and loaded on first use.
+
+    Call under ``_lock``. Shared by :func:`token_for_owner` and
+    :func:`installation_owners` so the ``/app/installations`` load happens once
+    for both, rather than each facade bootstrapping a registry of its own.
+    """
+    global _signer, _registry, _registry_loaded
+    app_id, inst_id_pin, pem = cfg
+    if _signer is None:
+        _signer = AppJwtSigner(app_id, pem, clock=_clock)
+        _registry = InstallationRegistry(_signer, _app_rest, installation_id=inst_id_pin)
+        _registry_loaded = False
+    if not _registry_loaded:
+        _registry.load()  # type: ignore[union-attr]
+        _registry_loaded = True
+    return _signer, cast(InstallationRegistry, _registry)
+
+
+def register_gitrepos_providers() -> None:
+    """Point ``ccswitch.gitrepos`` at this App for both token and owner lookup.
+
+    ONE registration site for both seams, called by every process that talks to
+    GitHub — the daemon (``server.ipc.serve``, where clone/fetch run) and the edge
+    (``server.app``, where repo/branch listing runs). Registering them separately
+    per process is how the edge ended up with the token seam only, silently
+    listing repos as the machine's ambient gh user.
+
+    Config is read at call time, not registration time — both processes register
+    during startup, so an App configured later (or not at all) is still handled.
+    The owners provider returns None when no App is configured, which keeps repo
+    listing on the viewer path instead of hard-failing an App-less deployment.
+    """
+    from ccswitch.gitrepos import set_installations_provider, set_token_provider
+
+    def _owners() -> list[str] | None:
+        return None if _load_app_config() is None else installation_owners()
+
+    set_token_provider(lambda owner: token_for_owner(owner))
+    set_installations_provider(_owners)
+
+
+def installation_owners() -> list[str]:
+    """Owner logins this App is installed on; empty when unconfigured or broken.
+
+    Companion to :func:`token_for_owner` for callers that must DISCOVER owners
+    rather than resolve a token for a known one — repo enumeration, which has no
+    owner to start from. Reuses the same ``InstallationRegistry`` (and its cached
+    ``/app/installations`` load) rather than issuing a second listing of its own.
+
+    Returns [] rather than raising: the caller decides whether an empty list is
+    fatal, and this must never take down a request path on a GitHub blip.
+    """
+    cfg = _load_app_config()
+    if cfg is None:
+        return []
+    try:
+        with _lock:
+            _, registry = _loaded_signer_and_registry(cfg)
+            return registry.owners()
+    except Exception:
+        log.warning("github_app.installations_list_failed", exc_info=True)  # never logs key
+        return []
+
+
 def token_for_owner(owner: str) -> str | None:
     """Installation token for `owner`'s installation, or None → caller uses the user gh token."""
     cfg = _load_app_config()
     if cfg is None:
         return None
-    app_id, inst_id_pin, pem = cfg
     try:
         with _lock:
-            global _signer, _registry, _registry_loaded
-            if _signer is None:
-                _signer = AppJwtSigner(app_id, pem, clock=_clock)
-                _registry = InstallationRegistry(_signer, _app_rest, installation_id=inst_id_pin)
-                _registry_loaded = False
-            if not _registry_loaded:
-                _registry.load()  # type: ignore[union-attr]
-                _registry_loaded = True
-            inst = _registry.installation_for(owner)  # type: ignore[union-attr]
+            signer, registry = _loaded_signer_and_registry(cfg)
+            inst = registry.installation_for(owner)
             if inst is None:
                 if owner not in _warned_owners:
                     _warned_owners.add(owner)
@@ -226,7 +289,7 @@ def token_for_owner(owner: str) -> str | None:
             src = _sources.get(inst)
             if src is None:
                 # _app_rest is captured per installation at first construction; tests reset() before patching.
-                src = AppTokenSource(_signer, inst, _app_rest, clock=_clock)
+                src = AppTokenSource(signer, inst, _app_rest, clock=_clock)
                 _sources[inst] = src
             return src.get()
     except Exception:
