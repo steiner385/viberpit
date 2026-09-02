@@ -13,4 +13,12 @@ describe('IconButton', () => {
     expect(btn.className).toContain('min-h-target')
     expect(await axe(container)).toHaveNoViolations()
   })
+
+  it('requires aria-label at the type level', () => {
+    // @ts-expect-error — an icon-only button has no visible text, so aria-label is required.
+    // If someone widens the prop back to optional, this directive becomes unused and
+    // `tsc --noEmit` fails — which is the regression this test exists to catch.
+    const missingLabel = <IconButton><X size={16} /></IconButton>
+    expect(missingLabel).toBeTruthy()
+  })
 })
