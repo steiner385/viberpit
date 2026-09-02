@@ -175,3 +175,93 @@ def test_token_for_owner_swallows_mint_error(monkeypatch, caplog):
     monkeypatch.setattr(A, "_app_rest", rest)
     assert A.token_for_owner("cairnea") is None
     assert "ghs_" not in caplog.text  # no token leaked
+
+
+# ---------------------------------------------------------------------------
+# installation_owners facade — repo enumeration needs the owner list up front
+# ---------------------------------------------------------------------------
+
+
+def test_installation_owners_lists_every_installation(monkeypatch):
+    A.reset()
+    _key, pem = _keypair()
+    rest = _FakeRest({
+        ("GET", "/app/installations"): [
+            {"id": 11, "account": {"login": "cairnea"}},
+            {"id": 22, "account": {"login": "steiner385"}},
+        ],
+    })
+    monkeypatch.setattr(A, "_load_app_config", lambda: (4031757, None, pem))
+    monkeypatch.setattr(A, "_app_rest", rest)
+    assert sorted(A.installation_owners()) == ["cairnea", "steiner385"]
+
+
+def test_installation_owners_empty_when_unconfigured(monkeypatch):
+    # No App configured: the caller must see "no installations", never a crash.
+    A.reset()
+    monkeypatch.setattr(A, "_load_app_config", lambda: None)
+    assert A.installation_owners() == []
+
+
+def test_register_gitrepos_providers_wires_both_seams(monkeypatch):
+    """Both seams must be registered together.
+
+    Registering only the token provider is what left the edge process listing
+    repos with the machine's ambient gh credential: the token seam alone cannot
+    enumerate owners, so enumeration silently stayed on the user path.
+    """
+    from ccswitch import gitrepos
+
+    A.reset()
+    _key, pem = _keypair()
+    rest = _FakeRest({
+        ("GET", "/app/installations"): [
+            {"id": 11, "account": {"login": "cairnea"}},
+        ],
+    })
+    monkeypatch.setattr(A, "_load_app_config", lambda: (4031757, None, pem))
+    monkeypatch.setattr(A, "_app_rest", rest)
+    gitrepos.set_token_provider(None)
+    gitrepos.set_installations_provider(None)
+    try:
+        A.register_gitrepos_providers()
+        assert gitrepos._token_provider is not None
+        # Routed through the App facade, not a second enumeration of its own.
+        assert gitrepos._installation_owners() == ["cairnea"]
+    finally:
+        gitrepos.set_token_provider(None)
+        gitrepos.set_installations_provider(None)
+
+
+def test_registration_without_a_configured_app_keeps_the_viewer_path(monkeypatch):
+    """Registering the seams must not, by itself, commit to the App path.
+
+    Both processes register unconditionally at startup, before anyone knows
+    whether an App is configured. If "registered" implied "App path", a
+    deployment with no GitHub App would hard-fail repo listing instead of
+    falling back to the operator's own gh login.
+    """
+    from ccswitch import gitrepos
+
+    A.reset()
+    monkeypatch.setattr(A, "_load_app_config", lambda: None)  # nothing configured
+    gitrepos.set_token_provider(None)
+    gitrepos.set_installations_provider(None)
+    try:
+        A.register_gitrepos_providers()
+        # None -> "no App here, use the viewer path"; [] would mean "App is
+        # configured but has zero installations", which IS a loud error.
+        assert gitrepos._installation_owners() is None
+    finally:
+        gitrepos.set_token_provider(None)
+        gitrepos.set_installations_provider(None)
+
+
+def test_installation_owners_empty_when_registry_fails(monkeypatch, caplog):
+    A.reset()
+    _key, pem = _keypair()
+    rest = _FakeRest({("GET", "/app/installations"): GhAppError("boom")})
+    monkeypatch.setattr(A, "_load_app_config", lambda: (4031757, None, pem))
+    monkeypatch.setattr(A, "_app_rest", rest)
+    assert A.installation_owners() == []
+    assert "ghs_" not in caplog.text  # no token leaked
