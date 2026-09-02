@@ -158,23 +158,33 @@ describe('Menu', () => {
     expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: /^Apple$/ }))
   })
 
-  it('Tab closes the menu without preventing default, letting focus move on naturally', () => {
+  it('Tab closes the menu without preventing default, and does not restore focus to the anchor', () => {
     render(<Host onSelect={() => {}} items={FOUR_ITEMS} />)
-    fireEvent.click(screen.getByText('Mode'))
+    const anchor = screen.getByText('Mode')
+    fireEvent.click(anchor)
     const menu = screen.getByRole('menu')
     const notPrevented = fireEvent.keyDown(menu, { key: 'Tab' })
     expect(screen.queryByRole('menu')).toBeNull()
     // fireEvent returns false only if preventDefault() was called.
     expect(notPrevented).toBe(true)
+    // jsdom does not perform the browser's native Tab focus-advancement, so
+    // this cannot assert focus actually *moved on* to the next control.
+    // What it CAN and must assert: the anchor-restore effect did not fire
+    // and clobber wherever focus was headed — contrast with the Escape test
+    // above, which asserts the opposite (focus IS on the anchor) for a
+    // close that has no native focus transfer to defer to.
+    expect(document.activeElement).not.toBe(anchor)
   })
 
-  it('Shift+Tab also closes the menu without preventing default', () => {
+  it('Shift+Tab also closes the menu without preventing default or restoring focus to the anchor', () => {
     render(<Host onSelect={() => {}} items={FOUR_ITEMS} />)
-    fireEvent.click(screen.getByText('Mode'))
+    const anchor = screen.getByText('Mode')
+    fireEvent.click(anchor)
     const menu = screen.getByRole('menu')
     const notPrevented = fireEvent.keyDown(menu, { key: 'Tab', shiftKey: true })
     expect(screen.queryByRole('menu')).toBeNull()
     expect(notPrevented).toBe(true)
+    expect(document.activeElement).not.toBe(anchor)
   })
 
   it('marks a single-choice item as menuitemradio with aria-checked, and leaves an unselectable item as a plain menuitem with no aria-checked', () => {

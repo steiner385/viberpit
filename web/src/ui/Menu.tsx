@@ -83,6 +83,17 @@ export function Menu({ open, onClose, anchorRef, items, onSelect, label, align =
   // which don't bubble. This is the documented minimum bar: an anchored
   // menu that can't track live repositioning simply closes instead of
   // drifting from its anchor.
+  //
+  // ORDERING CONTRACT: this effect must stay declared *after* the
+  // focus-on-open effect above. Effects of the same kind (passive
+  // useEffect) run in declaration order within a commit, so on the render
+  // that opens the menu the active item's `.focus()` call above runs
+  // *before* this scroll listener is attached. If a scroll ever were
+  // triggered by that focus (e.g. an ancestor needing to reveal the newly
+  // focused item — `pos` is already viewport-clamped so this shouldn't
+  // normally be needed, but nothing guarantees a future change won't), the
+  // listener isn't live yet and can't self-close the menu the instant it
+  // opens. Reordering these two effects would silently break that.
   React.useEffect(() => {
     if (!open) return
     const onScroll = () => onClose()
@@ -93,9 +104,18 @@ export function Menu({ open, onClose, anchorRef, items, onSelect, label, align =
   // Restore focus to the anchor strictly on the open:true -> false
   // transition — never as a side effect of an unrelated re-render (see the
   // outside-pointerdown effect's comment above for why that split matters).
+  // `skipRestoreRef` lets the Tab handler opt out of this restore: Tab
+  // closes without preventDefault so the browser can advance focus to the
+  // next control natively, and if this effect unconditionally refocused the
+  // anchor afterward it would override that native transfer, making Tab
+  // behave like Escape instead of like Tab.
   const wasOpenRef = React.useRef(open)
+  const skipRestoreRef = React.useRef(false)
   React.useEffect(() => {
-    if (wasOpenRef.current && !open) anchorRef.current?.focus()
+    if (wasOpenRef.current && !open) {
+      if (skipRestoreRef.current) skipRestoreRef.current = false
+      else anchorRef.current?.focus()
+    }
     wasOpenRef.current = open
   }, [open, anchorRef])
 
@@ -134,8 +154,10 @@ export function Menu({ open, onClose, anchorRef, items, onSelect, label, align =
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(active); return }
     if (e.key === 'Escape') { e.preventDefault(); onClose(); return }
     // Tab is the standard ARIA-menu escape hatch: close and let focus move
-    // on naturally — do not preventDefault.
-    if (e.key === 'Tab') { onClose(); return }
+    // on naturally — do not preventDefault. Flag the restore effect to skip
+    // its anchor-focus so it doesn't clobber wherever the browser's native
+    // Tab default-action just sent focus.
+    if (e.key === 'Tab') { skipRestoreRef.current = true; onClose(); return }
     if (/^[1-9]$/.test(e.key)) { e.preventDefault(); const i = enabledIdx[Number(e.key) - 1]; if (i !== undefined) pick(i); return }
     if (e.key.length === 1) { typeahead(e.key.toLowerCase()) }
   }
