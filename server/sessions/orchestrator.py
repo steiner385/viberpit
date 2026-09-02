@@ -1357,6 +1357,7 @@ class SessionOrchestrator:
         return rec
 
     async def resolve_model_approval(self, session_id: str, decision: str, *,
+                                     model: str | None = None,
                                      identity: str) -> SessionRecord:
         """Approve or deny a parked model selection for BOTH hold kinds.
 
@@ -1371,15 +1372,44 @@ class SessionOrchestrator:
         driver and current model untouched. Either resolution fully clears pending
         state on both the record and the row.
 
+        *model*, when given, is a human COUNTER-OFFER: approve the hold at this model
+        instead of the parked one. Only a `block` policy can refuse it — the human
+        performing this action IS the approval that `require_approval` asks for.
+
+        NB: the substitution is applied to the parked value and then flows through the
+        SAME low-level paths this method already uses (_spawn_session for a launch hold,
+        driver.set_model for a mid-session one). It must NEVER be routed through
+        set_model_for_session(), which re-runs resolve_model_policy and would re-park —
+        making every approval re-ask for approval.
+
         Raises:
             KeyError: unknown session id.
             ValueError: bad decision, or nothing pending to resolve.
+            ModelBlockedError: the counter-offered model is blocked by policy.
         """
         if decision not in ("approve", "deny"):
             raise ValueError(f"bad decision: {decision!r}")
         rec = self._records.get(session_id)
         if rec is None:
             raise KeyError(session_id)
+
+        # Counter-offer: only `block` may refuse it. Checked DIRECTLY here rather than
+        # by routing through the gated set_model_for_session (see docstring).
+        requested_model = rec.pending_model
+        if model is not None and model != requested_model and decision == "approve":
+            from server.sessions.model_catalog import model_tier
+            from server.sessions.model_policy import resolve_model_policy
+            async with db_session() as _db:
+                _p = await resolve_model_policy(_db, model=model, account=rec.account)
+            if _p == "block":
+                raise ModelBlockedError(model)
+            # The session must stop asking for a tier a human has already answered.
+            from server.sessions.self_model_guards import SelfModelState
+            tier = model_tier(requested_model)
+            if tier:
+                self._self_model_state.setdefault(
+                    session_id, SelfModelState()).amended_away.add(tier)
+            rec.pending_model = model
 
         # Launch-time hold — a not-yet-spawned pending_approval row.
         if rec.status == "pending_approval":
@@ -1390,17 +1420,20 @@ class SessionOrchestrator:
             async with db_session() as db:
                 await record_audit(
                     db, type=f"model_approval.{decision}", identity=identity,
-                    detail={"session_id": session_id, "model": approved_model})
+                    detail={"session_id": session_id, "model": approved_model,
+                            "requested": requested_model, "applied": approved_model})
             if decision == "deny":
                 async with db_session() as db:
                     from sqlalchemy import update as sa_update
                     await db.execute(
                         sa_update(DbSession).where(DbSession.id == session_id).values(
                             status="ended", pending_model=None,
+                            pending_model_reason=None,
                             pending_model_requested_by=None,
                             pending_model_requested_at=None))
                 rec.status = "ended"
                 rec.pending_model = None
+                rec.pending_model_reason = None
                 log.info("session.model_approval_denied id=%s (launch)", session_id)
                 return rec
             # approve: drop the placeholder row + record, then run the normal
@@ -1453,9 +1486,11 @@ class SessionOrchestrator:
                 from sqlalchemy import update as sa_update
                 await record_audit(
                     db, type=f"model_approval.{decision}", identity=identity,
-                    detail={"session_id": session_id, "model": pending})
+                    detail={"session_id": session_id, "model": pending,
+                            "requested": requested_model, "applied": pending})
                 values: dict = {
                     "pending_model": None,
+                    "pending_model_reason": None,
                     "pending_model_requested_by": None,
                     "pending_model_requested_at": None,
                 }
@@ -1469,6 +1504,7 @@ class SessionOrchestrator:
                     await driver.set_model(pending)
                 rec.model = pending
             rec.pending_model = None
+            rec.pending_model_reason = None
             # Live-push a status frame (unchanged status) so the dashboard reconciles
             # and drops the pending badge — the same lifecycle-frame mechanism the
             # park path in set_model_for_session uses.
