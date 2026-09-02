@@ -107,9 +107,11 @@ literals passed to `cn()`, and `cva()` arguments:
 - `\bdark:` · `#[0-9a-f]{3,8}\b` inside `className` · `z-\[` · `z-(10|20|30|40|50)\b`
 - `\b(text|min-h|min-w|h|w)-\[\d+px\]` (arbitrary pixel sizes; the 44px target has a token)
 
-Scope in PR 1: files changed by the PR (`eslint --config … $(git diff --name-only)` in CI via a
-`lint-changed` script). Allowlist: `web/src/features/pipeline/charts/**` (created empty now).
-PR 11 (sub-spec C) widens the scope to the repo.
+Scope is **by folder**, not by changed file (a changed-file scope would fail on PR 1's own edits,
+since the files it touches still carry legacy `dark:`/palette classes): the rule is `error` for
+`web/src/ui/**` and `web/src/shell/**` from PR 1; each feature folder is added to the scope by the
+sub-spec C PR that migrates it; PR 11 widens it to `web/src/**`. Allowlist:
+`web/src/features/pipeline/charts/**`.
 
 ### 2.6 Build-output test (`web/src/__tests__/tokenBridge.test.ts`)
 
@@ -140,7 +142,7 @@ Each ships with a vitest + `jest-axe` test and a story-like `*.example.tsx` fixt
 | `Menu` | `items: {id,label,shortcut?,icon?,disabled?}[]`, `onSelect`, `1–9` selection, arrow keys, typeahead, `role=menu` | new; consumed by B |
 | `Dialog` | `open`, `onClose`, `title`, `description`, `size`, `initialFocus`; portal to `app.overlays`; `useFocusTrap`; `inert` on `#root` while open; focus restore; `Esc` closes | `AddAccountDialog`, `PermanentDeleteDialog`, `ManualDispatchDialog`, `ItemEditorDialog`, `McpServerDialog`, `ModelSwitchDialog`, `RenameDialog`, `NewSessionDialog`, the inline dialogs in `AccountsManager`, `ArchivedManager`, `AdoptPanel`, `CommandResultOverlay`, `DeployOverlay`, `LegendPanel` |
 | `Sheet` | `side: right\|bottom`, `mode: overlay\|push`, `width`, same focus contract as `Dialog` | `HelpDrawer` |
-| `Tabs` | `items: {id,label,count?,attention?}[]`, `value`, `onChange`, `label`, `panelId?`, `orientation`; roving tabindex, arrows, Home/End | `TabBar` (becomes a thin wrapper), `SettingsView` tablist, `PipelineSwitcher` |
+| `Tabs` | `items: {id,label,count?,attention?}[]`, `value`, `onChange`, `label`, `panelId?`, `orientation`; roving tabindex, arrows, Home/End | `TabBar` (becomes a thin wrapper), `SettingsView` tablist. (`PipelineSwitcher` is a type-to-filter combobox, not a tab strip — it stays until sub-spec C's Pipeline PR rebuilds it on `Menu`.) |
 | `Banner` | `tone: info\|warning\|danger\|success`, `title`, `children`, `actions`, `onDismiss?`, `role=status\|alert` by tone | `GlobalUpdateBanner`, `DaemonRestartBanner`, `GitCredentialBanner`, `AllLimitedBanner`, `UpdatePendingBanner`, `NewVersionBanner`, `DeployPanel`'s chrome |
 | `BannerStack` | `items: {id, priority, node}[]`; renders sorted; one mount (B moves it into `app.banners`; in PR 2 both shells mount it at their current banner position) | the three banner mount points |
 | `Card` | `tone?`, `rail?` (left status rail), `padding`, `interactive?` (hover/focus affordance) | none swept in PR 2 (C) |
