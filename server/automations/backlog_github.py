@@ -90,6 +90,20 @@ def _split_ref(ref: str) -> tuple[str, str]:
     return repo, number
 
 
+def _group_repos_by_owner(repos: Iterable[str]) -> list[tuple[str, list[str]]]:
+    """Group ``"owner/name"`` repos by owner, preserving first-seen order.
+
+    A single GraphQL search spanning repos owned by different owners can only
+    ever be authenticated with one installation token — so any multi-repo query
+    must issue one call per owner (never send one owner's token against
+    another owner's repo; it would 404 and look like a missing repo)."""
+    groups: dict[str, list[str]] = {}
+    for repo in repos:
+        owner = repo.partition("/")[0]
+        groups.setdefault(owner, []).append(repo)
+    return list(groups.items())
+
+
 # --------------------------------------------------------------------------- #
 # Candidate query                                                             #
 # --------------------------------------------------------------------------- #
@@ -206,22 +220,28 @@ def query_candidates(config: dict, *, gh_run: GhRun = gitrepos._run_gh,
     if retry_days:
         moment = now or datetime.now(timezone.utc)
         retry_cutoff = (moment - timedelta(days=retry_days)).strftime("%Y-%m-%d")
-    query = _build_candidates_query(repos, eligible_label, retry_cutoff)
 
-    proc = gh_run(["api", "graphql", "-f", f"query={query}"])
-    if getattr(proc, "returncode", 1) != 0:
-        log.warning("backlog_github.query_failed err=%s",
-                    (getattr(proc, "stderr", "") or "").strip())
-        return []
-    try:
-        payload = json.loads(getattr(proc, "stdout", "") or "{}")
-    except json.JSONDecodeError:
-        log.warning("backlog_github.query_unparseable", exc_info=True)
-        return []
+    # A single search spanning repos owned by different owners can't be
+    # authenticated with one installation token — group by owner and issue one
+    # call per owner (each with that owner's own token), merging results.
+    nodes: list[dict] = []
+    for owner, owner_repos in _group_repos_by_owner(repos):
+        query = _build_candidates_query(owner_repos, eligible_label, retry_cutoff)
+        proc = gh_run(["api", "graphql", "-f", f"query={query}"],
+                      token=gitrepos.app_token_for_owner(owner))
+        if getattr(proc, "returncode", 1) != 0:
+            log.warning("backlog_github.query_failed owner=%s err=%s",
+                        owner, (getattr(proc, "stderr", "") or "").strip())
+            continue
+        try:
+            payload = json.loads(getattr(proc, "stdout", "") or "{}")
+        except json.JSONDecodeError:
+            log.warning("backlog_github.query_unparseable owner=%s", owner, exc_info=True)
+            continue
+        data = payload.get("data") or {}
+        nodes += list((data.get("issues") or {}).get("nodes") or [])
+        nodes += list((data.get("retry") or {}).get("nodes") or [])
 
-    data = payload.get("data") or {}
-    nodes = list((data.get("issues") or {}).get("nodes") or [])
-    nodes += list((data.get("retry") or {}).get("nodes") or [])
     out: list[dict] = []
     seen: set[str] = set()
     for node in nodes:
@@ -283,7 +303,8 @@ def _issue_crossref_pr_nodes(ref: str, *, gh_run: GhRun) -> list[dict] | None:
         "  }\n"
         "}"
     )
-    proc = gh_run(["api", "graphql", "-f", f"query={query}"])
+    proc = gh_run(["api", "graphql", "-f", f"query={query}"],
+                  token=gitrepos.app_token_for_repo(repo))
     if getattr(proc, "returncode", 1) != 0:
         log.warning("backlog_github.find_referencing_pr_failed ref=%s err=%s",
                     ref, (getattr(proc, "stderr", "") or "").strip())
@@ -360,13 +381,14 @@ def _issue_edit(ref: str, *, add: str | None = None, remove: str | None = None,
         args += ["--add-label", add]
     if remove:
         args += ["--remove-label", remove]
-    proc = gh_run(args)
+    proc = gh_run(args, token=gitrepos.app_token_for_repo(repo))
     return getattr(proc, "returncode", 1) == 0
 
 
 def _issue_comment(ref: str, body: str, *, gh_run: GhRun) -> bool:
     repo, number = _split_ref(ref)
-    proc = gh_run(["issue", "comment", number, "--repo", repo, "--body", body])
+    proc = gh_run(["issue", "comment", number, "--repo", repo, "--body", body],
+                  token=gitrepos.app_token_for_repo(repo))
     return getattr(proc, "returncode", 1) == 0
 
 
@@ -381,10 +403,12 @@ def ensure_claim_labels(repos: Iterable[str], *, gh_run: GhRun = gitrepos._run_g
     crash the claim — the subsequent add-label call surfaces the real error.
     """
     for repo in dict.fromkeys(repos):  # de-dupe, preserve first-seen order
+        token = gitrepos.app_token_for_repo(repo)
         for name in (IN_PROGRESS_LABEL, NEEDS_HUMAN_LABEL):
             try:
                 gh_run(["label", "create", name, "--repo", repo, "--color", "ededed",
-                        "--description", "ccswitch backlog-runner", "--force"])
+                        "--description", "ccswitch backlog-runner", "--force"],
+                      token=token)
             except Exception:  # pragma: no cover — provisioning must never raise
                 log.warning("backlog_github.ensure_label_failed repo=%s name=%s", repo, name)
 
@@ -474,7 +498,8 @@ def _pr_linkage(repo: str, pr_number: int, *, gh_run: GhRun) -> dict | None:
         "  }\n"
         "}"
     )
-    proc = gh_run(["api", "graphql", "-f", f"query={query}"])
+    proc = gh_run(["api", "graphql", "-f", f"query={query}"],
+                  token=gitrepos.app_token_for_repo(repo))
     if getattr(proc, "returncode", 1) != 0:
         log.warning("backlog_github.pr_linkage_failed repo=%s pr=%s err=%s",
                     repo, pr_number, (getattr(proc, "stderr", "") or "").strip())
@@ -538,7 +563,7 @@ def _close_issue(ref: str, comment: str, *, gh_run: GhRun) -> bool:
     repo, number = _split_ref(ref)
     try:
         proc = gh_run(["issue", "close", number, "--repo", repo,
-                       "--comment", comment])
+                       "--comment", comment], token=gitrepos.app_token_for_repo(repo))
         if getattr(proc, "returncode", 1) != 0:
             log.warning("backlog_github.close_issue_failed ref=%s", ref)
             return False
@@ -572,7 +597,8 @@ def _issue_signals(ref: str, *, gh_run: GhRun) -> dict | None:
         "  }\n"
         "}"
     )
-    proc = gh_run(["api", "graphql", "-f", f"query={query}"])
+    proc = gh_run(["api", "graphql", "-f", f"query={query}"],
+                  token=gitrepos.app_token_for_repo(repo))
     if getattr(proc, "returncode", 1) != 0:
         log.warning("backlog_github.issue_signals_failed ref=%s err=%s",
                     ref, (getattr(proc, "stderr", "") or "").strip())
@@ -606,7 +632,8 @@ def _pr_changed_files(repo: str, pr_number: int, *, gh_run: GhRun) -> list[str] 
         "  }\n"
         "}"
     )
-    proc = gh_run(["api", "graphql", "-f", f"query={query}"])
+    proc = gh_run(["api", "graphql", "-f", f"query={query}"],
+                  token=gitrepos.app_token_for_repo(repo))
     if getattr(proc, "returncode", 1) != 0:
         log.warning("backlog_github.pr_files_failed repo=%s pr=%s err=%s",
                     repo, pr_number, (getattr(proc, "stderr", "") or "").strip())
@@ -771,26 +798,33 @@ def query_claimed_refs(repos: list[str], *, gh_run: GhRun = gitrepos._run_gh) ->
     """
     if not repos:
         return []
-    quals = [f"repo:{r}" for r in repos] + [
-        "is:issue", "is:open", f"label:{IN_PROGRESS_LABEL}"]
-    query = (
-        "query {\n"
-        f"  claimed: search(query: {json.dumps(' '.join(quals))}, type: ISSUE, first: 100) {{\n"
-        f"    {_ISSUE_NODES}\n"
-        "  }\n"
-        "}"
-    )
-    proc = gh_run(["api", "graphql", "-f", f"query={query}"])
-    if getattr(proc, "returncode", 1) != 0:
-        log.warning("backlog_github.claimed_query_failed err=%s",
-                    (getattr(proc, "stderr", "") or "").strip())
-        return []
-    try:
-        payload = json.loads(getattr(proc, "stdout", "") or "{}")
-    except json.JSONDecodeError:
-        log.warning("backlog_github.claimed_query_unparseable", exc_info=True)
-        return []
-    nodes = (((payload.get("data") or {}).get("claimed") or {}).get("nodes")) or []
+    # As in query_candidates: a search spanning multiple owners can't be
+    # authenticated with one installation token, so group by owner and issue
+    # one call per owner, merging results.
+    nodes: list[dict] = []
+    for owner, owner_repos in _group_repos_by_owner(repos):
+        quals = [f"repo:{r}" for r in owner_repos] + [
+            "is:issue", "is:open", f"label:{IN_PROGRESS_LABEL}"]
+        query = (
+            "query {\n"
+            f"  claimed: search(query: {json.dumps(' '.join(quals))}, type: ISSUE, first: 100) {{\n"
+            f"    {_ISSUE_NODES}\n"
+            "  }\n"
+            "}"
+        )
+        proc = gh_run(["api", "graphql", "-f", f"query={query}"],
+                      token=gitrepos.app_token_for_owner(owner))
+        if getattr(proc, "returncode", 1) != 0:
+            log.warning("backlog_github.claimed_query_failed owner=%s err=%s",
+                        owner, (getattr(proc, "stderr", "") or "").strip())
+            continue
+        try:
+            payload = json.loads(getattr(proc, "stdout", "") or "{}")
+        except json.JSONDecodeError:
+            log.warning("backlog_github.claimed_query_unparseable owner=%s", owner, exc_info=True)
+            continue
+        nodes += (((payload.get("data") or {}).get("claimed") or {}).get("nodes")) or []
+
     out: list[str] = []
     for node in nodes:
         if not node:
