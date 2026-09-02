@@ -127,6 +127,8 @@ export interface Session {
   /** Issue #434: the session's in-flight turn was dropped by a daemon wedge/restart (it
    *  came back idle via rehydrate). The dashboard labels it "re-send to resume". Transient. */
   interruptedByRestart?: boolean
+  /** Server-computed: this session was interrupted mid-work by a restart and can be resumed. */
+  resumable?: boolean
   /** The automation_id that spawned this session (e.g. 'pr-doctor'); null/absent = human-created. */
   origin?: string | null
   /** The automation's reference key (e.g. 'owner/repo#123'); null/absent when origin is absent. */

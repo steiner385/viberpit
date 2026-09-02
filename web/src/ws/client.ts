@@ -536,7 +536,9 @@ export class SessionSocket {
                  ...(revAt ? { revAt } : {}),
                  // Issue #434: the status frame carries the live restart-interruption flag
                  // (cleared on resume) so the pill relabels without waiting for the 5s poll.
-                 ...(interruptedByRestart !== undefined ? { interruptedByRestart } : {}) }
+                 ...(interruptedByRestart !== undefined
+                     ? { interruptedByRestart, ...(interruptedByRestart ? {} : { resumable: false }) }
+                     : {}) }
       })
     })
   }
