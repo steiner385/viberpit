@@ -55,3 +55,34 @@ async def test_gated_tier_parks_even_as_a_downgrade(monkeypatch):
         return "require_approval"
     monkeypatch.setattr(model_policy, "resolve_model_policy", _gated)
     assert await _decide("fable", "opus") == "park"
+
+
+@pytest.mark.asyncio
+async def test_tier_gate_checks_requested_model_not_current(monkeypatch):
+    """Verify the tier policy gate inspects the REQUESTED model, not the current one.
+
+    If the call were swapped to current_model, a session on a blocked tier could
+    request an allowed one and bypass the block, or vice versa.
+    """
+    captured_model = None
+
+    async def _capture_model(db, *, model=None, account=None):
+        nonlocal captured_model
+        captured_model = model
+        return "allow"
+
+    monkeypatch.setattr(model_policy, "resolve_model_policy", _capture_model)
+    await _decide("haiku", "fable")
+    assert captured_model == "fable", f"Expected 'fable' but gate was called with {captured_model}"
+
+
+@pytest.mark.asyncio
+async def test_same_tier_noop_at_rank_zero(allow_all):
+    """Verify same-tier noop works at rank 0 (falsy) to catch any future `if not rank` bugs."""
+    assert await _decide("haiku", "haiku") == "noop"
+
+
+@pytest.mark.asyncio
+async def test_downgrade_at_rank_zero(allow_all):
+    """Verify downgrade works at rank 0 (falsy) to catch any future `if not rank` bugs."""
+    assert await _decide("sonnet", "haiku") == "apply"
