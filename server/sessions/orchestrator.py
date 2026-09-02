@@ -2168,6 +2168,7 @@ class SessionOrchestrator:
             # status so the card stops nagging once the user re-sends.
             if status != "idle":
                 rec.interrupted_by_restart = False
+                rec.interrupted_from_status = None
         async with db_session() as db:
             from sqlalchemy import update as sa_update
             values: dict = {"status": status}
@@ -5858,7 +5859,9 @@ class SessionOrchestrator:
             # row-backed field — so it threads through as a call-site override
             # rather than living in _record_from_row's row mapping.
             self._records[row.id] = self._record_from_row(
-                row, status=status, branch=branch, interrupted_by_restart=was_interrupted)
+                row, status=status, branch=branch,
+                interrupted_by_restart=was_interrupted,
+                interrupted_from_status=(row.status if was_interrupted else None))
             added += 1
             log_event(log, logging.INFO, "session.reattach",
                       session_id=row.id,

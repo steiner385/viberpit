@@ -19,6 +19,11 @@ from server.time_iso import iso_utc
 # upgrade it (see SessionOrchestrator.ensure_driver) or their answers are rejected.
 SYSTEM_IDENTITY = "system"
 
+# Original pre-restart status is normalized to "idle" by rehydrate(); these are the
+# subset that represents genuinely dropped WORK (vs awaiting-human waiting_input /
+# waiting_question / ready_review, which normalize identically but must NOT be nudged).
+RESUME_ELIGIBLE_STATUSES = frozenset({"in_progress", "working", "condensing"})
+
 # The full ccswitch session permission-mode vocabulary — the single source of
 # truth for "what modes exist". The first four are ccswitch-native (gated by
 # PermissionRegistry.request); the last two share the Claude Agent SDK's own
@@ -100,6 +105,11 @@ class SessionRecord:
     # by daemon restart — re-send to resume" instead of a generic idle/"Turn failed" card.
     # Cleared on the next turn (see SessionOrchestrator._persist_status). Never persisted.
     interrupted_by_restart: bool = False
+    # transient companion to interrupted_by_restart: the ORIGINAL pre-restart status
+    # (before rehydrate normalized it to "idle"). Drives resume-eligibility only — a
+    # session is resumable iff it was flagged AND this is in RESUME_ELIGIBLE_STATUSES.
+    # Never persisted; cleared with the flag on the next turn.
+    interrupted_from_status: str | None = None
     authored_branches: list[str] = field(default_factory=list)  # feature branches → multi-PR badges
     # Last EXACT context-window occupancy from the SDK (the `/context` data), refreshed
     # each turn. Persisted + replayed on attach so a reloaded/idle session shows real
@@ -165,6 +175,9 @@ class SessionRecord:
             "host": self.host,
             "usageUnverified": self.usage_unverified,
             "interruptedByRestart": self.interrupted_by_restart,
+            "interruptedFromStatus": self.interrupted_from_status,
+            "resumable": (self.interrupted_by_restart
+                          and self.interrupted_from_status in RESUME_ELIGIBLE_STATUSES),
             "authoredBranches": list(self.authored_branches),
             "contextUsedTokens": self.context_used_tokens,
             "contextMaxTokens": self.context_max_tokens,
@@ -204,6 +217,7 @@ class SessionRecord:
             host=d.get("host"),
             usage_unverified=d.get("usageUnverified", False),
             interrupted_by_restart=d.get("interruptedByRestart", False),
+            interrupted_from_status=d.get("interruptedFromStatus"),
             authored_branches=list(d.get("authoredBranches") or []),
             context_used_tokens=d.get("contextUsedTokens"),
             context_max_tokens=d.get("contextMaxTokens"),
