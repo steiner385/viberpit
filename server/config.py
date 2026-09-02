@@ -286,6 +286,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         model_approval_denylist: str = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_MODEL_APPROVAL_DENYLIST", "fable")
         )
+        self_model_switch_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_SELF_MODEL_SWITCH_ENABLED", "true").lower() in ("1","true","yes","on")
+        )
 
         @property
         def tailnet_allowlist_items(self) -> list[str]:

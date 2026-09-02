@@ -37,6 +37,12 @@ def test_absent_or_malformed_returns_none():
         assert parse_model_request(text) is None, text
 
 
+def test_non_str_input_returns_none():
+    """Fail-open: never raise on non-str input."""
+    assert parse_model_request(123) is None
+    assert parse_model_request(["x"]) is None
+
+
 def test_strip_markers_removes_the_model_marker():
     """Load-bearing: an unstripped marker would defeat the trailing-question heuristic."""
     text = 'All set?\n<!-- ccswitch:model=opus reason="x" -->'

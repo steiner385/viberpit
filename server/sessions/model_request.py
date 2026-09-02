@@ -48,13 +48,13 @@ def parse_model_request(text: str) -> dict | None:
     Returns ``{"model": str, "reason": str | None}``, or ``None`` when *text* carries
     no well-formed marker. Last-wins because a session that reconsiders within one
     turn means the final word.
+
+    Returns ``None`` for any non-str input (fail-open: never raises).
     """
-    if not text:
+    if not isinstance(text, str) or not text:
         return None
     matches = MODEL_REQUEST_RE.findall(text)
     if not matches:
         return None
     model, reason = matches[-1]
-    if not model:
-        return None
     return {"model": model, "reason": reason or None}
