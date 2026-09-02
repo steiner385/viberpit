@@ -23,24 +23,62 @@ def test_record_defaults_to_none():
 
 
 def test_orchestrator_record_from_row_preserves_pending_model_reason():
-    """Audit by inspection: verify _record_from_row includes pending_model_reason mapping.
-    This guards against silent drops during daemon restart/unarchive (issue #XXX)."""
-    from pathlib import Path
-    orch_file = Path(__file__).resolve().parents[1] / "sessions" / "orchestrator.py"
-    content = orch_file.read_text()
+    """Behavioral test: call _record_from_row with a row carrying pending_model_reason
+    and verify the returned SessionRecord has it set. This guards against silent drops
+    during daemon restart/unarchive."""
+    from types import SimpleNamespace
+    from server.sessions.orchestrator import SessionOrchestrator
 
-    # Find the _record_from_row function and extract the SessionRecord construction
-    # Verify that every pending_model* field in SessionRecord has a corresponding
-    # line in _record_from_row.
-    session_record_fields = [
-        "pending_model=",
-        "pending_model_reason=",
-    ]
-    for field in session_record_fields:
-        assert field in content, (
-            f"_record_from_row must map {field} from the DB row to SessionRecord; "
-            f"found in orchestrator.py: {field in content}"
-        )
+    # Create a mock row object with the minimal attributes _record_from_row needs
+    mock_row = SimpleNamespace(
+        id="test-session-id",
+        name="Test Session",
+        account_name="test-account",
+        claude_session_id="claude-123",
+        cwd="/tmp/test",
+        repo="owner/repo",
+        status="idle",
+        name_is_auto=False,
+        permission_mode="interactive",
+        # The field we're testing:
+        pending_model_reason="User requested for code review",
+        # Other fields that _record_from_row accesses via getattr with defaults
+        branch=None,
+        origin=None,
+        origin_ref=None,
+        assisted_by=None,
+        created_at=None,
+        updated_at=None,
+        last_turn_at=None,
+        adopted_in_place=False,
+        model=None,
+        pending_model=None,
+        account_pinned=False,
+        active_goal=None,
+        inferred_goal=None,
+        autopilot_paused=False,
+        auto_archive_opt_out_reason=None,
+        authored_branches=None,
+        context_used_tokens=None,
+        context_max_tokens=None,
+        command_catalog=None,
+        pr_resolution=None,
+        pr_resolution_source=None,
+        host=None,
+    )
+
+    # Create an orchestrator instance to access the _record_from_row method
+    # (It doesn't need any complex setup since we're just testing one method)
+    orch = SessionOrchestrator(sdk_factory=None, poll_interval=1, usage_fn=None, repo_root="/tmp")
+
+    # Call the function
+    record = orch._record_from_row(mock_row)
+
+    # Verify the pending_model_reason survived the conversion
+    assert record.pending_model_reason == "User requested for code review", (
+        f"pending_model_reason was lost in _record_from_row: "
+        f"expected 'User requested for code review', got {record.pending_model_reason}"
+    )
 
 
 def test_migration_chain_has_exactly_one_head():
