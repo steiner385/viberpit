@@ -25,6 +25,14 @@ describe('PendingModelApprovalPanel', () => {
     expect(screen.getByText(/the session requested this/i)).toBeInTheDocument()
   })
 
+  // Finding 1: the positive case above proved nothing about the negative case —
+  // a human/automation-initiated park must NOT be misattributed to the session.
+  it('does not attribute a human-initiated request to the session', () => {
+    render(<PendingModelApprovalPanel model="fable" requestedBy="tony@example.com"
+                                      onDecision={vi.fn()} />)
+    expect(screen.queryByText(/the session requested this/i)).toBeNull()
+  })
+
   it('approves the requested model when the picker is untouched', () => {
     const onDecision = vi.fn()
     render(<PendingModelApprovalPanel model="fable" onDecision={onDecision} />)
@@ -45,5 +53,50 @@ describe('PendingModelApprovalPanel', () => {
     render(<PendingModelApprovalPanel model="fable" onDecision={onDecision} />)
     fireEvent.click(screen.getByRole('button', { name: /deny/i }))
     expect(onDecision).toHaveBeenCalledWith('deny', undefined)
+  })
+
+  // Finding 2: a pinned id (e.g. "claude-opus-5") is a valid request but is not
+  // in the alias catalog useModels() returns — it must be prepended so the
+  // default selection always exists.
+  it('prepends a pinned id not in the alias catalog so the default selection exists', () => {
+    render(<PendingModelApprovalPanel model="claude-opus-5" onDecision={vi.fn()} />)
+    const select = screen.getByLabelText(/approve as/i) as HTMLSelectElement
+    expect(select.value).toBe('claude-opus-5')
+    const values = Array.from(select.querySelectorAll('option')).map((o) => o.value)
+    expect(values).toContain('claude-opus-5')
+  })
+
+  it('does not duplicate a requested model that is already in the catalog', () => {
+    render(<PendingModelApprovalPanel model="fable" onDecision={vi.fn()} />)
+    const select = screen.getByLabelText(/approve as/i) as HTMLSelectElement
+    const fableOptions = Array.from(select.querySelectorAll('option'))
+      .filter((o) => o.value === 'fable')
+    expect(fableOptions).toHaveLength(1)
+  })
+
+  // Finding 3: restored from the pre-Task-9 test file (git show b5459ddd), adapted
+  // to the current props (onDecision now takes a second arg, unrelated here).
+  it('renders a full model id via modelName', () => {
+    render(<PendingModelApprovalPanel model="claude-opus-4-8" onDecision={vi.fn()} />)
+    expect(screen.getByText(/Opus 4\.8/)).toBeInTheDocument()
+  })
+
+  it('falls back to "this model" when model is null', () => {
+    render(<PendingModelApprovalPanel model={null} onDecision={vi.fn()} />)
+    expect(screen.getByText(/this model/i)).toBeInTheDocument()
+  })
+
+  it('exposes role="region" with aria-live="polite"', () => {
+    render(<PendingModelApprovalPanel model="fable" onDecision={vi.fn()} />)
+    const region = screen.getByRole('region', { name: /pending model approval/i })
+    expect(region).toHaveAttribute('aria-live', 'polite')
+  })
+
+  // Finding 4: an absent reason must render no quote markup at all.
+  it('renders no reason quote when reason is absent', () => {
+    const { container } = render(
+      <PendingModelApprovalPanel model="fable" reason={null} onDecision={vi.fn()} />,
+    )
+    expect(container.textContent).not.toMatch(/[“”]/)
   })
 })
