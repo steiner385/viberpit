@@ -723,7 +723,15 @@ export function transcriptReducer(
     // real job is re-resolving the block that a mid-turn reattach's ring resupply
     // recreates live, and resolving cards in OTHER attached clients.
     case 'questionResolved': {
-      return resolveQuestionInPlace(state, ev.questionId, ev.selected ?? [])
+      const selected = ev.selected ?? []
+      const next = resolveQuestionInPlace(state, ev.questionId, selected)
+      // A composer prompt sent while this question was pending is delivered by the
+      // server AS the answer (chat mode) — it never echoes as a `user` turn, so
+      // nothing else would consume its pendingSent entry and the next
+      // replayComplete would re-assert the answer as a phantom "pending" bubble.
+      // A resolution carrying that exact text proves the server consumed it.
+      const pendingSent = next.pendingSent.filter((p) => !selected.includes(p.text))
+      return pendingSent.length === next.pendingSent.length ? next : { ...next, pendingSent }
     }
 
     // ── sessionMeta ───────────────────────────────────────────────────────────
