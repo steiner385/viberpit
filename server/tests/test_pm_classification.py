@@ -13,6 +13,7 @@ from server.pm.classification import (
     build_classification_prompt,
     build_map_synthesis_prompt,
     feature_doc_path,
+    map_branch_name,
     parse_classification_output,
 )
 
@@ -178,3 +179,11 @@ def test_parse_defaults_confidence_level_and_scores():
     (c,) = parse_classification_output(text)
     assert c.confidence_level == "low"   # missing → conservative default
     assert c.reach is None and c.impact is None
+
+
+def test_initial_map_prompt_pins_deterministic_branch():
+    p = build_map_synthesis_prompt(
+        slug="acme", repo="o/acme", default_branch="main",
+        open_count=5, closed_count=9, scope="initial")
+    assert map_branch_name("acme") == "pm/feature-map-acme"
+    assert "pm/feature-map-acme" in p          # the branch is named in the prompt

@@ -29,6 +29,12 @@ def feature_doc_path(slug: str) -> str:
     return f"{FEATURE_DOCS_DIR}/{slug}.md"
 
 
+def map_branch_name(slug: str) -> str:
+    """Deterministic branch a map-synthesis PR pushes to, so the completeness
+    critic (phase 2) can find and augment the SAME PR. One map per project."""
+    return f"pm/feature-map-{slug}"
+
+
 class ClassificationParseError(ValueError):
     """Raised only when a classify session's output has no parseable JSON array.
     Individual malformed rows are skipped, not fatal (one bad row must never lose
@@ -219,7 +225,9 @@ def build_map_synthesis_prompt(
         "be resolved before the PR can be merged.\n\n"
         "---\n\n"
         "Requirements — this is a propose-only onboarding step, follow exactly:\n"
-        f"1. Branch off `origin/{default_branch}` (never local `{default_branch}`).\n"
+        f"1. Branch off `origin/{default_branch}` (never local `{default_branch}`) "
+        f"into a branch named exactly `{map_branch_name(slug)}`, and open ONE "
+        f"non-draft PR from it.\n"
         f"2. Commit the new docs under `{FEATURE_DOCS_DIR}/` only.\n"
         "3. Open exactly ONE pull request with the whole feature map — a "
         "NON-draft PR, marked ready for review.\n"
