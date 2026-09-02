@@ -511,6 +511,11 @@ class SessionOrchestrator:
         # session_id → clock() when its turn-restart dance (model swap / reassign)
         # began; autopilot skips the session for TURN_RESTART_DEFER_S from that mark.
         self._turn_restart_at: dict[str, float] = {}
+        # Self-directed model switching: per-session guard state, and the turn id of
+        # the last request consumed (so one request is acted on exactly once).
+        from server.sessions.self_model_guards import SelfModelState  # noqa: F401
+        self._self_model_state: dict[str, SelfModelState] = {}
+        self._handled_model_requests: dict[str, str] = {}
         # Failure-driven recovery: quarantine + per-session rotation cap. Clock is
         # injectable for deterministic tests; production uses wall-clock time. The
         # recompose-attempt map distinguishes a first 401 (heal in place) from a
@@ -1990,6 +1995,8 @@ class SessionOrchestrator:
         driver = self._drivers.pop(session_id, None)
         self._last_prompt.pop(session_id, None)
         self._turn_restart_at.pop(session_id, None)
+        self._self_model_state.pop(session_id, None)
+        self._handled_model_requests.pop(session_id, None)
         self._pending_initial_prompt.pop(session_id, None)
         if driver is not None:
             await driver.aclose()
@@ -2088,6 +2095,7 @@ class SessionOrchestrator:
             return
         # A "switch after this turn" model change is in force once the turn is over.
         self._settle_model_pending(session_id, status)
+        self._maybe_handle_model_request(session_id, status)
         # A turn failure surfacing during teardown is our own shutdown dropping the
         # turn (deploy / watchdog restart / systemctl stop), not a real failure.
         # Persisting needs_attention here brands the session "Turn failed" across
@@ -8509,6 +8517,137 @@ class SessionOrchestrator:
         if status not in MID_TURN_STATUSES:
             record.model_pending = False
 
+    def _maybe_handle_model_request(self, session_id: str, status: str) -> None:
+        """Consume a self-directed model request the driver latched at turn end.
+
+        Sync + fire-and-forget on purpose: this runs inside the status pump, and the
+        handling does DB work (policy lookup, audit) that must not stall the turn loop
+        — the same reason _persist_sub_agents is deferred.
+        """
+        from server.sessions.status import MID_TURN_STATUSES
+        if status in MID_TURN_STATUSES:
+            return
+        driver = self._drivers.get(session_id)
+        req = getattr(driver, "last_model_request", None)
+        if not req:
+            return
+        turn_id = req.get("turn_id")
+        if self._handled_model_requests.get(session_id) == turn_id:
+            return
+        self._handled_model_requests[session_id] = turn_id
+        self._spawn(self._apply_model_request(session_id, req))
+
+    async def _apply_model_request(self, session_id: str, req: dict) -> None:
+        """Guards -> policy -> apply or park. Never raises into the caller.
+
+        Fail-open per the feature's invariant: any failure here drops the
+        recommendation and logs. A session must never fail a turn because it asked
+        for a different model.
+        """
+        from server.audit import record_audit
+        from server.config import get_settings
+        from server.sessions.model_catalog import model_tier
+        from server.sessions.model_policy import resolve_self_directed_model_policy
+        from server.sessions.self_model_guards import SelfModelState, evaluate_guards
+        try:
+            cfg = get_settings()
+            if not cfg.self_model_switch_enabled:
+                return
+            rec = self._records.get(session_id)
+            if rec is None:
+                return
+            # Copilot sessions run a third-party model; a Claude tier request is
+            # meaningless there. Same reasoning as _pre_record skipping suggestions.
+            if _provider_of(rec.account) == _copilot_mod.PROVIDER:
+                return
+            requested, reason = req.get("model"), req.get("reason")
+            if not requested:
+                # Malformed latch (should not happen per Task 3's shape guarantee,
+                # but fail-open rather than trust an upstream invariant here).
+                return
+            current = rec.model
+            state = self._self_model_state.setdefault(session_id, SelfModelState())
+
+            guard = evaluate_guards(
+                state, current_tier=model_tier(current),
+                requested_tier=model_tier(requested), cap=cfg.self_model_switch_cap)
+            if guard == "drop":
+                log.debug("session.self_model_request_dropped id=%s model=%s",
+                          session_id, requested)
+                return
+
+            async with db_session() as db:
+                decision = await resolve_self_directed_model_policy(
+                    db, current_model=current, requested_model=requested,
+                    account=rec.account)
+            if decision == "noop":
+                return
+            if decision == "refuse":
+                async with db_session() as db:
+                    await record_audit(
+                        db, type="self_model_switch.refused", identity="session:self",
+                        detail={"session_id": session_id, "model": requested,
+                                "reason": reason})
+                log.info("session.self_model_request_refused id=%s model=%s",
+                         session_id, requested)
+                return
+
+            if decision == "park" or guard == "force_park":
+                await self._park_self_model_request(session_id, requested, reason)
+                return
+
+            await self.set_model_for_session(
+                session_id, requested, when="after_turn", identity="session:self")
+            state.auto_applied += 1
+            current_tier = model_tier(current)
+            if current_tier:
+                state.tiers_left.add(current_tier)
+            async with db_session() as db:
+                await record_audit(
+                    db, type="self_model_switch.applied", identity="session:self",
+                    detail={"session_id": session_id, "from": current,
+                            "model": requested, "reason": reason})
+            log.info("session.self_model_switch_applied id=%s %s -> %s",
+                     session_id, current, requested)
+        except Exception:
+            log.exception("session.self_model_request_failed id=%s", session_id)
+
+    async def _park_self_model_request(
+        self, session_id: str, model: str, reason: str | None,
+    ) -> None:
+        """Park a self-directed request for human approval, carrying its reason.
+
+        Writes the same pending_model columns the model-approval gate uses, so the
+        existing approval card, REST route and resolve path handle it unchanged —
+        only the identity and the reason distinguish it.
+        """
+        from datetime import datetime
+        from sqlalchemy import update as sa_update
+
+        from server.audit import record_audit
+        rec = self._records.get(session_id)
+        if rec is not None:
+            if rec.pending_model == model:
+                return                                  # already parked; don't re-park
+            rec.pending_model = model
+            rec.pending_model_reason = reason
+        now = datetime.utcnow()
+        async with db_session() as db:
+            await db.execute(
+                sa_update(DbSession).where(DbSession.id == session_id).values(
+                    pending_model=model, pending_model_reason=reason,
+                    pending_model_requested_by="session:self",
+                    pending_model_requested_at=now))
+            await record_audit(
+                db, type="model_approval.requested", identity="session:self",
+                detail={"session_id": session_id, "model": model, "reason": reason,
+                        "source": "session"})
+        if rec is not None:
+            self._publish_event({
+                "type": "status", "sessionId": session_id, "status": rec.status,
+                "updatedAt": rec.updated_at_iso, "revAt": rec.rev_at})
+        log.info("session.self_model_request_parked id=%s model=%s", session_id, model)
+
     async def _persist_model(self, session_id: str, model: str | None) -> None:
         async with db_session() as db:
             from sqlalchemy import update as sa_update
@@ -8716,6 +8855,8 @@ class SessionOrchestrator:
         driver = self._drivers.pop(session_id, None)
         self._last_prompt.pop(session_id, None)
         self._turn_restart_at.pop(session_id, None)
+        self._self_model_state.pop(session_id, None)
+        self._handled_model_requests.pop(session_id, None)
         self._pending_initial_prompt.pop(session_id, None)
 
         # Remove from active records BEFORE driver.aclose() so the session
