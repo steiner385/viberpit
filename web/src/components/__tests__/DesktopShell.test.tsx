@@ -57,6 +57,7 @@ vi.mock('@/api/hooks', () => ({
   useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   QK: { accounts: ['accounts'], sessions: ['sessions'], archived: ['archived-sessions'], config: ['config'], githubRepos: ['github-repos'], githubBranches: (r?: string) => ['github-branches', r], settings: ['settings'] },
   useAssessDispatch: vi.fn(() => ({ assess: vi.fn() })),
+  useResumeInterrupted: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }))
 
 vi.mock('@/session/useSessionSearch', () => ({
