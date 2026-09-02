@@ -3286,20 +3286,27 @@ class SessionOrchestrator:
                 setattr(row, key, value)
 
     async def _pm_sync_read_feature_docs(self, repo: str) -> list[tuple[str, str]]:
-        """List docs/product/features/*.md at origin's default branch in the
-        shared clone. Uses git plumbing only — no GitHub API cost."""
+        """Read docs/product/features/*.md at origin's default branch in the
+        shared clone. Uses git plumbing only — no GitHub API cost.
+
+        ATOMIC-OR-RAISE. The read resolves the default branch to an IMMUTABLE
+        commit SHA once, then reads every blob against THAT snapshot — so a
+        concurrent fetch moving origin/master (the shared clone is touched by
+        many automations) can't make the per-doc reads race. Any failure —
+        clone, ref resolution, ls-tree, or a single unreadable blob — RAISES
+        rather than returning a subset. Returning a subset is what orphaned 21
+        live features in the dogfood: the caller (``_feature_index``) treats a
+        missing doc as deleted and orphans its row. A raise makes the caller
+        skip the pass instead, leaving the index untouched until a clean read."""
 
         async def _read() -> list[tuple[str, str]]:
             import subprocess
             repo_root = await self._effective_repo_root()
             url = f"https://github.com/{repo}.git"
-            try:
-                clone = await asyncio.to_thread(
-                    gitrepos.ensure_clone, repo_root, repo, url)
-            except Exception:
-                log.warning("pm_sync.read_feature_docs.clone_failed repo=%s", repo,
-                            exc_info=True)
-                return []
+            # A clone failure must NOT degrade to an empty list — that would
+            # orphan every indexed feature. Let it raise so the pass is skipped.
+            clone = await asyncio.to_thread(
+                gitrepos.ensure_clone, repo_root, repo, url)
             await asyncio.to_thread(
                 subprocess.run,
                 ["git", "-C", clone, "fetch", "origin", "--quiet"],
@@ -3312,23 +3319,44 @@ class SessionOrchestrator:
                 capture_output=True, text=True, timeout=30,
             )
             ref = head.stdout.strip() or "refs/remotes/origin/master"
+            # Pin the ref to a concrete commit so every blob read below is against
+            # one consistent snapshot, immune to a concurrent ref-moving fetch.
+            rp = await asyncio.to_thread(
+                subprocess.run,
+                ["git", "-C", clone, "rev-parse", "--verify", f"{ref}^{{commit}}"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if rp.returncode != 0:
+                raise RuntimeError(
+                    f"pm_sync.read_feature_docs: cannot resolve {ref} in {repo}: "
+                    f"{(rp.stderr or '').strip()[:200]}")
+            sha = rp.stdout.strip()
             ls = await asyncio.to_thread(
                 subprocess.run,
-                ["git", "-C", clone, "ls-tree", "-r", "--name-only", ref,
+                ["git", "-C", clone, "ls-tree", "-r", "--name-only", sha,
                  "docs/product/features/"],
                 capture_output=True, text=True, timeout=30,
             )
+            if ls.returncode != 0:
+                raise RuntimeError(
+                    f"pm_sync.read_feature_docs: ls-tree failed for {repo}: "
+                    f"{(ls.stderr or '').strip()[:200]}")
             out: list[tuple[str, str]] = []
             for path in ls.stdout.splitlines():
                 if not path.endswith(".md"):
                     continue
                 show = await asyncio.to_thread(
                     subprocess.run,
-                    ["git", "-C", clone, "show", f"{ref}:{path}"],
+                    ["git", "-C", clone, "show", f"{sha}:{path}"],
                     capture_output=True, text=True, timeout=30,
                 )
-                if show.returncode == 0:
-                    out.append((path, show.stdout))
+                if show.returncode != 0:
+                    # One unreadable blob makes the whole read untrustworthy —
+                    # raise so the caller skips rather than orphaning the rest.
+                    raise RuntimeError(
+                        f"pm_sync.read_feature_docs: read failed for {path} in "
+                        f"{repo}: {(show.stderr or '').strip()[:200]}")
+                out.append((path, show.stdout))
             return out
 
         return await _read()
