@@ -59,17 +59,22 @@ def parse_feature_doc(text: str) -> FeatureDoc:
         raise FeatureDocError(f"state {state!r} not in {FEATURE_LIFECYCLE_STATES}")
 
     links: list[FeatureLinkRef] = []
-    for item in meta.get("links") or []:
-        if not isinstance(item, dict):
-            raise FeatureDocError("each link must be a mapping")
-        kind = str(item.get("kind") or "").strip()
-        if kind not in FEATURE_LINK_KINDS:
-            raise FeatureDocError(f"link kind {kind!r} not in {FEATURE_LINK_KINDS}")
-        links.append(FeatureLinkRef(
-            kind=kind,
-            project=str(item.get("project") or "").strip(),
-            feature=str(item.get("feature") or "").strip(),
-        ))
+    raw_links = meta.get("links")
+    # Tolerate an archaeology-style evidence dict (links: {code: [...], prs: [...]})
+    # or any non-list value: skip the whole field rather than discarding the doc.
+    # Only a proper list is iterated; malformed individual items are also skipped.
+    if isinstance(raw_links, list):
+        for item in raw_links:
+            if not isinstance(item, dict):
+                continue  # skip malformed item, keep parsing the rest
+            kind = str(item.get("kind") or "").strip()
+            if kind not in FEATURE_LINK_KINDS:
+                continue  # skip item with unknown/missing kind
+            links.append(FeatureLinkRef(
+                kind=kind,
+                project=str(item.get("project") or "").strip(),
+                feature=str(item.get("feature") or "").strip(),
+            ))
 
     body = "\n".join(lines[close + 1:]).lstrip("\n")
     return FeatureDoc(slug=slug, title=title, state=state, links=tuple(links), body=body)

@@ -3348,9 +3348,14 @@ class SessionOrchestrator:
     async def _pm_sync_apply_feature_plan(
         self, project_id: str, plan, by_slug: dict
     ) -> None:
-        """Write upserts/orphans from *plan* into the Feature table."""
-        from sqlalchemy import select
-        from server.db.models import Feature
+        """Write upserts/orphans from *plan* into the Feature table.
+
+        After upserting, if the project is in ``map_proposed`` and now has ≥1
+        non-orphaned Feature, advance it to ``map_merged``.  This ties the
+        transition to the observable "map merged & indexed" state — no PR
+        webhook needed.  No other states are touched."""
+        from sqlalchemy import func, select
+        from server.db.models import Feature, Project
         async with db_session() as db:
             for up in plan.upserts:
                 row = (await db.execute(
@@ -3376,6 +3381,20 @@ class SessionOrchestrator:
                 )).scalar_one_or_none()
                 if row is not None:
                     row.orphaned = True
+            # Advance map_proposed → map_merged when ≥1 non-orphaned feature
+            # exists after this upsert.  Other states are intentionally left alone.
+            proj = (await db.execute(
+                select(Project).where(Project.id == project_id)
+            )).scalar_one_or_none()
+            if proj is not None and proj.onboarding_state == "map_proposed":
+                live_count = (await db.execute(
+                    select(func.count(Feature.id)).where(
+                        Feature.project_id == project_id,
+                        Feature.orphaned.is_not(True),
+                    )
+                )).scalar_one()
+                if live_count >= 1:
+                    proj.onboarding_state = "map_merged"
 
     async def _pm_sync_tick_loop(self, interval: float) -> None:
         """Periodic driver for the pm-sync control loop (mirrors _sdlc_intake_tick_loop)."""
