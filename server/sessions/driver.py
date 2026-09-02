@@ -184,6 +184,7 @@ class SessionDriver:
         self._turns_completed: int = 0
         self._last_turn_outcome: str = "success"
         self._last_pr_resolution: str | None = None
+        self._last_model_request: dict | None = None
         self._suggester = suggester
         self._suggest_task: asyncio.Task | None = None
         self._last_user_text: str = ""
@@ -714,6 +715,7 @@ class SessionDriver:
                             # Intentionally sticky: set-only; first-write-wins is enforced
                             # downstream by the rec.pr_resolution is None guard in _persist_status.
                             self._last_pr_resolution = e.pr_resolution
+                        self._latch_model_request(e)
                     elif isinstance(e, ev.ErrorEvent):
                         failure = await self._maybe_signal_recovery(
                             e.code, e.raw_message or e.message)
@@ -826,6 +828,22 @@ class SessionDriver:
     def turn_started_at(self) -> float | None:
         """Epoch seconds of the in-progress turn's start, or None when idle."""
         return self._turn_started_at
+
+    def _latch_model_request(self, e) -> None:
+        """Latch a self-directed model request from a completed turn.
+
+        Stamped with the turn id so the orchestrator can consume each request exactly
+        once. Set-only: a turn carrying no request leaves the previous value alone,
+        matching _last_pr_resolution's stickiness.
+        """
+        if e.model_request:
+            self._last_model_request = {"turn_id": e.turn_id, **e.model_request}
+
+    @property
+    def last_model_request(self) -> dict | None:
+        """The most recent ``<!-- ccswitch:model=… -->`` request, or None.
+        ``{"turn_id", "model", "reason"}``."""
+        return self._last_model_request
 
     @property
     def last_pr_resolution(self) -> str | None:
