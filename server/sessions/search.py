@@ -2,13 +2,17 @@
 
 `transcript_text` reads a Claude transcript JSONL and returns ONLY the
 human-readable text (user message text, assistant `text` blocks, `thinking`
-blocks). Tool-call/result JSON, base64 images, and `isSidechain` entries are
-excluded so a substring match means something real. No SQLAlchemy / SDK imports
-— this stays cheap and trivially unit-testable.
+blocks). Tool-call/result JSON, base64 images, `isSidechain` entries, and the
+CLI's own `type:"user"` bookkeeping (harness/meta/compaction records nobody
+typed — see `transcript_entries`) are excluded so a substring match means
+something real. No SQLAlchemy / SDK imports — this stays cheap and trivially
+unit-testable.
 """
 from __future__ import annotations
 
 import json
+
+from .transcript_entries import is_harness_user_entry
 
 
 def _blocks(content) -> list[dict]:
@@ -40,14 +44,27 @@ def transcript_text(jsonl_path: str, *, max_bytes: int = 8 * 1024 * 1024) -> str
                     continue
                 typ = o.get("type")
                 msg = o.get("message") or {}
-                for b in _blocks(msg.get("content")):
-                    bt = b.get("type")
-                    if typ == "user" and bt == "text":
-                        parts.append(b.get("text", ""))
-                    elif typ == "assistant" and bt == "text":
-                        parts.append(b.get("text", ""))
-                    elif typ == "assistant" and bt == "thinking":
-                        parts.append(b.get("thinking", ""))
+                blocks = _blocks(msg.get("content"))
+                if typ == "user":
+                    # Only index a `type:"user"` entry a human actually typed. The CLI
+                    # journals plumbing user entries nobody wrote — the `/model`
+                    # `set_model` records (`<command-name>…`, `<local-command-stdout>Set
+                    # model to fable…`), a background task's `<task-notification>`,
+                    # `isMeta` context, and the auto-compaction summary — which would
+                    # otherwise pollute search with noise like "Set model to Fable".
+                    # Route through the shared predicate so search agrees with replay and
+                    # the titler about what a prompt is.
+                    user_text = "\n".join(
+                        b.get("text", "") for b in blocks if b.get("type") == "text")
+                    if user_text and not is_harness_user_entry(o, user_text):
+                        parts.append(user_text)
+                elif typ == "assistant":
+                    for b in blocks:
+                        bt = b.get("type")
+                        if bt == "text":
+                            parts.append(b.get("text", ""))
+                        elif bt == "thinking":
+                            parts.append(b.get("thinking", ""))
     except OSError:
         return ""
     return "\n".join(parts)
