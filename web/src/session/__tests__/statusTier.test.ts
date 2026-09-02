@@ -14,6 +14,8 @@ describe('statusTier', () => {
     ['limited', 'error'],
     ['ended', 'your-turn'],
     ['waiting_external', 'waiting'],   // parked on an external event
+    ['queued', 'waiting'],          // enqueued behind the active-session cap
+    ['pending_approval', 'needs-you'],  // parked on a human model decision
     ['working', 'busy'],            // legacy alias tolerated
   ])('maps %s -> %s', (state, tier) => {
     expect(statusTier(state)).toBe(tier)
@@ -37,9 +39,24 @@ describe('statusPresentation', () => {
     ['limited', 'Usage limit'],
     ['ended', 'Ended'],
     ['waiting_external', 'Waiting…'],
+    ['queued', 'Queued'],
+    ['pending_approval', 'Awaiting approval'],
   ])('labels %s as "%s"', (state, label) => {
     expect(statusPresentation(state).label).toBe(label)
   })
+
+  // Regression: a session that has not started yet used to hit the FALLBACK and
+  // render as a calm "Ready" — indistinguishable from a live idle session, over an
+  // empty conversation. That is what made a restart-stranded session read as a
+  // healthy-but-dead orphan. 'queued'/'pending_approval' were in the SessionStatus
+  // union but missing from the presentation table; PRESENTATION is now typed
+  // Record<SessionStatus | 'working', …> so tsc fails the build if that drifts again.
+  it.each(['queued', 'pending_approval'])(
+    'never renders %s as the "Ready" fallback', (state) => {
+      const p = statusPresentation(state)
+      expect(p.label).not.toBe('Ready')
+      expect(p.tier).not.toBe('your-turn')
+    })
 })
 
 
