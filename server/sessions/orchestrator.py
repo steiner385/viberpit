@@ -8959,24 +8959,31 @@ class SessionOrchestrator:
         return val is not False  # NULL/True → enabled; only an explicit False disables
 
     async def purge_oldest_archived(self, count: int) -> list[str]:
-        """Permanently delete the ``count`` oldest archived sessions (oldest first by
-        ``archived_at``). Returns the IDs actually deleted.
+        """Permanently delete the ``count`` oldest archived sessions. Returns the IDs
+        actually deleted.
 
         Selection is null-safe — legacy rows with no ``archived_at`` fall back to
         ``created_at`` so they still sort as oldest. Best-effort: a failure on one
         session is logged and skipped, never aborting the rest. ``count`` <= 0 no-ops.
+
+        Ordering: automation-origin sessions (``origin IS NOT NULL``) are purged first
+        so that human-launched sessions survive as long as any automation archive
+        exists to fill the cap (#921).  Within each origin tier, oldest first.
         """
         if count <= 0:
             return []
+        from sqlalchemy import case as sa_case
         from sqlalchemy import func as sa_func
         from sqlalchemy import select as sa_select
 
         async with db_session() as db:
+            # 0 = automation (origin set), 1 = human (origin NULL) → automation first
+            origin_priority = sa_case((DbSession.origin.is_(None), 1), else_=0)
             order_key = sa_func.coalesce(DbSession.archived_at, DbSession.created_at)
             stmt = (
                 sa_select(DbSession.id)
                 .where(DbSession.status == "archived")
-                .order_by(order_key.asc())
+                .order_by(origin_priority.asc(), order_key.asc())
                 .limit(count)
             )
             # Skip sessions that have already exhausted their delete strikes, so one
@@ -9053,6 +9060,22 @@ class SessionOrchestrator:
             except Exception:
                 log.exception("archive_limit: periodic sweep failed")
 
+    async def _fetch_archived_cwds(self) -> frozenset[str]:
+        """Return absolute cwd paths of all archived sessions from the DB (#921).
+
+        Archived sessions are popped from ``_records`` on archive, so the janitor's
+        in-memory live_cwds set would not otherwise include them — leaving their
+        stay-in-place worktrees unprotected from the 24 h sweep.
+        """
+        from sqlalchemy import select as sa_select
+        async with db_session() as db:
+            rows = (await db.execute(
+                sa_select(DbSession.cwd)
+                .where(DbSession.status == "archived")
+                .where(DbSession.cwd.is_not(None))
+            )).scalars().all()
+        return frozenset(os.path.abspath(r) for r in rows if r)
+
     async def _worktree_janitor_loop(self, interval: float) -> None:
         """Fires immediately on startup then every ``interval`` seconds (default 24 h).
 
@@ -9063,13 +9086,20 @@ class SessionOrchestrator:
         while True:
             if not self._shutting_down:
                 try:
-                    await asyncio.to_thread(self._janitor_sweep_once)
+                    archived_cwds = await self._fetch_archived_cwds()
+                    await asyncio.to_thread(self._janitor_sweep_once, archived_cwds)
                 except Exception:
                     log.exception("worktree-janitor: sweep failed")
             await asyncio.sleep(interval)
 
-    def _janitor_sweep_once(self) -> None:
-        """Synchronous sweep — called inside ``asyncio.to_thread``."""
+    def _janitor_sweep_once(self, archived_cwds: "frozenset[str] | None" = None) -> None:
+        """Synchronous sweep — called inside ``asyncio.to_thread``.
+
+        ``archived_cwds`` carries the absolute cwd paths of all archived sessions
+        fetched from the DB before entering the thread, so their stay-in-place
+        worktrees are protected even though archived sessions are absent from
+        ``_records`` (#921).
+        """
         from ccswitch.worktrees_janitor import sweep_orphaned_worktrees
 
         live_cwds: frozenset[str] = frozenset(
@@ -9080,7 +9110,7 @@ class SessionOrchestrator:
             os.path.abspath(wt.path)
             for wt in self._worktrees.values()
             if wt.path
-        )
+        ) | (archived_cwds or frozenset())
         counts = sweep_orphaned_worktrees(self._repo_root, live_cwds)
         log.info(
             "worktree-janitor: scanned=%d removed=%d kept_live=%d "

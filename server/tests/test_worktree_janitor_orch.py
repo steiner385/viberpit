@@ -1,10 +1,13 @@
 """Orchestrator integration tests for the worktree janitor loop."""
 import asyncio
+import os
 import pytest
+from datetime import datetime
 from unittest.mock import patch
 
 
-from server.db import dispose_db, init_db
+from server.db import db_session, dispose_db, init_db
+from server.db.models import Session as DbSession
 from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
@@ -110,3 +113,35 @@ class TestJanitorLoop:
         await dispose_db()
 
         assert called[0] is False
+
+    @pytest.mark.asyncio
+    async def test_janitor_sweep_includes_archived_session_cwds(self, tmp_path):
+        """Archived sessions are absent from _records but their cwds must still appear
+        in live_cwds so the 24 h janitor does not sweep their stay-in-place worktrees
+        (#921)."""
+        orch = await _build_orch(tmp_path)
+
+        # Seed an archived row in the DB (simulating a session already archived).
+        archived_cwd = str(tmp_path / "archived-wt")
+        async with db_session() as db:
+            db.add(DbSession(
+                id="archived-1", name="Archived", account_name="acc1",
+                claude_session_id=None, status="archived",
+                cwd=archived_cwd, archived_at=datetime(2026, 1, 1),
+            ))
+
+        captured = {}
+
+        def mock_sweep(repo_root, live_cwds, **kw):
+            captured["live_cwds"] = live_cwds
+            return {"scanned": 0, "removed": 0, "kept_live": 0,
+                    "kept_young": 0, "kept_dirty": 0, "kept_unpushed": 0,
+                    "kept_error": 0, "evicted_dirty": 0}
+
+        with patch("ccswitch.worktrees_janitor.sweep_orphaned_worktrees", mock_sweep):
+            archived_cwds = await orch._fetch_archived_cwds()
+            orch._janitor_sweep_once(archived_cwds)
+
+        await dispose_db()
+
+        assert os.path.abspath(archived_cwd) in captured["live_cwds"]
