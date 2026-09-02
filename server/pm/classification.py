@@ -117,7 +117,7 @@ def build_map_synthesis_prompt(
     return (
         "You are performing **product archaeology** for an existing project. "
         "Your goal is to reconstruct the durable *feature map* — what this "
-        "product actually is — by working through the four steps below IN ORDER. "
+        "product actually is — by working through the five steps below IN ORDER. "
         "Do NOT skip steps or reorder them.\n\n"
         f"CONTEXT: project `{slug}`{repo_clause}. The mirror holds ~{open_count} "
         f"open and ~{closed_count} closed items.\n\n"

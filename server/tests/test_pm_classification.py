@@ -45,6 +45,8 @@ def test_map_prompt_is_propose_only_one_pr():
     assert "auto-merge" in p.lower()          # explicitly forbidden
     assert "Evidence" in p                    # outcome-driven template marker
     assert "120" in p and "800" in p          # backlog scale is context
+    assert "Co-Authored-By: Claude Opus 4.8" in p  # commit trailer
+    assert "origin/" in p                    # origin/ branch instruction
 
 
 def test_map_prompt_reads_authoritative_docs_first():
@@ -98,6 +100,11 @@ def test_map_prompt_coverage_audit_in_pr_body():
     assert "coverage" in p.lower()
     # Must instruct session to put coverage table in PR body
     assert "PR body" in p or "pull request body" in p.lower()
+    # Step D must come before Step E (coverage audit comes after writing docs)
+    # Use the section header format to find the actual step sections
+    step_d_pos = p.index("## Step D")
+    step_e_pos = p.index("## Step E")
+    assert step_d_pos < step_e_pos, "Step D (write docs) must precede Step E (coverage audit)"
 
 
 def test_map_prompt_churn_is_secondary_not_discovery():
