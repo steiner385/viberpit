@@ -385,6 +385,28 @@ async def propose_map(
     return {"sessionId": _rec_id(rec)}
 
 
+@router.post("/projects/{slug}/advance-map", status_code=status.HTTP_200_OK)
+async def advance_map(
+    slug: str,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Advance the project from ``map_proposed`` → ``map_merged`` after the
+    human merges the archaeology map PR. 409 if the project is not in the
+    ``map_proposed`` state."""
+    p = await _load_project(db, slug)
+    if p.onboarding_state != "map_proposed":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "not_map_proposed",
+            "message": f"project is in state '{p.onboarding_state}', not 'map_proposed'"})
+    orch = request.app.state.sessions
+    await orch.pm_advance_map_merged(slug)
+    await record_audit(db=db, type="pm.onboard.advance_map", identity=identity,
+                       detail={"slug": slug})
+    return {"onboardingState": "map_merged"}
+
+
 @router.post("/projects/{slug}/classify", status_code=status.HTTP_202_ACCEPTED)
 async def classify(
     slug: str,

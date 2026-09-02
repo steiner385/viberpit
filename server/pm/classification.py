@@ -12,7 +12,7 @@ import json
 import re
 from dataclasses import dataclass
 
-from server.db.models import FEATURE_LIFECYCLE_STATES, WORK_ITEM_KINDS
+from server.db.models import FEATURE_LIFECYCLE_STATES, FEATURE_LINK_KINDS, WORK_ITEM_KINDS
 
 # One place defining the feature-doc directory + path (single source of truth,
 # mirrors sdlc.prompts.SDLC_DOCS_DIR / artifact_path). The map-synthesis session
@@ -123,9 +123,17 @@ def build_map_synthesis_prompt(
         f"open and ~{closed_count} closed items; churn concentration in the PR "
         "history is strong evidence of real capability areas.\n\n"
         f"Write one markdown doc per capability under `{FEATURE_DOCS_DIR}/"
-        "<feature-slug>.md`. Each doc uses YAML frontmatter (slug, title, "
-        f"state ∈ {list(FEATURE_LIFECYCLE_STATES)}, optional links) followed by "
-        "the outcome-driven template:\n"
+        "<feature-slug>.md`. Each doc uses YAML frontmatter with these fields:\n"
+        "  slug: <kebab-case-identifier>\n"
+        "  title: <human name>\n"
+        f"  state: <one of {list(FEATURE_LIFECYCLE_STATES)}>\n"
+        "  links:  # optional — feature-to-feature relationships ONLY\n"
+        f"    - kind: <one of {list(FEATURE_LINK_KINDS)}>\n"
+        "      project: <repo-slug>\n"
+        "      feature: <feature-slug>\n\n"
+        "IMPORTANT: do NOT put code paths or PR numbers in `links`. "
+        "All code/PR evidence belongs in the **Evidence** body section.\n\n"
+        "The body uses the outcome-driven template:\n"
         "- **Problem** — the concrete pain this capability addresses.\n"
         "- **Target users** — who relies on it.\n"
         "- **Desired outcome** — what good looks like.\n"

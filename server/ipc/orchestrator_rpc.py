@@ -291,6 +291,8 @@ def register_orchestrator_rpc(app, orch) -> None:
         "list_adoptable_candidates", "migrate_archive_home", "cloned_repos",
         # pm onboarding seams (phase 2, 2026-08-31) — pm_classify_run returns int
         "pm_classify_run",
+        # advance map_proposed → map_merged (returns None, JSON-safe)
+        "pm_advance_map_merged",
     ]
 
     def _make_simple(method_name):
