@@ -10,6 +10,7 @@ import { PendingApprovalSection } from './PendingApprovalSection'
 import { AdoptPanel } from './AdoptPanel'
 import { AllLimitedBanner } from './AllLimitedBanner'
 import { UpdatePendingBanner } from './UpdatePendingBanner'
+import { BannerStack } from '@/ui/BannerStack'
 import { useInputHold } from '@/hooks/useInputHold'
 import { SettingsView } from './settings/SettingsView'
 import { DaemonHealthIndicator } from './DaemonHealthIndicator'
@@ -745,19 +746,17 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
 
   return (
     <div className="flex flex-1 min-h-0 flex-col gap-4 pt-4">
-      {/* All-limited banner — global, above tabs */}
-      {allLimitedReset !== undefined && (
-        <AllLimitedBanner
-          earliestReset={allLimitedReset}
-          onDismiss={() => setAllLimitedReset(undefined)}
-        />
-      )}
-
-      {inputHold.holding && (
-        <UpdatePendingBanner queuedCount={inputHold.count} mode={inputHold.mode} />
-      )}
-
-      <DeployPanel />
+      {/* Banner region — global, above tabs. One BannerStack per shell (see DesktopShell's
+          equivalent), priority-ordered, so a banner added here can't be forgotten there. */}
+      <BannerStack items={[
+        { id: 'all-limited', priority: 70, node: allLimitedReset !== undefined
+          ? <AllLimitedBanner earliestReset={allLimitedReset} onDismiss={() => setAllLimitedReset(undefined)} />
+          : null },
+        { id: 'input-hold', priority: 60, node: inputHold.holding
+          ? <UpdatePendingBanner queuedCount={inputHold.count} mode={inputHold.mode} />
+          : null },
+        { id: 'deploy', priority: 50, node: <DeployPanel /> },
+      ]} />
 
       {/* Tab strip — horizontally scrollable so all sections stay reachable on a
           narrow viewport. */}

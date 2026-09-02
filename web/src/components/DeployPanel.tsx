@@ -1,5 +1,7 @@
 // web/src/components/DeployPanel.tsx
 import { useState } from 'react'
+import { Banner } from '@/ui/Banner'
+import { Button } from '@/ui/Button'
 import { usePendingDeploy, useDeployStatus } from '@/api/hooks'
 import { useDeployController } from '@/lib/deployController'
 
@@ -43,48 +45,50 @@ export function DeployPanel() {
     : ci !== 'green' ? `CI ${ci}` : ''
 
   return (
-    <div className="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/30 p-3 text-sm">
-      {behind && (
-        <div className="flex items-center justify-between gap-3">
-          <button className="font-medium" onClick={() => setOpen(o => !o)}>
-            {count} change{count === 1 ? '' : 's'} pending deploy {open ? '▾' : '▸'}
-          </button>
-          <div className="flex items-center gap-2">
-            {reason && <span className="text-xs text-amber-700 dark:text-amber-400">{reason}</span>}
-            <button
-              className="rounded bg-amber-600 px-3 py-1 text-white transition
-                         hover:bg-amber-700 active:scale-95
-                         focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400
-                         disabled:opacity-50 disabled:hover:bg-amber-600 disabled:active:scale-100"
-              disabled={!canDeploy || starting}
-              onClick={() => start(partial ? deployableSha : undefined)}
-            >{starting ? 'Starting…' : 'Deploy now'}</button>
-          </div>
-        </div>
-      )}
+    <Banner
+      tone="warning"
+      title={behind ? (
+        <button type="button" onClick={() => setOpen((o) => !o)}>
+          {count} change{count === 1 ? '' : 's'} pending deploy {open ? '▾' : '▸'}
+        </button>
+      ) : undefined}
+      actions={behind ? (
+        <>
+          {reason && <span className="text-xs text-warning">{reason}</span>}
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={!canDeploy || starting}
+            onClick={() => start(partial ? deployableSha : undefined)}
+          >
+            {starting ? 'Starting…' : 'Deploy now'}
+          </Button>
+        </>
+      ) : undefined}
+    >
       {open && pending && (
         <ul className="mt-2 space-y-1">
-          {pending.commits.map(c => (
+          {pending.commits.map((c) => (
             <li key={c.sha} className="flex gap-2 font-mono text-xs">
-              <span className="text-amber-700 dark:text-amber-400">{c.sha.slice(0, 7)}</span>
+              <span className="text-warning">{c.sha.slice(0, 7)}</span>
               <span className="flex-1 truncate">{c.subject}</span>
-              <span className="text-gray-500">{c.author}</span>
+              <span className="text-ink-muted">{c.author}</span>
             </li>
           ))}
         </ul>
       )}
       {showFailure && (
-        <div className="mt-2 space-y-1 border-t border-amber-200 pt-2">
-          {showError && <p className="text-xs text-red-600">{deploy?.error}</p>}
+        <div className="mt-2 space-y-1 border-t border-edge pt-2">
+          {showError && <p className="text-xs text-danger">{deploy?.error}</p>}
           {failed.length > 0 && (
-            <p className="mt-1 text-xs text-red-600">
+            <p className="mt-1 text-xs text-danger">
               {failed.length} session{failed.length === 1 ? '' : 's'} failed to resume — autopilot is
               recovering {failed.length === 1 ? 'it' : 'them'}…{' '}
               <span className="font-mono">{failed.join(', ')}</span>
             </p>
           )}
           {gaveUp.length > 0 && (
-            <p className="mt-1 text-xs text-red-600">
+            <p className="mt-1 text-xs text-danger">
               {gaveUp.length} session{gaveUp.length === 1 ? '' : 's'} couldn’t be recovered — open to
               retry or archive:{' '}
               <span className="font-mono">{gaveUp.join(', ')}</span>
@@ -92,6 +96,6 @@ export function DeployPanel() {
           )}
         </div>
       )}
-    </div>
+    </Banner>
   )
 }
