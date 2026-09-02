@@ -19,6 +19,11 @@ export default defineConfig({
     globals: true,
     exclude: ['node_modules', 'dist', 'e2e/**'],
     // Only index.css is processed (everything else stays an empty string, as before).
-    css: { include: [/src\/index\.css$/] },
+    // Anchored on `$` alone this never matches: Vitest's CSSEnablerPlugin tests
+    // the *raw* module id, which for `import css from '@/index.css?inline'`
+    // still carries the `?inline` query (e.g. `.../src/index.css?inline`), so
+    // `$` never lines up and the css-disable plugin silently short-circuits the
+    // import to `export default ""` regardless of index.css's content.
+    css: { include: [/src\/index\.css(\?|$)/] },
   },
 })
