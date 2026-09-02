@@ -12,7 +12,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/react';
 import { useRef, type RefObject } from 'react';
-import { useFocusTrap } from '../hooks/useFocusTrap';
+import { useFocusTrap } from '@/ui/useFocusTrap';
 
 // ---- minimal test harness ---------------------------------------------------
 

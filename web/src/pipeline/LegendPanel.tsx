@@ -5,7 +5,7 @@ import {
   METRIC_DEFINITIONS, SUBLINE_TERMS, LANE_STATE_DEFINITIONS, LANE_DEFINITIONS,
   SETTINGS_DEFINITIONS, DESIGNER_DEFINITIONS, METRIC_SECTION_GROUPS,
 } from './definitions';
-import { useFocusTrap } from './hooks/useFocusTrap';
+import { useFocusTrap } from '@/ui/useFocusTrap';
 
 interface LegendPanelProps {
   open: boolean;
