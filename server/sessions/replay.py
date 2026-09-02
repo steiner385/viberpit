@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from server.config import env_float
 from . import events as ev
+from .transcript_entries import is_harness_user_entry
 
 log = logging.getLogger("server.sessions.replay")
 
@@ -219,30 +220,18 @@ def _build_events(path: str) -> tuple[list, object | None]:
                         mt = src.get("media_type", "image/png")
                         imgs.append({"url": f"data:{mt};base64,{data}",
                                      "mime": mt, "name": ""})
-            # `isMeta` user entries are harness-injected context, not a real user
-            # turn: the Skill-tool body ("Base directory for this skill: …"), the
-            # "Continue from where you left off." resume prompt, Stop-hook notices,
-            # etc. Rendering them makes the skill's own prompt look like the user's
-            # (or our) message — suppress the bubble. (Any tool_results on the entry
-            # still emit below; in practice these meta entries carry only text.)
-            #
-            # A background task's termination is delivered the same way — a plain-string
-            # `type:"user"` entry holding a `<task-notification>` block — but is NOT
-            # flagged `isMeta`. It is still harness plumbing (the live translator drops
-            # it, forwarding only tool_result blocks from user messages), so suppress its
-            # raw-XML bubble too. The tool_result-carried form still renders in its card.
-            is_task_notification = text.lstrip().startswith("<task-notification>")
-            # The CLI's auto-compaction summary ("This session is being continued from a
-            # previous conversation…") is a `type:"user"` entry flagged `isCompactSummary`
-            # / `isVisibleInTranscriptOnly` — NOT `isMeta`. It is a CLI-local artifact, not
-            # a real user prompt (the live stream never shows it). Emitting it as a
-            # UserMessage both renders a bogus giant bubble AND — because it is a
-            # UserMessage — becomes the `drop_incomplete_turn` boundary, so a live reattach
-            # would drop EVERY completed post-compaction turn (they live only on disk, not
-            # in the in-progress live buffer) and they vanish from the reloaded transcript.
-            is_compact_summary = bool(o.get("isCompactSummary"))
-            if (text or imgs) and not o.get("isMeta") and not is_task_notification \
-                    and not is_compact_summary:
+            # Only a HUMAN prompt renders as a user bubble. The CLI journals several
+            # `type:"user"` entries nobody typed — `isMeta` context (a Skill body, the
+            # resume prompt), the auto-compaction summary (`isCompactSummary`, which as a
+            # UserMessage would also become the `drop_incomplete_turn` boundary and wipe
+            # every completed post-compaction turn on a live reattach), a background
+            # task's `<task-notification>`, and the `/model` local-command records a
+            # `set_model` writes (`<command-name>…`, `<local-command-stdout>Set model
+            # to fable…`) — none of which the live stream shows. The predicate is shared
+            # with the fallback titler (transcript_entries) so the two readers of the
+            # transcript can't disagree about what a prompt is. (Any tool_results on the
+            # entry still emit below.)
+            if (text or imgs) and not is_harness_user_entry(o, text):
                 out.append(ev.UserMessage(turn_id=uuid, text=text, src_uuid=uuid,
                                           images=imgs or None, ts=ts))
             out.extend(_tool_result_events(content, uuid, ts, None))
