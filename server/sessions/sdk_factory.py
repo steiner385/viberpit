@@ -4,6 +4,7 @@ import json
 import os
 
 from .account_auth import oauth_env_for
+from .claude_bin import cli_path_kwargs as _cli_path_kwargs
 from .completion import COMPLETION_INSTRUCTION, NO_PR_INSTRUCTION
 from .permissions import to_sdk_permission_mode
 
@@ -43,6 +44,7 @@ def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None
             "preset": "claude_code",
             "append": _build_append_string(),
         },
+        **_cli_path_kwargs(),
     )
     return ClaudeSDKClient(options=opts)
 
@@ -74,6 +76,7 @@ def real_suggestion_factory(cwd, config_dir, account=None):
         cwd=cwd, env=env, can_use_tool=_deny_all_tools,
         permission_mode="default", include_partial_messages=True,
         max_turns=1, system_prompt=SUGGEST_SYSTEM_PROMPT, model=model, resume=None,
+        **_cli_path_kwargs(),
     )
     return ClaudeSDKClient(options=opts)
 
@@ -99,5 +102,6 @@ def real_summary_factory(cwd, config_dir, account=None):
         cwd=cwd, env=env, can_use_tool=_deny_all_tools,
         permission_mode="default", include_partial_messages=True,
         max_turns=1, system_prompt=SUMMARY_SYSTEM_PROMPT, model=model, resume=None,
+        **_cli_path_kwargs(),
     )
     return ClaudeSDKClient(options=opts)

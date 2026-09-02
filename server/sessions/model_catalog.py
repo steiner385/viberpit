@@ -31,9 +31,9 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
-import shutil
+
+from .claude_bin import resolve_claude_bin
 
 log = logging.getLogger("ccswitch.model_catalog")
 
@@ -135,11 +135,10 @@ def _live_aliases() -> list[str]:
     """Return the alias list from the running binary, falling back to ``ALIASES``."""
     global _cache
     if _cache is None:
-        # CCSWITCH_CLAUDE_BIN may be a full command ("path/to/claude --flag");
-        # take only the first token as the executable.
-        cmd = os.environ.get("CCSWITCH_CLAUDE_BIN", "claude").split()[0]
-        path = shutil.which(cmd) or cmd
-        discovered = _discover_from_binary(path)
+        # Probe the SAME binary the SDK session factory runs (resolve_claude_bin,
+        # the single source of truth) so the picker and the runtime can't diverge.
+        path = resolve_claude_bin()
+        discovered = _discover_from_binary(path) if path else None
         if discovered is not None:
             log.debug("model_catalog: probed %d aliases from %s", len(discovered), path)
             _cache = discovered

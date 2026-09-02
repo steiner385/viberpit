@@ -13,6 +13,7 @@ import logging
 import re
 
 from .account_auth import helper_env
+from .claude_bin import cli_path_kwargs
 from .helper_call import run_helper_call
 
 log = logging.getLogger(__name__)
@@ -112,6 +113,7 @@ async def generate_title(
             env=helper_env(config_dir),
             allowed_tools=[],
             setting_sources=[],
+            **cli_path_kwargs(),
         )
     except Exception as exc:  # unimportable/unbuildable SDK options — degrade
         log.warning("generate_title options failed for config_dir=%s: %s", config_dir, exc)

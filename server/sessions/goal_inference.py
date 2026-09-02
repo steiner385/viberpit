@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 
 from .account_auth import helper_env
+from .claude_bin import cli_path_kwargs
 from .helper_call import run_helper_call
 
 log = logging.getLogger(__name__)
@@ -71,7 +72,7 @@ async def infer_goal(
             options = ClaudeAgentOptions(
                 model=model, system_prompt=_SYSTEM_PROMPT, cwd=cwd,
                 env=helper_env(config_dir),
-                allowed_tools=[], setting_sources=[])
+                allowed_tools=[], setting_sources=[], **cli_path_kwargs())
     except Exception as exc:
         log.warning("infer_goal failed: %s", exc)
         return None

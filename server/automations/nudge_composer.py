@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 
 from server.sessions.account_auth import helper_env
+from server.sessions.claude_bin import cli_path_kwargs
 
 log = logging.getLogger(__name__)
 
@@ -77,7 +78,7 @@ async def compose_nudge(ctx, *, intent_hint, verdict_reason, verdict_remedy,
             options = ClaudeAgentOptions(
                 model="sonnet", system_prompt=_GUIDANCE, cwd=cwd,
                 env=helper_env(config_dir),
-                allowed_tools=[], setting_sources=[])
+                allowed_tools=[], setting_sources=[], **cli_path_kwargs())
         parts: list[str] = []
         prompt = _build_prompt(ctx, intent_hint=intent_hint, verdict_reason=verdict_reason,
                                verdict_remedy=verdict_remedy, recent_nudges=recent_nudges,
