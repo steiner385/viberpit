@@ -4,7 +4,7 @@
  */
 import { useState } from 'react'
 import { cn } from '@/lib/utils'
-import { Button } from '@/components/ui/button'
+import { Button } from '@/ui/Button'
 import { useSettings, useUpdateSettings, type AppSettings } from '@/api/hooks'
 import { PERMISSION_MODES } from '@/session/permissionModes'
 import { NotificationsToggle } from './NotificationsToggle'

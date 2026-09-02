@@ -10,7 +10,7 @@ import { useState, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { RefreshCw, Pencil, Check, X, Trash2, Plus, KeyRound, Power } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { Button } from '@/components/ui/button'
+import { Button } from '@/ui/Button'
 import { UsageBadge, StatusPill } from './UsageBadge'
 import {
   useAccounts,

@@ -39,13 +39,15 @@ _CANCEL_RE = re.compile(
 
 
 def strip_markers(text: str) -> str:
-    """Remove the completion / no-PR marker from *text* so prose heuristics judge
+    """Remove the completion / no-PR / model-request marker from *text* so prose heuristics judge
     the real tail. The marker trails the message, so an unanswered closing question
     sits BEFORE it — without stripping, a trailing-"?" check can never fire on a
     completion turn."""
     if not text:
         return text
-    return text.replace(COMPLETION_MARKER, "").replace(NO_PR_MARKER, "").rstrip()
+    from .model_request import MODEL_REQUEST_RE
+    text = text.replace(COMPLETION_MARKER, "").replace(NO_PR_MARKER, "")
+    return MODEL_REQUEST_RE.sub("", text).rstrip()
 
 
 def resolution_from_text(text: str) -> str | None:

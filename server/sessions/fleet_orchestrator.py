@@ -19,6 +19,50 @@ _FANOUT_BY_IDS: frozenset[str] = frozenset({
     "latest_suggestions_many", "latest_summary_many", "prs_for_many",
 })
 
+
+def _merge_sum_floats(parts: list[dict]) -> dict[str, float]:
+    """Sum weighted per-account loads across hosts (live_session_load)."""
+    out: dict[str, float] = {}
+    for d in parts:
+        for k, v in (d or {}).items():
+            out[k] = out.get(k, 0.0) + v
+    return out
+
+
+def _merge_sum_counts(parts: list[dict]) -> dict[str, dict[str, int]]:
+    """Sum per-account {active, idle} count buckets across hosts (live_session_counts)."""
+    out: dict[str, dict[str, int]] = {}
+    for d in parts:
+        for acct, buckets in (d or {}).items():
+            cur = out.setdefault(acct, {"active": 0, "idle": 0})
+            for key, n in (buckets or {}).items():
+                cur[key] = cur.get(key, 0) + n
+    return out
+
+
+def _merge_union(parts: list[dict]) -> dict:
+    """Union per-host maps keyed by session_id (session_queue_positions).
+
+    Session ids are unique per host, so a plain overlay never clobbers a real
+    entry; if the queue is one shared DB, every host returns the same map and the
+    union is idempotent.
+    """
+    out: dict = {}
+    for d in parts:
+        out.update(d or {})
+    return out
+
+
+# Aggregate reads whose truthful value spans the WHOLE fleet: the primary's answer
+# only covers sessions IT holds a driver for (live_session_load/counts) or its own
+# queue (session_queue_positions), so a primary-only read silently undercounts every
+# worker session (#920). Ask EVERY host and reduce with the per-method merge below.
+_MERGE_ALL_HOSTS: dict[str, object] = {
+    "live_session_load": _merge_sum_floats,
+    "live_session_counts": _merge_sum_counts,
+    "session_queue_positions": _merge_union,
+}
+
 # Method names whose FIRST positional arg is session_id and that touch live daemon
 # state (must run on the owning host). Pinned by a completeness test (Task 4a).
 _PER_SESSION: frozenset[str] = frozenset({
@@ -158,6 +202,36 @@ class FleetOrchestrator:
             setattr(_call, _DEADLINE_ATTR, True)
         return _call
 
+    def _make_merge_all(self, name: str, merge):
+        """Fan a no-id aggregate read to EVERY host and reduce (#920).
+
+        Host isolation mirrors ``list_sessions``: an unreachable non-primary host
+        is skipped with a warning (a dead worker must not blank an aggregate), and
+        the primary's own failure still raises so the API surfaces "daemon
+        unavailable" rather than a silently partial total.
+        """
+        async def _call(*a, **k):
+            async def _one(host: str):
+                try:
+                    return host, await getattr(self._router.get(host), name)(*a, **k), None
+                except Exception as e:  # noqa: BLE001 — per-host isolation is the point
+                    return host, None, e
+
+            parts: list[dict] = []
+            for host, res, exc in await asyncio.gather(
+                    *(_one(n) for n in self._router.names())):
+                if exc is not None:
+                    if host == self._primary:
+                        raise exc
+                    log.warning("fleet.%s host=%s unreachable; skipping its share "
+                                "this pass", name, host, exc_info=exc)
+                    continue
+                parts.append(res or {})
+            return merge(parts)
+        if getattr(getattr(RemoteOrchestrator, name, None), _DEADLINE_ATTR, False):
+            setattr(_call, _DEADLINE_ATTR, True)
+        return _call
+
     async def list_sessions(self):
         """Fleet-wide session list: ask EVERY host and merge.
 
@@ -221,6 +295,8 @@ class FleetOrchestrator:
     def __getattr__(self, name: str):
         if name in _FANOUT_BY_IDS:
             return self._make_fanout(name)
+        if name in _MERGE_ALL_HOSTS:
+            return self._make_merge_all(name, _MERGE_ALL_HOSTS[name])
         if name in _PER_SESSION:
             return self._make_per_session(name)
         return getattr(self._primary_orch(), name)

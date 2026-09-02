@@ -359,8 +359,11 @@ def register_orchestrator_rpc(app, orch) -> None:
         }
 
     async def resolve_model_approval(params: dict) -> dict:
+        # .get, not [] — an older client that omits "model" (pre-counter-offer)
+        # must still work; None means "approve exactly what was requested".
         rec = await orch.resolve_model_approval(
-            params["session_id"], params["decision"], identity=params["identity"])
+            params["session_id"], params["decision"], model=params.get("model"),
+            identity=params["identity"])
         return {"session": rec.to_dict()}
 
     register_rpc(app, "unarchive", unarchive)

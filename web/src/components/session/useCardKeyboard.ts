@@ -3,6 +3,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 export interface CardKeyboardOptions {
   count: number
   multiSelect?: boolean
+  /**
+   * Focus the first option on mount so keyboard users land on it. Set false for
+   * off-screen cards in a carousel: focusing an option in a non-visible card
+   * scrolls the shared track to it, jumping the view to the wrong question.
+   */
+  autoFocus?: boolean
   onActivate?: (index: number) => void
   onToggle?: (index: number) => void
   onSubmit?: () => void
@@ -31,14 +37,17 @@ export interface CardKeyboardApi {
  *   whenever a permission or question block is pending — not by stopPropagation here.
  */
 export function useCardKeyboard({
-  count, multiSelect = false, onActivate, onToggle, onSubmit,
+  count, multiSelect = false, autoFocus = true, onActivate, onToggle, onSubmit,
 }: CardKeyboardOptions): CardKeyboardApi {
   const [activeIndex, setActiveIndex] = useState(0)
   const itemRefs = useRef<(HTMLElement | null)[]>([])
 
+  // Depend on `autoFocus` (not `[]`): a carousel card that later becomes the
+  // active one flips false→true and focuses its first option then, so keyboard
+  // focus follows the visible card instead of firing once for every card at mount.
   useEffect(() => {
-    itemRefs.current[0]?.focus()
-  }, [])
+    if (autoFocus) itemRefs.current[0]?.focus()
+  }, [autoFocus])
 
   const onKeyDown = useCallback((e: React.KeyboardEvent) => {
     const tag = (e.target as HTMLElement).tagName

@@ -312,6 +312,69 @@ def _mk_async(value):
     return _f
 
 
+@pytest.mark.asyncio
+async def test_classify_chain_ingest_waits_for_settled_then_ingests_once(db_env, monkeypatch):
+    """The chain polls the session until it settles, then harvests + ingests ONCE.
+
+    This is the wiring the dogfood found missing: classify sessions completed but
+    ``_pm_classify_ingest`` had no caller, so proposals never landed (0 of 13)."""
+    orch = _bare_orch()
+    statuses = ["running", "running", "complete"]
+    def fake_get_session(sid):
+        return SimpleNamespace(id=sid, status=statuses.pop(0) if statuses else "complete")
+    orch.get_session = fake_get_session
+    orch._pm_classify_output_text = _mk_async('```json\n[{"number": 1}]\n```')
+    ingested = []
+    async def fake_ingest(session_id, project_slug, output_text):
+        ingested.append((session_id, project_slug, output_text)); return 1
+    orch._pm_classify_ingest = fake_ingest
+    import asyncio as _a
+    monkeypatch.setattr(_a, "sleep", _mk_async(None))
+    written = await orch._pm_classify_chain_ingest("sess-1", "ccswitch",
+                                                  attempts=10, delay=0.0)
+    assert written == 1
+    assert ingested == [("sess-1", "ccswitch", '```json\n[{"number": 1}]\n```')]
+
+
+@pytest.mark.asyncio
+async def test_classify_chain_ingest_stops_when_session_vanishes(db_env, monkeypatch):
+    orch = _bare_orch()
+    orch.get_session = lambda sid: None
+    ingested = []
+    async def fake_ingest(*a):
+        ingested.append(a); return 1
+    orch._pm_classify_ingest = fake_ingest
+    import asyncio as _a
+    monkeypatch.setattr(_a, "sleep", _mk_async(None))
+    written = await orch._pm_classify_chain_ingest("gone", "ccswitch",
+                                                  attempts=3, delay=0.0)
+    assert written == 0
+    assert ingested == []
+
+
+@pytest.mark.asyncio
+async def test_classify_run_schedules_ingest_chain(db_env):
+    """pm_classify_run must schedule the ingest chain for the spawned session —
+    without it the session's JSON output is never harvested into proposals."""
+    await _seed(db_env)
+    orch = _bare_orch()
+    orch._backlog_healthy_account = _mk_async("acct1")
+    orch._effective_repo_root = _mk_async("/tmp/root")
+    orch._pm_classify_ctx = _SpawnRec()
+    chained = []
+    async def fake_chain(session_id, slug, **kw):
+        chained.append((session_id, slug)); return 0
+    orch._pm_classify_chain_ingest = fake_chain
+    scheduled = []
+    orch._spawn = lambda coro, name=None: scheduled.append(coro)
+    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+        n = await orch.pm_classify_run("ccswitch")
+    assert n > 0
+    assert len(scheduled) == 1
+    await scheduled[0]
+    assert chained == [("sess-1", "ccswitch")]
+
+
 def _git(*args, cwd):
     import subprocess
     subprocess.run(["git", "-C", cwd, *args], check=True,

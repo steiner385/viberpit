@@ -23,6 +23,9 @@
   </head>
   <body>
     <div id="root"></div>
+    <!-- Portal root for Dialog/Sheet/Menu (web/src/ui). Sits outside #root so
+         `inert` on #root while an overlay is open never inerts the overlay. -->
+    <div id="overlays"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

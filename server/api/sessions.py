@@ -105,6 +105,9 @@ class SendPromptRequest(BaseModel):
 
 class ModelApprovalBody(BaseModel):
     decision: Literal["approve", "deny"]
+    # Optional counter-offer: approve the hold at THIS model instead of the parked
+    # one. Absent = approve exactly what was requested (pre-override behaviour).
+    model: str | None = None
 
 
 class FixPrRequest(BaseModel):
@@ -183,6 +186,11 @@ def _record_to_dict(
         # model pending admin sign-off (status="pending_approval" or a mid-session
         # hold). Null once approved/denied or for non-gated sessions.
         "pendingModel": getattr(record, "pending_model", None),
+        # Why the session asked for pendingModel (its own stated reason), or null.
+        "pendingModelReason": getattr(record, "pending_model_reason", None),
+        # Identity that requested pendingModel; "session:self" when the session asked
+        # for itself (vs. a human requesting on its behalf).
+        "pendingModelRequestedBy": getattr(record, "pending_model_requested_by", None),
         # True while a "switch after this turn" model change waits for the in-flight
         # turn to end (transient, never persisted) — the picker shows it as pending.
         "modelPending": getattr(record, "model_pending", False),
@@ -1357,15 +1365,32 @@ async def model_approval(
 ) -> dict:
     """Approve or deny a parked model-approval hold for a session.
 
-    Returns the updated session record (200), 404 if unknown, 409 if no
-    pending approval to resolve. Bad ``decision`` values yield 422 from the
+    ``body.model``, when given, is a human COUNTER-OFFER: approve the hold at this
+    model instead of the parked one. Absent means approve exactly what was requested.
+    Ignored when ``decision`` is ``"deny"`` — a denial rejects the hold outright, so
+    there is no model to approve at.
+
+    Returns the updated session record (200), 404 if unknown, 409 if no pending
+    approval to resolve or the counter-offer is blocked by policy, 422 if the
+    counter-offered model is unknown. Bad ``decision`` values yield 422 from the
     ``Literal`` constraint.
     """
+    if body.model is not None:
+        from server.sessions.model_catalog import is_known_alias, model_tier
+        if not (is_known_alias(body.model) or model_tier(body.model)):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={"code": "unknown_model", "message": f"unknown model: {body.model}"})
     orch = _get_orchestrator(request)
     try:
-        rec = await orch.resolve_model_approval(session_id, body.decision, identity=identity)
+        rec = await orch.resolve_model_approval(
+            session_id, body.decision, model=body.model, identity=identity)
     except KeyError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    except ModelBlockedError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "model_blocked", "message": f"{body.model} is blocked by policy"})
     except ValueError:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="no pending model approval")
     return _record_to_dict(rec)

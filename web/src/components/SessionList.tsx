@@ -5,7 +5,7 @@ import { useAutomations, useFixPr, useGenerateSuggestions, useSetAutopilotPaused
 import { SessionCard } from './SessionCard'
 import { GroupedList } from './GroupedList'
 import { EmptyState } from './EmptyState'
-import { Button } from '@/components/ui/button'
+import { Button } from '@/ui/Button'
 import type { Session, Account } from '@/api/types'
 import type { SessionGroup } from '@/session/ordering'
 

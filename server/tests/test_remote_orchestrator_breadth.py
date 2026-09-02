@@ -1,4 +1,5 @@
 import ast
+import inspect
 from pathlib import Path
 from unittest import mock
 
@@ -63,6 +64,61 @@ def test_remote_orchestrator_covers_every_request_layer_call():
         f"but daemon mode would AttributeError -> 500. Add a proxy method in server/sessions/remote.py "
         f"(or add to _LOCAL_ONLY if truly local-only)."
     )
+
+
+def _orch_call_kwargs() -> dict[str, set[str]]:
+    """AST-scan the request-handling layers for `orch.<method>(..., kw=...)` call
+    sites, returning {method_name: {kwarg names passed at any call site}}."""
+    root = Path(server.__file__).parent
+    calls: dict[str, set[str]] = {}
+    for sub in _REQUEST_LAYER_DIRS:
+        for path in (root / sub).rglob("*.py"):
+            tree = ast.parse(path.read_text(), filename=str(path))
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id in _ORCH_VARS
+                ):
+                    kwnames = {kw.arg for kw in node.keywords if kw.arg is not None}
+                    calls.setdefault(node.func.attr, set()).update(kwnames)
+    return calls
+
+
+def test_remote_orchestrator_signatures_accept_the_kwargs_call_sites_pass():
+    """Whole-branch review finding 1(d): the name-only guard above (and
+    FleetOrchestrator.__getattr__'s blind **k forwarding) hide a SIGNATURE mismatch
+    from mypy — RemoteOrchestrator.resolve_model_approval used to lack a `model`
+    parameter entirely, so `orch.resolve_model_approval(..., model=body.model, ...)`
+    in server/api/sessions.py raised TypeError -> 500 in daemon mode, invisible to
+    every test that only calls the method with kwargs it happens to accept.
+
+    For every orch.<method>(..., kw=...) call site found in the request layers,
+    assert the RemoteOrchestrator method's signature actually accepts that keyword
+    (or the method accepts **kwargs)."""
+    calls = _orch_call_kwargs()
+    assert calls, "AST scan found no keyword orch.* calls — selector likely broke"
+    problems = []
+    for name, kwargs in calls.items():
+        method = getattr(RemoteOrchestrator, name, None)
+        if not callable(method):
+            continue  # already reported by test_remote_orchestrator_covers_every_request_layer_call
+        sig = inspect.signature(method)
+        params = sig.parameters
+        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+            continue
+        missing = kwargs - set(params)
+        if missing:
+            problems.append(f"{name} missing {sorted(missing)}")
+    assert not problems, (
+        "RemoteOrchestrator method signature(s) don't accept keyword(s) the request "
+        "layer passes at a real call site: " + "; ".join(problems) + " — this is a "
+        "silent TypeError -> 500 in daemon mode (see #295 and the whole-branch "
+        "finding-1 fix for resolve_model_approval)."
+    )
+    # At minimum, the specific seam this finding was about:
+    assert "model" in inspect.signature(RemoteOrchestrator.resolve_model_approval).parameters
 
 
 def test_request_layer_never_touches_private_orchestrator_attrs():
@@ -251,3 +307,84 @@ async def test_cloned_repos_round_trips():
         finally:
             await ro.aclose()
     orch.cloned_repos.assert_awaited_once_with(names=["o/present", "o/absent"])
+
+
+# --- whole-branch review finding 1: resolve_model_approval's `model` counter-offer
+#     must survive the RPC boundary in BOTH directions (remote.py's call, and the
+#     daemon-side handler reading it back out of params) --------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_model_approval_forwards_model_to_wire_call():
+    """MANDATORY PROOF (finding 1): with the RPC client stubbed directly (no real
+    daemon), the `model` counter-offer must reach the wire call — or the human's
+    chosen model silently vanishes and the session gets what IT asked for instead
+    of the model the human actually named."""
+    client = mock.AsyncMock()
+    client.call.return_value = {"session": _rec("s1").to_dict()}
+    ro = RemoteOrchestrator(client)
+    rec = await ro.resolve_model_approval("s1", "approve", model="opus", identity="me")
+    assert rec.id == "s1"
+    client.call.assert_awaited_once_with(
+        "resolve_model_approval", session_id="s1", decision="approve",
+        model="opus", identity="me")
+
+
+@pytest.mark.asyncio
+async def test_resolve_model_approval_round_trips_through_daemon():
+    """End-to-end over a real (in-memory) daemon: the RPC handler must also read
+    params["model"] back out, or the counter-offer vanishes at the daemon boundary
+    even though the wire call above carries it correctly."""
+    app, orch = _build()
+    orch.resolve_model_approval = mock.AsyncMock(return_value=_rec("s1"))
+
+    async with serve_daemon_uds(app) as sock:
+        ro = RemoteOrchestrator(DaemonClient(sock))
+        try:
+            rec = await ro.resolve_model_approval("s1", "approve", model="opus", identity="me")
+            assert rec.id == "s1"
+        finally:
+            await ro.aclose()
+    orch.resolve_model_approval.assert_awaited_once_with(
+        "s1", "approve", model="opus", identity="me")
+
+
+@pytest.mark.asyncio
+async def test_resolve_model_approval_omitted_model_still_works():
+    """An older client (or a plain Approve/Deny with no counter-offer) omits `model`
+    entirely — params.get("model") must default to None rather than KeyError, so the
+    pre-existing fable approval gate (which predates the counter-offer feature)
+    keeps working."""
+    app, orch = _build()
+    orch.resolve_model_approval = mock.AsyncMock(return_value=_rec("s1"))
+
+    async with serve_daemon_uds(app) as sock:
+        ro = RemoteOrchestrator(DaemonClient(sock))
+        try:
+            rec = await ro.resolve_model_approval("s1", "deny", identity="me")
+            assert rec.id == "s1"
+        finally:
+            await ro.aclose()
+    orch.resolve_model_approval.assert_awaited_once_with(
+        "s1", "deny", model=None, identity="me")
+
+
+@pytest.mark.asyncio
+async def test_resolve_model_approval_reconstitutes_model_blocked_error():
+    """A blocked counter-offer must surface as ModelBlockedError (-> 409) in remote
+    mode too, not degrade to a bare DaemonError (-> 500)."""
+    from server.sessions.orchestrator import ModelBlockedError
+
+    app, orch = _build()
+
+    async def _raise(*a, **k):
+        raise ModelBlockedError("opus")
+    orch.resolve_model_approval = _raise
+
+    async with serve_daemon_uds(app) as sock:
+        ro = RemoteOrchestrator(DaemonClient(sock))
+        try:
+            with pytest.raises(ModelBlockedError):
+                await ro.resolve_model_approval("s1", "approve", model="opus", identity="me")
+        finally:
+            await ro.aclose()

@@ -5,6 +5,7 @@ from claude_agent_sdk import (SystemMessage, StreamEvent, AssistantMessage, User
                               RateLimitEvent)
 from . import events as ev
 from .completion import COMPLETION_MARKER, resolution_from_text
+from .model_request import parse_model_request
 
 
 def _usage_dict(u):
@@ -49,6 +50,14 @@ class Translator:
         self._seen_tools = set()
         self._turn_text = ""
         self._turn_model = {}
+
+    def _turn_end_model_request(self) -> dict | None:
+        """Self-directed model request carried by this turn's text, or None.
+
+        Isolated from the ResultMessage branch so it is unit-testable without
+        constructing a whole SDK message.
+        """
+        return parse_model_request(self._turn_text)
 
     def feed(self, msg) -> list:
         if isinstance(msg, SystemMessage):
@@ -147,6 +156,7 @@ class Translator:
             self.session_id = msg.session_id or self.session_id
             tid = self._turn_ids.get(None) or "turn"
             pr_resolution = resolution_from_text(self._turn_text)
+            model_request = self._turn_end_model_request()
             if msg.subtype != "success" or bool(getattr(msg, "is_error", False)):
                 outcome = "failed"
             elif COMPLETION_MARKER in self._turn_text or pr_resolution is not None:
@@ -166,7 +176,8 @@ class Translator:
                 out.append(err)
             out.append(ev.TurnEnd(tid, _usage_dict(msg.usage),
                                   getattr(msg, "total_cost_usd", None), getattr(msg, "uuid", None),
-                                  outcome=outcome, pr_resolution=pr_resolution))
+                                  outcome=outcome, pr_resolution=pr_resolution,
+                                  model_request=model_request))
             return out
 
         return []

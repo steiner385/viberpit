@@ -102,8 +102,8 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
           role="tablist"
           aria-label="Session view"
           className={cn(
-            'flex-shrink-0 flex border-b border-border',
-            'bg-background text-sm',
+            'flex-shrink-0 flex border-b border-edge',
+            'bg-canvas text-sm',
           )}
         >
           <button
@@ -115,8 +115,8 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
             className={cn(
               'px-4 py-2 font-medium',
               activeTab === 'conversation'
-                ? 'border-b-2 border-primary text-foreground'
-                : 'text-muted-foreground hover:text-foreground',
+                ? 'border-b-2 border-accent text-ink'
+                : 'text-ink-muted hover:text-ink',
             )}
           >
             Conversation
@@ -130,8 +130,8 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
             className={cn(
               'px-4 py-2 font-medium',
               activeTab === 'browser'
-                ? 'border-b-2 border-primary text-foreground'
-                : 'text-muted-foreground hover:text-foreground',
+                ? 'border-b-2 border-accent text-ink'
+                : 'text-ink-muted hover:text-ink',
             )}
           >
             Browser
@@ -230,8 +230,10 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
             {sessionRecord?.pendingModel && (
               <PendingModelApprovalPanel
                 model={sessionRecord.pendingModel}
-                onDecision={(decision) =>
-                  modelApproval({ id: rt.sessionId, decision })
+                reason={sessionRecord.pendingModelReason}
+                requestedBy={sessionRecord.pendingModelRequestedBy}
+                onDecision={(decision, model) =>
+                  modelApproval({ id: rt.sessionId, decision, model })
                 }
               />
             )}

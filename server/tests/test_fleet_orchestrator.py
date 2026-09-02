@@ -275,11 +275,12 @@ async def test_remote_orchestrator_resume_interrupted_rpc():
 def test_every_remote_method_is_classified():
     import inspect
     from server.sessions.remote import RemoteOrchestrator
-    from server.sessions.fleet_orchestrator import _PER_SESSION, _FANOUT_BY_IDS
+    from server.sessions.fleet_orchestrator import (
+        _PER_SESSION, _FANOUT_BY_IDS, _MERGE_ALL_HOSTS)
 
     EXPLICIT = {"create_session", "subscribe", "aclose", "__init__"}
-    # Global/primary-routed: everything not per-session, fan-out, or explicit. Listed
-    # so adding a NEW method forces a conscious classification here.
+    # Global/primary-routed: everything not per-session, fan-out, merge-all, or
+    # explicit. Listed so adding a NEW method forces a conscious classification here.
     GLOBAL = {
         "list_sessions", "list_archived", "pr_for", "prs_for", "all_prs",
         "all_repos_stage_models", "all_merge_trains", "latest_queue_entries",
@@ -289,16 +290,135 @@ def test_every_remote_method_is_classified():
         "pr_doctor_job", "resume_recovery_status", "consolidation_candidates",
         "automation_consolidate", "backlog_candidates", "backlog_runner_dispatch",
         "list_adoptable_candidates", "migrate_archive_home", "cloned_repos", "usage",
-        "active_session_count", "live_session_load", "live_session_counts",
+        "active_session_count",
         "copilot_add_start", "copilot_add_status", "copilot_add_cancel", "copilot_usage",
         "subscribe_events", "unsubscribe_events", "x11_metrics", "adopt_session",
         "daemon_sha", "daemon_pool_stats", "daemon_epoch", "startup_report",
-        "session_queue_positions", "maybe_start_queued",
+        "maybe_start_queued",
         "pm_onboarding_counts", "pm_onboard_spawn_map", "pm_classify_run",
         "pm_advance_map_merged",
     }
     public = {n for n, _ in inspect.getmembers(RemoteOrchestrator, callable)
               if not n.startswith("_")}
-    classified = _PER_SESSION | _FANOUT_BY_IDS | EXPLICIT | GLOBAL
+    classified = (_PER_SESSION | _FANOUT_BY_IDS | set(_MERGE_ALL_HOSTS)
+                  | EXPLICIT | GLOBAL)
     unclassified = public - classified
     assert not unclassified, f"unclassified RemoteOrchestrator methods: {sorted(unclassified)}"
+
+
+# --- merge-all reads fan out to every host and reduce (#920) -------------------
+#
+# live_session_load / live_session_counts read the primary's _drivers ∩ _records;
+# session_queue_positions read its queue. A primary-only answer silently drops
+# every worker session, so the account selector stacked a worker-heavy account and
+# the Accounts UI / queuePosition undercounted. These must ask every host and reduce.
+
+class _AggOrch(_FakeOrch):
+    def __init__(self, name, *, load=None, counts=None, positions=None, fail=False):
+        super().__init__(name)
+        self._load, self._counts, self._positions, self._fail = load, counts, positions, fail
+    async def live_session_load(self):
+        if self._fail: raise RuntimeError(f"{self.name} down")
+        return self._load or {}
+    async def live_session_counts(self):
+        if self._fail: raise RuntimeError(f"{self.name} down")
+        return self._counts or {}
+    async def session_queue_positions(self):
+        if self._fail: raise RuntimeError(f"{self.name} down")
+        return self._positions or {}
+
+
+@pytest.mark.asyncio
+async def test_live_session_load_sums_across_hosts():
+    dobby = _AggOrch("dobby", load={"acctA": 1.0, "acctB": 0.3})
+    rocky = _AggOrch("rocky", load={"acctA": 2.0, "acctC": 1.0})
+    fo = FleetOrchestrator(_FakeRouter({"dobby": dobby, "rocky": rocky}), primary="dobby")
+    assert await fo.live_session_load() == {"acctA": 3.0, "acctB": 0.3, "acctC": 1.0}
+
+
+@pytest.mark.asyncio
+async def test_live_session_counts_sums_active_and_idle_buckets():
+    dobby = _AggOrch("dobby", counts={"acctA": {"active": 1, "idle": 2}})
+    rocky = _AggOrch("rocky", counts={"acctA": {"active": 3, "idle": 0},
+                                      "acctB": {"active": 0, "idle": 1}})
+    fo = FleetOrchestrator(_FakeRouter({"dobby": dobby, "rocky": rocky}), primary="dobby")
+    assert await fo.live_session_counts() == {
+        "acctA": {"active": 4, "idle": 2}, "acctB": {"active": 0, "idle": 1}}
+
+
+@pytest.mark.asyncio
+async def test_session_queue_positions_unions_across_hosts():
+    dobby = _AggOrch("dobby", positions={"s1": 1, "s2": 2})
+    rocky = _AggOrch("rocky", positions={"w1": 1})
+    fo = FleetOrchestrator(_FakeRouter({"dobby": dobby, "rocky": rocky}), primary="dobby")
+    assert await fo.session_queue_positions() == {"s1": 1, "s2": 2, "w1": 1}
+
+
+@pytest.mark.asyncio
+async def test_merge_all_skips_unreachable_worker_but_raises_on_primary():
+    dobby = _AggOrch("dobby", load={"acctA": 1.0})
+    rocky = _AggOrch("rocky", fail=True)  # a dead worker must not blank the total
+    fo = FleetOrchestrator(_FakeRouter({"dobby": dobby, "rocky": rocky}), primary="dobby")
+    assert await fo.live_session_load() == {"acctA": 1.0}
+    # The primary's own failure still surfaces as "daemon unavailable".
+    fo2 = FleetOrchestrator(_FakeRouter({"dobby": _AggOrch("dobby", fail=True)}), primary="dobby")
+    with pytest.raises(RuntimeError, match="dobby down"):
+        await fo2.live_session_load()
+
+
+def test_merge_all_reads_mirror_remote_deadline_marker():
+    # Marker propagation mirrors _make_per_session / _make_fanout: the fleet wrapper
+    # carries @rpc_deadline iff the underlying RemoteOrchestrator method does.
+    from server.sessions.remote import RemoteOrchestrator
+    from server.sessions.fleet_orchestrator import _MERGE_ALL_HOSTS
+    fo = FleetOrchestrator(_FakeRouter({"rocky": _AggOrch("rocky")}), primary="rocky")
+    for name in _MERGE_ALL_HOSTS:
+        expected = getattr(getattr(RemoteOrchestrator, name), _DEADLINE_ATTR, False)
+        assert getattr(getattr(fo, name), _DEADLINE_ATTR, False) == expected
+
+
+def test_api_orchestrator_reads_are_all_classified():
+    """Every orchestrator method reached from server/api must be per-session,
+    fanned out (by ids or merge-all), or explicitly whitelisted as primary-local.
+
+    #920: a NEW fleet-wide read added to the API without a fan-out silently serves
+    a primary-only (worker-blind) answer. This scans the API surface and forces a
+    conscious classification for anything it touches.
+    """
+    import pathlib, re
+    from server.sessions.fleet_orchestrator import (
+        _PER_SESSION, _FANOUT_BY_IDS, _MERGE_ALL_HOSTS)
+
+    # Whitelisted primary-local: reads whose truth already lives in the shared DB or
+    # is intentionally primary-scoped (adoptable candidates, deploy status, …). A
+    # fan-out here would be wrong or redundant, so they are named explicitly.
+    PRIMARY_LOCAL = {
+        "list_archived", "all_prs", "all_merge_trains", "all_repos_stage_models",
+        "latest_queue_entries", "check_insights", "ready_merge", "deploy_config_list",
+        "deploy_config_put", "deploy_status", "git_credential_alerts",
+        "dismiss_git_credential_alert", "automation_statuses", "automation_actionable",
+        "automation_trigger", "automation_consolidate", "consolidation_candidates",
+        "backlog_candidates", "backlog_runner_dispatch", "list_adoptable_candidates",
+        "adopt_session", "migrate_archive_home", "cloned_repos", "usage",
+        "resume_recovery_status", "pr_doctor_job", "maybe_start_queued",
+        "copilot_add_start", "copilot_add_status", "copilot_add_cancel",
+        "pm_onboarding_counts", "pm_onboard_spawn_map", "pm_classify_run",
+        "pm_advance_map_merged",
+    }
+    EXPLICIT = {"create_session", "list_sessions"}  # fleet-wide methods on FleetOrchestrator
+    classified = (_PER_SESSION | _FANOUT_BY_IDS | set(_MERGE_ALL_HOSTS)
+                  | PRIMARY_LOCAL | EXPLICIT)
+
+    api_dir = pathlib.Path(__file__).resolve().parents[1] / "api"
+    # Catch both `orch.<name>(` attribute calls and `getattr(orch, "<name>")` /
+    # `state.sessions.<name>` lookups used in the API layer.
+    pat = re.compile(r"(?:\borch|state\.sessions)\.([a-zA-Z_]\w*)"
+                     r"|getattr\(\s*orch\s*,\s*[\"']([a-zA-Z_]\w*)[\"']")
+    used: set[str] = set()
+    for f in api_dir.glob("*.py"):
+        for m in pat.finditer(f.read_text()):
+            used.add(m.group(1) or m.group(2))
+    unclassified = used - classified
+    assert not unclassified, (
+        f"server/api reaches unclassified orchestrator methods: {sorted(unclassified)} — "
+        f"classify each as per-session, merge-all, or PRIMARY_LOCAL")

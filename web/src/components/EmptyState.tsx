@@ -1,5 +1,5 @@
 import { Plus } from 'lucide-react'
-import { Button } from '@/components/ui/button'
+import { Button } from '@/ui/Button'
 
 interface EmptyStateProps {
   onNew: () => void

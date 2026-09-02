@@ -319,9 +319,9 @@ export function useQueueCancel() {
 
 export function useModelApproval() {
   const qc = useQueryClient()
-  return useMutation<Session, ApiRequestError, { id: string; decision: 'approve' | 'deny' }>({
-    mutationFn: ({ id, decision }) =>
-      api.post<Session>(`/sessions/${id}/model-approval`, { decision }),
+  return useMutation<Session, ApiRequestError, { id: string; decision: 'approve' | 'deny'; model?: string }>({
+    mutationFn: ({ id, decision, model }) =>
+      api.post<Session>(`/sessions/${id}/model-approval`, { decision, model }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
   })
 }

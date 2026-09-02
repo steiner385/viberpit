@@ -51,7 +51,7 @@ export function SettingsView() {
 
   return (
     <div className="max-w-3xl mx-auto w-full">
-      <div role="tablist" aria-label="Settings sections" className="flex gap-1 mb-4 border-b border-[var(--border)] overflow-x-auto">
+      <div role="tablist" aria-label="Settings sections" className="flex gap-1 mb-4 border-b border-edge overflow-x-auto">
         {SECTIONS.map((s) => (
           <button
             key={s.id}

@@ -64,6 +64,18 @@ describe('QuestionGroup', () => {
     expect(track.className).not.toMatch(/snap-mandatory/)
   })
 
+  it('does not let a later card steal focus on mount (which jumps the indicator to the last question)', () => {
+    render(<QuestionGroup questions={[mk('a'), mk('b'), mk('c')]} onAnswer={vi.fn()} />)
+    // Each card auto-focuses its first option on mount. In a shared horizontal
+    // scroll track, a *later* card winning that focus scrolls the track to the
+    // end, firing onScroll → setActive(lastIndex) — the "Question 3 of 3 on
+    // open" bug. Only the active (first) card may hold focus after mount.
+    const firstOptions = screen.getAllByRole('radio', { name: 'Yes' })
+    expect(document.activeElement).toBe(firstOptions[0])
+    // …and the indicator stays on the first question.
+    expect(screen.getByText(/question 1 of 3/i)).toBeInTheDocument()
+  })
+
   it('disables submit until all questions are answered', async () => {
     const user = userEvent.setup()
     render(<QuestionGroup questions={[mk('a'), mk('b')]} onAnswer={vi.fn()} />)

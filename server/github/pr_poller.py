@@ -30,16 +30,44 @@ log = logging.getLogger(__name__)
 
 
 def _default_query(pairs: list[tuple[str, str]]) -> dict:
-    query = build_pr_query(pairs)
-    if not query:
+    if not pairs:
         return {"data": {}}
-    # Pass the query on stdin (-F query=@-) rather than argv: a batched multi-pair
-    # query can exceed the 128 KiB per-argument kernel limit and raise
-    # "Argument list too long", killing the poll cycle.
-    proc = gitrepos._run_gh(["api", "graphql", "-F", "query=@-"], input=query)
-    if proc.returncode != 0:
-        raise gitrepos.GhError(proc.stderr.strip() or "gh api graphql failed")
-    response = json.loads(proc.stdout or "{}")
+    # Group pairs by owner: one GitHub App installation token cannot span owners —
+    # sending one owner's token against another owner's repo 404s, masquerading as
+    # "repo missing". Build one per-stdin query per owner (preserving the
+    # stdin/-F query=@- path to dodge the 128 KiB argv limit), call with that
+    # owner's token, then remap local r{0,1,...} aliases back to the global
+    # r{i} positions so parse_pr_response sees the expected layout.
+    # Two consequences: the first:N cap is per-owner; cross-owner ordering follows
+    # config order rather than GitHub's cross-repo ranking.
+    owner_to_items: dict[str, list[tuple[int, tuple[str, str]]]] = {}
+    for i, pair in enumerate(pairs):
+        owner = pair[0].partition("/")[0]
+        owner_to_items.setdefault(owner, []).append((i, pair))
+    merged_data: dict = {}
+    for owner, items in owner_to_items.items():
+        global_idxs = [idx for idx, _ in items]
+        owner_pairs = [pair for _, pair in items]
+        query = build_pr_query(owner_pairs)
+        if not query:
+            continue
+        proc = gitrepos._run_gh(
+            ["api", "graphql", "-F", "query=@-"],
+            token=gitrepos.app_token_for_owner(owner),
+            input=query,
+        )
+        if proc.returncode != 0:
+            log.warning(
+                "pr_poller.query_failed owner=%s err=%s",
+                owner, proc.stderr.strip() or "gh api graphql failed",
+            )
+            continue
+        owner_data = (json.loads(proc.stdout or "{}").get("data")) or {}
+        for local_i, global_i in enumerate(global_idxs):
+            node = owner_data.get(f"r{local_i}")
+            if node is not None:
+                merged_data[f"r{global_i}"] = node
+    response = {"data": merged_data}
     _supplement_env_deployments(response, pairs)
     return response
 
@@ -62,26 +90,37 @@ def _supplement_env_deployments(response: dict, pairs: list[tuple[str, str]]) ->
             targets.append((repo, missing))
     if not targets:
         return
-    query = build_env_deployments_query(targets)
-    try:
-        proc = gitrepos._run_gh(["api", "graphql", "-F", "query=@-"], input=query)
-        if proc.returncode != 0:
-            raise gitrepos.GhError(
-                proc.stderr.strip() or "gh api graphql (env deployments) failed"
+    # Same per-owner split as _default_query: group targets by owner and call once
+    # per owner with that owner's token so no token crosses an owner boundary.
+    owner_targets: dict[str, list[tuple[str, list[str]]]] = {}
+    for repo, missing in targets:
+        owner = repo.partition("/")[0]
+        owner_targets.setdefault(owner, []).append((repo, missing))
+    for owner, o_targets in owner_targets.items():
+        query = build_env_deployments_query(o_targets)
+        try:
+            proc = gitrepos._run_gh(
+                ["api", "graphql", "-F", "query=@-"],
+                token=gitrepos.app_token_for_owner(owner),
+                input=query,
             )
-        env_data = (json.loads(proc.stdout or "{}").get("data")) or {}
-    except Exception:
-        log.warning(
-            "pr_poller.env_supplement_failed targets=%s",
-            [t[0] for t in targets], exc_info=True,
-        )
-        return
-    for i, (repo, _missing) in enumerate(targets):
-        env_node = env_data.get(f"r{i}") or {}
-        for j in alias_idxs_by_repo[repo]:
-            node = data.get(f"r{j}")
-            if node:
-                merge_env_deployments(node, env_node)
+            if proc.returncode != 0:
+                raise gitrepos.GhError(
+                    proc.stderr.strip() or "gh api graphql (env deployments) failed"
+                )
+            env_data = (json.loads(proc.stdout or "{}").get("data")) or {}
+        except Exception:
+            log.warning(
+                "pr_poller.env_supplement_failed targets=%s",
+                [t[0] for t in o_targets], exc_info=True,
+            )
+            continue
+        for i, (repo, _missing) in enumerate(o_targets):
+            env_node = env_data.get(f"r{i}") or {}
+            for j in alias_idxs_by_repo[repo]:
+                node = data.get(f"r{j}")
+                if node:
+                    merge_env_deployments(node, env_node)
 
 
 class PrStatusPoller:

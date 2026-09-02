@@ -72,14 +72,14 @@ export function ManualDispatchDialog({
       aria-modal="true"
       aria-label="Custom dispatch"
     >
-      <div className="bg-[--bg] rounded-lg border border-[--border] p-4 w-full max-w-lg max-h-[80vh] flex flex-col gap-3 shadow-xl">
+      <div className="bg-canvas rounded-lg border border-edge p-4 w-full max-w-lg max-h-[80vh] flex flex-col gap-3 shadow-xl">
         <div className="flex items-center justify-between">
           <h3 className="font-semibold">Custom dispatch</h3>
           <button
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="text-muted-foreground hover:text-foreground"
+            className="text-ink-muted hover:text-ink"
           >
             ✕
           </button>
@@ -89,16 +89,16 @@ export function ManualDispatchDialog({
           placeholder="Filter issues…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="rounded border border-[--border] bg-[--bg] px-3 py-1 text-sm w-full"
+          className="rounded border border-edge bg-canvas px-3 py-1 text-sm w-full"
         />
         <div className="overflow-y-auto flex-1 min-h-0">
-          {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+          {isLoading && <p className="text-sm text-ink-muted">Loading…</p>}
           {!isLoading && candidates.length === 0 && (
-            <p className="text-sm text-muted-foreground">No eligible issues.</p>
+            <p className="text-sm text-ink-muted">No eligible issues.</p>
           )}
           {Array.from(byRepo.entries()).map(([repo, items]) => (
             <div key={repo} className="mb-3">
-              <p className="text-xs font-medium text-muted-foreground mb-1">{repo}</p>
+              <p className="text-xs font-medium text-ink-muted mb-1">{repo}</p>
               <ul className="space-y-1">
                 {items.map((c) => (
                   <li key={c.ref} className="flex items-center gap-2 text-sm">
@@ -109,7 +109,7 @@ export function ManualDispatchDialog({
                       onChange={() => toggle(c.ref)}
                     />
                     <span className="truncate">
-                      <span className="text-muted-foreground">#{c.number}</span>{' '}
+                      <span className="text-ink-muted">#{c.number}</span>{' '}
                       {c.title}
                     </span>
                   </li>
