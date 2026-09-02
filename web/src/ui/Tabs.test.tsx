@@ -24,4 +24,57 @@ describe('Tabs', () => {
     expect(onChange).toHaveBeenCalledWith('c')
     expect(await axe(container)).toHaveNoViolations()
   })
+
+  it('Home key moves focus to the first tab', () => {
+    const onChange = vi.fn()
+    render(<Tabs items={items} value="a" onChange={onChange} label="Sections" />)
+    const tabs = screen.getAllByRole('tab')
+    tabs[2].focus()
+    fireEvent.keyDown(tabs[2], { key: 'Home' })
+    expect(document.activeElement).toBe(tabs[0])
+  })
+
+  it('ArrowLeft wraps from the first tab to the last', () => {
+    const onChange = vi.fn()
+    render(<Tabs items={items} value="a" onChange={onChange} label="Sections" />)
+    const tabs = screen.getAllByRole('tab')
+    tabs[0].focus()
+    fireEvent.keyDown(tabs[0], { key: 'ArrowLeft' })
+    expect(document.activeElement).toBe(tabs[2])
+  })
+
+  it('ArrowRight wraps from the last tab to the first', () => {
+    const onChange = vi.fn()
+    render(<Tabs items={items} value="a" onChange={onChange} label="Sections" />)
+    const tabs = screen.getAllByRole('tab')
+    tabs[2].focus()
+    fireEvent.keyDown(tabs[2], { key: 'ArrowRight' })
+    expect(document.activeElement).toBe(tabs[0])
+  })
+
+  it('composes the combined count + attention accessible name', () => {
+    const onChange = vi.fn()
+    const combined = [{ id: 'a', label: 'Alpha', count: 3, attention: true }]
+    render(<Tabs items={combined} value="a" onChange={onChange} label="Sections" />)
+    expect(screen.getByRole('tab')).toHaveAccessibleName('Alpha (3, needs attention)')
+  })
+
+  it('vertical orientation follows Up/Down arrows and stacks tabs', async () => {
+    const onChange = vi.fn()
+    const { container } = render(
+      <Tabs items={items} value="a" onChange={onChange} label="Sections" orientation="vertical" />,
+    )
+    const tablist = screen.getByRole('tablist', { name: 'Sections' })
+    expect(tablist).toHaveAttribute('aria-orientation', 'vertical')
+    const tabs = screen.getAllByRole('tab')
+    tabs[0].focus()
+    fireEvent.keyDown(tabs[0], { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(tabs[1])
+    fireEvent.keyDown(tabs[1], { key: 'ArrowUp' })
+    expect(document.activeElement).toBe(tabs[0])
+    // Horizontal-only keys must not move focus in vertical orientation.
+    fireEvent.keyDown(tabs[0], { key: 'ArrowRight' })
+    expect(document.activeElement).toBe(tabs[0])
+    expect(await axe(container)).toHaveNoViolations()
+  })
 })

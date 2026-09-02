@@ -66,7 +66,7 @@ export function Tabs({ items, value, onChange, label, panelId, orientation = 'ho
             )}
           >
             {t.label}
-            {t.attention && <span aria-hidden="true" className="inline-block w-2 h-2 rounded-pill bg-warning" />}
+            {t.attention && <Badge tone="warning" dot />}
             {t.count != null && t.count > 0 && <Badge tone="neutral" count={t.count} />}
           </button>
         )
