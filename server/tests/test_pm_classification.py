@@ -187,3 +187,22 @@ def test_initial_map_prompt_pins_deterministic_branch():
         open_count=5, closed_count=9, scope="initial")
     assert map_branch_name("acme") == "pm/feature-map-acme"
     assert "pm/feature-map-acme" in p          # the branch is named in the prompt
+
+
+def test_coverage_critic_prompt_is_same_branch_and_census_driven():
+    from server.pm.classification import build_coverage_critic_prompt
+    p = build_coverage_critic_prompt(
+        slug="acme", repo="o/acme", default_branch="main",
+        branch="pm/feature-map-acme", open_count=5, closed_count=9)
+    pl = p.lower()
+    # Independent second-agent census (the anti-omission check)
+    assert "census" in pl
+    assert any(k in pl for k in ["cli", "console", "entry point"])
+    assert any(k in pl for k in ["router", "endpoint"])
+    assert "model" in pl
+    # Works on the SAME open PR branch — must NOT open a new PR or arm auto-merge
+    assert "pm/feature-map-acme" in p
+    assert "do not open a new pull request" in pl or "do not open a new pr" in pl
+    assert "auto-merge" in pl  # instructed never to arm it
+    # Anti-bias: low-churn foundations are the target, not skip-worthy
+    assert any(k in pl for k in ["churn", "activity, not importance", "fundamental"])

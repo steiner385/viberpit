@@ -24,6 +24,25 @@ CLASSIFY_CHUNK_SIZE = 50
 
 _VALID_CONFIDENCE = ("low", "medium", "high")
 
+# Shared capability-surface list (single source of truth — constitution VI).
+# Referenced verbatim by BOTH build_map_synthesis_prompt (Step B) and
+# build_coverage_critic_prompt so the two agents always audit the same surfaces.
+_CENSUS_SURFACES = (
+    "- **CLI / entry points:** `[project.scripts]` / `console_scripts` in "
+    "pyproject.toml or setup.py, argparse/click/typer subcommands, bin/ "
+    "scripts, Makefile targets, package.json `bin` entries\n"
+    "- **Web / API routers:** FastAPI/Flask/Express routers, page/tab "
+    "registries, GraphQL schema types and resolvers\n"
+    "- **Background automation:** scheduler jobs, worker registries, "
+    "daemon loops, cron tasks, background task queues\n"
+    "- **Data model:** every DB model/table, migration history, "
+    "significant data relationships\n"
+    "- **Config / settings surface:** env vars, settings files, "
+    "config schemas, feature flags\n"
+    "- **Top-level library API:** exported public functions/classes "
+    "that callers depend on"
+)
+
 
 def feature_doc_path(slug: str) -> str:
     return f"{FEATURE_DOCS_DIR}/{slug}.md"
@@ -147,19 +166,7 @@ def build_map_synthesis_prompt(
         "## Step B — Structural capability census (churn-INDEPENDENT)\n\n"
         "Enumerate EVERY surface in the codebase, independent of PR churn. "
         "Each distinct surface cluster is a candidate capability. Cover ALL of:\n\n"
-        "- **CLI / entry points:** `[project.scripts]` / `console_scripts` in "
-        "pyproject.toml or setup.py, argparse/click/typer subcommands, bin/ "
-        "scripts, Makefile targets, package.json `bin` entries\n"
-        "- **Web / API routers:** FastAPI/Flask/Express routers, page/tab "
-        "registries, GraphQL schema types and resolvers\n"
-        "- **Background automation:** scheduler jobs, worker registries, "
-        "daemon loops, cron tasks, background task queues\n"
-        "- **Data model:** every DB model/table, migration history, "
-        "significant data relationships\n"
-        "- **Config / settings surface:** env vars, settings files, "
-        "config schemas, feature flags\n"
-        "- **Top-level library API:** exported public functions/classes "
-        "that callers depend on\n\n"
+        f"{_CENSUS_SURFACES}\n\n"
         "Record your census findings before moving to Step C. A surface "
         "present here MUST either appear in a feature doc or be explicitly "
         "noted as 'deliberately not a feature' in the coverage table (Step E).\n\n"
@@ -235,6 +242,40 @@ def build_map_synthesis_prompt(
         "review comments are where the map is argued with.\n"
         "5. End every commit message with:\n"
         "   `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`\n"
+    )
+
+
+def build_coverage_critic_prompt(
+    *,
+    slug: str,
+    repo: str,
+    default_branch: str,
+    branch: str,
+    open_count: int,
+    closed_count: int,
+) -> str:
+    """Independent completeness-critic (design §3.2). A FRESH agent, no synthesis
+    context, whose only job is to catch capabilities the map omitted — especially
+    low-churn foundations (CLI, auth, storage, isolation, config)."""
+    return (
+        f"You are an independent COVERAGE CRITIC for the product `{slug}` "
+        f"(repo `{repo}`). A prior session drafted a feature map on the open PR "
+        f"branch `{branch}`. Your ONLY job: find capabilities that have NO feature "
+        f"doc, and add them — do not rewrite existing docs.\n\n"
+        f"1. `git fetch` and check out `{branch}` (the open map PR). Read the "
+        f"drafted docs under `docs/product/features/`.\n"
+        f"2. Structural capability CENSUS (churn-independent):\n{_CENSUS_SURFACES}\n"
+        f"3. For every census surface with no covering feature doc, ADD a feature "
+        f"doc (same outcome template + frontmatter; `links` = feature-to-feature "
+        f"only) OR, if it is genuinely not a feature, record it in the PR's "
+        f"coverage-audit table as an explicit not-a-feature line.\n"
+        f"4. ANTI-BIAS: PR churn signals activity, not importance. Stable, "
+        f"rarely-churned code (CLI, auth, storage, isolation primitives, config) "
+        f"is frequently the MOST fundamental — a near-zero-churn surface with no "
+        f"doc is a reason to ADD one, not to skip it.\n"
+        f"5. Commit your additions and PUSH to `{branch}` to update the SAME PR. "
+        f"DO NOT open a new pull request. DO NOT arm auto-merge. Leave the PR for "
+        f"human review.\n"
     )
 
 
