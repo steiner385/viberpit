@@ -1,7 +1,7 @@
 import pytest
 
 from server.sessions.orchestrator import SessionOrchestrator, RESUME_NUDGE
-from server.sessions.types import SessionRecord, RESUME_ELIGIBLE_STATUSES
+from server.sessions.types import SessionRecord, RESUME_ELIGIBLE_STATUSES, SYSTEM_IDENTITY
 
 
 def _rec(**kw) -> SessionRecord:
@@ -48,7 +48,7 @@ def _orch_with(rec):
     orch._drivers = {}
     calls = {"ensure": [], "prompt": []}
 
-    async def ensure_driver(sid, identity="system"):
+    async def ensure_driver(sid, identity=SYSTEM_IDENTITY):
         calls["ensure"].append((sid, identity))
         d = _FakeDriver()
         orch._drivers[sid] = d
@@ -68,7 +68,7 @@ async def test_resume_interrupted_eligible_nudges():
     rec = _rec(status="idle", interrupted_by_restart=True, interrupted_from_status="in_progress")
     orch, calls = _orch_with(rec)
     assert await orch.resume_interrupted("s1") == "resumed"
-    assert calls["ensure"] == [("s1", "system")]
+    assert calls["ensure"] == [("s1", SYSTEM_IDENTITY)]
     assert calls["prompt"] == [("s1", RESUME_NUDGE)]
 
 
@@ -102,6 +102,18 @@ async def test_resume_interrupted_unknown_session():
 async def test_resume_interrupted_no_driver_propagates():
     rec = _rec(status="idle", interrupted_by_restart=True, interrupted_from_status="working")
     orch, _ = _orch_with(rec)
-    async def ensure_none(sid, identity="system"): return None
+    async def ensure_none(sid, identity=SYSTEM_IDENTITY): return None
     orch.ensure_driver = ensure_none             # type: ignore[assignment]
     assert await orch.resume_interrupted("s1") == "no_driver"
+
+
+@pytest.mark.asyncio
+async def test_resume_interrupted_draining_propagates():
+    rec = _rec(status="idle", interrupted_by_restart=True, interrupted_from_status="in_progress")
+    orch, _ = _orch_with(rec)
+
+    async def send_draining(sid, text, attachment_ids=None):
+        return "draining"
+
+    orch.send_prompt = send_draining             # type: ignore[assignment]
+    assert await orch.resume_interrupted("s1") == "draining"
