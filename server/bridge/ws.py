@@ -394,6 +394,20 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             error frame plus a replayComplete (so the client's loading state always
             clears) and returns None.
             """
+            def _error_complete() -> dict:
+                """Build an error-path replayComplete frame.
+
+                Stamps epoch (#497) via the same cached sync read that _run_replay_and_complete
+                uses — daemon_epoch() is an in-memory field with no DB dependency, so it is safe
+                to call even when the DB connection is broken (e.g. aiosqlite pool corruption on
+                async-generator teardown). The epoch lets a client that retries the attach know
+                which epoch's cursor is valid without a fresh /info round-trip."""
+                frame: dict = {"type": "replayComplete", "sessionId": session_id}
+                ep = orchestrator.daemon_epoch()
+                if ep is not None:
+                    frame["epoch"] = ep
+                return frame
+
             try:
                 # The deadline goes INTO the RPC (call_with_deadline), never around it:
                 # asyncio.wait_for CANCELS an in-flight httpx request, orphaning the
@@ -416,7 +430,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # The error frame stays a direct top-level send (it's a banner, not
                 # transcript state), but replayComplete IS transcript state — route
                 # it through out_q so it can never overtake queued session frames.
-                out_q.put_nowait({"type": "replayComplete", "sessionId": session_id})
+                out_q.put_nowait(_error_complete())
                 return None
             except DaemonUnavailable:
                 log.warning("ws.attach: session daemon unavailable for %s", session_id)
@@ -437,13 +451,13 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 await _send({"type": "error", "code": "SESSION_START_FAILED",
                              "message": f"Couldn't resume this session.{hint}",
                              "sessionId": session_id})
-                out_q.put_nowait({"type": "replayComplete", "sessionId": session_id})
+                out_q.put_nowait(_error_complete())
                 return None
             if driver is None:
                 await _send({"type": "error", "code": "SESSION_NOT_FOUND",
                              "message": f"Session {session_id!r} not found",
                              "sessionId": session_id})
-                out_q.put_nowait({"type": "replayComplete", "sessionId": session_id})
+                out_q.put_nowait(_error_complete())
                 return None
             return driver
 
