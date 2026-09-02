@@ -13,7 +13,7 @@ from sqlalchemy import select
 
 from server.config import get_settings
 from server.db.models import AppSettings
-from server.sessions.model_catalog import model_tier
+from server.sessions.model_catalog import model_tier, normalized_alias
 
 VALID_ACTIONS: frozenset[str] = frozenset({"allow", "require_approval", "block"})
 
@@ -23,9 +23,19 @@ def _parse_denylist(raw: str | None) -> set[str]:
 
 
 async def resolve_model_policy(db, *, model: str | None, account: str | None = None) -> str:
-    """Return "allow" | "require_approval" | "block" for *model* on *account*."""
+    """Return "allow" | "require_approval" | "block" for *model* on *account*.
+
+    A denylist entry matches EITHER the model's tier ("fable" gates ``fable``,
+    ``fable[1m]`` and ``claude-fable-5-1``) OR its bare alias ("best" gates ``best``).
+    The alias arm exists because ``model_tier`` returns None for ``best`` / ``default``
+    / unknown ids — and returning "allow" on a None tier let ``best`` bypass the gate
+    entirely, even though it can resolve to the most expensive model available.
+    """
     tier = model_tier(model)
-    if tier is None:
+    alias = normalized_alias(model)
+    if alias is None:
+        # No model requested at all — the session takes the account default, which is
+        # not a selection to approve. Kept before the DB read: this is the hot path.
         return "allow"
 
     row = (await db.execute(
@@ -35,7 +45,7 @@ async def resolve_model_policy(db, *, model: str | None, account: str | None = N
     denylist = _parse_denylist(
         (row.model_approval_denylist if row is not None else None)
         or cfg.model_approval_denylist)
-    if tier not in denylist:
+    if tier not in denylist and alias not in denylist:
         return "allow"
 
     if account:
