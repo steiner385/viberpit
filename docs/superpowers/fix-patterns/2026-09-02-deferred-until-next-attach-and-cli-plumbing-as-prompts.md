@@ -58,6 +58,25 @@ they typed next ("continue") ran instead, and the session was auto-titled **"Set
   `background_tasks.py` (intentionally targets `<task-notification>`). `export.py` consumes
   replay events and inherits the fix.
 
+## Audit outcome (#941)
+
+Swept both failure modes across `server/` (2026-09-02):
+
+- **Staged-until-attach (mode 1) — no remaining siblings.** The only pop-on-attach state is
+  `_pending_initial_prompt` / `_pending_initial_attachment_ids` (the unarchive seed and
+  `_recover_undelivered_prompts` route through the same two dicts), all covered by the "deliver on
+  every live-stream open" fix above. `_pending_approvals` is popped on *spawn*, not attach — a
+  different lifecycle.
+- **Raw `type:"user"` reader (mode 2) — one fix, `search.py`.** `search.transcript_text` now routes
+  user entries through `is_harness_user_entry`, so `/model` bookkeeping, `<task-notification>`s,
+  `isMeta` context and the compaction summary no longer pollute the session-search index (they used
+  to make a session findable by, or its title read as, "Set model to Fable").
+- **Confirmed clean, no change needed.** `export.py` and the autopilot transcript tail
+  (`orchestrator._autopilot_transcript_tail`) both consume `replay`-built events, so they inherit
+  replay's filter. `background_tasks.py` reads `type:"user"` as a *turn boundary*, not a human
+  prompt — a different semantic that the predicate would wrongly alter, so it is deliberately left
+  as-is.
+
 ## Reference
 
 - Tests: `server/tests/test_ws_deferred_prompt_after_approval.py`,
