@@ -64,6 +64,22 @@ export type SessionStatus =
   | 'queued'
   | 'pending_approval'
 
+/**
+ * Statuses a session holds BEFORE its driver exists — parked at the launch-time
+ * model gate, or waiting for a capacity slot. No runtime slot, no transcript yet;
+ * a WS attach in this state is read-only. Mirrors the server's pre-spawn shapes
+ * (`_hold_for_approval` / `_enqueue_session`), which both defer the initial prompt
+ * until a LIVE attach — so a view open across the transition must re-attach.
+ */
+export const PRE_SPAWN_STATUSES: ReadonlySet<SessionStatus> = new Set<SessionStatus>([
+  'pending_approval',
+  'queued',
+])
+
+export function isPreSpawnStatus(status: string | null | undefined): boolean {
+  return !!status && PRE_SPAWN_STATUSES.has(status as SessionStatus)
+}
+
 /** A sub-agent (Task/Agent call) summary, nested under its session in the list. */
 export interface SubAgentSummary {
   agentId: string            // the spawning Task tool-use id (= key into reducer state.subAgents)

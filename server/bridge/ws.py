@@ -581,19 +581,37 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             except Exception:
                 log.warning("ws.attach: queue re-emit failed for %s", session_id, exc_info=True)
 
-            # Send the deferred initial prompt (if any) now that the client is watching.
-            # The prompt was stored in create_session instead of being sent immediately
-            # so that its events stream live to this first attach rather than racing the
-            # transcript-file write or arriving before any subscriber is registered on
-            # the driver. Only fires on the first attach (pop clears the entry);
-            # reconnects fall through to live-stream only. Best-effort like every
-            # other step here: a raise would propagate out of _handle_attach's
-            # try, close the just-opened stream, and kill the whole attach — the
-            # client would spin on a dead socket over a deferred nicety.
+            # Send the deferred initial prompt (if any) now that the client is watching
+            # a live stream.
+            await _send_deferred_initial_prompt(session_id)
+
+        async def _send_deferred_initial_prompt(session_id: str) -> None:
+            """Pop + send the session's deferred initial prompt, if one is staged.
+
+            The prompt is stored at spawn instead of being sent immediately so that
+            its events stream live to a watching client rather than racing the
+            transcript-file write or arriving before any subscriber is registered on
+            the driver. The pop clears the entry, so it fires at most once; a plain
+            reconnect finds nothing and falls through to live-stream only.
+
+            Called from BOTH places this socket opens a live stream — _handle_attach's
+            live path and the lazy _ensure_live a typed prompt triggers — because the
+            "first attach" can happen BEFORE the spawn: a `pending_approval` / `queued`
+            session viewed while it waits attaches on the read-only detached path,
+            which never pops. When the spawn then lands (approval, a freed slot), only
+            a later live-stream open on this same socket can deliver the prompt
+            (incident 2026-09-02: a Fable session approved from its open view sat
+            idle, the user's "continue" ran instead, and the titler named it after the
+            CLI's `/model` bookkeeping). Best-effort like every other attach step: a
+            raise would propagate out of the attach, close the just-opened stream and
+            kill the whole attach — the client would spin on a dead socket over a
+            deferred nicety.
+            """
             try:
                 pending_prompt = await orchestrator.pop_pending_initial_prompt(session_id)
                 pending_attachment_ids = await orchestrator.pop_pending_initial_attachment_ids(session_id)
                 if pending_prompt is not None or pending_attachment_ids:
+                    log.info("ws.attach: sending deferred initial prompt for %s", session_id)
                     await orchestrator.send_prompt(
                         session_id, pending_prompt or "", pending_attachment_ids)
             except Exception:
@@ -897,6 +915,10 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             # session that had never been live before (e.g. one predating catalog caching,
             # or only ever resumed lazily) — so its NEXT detached view shows the palette.
             await _emit_command_catalog(session_id)
+            # A prompt deferred at spawn goes FIRST: this socket may have attached on
+            # the detached path before the session was spawned (see the helper), and
+            # the user's typed prompt must queue behind the original one, not replace it.
+            await _send_deferred_initial_prompt(session_id)
             # Flip the header from the read-only 'Ready' to the live state as the
             # resumed turn begins. Best-effort; rides out_q like every other
             # session-scoped frame (raw + tagged, batcher redacts — and batching is
