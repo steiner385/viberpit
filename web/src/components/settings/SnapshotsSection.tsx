@@ -15,7 +15,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/lib/utils'
-import { Button } from '@/components/ui/button'
+import { Button } from '@/ui/Button'
 import { api } from '@/api/client'
 
 type SnapshotKind = 'manual' | 'auto' | 'pre-restore' | 'pre-import'
@@ -153,7 +153,7 @@ export function SnapshotsSection() {
             download
             className={cn(
               'inline-flex items-center justify-center rounded-md text-sm font-medium min-h-[44px] px-4',
-              'border border-input bg-background hover:bg-accent hover:text-accent-foreground',
+              'border border-edge bg-canvas hover:bg-accent-wash hover:text-ink',
             )}
           >
             Export bundle

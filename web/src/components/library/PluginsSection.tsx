@@ -42,7 +42,7 @@ function PluginRow({ plugin }: { plugin: LibraryPlugin }) {
   ].filter(Boolean).join(' · ')
 
   return (
-    <li className="border border-[var(--border)] rounded-lg p-3">
+    <li className="border border-edge rounded-lg p-3">
       <div className="flex items-center gap-3">
         <button
           className="flex-1 min-w-0 text-left"
@@ -53,7 +53,7 @@ function PluginRow({ plugin }: { plugin: LibraryPlugin }) {
             <span className="font-medium truncate">{plugin.name}</span>
             {plugin.version && <span className="text-xs opacity-60">{plugin.version}</span>}
             {plugin.category && (
-              <span className="text-xs px-1.5 py-0.5 rounded-full border border-[var(--border)] opacity-70">
+              <span className="text-xs px-1.5 py-0.5 rounded-full border border-edge opacity-70">
                 {plugin.category}
               </span>
             )}
@@ -79,7 +79,7 @@ function PluginRow({ plugin }: { plugin: LibraryPlugin }) {
         </label>
       </div>
       {expanded && (
-        <div className="mt-3 pt-3 border-t border-[var(--border)] text-sm space-y-2">
+        <div className="mt-3 pt-3 border-t border-edge text-sm space-y-2">
           {detail.isLoading && <div className="opacity-70">Loading components…</div>}
           {detail.data && (
             <>

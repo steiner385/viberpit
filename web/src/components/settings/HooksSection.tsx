@@ -9,7 +9,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/lib/utils'
-import { Button } from '@/components/ui/button'
+import { Button } from '@/ui/Button'
 import { api, ApiRequestError } from '@/api/client'
 
 /** A single hook row, matching the backend `HookRow` shape. */

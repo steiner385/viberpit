@@ -219,7 +219,7 @@ export function ItemEditorDialog({ kind, id, plugin, readonly = false, initialCo
           <p className="text-sm text-gray-500 dark:text-gray-400">
             {kind === 'skills' ? id : `/${(id ?? '').replace(/\//g, ':')}`}
             {plugin && (
-              <span className="ml-2 text-xs px-1.5 py-0.5 rounded-full border border-[var(--border)] opacity-70">
+              <span className="ml-2 text-xs px-1.5 py-0.5 rounded-full border border-edge opacity-70">
                 {plugin}
               </span>
             )}

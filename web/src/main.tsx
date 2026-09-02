@@ -9,19 +9,22 @@ import { queryClient } from '@/api/queryClient'
 import { clientLogger } from '@/obs/logger'
 import { installGlobalErrorHandlers } from '@/obs/install'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
+import { ThemeProvider } from '@/shell/theme'
 
 clientLogger.start()
 installGlobalErrorHandlers()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <ErrorBoundary>
-          <App />
-        </ErrorBoundary>
-        <Toaster richColors position="top-center" theme="system" />
-      </BrowserRouter>
-    </QueryClientProvider>
+    <ThemeProvider>
+      <QueryClientProvider client={queryClient}>
+        <BrowserRouter>
+          <ErrorBoundary>
+            <App />
+          </ErrorBoundary>
+          <Toaster richColors position="top-center" theme="system" />
+        </BrowserRouter>
+      </QueryClientProvider>
+    </ThemeProvider>
   </StrictMode>,
 )
