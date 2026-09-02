@@ -6,11 +6,13 @@ import { useFocusTrap } from './useFocusTrap'
 
 const SIZES = { sm: 'max-w-sm', md: 'max-w-md', lg: 'max-w-lg', xl: 'max-w-5xl' } as const
 
-export interface DialogProps {
+/** A dialog must be named by exactly one of a visible `title` or an `aria-label` — never
+ *  neither (silently unlabelled) and never both (redundant/conflicting accessible name). */
+type DialogLabelling = { title: string; 'aria-label'?: never } | { title?: never; 'aria-label': string }
+
+export type DialogProps = DialogLabelling & {
   open: boolean
   onClose: () => void
-  title?: string
-  'aria-label'?: string
   description?: React.ReactNode
   size?: keyof typeof SIZES
   initialFocus?: React.RefObject<HTMLElement | null>
