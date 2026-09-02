@@ -18,10 +18,10 @@ function GroupRow({
   isDispatching: boolean
 }) {
   return (
-    <li className="rounded border border-border p-2">
+    <li className="rounded border border-edge p-2">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
         {group.repo && (
-          <span className="text-xs text-muted-foreground shrink-0">{group.repo}</span>
+          <span className="text-xs text-ink-muted shrink-0">{group.repo}</span>
         )}
         {group.refs.map((ref) => (
           <a
@@ -52,7 +52,7 @@ function GroupRow({
         )}
       </div>
       {group.rationale && (
-        <p className="mt-0.5 text-xs text-muted-foreground leading-snug">{group.rationale}</p>
+        <p className="mt-0.5 text-xs text-ink-muted leading-snug">{group.rationale}</p>
       )}
     </li>
   )
@@ -90,8 +90,8 @@ export function BacklogGroupsPanel({
   }
 
   return (
-    <section className="mt-3 border-t border-border pt-3">
-      <h4 className="text-xs font-semibold uppercase text-muted-foreground mb-2">
+    <section className="mt-3 border-t border-edge pt-3">
+      <h4 className="text-xs font-semibold uppercase text-ink-muted mb-2">
         Planned groups
         {data?.createdAt && (
           <span className="ml-2 font-normal normal-case">

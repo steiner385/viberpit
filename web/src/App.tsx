@@ -43,9 +43,9 @@ function DashboardRoute({ tab }: { tab: TabId }) {
   // The settings modal became the Settings tab — honor old ?dialog=settings links.
   if (rawDialog === 'settings') return <Navigate to="/settings" replace />
   return (
-    <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-background text-foreground">
+    <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-canvas text-ink">
       {/* paddingTop pushes content below the iOS status bar; env() is 0 on desktop. */}
-      <header className="shrink-0 px-4 pb-4 border-b border-border" style={{ paddingTop: 'calc(env(safe-area-inset-top) + 1rem)' }}>
+      <header className="shrink-0 px-4 pb-4 border-b border-edge" style={{ paddingTop: 'calc(env(safe-area-inset-top) + 1rem)' }}>
         <div className="flex items-center gap-2.5">
           <BrandMark size={26} />
           <h1 className="text-2xl font-bold tracking-tight">ccswitch</h1>
@@ -144,7 +144,7 @@ function SessionRoute() {
     navigate(next ? `/session/${next}` : '/sessions')
   }
   return (
-    <div className="flex-1 min-h-0 flex flex-col bg-background text-foreground">
+    <div className="flex-1 min-h-0 flex flex-col bg-canvas text-ink">
       <SessionView
         key={sessionId}
         sessionId={sessionId}
@@ -162,7 +162,7 @@ function ReviewRoute() {
   const navigate = useNavigate()
   if (!sessionId) return <Navigate to="/sessions" replace />
   return (
-    <div className="flex-1 min-h-0 flex flex-col bg-background text-foreground">
+    <div className="flex-1 min-h-0 flex flex-col bg-canvas text-ink">
       <ReviewView sessionId={sessionId} onBack={() => navigate('/sessions')} />
     </div>
   )
@@ -173,7 +173,7 @@ function SubSessionRoute() {
   const navigate = useNavigate()
   if (!sessionId || !agentId) return <Navigate to="/sessions" replace />
   return (
-    <div className="flex-1 min-h-0 flex flex-col bg-background text-foreground">
+    <div className="flex-1 min-h-0 flex flex-col bg-canvas text-ink">
       <SubSessionView sessionId={sessionId} agentId={agentId} onBack={() => navigate(`/session/${sessionId}`)} />
     </div>
   )

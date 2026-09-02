@@ -48,7 +48,7 @@ export function TemplatesSection() {
       <div className="flex items-center justify-between">
         <h3 className="font-semibold text-sm">Prompt Templates</h3>
         <button
-          className="text-xs px-2 py-1 rounded border border-[var(--border)] hover:bg-[var(--muted)]"
+          className="text-xs px-2 py-1 rounded border border-edge hover:bg-surface-raised"
           onClick={() => { setCreating(true); setEditing(null); resetForm() }}
         >
           + New template
@@ -56,12 +56,12 @@ export function TemplatesSection() {
       </div>
 
       {(creating || editing) && (
-        <div className="border border-[var(--border)] rounded-md p-3 space-y-2 text-sm">
+        <div className="border border-edge rounded-md p-3 space-y-2 text-sm">
           <div className="font-medium">{editing ? `Edit "${editing.name}"` : 'New template'}</div>
           <label className="flex flex-col gap-0.5">
             <span className="text-xs opacity-70">Name *</span>
             <input
-              className="border border-[var(--border)] rounded px-2 py-1 text-sm bg-transparent"
+              className="border border-edge rounded px-2 py-1 text-sm bg-transparent"
               placeholder="e.g. PR review checklist"
               value={form.name}
               onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
@@ -70,7 +70,7 @@ export function TemplatesSection() {
           <label className="flex flex-col gap-0.5">
             <span className="text-xs opacity-70">{'Content (use {{variable}} for placeholders)'}</span>
             <textarea
-              className="border border-[var(--border)] rounded px-2 py-1 text-sm bg-transparent resize-none font-mono"
+              className="border border-edge rounded px-2 py-1 text-sm bg-transparent resize-none font-mono"
               rows={6}
               placeholder={'Review {{repo}} PR #{{pr_number}} using our checklist…'}
               value={form.content}
@@ -80,7 +80,7 @@ export function TemplatesSection() {
           <label className="flex flex-col gap-0.5">
             <span className="text-xs opacity-70">Tags (comma-separated)</span>
             <input
-              className="border border-[var(--border)] rounded px-2 py-1 text-sm bg-transparent"
+              className="border border-edge rounded px-2 py-1 text-sm bg-transparent"
               placeholder="review, pr, checklist"
               value={form.tags}
               onChange={e => setForm(f => ({ ...f, tags: e.target.value }))}
@@ -88,14 +88,14 @@ export function TemplatesSection() {
           </label>
           <div className="flex gap-2">
             <button
-              className="text-xs px-3 py-1 rounded bg-[var(--accent)] text-[var(--accent-foreground)] disabled:opacity-50"
+              className="text-xs px-3 py-1 rounded bg-accent text-accent-ink disabled:opacity-50"
               disabled={!form.name.trim() || createTemplate.isPending || updateTemplate.isPending}
               onClick={handleSave}
             >
               {editing ? 'Save' : 'Create'}
             </button>
             <button
-              className="text-xs px-3 py-1 rounded border border-[var(--border)] hover:bg-[var(--muted)]"
+              className="text-xs px-3 py-1 rounded border border-edge hover:bg-surface-raised"
               onClick={() => { setCreating(false); setEditing(null); resetForm() }}
             >Cancel</button>
           </div>
@@ -107,25 +107,25 @@ export function TemplatesSection() {
       ) : (
         <div className="space-y-1">
           {templates.map(t => (
-            <div key={t.id} className="flex items-start justify-between gap-2 px-3 py-2 rounded border border-[var(--border)] text-sm">
+            <div key={t.id} className="flex items-start justify-between gap-2 px-3 py-2 rounded border border-edge text-sm">
               <div className="min-w-0">
                 <div className="font-medium truncate">{t.name}</div>
                 <div className="text-xs opacity-60 line-clamp-2">{t.content.slice(0, 80)}{t.content.length > 80 ? '…' : ''}</div>
                 {t.tags.length > 0 && (
                   <div className="flex flex-wrap gap-1 mt-1">
                     {t.tags.map(tag => (
-                      <span key={tag} className="text-xs px-1.5 py-0.5 rounded-full bg-[var(--muted)] opacity-80">{tag}</span>
+                      <span key={tag} className="text-xs px-1.5 py-0.5 rounded-full bg-surface-raised opacity-80">{tag}</span>
                     ))}
                   </div>
                 )}
               </div>
               <div className="flex gap-1 shrink-0">
                 <button
-                  className="text-xs px-2 py-0.5 rounded border border-[var(--border)] hover:bg-[var(--muted)]"
+                  className="text-xs px-2 py-0.5 rounded border border-edge hover:bg-surface-raised"
                   onClick={() => startEdit(t)}
                 >Edit</button>
                 <button
-                  className="text-xs px-2 py-0.5 rounded border border-[var(--border)] text-red-500 hover:bg-red-50 dark:hover:bg-red-950"
+                  className="text-xs px-2 py-0.5 rounded border border-edge text-red-500 hover:bg-red-50 dark:hover:bg-red-950"
                   onClick={() => deleteTemplate.mutate(t.id)}
                 >Delete</button>
               </div>
