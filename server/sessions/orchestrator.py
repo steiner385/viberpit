@@ -74,7 +74,7 @@ from server.sessions.background_tasks import scan_open_background_tasks, build_r
 from server.obs.context import log_event
 from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
-from server.sessions.types import SessionRecord, SYSTEM_IDENTITY
+from server.sessions.types import SessionRecord, SYSTEM_IDENTITY, RESUME_ELIGIBLE_STATUSES
 from server.config import env_float
 from server.time_iso import iso_utc
 from server.usage.poller import UsagePoller
@@ -112,6 +112,11 @@ _RESTART_TRANSIENT_STATUSES = _ACTIVE_STATUSES | frozenset({"waiting_question", 
 # Message surfaced to the user when auto-recovery gives up on a repeatedly-dropped turn.
 _TURN_DROPPED_GIVEUP = ("Auto-recovery gave up after repeated empty turns — the context "
                         "may be full. Send a message to retry, or /compact to free space.")
+
+# Sent to a session whose in-flight turn was dropped by a daemon restart, to continue
+# the work. One text for human + automation sessions (design 2026-09-02).
+RESUME_NUDGE = ("Your previous turn was interrupted by a daemon restart. "
+                "Please continue where you left off.")
 
 # Bounded auto-recovery attempts for a session that failed to resume after a
 # daemon-affecting deploy. Past this the session is kept visible (flagged gave-up)
@@ -6858,6 +6863,31 @@ class SessionOrchestrator:
         d = self._drivers.get(session_id)
         if d is not None:
             d.seed_idle_suggestions(user_text, assistant_text)
+
+    def _resume_eligible(self, rec: "SessionRecord") -> str | None:
+        """Skip-reason when a session is NOT resume-eligible, else None. Single gate
+        shared by the batch endpoint, the auto pass, and resume_interrupted itself."""
+        if not rec.interrupted_by_restart:
+            return "not-interrupted"
+        if rec.interrupted_from_status not in RESUME_ELIGIBLE_STATUSES:
+            return "not-resumable-status"
+        return None
+
+    async def resume_interrupted(self, session_id: str,
+                                 identity: str = SYSTEM_IDENTITY) -> str:
+        """Re-attach a restart-interrupted session and nudge it to continue.
+        Returns "resumed" | "skipped:<reason>" | "no_driver". Idempotent: a
+        session that already resumed fails _resume_eligible ("not-interrupted")."""
+        rec = self._records.get(session_id)
+        if rec is None:
+            return "skipped:not-found"
+        reason = self._resume_eligible(rec)
+        if reason is not None:
+            return f"skipped:{reason}"
+        if await self.ensure_driver(session_id, identity) is None:
+            return "no_driver"
+        result = await self.send_prompt(session_id, RESUME_NUDGE)
+        return "resumed" if result == "sent" else result
 
     async def ensure_driver(self, session_id: str, identity: str = SYSTEM_IDENTITY) -> SessionDriver | None:
         """Return the live SessionDriver for session_id, resuming from DB if detached.

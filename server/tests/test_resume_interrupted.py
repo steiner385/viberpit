@@ -1,3 +1,6 @@
+import pytest
+
+from server.sessions.orchestrator import SessionOrchestrator, RESUME_NUDGE
 from server.sessions.types import SessionRecord, RESUME_ELIGIBLE_STATUSES
 
 
@@ -30,3 +33,75 @@ def test_resumable_false_without_flag():
 def test_interrupted_from_status_round_trips():
     r = _rec(interrupted_by_restart=True, interrupted_from_status="working")
     assert SessionRecord.from_dict(r.to_dict()).interrupted_from_status == "working"
+
+
+# ---------------------------------------------------------------------------
+# Task 2 — resume_interrupted primitive tests
+# ---------------------------------------------------------------------------
+
+class _FakeDriver: ...
+
+
+def _orch_with(rec):
+    orch = SessionOrchestrator.__new__(SessionOrchestrator)
+    orch._records = {rec.id: rec} if rec else {}
+    orch._drivers = {}
+    calls = {"ensure": [], "prompt": []}
+
+    async def ensure_driver(sid, identity="system"):
+        calls["ensure"].append((sid, identity))
+        d = _FakeDriver()
+        orch._drivers[sid] = d
+        return d
+
+    async def send_prompt(sid, text, attachment_ids=None):
+        calls["prompt"].append((sid, text))
+        return "sent"
+
+    orch.ensure_driver = ensure_driver          # type: ignore[assignment]
+    orch.send_prompt = send_prompt               # type: ignore[assignment]
+    return orch, calls
+
+
+@pytest.mark.asyncio
+async def test_resume_interrupted_eligible_nudges():
+    rec = _rec(status="idle", interrupted_by_restart=True, interrupted_from_status="in_progress")
+    orch, calls = _orch_with(rec)
+    assert await orch.resume_interrupted("s1") == "resumed"
+    assert calls["ensure"] == [("s1", "system")]
+    assert calls["prompt"] == [("s1", RESUME_NUDGE)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("from_status,reason", [
+    ("ready_review", "not-resumable-status"),
+    ("waiting_question", "not-resumable-status"),
+    ("waiting_input", "not-resumable-status"),
+])
+async def test_resume_interrupted_skips_non_work(from_status, reason):
+    rec = _rec(status="idle", interrupted_by_restart=True, interrupted_from_status=from_status)
+    orch, calls = _orch_with(rec)
+    assert await orch.resume_interrupted("s1") == f"skipped:{reason}"
+    assert calls["ensure"] == [] and calls["prompt"] == []
+
+
+@pytest.mark.asyncio
+async def test_resume_interrupted_skips_unflagged():
+    rec = _rec(status="idle", interrupted_by_restart=False, interrupted_from_status=None)
+    orch, _ = _orch_with(rec)
+    assert await orch.resume_interrupted("s1") == "skipped:not-interrupted"
+
+
+@pytest.mark.asyncio
+async def test_resume_interrupted_unknown_session():
+    orch, _ = _orch_with(None)
+    assert await orch.resume_interrupted("nope") == "skipped:not-found"
+
+
+@pytest.mark.asyncio
+async def test_resume_interrupted_no_driver_propagates():
+    rec = _rec(status="idle", interrupted_by_restart=True, interrupted_from_status="working")
+    orch, _ = _orch_with(rec)
+    async def ensure_none(sid, identity="system"): return None
+    orch.ensure_driver = ensure_none             # type: ignore[assignment]
+    assert await orch.resume_interrupted("s1") == "no_driver"
