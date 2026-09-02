@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useMediaQuery } from '@/lib/useMediaQuery'
 
 export type ThemeChoice = 'system' | 'light' | 'dark'
 export const THEME_STORAGE_KEY = 'ccswitch.theme'
@@ -22,12 +23,6 @@ export function readStoredTheme(search: string = typeof location !== 'undefined'
     if (isChoice(stored)) return stored
   } catch { /* storage unavailable */ }
   return 'system'
-}
-
-function systemPrefersDark(): boolean {
-  return typeof window !== 'undefined' && typeof window.matchMedia === 'function'
-    ? window.matchMedia('(prefers-color-scheme: dark)').matches
-    : false
 }
 
 /** Stamp <html data-theme> and pin the browser-chrome color to the chosen scheme. */
@@ -57,17 +52,9 @@ const ThemeContext = createContext<ThemeContextValue | null>(null)
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [choice, setChoiceState] = useState<ThemeChoice>(readStoredTheme)
-  const [systemDark, setSystemDark] = useState(systemPrefersDark)
+  const systemDark = useMediaQuery('(prefers-color-scheme: dark)')
 
   useEffect(() => { applyTheme(choice) }, [choice])
-
-  useEffect(() => {
-    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
-    const mql = window.matchMedia('(prefers-color-scheme: dark)')
-    const onChange = () => setSystemDark(mql.matches)
-    mql.addEventListener('change', onChange)
-    return () => mql.removeEventListener('change', onChange)
-  }, [])
 
   const setChoice = useCallback((c: ThemeChoice) => {
     setChoiceState(c)
