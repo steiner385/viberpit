@@ -367,6 +367,21 @@ def self_host_name() -> str:
     return socket.gethostname().split(".")[0]
 
 
+def local_host_stamp() -> str | None:
+    """``Session.host`` for a session THIS daemon creates in-process.
+
+    The dispatcher stamps sessions it routes to a host, but a daemon's own spawns
+    (automation loops, a direct create on the primary) never pass through it. On a
+    WORKER those landed as host=NULL — which reads as "the primary's" everywhere
+    (``_owns_record``, a worker's ``rehydrate`` filter): the primary's rotation and
+    stuck-session loops acted on them, the worker dropped them on its next restart,
+    and the primary's ``_records`` (the fleet dashboard) never listed them. A worker
+    therefore stamps itself at creation. The primary keeps NULL: that IS its
+    ownership marker, so single-host installs never see a host value.
+    """
+    return self_host_name() if daemon_role() == "worker" else None
+
+
 class SessionOrchestrator:
     """Orchestrates session lifecycle: creation, rotation, termination.
 
@@ -1278,6 +1293,8 @@ class SessionOrchestrator:
                                name_is_auto, origin, origin_ref, model) -> SessionRecord:
         from datetime import datetime
         from server.sessions import session_queue as sq
+        now = datetime.utcnow()
+        host = local_host_stamp()
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name=name, account_name=account or "",
@@ -1285,7 +1302,7 @@ class SessionOrchestrator:
                 cwd=cwd or "", repo=repo, branch=None,
                 permission_mode=permission_mode, name_is_auto=name_is_auto,
                 origin=origin, origin_ref=origin_ref, model=model,
-                initial_prompt=initial_prompt))
+                initial_prompt=initial_prompt, host=host))
         priority = await sq.enqueue(session_id, {
             "name": name, "account": account, "initial_prompt": initial_prompt,
             "cols": cols, "rows": rows, "cwd": cwd, "branch": branch,
@@ -1298,8 +1315,8 @@ class SessionOrchestrator:
             id=session_id, name=name, account=account or "", claude_session_id="",
             cols=cols, rows=rows, cwd=cwd or "", repo=repo, branch=None,
             status="queued", name_is_auto=name_is_auto,
-            updated_at=datetime.utcnow(), origin=origin, origin_ref=origin_ref,
-            model=model)
+            created_at=now, updated_at=now, origin=origin, origin_ref=origin_ref,
+            model=model, host=host)
         self._records[session_id] = rec
         log.info("session.queued id=%s priority=%d origin=%s",
                  session_id, priority, origin)
@@ -1320,6 +1337,7 @@ class SessionOrchestrator:
         """
         from datetime import datetime
         now = datetime.utcnow()
+        host = local_host_stamp()
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name=name, account_name=account or "",
@@ -1329,7 +1347,7 @@ class SessionOrchestrator:
                 origin=origin, origin_ref=origin_ref,
                 model=None, pending_model=model,
                 pending_model_requested_by=identity, pending_model_requested_at=now,
-                initial_prompt=initial_prompt))
+                initial_prompt=initial_prompt, host=host))
             await record_audit(db, type="model_approval.requested", identity=identity,
                                detail={"session_id": session_id, "model": model,
                                        "account": account})
@@ -1344,8 +1362,8 @@ class SessionOrchestrator:
             id=session_id, name=name, account=account or "", claude_session_id="",
             cols=cols, rows=rows, cwd=cwd or "", repo=repo, branch=None,
             status="pending_approval", name_is_auto=name_is_auto,
-            updated_at=now, origin=origin, origin_ref=origin_ref,
-            model=None, pending_model=model)
+            created_at=now, updated_at=now, origin=origin, origin_ref=origin_ref,
+            model=None, pending_model=model, host=host)
         self._records[session_id] = rec
         log.info("session.pending_approval id=%s model=%s origin=%s",
                  session_id, model, origin)
@@ -1517,6 +1535,7 @@ class SessionOrchestrator:
                 if existing is not None:
                     await db.delete(existing)
                 await db.flush()
+                host = local_host_stamp()
                 db.add(DbSession(
                     id=session_id, name=kwargs.get("name"),
                     account_name=kwargs.get("account") or "",
@@ -1528,19 +1547,20 @@ class SessionOrchestrator:
                     model=None, pending_model=model,
                     pending_model_requested_by=requested_by,
                     pending_model_requested_at=requested_at,
-                    initial_prompt=kwargs.get("initial_prompt")))
+                    initial_prompt=kwargs.get("initial_prompt"), host=host))
             restored = dict(kwargs)
             restored["model"] = model
             self._pending_approvals[session_id] = restored
+            now = datetime.utcnow()
             self._records[session_id] = SessionRecord(
                 id=session_id, name=kwargs.get("name") or session_id,
                 account=kwargs.get("account") or "", claude_session_id="",
                 cols=kwargs.get("cols", 80), rows=kwargs.get("rows", 24),
                 cwd=kwargs.get("cwd") or "", repo=kwargs.get("repo"), branch=None,
                 status="pending_approval", name_is_auto=kwargs.get("name_is_auto", True),
-                updated_at=datetime.utcnow(), origin=kwargs.get("origin"),
+                created_at=now, updated_at=now, origin=kwargs.get("origin"),
                 origin_ref=kwargs.get("origin_ref"),
-                model=None, pending_model=model)
+                model=None, pending_model=model, host=host)
         except Exception:
             # Never let the recovery path mask the real spawn error.
             log.exception("session.model_approval_hold_restore_failed id=%s",
@@ -1877,12 +1897,18 @@ class SessionOrchestrator:
         # look up the account (needed for copilot env injection during driver.start()).
         # The model field is patched below once the driver resolves the actual alias.
         from datetime import datetime
+        _now = datetime.utcnow()
+        # A session promoted from the queue keeps its queue-time created_at (and
+        # host stamp); a fresh spawn is born now, on this host (worker) / NULL.
+        _prior = self._records.get(session_id)
+        _host = getattr(_prior, "host", None) or local_host_stamp()
         _pre_record = SessionRecord(
             id=session_id, name=name, account=account, claude_session_id="",
             cols=cols, rows=rows, cwd=cwd, repo=repo, branch=branch_name,
             status="idle", name_is_auto=name_is_auto,
-            updated_at=datetime.utcnow(), usage_unverified=usage_unverified,
-            origin=origin, origin_ref=origin_ref, model=None,
+            created_at=getattr(_prior, "created_at", None) or _now,
+            updated_at=_now, usage_unverified=usage_unverified,
+            origin=origin, origin_ref=origin_ref, model=None, host=_host,
         )
         self._records[session_id] = _pre_record
 
@@ -1961,6 +1987,7 @@ class SessionOrchestrator:
                     origin_ref=origin_ref,
                     model=model,
                     initial_prompt=initial_prompt,
+                    host=_host,
                 )
                 db.add(row)
 
@@ -7213,12 +7240,14 @@ class SessionOrchestrator:
         # The transcript mtime is the adopted session's real last-response time — seed the
         # "active … ago" clock from it (naive UTC to match the DB columns) instead of "now".
         adopted_last_turn = cand.last_activity.replace(tzinfo=None) if cand.last_activity else None
+        adopt_host = local_host_stamp()
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name=cand.name, account_name=cand.account,
                 claude_session_id=claude_session_id, status="idle", pid=None,
                 cwd=cand.cwd, repo=None, permission_mode=permission_mode,
                 name_is_auto=True, adopted_in_place=True, last_turn_at=adopted_last_turn,
+                host=adopt_host,
             ))
             await record_audit(
                 db, "session.adopt", identity,
@@ -7227,13 +7256,15 @@ class SessionOrchestrator:
             )
 
         from datetime import datetime
+        adopt_now = datetime.utcnow()
         rec = SessionRecord(
             id=session_id, name=cand.name, account=cand.account,
             claude_session_id=claude_session_id, cols=80, rows=24,
             cwd=cand.cwd, repo=None, status="idle", adopted_in_place=True,
             permission_mode=permission_mode,
-            updated_at=datetime.utcnow(),  # row-write time
+            created_at=adopt_now, updated_at=adopt_now,  # row-write time
             last_turn_at=adopted_last_turn,  # real last-response time from the transcript
+            host=adopt_host,
         )
         self._records[session_id] = rec
         log.info("session.adopt id=%s sid=%s resumed=%s killed=%s",

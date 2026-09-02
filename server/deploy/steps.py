@@ -33,7 +33,7 @@ def _gh_api_via_app(args: list[str], *, input: str | None = None) -> str:
     (they read ``.stderr`` and treat any raise as unavailable)."""
     from ccswitch import gitrepos
 
-    r = gitrepos._run_gh(args, token=gitrepos._app_token(_DEPLOY_OWNER), input=input)
+    r = gitrepos._run_gh(args, token=gitrepos.app_token_for_owner(_DEPLOY_OWNER), input=input)
     if r.returncode != 0:
         raise subprocess.CalledProcessError(
             r.returncode, r.args, output=r.stdout, stderr=r.stderr)

@@ -32,11 +32,6 @@ def _run_gh_bytes(args: list[str], token: str | None = None) -> bytes:
     return proc.stdout
 
 
-def _owner_of(repo: str) -> str:
-    """``owner`` from an ``owner/name`` slug (the App-token key)."""
-    return repo.partition("/")[0]
-
-
 def _run_gh_for(repo: str):
     """A ``_run_gh`` bound to ``repo`` owner's App installation token (issue #913).
 
@@ -44,7 +39,7 @@ def _run_gh_for(repo: str):
     the App installation for that owner, not the ambient gh user. Falls back to the
     pinned/ambient gh identity when no App is registered (CLI) or the owner has no
     installation. Bound once per doctor call — ``token_for_owner`` caches the token."""
-    token = gitrepos._app_token(_owner_of(repo))
+    token = gitrepos.app_token_for_repo(repo)
 
     def run(args: list[str]) -> subprocess.CompletedProcess:
         return gitrepos._run_gh(args, token=token)
@@ -54,7 +49,7 @@ def _run_gh_for(repo: str):
 
 def _run_gh_bytes_for(repo: str):
     """A ``_run_gh_bytes`` bound to ``repo`` owner's App installation token (issue #913)."""
-    token = gitrepos._app_token(_owner_of(repo))
+    token = gitrepos.app_token_for_repo(repo)
 
     def run_bytes(args: list[str]) -> bytes:
         return _run_gh_bytes(args, token=token)
