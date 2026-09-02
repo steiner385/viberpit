@@ -73,7 +73,9 @@ export function PendingApprovalSection({ sessions, onOpen }: PendingApprovalSect
               {/* Approve/Deny panel rendered for any hold (launch-time or mid-session) */}
               <PendingModelApprovalPanel
                 model={session.pendingModel}
-                onDecision={(decision) => modelApproval({ id: session.id, decision })}
+                reason={session.pendingModelReason}
+                requestedBy={session.pendingModelRequestedBy}
+                onDecision={(decision, model) => modelApproval({ id: session.id, decision, model })}
               />
             </li>
           ))}

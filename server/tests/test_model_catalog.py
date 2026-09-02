@@ -158,6 +158,18 @@ def test_catalog_uses_discovered_list_when_binary_found(monkeypatch, tmp_path):
     assert "opusplan" in ids
 
 
+def test_live_aliases_probe_uses_shared_resolver(monkeypatch, tmp_path):
+    """The picker must probe the SAME binary the SDK session factory runs, so the
+    two can never diverge (constitution VI). _live_aliases resolves via the shared
+    resolve_claude_bin helper, not its own private lookup."""
+    binary = tmp_path / "claude"
+    _make_binary(binary, ["sonnet", "opus", "opusplan"])
+    monkeypatch.setattr(mc, "resolve_claude_bin", lambda: str(binary))
+    monkeypatch.setattr(mc, "_cache", None)
+    ids = [e["id"] for e in mc.catalog()]
+    assert "opusplan" in ids and "default" in ids
+
+
 def test_catalog_falls_back_to_static_when_binary_not_found(monkeypatch):
     monkeypatch.setenv("CCSWITCH_CLAUDE_BIN", "/nonexistent/claude")
     monkeypatch.setattr(shutil, "which", lambda _: None)

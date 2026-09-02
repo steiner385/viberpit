@@ -230,8 +230,10 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
             {sessionRecord?.pendingModel && (
               <PendingModelApprovalPanel
                 model={sessionRecord.pendingModel}
-                onDecision={(decision) =>
-                  modelApproval({ id: rt.sessionId, decision })
+                reason={sessionRecord.pendingModelReason}
+                requestedBy={sessionRecord.pendingModelRequestedBy}
+                onDecision={(decision, model) =>
+                  modelApproval({ id: rt.sessionId, decision, model })
                 }
               />
             )}

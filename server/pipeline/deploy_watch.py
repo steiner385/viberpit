@@ -44,7 +44,7 @@ _MAX_CHECKED_PAIRS = 10_000
 _HTTP_TIMEOUT_S = 5.0
 
 HttpGet = Callable[[str], Awaitable[object]]
-GhRun = Callable[[list[str]], object]
+GhRun = Callable[..., object]
 
 
 def _url_allowed(url: str) -> bool:
@@ -90,10 +90,10 @@ async def _default_http_get(url: str) -> object:
         return await client.get(url)
 
 
-def _default_gh_run(args: list[str]) -> object:
+def _default_gh_run(args: list[str], token: str | None = None) -> object:
     from ccswitch import gitrepos
 
-    return gitrepos._run_gh(args)
+    return gitrepos._run_gh(args, token=token)
 
 
 class DeployWatcher:
@@ -220,9 +220,12 @@ class DeployWatcher:
 
     async def _compare_status(self, repo: str, base: str, head: str) -> str | None:
         """Return the compare API ``status`` (base...head), or None on failure."""
+        from ccswitch import gitrepos
+
         args = ["api", f"repos/{repo}/compare/{base}...{head}"]
+        token = gitrepos.app_token_for_repo(repo)
         try:
-            proc = await asyncio.to_thread(self._gh_run, args)
+            proc = await asyncio.to_thread(self._gh_run, args, token=token)
         except Exception:
             return None
         if getattr(proc, "returncode", 1) != 0:

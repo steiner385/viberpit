@@ -17,6 +17,12 @@ interface Props {
   readOnly?: boolean
   staged?: StagedAnswer | null
   onStage?: (questionId: string, answer: StagedAnswer) => void
+  /**
+   * Auto-focus the first option on mount. Defaults to true for a standalone
+   * card; QuestionGroup sets it false for off-screen carousel cards so they
+   * don't scroll the shared track to themselves and hijack the view.
+   */
+  autoFocusOptions?: boolean
 }
 
 function optionLabel(opt: Record<string, unknown>): string {
@@ -36,17 +42,19 @@ const hatchBtn = cn(
 )
 
 function MultiSelectOptions({
-  block, checked, onToggle, onSubmit, showSubmit,
+  block, checked, onToggle, onSubmit, showSubmit, autoFocus,
 }: {
   block: QuestionBlock
   checked: Set<string>
   onToggle: (label: string) => void
   onSubmit?: () => void
   showSubmit: boolean
+  autoFocus: boolean
 }) {
   const kb = useCardKeyboard({
     count: block.options.length,
     multiSelect: true,
+    autoFocus,
     onToggle: (i) => onToggle(optionLabel(block.options[i])),
     onSubmit: () => onSubmit?.(),
   })
@@ -106,11 +114,12 @@ function MultiSelectOptions({
 }
 
 function SingleSelectOptions({
-  block, onPick, selectedLabel,
-}: { block: QuestionBlock; onPick: (label: string) => void; selectedLabel?: string }) {
+  block, onPick, selectedLabel, autoFocus,
+}: { block: QuestionBlock; onPick: (label: string) => void; selectedLabel?: string; autoFocus: boolean }) {
   const headerId = `q-header-${block.questionId}`
   const kb = useCardKeyboard({
     count: block.options.length,
+    autoFocus,
     onActivate: (i) => onPick(optionLabel(block.options[i])),
   })
   return (
@@ -149,7 +158,7 @@ function SingleSelectOptions({
   )
 }
 
-export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, readOnly = false, staged, onStage }: Props) {
+export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, readOnly = false, staged, onStage, autoFocusOptions = true }: Props) {
   const [writing, setWriting] = useState(false)
   const [draft, setDraft] = useState('')
   const [localChecked, setLocalChecked] = useState<Set<string>>(new Set())
@@ -295,6 +304,7 @@ export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, re
             back to the roving keyboard highlight (activeIndex) as before. */}
         <SingleSelectOptions
           block={block}
+          autoFocus={autoFocusOptions}
           onPick={(label) =>
             grouped
               ? onStage!(block.questionId, { selected: [label], mode: 'option' })
@@ -327,6 +337,7 @@ export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, re
       {heading}
       <MultiSelectOptions
         block={block}
+        autoFocus={autoFocusOptions}
         checked={grouped ? stagedSet : localChecked}
         onToggle={grouped ? toggleStaged : toggleLocal}
         onSubmit={grouped ? undefined : () => onAnswer(block.questionId, Array.from(localChecked))}

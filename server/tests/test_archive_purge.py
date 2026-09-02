@@ -40,8 +40,9 @@ async def _seed(rows: list[dict]) -> None:
             db.add(DbSession(**r))
 
 
-def _archived(idx: int, *, archived_at: datetime | None, created_at: datetime | None = None) -> dict:
-    """An archived row with a controllable archived_at (and optional created_at)."""
+def _archived(idx: int, *, archived_at: datetime | None, created_at: datetime | None = None,
+              origin: str | None = None) -> dict:
+    """An archived row with a controllable archived_at (and optional created_at/origin)."""
     row = dict(
         id=f"arch{idx}", name=f"A{idx}", account_name="acc1",
         claude_session_id=None, status="archived", cwd=f"/old/{idx}",
@@ -49,6 +50,8 @@ def _archived(idx: int, *, archived_at: datetime | None, created_at: datetime | 
     )
     if created_at is not None:
         row["created_at"] = created_at
+    if origin is not None:
+        row["origin"] = origin
     return row
 
 
@@ -121,6 +124,53 @@ def test_purge_oldest_archived_null_archived_at_falls_back_to_created_at(tmp_pat
 
     deleted, remaining = asyncio.run(run())
     assert deleted == ["arch0"]
+    assert remaining == ["arch1"]
+
+
+def test_purge_prioritizes_automation_over_human(tmp_path):
+    """Automation-origin sessions are purged first; human sessions survive as long as
+    there are automation archives to consume (#921)."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+
+    async def run():
+        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+            await init_db(db_url=db_url)
+            await _seed([
+                # Human session archived first (oldest timestamp) — must survive.
+                _archived(0, archived_at=_BASE + timedelta(hours=0), origin=None),
+                # Two automation sessions archived later — must be purged first.
+                _archived(1, archived_at=_BASE + timedelta(hours=1), origin="backlog-runner"),
+                _archived(2, archived_at=_BASE + timedelta(hours=2), origin="pr-doctor"),
+            ])
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            deleted = await orch.purge_oldest_archived(2)
+            return deleted, await _archived_ids()
+
+    deleted, remaining = asyncio.run(run())
+    # The two automation sessions must have been purged (order within may vary by age).
+    assert set(deleted) == {"arch1", "arch2"}
+    # The human session (oldest timestamp) survives.
+    assert remaining == ["arch0"]
+
+
+def test_purge_human_purged_when_no_automation_left(tmp_path):
+    """When there are no automation sessions, human sessions are purged oldest-first
+    as the normal fallback (#921)."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+
+    async def run():
+        with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
+            await init_db(db_url=db_url)
+            await _seed([
+                _archived(0, archived_at=_BASE + timedelta(hours=0), origin=None),  # oldest
+                _archived(1, archived_at=_BASE + timedelta(hours=1), origin=None),  # newest
+            ])
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            deleted = await orch.purge_oldest_archived(1)
+            return deleted, await _archived_ids()
+
+    deleted, remaining = asyncio.run(run())
+    assert deleted == ["arch0"]  # oldest human is still removed first
     assert remaining == ["arch1"]
 
 

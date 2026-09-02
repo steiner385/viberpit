@@ -23,6 +23,7 @@ import logging
 import os
 
 from .account_auth import helper_env
+from .claude_bin import cli_path_kwargs
 from .helper_call import pick_helper_config_dir, run_helper_call
 
 log = logging.getLogger(__name__)
@@ -95,7 +96,7 @@ async def completion_awaits_user(
             options = ClaudeAgentOptions(
                 model="haiku", system_prompt=_SYSTEM, cwd=cwd or os.getcwd(),
                 env=helper_env(config_dir),
-                allowed_tools=[], setting_sources=[])
+                allowed_tools=[], setting_sources=[], **cli_path_kwargs())
     except Exception as exc:
         log.warning("open_question.classify unavailable: %s", exc)
         return text_awaits_user(text)

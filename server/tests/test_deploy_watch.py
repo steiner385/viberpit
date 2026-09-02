@@ -57,7 +57,7 @@ def _http_map(mapping: dict[str, object]):
 
 def _gh_status(status: str):
     """Fake gh_run returning a compare API JSON with the given status."""
-    def _run(args):
+    def _run(args, token=None):
         return SimpleNamespace(
             returncode=0, stdout=json.dumps({"status": status}), stderr=""
         )
@@ -219,7 +219,7 @@ def test_ancestry_direction(status, expect):
 
 def test_ancestry_gh_failure_is_false():
     async def go():
-        def _run(args):
+        def _run(args, token=None):
             return SimpleNamespace(returncode=1, stdout="", stderr="404")
         w = DeployWatcher(http_get=_http_map({}), gh_run=_run)
         assert await w._is_ancestor("o/r", "b", "h") is False
@@ -230,7 +230,7 @@ def test_ancestry_throttle_checks_pair_once():
     async def go():
         calls = []
 
-        def _run(args):
+        def _run(args, token=None):
             calls.append(args)
             return SimpleNamespace(
                 returncode=0, stdout=json.dumps({"status": "diverged"}), stderr=""
@@ -252,7 +252,7 @@ def test_ancestry_yes_pair_checked_once_ever():
     async def go():
         calls = []
 
-        def _run(args):
+        def _run(args, token=None):
             calls.append(args)
             return SimpleNamespace(
                 returncode=0, stdout=json.dumps({"status": "ahead"}), stderr=""
@@ -334,7 +334,7 @@ def test_poll_skips_pr_with_column_already_set():
         gets = _http_map({"http://qa/h": _resp(200, json.dumps({"commitSha": "livesha"}))})
         calls = []
 
-        def _run(args):
+        def _run(args, token=None):
             calls.append(args)
             return SimpleNamespace(returncode=0, stdout=json.dumps({"status": "ahead"}), stderr="")
         w = DeployWatcher(http_get=gets, gh_run=_run)
@@ -352,7 +352,7 @@ def test_poll_skips_pr_without_merge_sha():
         gets = _http_map({"http://qa/h": _resp(200, json.dumps({"commitSha": "livesha"}))})
         calls = []
 
-        def _run(args):
+        def _run(args, token=None):
             calls.append(args)
             return SimpleNamespace(returncode=0, stdout=json.dumps({"status": "ahead"}), stderr="")
         w = DeployWatcher(http_get=gets, gh_run=_run)
@@ -371,7 +371,7 @@ def test_poll_skips_ancestry_when_livesha_none():
         gets = _http_map({"http://qa/h": _resp(503, "down")})
         calls = []
 
-        def _run(args):
+        def _run(args, token=None):
             calls.append(args)
             return SimpleNamespace(returncode=0, stdout=json.dumps({"status": "ahead"}), stderr="")
         w = DeployWatcher(http_get=gets, gh_run=_run)
@@ -425,3 +425,39 @@ def test_url_guard_blocks_dangerous_targets_allows_tailnet():
     assert _url_allowed("http://10.0.0.5/health") is True          # private LAN
     assert _url_allowed("http://100.101.102.103/health") is True   # tailnet CGNAT
     assert _url_allowed("https://1.1.1.1/health") is True          # public
+
+
+# --------------------------------------------------------------------------- #
+# _compare_status — per-repo App auth                                         #
+# --------------------------------------------------------------------------- #
+
+def test_compare_status_passes_app_token():
+    """_compare_status threads the repo owner's App token to gh_run."""
+    import contextlib
+    from ccswitch import gitrepos
+
+    @contextlib.contextmanager
+    def _app_tokens():
+        gitrepos.set_token_provider(lambda owner: f"tok-{owner}")
+        try:
+            yield
+        finally:
+            gitrepos.set_token_provider(None)
+
+    async def go():
+        tokens = []
+
+        def _run(args, token=None):
+            tokens.append(token)
+            return SimpleNamespace(
+                returncode=0, stdout=json.dumps({"status": "ahead"}), stderr=""
+            )
+
+        w = DeployWatcher(http_get=_http_map({}), gh_run=_run)
+        with _app_tokens():
+            result = await w._compare_status("acme/repo", "base123", "head456")
+
+        assert result == "ahead"
+        assert tokens == ["tok-acme"]
+
+    asyncio.run(go())

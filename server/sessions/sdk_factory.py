@@ -4,12 +4,23 @@ import json
 import os
 
 from .account_auth import oauth_env_for
+from .claude_bin import cli_path_kwargs as _cli_path_kwargs
 from .completion import COMPLETION_INSTRUCTION, NO_PR_INSTRUCTION
 from .permissions import to_sdk_permission_mode
 
 
 def _build_append_string() -> str:
-    return COMPLETION_INSTRUCTION + "\n\n" + NO_PR_INSTRUCTION
+    """Compose every ccswitch marker instruction into the system-prompt append.
+
+    Single composition point: each marker contract owns its own literal, this owns
+    the order they reach the agent in.
+    """
+    from server.config import get_settings
+    from .model_request import MODEL_REQUEST_INSTRUCTION
+    parts = [COMPLETION_INSTRUCTION, NO_PR_INSTRUCTION]
+    if get_settings().self_model_switch_enabled:
+        parts.append(MODEL_REQUEST_INSTRUCTION)
+    return "\n\n".join(parts)
 
 # Inline flag-settings payload (--settings layer, highest priority).  Auto-approves any
 # project-scoped `.mcp.json` MCP server so the CLI's trust gate (LX1 → "pending" → prompt)
@@ -43,6 +54,7 @@ def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None
             "preset": "claude_code",
             "append": _build_append_string(),
         },
+        **_cli_path_kwargs(),
     )
     return ClaudeSDKClient(options=opts)
 
@@ -74,6 +86,7 @@ def real_suggestion_factory(cwd, config_dir, account=None):
         cwd=cwd, env=env, can_use_tool=_deny_all_tools,
         permission_mode="default", include_partial_messages=True,
         max_turns=1, system_prompt=SUGGEST_SYSTEM_PROMPT, model=model, resume=None,
+        **_cli_path_kwargs(),
     )
     return ClaudeSDKClient(options=opts)
 
@@ -99,5 +112,6 @@ def real_summary_factory(cwd, config_dir, account=None):
         cwd=cwd, env=env, can_use_tool=_deny_all_tools,
         permission_mode="default", include_partial_messages=True,
         max_turns=1, system_prompt=SUMMARY_SYSTEM_PROMPT, model=model, resume=None,
+        **_cli_path_kwargs(),
     )
     return ClaudeSDKClient(options=opts)

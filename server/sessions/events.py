@@ -49,10 +49,14 @@ class TurnEnd:
     turn_id: str; usage: dict | None = None; cost_usd: float | None = None
     src_uuid: str | None = None; parent_tool_use_id: str | None = None; outcome: str = "success"
     pr_resolution: str | None = None
+    # Self-directed model request parsed from this turn's text, or None.
+    # {"model": str, "reason": str | None}
+    model_request: dict | None = None
     def to_wire(self): return {"type": "turnEnd", "turnId": self.turn_id, "usage": self.usage,
                                "costUsd": self.cost_usd, "srcUuid": self.src_uuid,
                                "parentToolUseId": self.parent_tool_use_id, "outcome": self.outcome,
-                               "prResolution": self.pr_resolution}
+                               "prResolution": self.pr_resolution,
+                               "modelRequest": self.model_request}
 
 @dataclass
 class TextDelta:
