@@ -6889,6 +6889,36 @@ class SessionOrchestrator:
         result = await self.send_prompt(session_id, RESUME_NUDGE)
         return "resumed" if result == "sent" else result
 
+    @staticmethod
+    def _env_truthy(name: str) -> bool:
+        return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+    async def auto_resume_interrupted(self) -> int:
+        """Opt-in: resume every eligible restart-interrupted session on startup.
+        Off unless CCSWITCH_AUTO_RESUME_ON_RESTART is truthy. Bounded by
+        CCSWITCH_REARM_CONCURRENCY. Run AFTER rearm so replayed pending_prompt
+        sessions are already un-interrupted and skip naturally."""
+        if not self._env_truthy("CCSWITCH_AUTO_RESUME_ON_RESTART"):
+            return 0
+        eligible = [sid for sid, rec in list(self._records.items())
+                    if self._resume_eligible(rec) is None]
+        if not eligible:
+            return 0
+        sem = asyncio.Semaphore(int(os.environ.get("CCSWITCH_REARM_CONCURRENCY", "3")))
+
+        async def _one(sid: str) -> bool:
+            async with sem:
+                try:
+                    return await self.resume_interrupted(sid, SYSTEM_IDENTITY) == "resumed"
+                except Exception:
+                    log.warning("auto-resume: session %s failed", sid, exc_info=True)
+                    return False
+
+        results = await asyncio.gather(*(_one(sid) for sid in eligible))
+        n = sum(1 for ok in results if ok)
+        log.info("auto-resume: resumed %d/%d interrupted session(s)", n, len(eligible))
+        return n
+
     async def ensure_driver(self, session_id: str, identity: str = SYSTEM_IDENTITY) -> SessionDriver | None:
         """Return the live SessionDriver for session_id, resuming from DB if detached.
 

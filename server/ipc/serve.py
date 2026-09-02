@@ -117,6 +117,10 @@ async def daemon_lifespan(app, orchestrator):
     except Exception as exc:
         log.error("daemon rearm_background_tasks() failed", exc_info=True)
         orchestrator.note_startup_failure("rearm", exc)
+    try:
+        await orchestrator.auto_resume_interrupted()
+    except Exception:
+        log.error("daemon auto_resume_interrupted() failed", exc_info=True)
     await orchestrator.start()
     # Drain in-flight turns on SIGTERM before uvicorn begins shutting down, whoever
     # sent it (deploy, watchdog, a bare `systemctl restart`). Needs KillMode=mixed and

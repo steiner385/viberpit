@@ -117,3 +117,29 @@ async def test_resume_interrupted_draining_propagates():
 
     orch.send_prompt = send_draining             # type: ignore[assignment]
     assert await orch.resume_interrupted("s1") == "draining"
+
+
+# ---------------------------------------------------------------------------
+# Task 4 — auto_resume_interrupted tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_auto_resume_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("CCSWITCH_AUTO_RESUME_ON_RESTART", raising=False)
+    rec = _rec(status="idle", interrupted_by_restart=True, interrupted_from_status="in_progress")
+    orch, calls = _orch_with(rec)
+    assert await orch.auto_resume_interrupted() == 0
+    assert calls["prompt"] == []
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_resumes_eligible_when_enabled(monkeypatch):
+    monkeypatch.setenv("CCSWITCH_AUTO_RESUME_ON_RESTART", "true")
+    eligible = _rec(id="s1", status="idle", interrupted_by_restart=True,
+                    interrupted_from_status="working")
+    parked = _rec(id="s2", status="idle", interrupted_by_restart=True,
+                  interrupted_from_status="ready_review")
+    orch, calls = _orch_with(eligible)
+    orch._records["s2"] = parked
+    assert await orch.auto_resume_interrupted() == 1
+    assert [sid for sid, _ in calls["prompt"]] == ["s1"]   # s2 skipped
