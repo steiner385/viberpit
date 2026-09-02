@@ -115,7 +115,7 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
             className={cn(
               'px-4 py-2 font-medium',
               activeTab === 'conversation'
-                ? 'border-b-2 border-primary text-ink'
+                ? 'border-b-2 border-accent text-ink'
                 : 'text-ink-muted hover:text-ink',
             )}
           >
@@ -130,7 +130,7 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
             className={cn(
               'px-4 py-2 font-medium',
               activeTab === 'browser'
-                ? 'border-b-2 border-primary text-ink'
+                ? 'border-b-2 border-accent text-ink'
                 : 'text-ink-muted hover:text-ink',
             )}
           >

@@ -38,7 +38,7 @@ export function NotificationsToggle() {
       <div>
         <div className="text-sm font-medium">Phone notifications</div>
         {state === 'denied' && (
-          <div className="text-xs text-destructive">Permission denied — enable it in browser settings.</div>
+          <div className="text-xs text-danger">Permission denied — enable it in browser settings.</div>
         )}
         {state === 'subscribed' && (
           <div className="text-xs text-ink-muted">This device will receive alerts.</div>

@@ -177,7 +177,7 @@ function QuietHoursForm({ initial, qc }: { initial: QuietHours | undefined; qc: 
       </div>
       <p className="text-xs text-gray-500 dark:text-gray-400">Rules marked &lsquo;critical&rsquo; bypass quiet hours.</p>
       {save.isError && (
-        <p role="alert" className="text-sm text-destructive">{errMessage(save.error)}</p>
+        <p role="alert" className="text-sm text-danger">{errMessage(save.error)}</p>
       )}
     </div>
   )
@@ -235,7 +235,7 @@ function ChannelsSection() {
                 type="button"
                 onClick={() => remove.mutate(c.id)}
                 aria-label={`Delete ${c.name}`}
-                className="text-sm text-destructive underline"
+                className="text-sm text-danger underline"
               >
                 Delete
               </button>
@@ -320,8 +320,8 @@ function AddChannelForm({ qc }: { qc: ReturnType<typeof useQueryClient> }) {
           className={cn(inputClass, 'font-mono min-h-[72px]')}
         />
       </div>
-      {parseError && <p role="alert" className="text-sm text-destructive">{parseError}</p>}
-      {add.isError && <p role="alert" className="text-sm text-destructive">{errMessage(add.error)}</p>}
+      {parseError && <p role="alert" className="text-sm text-danger">{parseError}</p>}
+      {add.isError && <p role="alert" className="text-sm text-danger">{errMessage(add.error)}</p>}
       <div className="flex justify-end">
         <Button type="submit" disabled={add.isPending || !name.trim() || !url.trim()} className="min-h-[44px]">
           {add.isPending ? 'Adding…' : 'Add channel'}
@@ -408,7 +408,7 @@ function RulesSection() {
                 type="button"
                 onClick={() => remove.mutate(r.id)}
                 aria-label={`Delete rule ${r.id}`}
-                className="text-sm text-destructive underline"
+                className="text-sm text-danger underline"
               >
                 Delete
               </button>
@@ -556,7 +556,7 @@ function AddRuleForm({
         </div>
       </div>
 
-      {add.isError && <p role="alert" className="text-sm text-destructive">{errMessage(add.error)}</p>}
+      {add.isError && <p role="alert" className="text-sm text-danger">{errMessage(add.error)}</p>}
 
       <div className="flex flex-wrap justify-end gap-2">
         <Button type="button" variant="outline" onClick={handleTest} disabled={test.isPending} className="min-h-[44px]">

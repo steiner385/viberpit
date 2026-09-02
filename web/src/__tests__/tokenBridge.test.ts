@@ -22,6 +22,7 @@ const DEAD = [
   'border-border', 'bg-background', 'text-foreground',
   'border-[var(--border)]', 'border-[--border]', 'bg-[var(--muted)]', 'bg-[var(--accent)]',
   'text-[var(--accent-foreground)]', 'bg-[--bg]',
+  'border-primary', 'text-destructive',
 ]
 
 function walk(dir: string, out: string[] = []): string[] {

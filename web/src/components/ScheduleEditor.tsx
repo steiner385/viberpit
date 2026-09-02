@@ -256,7 +256,7 @@ export function ScheduleEditor({ schedule, onSave, saving = false }: ScheduleEdi
                 className={cn(
                   'text-xs rounded border px-2 min-h-[44px] min-w-[44px] transition-colors',
                   on
-                    ? 'bg-accent text-accent-ink border-primary'
+                    ? 'bg-accent text-accent-ink border-accent'
                     : 'bg-canvas text-ink border-edge hover:bg-accent-wash',
                 )}
               >

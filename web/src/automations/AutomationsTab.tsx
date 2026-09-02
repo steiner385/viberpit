@@ -155,7 +155,7 @@ function ActionButton(
   const base = 'rounded border px-2 py-1 text-xs font-semibold disabled:opacity-50'
   const btnTone = action.style === 'risky'
     ? 'border-red-300 text-red-700 hover:bg-red-600 hover:text-white hover:border-red-600'
-    : 'border-edge hover:bg-accent hover:text-accent-ink hover:border-primary'
+    : 'border-edge hover:bg-accent hover:text-accent-ink hover:border-accent'
   return (
     <span className="inline-flex items-center gap-2">
       <button type="button" disabled={busy} onClick={onClick} className={`${base} ${btnTone}`}>
