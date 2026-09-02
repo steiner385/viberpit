@@ -5,10 +5,13 @@ right daemon; unrouted calls go to the primary host's REAL bound method, so sync
 async behaviour and the @rpc_deadline marker are preserved for free.
 """
 import asyncio
+import logging
 
 from server.sessions.facade import _DEADLINE_ATTR
 from server.sessions.fleet_router import FleetRouter, NoHostAvailable
 from server.sessions.remote import RemoteOrchestrator
+
+log = logging.getLogger(__name__)
 
 # Fan-out methods that take session_ids: list[str] and group calls by owning host,
 # then merge the results. Each host receives only the IDs it owns.
@@ -154,6 +157,60 @@ class FleetOrchestrator:
         if getattr(getattr(RemoteOrchestrator, name, None), _DEADLINE_ATTR, False):
             setattr(_call, _DEADLINE_ATTR, True)
         return _call
+
+    async def list_sessions(self):
+        """Fleet-wide session list: ask EVERY host and merge.
+
+        The primary's ``_records`` mirrors foreign rows only at rehydrate (process
+        start), so a session a worker created after the primary's last restart was
+        invisible to a primary-only list until the next restart — the "launched a
+        session and it vanished" report. Merge rules:
+
+        - a record served by the host that RUNS it (any non-primary host) beats the
+          primary's mirror copy of the same id, so status is live, not stale;
+        - a record with no ``host`` stamp is labelled with the host that served it,
+          and that host is cached for per-session routing — pre-stamp rows carry
+          host=NULL in the DB, which ``_host_for`` would otherwise route to the
+          primary (→ 404 by id for a session that is alive on a worker);
+        - an unreachable worker is skipped with a warning: a dead worker must not
+          blank the whole dashboard;
+        - the primary's failure still raises, so the API keeps surfacing "daemon
+          unavailable" rather than a silently partial list.
+        """
+        names = self._router.names()
+
+        async def _one(name: str):
+            try:
+                return name, await self._router.get(name).list_sessions(), None
+            except Exception as e:  # noqa: BLE001 — per-host isolation is the point
+                return name, None, e
+
+        results = await asyncio.gather(*(_one(n) for n in names))
+        merged: dict[str, object] = {}
+        served_by: dict[str, str] = {}
+        for name, recs, exc in results:
+            if exc is not None:
+                if name == self._primary:
+                    raise exc
+                log.warning("fleet.list_sessions host=%s unreachable; skipping its "
+                            "sessions this pass", name, exc_info=exc)
+                continue
+            for rec in recs or []:
+                prev = served_by.get(rec.id)
+                # Keep an existing entry unless it is the primary's mirror and this
+                # host is the one actually running the session.
+                if prev is not None and not (prev == self._primary and name != self._primary):
+                    continue
+                if getattr(rec, "host", None) is None:
+                    try:
+                        rec.host = name
+                    except Exception:  # pragma: no cover — frozen record types
+                        pass
+                if name != self._primary:
+                    self._host_cache[rec.id] = name
+                merged[rec.id] = rec
+                served_by[rec.id] = name
+        return list(merged.values())
 
     def subscribe(self, session_id: str):
         # Sync per-session iterator. The WS handler calls ensure_driver (async, warms
