@@ -895,5 +895,61 @@ class TokenSettingsUrlTests(unittest.TestCase):
         self.assertEqual(row["settingsUrl"], "https://github.com/settings/tokens")
 
 
+class AppTokenPublicHelpersTests(unittest.TestCase):
+    """``app_token_for_owner``/``app_token_for_repo`` are the public wrappers
+    other modules under ``server/`` use instead of reaching into the private
+    ``_app_token``."""
+
+    def setUp(self) -> None:
+        self.addCleanup(gitrepos.set_token_provider, None)
+
+    def test_app_token_for_owner_returns_provider_token(self) -> None:
+        gitrepos.set_token_provider(lambda owner: "ghs_tok")
+        self.assertEqual(gitrepos.app_token_for_owner("acme"), "ghs_tok")
+
+    def test_app_token_for_owner_none_with_no_provider(self) -> None:
+        self.assertIsNone(gitrepos.app_token_for_owner("acme"))
+
+    def test_app_token_for_owner_swallows_provider_exceptions(self) -> None:
+        def boom(owner: str) -> str | None:
+            raise RuntimeError("mint failed")
+
+        gitrepos.set_token_provider(boom)
+        self.assertIsNone(gitrepos.app_token_for_owner("acme"))
+
+    def test_app_token_for_repo_returns_provider_token_for_owner(self) -> None:
+        seen: list[str] = []
+
+        def provider(owner: str) -> str | None:
+            seen.append(owner)
+            return "ghs_tok"
+
+        gitrepos.set_token_provider(provider)
+        self.assertEqual(gitrepos.app_token_for_repo("acme/widget"), "ghs_tok")
+        self.assertEqual(seen, ["acme"])
+
+    def test_app_token_for_repo_none_with_no_provider(self) -> None:
+        self.assertIsNone(gitrepos.app_token_for_repo("acme/widget"))
+
+    def test_app_token_for_repo_none_for_empty_string(self) -> None:
+        gitrepos.set_token_provider(lambda owner: "ghs_tok")
+        self.assertIsNone(gitrepos.app_token_for_repo(""))
+
+    def test_app_token_for_repo_none_for_no_slash(self) -> None:
+        gitrepos.set_token_provider(lambda owner: "ghs_tok")
+        self.assertIsNone(gitrepos.app_token_for_repo("noslash"))
+
+    def test_app_token_for_repo_none_for_leading_slash(self) -> None:
+        gitrepos.set_token_provider(lambda owner: "ghs_tok")
+        self.assertIsNone(gitrepos.app_token_for_repo("/leading"))
+
+    def test_app_token_for_repo_swallows_provider_exceptions(self) -> None:
+        def boom(owner: str) -> str | None:
+            raise RuntimeError("mint failed")
+
+        gitrepos.set_token_provider(boom)
+        self.assertIsNone(gitrepos.app_token_for_repo("acme/widget"))
+
+
 if __name__ == "__main__":
     unittest.main()

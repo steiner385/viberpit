@@ -316,7 +316,7 @@ def _real_gh(repo: str, branch: str) -> list[dict]:
              "-f", f"o={owner}",
              "-f", f"n={name}",
              "-f", f"br={branch}"],
-            token=gitrepos._app_token(owner), timeout=30)
+            token=gitrepos.app_token_for_owner(owner), timeout=30)
         if r.returncode != 0:
             raise gitrepos.GhError(r.stderr.strip() or "gh graphql failed")
     except Exception as exc:  # gh missing / auth / network / non-zero / timeout
@@ -355,7 +355,7 @@ def _real_gh_num(repo: str, number: int) -> "dict | None":
              "-f", f"o={owner}",
              "-f", f"n={name}",
              "-F", f"num={number}"],
-            token=gitrepos._app_token(owner), timeout=30)
+            token=gitrepos.app_token_for_owner(owner), timeout=30)
         if r.returncode != 0:
             raise gitrepos.GhError(r.stderr.strip() or "gh graphql failed")
     except Exception as exc:
