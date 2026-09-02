@@ -57,10 +57,31 @@ reaching the model. Two independent defects combined; both are instances of the 
   `aclose()` / cache-write swallows during teardown; no change.
 - Any `await orchestrator.<verb>(...)` on the WS receive path whose boolean result is dropped.
   `resolve_permission` had the identical shape — fixed in the same PR
-  (`PERMISSION_NOT_PENDING` error frame).
+  (`PERMISSION_NOT_PENDING` error frame). **Sibling-sweep (issue #917, 2026-09-02):** `cancelQueued`
+  was the third and last of this family — it dropped the bool from `cancel_queued` (False = stale
+  index, the queue already drained/shifted, or no live driver), so the user's "×" on a queue-strip
+  chip silently no-op'd. Fixed to emit a `QUEUED_NOT_FOUND` error frame, matching the two above; the
+  web reducer's generic `error` case already raises the dismissable banner for a turnId-less frame,
+  so no client change was needed. The full sweep confirmed these three (`answerQuestion`,
+  `permissionResponse`, `cancelQueued`) are the *only* WS verbs whose handler awaits a
+  bool-returning orchestrator call; the rest (`prompt`, `interrupt`, `setPermissionMode`, `command`,
+  `attach`, `detach`, `activity`) return no decision bool.
 - Any queue gated on "is something running" where the running thing can be blocked on user
   input: `driver.send_prompt` was the only one; `_queue` is drained solely in `_drain`'s
-  `finally`.
+  `finally`. **Re-swept (issue #917, 2026-09-02):** still the only such queue. The
+  images-after-answer append (`driver.py` `_queue.append(("", images))` right after
+  `resolve_all`) is *not* a sibling — `resolve_all` unblocks the parked turn, so the turn ends
+  and the drain runs; the images ride as an attachment-only follow-up by design (comment in
+  `send_prompt`), and the drainer is never waiting on the queued item. `_pending_initial_prompt`
+  is a one-shot dict popped on WS attach (no blocking turn depends on it), not a drain-at-turn-end
+  queue.
+- Any `SessionRecord` boolean whose truth is "X exists in some dict/set" — the shadow-flag
+  face. **Re-swept (issue #917, 2026-09-02):** `detached` remains the only true membership mirror
+  and stays derived. Every other bool field is genuine state, not a collection mirror:
+  `name_is_auto` / `adopted_in_place` / `autopilot_paused` (durable facts or user prefs),
+  `account_pinned` (DB-backed), `model_pending` / `interrupted_by_restart` / `usage_unverified`
+  (transient, cleared on their own boundary). Web mirrors (`hasOpenAction`, `hasOpenPermission`)
+  are derived from `viewState.turns` at render time. No new hand-maintained mirror found.
 - **Tests that `mock.patch.object(orch, "ensure_driver", …)`** and then expect a LIVE edge
   attach must also register the fake in `orch._drivers["<sid>"]` (that is what the real
   `ensure_driver` does; `detached` derives from it). Before this fix such tests passed by
@@ -73,6 +94,7 @@ reaching the model. Two independent defects combined; both are instances of the 
 
 - Tests: `server/tests/test_detached_derived_from_drivers.py`,
   `server/tests/test_question_prompt_answer.py`, `server/tests/test_ws_rejected_answer.py`,
+  `server/tests/test_ws_rejected_cancel_queued.py` (the #917 sibling-sweep instance),
   `web/src/session/reducer.questionAnswer.test.ts`.
 - Related: `docs/superpowers/fix-patterns/2026-08-31-empty-name-aliases-store-root.md`
   (another "two paths to one fact" drift), `server/tests/test_ensure_driver_identity_rethread.py`
