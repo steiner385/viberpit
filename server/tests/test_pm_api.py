@@ -237,6 +237,46 @@ def test_classify_409_when_not_eligible():
         assert r.json()["detail"]["error"] == "map_not_merged"
 
 
+def test_advance_map_transitions_state():
+    """advance-map: 200 in map_proposed → onboardingState becomes map_merged;
+    409 when state is wrong; classify becomes available after."""
+    import asyncio
+    from server.db import db_session
+    from sqlalchemy import select
+    from server.db.models import Project, ProjectRepo
+
+    with _client_with_stubbed_seams() as c:
+        _register(c, "Ccswitch", repo="o/r")
+
+        # Must be in map_proposed — 409 when still registered
+        r = c.post("/api/pm/projects/ccswitch/advance-map", headers=IDENTITY_HEADERS)
+        assert r.status_code == 409
+        assert r.json()["detail"]["error"] == "not_map_proposed"
+
+        # Force state to map_proposed + backfill_done
+        async def _set_proposed():
+            async with db_session() as db:
+                p = (await db.execute(select(Project).where(
+                    Project.slug == "ccswitch"))).scalar_one()
+                p.onboarding_state = "map_proposed"
+                (await db.execute(select(ProjectRepo).where(
+                    ProjectRepo.project_id == p.id))).scalar_one().backfill_done = True
+        asyncio.run(_set_proposed())
+
+        # advance succeeds
+        r = c.post("/api/pm/projects/ccswitch/advance-map", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json()["onboardingState"] == "map_merged"
+
+        # DB reflects the new state
+        async def _check():
+            async with db_session() as db:
+                p = (await db.execute(select(Project).where(
+                    Project.slug == "ccswitch"))).scalar_one()
+                assert p.onboarding_state == "map_merged"
+        asyncio.run(_check())
+
+
 def test_classify_dispatches_and_is_idempotent():
     # Full narrated flow: register → force map_merged → classify → accept.
     with _client_with_stubbed_seams() as c:

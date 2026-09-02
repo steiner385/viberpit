@@ -3678,6 +3678,20 @@ class SessionOrchestrator:
     # map_proposed with neither flag as "re-offer ProposeMap", which is the correct
     # resumable behavior. Wiring PR-state correlation is a phase-3 enrichment.
 
+    async def pm_advance_map_merged(self, slug: str) -> None:
+        """Advance a project from ``map_proposed`` to ``map_merged`` after the
+        human merges the archaeology map PR. The wizard calls this endpoint once
+        the user confirms the merge; pm-sync will index the merged docs on its
+        next tick and the classify step becomes available."""
+        from sqlalchemy import select
+        from server.db.models import Project
+        async with db_session() as db:
+            proj = (await db.execute(select(Project).where(
+                Project.slug == slug))).scalar_one_or_none()
+            if proj is not None and proj.onboarding_state == "map_proposed":
+                proj.onboarding_state = "map_merged"
+                await db.commit()
+
     # ------------------------------------------------------------------
     # SDLC Synthesizer control-loop dependencies (injected into SdlcSynthesizerLoop)
     # ------------------------------------------------------------------

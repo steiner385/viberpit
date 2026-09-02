@@ -59,12 +59,15 @@ def parse_feature_doc(text: str) -> FeatureDoc:
         raise FeatureDocError(f"state {state!r} not in {FEATURE_LIFECYCLE_STATES}")
 
     links: list[FeatureLinkRef] = []
-    for item in meta.get("links") or []:
+    links_raw = meta.get("links")
+    if not isinstance(links_raw, list):
+        links_raw = []  # archaeology sessions may write an evidence dict — treat as no links
+    for item in links_raw:
         if not isinstance(item, dict):
-            raise FeatureDocError("each link must be a mapping")
+            continue  # skip malformed entries rather than failing the whole doc
         kind = str(item.get("kind") or "").strip()
         if kind not in FEATURE_LINK_KINDS:
-            raise FeatureDocError(f"link kind {kind!r} not in {FEATURE_LINK_KINDS}")
+            continue  # skip unknown kinds rather than failing the whole doc
         links.append(FeatureLinkRef(
             kind=kind,
             project=str(item.get("project") or "").strip(),
