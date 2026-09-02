@@ -10,6 +10,8 @@ class _FakeOrch:
         self.calls.append(("usage", acct, timeout)); return {"acct": acct}
     setattr(usage, "__ccswitch_rpc_deadline__", True)
     def daemon_sha(self): return "abc1234"
+    async def list_archived(self):
+        self.calls.append("list_archived"); return [("archived", self.name)]
 
 
 class _FakeRouter:
@@ -23,8 +25,96 @@ class _FakeRouter:
 async def test_unrouted_method_goes_to_primary():
     prim = _FakeOrch("rocky")
     fo = FleetOrchestrator(_FakeRouter({"rocky": prim}), primary="rocky")
-    assert await fo.list_sessions() == ["rocky"]
-    assert prim.calls == ["list_sessions"]
+    assert await fo.list_archived() == [("archived", "rocky")]
+    assert prim.calls == ["list_archived"]
+
+
+# --- list_sessions fans out across every host ---------------------------------
+#
+# The primary's _records only mirrors FOREIGN rows at rehydrate (process start), so
+# a session a worker created after the primary's last restart is invisible to a
+# primary-only list until the next restart — the "session disappeared into the
+# void" report. The fleet list must ask every host and merge.
+
+class _LRec:
+    def __init__(self, id, host=None, status="idle"):
+        self.id, self.host, self.status = id, host, status
+
+    def __repr__(self):
+        return f"_LRec({self.id!r}, host={self.host!r}, status={self.status!r})"
+
+
+class _ListOrch(_FakeOrch):
+    def __init__(self, name, recs=None, fail=None):
+        super().__init__(name)
+        self.recs, self.fail = list(recs or []), fail
+
+    async def list_sessions(self):
+        self.calls.append("list_sessions")
+        if self.fail is not None:
+            raise self.fail
+        return list(self.recs)
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_fans_out_to_every_host():
+    dobby = _ListOrch("dobby", [_LRec("s-d1"), _LRec("s-d2")])
+    rocky = _ListOrch("rocky", [_LRec("s-r1")])
+    fo = FleetOrchestrator(_FakeRouter({"dobby": dobby, "rocky": rocky}), primary="dobby")
+    got = await fo.list_sessions()
+    assert sorted(r.id for r in got) == ["s-d1", "s-d2", "s-r1"]
+    assert dobby.calls == ["list_sessions"] and rocky.calls == ["list_sessions"]
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_prefers_owning_host_over_primary_mirror():
+    # The primary holds a stale mirror of a rocky-owned session; the worker's live
+    # record (the one with the driver) must win, and the result must not duplicate.
+    dobby = _ListOrch("dobby", [_LRec("s-r1", status="idle"), _LRec("s-d1")])
+    rocky = _ListOrch("rocky", [_LRec("s-r1", status="in_progress")])
+    fo = FleetOrchestrator(_FakeRouter({"dobby": dobby, "rocky": rocky}), primary="dobby")
+    got = {r.id: r for r in await fo.list_sessions()}
+    assert set(got) == {"s-r1", "s-d1"}
+    assert got["s-r1"].status == "in_progress"
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_stamps_host_when_record_has_none():
+    # A worker's own automation spawn carried host=NULL (pre-fix rows). The fleet
+    # list labels it with the host that actually served it so the UI can show
+    # where it runs; records that already carry a host are left alone.
+    dobby = _ListOrch("dobby", [_LRec("s-d1")])
+    rocky = _ListOrch("rocky", [_LRec("s-r1"), _LRec("s-r2", host="rocky")])
+    fo = FleetOrchestrator(_FakeRouter({"dobby": dobby, "rocky": rocky}), primary="dobby")
+    got = {r.id: r for r in await fo.list_sessions()}
+    assert got["s-r1"].host == "rocky"
+    assert got["s-r2"].host == "rocky"
+    assert got["s-d1"].host == "dobby"
+    # Per-session routing learns the real owner too: a pre-stamp NULL-host row would
+    # otherwise route get_session/answer_question to the primary (→ 404 / no driver).
+    assert fo._host_cache["s-r1"] == "rocky"
+    assert "s-d1" not in fo._host_cache
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_tolerates_unreachable_worker():
+    # A dead worker must not blank the whole dashboard.
+    dobby = _ListOrch("dobby", [_LRec("s-d1")])
+    rocky = _ListOrch("rocky", fail=ConnectionError("rocky down"))
+    fo = FleetOrchestrator(_FakeRouter({"dobby": dobby, "rocky": rocky}), primary="dobby")
+    got = await fo.list_sessions()
+    assert [r.id for r in got] == ["s-d1"]
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_primary_failure_still_raises():
+    # The primary's failure is the fleet's failure: keep the existing contract so
+    # the API surfaces "daemon unavailable" instead of a silently partial list.
+    dobby = _ListOrch("dobby", fail=ConnectionError("primary down"))
+    rocky = _ListOrch("rocky", [_LRec("s-r1")])
+    fo = FleetOrchestrator(_FakeRouter({"dobby": dobby, "rocky": rocky}), primary="dobby")
+    with pytest.raises(ConnectionError):
+        await fo.list_sessions()
 
 
 @pytest.mark.asyncio
