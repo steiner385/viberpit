@@ -836,7 +836,7 @@ class SessionDriver:
         once. Set-only: a turn carrying no request leaves the previous value alone,
         matching _last_pr_resolution's stickiness.
         """
-        if e.model_request:
+        if e.model_request is not None:
             self._last_model_request = {"turn_id": e.turn_id, **e.model_request}
 
     @property
