@@ -172,6 +172,36 @@ async def test_one_repo_failure_does_not_stall_others():
 
 
 @pytest.mark.asyncio
+async def test_feature_read_failure_skips_reindex_without_orphaning():
+    """A failed feature-doc read must SKIP the reindex, never orphan features.
+
+    The atomic reader raises on a partial/untrustworthy read (rather than
+    returning a subset).  ``_feature_index`` must swallow that and skip — running
+    ``apply_feature_plan`` on an incomplete doc set would orphan the valid docs
+    the read missed (the dogfood bug: 21 live features silently orphaned).  The
+    work-item sync is independent and must still complete: the watermark advances
+    and a warning is surfaced.
+    """
+    ctx = Ctx()
+    wm = datetime(2026, 1, 15, tzinfo=timezone.utc)
+    view = _view(backfill_done=True, watermark=wm, sync_requested_at=wm)
+    pages = [_issue_page([], None, False), _pr_page([], None, False)]
+    loop, saved, upserted, applied = _loop(ctx, [view], pages)
+
+    async def boom(_repo):
+        raise RuntimeError("git read partial/untrustworthy")
+
+    loop._read_feature_docs = boom
+    await loop.tick()
+    # Reindex skipped — apply_feature_plan never ran, so nothing was orphaned.
+    assert applied == []
+    # Work-item sync is decoupled and still completed: watermark advanced.
+    assert any("watermark" in u for _, u in saved)
+    # The skipped reindex is surfaced as a warning.
+    assert any(level == "warning" for level, _, _ in ctx.events)
+
+
+@pytest.mark.asyncio
 async def test_interval_gate_skips_recent_unless_requested():
     ctx = Ctx()
     now = datetime(2026, 2, 1, tzinfo=timezone.utc)

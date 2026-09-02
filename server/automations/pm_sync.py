@@ -235,9 +235,23 @@ class PmSyncLoop:
     async def _feature_index(self, view: RepoSyncView) -> None:
         if not view.is_primary:
             return
+        # The read is atomic-or-raise: a partial/untrustworthy read raises rather
+        # than returning a subset. Skip the reindex on failure — running the plan
+        # over an incomplete doc set would ORPHAN the docs the read missed (the
+        # dogfood bug). Best-effort and decoupled from work-item sync: a failed
+        # read never propagates out to abort the surrounding incremental pass.
+        try:
+            raw = await self._read_feature_docs(view.repo)
+        except Exception:
+            log.warning("pm_sync.feature_read_failed repo=%s — skipping reindex",
+                        view.repo, exc_info=True)
+            await self._ctx.emit(
+                "warning", f"feature-doc read failed for {view.repo}; reindex skipped",
+                kind="feature_read_error", target=view.repo)
+            return
         docs: list[tuple[str, FeatureDoc]] = []
         by_slug: dict[str, FeatureDoc] = {}
-        for path, text in await self._read_feature_docs(view.repo):
+        for path, text in raw:
             try:
                 doc = parse_feature_doc(text)
             except FeatureDocError:

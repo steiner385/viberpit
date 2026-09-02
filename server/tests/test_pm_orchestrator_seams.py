@@ -310,3 +310,85 @@ def _mk_async(value):
     async def _f(*a, **k):
         return value
     return _f
+
+
+def _git(*args, cwd):
+    import subprocess
+    subprocess.run(["git", "-C", cwd, *args], check=True,
+                   capture_output=True, text=True)
+
+
+def _make_feature_repo(root: str, slugs) -> str:
+    """A real git repo with docs/product/features/<slug>.md committed, plus a
+    ``refs/remotes/origin/master`` ref (what _pm_sync_read_feature_docs resolves)."""
+    import os
+    import subprocess
+    clone = os.path.join(root, "clone")
+    os.makedirs(os.path.join(clone, "docs", "product", "features"))
+    subprocess.run(["git", "init", "-q", clone], check=True,
+                   capture_output=True, text=True)
+    _git("config", "user.email", "t@t", cwd=clone)
+    _git("config", "user.name", "t", cwd=clone)
+    for slug in slugs:
+        p = os.path.join(clone, "docs", "product", "features", f"{slug}.md")
+        with open(p, "w") as fh:
+            fh.write(f"---\nslug: {slug}\ntitle: T{slug}\nstate: live\n---\n\nbody {slug}\n")
+    _git("add", "-A", cwd=clone)
+    _git("commit", "-q", "-m", "docs", cwd=clone)
+    head = subprocess.run(["git", "-C", clone, "rev-parse", "HEAD"],
+                          check=True, capture_output=True, text=True).stdout.strip()
+    _git("update-ref", "refs/remotes/origin/master", head, cwd=clone)
+    return clone
+
+
+@pytest.mark.asyncio
+async def test_read_feature_docs_returns_all_docs_from_pinned_snapshot(db_env):
+    """The reader returns EVERY feature doc in the tree (atomic snapshot) — never
+    a silent subset.  Guards the regression that orphaned 21 live features."""
+    orch = _bare_orch()
+    orch._effective_repo_root = _mk_async("/tmp/root")
+    with tempfile.TemporaryDirectory() as root:
+        clone = _make_feature_repo(root, ["alpha", "beta", "gamma"])
+        with patch("ccswitch.gitrepos.ensure_clone", return_value=clone):
+            docs = await orch._pm_sync_read_feature_docs("o/r")
+    paths = sorted(p for p, _ in docs)
+    assert paths == [
+        "docs/product/features/alpha.md",
+        "docs/product/features/beta.md",
+        "docs/product/features/gamma.md",
+    ]
+    assert all("body" in text for _, text in docs)
+
+
+@pytest.mark.asyncio
+async def test_read_feature_docs_raises_on_partial_read(db_env, monkeypatch):
+    """A single unreadable blob makes the whole read raise — never a silent
+    subset.  Returning a subset here is what orphaned the missing valid docs."""
+    import subprocess
+    orch = _bare_orch()
+    orch._effective_repo_root = _mk_async("/tmp/root")
+
+    def cp(cmd, rc=0, out=""):
+        return subprocess.CompletedProcess(
+            cmd, rc, stdout=out, stderr=("boom" if rc else ""))
+
+    def fake_run(cmd, *a, **k):
+        if "fetch" in cmd:
+            return cp(cmd)
+        if "symbolic-ref" in cmd:
+            return cp(cmd, 0, "")            # no origin/HEAD → fallback to origin/master
+        if "rev-parse" in cmd:
+            return cp(cmd, 0, "deadbeefcafe\n")
+        if "ls-tree" in cmd:
+            return cp(cmd, 0, "docs/product/features/a.md\n"
+                              "docs/product/features/b.md\n")
+        if "show" in cmd:
+            if cmd[-1].endswith("a.md"):
+                return cp(cmd, 0, "---\nslug: a\ntitle: A\nstate: live\n---\nx")
+            return cp(cmd, 1)                # b.md blob read FAILS
+        return cp(cmd)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+        with pytest.raises(RuntimeError):
+            await orch._pm_sync_read_feature_docs("o/r")
