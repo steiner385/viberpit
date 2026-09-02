@@ -349,6 +349,19 @@ def daemon_role() -> str:
     return role
 
 
+# Loop-task attributes that ONLY a primary daemon starts (#919). A worker "serves
+# dispatched sessions only" (#840); if it also drove these fleet-global automation
+# loops, two daemons would drive one shared DB — duplicate proposals/PRs, FK spam
+# for rows the other deleted, worker-spawned rows the primary "owns" but never holds.
+# start() gates their creation on daemon_role()=="primary"; the single source of
+# truth for the completeness test in test_primary_lease.
+_PRIMARY_ONLY_LOOP_ATTRS: frozenset[str] = frozenset({
+    "_backlog_task", "_sdlc_intake_task", "_pm_sync_task", "_sdlc_synth_task",
+    "_autopilot_task", "_cicd_task", "_archaudit_task", "_sweep_task",
+    "_archive_limit_task", "_recurring_task",
+})
+
+
 def self_host_name() -> str:
     """This daemon's fleet identity — the ``hosts.name`` the dispatcher stamps
     onto sessions it sends here (``Session.host``).
@@ -975,64 +988,74 @@ class SessionOrchestrator:
         self._token_refresh_task = asyncio.create_task(
             self._token_refresh_monitor(), name="token-refresh-monitor"
         )
-        # Backlog Runner control loop: one tick per interval (refill + handoff/
-        # terminal-watch sweep). A disabled row makes each tick a cheap sweep.
-        self._backlog_task = asyncio.create_task(
-            self._backlog_tick_loop(interval=60.0), name="backlog-runner-loop"
-        )
-        # SDLC Intake control loop: one tick per interval (propose intent for each
-        # pending trigger). A disabled/absent row makes each tick a cheap no-op.
-        self._sdlc_intake_task = asyncio.create_task(
-            self._sdlc_intake_tick_loop(interval=60.0), name="sdlc-intake-loop"
-        )
-        # PM Sync control loop: one tick per interval (backfill or incremental pass
-        # per onboarded repo + feature index refresh). Off by default; DB row enables.
-        self._pm_sync_task = asyncio.create_task(
-            self._pm_sync_tick_loop(interval=60.0), name="pm-sync-loop"
-        )
-        # SDLC Synthesizer control loop: one tick per interval (propose spec/plan
-        # artifacts + enrich PR metadata). A disabled row makes each tick cheap.
-        self._sdlc_synth_task = asyncio.create_task(
-            self._sdlc_synth_tick_loop(interval=60.0), name="sdlc-synthesizer-loop"
-        )
-        # Autopilot control loop: one tick per interval plus status-change nudges.
-        self._autopilot_task = asyncio.create_task(
-            self._autopilot_tick_loop(interval=20.0), name="autopilot-loop"
-        )
-        # CI/CD Doctor: slow cadence — CI history moves in minutes, not seconds,
-        # and each tick costs several REST calls per repo.
-        self._cicd_task = asyncio.create_task(
-            self._cicd_tick_loop(interval=900.0), name="cicd-doctor-loop"
-        )
-        # Archive Audit: re-audit recently-archived sessions every 6 hours.
-        self._archaudit_task = asyncio.create_task(
-            self._archaudit_tick_loop(interval=21600.0), name="archive-audit-loop"
-        )
-        # Stuck-session sweep: retry rotation for needs_attention sessions every 5 min.
-        # The rotation monitor is event-driven (fires on degradation); this covers
-        # the recovery side — sessions paused due to all_accounts_busy get a chance
-        # to move once a healthy account frees up.
-        self._sweep_task = asyncio.create_task(
-            self._stuck_session_sweep(), name="stuck-session-sweep"
-        )
-        # Archived-session cap sweep: re-enforce max_archived_sessions every 5 min so a
-        # lowered limit takes effect without waiting for the next archive event.
-        self._archive_limit_task = asyncio.create_task(
-            self._archive_limit_loop(), name="archive-limit-sweep"
-        )
         # Orphan-worktree janitor: fires immediately on startup then every 24 h.
         # Reclaims worktree dirs left behind by spawn crashes, failed archive moves,
-        # or SIGKILL mid-teardown — the three orphan sources from issue #591.
+        # or SIGKILL mid-teardown — the three orphan sources from issue #591. Per-host
+        # local cleanup (each daemon owns its own worktrees), so workers run it too.
         self._janitor_task = asyncio.create_task(
             self._worktree_janitor_loop(interval=86400.0), name="worktree-janitor-loop"
         )
-        # Recurring-session scheduler: fire cron-scheduled Automation rows as their
-        # due time arrives (#603 dispatch). Alongside the loops above; the watermark
-        # column makes each firing idempotent across restarts.
-        self._recurring_task = asyncio.create_task(
-            self._recurring_tick_loop(interval=_RECURRING_TICK_INTERVAL),
-            name="recurring-session-scheduler",
-        )
+        # Fleet-global automation loops (#919): ONLY the primary daemon may run these.
+        # A worker serves dispatched sessions only (#840); a worker that also drove
+        # these loops would double-drive the one shared DB (duplicate proposals/PRs,
+        # FK-violation spam, worker-spawned rows the primary "owns" but never holds).
+        # The primary lease above only role-gated its OWN acquisition — these spawns
+        # never passed the dispatcher, so gating here concentrates automation on the
+        # primary by design. Kept as one guarded block; _PRIMARY_ONLY_LOOP_ATTRS is
+        # the single source of truth (test_primary_lease pins the two agree).
+        if daemon_role() == "primary":
+            # Backlog Runner control loop: one tick per interval (refill + handoff/
+            # terminal-watch sweep). A disabled row makes each tick a cheap sweep.
+            self._backlog_task = asyncio.create_task(
+                self._backlog_tick_loop(interval=60.0), name="backlog-runner-loop"
+            )
+            # SDLC Intake control loop: one tick per interval (propose intent for each
+            # pending trigger). A disabled/absent row makes each tick a cheap no-op.
+            self._sdlc_intake_task = asyncio.create_task(
+                self._sdlc_intake_tick_loop(interval=60.0), name="sdlc-intake-loop"
+            )
+            # PM Sync control loop: one tick per interval (backfill or incremental pass
+            # per onboarded repo + feature index refresh). Off by default; DB row enables.
+            self._pm_sync_task = asyncio.create_task(
+                self._pm_sync_tick_loop(interval=60.0), name="pm-sync-loop"
+            )
+            # SDLC Synthesizer control loop: one tick per interval (propose spec/plan
+            # artifacts + enrich PR metadata). A disabled row makes each tick cheap.
+            self._sdlc_synth_task = asyncio.create_task(
+                self._sdlc_synth_tick_loop(interval=60.0), name="sdlc-synthesizer-loop"
+            )
+            # Autopilot control loop: one tick per interval plus status-change nudges.
+            self._autopilot_task = asyncio.create_task(
+                self._autopilot_tick_loop(interval=20.0), name="autopilot-loop"
+            )
+            # CI/CD Doctor: slow cadence — CI history moves in minutes, not seconds,
+            # and each tick costs several REST calls per repo.
+            self._cicd_task = asyncio.create_task(
+                self._cicd_tick_loop(interval=900.0), name="cicd-doctor-loop"
+            )
+            # Archive Audit: re-audit recently-archived sessions every 6 hours.
+            self._archaudit_task = asyncio.create_task(
+                self._archaudit_tick_loop(interval=21600.0), name="archive-audit-loop"
+            )
+            # Stuck-session sweep: retry rotation for needs_attention sessions every 5 min.
+            # The rotation monitor is event-driven (fires on degradation); this covers
+            # the recovery side — sessions paused due to all_accounts_busy get a chance
+            # to move once a healthy account frees up.
+            self._sweep_task = asyncio.create_task(
+                self._stuck_session_sweep(), name="stuck-session-sweep"
+            )
+            # Archived-session cap sweep: re-enforce max_archived_sessions every 5 min so
+            # a lowered limit takes effect without waiting for the next archive event.
+            self._archive_limit_task = asyncio.create_task(
+                self._archive_limit_loop(), name="archive-limit-sweep"
+            )
+            # Recurring-session scheduler: fire cron-scheduled Automation rows as their
+            # due time arrives (#603 dispatch). The watermark column makes each firing
+            # idempotent across restarts.
+            self._recurring_task = asyncio.create_task(
+                self._recurring_tick_loop(interval=_RECURRING_TICK_INTERVAL),
+                name="recurring-session-scheduler",
+            )
 
     async def _primary_lease_heartbeat(self) -> None:
         """Renew the primary lease every TTL/5; scream on a fenced takeover (#852).

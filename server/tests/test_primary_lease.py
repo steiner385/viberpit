@@ -146,3 +146,43 @@ def test_worker_start_never_touches_the_lease(tmp_path, monkeypatch):
         assert state is not None and state.holder == "dobby" and state.fence == 1
 
     asyncio.run(run())
+
+
+def test_worker_start_skips_fleet_global_loops(tmp_path, monkeypatch):
+    """#919: a worker serves dispatched sessions only — it must NOT start the
+    fleet-global automation loops, or two daemons double-drive the shared DB."""
+    from server.sessions.orchestrator import _PRIMARY_ONLY_LOOP_ATTRS
+    monkeypatch.setenv("CCSWITCH_DAEMON_ROLE", "worker")
+    monkeypatch.setenv("CCSWITCH_HOST_NAME", "rocky")
+
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")
+        orch = _new_orch()
+        await orch.start()
+        still_running = {a for a in _PRIMARY_ONLY_LOOP_ATTRS
+                         if getattr(orch, a, None) is not None}
+        await orch.stop()
+        assert not still_running, f"worker started fleet-global loops: {sorted(still_running)}"
+        # Per-host local loops still run (the janitor owns this host's worktrees).
+        assert orch._janitor_task is None  # stop() cleared it, proving it existed
+
+    asyncio.run(run())
+
+
+def test_primary_start_runs_every_fleet_global_loop(tmp_path, monkeypatch):
+    """The mirror of the worker case: a primary starts ALL of them, so
+    _PRIMARY_ONLY_LOOP_ATTRS stays in lockstep with start()."""
+    from server.sessions.orchestrator import _PRIMARY_ONLY_LOOP_ATTRS
+    monkeypatch.delenv("CCSWITCH_DAEMON_ROLE", raising=False)
+    monkeypatch.setenv("CCSWITCH_HOST_NAME", "dobby")
+
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")
+        orch = _new_orch()
+        await orch.start()
+        missing = {a for a in _PRIMARY_ONLY_LOOP_ATTRS
+                   if getattr(orch, a, None) is None}
+        await orch.stop()
+        assert not missing, f"primary did not start: {sorted(missing)}"
+
+    asyncio.run(run())
