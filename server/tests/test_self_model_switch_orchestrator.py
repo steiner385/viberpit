@@ -409,6 +409,10 @@ def test_park_self_model_request_writes_the_real_row(tmp_path, monkeypatch):
     assert row.pending_model_requested_at is not None
     assert rec.pending_model == "fable"
     assert rec.pending_model_reason == "needs a human"
+    # I3 (whole-branch finding): _record_to_dict reads the in-memory record, not the
+    # DB row, so pendingModelRequestedBy must be set here too or the approval card
+    # never renders "the session requested this" until a daemon restart rehydrates it.
+    assert rec.pending_model_requested_by == "session:self"
 
 
 def test_apply_model_request_fails_open_when_a_collaborator_raises(tmp_path, monkeypatch):

@@ -1337,6 +1337,8 @@ async def model_approval(
 
     ``body.model``, when given, is a human COUNTER-OFFER: approve the hold at this
     model instead of the parked one. Absent means approve exactly what was requested.
+    Ignored when ``decision`` is ``"deny"`` — a denial rejects the hold outright, so
+    there is no model to approve at.
 
     Returns the updated session record (200), 404 if unknown, 409 if no pending
     approval to resolve or the counter-offer is blocked by policy, 422 if the

@@ -8667,6 +8667,7 @@ class SessionOrchestrator:
         record = self._records.get(session_id)
         if record is not None:
             record.pending_model = model
+            record.pending_model_requested_by = identity
             if reason is not self._NO_REASON:
                 record.pending_model_reason = reason
         values: dict = {

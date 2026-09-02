@@ -34,6 +34,19 @@ export function PendingModelApprovalPanel({ model, reason, requestedBy, onDecisi
   const { data: models } = useModels()
   // Default the picker to the requested model so a plain Approve is unchanged.
   const [choice, setChoice] = useState<string>(model ?? '')
+  // The panel stays mounted while a hold is pending, and a standing hold can be
+  // overwritten by a DIFFERENT parked model (e.g. fable parks, goes unanswered,
+  // then opus parks) — the dedupe upstream only short-circuits on an IDENTICAL
+  // model. Without this, `choice` would keep reading the stale model while the
+  // headline updates, so Approve would silently grant the wrong (often costlier)
+  // model. Re-sync `choice` to a new `model` prop during render (no setState-in-
+  // effect, matching Dashboard.tsx's repo/branch pattern) rather than in a
+  // useEffect, which would flash the stale value for one paint.
+  const [prevModel, setPrevModel] = useState(model)
+  if (model !== prevModel) {
+    setPrevModel(model)
+    setChoice(model ?? '')
+  }
   const bySession = requestedBy === 'session:self'
   // A pinned id (e.g. "claude-opus-5") is valid input but is not in the alias catalog.
   // Prepend it so the default selection is always a real option.

@@ -99,4 +99,36 @@ describe('PendingModelApprovalPanel', () => {
     )
     expect(container.textContent).not.toMatch(/[“”]/)
   })
+
+  // Whole-branch review finding 4: the panel stays mounted while pendingModel is
+  // truthy, so a standing hold can be overwritten by a DIFFERENT parked model (the
+  // dedupe upstream only short-circuits on an identical model). The picker must
+  // follow the new `model` prop, or a stale "Approve as" selection silently grants
+  // a different (often costlier) model than the headline announces.
+  it('follows the model prop when it changes on a re-render', () => {
+    const onDecision = vi.fn()
+    const { rerender } = render(
+      <PendingModelApprovalPanel model="fable" onDecision={onDecision} />,
+    )
+    const select = screen.getByLabelText(/approve as/i) as HTMLSelectElement
+    expect(select.value).toBe('fable')
+
+    rerender(<PendingModelApprovalPanel model="opus" onDecision={onDecision} />)
+
+    expect(select.value).toBe('opus')
+    fireEvent.click(screen.getByRole('button', { name: /approve/i }))
+    expect(onDecision).toHaveBeenCalledWith('approve', 'opus')
+  })
+
+  it('still respects a manual counter-offer picked after a model-prop change', () => {
+    const onDecision = vi.fn()
+    const { rerender } = render(
+      <PendingModelApprovalPanel model="fable" onDecision={onDecision} />,
+    )
+    rerender(<PendingModelApprovalPanel model="opus" onDecision={onDecision} />)
+
+    fireEvent.change(screen.getByLabelText(/approve as/i), { target: { value: 'haiku' } })
+    fireEvent.click(screen.getByRole('button', { name: /approve/i }))
+    expect(onDecision).toHaveBeenCalledWith('approve', 'haiku')
+  })
 })
