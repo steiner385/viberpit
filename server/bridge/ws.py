@@ -1087,7 +1087,20 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 elif msg_type == "cancelQueued":
                     index = msg.get("index")
                     if isinstance(index, int) and not isinstance(index, bool):
-                        await orchestrator.cancel_queued(session_id, index)
+                        ok = await orchestrator.cancel_queued(session_id, index)
+                        if not ok:
+                            # Same silent-drop shape as answerQuestion /
+                            # permissionResponse (issue #917): a cancel the daemon
+                            # can't honor (stale index — the queue already
+                            # drained/shifted — or no live driver) must surface,
+                            # not 200-and-vanish while the chip stays put.
+                            log.warning("ws.cancel_queued rejected session=%s index=%s identity=%s",
+                                        session_id, index, identity)
+                            await _send({"type": "error", "code": "QUEUED_NOT_FOUND",
+                                         "message": "That queued prompt is no longer in the queue "
+                                                    "— it may have already run or been removed. "
+                                                    "Reload to see its current state.",
+                                         "sessionId": session_id})
                 elif msg_type == "command":
                     name = msg.get("name", "")
                     args = msg.get("args", "")
