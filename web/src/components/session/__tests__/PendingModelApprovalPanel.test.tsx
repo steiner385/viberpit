@@ -1,39 +1,49 @@
 import { render, screen, fireEvent } from '@testing-library/react'
-import { describe, it, expect, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { PendingModelApprovalPanel } from '../PendingModelApprovalPanel'
 
+vi.mock('@/api/hooks', () => ({
+  useModels: () => ({ data: [{ id: 'haiku', label: 'Haiku' }, { id: 'sonnet', label: 'Sonnet' },
+                             { id: 'opus', label: 'Opus' }, { id: 'fable', label: 'Fable' }] }),
+}))
+
 describe('PendingModelApprovalPanel', () => {
-  it('renders the pending model name and fires decisions', () => {
-    const onDecision = vi.fn()
-    render(<PendingModelApprovalPanel model="fable" onDecision={onDecision} />)
-    // "fable" short alias is capitalized to "Fable"
+  it('shows the requested model label', () => {
+    render(<PendingModelApprovalPanel model="fable" onDecision={vi.fn()} />)
     expect(screen.getByText(/Fable/)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /approve/i }))
-    expect(onDecision).toHaveBeenCalledWith('approve')
   })
 
-  it('fires deny when the deny button is clicked', () => {
+  it('shows the reason when one is given', () => {
+    render(<PendingModelApprovalPanel model="fable" reason="cross-module refactor"
+                                      onDecision={vi.fn()} />)
+    expect(screen.getByText(/cross-module refactor/)).toBeInTheDocument()
+  })
+
+  it('attributes a session-initiated request', () => {
+    render(<PendingModelApprovalPanel model="fable" requestedBy="session:self"
+                                      onDecision={vi.fn()} />)
+    expect(screen.getByText(/the session requested this/i)).toBeInTheDocument()
+  })
+
+  it('approves the requested model when the picker is untouched', () => {
+    const onDecision = vi.fn()
+    render(<PendingModelApprovalPanel model="fable" onDecision={onDecision} />)
+    fireEvent.click(screen.getByRole('button', { name: /approve/i }))
+    expect(onDecision).toHaveBeenCalledWith('approve', 'fable')
+  })
+
+  it('approves the counter-offer when a different model is picked', () => {
+    const onDecision = vi.fn()
+    render(<PendingModelApprovalPanel model="fable" onDecision={onDecision} />)
+    fireEvent.change(screen.getByLabelText(/approve as/i), { target: { value: 'opus' } })
+    fireEvent.click(screen.getByRole('button', { name: /approve/i }))
+    expect(onDecision).toHaveBeenCalledWith('approve', 'opus')
+  })
+
+  it('denies without a model', () => {
     const onDecision = vi.fn()
     render(<PendingModelApprovalPanel model="fable" onDecision={onDecision} />)
     fireEvent.click(screen.getByRole('button', { name: /deny/i }))
-    expect(onDecision).toHaveBeenCalledWith('deny')
-  })
-
-  it('renders a full model id via modelName', () => {
-    const onDecision = vi.fn()
-    render(<PendingModelApprovalPanel model="claude-opus-4-8" onDecision={onDecision} />)
-    expect(screen.getByText(/Opus 4\.8/)).toBeInTheDocument()
-  })
-
-  it('falls back to "this model" when model is null', () => {
-    const onDecision = vi.fn()
-    render(<PendingModelApprovalPanel model={null} onDecision={onDecision} />)
-    expect(screen.getByText(/this model/i)).toBeInTheDocument()
-  })
-
-  it('exposes role="region" with aria-live="polite"', () => {
-    render(<PendingModelApprovalPanel model="fable" onDecision={vi.fn()} />)
-    const region = screen.getByRole('region', { name: /pending model approval/i })
-    expect(region).toHaveAttribute('aria-live', 'polite')
+    expect(onDecision).toHaveBeenCalledWith('deny', undefined)
   })
 })

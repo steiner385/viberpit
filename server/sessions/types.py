@@ -66,6 +66,10 @@ class SessionRecord:
     # once approved/rejected. Distinct from `model` (which stays None until approval).
     pending_model: str | None = None
     pending_model_reason: str | None = None
+    # Identity that requested `pending_model`; "session:self" means the session asked
+    # for itself (vs. a human requesting on its behalf). Mirrors DB
+    # Session.pending_model_requested_by.
+    pending_model_requested_by: str | None = None
     # transient: a "switch after this turn" model change has been handed to the SDK
     # (set_model without an interrupt) but the in-flight turn is still on the old model —
     # the binary applies it on the NEXT turn. Cleared when the turn ends (see
@@ -156,6 +160,7 @@ class SessionRecord:
             "model": self.model,
             "pendingModel": self.pending_model,
             "pendingModelReason": self.pending_model_reason,
+            "pendingModelRequestedBy": self.pending_model_requested_by,
             "modelPending": self.model_pending,
             "accountPinned": self.account_pinned,
             "activeGoal": self.active_goal,
@@ -196,6 +201,7 @@ class SessionRecord:
             model=d.get("model"),
             pending_model=d.get("pendingModel"),
             pending_model_reason=d.get("pendingModelReason"),
+            pending_model_requested_by=d.get("pendingModelRequestedBy"),
             model_pending=bool(d.get("modelPending", False)),
             account_pinned=d.get("accountPinned", False),
             active_goal=d.get("activeGoal"),

@@ -446,10 +446,14 @@ def test_apply_model_request_fails_open_when_a_collaborator_raises(tmp_path, mon
 
 
 def test_teardown_clears_self_model_state(tmp_path):
-    """Regression for the two new per-session dicts: a mutation that dropped
-    either pop at either of the two teardown sites left the whole suite green
-    (nothing else reads these dicts after a session ends). Assert directly
-    that both are gone once the session's teardown path runs."""
+    """Regression for the two new per-session dicts, via the ``close_session``
+    teardown site (~orchestrator.py:2035-2036): a mutation that dropped either
+    pop there left the whole suite green (nothing else reads these dicts after
+    a session ends). Assert directly that both are gone once close_session
+    runs. The sibling ``archive_session`` teardown site
+    (~orchestrator.py:8917-8918) has its own pop pair and its own regression
+    test below — dropping it leaks two dict entries per archived session
+    until daemon restart, and this test alone would NOT have caught that."""
     env, comp, trust, sel, h = _harness(tmp_path)
     with env, comp, trust, sel:
         _seed_account("alpha")
@@ -462,6 +466,39 @@ def test_teardown_clears_self_model_state(tmp_path):
                 orch._self_model_state[sid] = SelfModelState(auto_applied=1)
                 orch._handled_model_requests[sid] = "t1"
                 await orch.close_session(sid)
+                return (sid in orch._self_model_state,
+                        sid in orch._handled_model_requests)
+            finally:
+                await orch.stop()
+
+        in_state, in_handled = asyncio.run(_run())
+
+    assert in_state is False
+    assert in_handled is False
+
+
+def test_archive_session_teardown_clears_self_model_state(tmp_path):
+    """Same regression as ``test_teardown_clears_self_model_state`` above, but
+    for the SECOND teardown site inside ``archive_session``
+    (~orchestrator.py:8917-8918). ``close_session`` and ``archive_session`` each
+    maintain their own independent pop pair for ``_self_model_state`` /
+    ``_handled_model_requests`` — dropping the archive-path pops leaves every
+    other test in the suite green (nothing else reads these dicts after a
+    session is archived), silently leaking two dict entries per archived
+    session until the daemon restarts. Assert directly that both are gone
+    once ``archive_session`` runs."""
+    env, comp, trust, sel, h = _harness(tmp_path)
+    with env, comp, trust, sel:
+        _seed_account("alpha")
+
+        async def _run():
+            orch = await h.make_orch()
+            try:
+                sid = "s1"
+                _attach(orch, session_id=sid, req={"turn_id": "t1", "model": "haiku"})
+                orch._self_model_state[sid] = SelfModelState(auto_applied=1)
+                orch._handled_model_requests[sid] = "t1"
+                await orch.archive_session(sid)
                 return (sid in orch._self_model_state,
                         sid in orch._handled_model_requests)
             finally:

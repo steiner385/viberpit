@@ -188,6 +188,9 @@ def _record_to_dict(
         "pendingModel": getattr(record, "pending_model", None),
         # Why the session asked for pendingModel (its own stated reason), or null.
         "pendingModelReason": getattr(record, "pending_model_reason", None),
+        # Identity that requested pendingModel; "session:self" when the session asked
+        # for itself (vs. a human requesting on its behalf).
+        "pendingModelRequestedBy": getattr(record, "pending_model_requested_by", None),
         # True while a "switch after this turn" model change waits for the in-flight
         # turn to end (transient, never persisted) — the picker shows it as pending.
         "modelPending": getattr(record, "model_pending", False),
