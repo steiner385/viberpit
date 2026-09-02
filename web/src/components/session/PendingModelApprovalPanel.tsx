@@ -9,24 +9,7 @@
  */
 
 import { cn } from '@/lib/utils'
-import { modelName } from '@/session/modelName'
-
-// Short aliases like "fable" are not recognised by modelName (which expects the
-// full `claude-<tier>-<maj>` id). Capitalise them via the same TIERS map so
-// "fable" renders as "Fable" rather than verbatim lowercase.
-const TIER_LABELS: Record<string, string> = {
-  opus: 'Opus',
-  sonnet: 'Sonnet',
-  haiku: 'Haiku',
-  fable: 'Fable',
-}
-
-function displayLabel(model: string | null | undefined): string {
-  if (!model) return 'this model'
-  const full = modelName(model)
-  if (full && full !== model) return full          // matched the full-id pattern
-  return TIER_LABELS[model.toLowerCase()] ?? model // short alias or verbatim
-}
+import { tierLabel } from '@/session/modelName'
 
 interface Props {
   /** The model alias or full id requiring approval (e.g. "fable", "claude-opus-4-8"). */
@@ -35,7 +18,7 @@ interface Props {
 }
 
 export function PendingModelApprovalPanel({ model, onDecision }: Props) {
-  const label = displayLabel(model)
+  const label = tierLabel(model)
   return (
     <div
       role="region"

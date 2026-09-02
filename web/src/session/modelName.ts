@@ -8,7 +8,7 @@
 // *selectable* models; this formatter renders the *full* model id that
 // AssistantMessage.model carries into a transcript, including historical or
 // no-longer-selectable ids the picker never lists.
-const TIERS: Record<string, string> = { opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku', fable: 'Fable' }
+export const TIERS: Record<string, string> = { opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku', fable: 'Fable' }
 
 export function modelName(id: string | null | undefined): string {
   if (!id) return ''
@@ -34,6 +34,18 @@ export function modelTier(id: string | null | undefined): keyof typeof TIERS | n
   if (base in TIERS) return base as keyof typeof TIERS
   if (base === 'opusplan') return 'opus'
   return null
+}
+
+/**
+ * Display label for a model alias or pinned id: the full "Opus 5" form when the id
+ * matches, else the tier's capitalised name ("fable" -> "Fable"), else verbatim.
+ * Single source of truth for model labels in the UI.
+ */
+export function tierLabel(id: string | null | undefined): string {
+  if (!id) return 'this model'
+  const full = modelName(id)
+  if (full && full !== id) return full
+  return TIERS[id.toLowerCase()] ?? id
 }
 
 /**

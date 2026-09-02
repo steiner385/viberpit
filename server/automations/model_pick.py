@@ -23,12 +23,13 @@ import os
 
 from server.sessions.account_auth import helper_env
 from server.sessions.helper_call import pick_helper_config_dir, run_helper_call
-from server.sessions.model_catalog import ALIASES
+from server.sessions.model_catalog import ALIASES, TIER_ORDER
 
 log = logging.getLogger("ccswitch.automations")
 
-# Tiers "auto" chooses between, cheapest first (user-confirmed pool).
-AUTO_MODEL_POOL: list[str] = ["haiku", "sonnet", "opus", "fable"]
+# Tiers "auto" chooses between, cheapest first. Derived from the model-catalog
+# ordering so there is exactly one tier ranking in the codebase.
+AUTO_MODEL_POOL: list[str] = TIER_ORDER
 
 # The one-shot assessment is a network SDK call with no inherent timeout, and an
 # automation spawn runs it INLINE inside the (bounded) edge→daemon RPC. A wedged
