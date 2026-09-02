@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from server.sessions.account_auth import helper_env
+from server.sessions.claude_bin import cli_path_kwargs
 from server.time_iso import iso_utc
 
 from .backlog_selection import Batch, order_live_groups
@@ -169,6 +170,7 @@ async def propose_groups(
             env=helper_env(config_dir),
             allowed_tools=[],
             setting_sources=[],
+            **cli_path_kwargs(),
         )
         text_parts: list[str] = []
         async for msg in query_fn(prompt=_grouping_prompt(candidates, max_k),
