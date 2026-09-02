@@ -849,6 +849,36 @@ async def batch_archive_sessions(
     return {"succeeded": succeeded, "failed": failed}
 
 
+@router.post("/batch/resume")
+async def batch_resume_sessions(
+    body: BatchSessionIdsRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Resume restart-interrupted sessions (re-attach + nudge). Best-effort:
+    a resumed session lands in `succeeded`; a skip / no_driver lands in `failed`."""
+    orch = _get_orchestrator(request)
+    succeeded: list[str] = []
+    failed: list[dict] = []
+    for session_id in dict.fromkeys(body.ids):  # dedupe, preserve order
+        try:
+            result = await orch.resume_interrupted(session_id, identity)
+        except Exception as exc:  # noqa: BLE001 — best-effort batch must not abort
+            log.warning("batch resume failed for %s: %s", session_id, exc)
+            failed.append({"id": session_id, "error": str(exc)})
+            continue
+        if result == "resumed":
+            succeeded.append(session_id)
+            await record_audit(
+                db=db, type="session.resume", identity=identity,
+                detail={"session_id": session_id},
+            )
+        else:
+            failed.append({"id": session_id, "error": result})
+    return {"succeeded": succeeded, "failed": failed}
+
+
 @router.get("/{session_id}")
 async def get_session(
     session_id: str,

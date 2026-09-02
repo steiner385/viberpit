@@ -243,6 +243,35 @@ async def test_fanout_keeps_deadline_marker():
     assert getattr(fo.latest_summary_many, _DEADLINE_ATTR, False) is True
 
 
+def test_resume_interrupted_in_per_session():
+    """resume_interrupted must be classified as per-session so fleet routes it to
+    the owning host rather than the primary (which has no driver for foreign sessions)."""
+    from server.sessions.fleet_orchestrator import _PER_SESSION
+    assert "resume_interrupted" in _PER_SESSION
+
+
+class _FakeClient:
+    """Minimal DaemonClient stand-in that records the most recent call."""
+    def __init__(self, return_value):
+        self._return_value = return_value
+        self.last_call = None  # (method_name, kwargs)
+
+    async def call(self, method, **kwargs):
+        self.last_call = (method, kwargs)
+        return self._return_value
+
+
+@pytest.mark.asyncio
+async def test_remote_orchestrator_resume_interrupted_rpc():
+    """RemoteOrchestrator.resume_interrupted must proxy to the daemon and return its result."""
+    from server.sessions.remote import RemoteOrchestrator
+    client = _FakeClient("resumed")
+    ro = RemoteOrchestrator(client)
+    result = await ro.resume_interrupted("s1", "system")
+    assert result == "resumed"
+    assert client.last_call == ("resume_interrupted", {"session_id": "s1", "identity": "system"})
+
+
 def test_every_remote_method_is_classified():
     import inspect
     from server.sessions.remote import RemoteOrchestrator

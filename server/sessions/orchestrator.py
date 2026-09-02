@@ -74,7 +74,7 @@ from server.sessions.background_tasks import scan_open_background_tasks, build_r
 from server.obs.context import log_event
 from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
-from server.sessions.types import SessionRecord, SYSTEM_IDENTITY
+from server.sessions.types import SessionRecord, SYSTEM_IDENTITY, RESUME_ELIGIBLE_STATUSES
 from server.config import env_float
 from server.time_iso import iso_utc
 from server.usage.poller import UsagePoller
@@ -112,6 +112,11 @@ _RESTART_TRANSIENT_STATUSES = _ACTIVE_STATUSES | frozenset({"waiting_question", 
 # Message surfaced to the user when auto-recovery gives up on a repeatedly-dropped turn.
 _TURN_DROPPED_GIVEUP = ("Auto-recovery gave up after repeated empty turns — the context "
                         "may be full. Send a message to retry, or /compact to free space.")
+
+# Sent to a session whose in-flight turn was dropped by a daemon restart, to continue
+# the work. One text for human + automation sessions (design 2026-09-02).
+RESUME_NUDGE = ("Your previous turn was interrupted by a daemon restart. "
+                "Please continue where you left off.")
 
 # Bounded auto-recovery attempts for a session that failed to resume after a
 # daemon-affecting deploy. Past this the session is kept visible (flagged gave-up)
@@ -2236,6 +2241,7 @@ class SessionOrchestrator:
             # status so the card stops nagging once the user re-sends.
             if status != "idle":
                 rec.interrupted_by_restart = False
+                rec.interrupted_from_status = None
         async with db_session() as db:
             from sqlalchemy import update as sa_update
             values: dict = {"status": status}
@@ -5983,7 +5989,9 @@ class SessionOrchestrator:
             # row-backed field — so it threads through as a call-site override
             # rather than living in _record_from_row's row mapping.
             self._records[row.id] = self._record_from_row(
-                row, status=status, branch=branch, interrupted_by_restart=was_interrupted)
+                row, status=status, branch=branch,
+                interrupted_by_restart=was_interrupted,
+                interrupted_from_status=(row.status if was_interrupted else None))
             added += 1
             log_event(log, logging.INFO, "session.reattach",
                       session_id=row.id,
@@ -6980,6 +6988,61 @@ class SessionOrchestrator:
         d = self._drivers.get(session_id)
         if d is not None:
             d.seed_idle_suggestions(user_text, assistant_text)
+
+    def _resume_eligible(self, rec: "SessionRecord") -> str | None:
+        """Skip-reason when a session is NOT resume-eligible, else None. Single gate
+        shared by the batch endpoint, the auto pass, and resume_interrupted itself."""
+        if not rec.interrupted_by_restart:
+            return "not-interrupted"
+        if rec.interrupted_from_status not in RESUME_ELIGIBLE_STATUSES:
+            return "not-resumable-status"
+        return None
+
+    async def resume_interrupted(self, session_id: str,
+                                 identity: str = SYSTEM_IDENTITY) -> str:
+        """Re-attach a restart-interrupted session and nudge it to continue.
+        Returns "resumed" | "skipped:<reason>" | "no_driver". Idempotent: a
+        session that already resumed fails _resume_eligible ("not-interrupted")."""
+        rec = self._records.get(session_id)
+        if rec is None:
+            return "skipped:not-found"
+        reason = self._resume_eligible(rec)
+        if reason is not None:
+            return f"skipped:{reason}"
+        if await self.ensure_driver(session_id, identity) is None:
+            return "no_driver"
+        result = await self.send_prompt(session_id, RESUME_NUDGE)
+        return "resumed" if result == "sent" else result
+
+    @staticmethod
+    def _env_truthy(name: str) -> bool:
+        return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+    async def auto_resume_interrupted(self) -> int:
+        """Opt-in: resume every eligible restart-interrupted session on startup.
+        Off unless CCSWITCH_AUTO_RESUME_ON_RESTART is truthy. Bounded by
+        CCSWITCH_REARM_CONCURRENCY. Run AFTER rearm so replayed pending_prompt
+        sessions are already un-interrupted and skip naturally."""
+        if not self._env_truthy("CCSWITCH_AUTO_RESUME_ON_RESTART"):
+            return 0
+        eligible = [sid for sid, rec in list(self._records.items())
+                    if self._resume_eligible(rec) is None]
+        if not eligible:
+            return 0
+        sem = asyncio.Semaphore(int(os.environ.get("CCSWITCH_REARM_CONCURRENCY", "3")))
+
+        async def _one(sid: str) -> bool:
+            async with sem:
+                try:
+                    return await self.resume_interrupted(sid, SYSTEM_IDENTITY) == "resumed"
+                except Exception:
+                    log.warning("auto-resume: session %s failed", sid, exc_info=True)
+                    return False
+
+        results = await asyncio.gather(*(_one(sid) for sid in eligible))
+        n = sum(1 for ok in results if ok)
+        log.info("auto-resume: resumed %d/%d interrupted session(s)", n, len(eligible))
+        return n
 
     async def ensure_driver(self, session_id: str, identity: str = SYSTEM_IDENTITY) -> SessionDriver | None:
         """Return the live SessionDriver for session_id, resuming from DB if detached.

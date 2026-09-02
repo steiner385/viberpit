@@ -690,6 +690,20 @@ export function useBulkArchiveSessions() {
   })
 }
 
+export function useResumeInterrupted() {
+  const qc = useQueryClient()
+  return useMutation<BatchResult, ApiRequestError, string[]>({
+    mutationFn: (ids) => api.post<BatchResult>('/sessions/batch/resume', { ids }),
+    onSuccess: (result) => {
+      const n = result.succeeded.length
+      const f = result.failed.length
+      if (f > 0) toast.error(`Resumed ${n} · ${f} skipped`)
+      else toast.success(`Resumed ${n}`)
+    },
+    onSettled: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
+  })
+}
+
 export interface BulkDeleteProgress {
   done: number
   total: number
