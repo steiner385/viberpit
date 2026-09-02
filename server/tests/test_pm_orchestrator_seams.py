@@ -424,3 +424,36 @@ async def test_spawn_critic_returns_none_without_account(db_env):
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
         out = await orch._pm_onboard_spawn_critic("ccswitch", "o/r", "pm/feature-map-ccswitch")
     assert out is None
+
+
+@pytest.mark.asyncio
+async def test_chain_critic_waits_for_pr_then_spawns_once(db_env, monkeypatch):
+    orch = _bare_orch()
+    seen = {"pr": [None, None, object()]}   # PR appears on the 3rd poll
+    def fake_pr_for(repo, branch):
+        return seen["pr"].pop(0) if seen["pr"] else object()
+    orch.pr_for = fake_pr_for
+    spawned = []
+    async def fake_spawn(slug, repo, branch):
+        spawned.append((slug, repo, branch)); return object()
+    orch._pm_onboard_spawn_critic = fake_spawn
+    import asyncio as _a
+    monkeypatch.setattr(_a, "sleep", _mk_async(None))   # no real waiting
+    out = await orch._pm_onboard_chain_critic(
+        "ccswitch", "o/r", "pm/feature-map-ccswitch", attempts=5, delay=0.0)
+    assert out is not None
+    assert spawned == [("ccswitch", "o/r", "pm/feature-map-ccswitch")]  # exactly once
+
+
+@pytest.mark.asyncio
+async def test_chain_critic_times_out_without_spawning(db_env, monkeypatch):
+    orch = _bare_orch()
+    orch.pr_for = lambda repo, branch: None   # PR never appears
+    spawned = []
+    async def fake_spawn(*a): spawned.append(a); return object()
+    orch._pm_onboard_spawn_critic = fake_spawn
+    import asyncio as _a
+    monkeypatch.setattr(_a, "sleep", _mk_async(None))
+    out = await orch._pm_onboard_chain_critic("s", "o/r", "b", attempts=3, delay=0.0)
+    assert out is None
+    assert spawned == []

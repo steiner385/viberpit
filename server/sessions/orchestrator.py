@@ -3578,6 +3578,19 @@ class SessionOrchestrator:
             account=account, name=f"pm map-critic {slug}", initial_prompt=prompt,
             detail={"slug": slug, "kind": "feature-map-critic", "branch": branch})
 
+    async def _pm_onboard_chain_critic(self, slug: str, repo: str, branch: str, *,
+                                       attempts: int = 30, delay: float = 30.0):
+        """Wait (bounded) for the map-synthesis PR on *branch* to appear, then spawn
+        ONE completeness-critic session against it (design §3.2). No webhook: polls
+        the PR poller's cache. Best-effort — a timeout just skips the critic."""
+        for _ in range(attempts):
+            if self.pr_for(repo, branch) is not None:
+                return await self._pm_onboard_spawn_critic(slug, repo, branch)
+            await asyncio.sleep(delay)
+        log.warning("pm_onboard.chain_critic: map PR for %s (%s) never appeared — "
+                    "skipping critic", slug, branch)
+        return None
+
     async def pm_classify_run(
             self, slug: str, *,
             items: list[tuple[str, int, str]] | None = None) -> int:
