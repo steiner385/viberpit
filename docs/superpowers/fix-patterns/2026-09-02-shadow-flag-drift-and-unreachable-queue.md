@@ -61,6 +61,13 @@ reaching the model. Two independent defects combined; both are instances of the 
 - Any queue gated on "is something running" where the running thing can be blocked on user
   input: `driver.send_prompt` was the only one; `_queue` is drained solely in `_drain`'s
   `finally`.
+- **Tests that `mock.patch.object(orch, "ensure_driver", …)`** and then expect a LIVE edge
+  attach must also register the fake in `orch._drivers["<sid>"]` (that is what the real
+  `ensure_driver` does; `detached` derives from it). Before this fix such tests passed by
+  accident on the stale default `detached=False`; now they hang on the read-only attach.
+  Fixed 2026-09-02 in `test_ws_cursor_catchup.py`, `test_ws_reattach_turn_resupply.py`,
+  `test_remote_mode_edge.py` (fakes also gained `pending_questions/pending_permissions`,
+  which the live-attach extras call on any registered driver).
 
 ## Reference
 

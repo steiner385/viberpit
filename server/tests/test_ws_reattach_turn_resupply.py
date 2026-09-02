@@ -60,6 +60,20 @@ class _OpenTurnRingDriver:
         self._n = n
         self._emitted = False
 
+    # Registered in orch._drivers (detached derives from that), so the live-attach
+    # extras consult it like any live driver: nothing pending, no catalog, no seeding.
+    def pending_questions(self) -> list:
+        return []
+
+    def pending_permissions(self) -> list:
+        return []
+
+    async def server_info(self):
+        return None
+
+    def seed_idle_suggestions(self, *a, **k) -> None:
+        return None
+
     def current_status(self) -> str:
         return "in_progress"
 
@@ -104,6 +118,9 @@ def open_turn_edge(remote_edge):
     orch, client = remote_edge
     orch._records["s1"] = _rec("s1")
     driver = _OpenTurnRingDriver(4)
+    # The real ensure_driver registers the driver it returns; `detached` is DERIVED from
+    # that registration (no driver → read-only replay attach), so the mock must mirror it.
+    orch._drivers["s1"] = driver
     with mock.patch.object(orch, "ensure_driver", new=mock.AsyncMock(return_value=driver)), \
          mock.patch.object(orch, "transcript_path", new=mock.AsyncMock(return_value=None)):
         with client.websocket_connect("/ws", headers=_IDENT) as wsA:
