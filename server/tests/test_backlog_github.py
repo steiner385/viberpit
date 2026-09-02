@@ -362,6 +362,61 @@ def test_query_candidates_groups_by_owner_and_merges_results():
     assert {c["ref"] for c in out} == {"acme/r1#1", "other/r2#2"}
 
 
+class OwnerFreshRetryGh:
+    """Routes graphql calls by owner, returning that owner's own fresh+retry
+    node sets (both pools, per call) — used to verify that grouping the
+    candidate query by owner (an AUTH decision) never reorders the product
+    invariant that fresh work always outranks a retry."""
+
+    def __init__(self, fresh_retry_by_owner: dict[str, tuple[list[dict], list[dict]]]):
+        self.calls: list[list[str]] = []
+        self._by_owner = fresh_retry_by_owner
+
+    def __call__(self, args, token=None):
+        self.calls.append(list(args))
+        query = next(a for a in args if a.startswith("query="))
+        for owner, (fresh, retry) in self._by_owner.items():
+            if f"repo:{owner}/" in query:
+                return _proc(stdout=_graphql_stdout_with_retry(fresh, retry))
+        raise AssertionError(f"query did not target a known owner: {query}")
+
+
+def test_query_candidates_owner_grouping_keeps_fresh_before_retry_globally():
+    """Regression for the ordering bug: grouping by owner (an AUTH decision)
+    must NOT change scheduling priority. With two owners, each contributing
+    one fresh and one retry item, every fresh item across BOTH owners must
+    precede every retry item in the merged output — never
+    owner1-fresh, owner1-retry, owner2-fresh, owner2-retry, which would let a
+    stale needs-human issue in one owner outrank fresh work in another."""
+    gh = OwnerFreshRetryGh({
+        "acme": (
+            [{"number": 1, "title": "acme fresh",
+              "repository": {"nameWithOwner": "acme/r1"}}],
+            [{"number": 2, "title": "acme retry",
+              "repository": {"nameWithOwner": "acme/r1"}}],
+        ),
+        "other": (
+            [{"number": 3, "title": "other fresh",
+              "repository": {"nameWithOwner": "other/r2"}}],
+            [{"number": 4, "title": "other retry",
+              "repository": {"nameWithOwner": "other/r2"}}],
+        ),
+    })
+    config = {"enabled_repos": ["acme/r1", "other/r2"], "eligible_label": "",
+              "needs_human_retry_days": 7}
+
+    out = query_candidates(config, gh_run=gh, now=_NOW)
+
+    refs = [c["ref"] for c in out]
+    assert set(refs) == {"acme/r1#1", "acme/r1#2", "other/r2#3", "other/r2#4"}
+    fresh_refs = {"acme/r1#1", "other/r2#3"}
+    retry_refs = {"acme/r1#2", "other/r2#4"}
+    last_fresh_index = max(refs.index(r) for r in fresh_refs)
+    first_retry_index = min(refs.index(r) for r in retry_refs)
+    assert last_fresh_index < first_retry_index, (
+        f"a retry item outranked a fresh item across owners: {refs}")
+
+
 # --------------------------------------------------------------------------- #
 # claim_batch                                                                  #
 # --------------------------------------------------------------------------- #

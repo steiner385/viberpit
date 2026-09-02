@@ -104,6 +104,43 @@ def _group_repos_by_owner(repos: Iterable[str]) -> list[tuple[str, list[str]]]:
     return list(groups.items())
 
 
+def _graphql_per_owner(repos: list[str], build_query: "Callable[[list[str]], str]", *,
+                       gh_run: GhRun, event: str) -> list[dict]:
+    """Run one ``gh api graphql`` call per owner in *repos* (grouped via
+    :func:`_group_repos_by_owner`), each authenticated with that owner's own
+    App installation token — never one owner's token against another owner's
+    repo (it would 404). ``build_query(owner_repos)`` builds the query text for
+    one owner's repo subset.
+
+    Returns each owner's parsed ``data`` dict, **in owner order** — callers
+    that must preserve a within-payload ordering invariant (e.g. "fresh
+    results across ALL owners before any retry result", so grouping by owner
+    for auth never reorders product-level scheduling) should extract each
+    pool from every returned dict and concatenate pool-by-pool themselves,
+    rather than flattening owner-by-owner.
+
+    A gh failure or unparseable payload for one owner is logged (tagged with
+    ``event``, matching this function's one caller's prior log names) and
+    that owner is skipped — it must never blank out other owners' results.
+    """
+    out: list[dict] = []
+    for owner, owner_repos in _group_repos_by_owner(repos):
+        query = build_query(owner_repos)
+        proc = gh_run(["api", "graphql", "-f", f"query={query}"],
+                      token=gitrepos.app_token_for_owner(owner))
+        if getattr(proc, "returncode", 1) != 0:
+            log.warning("backlog_github.%s_failed owner=%s err=%s",
+                        event, owner, (getattr(proc, "stderr", "") or "").strip())
+            continue
+        try:
+            payload = json.loads(getattr(proc, "stdout", "") or "{}")
+        except json.JSONDecodeError:
+            log.warning("backlog_github.%s_unparseable owner=%s", event, owner, exc_info=True)
+            continue
+        out.append(payload.get("data") or {})
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # Candidate query                                                             #
 # --------------------------------------------------------------------------- #
@@ -223,24 +260,20 @@ def query_candidates(config: dict, *, gh_run: GhRun = gitrepos._run_gh,
 
     # A single search spanning repos owned by different owners can't be
     # authenticated with one installation token — group by owner and issue one
-    # call per owner (each with that owner's own token), merging results.
-    nodes: list[dict] = []
-    for owner, owner_repos in _group_repos_by_owner(repos):
-        query = _build_candidates_query(owner_repos, eligible_label, retry_cutoff)
-        proc = gh_run(["api", "graphql", "-f", f"query={query}"],
-                      token=gitrepos.app_token_for_owner(owner))
-        if getattr(proc, "returncode", 1) != 0:
-            log.warning("backlog_github.query_failed owner=%s err=%s",
-                        owner, (getattr(proc, "stderr", "") or "").strip())
-            continue
-        try:
-            payload = json.loads(getattr(proc, "stdout", "") or "{}")
-        except json.JSONDecodeError:
-            log.warning("backlog_github.query_unparseable owner=%s", owner, exc_info=True)
-            continue
-        data = payload.get("data") or {}
-        nodes += list((data.get("issues") or {}).get("nodes") or [])
-        nodes += list((data.get("retry") or {}).get("nodes") or [])
+    # call per owner (each with that owner's own token). Grouping by owner is
+    # an AUTH concern only and must not silently change scheduling priority:
+    # fresh results across EVERY owner are concatenated before ANY owner's
+    # retry results, preserving "fresh-first, a retry can never displace new
+    # work" even when it spans owners (never interleaved owner-by-owner).
+    fresh_nodes: list[dict] = []
+    retry_nodes: list[dict] = []
+    for data in _graphql_per_owner(
+        repos, lambda owner_repos: _build_candidates_query(owner_repos, eligible_label, retry_cutoff),
+        gh_run=gh_run, event="query",
+    ):
+        fresh_nodes += list((data.get("issues") or {}).get("nodes") or [])
+        retry_nodes += list((data.get("retry") or {}).get("nodes") or [])
+    nodes = fresh_nodes + retry_nodes
 
     out: list[dict] = []
     seen: set[str] = set()
@@ -800,30 +833,24 @@ def query_claimed_refs(repos: list[str], *, gh_run: GhRun = gitrepos._run_gh) ->
         return []
     # As in query_candidates: a search spanning multiple owners can't be
     # authenticated with one installation token, so group by owner and issue
-    # one call per owner, merging results.
-    nodes: list[dict] = []
-    for owner, owner_repos in _group_repos_by_owner(repos):
+    # one call per owner (via the shared _graphql_per_owner helper), merging
+    # results. Only one pool here (no fresh/retry split), so owner order
+    # doesn't carry a scheduling invariant the way it does in query_candidates.
+    def _build_claimed_query(owner_repos: list[str]) -> str:
         quals = [f"repo:{r}" for r in owner_repos] + [
             "is:issue", "is:open", f"label:{IN_PROGRESS_LABEL}"]
-        query = (
+        return (
             "query {\n"
             f"  claimed: search(query: {json.dumps(' '.join(quals))}, type: ISSUE, first: 100) {{\n"
             f"    {_ISSUE_NODES}\n"
             "  }\n"
             "}"
         )
-        proc = gh_run(["api", "graphql", "-f", f"query={query}"],
-                      token=gitrepos.app_token_for_owner(owner))
-        if getattr(proc, "returncode", 1) != 0:
-            log.warning("backlog_github.claimed_query_failed owner=%s err=%s",
-                        owner, (getattr(proc, "stderr", "") or "").strip())
-            continue
-        try:
-            payload = json.loads(getattr(proc, "stdout", "") or "{}")
-        except json.JSONDecodeError:
-            log.warning("backlog_github.claimed_query_unparseable owner=%s", owner, exc_info=True)
-            continue
-        nodes += (((payload.get("data") or {}).get("claimed") or {}).get("nodes")) or []
+
+    nodes: list[dict] = []
+    for data in _graphql_per_owner(repos, _build_claimed_query, gh_run=gh_run,
+                                   event="claimed_query"):
+        nodes += (data.get("claimed") or {}).get("nodes") or []
 
     out: list[str] = []
     for node in nodes:
