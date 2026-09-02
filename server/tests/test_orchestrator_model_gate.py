@@ -574,6 +574,119 @@ def test_deny_midsession_clears(tmp_path):
     assert row.pending_model_requested_at is None
 
 
+# ---------------------------------------------------------------------------
+# Task 8 fix round 1 (Finding 3) — pending_model_reason clearing and launch-
+# branch audit provenance, asserted against the real DB rather than a null
+# stub, so a mutation that deletes the clearing/audit code is actually caught.
+# ---------------------------------------------------------------------------
+
+
+def test_deny_midsession_clears_reason(tmp_path):
+    """A human-initiated park never itself writes pending_model_reason, so stamp
+    one directly (as a stale self-directed reason surviving into a human park
+    would) and prove deny wipes it — record AND row."""
+    env, comp, trust, sel, h = _harness(tmp_path)
+    with env, comp, trust, sel:
+        _seed_account("alpha")
+
+        async def _run():
+            from sqlalchemy import update as sa_update
+            from server.db.models import Session as DbSession
+            orch = await h.make_orch()
+            try:
+                sid = "s-live"
+                async with db_session() as db:
+                    db.add(DbSession(id=sid, name="n", account_name="alpha",
+                                     claude_session_id="c1", status="idle",
+                                     cwd="/tmp", model="opus"))
+                driver = _RecordingDriver(turn_active=False)
+                rec = _running_orch(orch, driver, session_id=sid, model="opus")
+                await orch.set_model_for_session(sid, "fable", identity="user@x")
+                rec.pending_model_reason = "stale-reason"
+                async with db_session() as db:
+                    await db.execute(sa_update(DbSession).where(DbSession.id == sid)
+                                     .values(pending_model_reason="stale-reason"))
+
+                out = await orch.resolve_model_approval(sid, "deny", identity="user@x")
+
+                async with db_session() as db:
+                    row = (await db.execute(
+                        select(DbSession).where(DbSession.id == sid))).scalar_one()
+                return out, row
+            finally:
+                await orch.stop()
+
+        out, row = asyncio.run(_run())
+
+    assert out.pending_model_reason is None
+    assert row.pending_model_reason is None
+
+
+def test_deny_launch_clears_reason_and_records_audit_provenance(tmp_path):
+    """Same reason-clearing proof for the LAUNCH-time hold's deny branch, plus the
+    launch-branch audit detail carrying requested/applied (approve and deny)."""
+    env, comp, trust, sel, h = _harness(tmp_path)
+    with env, comp, trust, sel:
+        _seed_account("alpha")
+
+        async def _run():
+            from sqlalchemy import update as sa_update
+            from server.db.models import AuditEvent, Session as DbSession
+            orch = await h.make_orch()
+            try:
+                rec = await orch.create_session(name="s", account=None, model="fable")
+                rec.pending_model_reason = "stale-reason"
+                async with db_session() as db:
+                    await db.execute(sa_update(DbSession).where(DbSession.id == rec.id)
+                                     .values(pending_model_reason="stale-reason"))
+
+                out = await orch.resolve_model_approval(rec.id, "deny", identity="user@x")
+
+                async with db_session() as db:
+                    row = (await db.execute(
+                        select(DbSession).where(DbSession.id == rec.id))).scalar_one()
+                    audit_rows = (await db.execute(
+                        select(AuditEvent).where(
+                            AuditEvent.type == "model_approval.deny"))).scalars().all()
+                return out, row, audit_rows
+            finally:
+                await orch.stop()
+
+        out, row, audit_rows = asyncio.run(_run())
+
+    assert out.pending_model_reason is None
+    assert row.pending_model_reason is None
+    assert len(audit_rows) == 1
+    assert audit_rows[0].detail["requested"] == "fable"
+    assert audit_rows[0].detail["applied"] == "fable"
+
+
+def test_launch_approve_audit_records_requested_and_applied(tmp_path):
+    env, comp, trust, sel, h = _harness(tmp_path)
+    with env, comp, trust, sel:
+        _seed_account("alpha")
+
+        async def _run():
+            from server.db.models import AuditEvent
+            orch = await h.make_orch()
+            try:
+                rec = await orch.create_session(name="s", account=None, model="fable")
+                await orch.resolve_model_approval(rec.id, "approve", identity="user@x")
+                async with db_session() as db:
+                    rows = (await db.execute(
+                        select(AuditEvent).where(
+                            AuditEvent.type == "model_approval.approve"))).scalars().all()
+                return rows
+            finally:
+                await orch.stop()
+
+        rows = asyncio.run(_run())
+
+    assert len(rows) == 1
+    assert rows[0].detail["requested"] == "fable"
+    assert rows[0].detail["applied"] == "fable"
+
+
 def test_resolve_without_pending_raises(tmp_path):
     env, comp, trust, sel, h = _harness(tmp_path)
     with env, comp, trust, sel:

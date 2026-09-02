@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from ccswitch.oauth import Usage
 from server.ipc.client import DaemonError, DaemonUnavailable
 from server.sessions.facade import rpc_deadline
+from server.sessions.orchestrator import ModelBlockedError
 from server.sessions.selection import AllAccountsBusy
 
 if TYPE_CHECKING:
@@ -647,21 +648,25 @@ class RemoteOrchestrator:
             raise
 
     async def resolve_model_approval(self, session_id: str, decision: str, *,
+                                     model: str | None = None,
                                      identity: str) -> "SessionRecord":
         """Proxy resolve_model_approval, reconstituting the in-process error contract.
 
-        The orchestrator raises ``KeyError`` (unknown session) or ``ValueError``
-        (nothing pending / bad decision). Both collapse to a DaemonError at the RPC
+        The orchestrator raises ``KeyError`` (unknown session), ``ValueError``
+        (nothing pending / bad decision), or ``ModelBlockedError`` (the counter-offered
+        model is blocked by policy). All three collapse to a DaemonError at the RPC
         boundary; re-raise the original types so the API endpoint sees the same
         exceptions on both code paths."""
         try:
             r = await self._client.call("resolve_model_approval", session_id=session_id,
-                                        decision=decision, identity=identity)
+                                        decision=decision, model=model, identity=identity)
         except DaemonError as exc:
             if exc.err_type == "KeyError":
                 raise KeyError(exc.message) from exc
             if exc.err_type == "ValueError":
                 raise ValueError(exc.message) from exc
+            if exc.err_type == "ModelBlockedError":
+                raise ModelBlockedError(exc.message) from exc
             raise
         return SessionRecord.from_dict(r["session"])
 

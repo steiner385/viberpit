@@ -183,3 +183,27 @@ responsible for ensuring their usage complies with applicable terms.
 
 **Adding a Copilot account:** open the Add Account dialog → toggle to "GitHub Copilot" → enter a
 name → click Add → follow the device-flow code at `github.com/login/device`.
+
+## Self-directed model switching
+
+A running session can ask for a different model by ending a message with
+`<!-- ccswitch:model=<tier> reason="..." -->`. The contract lives in
+`server/sessions/model_request.py` (marker + instruction + parser, one module so the
+system-prompt half and the scan half cannot drift).
+
+- **Downgrades auto-apply** on the next turn; **upgrades park** for human approval in the
+  existing `pending_model` columns. `resolve_self_directed_model_policy` composes this with
+  the tier denylist and takes the stricter outcome — a **blocked tier stays blocked even as a
+  downgrade**.
+- A parked hold can be approved **at a different model** (`POST /sessions/{id}/model-approval`
+  with `{"decision": "approve", "model": "opus"}`). Only `block` refuses a counter-offer.
+- **Never route an approval through `set_model_for_session()`** — it re-runs the policy and
+  re-parks, so every approval would re-ask for approval. Approvals use the low-level
+  `driver.set_model()` / `_spawn_session(model=…)` paths.
+- Guards (`server/sessions/self_model_guards.py`): same-tier dedupe, a cap of
+  `CCSWITCH_SELF_MODEL_SWITCH_CAP` (default 3) auto-applies per session, a flip-flop halt, and
+  a drop once a human has amended a request for that tier.
+- Kill switch: `CCSWITCH_SELF_MODEL_SWITCH_ENABLED=false` stops both the prompt instruction
+  and any acting on a marker.
+- Audit `model_approval.approve` carries `{requested, applied}` — requested ≠ applied is the
+  metric for whether sessions self-assess accurately.

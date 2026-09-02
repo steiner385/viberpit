@@ -10,7 +10,17 @@ from .permissions import to_sdk_permission_mode
 
 
 def _build_append_string() -> str:
-    return COMPLETION_INSTRUCTION + "\n\n" + NO_PR_INSTRUCTION
+    """Compose every ccswitch marker instruction into the system-prompt append.
+
+    Single composition point: each marker contract owns its own literal, this owns
+    the order they reach the agent in.
+    """
+    from server.config import get_settings
+    from .model_request import MODEL_REQUEST_INSTRUCTION
+    parts = [COMPLETION_INSTRUCTION, NO_PR_INSTRUCTION]
+    if get_settings().self_model_switch_enabled:
+        parts.append(MODEL_REQUEST_INSTRUCTION)
+    return "\n\n".join(parts)
 
 # Inline flag-settings payload (--settings layer, highest priority).  Auto-approves any
 # project-scoped `.mcp.json` MCP server so the CLI's trust gate (LX1 → "pending" → prompt)

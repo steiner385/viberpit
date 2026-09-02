@@ -172,12 +172,14 @@ def is_known_alias(name: str) -> bool:
     return name in ALIASES
 
 
-# Canonical model tiers. The server mirror of web/src/session/modelName.ts TIERS
-# (constitution VI: one tier definition, not three). Used by the model-approval
-# policy to match a requested model against the gated-tier denylist regardless of
-# whether it arrives as an alias ("fable", "fable[1m]") or a pinned id
-# ("claude-fable-5").
-_TIER_ALIASES: frozenset[str] = frozenset({"opus", "sonnet", "haiku", "fable"})
+# Canonical model tiers, CHEAPEST FIRST. The single ordered source of truth: the
+# model-approval policy matches against it, the self-directed switch rule compares
+# ranks with it, and automations/model_pick.AUTO_MODEL_POOL derives from it.
+# Server mirror of web/src/session/modelName.ts TIERS (constitution VI: one tier
+# definition, not four).
+TIER_ORDER: list[str] = ["haiku", "sonnet", "opus", "fable"]
+
+_TIER_ALIASES: frozenset[str] = frozenset(TIER_ORDER)
 
 
 def model_tier(model: str | None) -> str | None:
@@ -194,3 +196,14 @@ def model_tier(model: str | None) -> str | None:
     if base == "opusplan":
         return "opus"
     return None
+
+
+def tier_rank(model: str | None) -> int | None:
+    """Cost rank of *model* within TIER_ORDER (0 = cheapest), or None when the
+    model has no fixed tier (None / "" / "default" / "best" / unknown ids).
+
+    A None rank means no honest cheaper/costlier comparison exists — callers must
+    treat it as indeterminate rather than defaulting a direction.
+    """
+    tier = model_tier(model)
+    return TIER_ORDER.index(tier) if tier is not None else None
