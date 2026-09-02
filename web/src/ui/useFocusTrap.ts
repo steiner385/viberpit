@@ -1,4 +1,7 @@
-// Ported from plotroom@5166b52 frontend/src/hooks/useFocusTrap.ts; edits: render-phase ref write → useLayoutEffect (react-hooks/refs rule)
+// Ported from plotroom@5166b52 frontend/src/hooks/useFocusTrap.ts; edits: render-phase ref write → useLayoutEffect (react-hooks/refs rule).
+// Promoted to web/src/ui/ with an `inertRoot` option: while a trap is active it sets `inert` on
+// an element (default `#root`) so background content is unfocusable/unclickable; a module-level
+// depth counter allows nested traps to stack without the inner trap's close lifting `inert` early.
 import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react';
 
 /**
@@ -12,9 +15,12 @@ const FOCUSABLE =
 // the `inert` attribute must only be removed once the outermost trap closes.
 let inertDepth = 0;
 function setRootInert(id: string, on: boolean) {
+  // Count first, unconditionally: increments and decrements must pair up even if
+  // the element is missing at one end, or a decrement could be stolen from an
+  // outer trap and lift `inert` while its dialog is still open.
+  inertDepth = Math.max(0, inertDepth + (on ? 1 : -1));
   const root = document.getElementById(id);
   if (!root) return;
-  inertDepth = Math.max(0, inertDepth + (on ? 1 : -1));
   if (inertDepth > 0) root.setAttribute('inert', '');
   else root.removeAttribute('inert');
 }
