@@ -510,7 +510,7 @@ def test_turn_end_model_request_defaults_to_none():
 
 def test_translator_extracts_model_request_from_turn_text():
     from server.sessions.translator import Translator
-    tr = Translator(session_id="s1")
+    tr = Translator()                      # __init__ takes no args
     tr._turn_text = 'work done\n<!-- ccswitch:model=haiku reason="trivial" -->'
     out = tr._turn_end_model_request()
     assert out == {"model": "haiku", "reason": "trivial"}
@@ -518,7 +518,7 @@ def test_translator_extracts_model_request_from_turn_text():
 
 def test_translator_returns_none_without_a_marker():
     from server.sessions.translator import Translator
-    tr = Translator(session_id="s1")
+    tr = Translator()                      # __init__ takes no args
     tr._turn_text = "just prose"
     assert tr._turn_end_model_request() is None
 
@@ -1155,6 +1155,15 @@ Wire the pieces together: consume once per turn, run guards, run policy, then ei
 
 Create `server/tests/test_self_model_switch_orchestrator.py`:
 
+**Harness directive (pre-flight ruling):** `server/tests/test_orchestrator_model_gate.py`
+already establishes the orchestrator test harness for this area — a real in-memory DB via
+`init_db`, `server/tests/fakes/fake_factory.fake_sdk_factory`, and `select_account` patched.
+**Build these fixtures on that harness.** The `SessionOrchestrator.__new__` + null-DB stubs
+sketched below are the assertion source, not the preferred wiring: keep every assertion
+verbatim, but obtain the orchestrator the way the existing gate tests do wherever that
+supports the assertion. Inventing a second orchestrator-faking pattern is the
+parallel-implementation anti-pattern the constitution forbids.
+
 ```python
 """Orchestrator consumption of a session's self-directed model request."""
 import pytest
@@ -1504,6 +1513,15 @@ Let the human counter-offer. The riskiest task: the approval path must not re-en
 
 Create `server/tests/test_model_approval_override.py`:
 
+**Harness directive (pre-flight ruling):** `server/tests/test_orchestrator_model_gate.py`
+already establishes the orchestrator test harness for this area — a real in-memory DB via
+`init_db`, `server/tests/fakes/fake_factory.fake_sdk_factory`, and `select_account` patched.
+**Build these fixtures on that harness.** The `SessionOrchestrator.__new__` + null-DB stubs
+sketched below are the assertion source, not the preferred wiring: keep every assertion
+verbatim, but obtain the orchestrator the way the existing gate tests do wherever that
+supports the assertion. Inventing a second orchestrator-faking pattern is the
+parallel-implementation anti-pattern the constitution forbids.
+
 ```python
 """Approve-as: the human may substitute a model, but block still refuses."""
 import pytest
@@ -1810,7 +1828,8 @@ orchestrator imports.
 
 ```bash
 PYTHONPATH=$PWD /home/tony/GitHub/ccswitch/.venv/bin/python -m pytest \
-  server/tests/test_model_approval_override.py server/tests/test_model_approval.py -v
+  server/tests/test_model_approval_override.py server/tests/test_api_model_approval.py \
+  server/tests/test_orchestrator_model_gate.py -v
 CCSWITCH_TAILNET_ALLOWLIST= CCSWITCH_DEV=1 PYTHONPATH=$PWD \
   /home/tony/GitHub/ccswitch/.venv/bin/python -m pytest server/tests/ -k "approval" -q
 ```
@@ -2051,8 +2070,25 @@ This needs `pendingModelRequestedBy` on the payload. Add it in `server/api/sessi
         "pendingModelRequestedBy": getattr(record, "pending_model_requested_by", None),
 ```
 
-and to `SessionRecord` in `server/sessions/types.py` (field + `to_dict` + `from_dict`, mirroring
-`pending_model_reason` from Task 4), and to the `Session` interface in `web/src/api/types.ts`:
+In `server/sessions/types.py`, add the field beside `pending_model_reason`:
+
+```python
+    pending_model_requested_by: str | None = None
+```
+
+in `to_dict`:
+
+```python
+            "pendingModelRequestedBy": self.pending_model_requested_by,
+```
+
+and in `from_dict`:
+
+```python
+            pending_model_requested_by=d.get("pendingModelRequestedBy"),
+```
+
+Then add it to the `Session` interface in `web/src/api/types.ts`:
 
 ```ts
   /** Identity that requested pendingModel; "session:self" when the session asked. */
