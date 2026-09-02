@@ -84,14 +84,14 @@ export function ModelSwitchDialog({ modelLabel, onClose, onConfirm }: ModelSwitc
           <Button
             ref={cancelRef}
             type="button"
-            variant="outline"
+            variant="secondary"
             onClick={onClose}
           >
             Cancel
           </Button>
           <Button
             type="button"
-            variant="outline"
+            variant="secondary"
             onClick={() => onConfirm('after_turn')}
             className="min-h-[44px]"
           >

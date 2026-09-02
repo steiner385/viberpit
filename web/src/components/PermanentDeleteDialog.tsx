@@ -81,7 +81,7 @@ export function PermanentDeleteDialog({ sessionName, onClose, onConfirm, isPendi
           <Button
             ref={cancelRef}
             type="button"
-            variant="outline"
+            variant="secondary"
             onClick={onClose}
             disabled={isPending}
           >

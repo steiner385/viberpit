@@ -44,7 +44,7 @@ function BulkActionBar({ count, archivableDoneCount, archivePending, onArchive, 
         {archivableDoneCount > 0 && (
           <Button
             type="button"
-            variant="outline"
+            variant="secondary"
             onClick={onArchiveDone}
             disabled={archivePending}
             className="min-h-[44px] text-xs"
@@ -66,7 +66,7 @@ function BulkActionBar({ count, archivableDoneCount, archivePending, onArchive, 
             {archivePending ? 'Archiving…' : `Archive (${count})`}
           </Button>
         )}
-        <Button type="button" variant="outline" onClick={onClear} className="min-h-[44px]">
+        <Button type="button" variant="secondary" onClick={onClear} className="min-h-[44px]">
           Done
         </Button>
       </div>

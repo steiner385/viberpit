@@ -152,7 +152,7 @@ function DeleteAccountDialog({ account, activeSessions, onClose, onConfirm, isPe
           <Button
             ref={cancelRef}
             type="button"
-            variant="outline"
+            variant="secondary"
             onClick={onClose}
             disabled={isPending}
           >
@@ -864,7 +864,7 @@ export function AccountsManager() {
         </h2>
         <Button
           type="button"
-          variant="outline"
+          variant="secondary"
           size="sm"
           onClick={() => setShowAdd(true)}
           className="gap-1.5"

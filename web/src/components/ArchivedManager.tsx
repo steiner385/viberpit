@@ -153,7 +153,7 @@ function PermanentDeleteDialog({ names, onClose, onConfirm, isPending, progress,
           <Button
             ref={cancelRef}
             type="button"
-            variant="outline"
+            variant="secondary"
             onClick={isPending ? onCancel : onClose}
             disabled={isPending && !onCancel}
           >
@@ -205,7 +205,7 @@ function QuickPurgeBar({ total, onPurge, disabled }: QuickPurgeBarProps) {
           <Button
             key={n}
             type="button"
-            variant="outline"
+            variant="secondary"
             onClick={() => onPurge(n)}
             disabled={disabled || total < n}
             title={
@@ -267,7 +267,7 @@ function BulkActionBar({ count, onUnarchive, onDelete, onClear, unarchivePending
         >
           Delete ({count})
         </Button>
-        <Button type="button" variant="outline" onClick={onClear}>Clear</Button>
+        <Button type="button" variant="secondary" onClick={onClear}>Clear</Button>
       </div>
     </div>
   )

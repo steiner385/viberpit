@@ -308,7 +308,7 @@ export function AddAccountDialog({ onClose, initialProvider, initialName }: AddA
               {isRunning ? (
                 <Button
                   type="button"
-                  variant="outline"
+                  variant="secondary"
                   onClick={handleCancel}
                   aria-label="Cancel add"
                 >
@@ -317,7 +317,7 @@ export function AddAccountDialog({ onClose, initialProvider, initialName }: AddA
               ) : (
                 <Button
                   type="button"
-                  variant="outline"
+                  variant="secondary"
                   onClick={onClose}
                 >
                   {isSuccess ? 'Done' : 'Cancel'}
@@ -339,7 +339,7 @@ export function AddAccountDialog({ onClose, initialProvider, initialName }: AddA
               {copilotStarted ? (
                 <Button
                   type="button"
-                  variant="outline"
+                  variant="secondary"
                   onClick={handleCopilotCancel}
                   aria-label="Cancel add"
                 >
@@ -348,7 +348,7 @@ export function AddAccountDialog({ onClose, initialProvider, initialName }: AddA
               ) : (
                 <Button
                   type="button"
-                  variant="outline"
+                  variant="secondary"
                   onClick={onClose}
                 >
                   Cancel

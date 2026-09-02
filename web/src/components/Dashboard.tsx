@@ -377,7 +377,7 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending, externalErro
           )}
 
           <div className="flex gap-3 justify-end pt-2">
-            <Button type="button" variant="outline" onClick={onClose} disabled={isPending}>Cancel</Button>
+            <Button type="button" variant="secondary" onClick={onClose} disabled={isPending}>Cancel</Button>
             <Button type="submit" disabled={isPending} className="min-h-[44px]">
               {isPending ? 'Creating…' : 'Create'}
             </Button>
@@ -456,7 +456,7 @@ export function RenameDialog({ sessionId, currentName, onClose, onSubmit, isPend
             )}
           />
           <div className="flex gap-3 justify-end">
-            <Button type="button" variant="outline" onClick={onClose} disabled={isPending}>
+            <Button type="button" variant="secondary" onClick={onClose} disabled={isPending}>
               Cancel
             </Button>
             <Button type="submit" disabled={isPending || !name.trim()} className="min-h-[44px]">
@@ -788,7 +788,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
             <div className="flex items-center gap-2">
               <Button
                 size="sm"
-                variant="outline"
+                variant="secondary"
                 className="min-h-[44px]"
                 onClick={() => setShowHelp(true)}
                 aria-label="Open help"
@@ -797,7 +797,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
               </Button>
               <Button
                 size="sm"
-                variant="outline"
+                variant="secondary"
                 className="min-h-[44px]"
                 onClick={() => setActiveTab('settings')}
                 aria-label="Settings"
