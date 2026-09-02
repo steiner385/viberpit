@@ -1,6 +1,23 @@
 import asyncio
 import json
+from types import SimpleNamespace
+
 from server.automations import archive_audit as aa
+
+
+def _fake_run_gh(stdout="{}", returncode=0, stderr="", capture=None):
+    """A stand-in for gitrepos._run_gh: records the token and returns a canned result.
+
+    _real_gh / _real_gh_num were rerouted off raw subprocess.run onto gitrepos._run_gh
+    so they authenticate as the owner's App installation (issue #913); tests patch the
+    new seam and assert the token is threaded."""
+    def run(args, token=None, *, input=None, timeout=None):
+        if capture is not None:
+            capture["args"] = args
+            capture["token"] = token
+            capture["timeout"] = timeout
+        return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+    return run
 
 
 def _row(id, goal, repo="o/r", branch="feat/x", authored=("feat/x",), initial_prompt=None):
@@ -57,47 +74,49 @@ def test_dry_run_does_not_unarchive():
 
 
 def test_real_gh_parses_json(monkeypatch):
-    import subprocess
     sample = json.dumps({"data": {"repository": {"pullRequests": {"nodes": [
         {"number": 3, "state": "OPEN", "isDraft": False,
          "autoMergeRequest": None, "mergeQueueEntry": None, "url": "u"},
     ]}}}})
-
-    def fake_run(cmd, capture_output, text, timeout, check):
-        class R:
-            stdout = sample
-            returncode = 0
-        assert "graphql" in cmd
-        assert any("mergeQueueEntry" in a for a in cmd)
-        return R()
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    cap: dict = {}
+    monkeypatch.setattr(aa.gitrepos, "_run_gh", _fake_run_gh(sample, capture=cap))
     out = aa._real_gh("o/r", "feat/x")
     assert out[0]["number"] == 3
+    assert "graphql" in cap["args"]
+    assert any("mergeQueueEntry" in a for a in cap["args"])
+
+
+def test_real_gh_authenticates_as_owner_app(monkeypatch):
+    """_real_gh threads the owner's App installation token, not the ambient gh user
+    (issue #913)."""
+    monkeypatch.setattr(aa.gitrepos, "_app_token", lambda owner: f"ghs_{owner}")
+    cap: dict = {}
+    monkeypatch.setattr(aa.gitrepos, "_run_gh", _fake_run_gh("{}", capture=cap))
+    aa._real_gh("acme/widget", "feat/x")
+    assert cap["token"] == "ghs_acme"
+    assert cap["timeout"] == 30
 
 
 def test_real_gh_returns_empty_on_error(monkeypatch):
-    import subprocess
+    def boom(args, token=None, *, input=None, timeout=None):
+        raise aa.gitrepos.GhError("the `gh` CLI is not installed")
 
-    def boom(*a, **k):
-        raise subprocess.CalledProcessError(1, "gh")
+    monkeypatch.setattr(aa.gitrepos, "_run_gh", boom)
+    assert aa._real_gh("o/r", "feat/x") == []
 
-    monkeypatch.setattr(subprocess, "run", boom)
+
+def test_real_gh_returns_empty_on_nonzero(monkeypatch):
+    """A non-zero gh (e.g. anonymous rate-limit 403 after the credential expired)
+    buckets ambiguous, never a false 'premature' — [] on failure."""
+    monkeypatch.setattr(
+        aa.gitrepos, "_run_gh", _fake_run_gh("", returncode=1, stderr="HTTP 403"))
     assert aa._real_gh("o/r", "feat/x") == []
 
 
 def test_real_gh_returns_empty_on_graphql_errors(monkeypatch):
     """_real_gh returns [] when GraphQL response contains top-level errors."""
-    import subprocess
     sample = json.dumps({"errors": [{"message": "Not Found"}]})
-
-    def fake_run(cmd, capture_output, text, timeout, check):
-        class R:
-            stdout = sample
-            returncode = 0
-        return R()
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(aa.gitrepos, "_run_gh", _fake_run_gh(sample))
     assert aa._real_gh("o/r", "feat/x") == []
 
 
@@ -288,64 +307,40 @@ def test_build_pr_facts_dedupes_branch_and_ref_number():
 
 def test_real_gh_num_parses_json(monkeypatch):
     """_real_gh_num returns a normalized dict on success via GraphQL."""
-    import subprocess
     sample = json.dumps({"data": {"repository": {"pullRequest": {
         "number": 42, "state": "OPEN", "isDraft": False,
         "autoMergeRequest": None, "mergeQueueEntry": None, "url": "u",
     }}}})
-
-    def fake_run(cmd, capture_output, text, timeout, check):
-        class R:
-            stdout = sample
-            returncode = 0
-        assert "graphql" in cmd
-        assert any("mergeQueueEntry" in a for a in cmd)
-        return R()
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    cap: dict = {}
+    monkeypatch.setattr(aa.gitrepos, "_app_token", lambda owner: f"ghs_{owner}")
+    monkeypatch.setattr(aa.gitrepos, "_run_gh", _fake_run_gh(sample, capture=cap))
     result = aa._real_gh_num("o/r", 42)
     assert result is not None
     assert result["number"] == 42
+    assert "graphql" in cap["args"]
+    assert cap["token"] == "ghs_o"  # authenticates as the owner's App install (#913)
 
 
 def test_real_gh_num_returns_none_on_null_pr(monkeypatch):
     """_real_gh_num returns None when pullRequest is null (PR does not exist)."""
-    import subprocess
     sample = json.dumps({"data": {"repository": {"pullRequest": None}}})
-
-    def fake_run(cmd, capture_output, text, timeout, check):
-        class R:
-            stdout = sample
-            returncode = 0
-        return R()
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(aa.gitrepos, "_run_gh", _fake_run_gh(sample))
     assert aa._real_gh_num("o/r", 9999) is None
 
 
 def test_real_gh_num_returns_none_on_graphql_errors(monkeypatch):
     """_real_gh_num returns None when GraphQL response contains errors."""
-    import subprocess
     sample = json.dumps({"errors": [{"message": "Not Found"}]})
-
-    def fake_run(cmd, capture_output, text, timeout, check):
-        class R:
-            stdout = sample
-            returncode = 0
-        return R()
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(aa.gitrepos, "_run_gh", _fake_run_gh(sample))
     assert aa._real_gh_num("o/r", 42) is None
 
 
 def test_real_gh_num_returns_none_on_error(monkeypatch):
     """_real_gh_num returns None on any gh failure."""
-    import subprocess
+    def boom(args, token=None, *, input=None, timeout=None):
+        raise aa.gitrepos.GhError("gh missing")
 
-    def boom(*a, **k):
-        raise subprocess.CalledProcessError(1, "gh")
-
-    monkeypatch.setattr(subprocess, "run", boom)
+    monkeypatch.setattr(aa.gitrepos, "_run_gh", boom)
     assert aa._real_gh_num("o/r", 42) is None
 
 

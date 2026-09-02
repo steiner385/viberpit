@@ -126,9 +126,12 @@ class InstallationRegistry:
     def installation_for(self, owner: str) -> int | None:
         return self._by_login.get(owner.lower())
 
-    def owners(self) -> list[str]:
-        """Every owner login with an installation (lowercased, load order)."""
-        return list(self._by_login)
+    def installation_ids(self) -> list[int]:
+        """Every distinct installation id this App is installed on (issue #912).
+
+        Repo enumeration iterates installations rather than resolving one owner, so
+        it needs the ids without knowing any owner up front."""
+        return sorted(set(self._by_login.values()))
 
 
 class AppTokenSource:
@@ -226,52 +229,6 @@ def _loaded_signer_and_registry(
     return _signer, cast(InstallationRegistry, _registry)
 
 
-def register_gitrepos_providers() -> None:
-    """Point ``ccswitch.gitrepos`` at this App for both token and owner lookup.
-
-    ONE registration site for both seams, called by every process that talks to
-    GitHub — the daemon (``server.ipc.serve``, where clone/fetch run) and the edge
-    (``server.app``, where repo/branch listing runs). Registering them separately
-    per process is how the edge ended up with the token seam only, silently
-    listing repos as the machine's ambient gh user.
-
-    Config is read at call time, not registration time — both processes register
-    during startup, so an App configured later (or not at all) is still handled.
-    The owners provider returns None when no App is configured, which keeps repo
-    listing on the viewer path instead of hard-failing an App-less deployment.
-    """
-    from ccswitch.gitrepos import set_installations_provider, set_token_provider
-
-    def _owners() -> list[str] | None:
-        return None if _load_app_config() is None else installation_owners()
-
-    set_token_provider(lambda owner: token_for_owner(owner))
-    set_installations_provider(_owners)
-
-
-def installation_owners() -> list[str]:
-    """Owner logins this App is installed on; empty when unconfigured or broken.
-
-    Companion to :func:`token_for_owner` for callers that must DISCOVER owners
-    rather than resolve a token for a known one — repo enumeration, which has no
-    owner to start from. Reuses the same ``InstallationRegistry`` (and its cached
-    ``/app/installations`` load) rather than issuing a second listing of its own.
-
-    Returns [] rather than raising: the caller decides whether an empty list is
-    fatal, and this must never take down a request path on a GitHub blip.
-    """
-    cfg = _load_app_config()
-    if cfg is None:
-        return []
-    try:
-        with _lock:
-            _, registry = _loaded_signer_and_registry(cfg)
-            return registry.owners()
-    except Exception:
-        log.warning("github_app.installations_list_failed", exc_info=True)  # never logs key
-        return []
-
-
 def token_for_owner(owner: str) -> str | None:
     """Installation token for `owner`'s installation, or None → caller uses the user gh token."""
     cfg = _load_app_config()
@@ -295,3 +252,88 @@ def token_for_owner(owner: str) -> str | None:
     except Exception:
         log.warning("github_app.token_mint_failed", exc_info=True)  # never logs token/key
         return None
+
+
+# ---------------------------------------------------------------------------
+# Issue #912: installation-repo enumeration + shared provider registration
+# ---------------------------------------------------------------------------
+
+# Hard bound on /installation/repositories pages (100 repos/page) so a
+# misbehaving API can never spin forever; far above any real installation.
+_MAX_REPO_PAGES = 100
+
+
+def _list_installation_repos(token: str, *, per_page: int = 100) -> list[dict]:
+    """All repo objects accessible to one installation, via its installation token.
+
+    ``/installation/repositories`` is authenticated with the *installation* token
+    (passed as the bearer credential — the ``_app_rest`` seam sends it as
+    ``Authorization: Bearer``, which GitHub accepts for installation tokens). Paged
+    with ``page``/``per_page`` and stopped when a short page arrives."""
+    out: list[dict] = []
+    for page in range(1, _MAX_REPO_PAGES + 1):
+        body = _app_rest(
+            "GET", f"/installation/repositories?per_page={per_page}&page={page}", token)
+        repos = (body or {}).get("repositories") or []
+        out.extend(repos)
+        if len(repos) < per_page:
+            break
+    return out
+
+
+def installation_repos() -> list[dict] | None:
+    """Raw REST repo objects for every installation, or None when no App is configured.
+
+    Feeds ``gitrepos.list_accessible_repos`` on the App path (the repo chooser). Returns
+    None when no App is configured, so standalone CLI usage keeps the viewer path. When
+    an App IS configured but enumeration fails, raises ``gitrepos.GhError`` so the chooser
+    fails loudly rather than degrading to the ambient user credential (issue #912)."""
+    from ccswitch.gitrepos import GhError
+
+    cfg = _load_app_config()
+    if cfg is None:
+        return None
+    app_id, inst_id_pin, pem = cfg
+    try:
+        with _lock:
+            global _signer, _registry, _registry_loaded
+            if _signer is None:
+                _signer = AppJwtSigner(app_id, pem, clock=_clock)
+                _registry = InstallationRegistry(_signer, _app_rest, installation_id=inst_id_pin)
+                _registry_loaded = False
+            if not _registry_loaded:
+                _registry.load()  # type: ignore[union-attr]
+                _registry_loaded = True
+            repos: list[dict] = []
+            for inst in _registry.installation_ids():  # type: ignore[union-attr]
+                src = _sources.get(inst)
+                if src is None:
+                    src = AppTokenSource(_signer, inst, _app_rest, clock=_clock)
+                    _sources[inst] = src
+                repos.extend(_list_installation_repos(src.get()))
+            return repos
+    except Exception as exc:
+        # exc is a GhAppError / httpx error whose str() carries no token; log with
+        # exc_info (redacting filter scrubs any secret) and re-raise as GhError so
+        # the chooser surfaces a loud 502 rather than an empty list.
+        log.warning("github_app.installation_repos_failed", exc_info=True)
+        raise GhError(f"GitHub App repo enumeration failed: {exc}") from exc
+
+
+def register_git_providers() -> None:
+    """Point gitrepos at the pr-dashy App for BOTH git auth and repo enumeration.
+
+    Registered from every process that lists or clones repos — the daemon
+    (``server/ipc/serve.py``, where ``ensure_clone`` runs), the edge
+    (``server/app.py``, where the repo/branch chooser runs), and the deploy
+    controller (``server/deploy/serve.py``). Issue #912 found the edge never
+    registered a provider, so the chooser silently used the ambient gh user and
+    blanked when that credential expired. ``token_for_owner`` mints a per-owner
+    installation token for git clone/fetch; ``installation_repos`` enumerates the
+    repos the App can reach. Both are read through the module attributes so the App
+    config is consulted at call time, and both no-op to ambient/viewer when no App
+    is configured."""
+    from ccswitch import gitrepos
+
+    gitrepos.set_token_provider(lambda owner: token_for_owner(owner))
+    gitrepos.set_installations_provider(installation_repos)

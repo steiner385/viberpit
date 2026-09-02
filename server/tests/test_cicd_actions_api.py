@@ -111,6 +111,41 @@ def test_repo_ci_meta_error_degrades_to_empty():
     assert branch == "master" and required == set()
 
 
+def test_default_runner_authenticates_as_owner_app(monkeypatch):
+    """With no run= injected, the doctor's default runner threads the repo owner's
+    App installation token (issue #913) — not the ambient gh user, whose expired
+    credential drops gh to anonymous and 404s private repos."""
+    from ccswitch import gitrepos
+    monkeypatch.setattr(gitrepos, "_app_token", lambda owner: f"ghs_{owner}")
+    seen = {}
+
+    def fake_run_gh(args, token=None, *, input=None, timeout=None):
+        seen["token"] = token
+        return _ok({"jobs": []})
+
+    monkeypatch.setattr(gitrepos, "_run_gh", fake_run_gh)
+    list_jobs("acme/widget", 7)  # no run= → owner-bound default runner
+    assert seen["token"] == "ghs_acme"
+
+
+def test_default_run_bytes_authenticates_as_owner_app(monkeypatch):
+    """The artifact-zip fetch (_run_gh_bytes) is bound to the owner's App token too."""
+    from ccswitch import gitrepos
+    from server.github import actions_api
+    monkeypatch.setattr(gitrepos, "_app_token", lambda owner: f"ghs_{owner}")
+    seen = {}
+
+    def fake_run_bytes(args, token=None):
+        seen["token"] = token
+        return b""
+
+    monkeypatch.setattr(actions_api, "_run_gh_bytes", fake_run_bytes)
+    # No artifacts to fetch, so run= (the listing) can be a trivial stub; run_bytes is
+    # only exercised when an artifact matches, so drive it directly via the binder.
+    actions_api._run_gh_bytes_for("acme/widget")(["api", "x"])
+    assert seen["token"] == "ghs_acme"
+
+
 def _workflow_fake(sha="sha1", body=b"name: CI\n"):
     """A gh runner that answers the three workflow_texts endpoints and records
     how many contents/commits calls it served."""

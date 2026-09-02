@@ -178,11 +178,24 @@ def test_token_for_owner_swallows_mint_error(monkeypatch, caplog):
 
 
 # ---------------------------------------------------------------------------
-# installation_owners facade — repo enumeration needs the owner list up front
+# Issue #912: installation_repos() — App-path repo enumeration
 # ---------------------------------------------------------------------------
 
+def _repo(full_name):
+    owner, _, name = full_name.partition("/")
+    return {"full_name": full_name, "name": name, "owner": {"login": owner},
+            "private": True, "archived": False,
+            "html_url": f"https://github.com/{full_name}",
+            "default_branch": "main", "pushed_at": "2026-06-20T00:00:00Z"}
 
-def test_installation_owners_lists_every_installation(monkeypatch):
+
+def test_installation_repos_none_when_unconfigured(monkeypatch):
+    A.reset()
+    monkeypatch.setattr(A, "_load_app_config", lambda: None)
+    assert A.installation_repos() is None  # → gitrepos viewer fallback (CLI)
+
+
+def test_installation_repos_enumerates_per_installation(monkeypatch):
     A.reset()
     _key, pem = _keypair()
     rest = _FakeRest({
@@ -190,78 +203,50 @@ def test_installation_owners_lists_every_installation(monkeypatch):
             {"id": 11, "account": {"login": "cairnea"}},
             {"id": 22, "account": {"login": "steiner385"}},
         ],
+        ("POST", "/app/installations/11/access_tokens"):
+            {"token": "ghs_CA", "expires_at": "2099-01-01T00:00:00Z"},
+        ("POST", "/app/installations/22/access_tokens"):
+            {"token": "ghs_ST", "expires_at": "2099-01-01T00:00:00Z"},
+        # Each installation's repo list; the token is passed as the bearer credential.
+        ("GET", "/installation/repositories?per_page=100&page=1*"):
+            {"repositories": [_repo("cairnea/KinDash")]},
     })
     monkeypatch.setattr(A, "_load_app_config", lambda: (4031757, None, pem))
     monkeypatch.setattr(A, "_app_rest", rest)
-    assert sorted(A.installation_owners()) == ["cairnea", "steiner385"]
+    repos = A.installation_repos()
+    names = sorted(r["full_name"] for r in repos)
+    # Two installations enumerated; the fake returns one repo per page for each.
+    assert names == ["cairnea/KinDash", "cairnea/KinDash"]
+    # /installation/repositories was hit once per installation (2 GETs).
+    assert sum(1 for m, p in rest.calls
+               if m == "GET" and p.startswith("/installation/repositories")) == 2
 
 
-def test_installation_owners_empty_when_unconfigured(monkeypatch):
-    # No App configured: the caller must see "no installations", never a crash.
-    A.reset()
-    monkeypatch.setattr(A, "_load_app_config", lambda: None)
-    assert A.installation_owners() == []
-
-
-def test_register_gitrepos_providers_wires_both_seams(monkeypatch):
-    """Both seams must be registered together.
-
-    Registering only the token provider is what left the edge process listing
-    repos with the machine's ambient gh credential: the token seam alone cannot
-    enumerate owners, so enumeration silently stayed on the user path.
-    """
-    from ccswitch import gitrepos
-
-    A.reset()
-    _key, pem = _keypair()
-    rest = _FakeRest({
-        ("GET", "/app/installations"): [
-            {"id": 11, "account": {"login": "cairnea"}},
-        ],
-    })
-    monkeypatch.setattr(A, "_load_app_config", lambda: (4031757, None, pem))
-    monkeypatch.setattr(A, "_app_rest", rest)
-    gitrepos.set_token_provider(None)
-    gitrepos.set_installations_provider(None)
-    try:
-        A.register_gitrepos_providers()
-        assert gitrepos._token_provider is not None
-        # Routed through the App facade, not a second enumeration of its own.
-        assert gitrepos._installation_owners() == ["cairnea"]
-    finally:
-        gitrepos.set_token_provider(None)
-        gitrepos.set_installations_provider(None)
-
-
-def test_registration_without_a_configured_app_keeps_the_viewer_path(monkeypatch):
-    """Registering the seams must not, by itself, commit to the App path.
-
-    Both processes register unconditionally at startup, before anyone knows
-    whether an App is configured. If "registered" implied "App path", a
-    deployment with no GitHub App would hard-fail repo listing instead of
-    falling back to the operator's own gh login.
-    """
-    from ccswitch import gitrepos
-
-    A.reset()
-    monkeypatch.setattr(A, "_load_app_config", lambda: None)  # nothing configured
-    gitrepos.set_token_provider(None)
-    gitrepos.set_installations_provider(None)
-    try:
-        A.register_gitrepos_providers()
-        # None -> "no App here, use the viewer path"; [] would mean "App is
-        # configured but has zero installations", which IS a loud error.
-        assert gitrepos._installation_owners() is None
-    finally:
-        gitrepos.set_token_provider(None)
-        gitrepos.set_installations_provider(None)
-
-
-def test_installation_owners_empty_when_registry_fails(monkeypatch, caplog):
+def test_installation_repos_raises_when_app_broken(monkeypatch):
+    """A configured-but-broken App fails loud (GhError), so the chooser 502s
+    instead of silently degrading to the ambient user credential (issue #912)."""
+    from ccswitch.gitrepos import GhError
     A.reset()
     _key, pem = _keypair()
     rest = _FakeRest({("GET", "/app/installations"): GhAppError("boom")})
     monkeypatch.setattr(A, "_load_app_config", lambda: (4031757, None, pem))
     monkeypatch.setattr(A, "_app_rest", rest)
-    assert A.installation_owners() == []
-    assert "ghs_" not in caplog.text  # no token leaked
+    with pytest.raises(GhError):
+        A.installation_repos()
+
+
+def test_register_git_providers_wires_both_seams(monkeypatch):
+    """register_git_providers registers BOTH the token and installations seams so
+    the edge/daemon/deploy processes authenticate as the App (issue #912)."""
+    from ccswitch import gitrepos
+    gitrepos.set_token_provider(None)
+    gitrepos.set_installations_provider(None)
+    try:
+        A.register_git_providers()
+        assert gitrepos._token_provider is not None
+        assert gitrepos._installations_provider is not None
+        # The installations seam is installation_repos itself.
+        assert gitrepos._installations_provider is A.installation_repos
+    finally:
+        gitrepos.set_token_provider(None)
+        gitrepos.set_installations_provider(None)
