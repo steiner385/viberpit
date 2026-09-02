@@ -457,3 +457,56 @@ async def test_chain_critic_times_out_without_spawning(db_env, monkeypatch):
     out = await orch._pm_onboard_chain_critic("s", "o/r", "b", attempts=3, delay=0.0)
     assert out is None
     assert spawned == []
+
+
+async def _seed_project_for_map(db_url: str) -> str:
+    """Project with slug 'ccswitch', primary repo 'steiner385/cc-account-switcher',
+    state 'syncing' — ready for pm_onboard_spawn_map(scope='initial')."""
+    await init_db(db_url)
+    async with db_session() as db:
+        p = Project(slug="ccswitch", name="ccswitch", onboarding_state="syncing")
+        db.add(p)
+        await db.flush()
+        db.add(ProjectRepo(project_id=p.id,
+                           repo="steiner385/cc-account-switcher",
+                           is_primary=True, backfill_done=True))
+        return p.id
+
+
+@pytest.mark.asyncio
+async def test_initial_map_spawn_schedules_critic_chain(db_env):
+    proj_id = await _seed_project_for_map(db_env)  # noqa: F841
+    orch = _bare_orch()
+    orch._backlog_healthy_account = _mk_async("acct1")
+    orch._effective_repo_root = _mk_async("/tmp/root")
+    orch._sdlc_default_branch = _mk_async("master")
+    orch._pm_onboard_ctx = _SpawnRec()
+    chained = []
+    async def fake_chain(slug, repo, branch, **kw):
+        chained.append((slug, repo, branch))
+    orch._pm_onboard_chain_critic = fake_chain
+    # capture the bg-task instead of really backgrounding it
+    scheduled = []
+    orch._spawn = lambda coro, name=None: scheduled.append(coro)
+    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+        rec = await orch.pm_onboard_spawn_map("ccswitch", scope="initial")
+    assert rec is not None
+    assert len(scheduled) == 1          # exactly one chain task scheduled
+    await scheduled[0]                  # run it
+    assert chained == [("ccswitch", "steiner385/cc-account-switcher",
+                        "pm/feature-map-ccswitch")]
+
+
+@pytest.mark.asyncio
+async def test_diff_map_spawn_does_not_schedule_critic(db_env):
+    await _seed_project_for_map(db_env)
+    orch = _bare_orch()
+    orch._backlog_healthy_account = _mk_async("acct1")
+    orch._effective_repo_root = _mk_async("/tmp/root")
+    orch._sdlc_default_branch = _mk_async("master")
+    orch._pm_onboard_ctx = _SpawnRec()
+    scheduled = []
+    orch._spawn = lambda coro, name=None: scheduled.append(coro)
+    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+        await orch.pm_onboard_spawn_map("ccswitch", scope="diff", suggestion="x")
+    assert scheduled == []   # drift path never chains a critic

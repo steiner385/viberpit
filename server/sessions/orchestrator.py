@@ -3553,6 +3553,10 @@ class SessionOrchestrator:
                 if proj is not None:
                     proj.onboarding_state = "map_proposed"
                     await db.commit()
+            from server.pm.classification import map_branch_name
+            self._spawn(
+                self._pm_onboard_chain_critic(slug, repo, map_branch_name(slug)),
+                name=f"pm-critic-chain-{slug}")
         return rec
 
     async def _pm_onboard_spawn_critic(self, slug: str, repo: str,
