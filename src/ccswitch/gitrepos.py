@@ -176,6 +176,24 @@ def _installation_repos() -> "list[dict] | None":
     if fn is None:
         return None
     return fn()
+def app_token_for_owner(owner: str) -> str | None:
+    """Installation token for ``owner``, or None to use ambient auth.
+
+    Public wrapper over :func:`_app_token` for consumers outside this module
+    (``server/`` call sites migrating off ambient ``gh`` credentials)."""
+    return _app_token(owner)
+
+
+def app_token_for_repo(name_with_owner: str) -> str | None:
+    """Installation token for the owner of ``owner/name``, or None.
+
+    Splits on the first ``/`` and returns ``None`` for empty or malformed
+    input rather than raising — callers are in polling loops where an
+    exception would take down the whole tick."""
+    owner, _sep, rest = (name_with_owner or "").partition("/")
+    if not owner or not rest:
+        return None
+    return _app_token(owner)
 
 
 def is_auth_error(stderr: str | None) -> bool:
