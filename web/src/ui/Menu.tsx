@@ -25,6 +25,8 @@ export interface MenuProps {
   className?: string
 }
 
+const GAP = 4
+
 export function Menu({ open, onClose, anchorRef, items, onSelect, label, align = 'start', className }: MenuProps) {
   const listRef = React.useRef<HTMLDivElement>(null)
   const [active, setActive] = React.useState(0)
@@ -35,34 +37,67 @@ export function Menu({ open, onClose, anchorRef, items, onSelect, label, align =
   const enabledIdx = React.useMemo(() => items.map((it, i) => (it.disabled ? -1 : i)).filter((i) => i >= 0), [items])
 
   // Position under the anchor (fixed, so it escapes overflow:hidden ancestors).
-  const [pos, setPos] = React.useState<{ top: number; left: number; right?: number }>({ top: 0, left: 0 })
+  // Measured (not just anchor-relative) so we can clamp fully on-screen and
+  // flip above the anchor when there isn't room below — this runs once per
+  // open, not on every scroll/resize; see the close-on-scroll effect below
+  // for why live repositioning isn't needed.
+  const [pos, setPos] = React.useState<{ top: number; left: number }>({ top: 0, left: 0 })
   React.useLayoutEffect(() => {
     if (!open) return
     const r = anchorRef.current?.getBoundingClientRect()
     if (!r) return
-    setPos(align === 'end' ? { top: r.bottom + 4, left: 0, right: window.innerWidth - r.right } : { top: r.bottom + 4, left: r.left })
+    const mw = listRef.current?.offsetWidth ?? 0
+    const mh = listRef.current?.offsetHeight ?? 0
+    const vw = window.innerWidth
+    const vh = window.innerHeight
+    const fitsBelow = r.bottom + GAP + mh <= vh
+    const top = fitsBelow ? r.bottom + GAP : Math.max(GAP, r.top - GAP - mh)
+    const rawLeft = align === 'end' ? r.right - mw : r.left
+    const left = Math.min(Math.max(rawLeft, GAP), Math.max(GAP, vw - mw - GAP))
+    setPos({ top, left })
     setActive(enabledIdx[0] ?? 0)
   }, [open, anchorRef, align, enabledIdx])
 
   React.useEffect(() => {
     if (!open) return
-    listRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]')[active]?.focus()
+    listRef.current?.querySelectorAll<HTMLElement>('[role^="menuitem"]')[active]?.focus()
   }, [open, active])
 
-  // Close on outside pointer-down; restore focus to the anchor on close.
+  // Close on outside pointer-down. Kept separate from focus restoration
+  // (below) so a caller passing an inline `onClose` — which gets a fresh
+  // identity on every parent re-render — never causes this effect's cleanup
+  // to run a focus change; it only ever tears down and reinstalls the
+  // listener.
   React.useEffect(() => {
     if (!open) return
-    const anchor = anchorRef.current
     const onDown = (e: PointerEvent) => {
-      if (listRef.current?.contains(e.target as Node) || anchor?.contains(e.target as Node)) return
+      if (listRef.current?.contains(e.target as Node) || anchorRef.current?.contains(e.target as Node)) return
       onClose()
     }
     document.addEventListener('pointerdown', onDown)
-    return () => {
-      document.removeEventListener('pointerdown', onDown)
-      anchor?.focus()
-    }
+    return () => document.removeEventListener('pointerdown', onDown)
   }, [open, onClose, anchorRef])
+
+  // Close (don't reposition) on scroll of the page or any scrolling
+  // ancestor — capture phase catches scroll events from inner containers,
+  // which don't bubble. This is the documented minimum bar: an anchored
+  // menu that can't track live repositioning simply closes instead of
+  // drifting from its anchor.
+  React.useEffect(() => {
+    if (!open) return
+    const onScroll = () => onClose()
+    window.addEventListener('scroll', onScroll, true)
+    return () => window.removeEventListener('scroll', onScroll, true)
+  }, [open, onClose])
+
+  // Restore focus to the anchor strictly on the open:true -> false
+  // transition — never as a side effect of an unrelated re-render (see the
+  // outside-pointerdown effect's comment above for why that split matters).
+  const wasOpenRef = React.useRef(open)
+  React.useEffect(() => {
+    if (wasOpenRef.current && !open) anchorRef.current?.focus()
+    wasOpenRef.current = open
+  }, [open, anchorRef])
 
   if (!open) return null
 
@@ -73,9 +108,23 @@ export function Menu({ open, onClose, anchorRef, items, onSelect, label, align =
     onClose()
   }
   const move = (delta: number) => {
+    if (enabledIdx.length === 0) return
     const k = enabledIdx.indexOf(active)
     const next = enabledIdx[(k + delta + enabledIdx.length) % enabledIdx.length]
     if (next !== undefined) setActive(next)
+  }
+  // Typeahead: search starting just *after* the current item and wrap
+  // around, so repeated presses of the same letter cycle through every
+  // enabled item sharing that initial rather than always landing on the
+  // first one.
+  const typeahead = (ch: string) => {
+    const n = enabledIdx.length
+    if (n === 0) return
+    const k = enabledIdx.indexOf(active)
+    for (let step = 1; step <= n; step++) {
+      const i = enabledIdx[(k + step + n) % n]
+      if (i !== undefined && String(items[i].label).toLowerCase().startsWith(ch)) { setActive(i); return }
+    }
   }
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') { e.preventDefault(); move(1); return }
@@ -84,12 +133,11 @@ export function Menu({ open, onClose, anchorRef, items, onSelect, label, align =
     if (e.key === 'End') { e.preventDefault(); setActive(enabledIdx[enabledIdx.length - 1] ?? 0); return }
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(active); return }
     if (e.key === 'Escape') { e.preventDefault(); onClose(); return }
+    // Tab is the standard ARIA-menu escape hatch: close and let focus move
+    // on naturally — do not preventDefault.
+    if (e.key === 'Tab') { onClose(); return }
     if (/^[1-9]$/.test(e.key)) { e.preventDefault(); const i = enabledIdx[Number(e.key) - 1]; if (i !== undefined) pick(i); return }
-    if (e.key.length === 1) {
-      const ch = e.key.toLowerCase()
-      const hit = enabledIdx.find((i) => String(items[i].label).toLowerCase().startsWith(ch))
-      if (hit !== undefined) setActive(hit)
-    }
+    if (e.key.length === 1) { typeahead(e.key.toLowerCase()) }
   }
 
   return createPortal(
@@ -98,7 +146,7 @@ export function Menu({ open, onClose, anchorRef, items, onSelect, label, align =
       role="menu"
       aria-label={label}
       onKeyDown={onKeyDown}
-      style={{ position: 'fixed', top: pos.top, left: pos.right === undefined ? pos.left : undefined, right: pos.right }}
+      style={{ position: 'fixed', top: pos.top, left: pos.left }}
       className={cn('z-popover min-w-48 rounded-md border border-edge bg-surface p-1 shadow-lg', className)}
     >
       {items.map((it, i) => {
@@ -107,17 +155,22 @@ export function Menu({ open, onClose, anchorRef, items, onSelect, label, align =
         // gets a badge and never consumes a digit.
         const enabledPos = enabledIdx.indexOf(i)
         const n = enabledPos >= 0 ? enabledPos + 1 : null
+        // Single-choice pickers (current permission mode / model): `selected`
+        // being defined at all marks this as a radio-style item, which is
+        // the only role `aria-checked` is valid on — a plain `menuitem`
+        // never carries it.
+        const role = it.selected === undefined ? 'menuitem' : 'menuitemradio'
         return (
           <div
             key={it.id}
-            role="menuitem"
+            role={role}
             tabIndex={i === active ? 0 : -1}
             aria-disabled={it.disabled || undefined}
-            aria-checked={it.selected}
+            aria-checked={role === 'menuitemradio' ? it.selected : undefined}
             onClick={() => pick(i)}
             onMouseEnter={() => !it.disabled && setActive(i)}
             className={cn(
-              'flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-ink cursor-default select-none min-h-9',
+              'flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-ink cursor-default select-none min-h-target',
               'focus:outline-none focus:bg-surface-raised',
               it.disabled && 'opacity-50',
               it.selected && 'font-semibold',

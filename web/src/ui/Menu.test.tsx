@@ -139,4 +139,94 @@ describe('Menu', () => {
     fireEvent.keyDown(menu, { key: 'c' })
     expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: /Cherry/ }))
   })
+
+  it('typeahead cycles to the next match on repeat presses of the same letter, wrapping around', () => {
+    const items: MenuItem[] = [
+      { id: 'apple', label: 'Apple' },
+      { id: 'avocado', label: 'Avocado' },
+      { id: 'banana', label: 'Banana' },
+    ]
+    render(<Host onSelect={() => {}} items={items} />)
+    fireEvent.click(screen.getByText('Mode'))
+    const menu = screen.getByRole('menu')
+    expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: /^Apple$/ }))
+    // First 'a': advances past Apple (the current item) to the next 'a' item, Avocado.
+    fireEvent.keyDown(menu, { key: 'a' })
+    expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: /Avocado/ }))
+    // Second 'a': Banana doesn't match, so it wraps back around to Apple.
+    fireEvent.keyDown(menu, { key: 'a' })
+    expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: /^Apple$/ }))
+  })
+
+  it('Tab closes the menu without preventing default, letting focus move on naturally', () => {
+    render(<Host onSelect={() => {}} items={FOUR_ITEMS} />)
+    fireEvent.click(screen.getByText('Mode'))
+    const menu = screen.getByRole('menu')
+    const notPrevented = fireEvent.keyDown(menu, { key: 'Tab' })
+    expect(screen.queryByRole('menu')).toBeNull()
+    // fireEvent returns false only if preventDefault() was called.
+    expect(notPrevented).toBe(true)
+  })
+
+  it('Shift+Tab also closes the menu without preventing default', () => {
+    render(<Host onSelect={() => {}} items={FOUR_ITEMS} />)
+    fireEvent.click(screen.getByText('Mode'))
+    const menu = screen.getByRole('menu')
+    const notPrevented = fireEvent.keyDown(menu, { key: 'Tab', shiftKey: true })
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(notPrevented).toBe(true)
+  })
+
+  it('marks a single-choice item as menuitemradio with aria-checked, and leaves an unselectable item as a plain menuitem with no aria-checked', () => {
+    const items: MenuItem[] = [
+      { id: 'sonnet', label: 'Sonnet', selected: true },
+      { id: 'opus', label: 'Opus', selected: false },
+    ]
+    render(<Host onSelect={() => {}} items={items} />)
+    fireEvent.click(screen.getByText('Mode'))
+    // Plain BASE_ITEMS/FOUR_ITEMS elsewhere in this file never set `selected`
+    // and are correctly queried via role "menuitem" in those tests; here every
+    // item sets `selected`, so all render as menuitemradio.
+    const sonnet = screen.getByRole('menuitemradio', { name: /Sonnet/ })
+    const opus = screen.getByRole('menuitemradio', { name: /Opus/ })
+    expect(sonnet).toHaveAttribute('aria-checked', 'true')
+    expect(opus).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('a plain menuitem (no item sets `selected`) never carries aria-checked', () => {
+    render(<Host onSelect={() => {}} items={BASE_ITEMS} />)
+    fireEvent.click(screen.getByText('Mode'))
+    const manual = screen.getByRole('menuitem', { name: /Manual/ })
+    expect(manual).not.toHaveAttribute('aria-checked')
+  })
+
+  it('an unrelated parent re-render with a fresh inline onClose does not steal focus from the active menu item', () => {
+    function ToggleHost() {
+      const ref = useRef<HTMLButtonElement>(null)
+      const [open, setOpen] = useState(false)
+      const [tick, setTick] = useState(0)
+      return (
+        <>
+          <button ref={ref} onClick={() => setOpen(true)}>Mode</button>
+          <button onClick={() => setTick((t) => t + 1)}>Bump</button>
+          <span>{tick}</span>
+          {/* Inline onClose: a fresh function identity on every render, exactly
+              like the composer pickers this primitive is built for. */}
+          <Menu open={open} onClose={() => setOpen(false)} anchorRef={ref} label="Permission mode" onSelect={() => {}} items={FOUR_ITEMS} />
+        </>
+      )
+    }
+    render(<ToggleHost />)
+    fireEvent.click(screen.getByText('Mode'))
+    const menu = screen.getByRole('menu')
+    fireEvent.keyDown(menu, { key: 'ArrowDown' }) // Alpha -> Charlie
+    const charlie = screen.getByRole('menuitem', { name: /Charlie/ })
+    expect(document.activeElement).toBe(charlie)
+
+    // Unrelated re-render of the host: recreates the inline onClose passed to
+    // Menu. This must not tear focus off the active menu item.
+    fireEvent.click(screen.getByText('Bump'))
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+    expect(document.activeElement).toBe(charlie)
+  })
 })
