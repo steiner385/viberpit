@@ -75,11 +75,23 @@ See src/ccswitch/accounts.py, PRs #352, #873.
 """
 
 
-def test_evidence_dict_links_are_tolerated():
-    """links written as an evidence dict (code/prs keys) must not fail the doc."""
+def test_archaeology_links_dict_does_not_raise():
+    """parse_feature_doc must not raise when links is an evidence dict
+    (archaeology shape: {code: [...], prs: [...]}).  The whole doc must be
+    returned with slug/title/state/body intact and links safely empty."""
     doc = parse_feature_doc(ARCHAEOLOGY_DOC)
     assert doc.slug == "session-manager"
-    assert doc.links == ()  # non-list links → treated as no links
+    assert doc.title == "Session Manager"
+    assert doc.state == "live"
+    assert doc.body.startswith("## Problem")
+    # The archaeology evidence dict contains no valid FeatureLinkRef items — links empty.
+    assert doc.links == ()
+
+
+def test_valid_feature_links_still_parse():
+    """A proper links list must still produce FeatureLinkRef objects after the fix."""
+    doc = parse_feature_doc(VALID)
+    assert doc.links == (FeatureLinkRef("powered_by", "infra", "message-queue"),)
 
 
 def test_unknown_link_kind_is_skipped():
@@ -97,15 +109,15 @@ def test_unknown_link_kind_is_skipped():
     assert doc.links[0].kind == "powered_by"
 
 
-def test_non_dict_link_item_is_skipped():
-    """A string or scalar in the links list must be skipped, not fail the doc."""
+def test_links_list_with_malformed_item_skips_bad_keeps_good():
+    """A links list mixing valid and malformed items must skip the bad ones."""
     text = (
-        "---\n"
-        "slug: a\ntitle: A\nstate: proposed\n"
-        "links:\n"
+        "---\nslug: a\ntitle: A\nstate: proposed\nlinks:\n"
         "  - kind: powered_by\n    project: p\n    feature: f\n"
-        "  - just-a-string\n"
+        "  - not-a-mapping\n"  # scalar — should be skipped
+        "  - kind: unknown_kind\n    feature: x\n"  # bad kind — should be skipped
         "---\nbody\n"
     )
     doc = parse_feature_doc(text)
     assert len(doc.links) == 1
+    assert doc.links[0] == FeatureLinkRef("powered_by", "p", "f")

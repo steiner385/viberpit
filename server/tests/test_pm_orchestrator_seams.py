@@ -214,6 +214,98 @@ async def test_classify_ingest_is_idempotent(db_env):
     assert (first, second) == (1, 0)  # second pass writes nothing (pending exists)
 
 
+@pytest.mark.asyncio
+async def test_apply_feature_plan_map_proposed_advances_to_map_merged(db_env):
+    """Bug #2 regression: applying ≥1 feature to a map_proposed project must
+    advance onboarding_state to map_merged."""
+    await init_db(db_env)
+    async with db_session() as db:
+        p = Project(slug="test-proj", name="test-proj",
+                    onboarding_state="map_proposed")
+        db.add(p)
+        await db.flush()
+        project_id = p.id
+
+    orch = _bare_orch()
+
+    # Build a minimal plan with one upsert (simulating an indexed feature doc).
+    from server.pm.feature_index import FeatureIndexPlan, FeatureUpsert
+    plan = FeatureIndexPlan(
+        upserts=(FeatureUpsert(
+            slug="core", title="Core", state="live",
+            summary="Core feature.", repo_path="docs/product/features/core.md",
+        ),),
+        orphan_slugs=(),
+        revive_slugs=(),
+    )
+    await orch._pm_sync_apply_feature_plan(project_id, plan, {})
+
+    async with db_session() as db:
+        from sqlalchemy import select
+        proj = (await db.execute(
+            select(Project).where(Project.id == project_id)
+        )).scalar_one()
+        assert proj.onboarding_state == "map_merged"
+
+
+@pytest.mark.asyncio
+async def test_apply_feature_plan_non_map_proposed_state_unchanged(db_env):
+    """Bug #2 regression: applying a plan to a project NOT in map_proposed must
+    leave onboarding_state unchanged (e.g. map_merged stays map_merged)."""
+    await init_db(db_env)
+    async with db_session() as db:
+        p = Project(slug="stable-proj", name="stable-proj",
+                    onboarding_state="map_merged")
+        db.add(p)
+        await db.flush()
+        project_id = p.id
+
+    orch = _bare_orch()
+
+    from server.pm.feature_index import FeatureIndexPlan, FeatureUpsert
+    plan = FeatureIndexPlan(
+        upserts=(FeatureUpsert(
+            slug="feature-a", title="A", state="live",
+            summary="A feature.", repo_path="docs/product/features/a.md",
+        ),),
+        orphan_slugs=(),
+        revive_slugs=(),
+    )
+    await orch._pm_sync_apply_feature_plan(project_id, plan, {})
+
+    async with db_session() as db:
+        from sqlalchemy import select
+        proj = (await db.execute(
+            select(Project).where(Project.id == project_id)
+        )).scalar_one()
+        assert proj.onboarding_state == "map_merged"  # unchanged
+
+
+@pytest.mark.asyncio
+async def test_apply_feature_plan_map_proposed_no_upserts_stays(db_env):
+    """map_proposed project with 0 new features (empty plan) must NOT advance."""
+    await init_db(db_env)
+    async with db_session() as db:
+        p = Project(slug="empty-proj", name="empty-proj",
+                    onboarding_state="map_proposed")
+        db.add(p)
+        await db.flush()
+        project_id = p.id
+
+    orch = _bare_orch()
+
+    from server.pm.feature_index import FeatureIndexPlan
+    plan = FeatureIndexPlan(upserts=[], orphan_slugs=(), revive_slugs=())
+    await orch._pm_sync_apply_feature_plan(project_id, plan, {})
+
+    async with db_session() as db:
+        from sqlalchemy import select
+        proj = (await db.execute(
+            select(Project).where(Project.id == project_id)
+        )).scalar_one()
+        assert proj.onboarding_state == "map_proposed"  # no features → no advance
+
+
 def _mk_async(value):
     async def _f(*a, **k):
         return value
