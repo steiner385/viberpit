@@ -589,17 +589,23 @@ def test_unknown_permission_and_interrupt_safe(ws_env):
         ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
         _drain_events(ws, until_type="replayComplete")
 
-        # Unknown permId — must not crash, no error frame expected.
+        # Unknown permId — must not crash, and must NOT be a silent no-op either:
+        # a decision the daemon can't apply is reported (PERMISSION_NOT_PENDING),
+        # the sibling of the answerQuestion silent-drop that froze a session on
+        # 2026-09-02 (see test_ws_rejected_answer.py).
         ws.send_text(json.dumps({
             "type": "permissionResponse", "sessionId": session_id,
             "permId": "does-not-exist", "decision": "allow",
         }))
+        events = _drain_events(ws, until=lambda e: e.get("type") == "error", timeout=4.0)
+        err = next((e for e in events if e.get("type") == "error"), None)
+        assert err is not None and err.get("code") == "PERMISSION_NOT_PENDING"
         # interrupt is accepted.
         ws.send_text(json.dumps({"type": "interrupt", "sessionId": session_id}))
 
         # Send a benign unknown frame and confirm we get a well-formed error back.
         ws.send_text(json.dumps({"type": "bogus", "sessionId": session_id}))
-        events = _drain_events(ws, until_type="error", timeout=4.0)
+        events = _drain_events(ws, until=lambda e: e.get("type") == "error", timeout=4.0)
         err = next((e for e in events if e.get("type") == "error"), None)
         assert err is not None and err.get("code") == "UNKNOWN_TYPE"
 

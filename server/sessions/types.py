@@ -50,7 +50,7 @@ class SessionRecord:
     origin: str | None = None        # automation_id that spawned this session (None = human-created)
     origin_ref: str | None = None    # automation's reference key (e.g. "owner/repo#123")
     assisted_by: str | None = None   # automation_id that has acted on this session (e.g. "autopilot")
-    detached: bool = False           # True for rehydrated sessions with no live driver
+    detached: bool = False           # no live driver — DERIVED on read (orchestrator._sync_detached), never hand-set
     status: str = "idle"             # idle / in_progress / condensing / waiting_input / ready_review / done / waiting_external / limited / ended
     name_is_auto: bool = True        # False once the user manually renames the session
     permission_mode: str = "interactive"

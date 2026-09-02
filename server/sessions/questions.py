@@ -93,6 +93,25 @@ class QuestionRegistry:
             return True
         return False
 
+    def resolve_all(self, session_id: str, selected: list[str], mode: str = "chat") -> int:
+        """Resolve EVERY pending question of *session_id* with the same answer.
+
+        The driver's ``send_prompt`` uses this when a plain user message arrives while
+        the turn is parked on AskUserQuestion: the message is the user's reply to the
+        call as a whole, so a multi-question call is answered as a group. No identity
+        check — the caller is the driver that owns the session (a prompt already
+        carries no identity gate; answering the pending question with it widens
+        nothing). Returns the number of questions resolved (0 when none pending).
+        """
+        pend = [qid for qid, r in self._pending.items() if r["session_id"] == session_id]
+        n = 0
+        for qid in pend:
+            rec = self._pending.pop(qid)
+            if not rec["future"].done():
+                rec["future"].set_result((selected, mode))
+                n += 1
+        return n
+
     def _reconcile(self, question_id: str, session_id: str) -> tuple[str, dict | None]:
         """Map an unrecognized question id onto the session's pending question.
 

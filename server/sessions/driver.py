@@ -561,6 +561,26 @@ class SessionDriver:
         if self._client is None:
             raise RuntimeError("SessionDriver.send_prompt called before start()")
         images = images or []
+        # A pending AskUserQuestion means the turn is parked inside _can_use_tool
+        # waiting for the user — a message typed now IS the answer, and the driver's
+        # own state (not the client's choice of frame type) decides that. It must be
+        # delivered as one: the C2 queue below only drains when the turn ENDS, which
+        # needs this very answer, so enqueueing here deadlocked the session (reply
+        # stuck in the queue strip, model blocked, forever — the frozen "Answer
+        # needed" failure mode). Every still-pending question of the call gets the
+        # text (a multi-question call is answered as a group) in chat framing, so the
+        # model reads it as the user's own words rather than a picked option. The
+        # question channel is text-only: images follow as an attachment-only prompt
+        # once the turn ends, never dropped.
+        if text.strip():
+            answered = self._qreg.resolve_all(self.session_id, [text], "chat")
+            if answered:
+                log.info("driver.send_prompt: delivered prompt as the answer to %d pending "
+                         "question(s) session=%s", answered, self.session_id)
+                if images:
+                    self._queue.append(("", images))
+                    self._emit(ev.QueueUpdate(self.queue_wire()))
+                return
         # C2 — FIFO queue: if a pump is live, enqueue (text, images) instead of rejecting.
         if self._pump is not None and not self._pump.done():
             self._queue.append((text, images))

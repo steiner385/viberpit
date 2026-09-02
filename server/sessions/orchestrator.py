@@ -5689,6 +5689,9 @@ class SessionOrchestrator:
             origin=getattr(row, "origin", None),
             origin_ref=getattr(row, "origin_ref", None),
             assisted_by=getattr(row, "assisted_by", None),
+            # Initial value only: a record just rebuilt from its row has no driver.
+            # From here on the flag is DERIVED on every read (_sync_detached), never
+            # hand-maintained — see that method for the drift this used to cause.
             detached=True,
             status=row.status,
             name_is_auto=row.name_is_auto,
@@ -5906,13 +5909,31 @@ class SessionOrchestrator:
         except Exception:
             log.warning("rearm-on-attach failed session=%s", session_id, exc_info=True)
 
+    def _sync_detached(self, rec: SessionRecord) -> SessionRecord:
+        """``detached`` is DERIVED from driver presence at read time — never stored.
+
+        It used to be a hand-maintained shadow of ``_drivers`` membership: set True
+        when a record was rebuilt from its DB row at boot, cleared at exactly one
+        line of ``ensure_driver`` — after the driver was already registered and after
+        an awaited SDK ``set_model`` that can raise — and never cleared by the
+        reassign install path at all. Once wrong it stayed wrong: ``ensure_driver``'s
+        fast path returns an existing driver without touching the flag, and the edge
+        then took the read-only "detached" attach forever (no pending-question
+        re-emit, no live status) for a session that was live and blocked on
+        AskUserQuestion — the frozen "Answer needed" failure mode (2026-09-02).
+        Deriving it here makes it exactly the condition ``ensure_driver`` branches on."""
+        rec.detached = rec.id not in self._drivers
+        return rec
+
     def list_sessions(self) -> list[SessionRecord]:
-        """Return all in-memory SessionRecords."""
-        return list(self._records.values())
+        """Return all in-memory SessionRecords (``detached`` synced from ``_drivers``)."""
+        return [self._sync_detached(r) for r in self._records.values()]
 
     def get_session(self, session_id: str) -> SessionRecord | None:
-        """Return the in-memory SessionRecord for session_id, or None."""
-        return self._records.get(session_id)
+        """Return the in-memory SessionRecord for session_id, or None
+        (``detached`` synced from ``_drivers``)."""
+        rec = self._records.get(session_id)
+        return None if rec is None else self._sync_detached(rec)
 
     async def _refresh_live_branches(self) -> None:
         """Re-read each repo-backed session's branch from its live worktree HEAD.
@@ -6931,8 +6952,15 @@ class SessionOrchestrator:
             # detach → attach lost it to the account default). Placed after the
             # final driver assignment so the fresh-start fallback gets it too.
             if rec.model is not None:
-                await driver.set_model(rec.model)
-            rec.detached = False
+                try:
+                    await driver.set_model(rec.model)
+                except Exception:
+                    # The driver is live and registered; a failed model re-apply must
+                    # not become a failed resume — the caller would treat the session
+                    # as un-resumed (and log nothing) while its process runs on. It
+                    # continues on the launch model; the user can re-pick.
+                    log.warning("session.resume id=%s set_model(%r) failed — continuing "
+                                "on the launch model", session_id, rec.model, exc_info=True)
             # INVARIANT: a session holding a live driver is not capacity-exempt.
             # `complete` is exempt (see CAPACITY_EXEMPT_STATUSES) precisely because
             # its process was released; resuming it makes that false again. Without
@@ -9514,6 +9542,10 @@ class SessionOrchestrator:
             try:
                 driver = await self.ensure_driver(sid, SYSTEM_IDENTITY)
             except Exception:
+                # Never swallow silently: this was the only trace of WHY a session
+                # came back wrong after a deploy, and it went nowhere.
+                log.warning("deploy.restore: ensure_driver failed session=%s", sid,
+                            exc_info=True)
                 driver = None
             if driver is None:
                 failed.append(sid)
@@ -9560,6 +9592,8 @@ class SessionOrchestrator:
             try:
                 driver = await self.ensure_driver(sid, SYSTEM_IDENTITY)
             except Exception:
+                log.warning("deploy.resume.retry: ensure_driver failed session=%s "
+                            "attempt=%d", sid, attempts + 1, exc_info=True)
                 driver = None
             if driver is not None:
                 self._resume_recovery.pop(sid, None)
