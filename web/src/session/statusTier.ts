@@ -1,8 +1,10 @@
 import {
   Loader2, CircleAlert, HelpCircle, Eye, Check, CheckCircle2,
   AlertTriangle, X, Clock, Minimize2, Hourglass, RotateCcw,
+  ListOrdered, UserCheck,
 } from 'lucide-react'
 import type { ComponentType } from 'react'
+import type { SessionStatus } from '@/api/types'
 
 export type StatusTier = 'busy' | 'needs-you' | 'your-turn' | 'waiting' | 'error'
 
@@ -20,7 +22,19 @@ const BUSY = 'text-emerald-700 dark:text-emerald-400'
 const CALM = 'text-gray-600 dark:text-gray-400'
 
 // One table, keyed by the rich status string. 'working' is a tolerated legacy alias.
-const PRESENTATION: Record<string, StatusPresentation> = {
+//
+// Typed Record<SessionStatus | 'working', …> ON PURPOSE, not Record<string, …>: the
+// status vocabulary used to live in two independent lists — the SessionStatus union in
+// api/types.ts and these keys — with nothing tying them together. They drifted, and a
+// status missing here does not fail loudly: it silently hits FALLBACK and renders as a
+// calm "Ready". That is exactly how a not-yet-started 'queued' session came to look like
+// a healthy idle one over an empty conversation. With this type, adding a member to
+// SessionStatus fails the build until it has a pill here.
+//
+// NB the enforcing gate is CI's `npm run build` (`tsc -b`), NOT `npm run typecheck`:
+// the root tsconfig is `"files": []` plus project references, so a bare `tsc --noEmit`
+// against it checks zero files and passes no matter what.
+const PRESENTATION: Record<SessionStatus | 'working', StatusPresentation> = {
   in_progress:      { tier: 'busy',      label: 'Working…',          Icon: Loader2,       textClass: BUSY },
   working:          { tier: 'busy',      label: 'Working…',          Icon: Loader2,       textClass: BUSY },
   retrying:         { tier: 'busy',      label: 'Overloaded — retrying', Icon: Loader2,   textClass: NEEDS_YOU },
@@ -35,6 +49,11 @@ const PRESENTATION: Record<string, StatusPresentation> = {
   needs_attention:  { tier: 'error',     label: 'Turn failed',       Icon: AlertTriangle, textClass: ERROR },
   limited:          { tier: 'error',     label: 'Usage limit',       Icon: AlertTriangle, textClass: ERROR },
   ended:            { tier: 'your-turn', label: 'Ended',             Icon: X,             textClass: CALM },
+  // Not started yet. These two carry no transcript, so the pill is the ONLY signal the
+  // session has not run — a calm "Ready" over an empty conversation reads as a dead
+  // session, which is exactly what this table's fallback used to produce for them.
+  queued:           { tier: 'waiting',   label: 'Queued',            Icon: ListOrdered,   textClass: CALM },
+  pending_approval: { tier: 'needs-you', label: 'Awaiting approval', Icon: UserCheck,     textClass: NEEDS_YOU },
 }
 
 const FALLBACK: StatusPresentation = {
@@ -79,7 +98,10 @@ export function statusPresentation(
   if (opts?.interruptedByRestart && RESTART_STRANDABLE.has(state)) {
     return INTERRUPTED_BY_RESTART
   }
-  const hit = PRESENTATION[state]
+  // Cast to widen the key type for lookup only: `state` arrives as a plain string off
+  // the wire, so an unknown value must still be *handled* (FALLBACK + the warn below)
+  // even though the table itself is exhaustively typed over SessionStatus.
+  const hit = (PRESENTATION as Record<string, StatusPresentation | undefined>)[state]
   if (!hit && !seenUnknownStatuses.has(state)) {
     seenUnknownStatuses.add(state)
     console.warn(`[status] unrecognized status %o rendered as fallback "Ready"`, state)

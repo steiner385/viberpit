@@ -420,6 +420,13 @@ class SessionOrchestrator:
     # attached viewer's transcript freezes. None in edge/in-process mode (no daemon pump).
     on_driver_replaced = None   # Callable[[str, SessionDriver], None] | None
 
+    # Statuses a stranded initial prompt may be recovered from on rehydrate (see
+    # _recover_undelivered_prompts). Narrow on purpose: a session that has never run
+    # turn one cannot legitimately rest anywhere else, and 'queued' (owned by the
+    # queue drain) / 'pending_approval' (parked for a human decision) must never be
+    # woken by recovery.
+    _PROMPT_RECOVERABLE_STATUSES: frozenset[str] = frozenset({"idle"})
+
     def __init__(
         self,
         sdk_factory=None,
@@ -1669,16 +1676,26 @@ class SessionOrchestrator:
                 if entry is None:
                     break
                 sid, params = entry.session_id, dict(entry.params)
-                await sq.remove(sid)
+                # The queue entry is deliberately NOT removed yet — it is the ONLY
+                # place the spawn params (cols/rows/identity/attachment_ids) are
+                # persisted, so deleting it before the spawn commits meant a daemon
+                # killed mid-spawn left a 'queued' row nothing could ever replay:
+                # _reconcile_orphan_queued could only discard it as 'ended'. Holding
+                # the entry until the spawn commits turns that crash into a RETRY on
+                # the next boot's queue-drain-on-rehydrate. Every exit path below
+                # removes it exactly once.
+                #
                 # Re-verify the DB row is still 'queued' before spawning.  A
-                # concurrent close/archive (or crash-window orphan) may have already
-                # changed the status while the entry sat in the queue.  Skipping here
-                # heals those stale entries without double-starting the session.
+                # concurrent close/archive (or a crash AFTER a spawn committed, which
+                # now leaves the entry behind) may have already changed the status
+                # while the entry sat in the queue.  Skipping here heals those stale
+                # entries without double-starting the session.
                 in_mem = self._records.get(sid)
                 # A legitimately queued entry ALWAYS has an in-memory record
                 # (enqueue and rehydrate both seed one) — a missing record means
                 # a concurrent close/archive won the race; skip, never spawn.
                 if in_mem is None or in_mem.status != "queued":
+                    await sq.remove(sid)
                     log.warning("session_queue.stale_entry id=%s status=%s — skipping",
                                 sid, in_mem.status if in_mem is not None else "<gone>")
                     continue
@@ -1687,8 +1704,11 @@ class SessionOrchestrator:
                 self._records.pop(sid, None)
                 try:
                     await self._spawn_session(sid, preexisting_row=True, **params)
-                    started += 1
                 except Exception as exc:
+                    # A real start failure (as opposed to the process dying): the
+                    # session is about to be marked 'ended', so drop its entry —
+                    # leaving it would wedge the head of the queue forever.
+                    await sq.remove(sid)
                     # A queued session can lose a race with branch auto-delete on
                     # merge (#836): its PR lands between enqueue and spawn, the
                     # remote deletes the head branch, and create_worktree finds no
@@ -1748,6 +1768,13 @@ class SessionOrchestrator:
                             .where(DbSession.id == sid)
                             .values(**values)
                         )
+                else:
+                    # Commit point: the spawn persisted the row as 'idle' and (for an
+                    # automation session) already fired turn one, so the entry has
+                    # served its purpose. Removing it only here is what makes a
+                    # mid-spawn daemon death replayable rather than orphaning.
+                    await sq.remove(sid)
+                    started += 1
         return started
 
     def _queued_spawn_merged_pr(self, exc: Exception,
@@ -1790,6 +1817,13 @@ class SessionOrchestrator:
         got) its queue entry is invisible to it forever: stranded garbage that
         also renders in the UI as a duplicate queue position (two cards both
         numbered 1 — the live incident this fixes).
+
+        Scope note: this is now a LAST-RESORT reaper, not the crash-window handler it
+        started as. _maybe_start_queued used to delete the queue entry before spawning,
+        so a daemon killed mid-spawn manufactured orphans routinely; it now holds the
+        entry until the spawn commits, so that window replays instead. What still
+        reaches here is a row whose entry was lost some other way — a row enqueued by a
+        daemon predating that fix, or genuine DB-level loss.
 
         Decision: mark orphans 'ended', never re-enqueue. Re-enqueueing needs the
         full _enqueue_session params dict, but per SessionQueue's docstring,
@@ -6032,12 +6066,134 @@ class SessionOrchestrator:
         # the rows already selected above (see _reconcile_orphan_queued's
         # candidate_rows docstring) instead of re-querying.
         await self._reconcile_orphan_queued(candidate_rows=rows)
+        # Recover initial prompts the restart stranded (see the method's docstring).
+        # Runs on the same already-selected rows, after reconcile so a row this pass
+        # just ended is never woken.
+        await self._recover_undelivered_prompts(rows)
         # After rebuilding in-memory records, drain the queue: a restarted daemon may
         # have fewer active sessions than the cap (e.g. some were closed before restart),
         # so queued sessions should fill those free slots immediately. Tracked via _spawn
         # so stop() can cancel before it writes into a later test's DB.
         self._spawn(self._maybe_start_queued(), name="queue-drain-on-rehydrate")
         return added
+
+    async def _recover_undelivered_prompts(self, rows) -> int:
+        """Re-stage / re-send initial prompts a daemon restart stranded. Returns the count.
+
+        The bug this closes: ``_pending_initial_prompt`` is an in-memory dict, and
+        ``_spawn_session``'s two delivery paths are both process-local — a human
+        session (origin None) parks its prompt there until the first WS attach, and an
+        automation session (origin set) sends it inline right after the row is written.
+        A restart in either window left the session resting at 'idle' with its prompt
+        never delivered: a card that reads "Ready" over an empty conversation and never
+        does anything. Nothing reaped it and nothing retried it.
+
+        The durable state that makes recovery safe already exists on the row — no new
+        column needed:
+
+        * ``initial_prompt`` is the prompt itself (persisted at create time, and also
+          re-written by ``unarchive`` as the "why you're back" seed).
+        * ``claude_session_id`` is NULL until the SDK assigns one, which happens when
+          turn ONE actually starts (see ``_persist_claude_session_id``). A NULL is
+          therefore proof that no turn has ever run, which is what makes redelivery
+          idempotent in effect: a session that really did run cannot match, and one
+          whose turn died with the daemon *should* be re-prompted.
+
+        Status is held to ``_PROMPT_RECOVERABLE_STATUSES`` so this can never wake a
+        row that is parked deliberately ('pending_approval', awaiting a human) or one
+        the queue drain owns ('queued'). Synchronous: staging is a dict write, and the
+        automation sends are scheduled as tracked tasks so a slow driver spawn cannot
+        delay daemon startup.
+
+        Not covered (deliberately): an ``unarchive`` seed stranded the same way. That
+        row HAS a claude_session_id (it ran turns before being archived), so the
+        never-ran test above cannot distinguish "seed still pending" from "seed already
+        delivered"; separating them needs a durable delivered-at marker this fix does
+        not add. Pre-existing behaviour, called out so it is not mistaken for covered.
+
+        Known limitation: the initial prompt's ATTACHMENTS are not recovered. Nothing
+        persists them on the sessions row (``_pending_initial_attachment_ids`` is
+        in-memory, and ``session_queue.params`` is the only durable copy — see
+        ``_rebuild_hold_kwargs``, which forgoes them for the same reason). A recovered
+        turn therefore runs text-only rather than not running at all.
+        """
+        recovered = 0
+        to_send: list[tuple[str, str]] = []
+        # Fleet ownership (#852): the PRIMARY rehydrates every host's rows so the fleet
+        # dashboard can render them, so an acting loop that skipped this check would
+        # re-drive turn one for sessions a worker owns — and the worker would drive it
+        # too. Same gate the stuck-session sweep and rotation monitor use.
+        enabled_hosts = await self._enabled_host_names()
+        for row in rows:
+            rec = self._records.get(row.id)
+            if rec is None or rec.status not in self._PROMPT_RECOVERABLE_STATUSES:
+                continue
+            if not self._owns_record(rec, enabled_hosts):
+                continue
+            if getattr(rec, "interrupted_by_restart", False):
+                # The row was mid-turn (or awaiting a human) when the daemon died, which
+                # PROVES its prompt was delivered — an undelivered prompt cannot produce
+                # a running turn. Continuing that turn is owned by #434's flag and by the
+                # resume paths keyed off it: restore_deploy (re-issues the snapshotted
+                # _last_prompt) and resume_interrupted / auto_resume_interrupted (#938,
+                # gated on _resume_eligible → interrupted_by_restart). Acting here too
+                # would drive the same session twice. Skipping keeps the two sets
+                # disjoint: they own interrupted rows, this owns never-started ones.
+                continue
+            if getattr(row, "claude_session_id", None):
+                continue  # turn one already ran — re-sending would duplicate work
+            prompt = (getattr(row, "initial_prompt", None) or "").strip()
+            if not prompt:
+                continue
+            if row.id in self._pending_initial_prompt:
+                continue  # already staged this boot (e.g. by unarchive)
+            if getattr(row, "origin", None) is None:
+                # Human session: restore the deferred-until-attach contract exactly as
+                # _spawn_session set it up, so the turn streams live to the client that
+                # opens the card rather than firing into a driver nobody is watching.
+                self._pending_initial_prompt[row.id] = prompt
+            else:
+                # Automation session: no human will ever attach, so nothing would pop a
+                # staged prompt. Re-send it — batched below, off the startup path.
+                to_send.append((row.id, prompt))
+            recovered += 1
+            log_event(log, logging.WARNING, "session.initial_prompt_recovered",
+                      session_id=row.id,
+                      **{"from": row.status, "to": rec.status,
+                         "reason": "undelivered_across_restart"})
+        if to_send:
+            # ONE task that works through them in order, not one task per session: each
+            # delivery spawns a driver, and a boot that finds many orphans (the live
+            # fleet had 70 accumulated) must not try to spawn them all at once.
+            self._spawn(self._deliver_initial_prompts(to_send),
+                        name="initial-prompt-recovery")
+        if recovered:
+            log.warning("rehydrate: recovered %d undelivered initial prompt(s)", recovered)
+        self._startup_note("prompts_recovered", recovered)
+        return recovered
+
+    async def _deliver_initial_prompts(self, items: list[tuple[str, str]]) -> None:
+        """Deliver each recovered automation prompt in turn (see _deliver_initial_prompt)."""
+        for session_id, prompt in items:
+            await self._deliver_initial_prompt(session_id, prompt)
+
+    async def _deliver_initial_prompt(self, session_id: str, prompt: str) -> None:
+        """Spawn a driver for a rehydrated session and run its never-delivered turn one.
+
+        ``send_prompt`` drops the prompt when no driver is registered, and a rehydrated
+        record is detached by definition — so the ``ensure_driver`` here is load-bearing,
+        not defensive. Never raises: a failed recovery must not take down startup, and
+        the row still matches on the next boot so the attempt repeats.
+        """
+        try:
+            if await self.ensure_driver(session_id) is None:
+                log.warning("initial_prompt_recover: no driver for %s — prompt still "
+                            "undelivered, will retry next boot", session_id)
+                return
+            await self.send_prompt(session_id, prompt)
+        except Exception:
+            log.warning("initial_prompt_recover: delivery failed for %s", session_id,
+                        exc_info=True)
 
     async def rearm_background_tasks(self) -> int:
         """Relaunch background tasks snapshotted at the last drain. Called once after
@@ -8268,7 +8424,11 @@ class SessionOrchestrator:
         racing a live worker's _rotate_away over the same shared row.
         """
         now = time.monotonic()
-        cached = self._ownership_hosts_cache
+        # getattr-guarded like _startup_note / _maybe_start_queued's lock: rehydrate-
+        # shaped tests build orchestrators via SessionOrchestrator.__new__ (no
+        # __init__, so no _ownership_hosts_cache). Ownership is consulted from
+        # rehydrate now, which is exactly the path those tests drive.
+        cached = getattr(self, "_ownership_hosts_cache", None)
         if cached is not None and now - cached[0] < _OWNERSHIP_HOSTS_TTL_S:
             return cached[1]
         from sqlalchemy import select as sa_select
@@ -8294,7 +8454,10 @@ class SessionOrchestrator:
         spawns over the same shared rows (the reason the sweep was fleet-global
         before this).
         """
-        if record.id in self._drivers:
+        # Defensive getattr (mirrors _queued_spawn_merged_pr / _startup_note):
+        # minimally-constructed orchestrators built via __new__ in rehydrate-shaped
+        # tests have no _drivers, and ownership is consulted from rehydrate now.
+        if record.id in getattr(self, "_drivers", {}):
             # The live driver is in this process — de facto ours regardless of
             # what the stamp says (e.g. a mid-flight registry rename).
             return True

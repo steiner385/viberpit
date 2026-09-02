@@ -49,6 +49,9 @@ export type SessionStatus =
   | 'idle'
   | 'in_progress'
   | 'condensing'
+  // Emitted by server/sessions/status.py (MID_TURN_STATUSES) but missing here until
+  // statusTier's PRESENTATION was typed against this union — the drift ran both ways.
+  | 'retrying'
   | 'waiting_input'
   | 'waiting_question'
   | 'ready_review'
