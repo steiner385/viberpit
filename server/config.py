@@ -133,6 +133,10 @@ try:
         # model change (and whether a marker found in output is acted on at all).
         self_model_switch_enabled: bool = Field(
             default=True, alias="CCSWITCH_SELF_MODEL_SWITCH_ENABLED")
+        # How many model switches one session may auto-apply before further requests
+        # are parked for a human instead. Bounds a session driving itself in circles.
+        self_model_switch_cap: int = Field(
+            default=3, alias="CCSWITCH_SELF_MODEL_SWITCH_CAP")
 
         model_config = {"populate_by_name": True, "env_file": ".env", "extra": "ignore"}
 
@@ -288,6 +292,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         self_model_switch_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_SELF_MODEL_SWITCH_ENABLED", "true").lower() in ("1","true","yes","on")
+        )
+        self_model_switch_cap: int = dataclasses.field(
+            default_factory=lambda: int(v) if (v := os.environ.get("CCSWITCH_SELF_MODEL_SWITCH_CAP", "")) and v.isdigit() else 3
         )
 
         @property
