@@ -23,7 +23,13 @@
   --t-accent: #2563eb;  --t-accent-ink: #ffffff; --t-accent-wash: #e8effc;
 
   /* semantic status — base is AA as text on surface; -strong is AA behind white
-     text; -wash is a tint for backgrounds */
+     text; -wash is a tint for backgrounds.
+     -strong is deliberately theme-invariant: declared once, here, with NO dark
+     override. White text/glyphs on a -strong fill (metro node circles,
+     ready-merge button) must stay AA in BOTH themes, so the fill itself must
+     not change with the theme — see plotroom.css's UX-H5 rationale, which
+     holds --accent-strong/--done-strong/--amber-strong at the same AA-vs-white
+     values in its light and dark blocks. */
   --t-success: #15803d; --t-success-wash: #e6f4ea; --t-success-strong: #15803d;
   --t-warning: #9a5d00; --t-warning-wash: #fbf0dc; --t-warning-strong: #9a5d00;
   --t-danger:  #d23b3b; --t-danger-wash:  #fbe9e7; --t-danger-strong:  #b42318;
@@ -69,6 +75,8 @@
     --t-edge: #323843;    --t-edge-strong: #46505e;
     --t-ink: #e8eaee;     --t-ink-muted: #98a0ac;  --t-ink-faint: #6f7886;
     --t-accent: #5c9bff;  --t-accent-ink: #0b1416; --t-accent-wash: #1c2a44;
+    /* -strong intentionally absent here — inherits from :root (see the
+       light-block comment: it must stay AA-vs-white in both themes). */
     --t-success: #3dbb66; --t-success-wash: #17301f;
     --t-warning: #e0a23b; --t-warning-wash: #3a2d16;
     --t-danger:  #ef6262; --t-danger-wash:  #3a1d1b;
@@ -82,6 +90,8 @@
   --t-edge: #323843;    --t-edge-strong: #46505e;
   --t-ink: #e8eaee;     --t-ink-muted: #98a0ac;  --t-ink-faint: #6f7886;
   --t-accent: #5c9bff;  --t-accent-ink: #0b1416; --t-accent-wash: #1c2a44;
+  /* -strong intentionally absent here — inherits from :root (see the
+     light-block comment: it must stay AA-vs-white in both themes). */
   --t-success: #3dbb66; --t-success-wash: #17301f;
   --t-warning: #e0a23b; --t-warning-wash: #3a2d16;
   --t-danger:  #ef6262; --t-danger-wash:  #3a1d1b;
