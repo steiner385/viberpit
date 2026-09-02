@@ -3553,7 +3553,47 @@ class SessionOrchestrator:
                 if proj is not None:
                     proj.onboarding_state = "map_proposed"
                     await db.commit()
+            from server.pm.classification import map_branch_name
+            self._spawn(
+                self._pm_onboard_chain_critic(slug, repo, map_branch_name(slug)),
+                name=f"pm-critic-chain-{slug}")
         return rec
+
+    async def _pm_onboard_spawn_critic(self, slug: str, repo: str,
+                                       branch: str):
+        """Independent completeness-critic session on the open map PR branch
+        (design §3.2). Internal-only — spawned by the chain after synthesis; never
+        reached by the request layer, so it stays private (no facade/RPC forward).
+        Propose-only: augments the SAME PR, never opens a new one."""
+        from server.pm.classification import build_coverage_critic_prompt
+        account = await self._backlog_healthy_account()
+        if account is None:
+            return None
+        url = f"https://github.com/{repo}.git"
+        cwd = await asyncio.to_thread(
+            gitrepos.ensure_clone, await self._effective_repo_root(), repo, url)
+        default_branch = await self._sdlc_default_branch(repo)
+        prompt = build_coverage_critic_prompt(
+            slug=slug, repo=repo, default_branch=default_branch, branch=branch,
+            open_count=0, closed_count=0)
+        origin_ref = f"{slug}:feature-map-critic"
+        return await self._pm_onboard_ctx.spawn_session(
+            origin_ref=origin_ref, dedupe_key=origin_ref, repo=repo, cwd=cwd,
+            account=account, name=f"pm map-critic {slug}", initial_prompt=prompt,
+            detail={"slug": slug, "kind": "feature-map-critic", "branch": branch})
+
+    async def _pm_onboard_chain_critic(self, slug: str, repo: str, branch: str, *,
+                                       attempts: int = 30, delay: float = 30.0):
+        """Wait (bounded) for the map-synthesis PR on *branch* to appear, then spawn
+        ONE completeness-critic session against it (design §3.2). No webhook: polls
+        the PR poller's cache. Best-effort — a timeout just skips the critic."""
+        for _ in range(attempts):
+            if self.pr_for(repo, branch) is not None:
+                return await self._pm_onboard_spawn_critic(slug, repo, branch)
+            await asyncio.sleep(delay)
+        log.warning("pm_onboard.chain_critic: map PR for %s (%s) never appeared — "
+                    "skipping critic", slug, branch)
+        return None
 
     async def pm_classify_run(
             self, slug: str, *,
