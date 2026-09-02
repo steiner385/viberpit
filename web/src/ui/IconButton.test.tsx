@@ -15,9 +15,10 @@ describe('IconButton', () => {
   })
 
   it('requires aria-label at the type level', () => {
+    // NOTE: inert today — tsconfig.app.json excludes *.test.tsx, so nothing type-checks
+    // this file (see the typecheck-gate follow-up). Kept because editors surface it now,
+    // and it becomes a real gate failure once test files are checked.
     // @ts-expect-error — an icon-only button has no visible text, so aria-label is required.
-    // If someone widens the prop back to optional, this directive becomes unused and
-    // `tsc --noEmit` fails — which is the regression this test exists to catch.
     const missingLabel = <IconButton><X size={16} /></IconButton>
     expect(missingLabel).toBeTruthy()
   })
