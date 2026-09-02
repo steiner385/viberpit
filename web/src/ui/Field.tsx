@@ -15,8 +15,18 @@ export interface FieldProps {
 export function Field({ label, htmlFor, help, error, required, className, children }: FieldProps) {
   const helpId = help ? `${htmlFor}-help` : undefined
   const errorId = error ? `${htmlFor}-error` : undefined
-  const describedBy = [helpId, errorId].filter(Boolean).join(' ') || undefined
-  const control = React.cloneElement(children, { 'aria-describedby': describedBy, required })
+  // Preserve the child's own `aria-describedby` (a caller may already document
+  // the control) and append Field's ids after it, so the caller's description
+  // reads first. Only ever write keys Field actually has a value for —
+  // cloneElement copies every own-enumerable key from the config verbatim,
+  // `undefined` included, so an unconditional call here would silently wipe
+  // out a child's existing `required` / `aria-describedby`.
+  const childDescribedBy = children.props['aria-describedby']
+  const describedBy = [childDescribedBy, helpId, errorId].filter(Boolean).join(' ') || undefined
+  const config: { 'aria-describedby'?: string; required?: boolean } = {}
+  if (describedBy) config['aria-describedby'] = describedBy
+  if (required !== undefined) config.required = required
+  const control = React.cloneElement(children, config)
   return (
     <div className={cn('flex flex-col gap-1', className)}>
       <label htmlFor={htmlFor} className="text-sm font-medium text-ink">
