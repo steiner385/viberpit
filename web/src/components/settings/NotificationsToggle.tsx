@@ -7,7 +7,7 @@ export function NotificationsToggle() {
 
   if (!pushSupported()) {
     return (
-      <p className="text-sm text-muted-foreground">
+      <p className="text-sm text-ink-muted">
         Push notifications are not supported in this browser (needs HTTPS + a modern browser).
       </p>
     )
@@ -41,7 +41,7 @@ export function NotificationsToggle() {
           <div className="text-xs text-destructive">Permission denied — enable it in browser settings.</div>
         )}
         {state === 'subscribed' && (
-          <div className="text-xs text-muted-foreground">This device will receive alerts.</div>
+          <div className="text-xs text-ink-muted">This device will receive alerts.</div>
         )}
       </div>
       {state === 'subscribed' ? (

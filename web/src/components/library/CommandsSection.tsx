@@ -28,7 +28,7 @@ export function CommandsSection() {
         <button
           type="button"
           onClick={() => setDialog({ id: null })}
-          className="text-xs px-2 py-1 rounded border border-[var(--border)] hover:bg-gray-50 dark:hover:bg-gray-700"
+          className="text-xs px-2 py-1 rounded border border-edge hover:bg-gray-50 dark:hover:bg-gray-700"
         >
           New command
         </button>
@@ -89,7 +89,7 @@ function CommandRow({
   const displayPath = `/${command.path.replace(/\//g, ':')}`
 
   return (
-    <li className="border border-[var(--border)] rounded-lg p-3">
+    <li className="border border-edge rounded-lg p-3">
       <button
         type="button"
         className="w-full text-left"
@@ -99,7 +99,7 @@ function CommandRow({
         <div className="flex items-baseline gap-2 min-w-0">
           <span className="font-medium font-mono text-sm">{displayPath}</span>
           {pluginBadge && (
-            <span className="text-xs px-1.5 py-0.5 rounded-full border border-[var(--border)] opacity-70 shrink-0">
+            <span className="text-xs px-1.5 py-0.5 rounded-full border border-edge opacity-70 shrink-0">
               {pluginBadge}
             </span>
           )}

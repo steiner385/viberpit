@@ -198,7 +198,7 @@ export function ScheduleEditor({ schedule, onSave, saving = false }: ScheduleEdi
 
   return (
     <section className="space-y-3">
-      <h4 className="text-xs font-semibold uppercase text-muted-foreground">Schedule</h4>
+      <h4 className="text-xs font-semibold uppercase text-ink-muted">Schedule</h4>
 
       {/* Preset */}
       <div>
@@ -210,7 +210,7 @@ export function ScheduleEditor({ schedule, onSave, saving = false }: ScheduleEdi
           aria-label="Schedule preset"
           value={preset}
           onChange={(e) => applyPreset(e.target.value)}
-          className="text-sm rounded border border-border bg-background px-2 py-1 w-full min-h-[44px]"
+          className="text-sm rounded border border-edge bg-canvas px-2 py-1 w-full min-h-[44px]"
         >
           {PRESETS.map((p) => (
             <option key={p.key} value={p.key}>{p.label}</option>
@@ -223,23 +223,23 @@ export function ScheduleEditor({ schedule, onSave, saving = false }: ScheduleEdi
         <span className="block text-sm font-medium mb-1">Active hours</span>
         <div className="flex items-center gap-2 flex-wrap">
           <label className="flex items-center gap-1 text-sm">
-            <span className="text-muted-foreground">from</span>
+            <span className="text-ink-muted">from</span>
             <input
               type="time"
               aria-label="Active hours start"
               value={activeHours.start ?? ''}
               onChange={(e) => setStart(e.target.value)}
-              className="text-sm rounded border border-border bg-background px-2 py-1 min-h-[44px]"
+              className="text-sm rounded border border-edge bg-canvas px-2 py-1 min-h-[44px]"
             />
           </label>
           <label className="flex items-center gap-1 text-sm">
-            <span className="text-muted-foreground">to</span>
+            <span className="text-ink-muted">to</span>
             <input
               type="time"
               aria-label="Active hours end"
               value={activeHours.end ?? ''}
               onChange={(e) => setEnd(e.target.value)}
-              className="text-sm rounded border border-border bg-background px-2 py-1 min-h-[44px]"
+              className="text-sm rounded border border-edge bg-canvas px-2 py-1 min-h-[44px]"
             />
           </label>
         </div>
@@ -256,8 +256,8 @@ export function ScheduleEditor({ schedule, onSave, saving = false }: ScheduleEdi
                 className={cn(
                   'text-xs rounded border px-2 min-h-[44px] min-w-[44px] transition-colors',
                   on
-                    ? 'bg-primary text-primary-foreground border-primary'
-                    : 'bg-background text-foreground border-border hover:bg-accent',
+                    ? 'bg-accent text-accent-ink border-primary'
+                    : 'bg-canvas text-ink border-edge hover:bg-accent-wash',
                 )}
               >
                 {label}
@@ -265,7 +265,7 @@ export function ScheduleEditor({ schedule, onSave, saving = false }: ScheduleEdi
             )
           })}
         </div>
-        <p className="text-xs text-muted-foreground mt-0.5">No days selected = every day.</p>
+        <p className="text-xs text-ink-muted mt-0.5">No days selected = every day.</p>
       </div>
 
       {/* Raw cron */}
@@ -280,21 +280,21 @@ export function ScheduleEditor({ schedule, onSave, saving = false }: ScheduleEdi
           placeholder="min hour dom mon dow"
           value={cron}
           onChange={(e) => setCronValue(e.target.value)}
-          className="text-sm rounded border border-border bg-background px-2 py-1 w-full min-h-[44px] font-mono"
+          className="text-sm rounded border border-edge bg-canvas px-2 py-1 w-full min-h-[44px] font-mono"
         />
-        <p className="text-xs text-muted-foreground mt-0.5">
+        <p className="text-xs text-ink-muted mt-0.5">
           Fields: minute · hour · day-of-month · month · day-of-week
         </p>
       </div>
 
       {/* Live preview */}
-      <div className="rounded border border-border bg-muted/30 p-2 text-sm" aria-live="polite">
+      <div className="rounded border border-edge bg-surface-raised/30 p-2 text-sm" aria-live="polite">
         {previewError ? (
           <p className="text-red-600 dark:text-red-400" role="alert">{previewError}</p>
         ) : hasCron ? (
           nextRuns.length > 0 ? (
             <div>
-              <span className="text-xs font-medium text-muted-foreground">Next runs</span>
+              <span className="text-xs font-medium text-ink-muted">Next runs</span>
               <ul className="mt-1 space-y-0.5">
                 {nextRuns.map((iso) => (
                   <li key={iso} className="tabular-nums">
@@ -307,10 +307,10 @@ export function ScheduleEditor({ schedule, onSave, saving = false }: ScheduleEdi
               </ul>
             </div>
           ) : (
-            <p className="text-muted-foreground">{previewing ? 'Computing next runs…' : 'No upcoming runs.'}</p>
+            <p className="text-ink-muted">{previewing ? 'Computing next runs…' : 'No upcoming runs.'}</p>
           )
         ) : (
-          <p className="text-muted-foreground">Active window only — no discrete fire times.</p>
+          <p className="text-ink-muted">Active window only — no discrete fire times.</p>
         )}
       </div>
 
