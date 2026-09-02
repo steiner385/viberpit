@@ -1,7 +1,7 @@
 """self-directed model switching — sessions.pending_model_reason
 
-Revision ID: 0014_pending_model_reason
-Revises: 0013_host_upgrade_ssh_config
+Revision ID: 0015_pending_model_reason
+Revises: 0014_pm_product_layer
 Create Date: 2026-09-02
 
 Reviewable record only: nothing runs `alembic upgrade` at deploy time — init_db's
@@ -11,8 +11,8 @@ next boot. Nullable, so no default-synthesis / drift issue.
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0014_pending_model_reason"
-down_revision = "0013_host_upgrade_ssh_config"
+revision = "0015_pending_model_reason"
+down_revision = "0014_pm_product_layer"
 branch_labels = None
 depends_on = None
 

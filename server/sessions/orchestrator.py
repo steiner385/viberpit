@@ -5699,6 +5699,7 @@ class SessionOrchestrator:
             adopted_in_place=bool(getattr(row, "adopted_in_place", False)),
             model=getattr(row, "model", None),
             pending_model=getattr(row, "pending_model", None),
+            pending_model_reason=getattr(row, "pending_model_reason", None),
             account_pinned=bool(getattr(row, "account_pinned", False)),
             active_goal=getattr(row, "active_goal", None),
             inferred_goal=getattr(row, "inferred_goal", None),
