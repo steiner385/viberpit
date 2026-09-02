@@ -47,6 +47,9 @@ export function DeployPanel() {
   return (
     <Banner
       tone="warning"
+      // Not a live region: commits, phase state and error text all change while a deploy
+      // runs, and role="status" would announce every one of those to a screen reader.
+      role="none"
       title={behind ? (
         <button type="button" onClick={() => setOpen((o) => !o)}>
           {count} change{count === 1 ? '' : 's'} pending deploy {open ? '▾' : '▸'}

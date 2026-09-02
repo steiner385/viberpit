@@ -21,8 +21,16 @@ export interface BannerProps {
   onDismiss?: () => void
   /** Live-region role. Defaults from tone: danger → alert (assertive), else status (polite).
    *  Pass explicitly wherever a call site's existing role differs from the tone default —
-   *  never let a banner silently go from assertive to polite. */
-  role?: 'status' | 'alert'
+   *  never let a banner silently go from assertive to polite.
+   *
+   *  Pass `'none'` when the content is NOT safe as a live region — e.g. it contains a
+   *  changing list, progress state, or anything else that would spam a screen reader with
+   *  updates the whole time the banner is visible (DeployPanel: commit list + phase state).
+   *  `'none'` renders no `role` attribute at all (not `role="none"`, which is a real ARIA
+   *  role meaning "presentational" — not what we want on a container with interactive
+   *  children). A banner that was never a live region before must not become one just
+   *  because it now shares this primitive. */
+  role?: 'status' | 'alert' | 'none'
   className?: string
   children?: React.ReactNode
 }
@@ -35,9 +43,10 @@ export interface BannerProps {
 export function Banner({ tone, title, icon, actions, onDismiss, role, className, children }: BannerProps) {
   const t = TONE[tone]
   const DefaultIcon = t.Icon
+  const resolvedRole = role ?? (tone === 'danger' ? 'alert' : 'status')
   return (
     <div
-      role={role ?? (tone === 'danger' ? 'alert' : 'status')}
+      role={resolvedRole === 'none' ? undefined : resolvedRole}
       className={cn('flex items-start gap-3 rounded-lg border px-4 py-3', t.box, className)}
     >
       {icon === undefined

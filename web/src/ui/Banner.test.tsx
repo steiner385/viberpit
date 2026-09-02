@@ -21,6 +21,35 @@ describe('Banner', () => {
     expect(onDismiss).toHaveBeenCalled()
     expect(await axe(container)).toHaveNoViolations()
   })
+
+  it('defaults every non-danger tone to a status live region', () => {
+    render(
+      <>
+        <Banner tone="info" title="Info" />
+        <Banner tone="success" title="Success" />
+        <Banner tone="warning" title="Warning" />
+      </>,
+    )
+    expect(screen.getAllByRole('status')).toHaveLength(3)
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('an explicit role="alert" on a non-danger tone wins over the tone default', () => {
+    render(<Banner tone="warning" role="alert" title="All accounts at limit" />)
+    expect(screen.getByRole('alert')).toHaveTextContent('All accounts at limit')
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
+  it('role="none" renders no role attribute and no live region, for content unsafe to announce', () => {
+    const { container } = render(<Banner tone="warning" role="none" title="Pending deploy" />)
+    expect(screen.queryByRole('status')).toBeNull()
+    expect(screen.queryByRole('alert')).toBeNull()
+    const node = container.firstElementChild
+    expect(node).not.toBeNull()
+    expect(node).toHaveTextContent('Pending deploy')
+    expect(node).not.toHaveAttribute('role')
+    expect(node).not.toHaveAttribute('aria-live')
+  })
 })
 
 describe('BannerStack', () => {
