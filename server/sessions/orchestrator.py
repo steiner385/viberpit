@@ -8455,27 +8455,10 @@ class SessionOrchestrator:
         if _policy == "block":
             raise ModelBlockedError(model)
         if _policy == "require_approval":
-            from datetime import datetime
-            now = datetime.utcnow()
-            if record is not None:
-                record.pending_model = model
-            async with db_session() as db:
-                from sqlalchemy import update as sa_update
-                await db.execute(
-                    sa_update(DbSession).where(DbSession.id == session_id).values(
-                        pending_model=model,
-                        pending_model_requested_by=identity,
-                        pending_model_requested_at=now))
-                await record_audit(db, type="model_approval.requested", identity=identity,
-                                   detail={"session_id": session_id, "model": model,
-                                           "account": _account})
-            # Live-push a status frame (unchanged status) so the dashboard reconciles
-            # and picks up pendingModel without waiting for the poll — the same
-            # lifecycle-frame mechanism _persist_status uses for a session-record change.
-            if record is not None:
-                self._publish_event({
-                    "type": "status", "sessionId": session_id, "status": record.status,
-                    "updatedAt": record.updated_at_iso, "revAt": record.rev_at})
+            await self._park_model(
+                session_id, model, identity=identity,
+                audit_detail={"session_id": session_id, "model": model,
+                              "account": _account})
             log.info("session.model_approval_requested id=%s model=%s by=%s",
                      session_id, model, identity)
             return False
@@ -8612,6 +8595,62 @@ class SessionOrchestrator:
         except Exception:
             log.exception("session.self_model_request_failed id=%s", session_id)
 
+    # Sentinel distinguishing "no reason column write applies at all" (the
+    # human-initiated gate — set_model_for_session's require_approval branch —
+    # never had a reason and must not start writing pending_model_reason) from
+    # an explicit reason of None (the self-directed path always writes the
+    # column, even to clear a stale one, because the session may genuinely omit
+    # a reason). See _park_model.
+    _NO_REASON = object()
+
+    async def _park_model(
+        self, session_id: str, model: str | None, *, identity: str,
+        audit_detail: dict, reason: str | None = _NO_REASON,  # type: ignore[assignment]
+    ) -> None:
+        """Persist *model* as pending-approval: the four ``pending_model*``
+        columns, a ``model_approval.requested`` audit event, and a status frame
+        so the dashboard reconciles ``pendingModel`` without waiting for the
+        poll.
+
+        Shared by BOTH parking paths — the human-initiated gate
+        (``set_model_for_session``'s ``require_approval`` branch) and the
+        self-directed park path (``_park_self_model_request``) — which used to
+        each hand-roll the same four-column write and a slightly-divergent
+        audit payload (#task-7 review finding I3: a parallel implementation of
+        one concept). Only ``identity``, whether a ``pending_model_reason``
+        write applies at all (``reason``), and the audit detail's exact shape
+        differ per caller; caller-specific behaviour (the self path's
+        already-parked dedup return, and each path's own log line) stays in
+        the caller.
+        """
+        from datetime import datetime
+        from sqlalchemy import update as sa_update
+        now = datetime.utcnow()
+        record = self._records.get(session_id)
+        if record is not None:
+            record.pending_model = model
+            if reason is not self._NO_REASON:
+                record.pending_model_reason = reason
+        values: dict = {
+            "pending_model": model, "pending_model_requested_by": identity,
+            "pending_model_requested_at": now,
+        }
+        if reason is not self._NO_REASON:
+            values["pending_model_reason"] = reason
+        async with db_session() as db:
+            await db.execute(
+                sa_update(DbSession).where(DbSession.id == session_id).values(**values))
+            await record_audit(
+                db, type="model_approval.requested", identity=identity,
+                detail=audit_detail)
+        # Live-push a status frame (unchanged status) so the dashboard reconciles
+        # and picks up pendingModel without waiting for the poll — the same
+        # lifecycle-frame mechanism _persist_status uses for a session-record change.
+        if record is not None:
+            self._publish_event({
+                "type": "status", "sessionId": session_id, "status": record.status,
+                "updatedAt": record.updated_at_iso, "revAt": record.rev_at})
+
     async def _park_self_model_request(
         self, session_id: str, model: str, reason: str | None,
     ) -> None:
@@ -8619,33 +8658,16 @@ class SessionOrchestrator:
 
         Writes the same pending_model columns the model-approval gate uses, so the
         existing approval card, REST route and resolve path handle it unchanged —
-        only the identity and the reason distinguish it.
+        only the identity and the reason distinguish it. See _park_model for the
+        shared column/audit/publish write.
         """
-        from datetime import datetime
-        from sqlalchemy import update as sa_update
-
-        from server.audit import record_audit
         rec = self._records.get(session_id)
-        if rec is not None:
-            if rec.pending_model == model:
-                return                                  # already parked; don't re-park
-            rec.pending_model = model
-            rec.pending_model_reason = reason
-        now = datetime.utcnow()
-        async with db_session() as db:
-            await db.execute(
-                sa_update(DbSession).where(DbSession.id == session_id).values(
-                    pending_model=model, pending_model_reason=reason,
-                    pending_model_requested_by="session:self",
-                    pending_model_requested_at=now))
-            await record_audit(
-                db, type="model_approval.requested", identity="session:self",
-                detail={"session_id": session_id, "model": model, "reason": reason,
-                        "source": "session"})
-        if rec is not None:
-            self._publish_event({
-                "type": "status", "sessionId": session_id, "status": rec.status,
-                "updatedAt": rec.updated_at_iso, "revAt": rec.rev_at})
+        if rec is not None and rec.pending_model == model:
+            return                                      # already parked; don't re-park
+        await self._park_model(
+            session_id, model, identity="session:self", reason=reason,
+            audit_detail={"session_id": session_id, "model": model, "reason": reason,
+                          "source": "session"})
         log.info("session.self_model_request_parked id=%s model=%s", session_id, model)
 
     async def _persist_model(self, session_id: str, model: str | None) -> None:

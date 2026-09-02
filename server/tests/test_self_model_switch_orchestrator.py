@@ -35,10 +35,15 @@ from server.tests.test_orchestrator_model_gate import _harness, _seed_account
 class _FakeDriver:
     """Bare stand-in for a live driver: only the attribute
     ``_maybe_handle_model_request`` reads. A real driver owns a PTY/subprocess
-    this unit test has no business spinning up."""
+    this unit test has no business spinning up. ``aclose`` is a no-op so the
+    teardown regression test can drive the real ``close_session`` path (which
+    unconditionally awaits ``driver.aclose()``) without a real driver."""
 
     def __init__(self, req=None):
         self.last_model_request = req
+
+    async def aclose(self):
+        pass
 
 
 def _attach(orch, *, session_id="s1", model="opus", account="alpha", req=None):
@@ -213,8 +218,10 @@ def test_guard_cap_forces_a_park_instead_of_applying(tmp_path, monkeypatch):
                 _attach(orch, model="opus", req=req)
                 orch._self_model_state["s1"] = SelfModelState(auto_applied=99)
                 parked = []
-                orch._park_self_model_request = (
-                    lambda sid, model, reason: parked.append((sid, model, reason)))
+
+                async def _park(sid, model, reason):
+                    parked.append((sid, model, reason))
+                orch._park_self_model_request = _park
 
                 await orch._apply_model_request("s1", req)
                 return parked
@@ -306,3 +313,161 @@ def test_refused_request_changes_nothing(tmp_path, monkeypatch):
         called = asyncio.run(_run())
 
     assert called == []
+
+
+# ---------------------------------------------------------------------------
+# Fix-round-1 findings (Opus mutation review of the first pass)
+# ---------------------------------------------------------------------------
+
+def test_persist_status_drives_the_model_request_consumption(tmp_path):
+    """C1 (critical): every test above calls ``_maybe_handle_model_request`` /
+    ``_apply_model_request`` directly — nothing exercises the ONE line
+    (``orchestrator.py``, inside ``_persist_status``) that actually wires this
+    feature to a running session's driver ``on_status`` callback. A mutation
+    that deletes that line left the whole ``-k model`` suite green. This test
+    drives the real production entry point, ``_persist_status``, instead of
+    the handler directly.
+
+    ``_persist_status`` legitimately ``_spawn``s several OTHER unrelated
+    background tasks for any status (``_persist_sub_agents``, sweep/nudge
+    ticks), so stubbing ``_spawn`` itself and counting entries is fragile —
+    it over-counts. Instead this stubs ``_apply_model_request`` (the specific
+    coroutine the wiring must reach) and awaits an event it sets, proving the
+    real, UN-stubbed ``_spawn`` actually scheduled and ran it."""
+    env, comp, trust, sel, h = _harness(tmp_path)
+    with env, comp, trust, sel:
+        _seed_account("alpha")
+
+        async def _run():
+            orch = await h.make_orch()
+            try:
+                req = {"turn_id": "t1", "model": "haiku", "reason": "trivial"}
+                _attach(orch, req=req)
+                called = asyncio.Event()
+
+                async def _stub_apply(session_id, r):
+                    called.set()
+                orch._apply_model_request = _stub_apply
+
+                # "idle" (not a MID_TURN_STATUS) is enough to reach the hook and
+                # is simpler than "done" here: "done" additionally runs the
+                # parked/waiting-external transcript overlay, which is
+                # unrelated to what this test verifies (that _persist_status
+                # calls _maybe_handle_model_request at all).
+                await orch._persist_status("s1", "idle")
+                try:
+                    await asyncio.wait_for(called.wait(), timeout=2.0)
+                    fired = True
+                except asyncio.TimeoutError:
+                    fired = False
+                return fired
+            finally:
+                await orch.stop()
+
+        fired = asyncio.run(_run())
+
+    assert fired is True
+
+
+def test_park_self_model_request_writes_the_real_row(tmp_path, monkeypatch):
+    """I1 (important): every other park-adjacent test stubs
+    ``_park_self_model_request`` out, so the actual column writes / audit /
+    publish it performs were never executed by any test. This one lets it run
+    for real against the harness DB and asserts on the persisted row."""
+    from sqlalchemy import select
+    from server.db import db_session
+    from server.db.models import Session as DbSession
+
+    env, comp, trust, sel, h = _harness(tmp_path)
+    with env, comp, trust, sel:
+        _seed_account("alpha")
+
+        async def _run():
+            orch = await h.make_orch()
+            try:
+                sid = "s1"
+                async with db_session() as db:
+                    db.add(DbSession(id=sid, name="n", account_name="alpha",
+                                     claude_session_id="c1", status="idle",
+                                     cwd="/tmp", model="opus"))
+                _attach(orch, session_id=sid, model="opus", req=None)
+
+                await orch._park_self_model_request(sid, "fable", "needs a human")
+
+                async with db_session() as db:
+                    row = (await db.execute(
+                        select(DbSession).where(DbSession.id == sid))).scalar_one()
+                return row, orch._records[sid]
+            finally:
+                await orch.stop()
+
+        row, rec = asyncio.run(_run())
+
+    assert row.pending_model == "fable"
+    assert row.pending_model_reason == "needs a human"
+    assert row.pending_model_requested_by == "session:self"
+    assert row.pending_model_requested_at is not None
+    assert rec.pending_model == "fable"
+    assert rec.pending_model_reason == "needs a human"
+
+
+def test_apply_model_request_fails_open_when_a_collaborator_raises(tmp_path, monkeypatch):
+    """I2 (important): the existing guard-cap test's park stub used to be a
+    SYNC lambda, so ``await <that lambda's return value (None)>`` raised
+    TypeError — a bug in the test, not a deliberate probe — and that TypeError
+    happened to be what the outer ``except Exception`` swallowed, giving
+    false confidence that fail-open was tested. That stub is now async (see
+    test_guard_cap_forces_a_park_instead_of_applying). This test purpose-
+    builds the fail-open proof: a real collaborator (``set_model_for_session``)
+    raises, and no exception may escape ``_apply_model_request``."""
+    env, comp, trust, sel, h = _harness(tmp_path)
+    with env, comp, trust, sel:
+        _seed_account("alpha")
+        _patch_decision(monkeypatch, "apply")
+
+        async def _run():
+            orch = await h.make_orch()
+            try:
+                req = {"turn_id": "t1", "model": "haiku", "reason": "trivial"}
+                _attach(orch, model="opus", req=req)
+
+                async def _boom(*a, **k):
+                    raise RuntimeError("collaborator exploded")
+                orch.set_model_for_session = _boom
+
+                await orch._apply_model_request("s1", req)  # must not raise
+                return "no exception escaped"
+            finally:
+                await orch.stop()
+
+        result = asyncio.run(_run())
+
+    assert result == "no exception escaped"
+
+
+def test_teardown_clears_self_model_state(tmp_path):
+    """Regression for the two new per-session dicts: a mutation that dropped
+    either pop at either of the two teardown sites left the whole suite green
+    (nothing else reads these dicts after a session ends). Assert directly
+    that both are gone once the session's teardown path runs."""
+    env, comp, trust, sel, h = _harness(tmp_path)
+    with env, comp, trust, sel:
+        _seed_account("alpha")
+
+        async def _run():
+            orch = await h.make_orch()
+            try:
+                sid = "s1"
+                _attach(orch, session_id=sid, req={"turn_id": "t1", "model": "haiku"})
+                orch._self_model_state[sid] = SelfModelState(auto_applied=1)
+                orch._handled_model_requests[sid] = "t1"
+                await orch.close_session(sid)
+                return (sid in orch._self_model_state,
+                        sid in orch._handled_model_requests)
+            finally:
+                await orch.stop()
+
+        in_state, in_handled = asyncio.run(_run())
+
+    assert in_state is False
+    assert in_handled is False
