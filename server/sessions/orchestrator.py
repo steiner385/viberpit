@@ -3687,7 +3687,62 @@ class SessionOrchestrator:
                     "map_merged", "map_proposed"):
                 proj.onboarding_state = "classifying"
                 await db.commit()
+        # Harvest wiring (dogfood bug: sessions completed but _pm_classify_ingest
+        # had no caller, so 0 proposals ever landed). Chained daemon-side like the
+        # map-critic chain; tracked via _spawn so stop() can cancel it.
+        self._spawn(self._pm_classify_chain_ingest(rec.id, slug),
+                    name=f"pm-classify-ingest-{slug}")
         return len(chunk)
+
+    # Statuses meaning "the classify turn has finished and its final message
+    # exists" — includes settled-but-live states (idle/done), not just terminal
+    # ones, because a one-shot classify session's first finished turn IS the
+    # deliverable.
+    _PM_CLASSIFY_SETTLED = ("complete", "done", "idle", "ended", "archived")
+
+    async def _pm_classify_output_text(self, session_id: str) -> str:
+        """Full text of the session's final assistant turn(s), UNTRUNCATED.
+
+        The classify deliverable is a ```json fenced array that can be many KB —
+        the autopilot tail helper truncates per-entry, so this is a separate,
+        lossless extractor. Best-effort: any failure returns ""."""
+        from server.sessions.events import TextDelta
+        try:
+            window = await self.transcript_window(session_id, limit=2)
+        except Exception:
+            log.warning("pm_classify.output_text failed sid=%s", session_id,
+                        exc_info=True)
+            return ""
+        if window is None:
+            return ""
+        return "".join(e.text for e in window.events
+                       if isinstance(e, TextDelta) and e.text)
+
+    async def _pm_classify_chain_ingest(self, session_id: str, slug: str, *,
+                                        attempts: int = 60,
+                                        delay: float = 30.0) -> int:
+        """Wait (bounded) for a classify session to settle, then harvest its JSON
+        output into TriageProposal rows via ``_pm_classify_ingest`` — exactly once.
+
+        Internal-only (chained by ``pm_classify_run``; never request-reachable, so
+        no facade/RPC forward). A vanished session or timeout just gives up — the
+        classify can be re-dispatched, and ingest is idempotent on re-runs."""
+        for _ in range(attempts):
+            rec = self.get_session(session_id)
+            if rec is None:
+                log.warning("pm_classify.chain_ingest: session %s vanished — "
+                            "giving up", session_id)
+                return 0
+            if getattr(rec, "status", None) in self._PM_CLASSIFY_SETTLED:
+                text = await self._pm_classify_output_text(session_id)
+                written = await self._pm_classify_ingest(session_id, slug, text)
+                log.info("pm_classify.chain_ingest: session=%s slug=%s wrote=%d",
+                         session_id, slug, written)
+                return written
+            await asyncio.sleep(delay)
+        log.warning("pm_classify.chain_ingest: session %s never settled after "
+                    "%d attempts — output not ingested", session_id, attempts)
+        return 0
 
     async def _pm_classify_ingest(
             self, session_id: str, project_slug: str, output_text: str) -> int:
