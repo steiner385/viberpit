@@ -349,6 +349,19 @@ def daemon_role() -> str:
     return role
 
 
+# Loop-task attributes that ONLY a primary daemon starts (#919). A worker "serves
+# dispatched sessions only" (#840); if it also drove these fleet-global automation
+# loops, two daemons would drive one shared DB — duplicate proposals/PRs, FK spam
+# for rows the other deleted, worker-spawned rows the primary "owns" but never holds.
+# start() gates their creation on daemon_role()=="primary"; the single source of
+# truth for the completeness test in test_primary_lease.
+_PRIMARY_ONLY_LOOP_ATTRS: frozenset[str] = frozenset({
+    "_backlog_task", "_sdlc_intake_task", "_pm_sync_task", "_sdlc_synth_task",
+    "_autopilot_task", "_cicd_task", "_archaudit_task", "_sweep_task",
+    "_archive_limit_task", "_recurring_task",
+})
+
+
 def self_host_name() -> str:
     """This daemon's fleet identity — the ``hosts.name`` the dispatcher stamps
     onto sessions it sends here (``Session.host``).
@@ -526,6 +539,11 @@ class SessionOrchestrator:
         # session_id → clock() when its turn-restart dance (model swap / reassign)
         # began; autopilot skips the session for TURN_RESTART_DEFER_S from that mark.
         self._turn_restart_at: dict[str, float] = {}
+        # Self-directed model switching: per-session guard state, and the turn id of
+        # the last request consumed (so one request is acted on exactly once).
+        from server.sessions.self_model_guards import SelfModelState  # noqa: F401
+        self._self_model_state: dict[str, SelfModelState] = {}
+        self._handled_model_requests: dict[str, str] = {}
         # Failure-driven recovery: quarantine + per-session rotation cap. Clock is
         # injectable for deterministic tests; production uses wall-clock time. The
         # recompose-attempt map distinguishes a first 401 (heal in place) from a
@@ -975,64 +993,74 @@ class SessionOrchestrator:
         self._token_refresh_task = asyncio.create_task(
             self._token_refresh_monitor(), name="token-refresh-monitor"
         )
-        # Backlog Runner control loop: one tick per interval (refill + handoff/
-        # terminal-watch sweep). A disabled row makes each tick a cheap sweep.
-        self._backlog_task = asyncio.create_task(
-            self._backlog_tick_loop(interval=60.0), name="backlog-runner-loop"
-        )
-        # SDLC Intake control loop: one tick per interval (propose intent for each
-        # pending trigger). A disabled/absent row makes each tick a cheap no-op.
-        self._sdlc_intake_task = asyncio.create_task(
-            self._sdlc_intake_tick_loop(interval=60.0), name="sdlc-intake-loop"
-        )
-        # PM Sync control loop: one tick per interval (backfill or incremental pass
-        # per onboarded repo + feature index refresh). Off by default; DB row enables.
-        self._pm_sync_task = asyncio.create_task(
-            self._pm_sync_tick_loop(interval=60.0), name="pm-sync-loop"
-        )
-        # SDLC Synthesizer control loop: one tick per interval (propose spec/plan
-        # artifacts + enrich PR metadata). A disabled row makes each tick cheap.
-        self._sdlc_synth_task = asyncio.create_task(
-            self._sdlc_synth_tick_loop(interval=60.0), name="sdlc-synthesizer-loop"
-        )
-        # Autopilot control loop: one tick per interval plus status-change nudges.
-        self._autopilot_task = asyncio.create_task(
-            self._autopilot_tick_loop(interval=20.0), name="autopilot-loop"
-        )
-        # CI/CD Doctor: slow cadence — CI history moves in minutes, not seconds,
-        # and each tick costs several REST calls per repo.
-        self._cicd_task = asyncio.create_task(
-            self._cicd_tick_loop(interval=900.0), name="cicd-doctor-loop"
-        )
-        # Archive Audit: re-audit recently-archived sessions every 6 hours.
-        self._archaudit_task = asyncio.create_task(
-            self._archaudit_tick_loop(interval=21600.0), name="archive-audit-loop"
-        )
-        # Stuck-session sweep: retry rotation for needs_attention sessions every 5 min.
-        # The rotation monitor is event-driven (fires on degradation); this covers
-        # the recovery side — sessions paused due to all_accounts_busy get a chance
-        # to move once a healthy account frees up.
-        self._sweep_task = asyncio.create_task(
-            self._stuck_session_sweep(), name="stuck-session-sweep"
-        )
-        # Archived-session cap sweep: re-enforce max_archived_sessions every 5 min so a
-        # lowered limit takes effect without waiting for the next archive event.
-        self._archive_limit_task = asyncio.create_task(
-            self._archive_limit_loop(), name="archive-limit-sweep"
-        )
         # Orphan-worktree janitor: fires immediately on startup then every 24 h.
         # Reclaims worktree dirs left behind by spawn crashes, failed archive moves,
-        # or SIGKILL mid-teardown — the three orphan sources from issue #591.
+        # or SIGKILL mid-teardown — the three orphan sources from issue #591. Per-host
+        # local cleanup (each daemon owns its own worktrees), so workers run it too.
         self._janitor_task = asyncio.create_task(
             self._worktree_janitor_loop(interval=86400.0), name="worktree-janitor-loop"
         )
-        # Recurring-session scheduler: fire cron-scheduled Automation rows as their
-        # due time arrives (#603 dispatch). Alongside the loops above; the watermark
-        # column makes each firing idempotent across restarts.
-        self._recurring_task = asyncio.create_task(
-            self._recurring_tick_loop(interval=_RECURRING_TICK_INTERVAL),
-            name="recurring-session-scheduler",
-        )
+        # Fleet-global automation loops (#919): ONLY the primary daemon may run these.
+        # A worker serves dispatched sessions only (#840); a worker that also drove
+        # these loops would double-drive the one shared DB (duplicate proposals/PRs,
+        # FK-violation spam, worker-spawned rows the primary "owns" but never holds).
+        # The primary lease above only role-gated its OWN acquisition — these spawns
+        # never passed the dispatcher, so gating here concentrates automation on the
+        # primary by design. Kept as one guarded block; _PRIMARY_ONLY_LOOP_ATTRS is
+        # the single source of truth (test_primary_lease pins the two agree).
+        if daemon_role() == "primary":
+            # Backlog Runner control loop: one tick per interval (refill + handoff/
+            # terminal-watch sweep). A disabled row makes each tick a cheap sweep.
+            self._backlog_task = asyncio.create_task(
+                self._backlog_tick_loop(interval=60.0), name="backlog-runner-loop"
+            )
+            # SDLC Intake control loop: one tick per interval (propose intent for each
+            # pending trigger). A disabled/absent row makes each tick a cheap no-op.
+            self._sdlc_intake_task = asyncio.create_task(
+                self._sdlc_intake_tick_loop(interval=60.0), name="sdlc-intake-loop"
+            )
+            # PM Sync control loop: one tick per interval (backfill or incremental pass
+            # per onboarded repo + feature index refresh). Off by default; DB row enables.
+            self._pm_sync_task = asyncio.create_task(
+                self._pm_sync_tick_loop(interval=60.0), name="pm-sync-loop"
+            )
+            # SDLC Synthesizer control loop: one tick per interval (propose spec/plan
+            # artifacts + enrich PR metadata). A disabled row makes each tick cheap.
+            self._sdlc_synth_task = asyncio.create_task(
+                self._sdlc_synth_tick_loop(interval=60.0), name="sdlc-synthesizer-loop"
+            )
+            # Autopilot control loop: one tick per interval plus status-change nudges.
+            self._autopilot_task = asyncio.create_task(
+                self._autopilot_tick_loop(interval=20.0), name="autopilot-loop"
+            )
+            # CI/CD Doctor: slow cadence — CI history moves in minutes, not seconds,
+            # and each tick costs several REST calls per repo.
+            self._cicd_task = asyncio.create_task(
+                self._cicd_tick_loop(interval=900.0), name="cicd-doctor-loop"
+            )
+            # Archive Audit: re-audit recently-archived sessions every 6 hours.
+            self._archaudit_task = asyncio.create_task(
+                self._archaudit_tick_loop(interval=21600.0), name="archive-audit-loop"
+            )
+            # Stuck-session sweep: retry rotation for needs_attention sessions every 5 min.
+            # The rotation monitor is event-driven (fires on degradation); this covers
+            # the recovery side — sessions paused due to all_accounts_busy get a chance
+            # to move once a healthy account frees up.
+            self._sweep_task = asyncio.create_task(
+                self._stuck_session_sweep(), name="stuck-session-sweep"
+            )
+            # Archived-session cap sweep: re-enforce max_archived_sessions every 5 min so
+            # a lowered limit takes effect without waiting for the next archive event.
+            self._archive_limit_task = asyncio.create_task(
+                self._archive_limit_loop(), name="archive-limit-sweep"
+            )
+            # Recurring-session scheduler: fire cron-scheduled Automation rows as their
+            # due time arrives (#603 dispatch). The watermark column makes each firing
+            # idempotent across restarts.
+            self._recurring_task = asyncio.create_task(
+                self._recurring_tick_loop(interval=_RECURRING_TICK_INTERVAL),
+                name="recurring-session-scheduler",
+            )
 
     async def _primary_lease_heartbeat(self) -> None:
         """Renew the primary lease every TTL/5; scream on a fenced takeover (#852).
@@ -1370,6 +1398,7 @@ class SessionOrchestrator:
         return rec
 
     async def resolve_model_approval(self, session_id: str, decision: str, *,
+                                     model: str | None = None,
                                      identity: str) -> SessionRecord:
         """Approve or deny a parked model selection for BOTH hold kinds.
 
@@ -1384,15 +1413,45 @@ class SessionOrchestrator:
         driver and current model untouched. Either resolution fully clears pending
         state on both the record and the row.
 
+        *model*, when given, is a human COUNTER-OFFER: approve the hold at this model
+        instead of the parked one. Only a `block` policy can refuse it — the human
+        performing this action IS the approval that `require_approval` asks for.
+
+        NB: the substitution is applied to the parked value and then flows through the
+        SAME low-level paths this method already uses (_spawn_session for a launch hold,
+        driver.set_model for a mid-session one). It must NEVER be routed through
+        set_model_for_session(), which re-runs resolve_model_policy and would re-park —
+        making every approval re-ask for approval.
+
         Raises:
             KeyError: unknown session id.
             ValueError: bad decision, or nothing pending to resolve.
+            ModelBlockedError: the counter-offered model is blocked by policy.
         """
         if decision not in ("approve", "deny"):
             raise ValueError(f"bad decision: {decision!r}")
         rec = self._records.get(session_id)
         if rec is None:
             raise KeyError(session_id)
+
+        # Counter-offer: only `block` may refuse it. Checked DIRECTLY here rather than
+        # by routing through the gated set_model_for_session (see docstring).
+        requested_model = rec.pending_model
+        if (model is not None and requested_model is not None
+                and model != requested_model and decision == "approve"):
+            from server.sessions.model_catalog import model_tier
+            from server.sessions.model_policy import resolve_model_policy
+            async with db_session() as _db:
+                _p = await resolve_model_policy(_db, model=model, account=rec.account)
+            if _p == "block":
+                raise ModelBlockedError(model)
+            # The session must stop asking for a tier a human has already answered.
+            from server.sessions.self_model_guards import SelfModelState
+            tier = model_tier(requested_model)
+            if tier:
+                self._self_model_state.setdefault(
+                    session_id, SelfModelState()).amended_away.add(tier)
+            rec.pending_model = model
 
         # Launch-time hold — a not-yet-spawned pending_approval row.
         if rec.status == "pending_approval":
@@ -1403,17 +1462,20 @@ class SessionOrchestrator:
             async with db_session() as db:
                 await record_audit(
                     db, type=f"model_approval.{decision}", identity=identity,
-                    detail={"session_id": session_id, "model": approved_model})
+                    detail={"session_id": session_id, "model": approved_model,
+                            "requested": requested_model, "applied": approved_model})
             if decision == "deny":
                 async with db_session() as db:
                     from sqlalchemy import update as sa_update
                     await db.execute(
                         sa_update(DbSession).where(DbSession.id == session_id).values(
                             status="ended", pending_model=None,
+                            pending_model_reason=None,
                             pending_model_requested_by=None,
                             pending_model_requested_at=None))
                 rec.status = "ended"
                 rec.pending_model = None
+                rec.pending_model_reason = None
                 log.info("session.model_approval_denied id=%s (launch)", session_id)
                 return rec
             # approve: drop the placeholder row + record, then run the normal
@@ -1466,9 +1528,11 @@ class SessionOrchestrator:
                 from sqlalchemy import update as sa_update
                 await record_audit(
                     db, type=f"model_approval.{decision}", identity=identity,
-                    detail={"session_id": session_id, "model": pending})
+                    detail={"session_id": session_id, "model": pending,
+                            "requested": requested_model, "applied": pending})
                 values: dict = {
                     "pending_model": None,
+                    "pending_model_reason": None,
                     "pending_model_requested_by": None,
                     "pending_model_requested_at": None,
                 }
@@ -1482,6 +1546,7 @@ class SessionOrchestrator:
                     await driver.set_model(pending)
                 rec.model = pending
             rec.pending_model = None
+            rec.pending_model_reason = None
             # Live-push a status frame (unchanged status) so the dashboard reconciles
             # and drops the pending badge — the same lifecycle-frame mechanism the
             # park path in set_model_for_session uses.
@@ -2017,6 +2082,8 @@ class SessionOrchestrator:
         driver = self._drivers.pop(session_id, None)
         self._last_prompt.pop(session_id, None)
         self._turn_restart_at.pop(session_id, None)
+        self._self_model_state.pop(session_id, None)
+        self._handled_model_requests.pop(session_id, None)
         self._pending_initial_prompt.pop(session_id, None)
         if driver is not None:
             await driver.aclose()
@@ -2115,6 +2182,7 @@ class SessionOrchestrator:
             return
         # A "switch after this turn" model change is in force once the turn is over.
         self._settle_model_pending(session_id, status)
+        self._maybe_handle_model_request(session_id, status)
         # A turn failure surfacing during teardown is our own shutdown dropping the
         # turn (deploy / watchdog restart / systemctl stop), not a real failure.
         # Persisting needs_attention here brands the session "Turn failed" across
@@ -5824,6 +5892,8 @@ class SessionOrchestrator:
             adopted_in_place=bool(getattr(row, "adopted_in_place", False)),
             model=getattr(row, "model", None),
             pending_model=getattr(row, "pending_model", None),
+            pending_model_reason=getattr(row, "pending_model_reason", None),
+            pending_model_requested_by=getattr(row, "pending_model_requested_by", None),
             account_pinned=bool(getattr(row, "account_pinned", False)),
             active_goal=getattr(row, "active_goal", None),
             inferred_goal=getattr(row, "inferred_goal", None),
@@ -8600,27 +8670,10 @@ class SessionOrchestrator:
         if _policy == "block":
             raise ModelBlockedError(model)
         if _policy == "require_approval":
-            from datetime import datetime
-            now = datetime.utcnow()
-            if record is not None:
-                record.pending_model = model
-            async with db_session() as db:
-                from sqlalchemy import update as sa_update
-                await db.execute(
-                    sa_update(DbSession).where(DbSession.id == session_id).values(
-                        pending_model=model,
-                        pending_model_requested_by=identity,
-                        pending_model_requested_at=now))
-                await record_audit(db, type="model_approval.requested", identity=identity,
-                                   detail={"session_id": session_id, "model": model,
-                                           "account": _account})
-            # Live-push a status frame (unchanged status) so the dashboard reconciles
-            # and picks up pendingModel without waiting for the poll — the same
-            # lifecycle-frame mechanism _persist_status uses for a session-record change.
-            if record is not None:
-                self._publish_event({
-                    "type": "status", "sessionId": session_id, "status": record.status,
-                    "updatedAt": record.updated_at_iso, "revAt": record.rev_at})
+            await self._park_model(
+                session_id, model, identity=identity,
+                audit_detail={"session_id": session_id, "model": model,
+                              "account": _account})
             log.info("session.model_approval_requested id=%s model=%s by=%s",
                      session_id, model, identity)
             return False
@@ -8661,6 +8714,177 @@ class SessionOrchestrator:
             return
         if status not in MID_TURN_STATUSES:
             record.model_pending = False
+
+    def _maybe_handle_model_request(self, session_id: str, status: str) -> None:
+        """Consume a self-directed model request the driver latched at turn end.
+
+        Sync + fire-and-forget on purpose: this runs inside the status pump, and the
+        handling does DB work (policy lookup, audit) that must not stall the turn loop
+        — the same reason _persist_sub_agents is deferred.
+        """
+        from server.sessions.status import MID_TURN_STATUSES
+        if status in MID_TURN_STATUSES:
+            return
+        driver = self._drivers.get(session_id)
+        req = getattr(driver, "last_model_request", None)
+        if not req:
+            return
+        turn_id = req.get("turn_id")
+        if self._handled_model_requests.get(session_id) == turn_id:
+            return
+        self._handled_model_requests[session_id] = turn_id
+        self._spawn(self._apply_model_request(session_id, req))
+
+    async def _apply_model_request(self, session_id: str, req: dict) -> None:
+        """Guards -> policy -> apply or park. Never raises into the caller.
+
+        Fail-open per the feature's invariant: any failure here drops the
+        recommendation and logs. A session must never fail a turn because it asked
+        for a different model.
+        """
+        from server.audit import record_audit
+        from server.config import get_settings
+        from server.sessions.model_catalog import model_tier
+        from server.sessions.model_policy import resolve_self_directed_model_policy
+        from server.sessions.self_model_guards import SelfModelState, evaluate_guards
+        try:
+            cfg = get_settings()
+            if not cfg.self_model_switch_enabled:
+                return
+            rec = self._records.get(session_id)
+            if rec is None:
+                return
+            # Copilot sessions run a third-party model; a Claude tier request is
+            # meaningless there. Same reasoning as _pre_record skipping suggestions.
+            if _provider_of(rec.account) == _copilot_mod.PROVIDER:
+                return
+            requested, reason = req.get("model"), req.get("reason")
+            if not requested:
+                # Malformed latch (should not happen per Task 3's shape guarantee,
+                # but fail-open rather than trust an upstream invariant here).
+                return
+            current = rec.model
+            state = self._self_model_state.setdefault(session_id, SelfModelState())
+
+            guard = evaluate_guards(
+                state, current_tier=model_tier(current),
+                requested_tier=model_tier(requested), cap=cfg.self_model_switch_cap)
+            if guard == "drop":
+                log.debug("session.self_model_request_dropped id=%s model=%s",
+                          session_id, requested)
+                return
+
+            async with db_session() as db:
+                decision = await resolve_self_directed_model_policy(
+                    db, current_model=current, requested_model=requested,
+                    account=rec.account)
+            if decision == "noop":
+                return
+            if decision == "refuse":
+                async with db_session() as db:
+                    await record_audit(
+                        db, type="self_model_switch.refused", identity="session:self",
+                        detail={"session_id": session_id, "model": requested,
+                                "reason": reason})
+                log.info("session.self_model_request_refused id=%s model=%s",
+                         session_id, requested)
+                return
+
+            if decision == "park" or guard == "force_park":
+                await self._park_self_model_request(session_id, requested, reason)
+                return
+
+            await self.set_model_for_session(
+                session_id, requested, when="after_turn", identity="session:self")
+            state.auto_applied += 1
+            current_tier = model_tier(current)
+            if current_tier:
+                state.tiers_left.add(current_tier)
+            async with db_session() as db:
+                await record_audit(
+                    db, type="self_model_switch.applied", identity="session:self",
+                    detail={"session_id": session_id, "from": current,
+                            "model": requested, "reason": reason})
+            log.info("session.self_model_switch_applied id=%s %s -> %s",
+                     session_id, current, requested)
+        except Exception:
+            log.exception("session.self_model_request_failed id=%s", session_id)
+
+    # Sentinel distinguishing "no reason column write applies at all" (the
+    # human-initiated gate — set_model_for_session's require_approval branch —
+    # never had a reason and must not start writing pending_model_reason) from
+    # an explicit reason of None (the self-directed path always writes the
+    # column, even to clear a stale one, because the session may genuinely omit
+    # a reason). See _park_model.
+    _NO_REASON = object()
+
+    async def _park_model(
+        self, session_id: str, model: str | None, *, identity: str,
+        audit_detail: dict, reason: str | None = _NO_REASON,  # type: ignore[assignment]
+    ) -> None:
+        """Persist *model* as pending-approval: the four ``pending_model*``
+        columns, a ``model_approval.requested`` audit event, and a status frame
+        so the dashboard reconciles ``pendingModel`` without waiting for the
+        poll.
+
+        Shared by BOTH parking paths — the human-initiated gate
+        (``set_model_for_session``'s ``require_approval`` branch) and the
+        self-directed park path (``_park_self_model_request``) — which used to
+        each hand-roll the same four-column write and a slightly-divergent
+        audit payload (#task-7 review finding I3: a parallel implementation of
+        one concept). Only ``identity``, whether a ``pending_model_reason``
+        write applies at all (``reason``), and the audit detail's exact shape
+        differ per caller; caller-specific behaviour (the self path's
+        already-parked dedup return, and each path's own log line) stays in
+        the caller.
+        """
+        from datetime import datetime
+        from sqlalchemy import update as sa_update
+        now = datetime.utcnow()
+        record = self._records.get(session_id)
+        if record is not None:
+            record.pending_model = model
+            record.pending_model_requested_by = identity
+            if reason is not self._NO_REASON:
+                record.pending_model_reason = reason
+        values: dict = {
+            "pending_model": model, "pending_model_requested_by": identity,
+            "pending_model_requested_at": now,
+        }
+        if reason is not self._NO_REASON:
+            values["pending_model_reason"] = reason
+        async with db_session() as db:
+            await db.execute(
+                sa_update(DbSession).where(DbSession.id == session_id).values(**values))
+            await record_audit(
+                db, type="model_approval.requested", identity=identity,
+                detail=audit_detail)
+        # Live-push a status frame (unchanged status) so the dashboard reconciles
+        # and picks up pendingModel without waiting for the poll — the same
+        # lifecycle-frame mechanism _persist_status uses for a session-record change.
+        if record is not None:
+            self._publish_event({
+                "type": "status", "sessionId": session_id, "status": record.status,
+                "updatedAt": record.updated_at_iso, "revAt": record.rev_at})
+
+    async def _park_self_model_request(
+        self, session_id: str, model: str, reason: str | None,
+    ) -> None:
+        """Park a self-directed request for human approval, carrying its reason.
+
+        Writes the same pending_model columns the model-approval gate uses, so the
+        existing approval card, REST route and resolve path handle it unchanged —
+        only the identity and the reason distinguish it. See _park_model for the
+        shared column/audit/publish write.
+        """
+        rec = self._records.get(session_id)
+        if rec is not None and rec.pending_model == model:
+            return                                      # already parked; don't re-park
+        await self._park_model(
+            session_id, model, identity="session:self", reason=reason,
+            audit_detail={"session_id": session_id, "model": model, "reason": reason,
+                          "source": "session"})
+        log.info("session.self_model_request_parked id=%s model=%s", session_id, model)
 
     async def _persist_model(self, session_id: str, model: str | None) -> None:
         async with db_session() as db:
@@ -8869,6 +9093,8 @@ class SessionOrchestrator:
         driver = self._drivers.pop(session_id, None)
         self._last_prompt.pop(session_id, None)
         self._turn_restart_at.pop(session_id, None)
+        self._self_model_state.pop(session_id, None)
+        self._handled_model_requests.pop(session_id, None)
         self._pending_initial_prompt.pop(session_id, None)
 
         # Remove from active records BEFORE driver.aclose() so the session

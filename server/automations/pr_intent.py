@@ -10,6 +10,7 @@ import os
 from dataclasses import dataclass
 
 from server.sessions.account_auth import helper_env
+from server.sessions.claude_bin import cli_path_kwargs
 from server.sessions.helper_call import run_helper_call
 
 log = logging.getLogger(__name__)
@@ -87,7 +88,7 @@ async def classify_pr_intent(transcript_tail: list[dict], goal: str, *,
             options = ClaudeAgentOptions(
                 model="haiku", system_prompt=_SYSTEM, cwd=cwd,
                 env=helper_env(config_dir),
-                allowed_tools=[], setting_sources=[])
+                allowed_tools=[], setting_sources=[], **cli_path_kwargs())
     except Exception as exc:
         log.warning("pr_intent.classify failed: %s", exc)
         return _UNRESOLVED

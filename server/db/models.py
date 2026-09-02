@@ -140,6 +140,9 @@ class Session(Base):
     pending_model: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     pending_model_requested_by: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     pending_model_requested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    # Why the requester wants this model — free text from a session's own
+    # <!-- ccswitch:model=… reason="…" --> marker. Shown on the approval card.
+    pending_model_reason: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # Active /goal condition for this session (the built-in Claude Code goal feature).
     # NULL = no active goal. Nullable so init_db backfills on dev SQLite without a migration.
     active_goal: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
