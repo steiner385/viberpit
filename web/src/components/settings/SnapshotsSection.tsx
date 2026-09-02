@@ -15,7 +15,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/lib/utils'
-import { Button } from '@/components/ui/button'
+import { Button } from '@/ui/Button'
 import { api } from '@/api/client'
 
 type SnapshotKind = 'manual' | 'auto' | 'pre-restore' | 'pre-import'

@@ -13,7 +13,7 @@ import * as React from 'react'
 import { useState, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/lib/utils'
-import { Button } from '@/components/ui/button'
+import { Button } from '@/ui/Button'
 import {
   useAddAccount, useAddAccountStatus, useCancelAddAccount,
   useAddCopilotAccount, useCopilotAddStatus, useCancelCopilotAdd,

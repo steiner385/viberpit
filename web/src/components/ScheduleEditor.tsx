@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, ApiRequestError } from '@/api/client'
 import { cn } from '@/lib/utils'
-import { Button } from '@/components/ui/button'
+import { Button } from '@/ui/Button'
 
 // --- Schedule shape ----------------------------------------------------------
 
