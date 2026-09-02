@@ -83,11 +83,17 @@ async def test_override_applies_the_humans_model_not_the_requested_one(orch_with
 @pytest.mark.asyncio
 async def test_override_clears_the_hold_and_does_not_re_park(orch_with_hold):
     """The infinite-approval-loop regression: approving must END the negotiation."""
-    o, _ = orch_with_hold
+    o, driver = orch_with_hold
     await o.resolve_model_approval("s1", "approve", model="opus", identity="tony")
     rec = o._records["s1"]
     assert rec.pending_model is None
     assert rec.pending_model_reason is None
+    # The name's claim ("does not re-park") is only actually exercised by this
+    # assertion: rec.pending_model is unconditionally wiped a few lines after the
+    # park/apply branch either way, so the two asserts above pass even under the
+    # loop bug (re-park then immediate wipe). Only the driver call proves apply,
+    # not park, actually happened.
+    assert driver.set_model_calls == ["opus"]
 
 
 @pytest.mark.asyncio
@@ -123,6 +129,53 @@ async def test_override_marks_the_tier_settled_so_the_session_stops_asking(orch_
     o, _ = orch_with_hold
     await o.resolve_model_approval("s1", "approve", model="opus", identity="tony")
     assert "fable" in o._self_model_state["s1"].amended_away
+
+
+@pytest.mark.asyncio
+async def test_override_with_no_hold_is_refused(monkeypatch, audit_log):
+    """A counter-offer on a session with NOTHING parked must not become an
+    ungated model setter. Before the override feature, this exact call raised
+    ValueError -> HTTP 409 ("no pending model approval"); a bare
+    `model is not None` guard (without also requiring requested_model is not
+    None) would treat the invented `None != "opus"` comparison as a genuine
+    substitution and fire the mid-session apply branch, bypassing
+    set_model_for_session's require_approval gate entirely."""
+    o = SessionOrchestrator.__new__(SessionOrchestrator)
+    rec = SessionRecord(id="s3", name="n", account="acct", claude_session_id="c1",
+                         cols=80, rows=24, cwd="/tmp", model="sonnet",
+                         status="in_progress")
+    # rec.pending_model defaults to None: nothing parked.
+    o._records = {"s3": rec}
+    driver = _FakeDriver()
+    o._drivers = {"s3": driver}
+    o._self_model_state = {}
+    o._handled_model_requests = {}
+    o._publish_event = lambda payload: None
+    o._pending_approvals = {}
+
+    async def _allow(db, *, model=None, account=None):
+        return "allow"
+    monkeypatch.setattr("server.sessions.model_policy.resolve_model_policy", _allow)
+
+    class _NullDb:
+        async def execute(self, *a, **k):
+            return None
+
+        async def get(self, *a, **k):
+            return None
+
+    class _NullCtx:
+        async def __aenter__(self):
+            return _NullDb()
+
+        async def __aexit__(self, *a):
+            return False
+    monkeypatch.setattr("server.sessions.orchestrator.db_session", lambda: _NullCtx())
+
+    with pytest.raises(ValueError):
+        await o.resolve_model_approval("s3", "approve", model="opus", identity="tony")
+    assert driver.set_model_calls == []
+    assert rec.model == "sonnet"
 
 
 @pytest.mark.asyncio

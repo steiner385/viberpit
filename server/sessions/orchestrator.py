@@ -1396,7 +1396,8 @@ class SessionOrchestrator:
         # Counter-offer: only `block` may refuse it. Checked DIRECTLY here rather than
         # by routing through the gated set_model_for_session (see docstring).
         requested_model = rec.pending_model
-        if model is not None and model != requested_model and decision == "approve":
+        if (model is not None and requested_model is not None
+                and model != requested_model and decision == "approve"):
             from server.sessions.model_catalog import model_tier
             from server.sessions.model_policy import resolve_model_policy
             async with db_session() as _db:
