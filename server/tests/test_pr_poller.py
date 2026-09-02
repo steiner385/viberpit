@@ -1,5 +1,9 @@
+import contextlib
+import json
+
 import pytest
 
+from ccswitch import gitrepos
 from server.github.pr_poller import PrStatusPoller
 from server.github.pr_status import PullRequestInfo
 
@@ -296,3 +300,105 @@ def test_default_query_supplements_evicted_envs(monkeypatch):
         envs = [d["latestEnvironment"]
                 for d in resp["data"][alias]["deployments"]["nodes"]]
         assert "kindash / production" in envs
+
+
+# --------------------------------------------------------------------------- #
+# _default_query — per-owner App auth                                          #
+# --------------------------------------------------------------------------- #
+
+@contextlib.contextmanager
+def _app_tokens(mapping: dict | None = None):
+    """Register a fake App token provider (owner → "tok-<owner>") for the test."""
+    fn = (lambda owner: mapping.get(owner)) if mapping is not None else (lambda owner: f"tok-{owner}")
+    gitrepos.set_token_provider(fn)
+    try:
+        yield
+    finally:
+        gitrepos.set_token_provider(None)
+
+
+def _empty_pr_node():
+    return {"pullRequests": {"nodes": []}, "deployments": {"nodes": []},
+            "environments": {"nodes": []}}
+
+
+def _ok_run(node, *, alias="r0"):
+    """Return a fake _run_gh that succeeds with a single aliased node."""
+    def _run(args, token=None, input=None):
+        class R:
+            returncode = 0
+            stdout = json.dumps({"data": {alias: node}})
+            stderr = ""
+        return R()
+    return _run
+
+
+def test_default_query_passes_owner_app_token(monkeypatch):
+    """Single owner: the gh call carries that owner's App installation token."""
+    from server.github import pr_poller as PP
+
+    tokens = []
+
+    def fake_run(args, token=None, input=None):
+        tokens.append(token)
+        class R:
+            returncode = 0
+            stdout = json.dumps({"data": {"r0": _empty_pr_node()}})
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(PP.gitrepos, "_run_gh", fake_run)
+    with _app_tokens():
+        PP._default_query([("acme/repo", "main")])
+
+    assert tokens == ["tok-acme"]
+
+
+def test_default_query_splits_per_owner(monkeypatch):
+    """Two owners → two gh calls with distinct per-owner tokens; local r0 aliases
+    are remapped back to the global pair positions r0 and r1."""
+    from server.github import pr_poller as PP
+
+    tokens = []
+
+    def fake_run(args, token=None, input=None):
+        tokens.append(token)
+        class R:
+            returncode = 0
+            stdout = json.dumps({"data": {"r0": _empty_pr_node()}})
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(PP.gitrepos, "_run_gh", fake_run)
+    with _app_tokens():
+        resp = PP._default_query([("acme/repo", "main"), ("other/repo", "main")])
+
+    assert len(tokens) == 2
+    assert set(tokens) == {"tok-acme", "tok-other"}
+    # Each owner's local r0 must be remapped to its global position.
+    assert "r0" in resp["data"]
+    assert "r1" in resp["data"]
+
+
+def test_default_query_tolerates_one_owner_failing(monkeypatch):
+    """A failing owner's call is logged and skipped; healthy owners still return data."""
+    from server.github import pr_poller as PP
+
+    def fake_run(args, token=None, input=None):
+        if token == "tok-bad":
+            class Fail:
+                returncode = 1; stdout = ""; stderr = "403 Forbidden"
+            return Fail()
+        class R:
+            returncode = 0
+            stdout = json.dumps({"data": {"r0": _empty_pr_node()}})
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(PP.gitrepos, "_run_gh", fake_run)
+    with _app_tokens({"acme": "tok-acme", "bad": "tok-bad"}):
+        resp = PP._default_query([("acme/repo", "main"), ("bad/repo", "main")])
+
+    # acme (global idx 0) succeeded; bad (global idx 1) failed → only r0 present.
+    assert "r0" in resp["data"]
+    assert "r1" not in resp["data"]
