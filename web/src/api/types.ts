@@ -96,6 +96,8 @@ export interface Session {
   modelPending?: boolean
   /** Model id (alias or full id) parked pending human approval; null/absent = no hold. */
   pendingModel?: string | null
+  /** The requester's stated reason for pendingModel — a session's own words, or null. */
+  pendingModelReason?: string | null
   /** Cached next-prompt suggestions for a live session (empty when none/detached). */
   latestSuggestions?: string[]
   /** One-line LLM status summary of what the session is doing now (empty when none). */

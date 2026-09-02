@@ -183,6 +183,8 @@ def _record_to_dict(
         # model pending admin sign-off (status="pending_approval" or a mid-session
         # hold). Null once approved/denied or for non-gated sessions.
         "pendingModel": getattr(record, "pending_model", None),
+        # Why the session asked for pendingModel (its own stated reason), or null.
+        "pendingModelReason": getattr(record, "pending_model_reason", None),
         # True while a "switch after this turn" model change waits for the in-flight
         # turn to end (transient, never persisted) — the picker shows it as pending.
         "modelPending": getattr(record, "model_pending", False),

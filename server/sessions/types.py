@@ -65,6 +65,7 @@ class SessionRecord:
     # SessionOrchestrator._hold_for_approval). Mirrors DB Session.pending_model; None
     # once approved/rejected. Distinct from `model` (which stays None until approval).
     pending_model: str | None = None
+    pending_model_reason: str | None = None
     # transient: a "switch after this turn" model change has been handed to the SDK
     # (set_model without an interrupt) but the in-flight turn is still on the old model —
     # the binary applies it on the NEXT turn. Cleared when the turn ends (see
@@ -154,6 +155,7 @@ class SessionRecord:
             "adoptedInPlace": self.adopted_in_place,
             "model": self.model,
             "pendingModel": self.pending_model,
+            "pendingModelReason": self.pending_model_reason,
             "modelPending": self.model_pending,
             "accountPinned": self.account_pinned,
             "activeGoal": self.active_goal,
@@ -193,6 +195,7 @@ class SessionRecord:
             adopted_in_place=d.get("adoptedInPlace", False),
             model=d.get("model"),
             pending_model=d.get("pendingModel"),
+            pending_model_reason=d.get("pendingModelReason"),
             model_pending=bool(d.get("modelPending", False)),
             account_pinned=d.get("accountPinned", False),
             active_goal=d.get("activeGoal"),
