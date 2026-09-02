@@ -417,6 +417,46 @@ def test_query_candidates_owner_grouping_keeps_fresh_before_retry_globally():
         f"a retry item outranked a fresh item across owners: {refs}")
 
 
+class OwnerFailureGh:
+    """Routes graphql calls by owner; the named ``failing_owner`` gets a
+    non-zero-returncode failure, every other owner gets its scripted nodes —
+    used to verify ``_graphql_per_owner``'s per-owner failure isolation (one
+    bad owner must skip-and-continue, never blank out the rest)."""
+
+    def __init__(self, nodes_by_owner: dict[str, list[dict]], *, failing_owner: str,
+                 data_key: str = "issues"):
+        self.calls: list[list[str]] = []
+        self._nodes_by_owner = nodes_by_owner
+        self._failing_owner = failing_owner
+        self._data_key = data_key
+
+    def __call__(self, args, token=None):
+        self.calls.append(list(args))
+        query = next(a for a in args if a.startswith("query="))
+        if f"repo:{self._failing_owner}/" in query:
+            return _proc(returncode=1, stderr="boom")
+        for owner, nodes in self._nodes_by_owner.items():
+            if f"repo:{owner}/" in query:
+                return _proc(stdout=json.dumps({"data": {self._data_key: {"nodes": nodes}}}))
+        raise AssertionError(f"query did not target a known owner: {query}")
+
+
+def test_query_candidates_one_owner_gh_failure_does_not_blank_others():
+    """``_graphql_per_owner`` must tolerate ONE owner's gh call failing while
+    other owners succeed: a failing owner is logged and skipped (``continue``),
+    not treated as a reason to give up on the whole call (``return []``) —
+    which would silently drop every healthy owner's results too."""
+    gh = OwnerFailureGh({
+        "other": [{"number": 2, "title": "other issue",
+                   "repository": {"nameWithOwner": "other/r2"}}],
+    }, failing_owner="acme")
+    with _app_tokens():
+        out = query_candidates(
+            {"enabled_repos": ["acme/r1", "other/r2"], "eligible_label": ""}, gh_run=gh)
+
+    assert {c["ref"] for c in out} == {"other/r2#2"}
+
+
 # --------------------------------------------------------------------------- #
 # claim_batch                                                                  #
 # --------------------------------------------------------------------------- #

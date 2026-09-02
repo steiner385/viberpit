@@ -176,6 +176,8 @@ def _installation_repos() -> "list[dict] | None":
     if fn is None:
         return None
     return fn()
+
+
 def app_token_for_owner(owner: str) -> str | None:
     """Installation token for ``owner``, or None to use ambient auth.
 

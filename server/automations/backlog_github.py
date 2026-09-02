@@ -265,6 +265,12 @@ def query_candidates(config: dict, *, gh_run: GhRun = gitrepos._run_gh,
     # fresh results across EVERY owner are concatenated before ANY owner's
     # retry results, preserving "fresh-first, a retry can never displace new
     # work" even when it spans owners (never interleaved owner-by-owner).
+    # Two side effects of grouping by owner: the GraphQL ``first: 100`` cap
+    # (see :func:`_build_candidates_query`) now applies per owner, so the
+    # effective ceiling is 100 x owners rather than 100 overall; and the
+    # relative ordering of results ACROSS owners now follows config
+    # (``enabled_repos``) order rather than GitHub's cross-repo best-match
+    # ranking — an unavoidable consequence of one token per owner.
     fresh_nodes: list[dict] = []
     retry_nodes: list[dict] = []
     for data in _graphql_per_owner(
