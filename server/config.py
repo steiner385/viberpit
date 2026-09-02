@@ -129,6 +129,10 @@ try:
             default="require_approval", alias="CCSWITCH_MODEL_APPROVAL_ACTION")
         model_approval_denylist: str = Field(
             default="fable", alias="CCSWITCH_MODEL_APPROVAL_DENYLIST")
+        # Self-directed model switching: whether sessions are told they may request a
+        # model change (and whether a marker found in output is acted on at all).
+        self_model_switch_enabled: bool = Field(
+            default=True, alias="CCSWITCH_SELF_MODEL_SWITCH_ENABLED")
 
         model_config = {"populate_by_name": True, "env_file": ".env", "extra": "ignore"}
 
