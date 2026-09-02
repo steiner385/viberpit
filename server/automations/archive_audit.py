@@ -9,8 +9,9 @@ import asyncio
 import json
 import logging
 import re
-import subprocess
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
+
+from ccswitch import gitrepos
 
 from .base import AutomationStatus, ConfigField
 from .completion_bar import BarVerdict, PrFact, PrFacts, _is_code_goal, met_bar
@@ -305,14 +306,20 @@ def _real_gh(repo: str, branch: str) -> list[dict]:
         "commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}}}"
     )
     try:
-        r = subprocess.run(
-            ["gh", "api", "graphql",
+        # Authenticate as the owner's App installation, not the ambient gh user
+        # (issue #913): once the stored gh credential expires, a raw gh call drops to
+        # anonymous and a private repo's PRs return a misleading 404 (→ false
+        # 'ambiguous'). _run_gh strips ambient tokens and pins the config dir.
+        r = gitrepos._run_gh(
+            ["api", "graphql",
              "-f", f"query={query}",
              "-f", f"o={owner}",
              "-f", f"n={name}",
              "-f", f"br={branch}"],
-            capture_output=True, text=True, timeout=30, check=True)
-    except Exception as exc:  # gh missing / auth / network / non-zero
+            token=gitrepos._app_token(owner), timeout=30)
+        if r.returncode != 0:
+            raise gitrepos.GhError(r.stderr.strip() or "gh graphql failed")
+    except Exception as exc:  # gh missing / auth / network / non-zero / timeout
         log.warning("archive_audit gh graphql pr list failed repo=%s head=%s: %s", repo, branch, exc)
         return []
     try:
@@ -340,13 +347,17 @@ def _real_gh_num(repo: str, number: int) -> "dict | None":
         "commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}}"
     )
     try:
-        r = subprocess.run(
-            ["gh", "api", "graphql",
+        # Same App-auth fix as _real_gh (issue #913): a stale ambient credential
+        # otherwise makes a private repo's PR appear not-found.
+        r = gitrepos._run_gh(
+            ["api", "graphql",
              "-f", f"query={query}",
              "-f", f"o={owner}",
              "-f", f"n={name}",
              "-F", f"num={number}"],
-            capture_output=True, text=True, timeout=30, check=True)
+            token=gitrepos._app_token(owner), timeout=30)
+        if r.returncode != 0:
+            raise gitrepos.GhError(r.stderr.strip() or "gh graphql failed")
     except Exception as exc:
         log.warning("archive_audit gh graphql pr view failed repo=%s number=%s: %s", repo, number, exc)
         return None

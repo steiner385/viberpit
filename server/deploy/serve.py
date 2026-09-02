@@ -32,6 +32,12 @@ def deploy_status_path() -> str:
 
 def serve(socket_path: str | None = None) -> None:
     """Build the deploy controller app and serve it on a Unix socket."""
+    # The deploy gate's gh reads (ci_verdict / publish_deployment) run in THIS process,
+    # so register the App seams here too (issue #912/#913). Without this, _app_token()
+    # returns None and the reads fall back to the pinned ccswitch gh identity — already
+    # safe (ambient GITHUB_TOKEN is stripped), but the App token is the intended auth.
+    from server.github import app_auth as _app_auth
+    _app_auth.register_git_providers()
     sock = socket_path or deploy_socket()
     repo = os.environ.get("CCSWITCH_DEPLOY_REPO", os.getcwd())
     host = os.environ.get("CCSWITCH_HOST", "127.0.0.1")

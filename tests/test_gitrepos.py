@@ -395,6 +395,122 @@ class GhListingTests(unittest.TestCase):
                 gitrepos.list_remote_branches("acme/widget")
 
 
+class InstallationReposTests(unittest.TestCase):
+    """App-path repo enumeration via set_installations_provider (issue #912).
+
+    When a provider is registered, list_accessible_repos lists the repos the
+    pr-dashy App can reach (REST objects from /installation/repositories) instead
+    of the ambient gh user's viewer.repositories — the App has no viewer, and a
+    stale gh credential silently blanks the viewer query.
+    """
+
+    def tearDown(self) -> None:
+        gitrepos.set_installations_provider(None)
+
+    @staticmethod
+    def _rest_repo(full_name, *, private=True, archived=False, pushed_at="2026-06-20T00:00:00Z"):
+        owner, _, name = full_name.partition("/")
+        return {
+            "full_name": full_name, "name": name, "owner": {"login": owner},
+            "private": private, "archived": archived,
+            "html_url": f"https://github.com/{full_name}",
+            "default_branch": "main", "pushed_at": pushed_at,
+        }
+
+    def test_app_path_maps_rest_objects_to_chooser_dicts(self) -> None:
+        gitrepos.set_installations_provider(lambda: [
+            self._rest_repo("cairnea/KinDash", pushed_at="2026-06-19T00:00:00Z"),
+            self._rest_repo("steiner385/ccswitch", private=False,
+                            pushed_at="2026-06-20T00:00:00Z"),
+        ])
+        # The provider path must NOT shell out to gh at all — a subprocess here is a bug.
+        with mock.patch("ccswitch.gitrepos.subprocess.run",
+                        side_effect=AssertionError("viewer path taken")):
+            repos = gitrepos.list_accessible_repos()
+        # PUSHED_AT-desc, mapped to the chooser wire shape.
+        self.assertEqual([r["nameWithOwner"] for r in repos],
+                         ["steiner385/ccswitch", "cairnea/KinDash"])
+        self.assertEqual(repos[0]["owner"], "steiner385")
+        self.assertFalse(repos[0]["isPrivate"])
+        self.assertEqual(repos[0]["url"], "https://github.com/steiner385/ccswitch")
+        self.assertEqual(repos[0]["defaultBranch"], "main")
+        self.assertTrue(repos[1]["isPrivate"])
+
+    def test_app_path_excludes_archived_and_dedupes(self) -> None:
+        gitrepos.set_installations_provider(lambda: [
+            self._rest_repo("acme/active"),
+            self._rest_repo("acme/old", archived=True),
+            self._rest_repo("acme/active"),  # duplicate across two installations
+        ])
+        repos = gitrepos.list_accessible_repos()
+        self.assertEqual([r["nameWithOwner"] for r in repos], ["acme/active"])
+
+    def test_app_path_broken_app_fails_loud(self) -> None:
+        # A configured-but-broken App must raise GhError, never silently fall back
+        # to the ambient user credential the chooser was migrated off.
+        def broken() -> list[dict]:
+            raise gitrepos.GhError("App repo enumeration failed")
+
+        gitrepos.set_installations_provider(broken)
+        with self.assertRaises(gitrepos.GhError):
+            gitrepos.list_accessible_repos()
+
+    def test_no_provider_uses_viewer_path(self) -> None:
+        # CLI usage: no provider, so the gh viewer query still drives the chooser.
+        gitrepos.set_installations_provider(None)
+
+        def fake_run(args, capture_output, text, env, input=None, timeout=None):
+            out = _REPOS_JSON if "viewer" in " ".join(args) and "repositories" in " ".join(args) \
+                else json.dumps({"data": {"viewer": {"organizations": {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}}}})
+            return subprocess.CompletedProcess(args, 0, stdout=out, stderr="")
+
+        with mock.patch("ccswitch.gitrepos.subprocess.run", side_effect=fake_run):
+            repos = gitrepos.list_accessible_repos()
+        self.assertEqual({r["nameWithOwner"] for r in repos},
+                         {"cairnea/KinDash", "acme/widget"})
+
+
+class BranchListingAppTokenTests(unittest.TestCase):
+    """list_remote_branches threads the owner's App token (issue #912)."""
+
+    def tearDown(self) -> None:
+        gitrepos.set_token_provider(None)
+
+    def test_branches_use_the_owner_app_token(self) -> None:
+        gitrepos.set_token_provider(lambda owner: f"ghs_{owner}")
+        envs: list[dict] = []
+
+        def fake_run(args, capture_output, text, env, input=None, timeout=None):
+            envs.append(env)
+            if "branches" in args[2]:
+                return subprocess.CompletedProcess(args, 0, stdout="main\n", stderr="")
+            return subprocess.CompletedProcess(args, 0, stdout="main\n", stderr="")
+
+        with mock.patch("ccswitch.gitrepos.subprocess.run", side_effect=fake_run):
+            gitrepos.list_remote_branches("acme/widget")
+        # Both the branches read and the default-branch read must carry the token as
+        # GH_TOKEN — the whole point is authenticating as the App, not the ambient user.
+        self.assertTrue(envs)
+        for env in envs:
+            self.assertEqual(env.get("GH_TOKEN"), "ghs_acme")
+
+    def test_branches_without_provider_send_no_token(self) -> None:
+        gitrepos.set_token_provider(None)
+        envs: list[dict] = []
+
+        def fake_run(args, capture_output, text, env, input=None, timeout=None):
+            envs.append(env)
+            return subprocess.CompletedProcess(args, 0, stdout="main\n", stderr="")
+
+        with mock.patch.dict(os.environ, {"GH_TOKEN": "ambient"}):
+            with mock.patch("ccswitch.gitrepos.subprocess.run", side_effect=fake_run):
+                gitrepos.list_remote_branches("acme/widget")
+        # No App token → GH_TOKEN is stripped (the ambient one must not leak through).
+        for env in envs:
+            self.assertNotIn("GH_TOKEN", env)
+
+
 class StaleCredentialRegistryTests(unittest.TestCase):
     """The auth-error classification + stale-credential registry (issue #670)."""
 
@@ -777,251 +893,6 @@ class TokenSettingsUrlTests(unittest.TestCase):
         )
         self.assertIs(row["viaApp"], False)
         self.assertEqual(row["settingsUrl"], "https://github.com/settings/tokens")
-
-
-# ---------------------------------------------------------------------------
-# App-installation-backed repo listing (issue #912)
-# ---------------------------------------------------------------------------
-
-
-def _inst_repo(
-    full_name: str,
-    *,
-    pushed_at: str,
-    archived: bool = False,
-    default_branch: str | None = "main",
-    private: bool = True,
-) -> dict:
-    """One element of a REST ``/installation/repositories`` response."""
-    owner, name = full_name.split("/", 1)
-    return {
-        "full_name": full_name,
-        "name": name,
-        "owner": {"login": owner},
-        "private": private,
-        "html_url": f"https://github.com/{full_name}",
-        "default_branch": default_branch,
-        "pushed_at": pushed_at,
-        "archived": archived,
-    }
-
-
-def _jsonl(*repos: dict) -> str:
-    """What ``gh api --paginate --jq '.repositories[]'`` writes: one repo per line."""
-    return "\n".join(json.dumps(r) for r in repos) + "\n"
-
-
-class InstallationListingTests(unittest.TestCase):
-    """``list_accessible_repos`` sources from the GitHub App installations.
-
-    The old ``viewer.repositories`` query authenticates as the *user*; an App
-    installation token has no viewer at all, so the App path must enumerate
-    ``/installation/repositories`` per installation instead.
-    """
-
-    def tearDown(self) -> None:
-        gitrepos.set_token_provider(None)
-        gitrepos.set_installations_provider(None)
-
-    def _register(self, owners: list[str]) -> None:
-        gitrepos.set_installations_provider(lambda: owners)
-        gitrepos.set_token_provider(lambda owner: f"ghs_{owner}")
-
-    def test_lists_installation_repos_with_that_owners_app_token(self) -> None:
-        self._register(["steiner385"])
-        calls: list[dict] = []
-
-        def fake_run(args, capture_output, text, env, input=None):
-            calls.append({"args": args, "env": env})
-            return subprocess.CompletedProcess(
-                args, 0,
-                stdout=_jsonl(_inst_repo("steiner385/ccswitch",
-                                         pushed_at="2026-09-01T00:00:00Z")),
-                stderr="",
-            )
-
-        with mock.patch("ccswitch.gitrepos.subprocess.run", side_effect=fake_run):
-            repos = gitrepos.list_accessible_repos()
-
-        self.assertIn("/installation/repositories", " ".join(calls[0]["args"]))
-        # The installation token, not the machine's ambient gh credential.
-        self.assertEqual(calls[0]["env"]["GH_TOKEN"], "ghs_steiner385")
-        self.assertEqual(len(repos), 1)
-        self.assertEqual(repos[0]["nameWithOwner"], "steiner385/ccswitch")
-        self.assertEqual(repos[0]["owner"], "steiner385")
-        self.assertEqual(repos[0]["defaultBranch"], "main")
-        self.assertEqual(repos[0]["pushedAt"], "2026-09-01T00:00:00Z")
-        self.assertTrue(repos[0]["isPrivate"])
-
-    def test_never_issues_a_viewer_query_on_the_app_path(self) -> None:
-        # A viewer.* query would authenticate as the user, which is exactly the
-        # dependency this change removes.
-        self._register(["steiner385"])
-
-        def fake_run(args, capture_output, text, env, input=None):
-            return subprocess.CompletedProcess(
-                args, 0,
-                stdout=_jsonl(_inst_repo("steiner385/a", pushed_at="2026-01-01T00:00:00Z")),
-                stderr="",
-            )
-
-        with mock.patch("ccswitch.gitrepos.subprocess.run", side_effect=fake_run) as run:
-            gitrepos.list_accessible_repos()
-
-        for call in run.call_args_list:
-            self.assertNotIn("viewer", " ".join(call.args[0]))
-
-    def test_merges_installations_deduped_and_pushed_at_desc(self) -> None:
-        self._register(["steiner385", "cairnea"])
-        by_owner = {
-            "ghs_steiner385": _jsonl(
-                _inst_repo("steiner385/old", pushed_at="2026-01-01T00:00:00Z"),
-                _inst_repo("shared/repo", pushed_at="2026-08-01T00:00:00Z"),
-            ),
-            "ghs_cairnea": _jsonl(
-                _inst_repo("cairnea/KinDash", pushed_at="2026-09-01T00:00:00Z"),
-                _inst_repo("shared/repo", pushed_at="2026-08-01T00:00:00Z"),
-            ),
-        }
-
-        def fake_run(args, capture_output, text, env, input=None):
-            return subprocess.CompletedProcess(
-                args, 0, stdout=by_owner[env["GH_TOKEN"]], stderr="")
-
-        with mock.patch("ccswitch.gitrepos.subprocess.run", side_effect=fake_run):
-            repos = gitrepos.list_accessible_repos()
-
-        self.assertEqual(
-            [r["nameWithOwner"] for r in repos],
-            ["cairnea/KinDash", "shared/repo", "steiner385/old"],
-        )
-
-    def test_excludes_archived_repos(self) -> None:
-        self._register(["steiner385"])
-
-        def fake_run(args, capture_output, text, env, input=None):
-            return subprocess.CompletedProcess(
-                args, 0,
-                stdout=_jsonl(
-                    _inst_repo("steiner385/live", pushed_at="2026-09-01T00:00:00Z"),
-                    _inst_repo("steiner385/dead", pushed_at="2026-09-02T00:00:00Z",
-                               archived=True),
-                ),
-                stderr="",
-            )
-
-        with mock.patch("ccswitch.gitrepos.subprocess.run", side_effect=fake_run):
-            repos = gitrepos.list_accessible_repos()
-
-        self.assertEqual([r["nameWithOwner"] for r in repos], ["steiner385/live"])
-
-    def test_all_installations_failing_raises_actionable_error(self) -> None:
-        # Fail loudly: silently degrading to the user's gh token is what made a
-        # dead credential look like an empty repo list.
-        self._register(["steiner385", "cairnea"])
-
-        def fake_run(args, capture_output, text, env, input=None):
-            return subprocess.CompletedProcess(args, 1, stdout="", stderr="gh: Bad credentials")
-
-        with mock.patch("ccswitch.gitrepos.subprocess.run", side_effect=fake_run):
-            with self.assertRaises(gitrepos.GhError) as ctx:
-                gitrepos.list_accessible_repos()
-
-        self.assertIn("installation", str(ctx.exception).lower())
-
-    def test_one_failing_installation_does_not_blank_the_chooser(self) -> None:
-        self._register(["steiner385", "cairnea"])
-
-        def fake_run(args, capture_output, text, env, input=None):
-            if env["GH_TOKEN"] == "ghs_cairnea":
-                return subprocess.CompletedProcess(args, 1, stdout="", stderr="gh: boom")
-            return subprocess.CompletedProcess(
-                args, 0,
-                stdout=_jsonl(_inst_repo("steiner385/ccswitch",
-                                         pushed_at="2026-09-01T00:00:00Z")),
-                stderr="",
-            )
-
-        with mock.patch("ccswitch.gitrepos.subprocess.run", side_effect=fake_run):
-            repos = gitrepos.list_accessible_repos()
-
-        self.assertEqual([r["nameWithOwner"] for r in repos], ["steiner385/ccswitch"])
-
-    def test_provider_registered_but_no_installations_raises(self) -> None:
-        gitrepos.set_installations_provider(lambda: [])
-        gitrepos.set_token_provider(lambda owner: "unused")
-
-        with mock.patch("ccswitch.gitrepos.subprocess.run") as run:
-            with self.assertRaises(gitrepos.GhError) as ctx:
-                gitrepos.list_accessible_repos()
-
-        run.assert_not_called()
-        self.assertIn("installation", str(ctx.exception).lower())
-
-    def test_owner_without_a_token_is_skipped_not_run_unauthenticated(self) -> None:
-        # A missing token must never fall through to an unauthenticated gh call —
-        # that is what exhausted the 60-req/hr anonymous quota.
-        gitrepos.set_installations_provider(lambda: ["steiner385"])
-        gitrepos.set_token_provider(lambda owner: None)
-
-        with mock.patch("ccswitch.gitrepos.subprocess.run") as run:
-            with self.assertRaises(gitrepos.GhError):
-                gitrepos.list_accessible_repos()
-
-        run.assert_not_called()
-
-    def test_no_provider_registered_keeps_the_viewer_path(self) -> None:
-        # Standalone CLI (no daemon): nothing is registered, so the user's own gh
-        # credential still backs the listing.
-        gitrepos.set_installations_provider(None)
-        gitrepos.set_token_provider(None)
-        seen: dict = {}
-
-        def fake_run(args, capture_output, text, env, input=None):
-            seen["args"] = args
-            return subprocess.CompletedProcess(args, 0, stdout=_REPOS_JSON, stderr="")
-
-        with mock.patch("ccswitch.gitrepos.subprocess.run", side_effect=fake_run):
-            repos = gitrepos.list_accessible_repos()
-
-        self.assertIn("viewer", " ".join(seen["args"]))
-        self.assertEqual(repos[0]["nameWithOwner"], "cairnea/KinDash")
-
-
-class BranchListingAuthTests(unittest.TestCase):
-    """Branch/default-branch lookups authenticate as the App when one is registered."""
-
-    def tearDown(self) -> None:
-        gitrepos.set_token_provider(None)
-        gitrepos.set_installations_provider(None)
-
-    def test_list_remote_branches_uses_the_owners_app_token(self) -> None:
-        gitrepos.set_token_provider(lambda owner: f"ghs_{owner}")
-        envs: list[dict] = []
-
-        def fake_run(args, capture_output, text, env, input=None):
-            envs.append(env)
-            if "graphql" in args:
-                payload = {
-                    "data": {
-                        "repository": {
-                            "refs": {
-                                "pageInfo": {"hasNextPage": False, "endCursor": None},
-                                "nodes": [{"name": "main"}],
-                            }
-                        }
-                    }
-                }
-                return subprocess.CompletedProcess(args, 0, stdout=json.dumps(payload),
-                                                   stderr="")
-            return subprocess.CompletedProcess(args, 0, stdout="main\n", stderr="")
-
-        with mock.patch("ccswitch.gitrepos.subprocess.run", side_effect=fake_run):
-            gitrepos.list_remote_branches("steiner385/ccswitch")
-
-        self.assertTrue(envs, "expected at least one gh invocation")
-        for env in envs:
-            self.assertEqual(env.get("GH_TOKEN"), "ghs_steiner385")
 
 
 if __name__ == "__main__":

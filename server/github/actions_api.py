@@ -17,12 +17,49 @@ from ccswitch import gitrepos
 log = logging.getLogger(__name__)
 
 
-def _run_gh_bytes(args: list[str]) -> bytes:
-    """gh with binary stdout (artifact zips). Same env discipline as _run_gh."""
-    proc = subprocess.run(["gh", *args], capture_output=True, env=gitrepos._gh_env())
+def _run_gh_bytes(args: list[str], token: str | None = None) -> bytes:
+    """gh with binary stdout (artifact zips). Same env discipline as _run_gh.
+
+    ``token`` (an App installation token) is set as ``GH_TOKEN`` so the fetch
+    authenticates as the App, not the ambient gh user (issue #913) — without it the
+    pinned-but-possibly-expired gh login silently drops to anonymous (60/hr)."""
+    env = gitrepos._gh_env()
+    if token:
+        env["GH_TOKEN"] = token
+    proc = subprocess.run(["gh", *args], capture_output=True, env=env)
     if proc.returncode != 0:
         raise gitrepos.GhError(proc.stderr.decode(errors="replace").strip() or "gh failed")
     return proc.stdout
+
+
+def _owner_of(repo: str) -> str:
+    """``owner`` from an ``owner/name`` slug (the App-token key)."""
+    return repo.partition("/")[0]
+
+
+def _run_gh_for(repo: str):
+    """A ``_run_gh`` bound to ``repo`` owner's App installation token (issue #913).
+
+    The CI/CD doctor reads Actions data for arbitrary repos; each must authenticate as
+    the App installation for that owner, not the ambient gh user. Falls back to the
+    pinned/ambient gh identity when no App is registered (CLI) or the owner has no
+    installation. Bound once per doctor call — ``token_for_owner`` caches the token."""
+    token = gitrepos._app_token(_owner_of(repo))
+
+    def run(args: list[str]) -> subprocess.CompletedProcess:
+        return gitrepos._run_gh(args, token=token)
+
+    return run
+
+
+def _run_gh_bytes_for(repo: str):
+    """A ``_run_gh_bytes`` bound to ``repo`` owner's App installation token (issue #913)."""
+    token = gitrepos._app_token(_owner_of(repo))
+
+    def run_bytes(args: list[str]) -> bytes:
+        return _run_gh_bytes(args, token=token)
+
+    return run_bytes
 
 
 def _iso_ts(s: str | None) -> float | None:
@@ -46,7 +83,8 @@ MAX_BACKFILL_PAGES = 10
 
 
 def list_completed_runs(repo: str, since_ts: float | None, *,
-                        run=gitrepos._run_gh, max_pages: int = MAX_BACKFILL_PAGES) -> list[dict]:
+                        run=None, max_pages: int = MAX_BACKFILL_PAGES) -> list[dict]:
+    run = run or _run_gh_for(repo)
     from urllib.parse import quote
     date = ""
     if since_ts:
@@ -80,7 +118,8 @@ def list_completed_runs(repo: str, since_ts: float | None, *,
     return out
 
 
-def list_jobs(repo: str, run_id: int, *, run=gitrepos._run_gh) -> list[dict]:
+def list_jobs(repo: str, run_id: int, *, run=None) -> list[dict]:
+    run = run or _run_gh_for(repo)
     data = _json(run(["api", f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100"]))
     out = []
     for j in data.get("jobs", []):
@@ -91,10 +130,12 @@ def list_jobs(repo: str, run_id: int, *, run=gitrepos._run_gh) -> list[dict]:
     return out
 
 
-def junit_artifacts(repo: str, run_id: int, *, run=gitrepos._run_gh,
-                    run_bytes=_run_gh_bytes) -> list[tuple[str, bytes]]:
+def junit_artifacts(repo: str, run_id: int, *, run=None,
+                    run_bytes=None) -> list[tuple[str, bytes]]:
     """(artifact name, xml bytes) for every junit-* artifact of the run.
     Contract: Plan A names all JUnit artifacts with the junit- prefix."""
+    run = run or _run_gh_for(repo)
+    run_bytes = run_bytes or _run_gh_bytes_for(repo)
     data = _json(run(["api", f"repos/{repo}/actions/runs/{run_id}/artifacts"]))
     out: list[tuple[str, bytes]] = []
     for a in data.get("artifacts", []):
@@ -112,9 +153,10 @@ def junit_artifacts(repo: str, run_id: int, *, run=gitrepos._run_gh,
     return out
 
 
-def repo_ci_meta(repo: str, *, run=gitrepos._run_gh) -> tuple[str, set[str]]:
+def repo_ci_meta(repo: str, *, run=None) -> tuple[str, set[str]]:
     """(default branch, required status-check contexts). Branch-protection reads
     need admin scope — degrade to an empty set (verdicts then skip demotion)."""
+    run = run or _run_gh_for(repo)
     branch = "master"
     try:
         meta = _json(run(["api", f"repos/{repo}"]))
@@ -150,9 +192,10 @@ def _default_branch_head_sha(repo: str, default_branch: str, *, run) -> str | No
     return sha or None
 
 
-def workflow_texts(repo: str, default_branch: str, *, run=gitrepos._run_gh,
+def workflow_texts(repo: str, default_branch: str, *, run=None,
                    cache: dict[str, tuple[str, dict[str, str]]] | None = None) -> dict[str, str]:
     import base64
+    run = run or _run_gh_for(repo)
     cache = _WORKFLOW_CACHE if cache is None else cache
     head_sha = _default_branch_head_sha(repo, default_branch, run=run)
     if head_sha is not None:
