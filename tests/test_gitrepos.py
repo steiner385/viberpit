@@ -395,6 +395,122 @@ class GhListingTests(unittest.TestCase):
                 gitrepos.list_remote_branches("acme/widget")
 
 
+class InstallationReposTests(unittest.TestCase):
+    """App-path repo enumeration via set_installations_provider (issue #912).
+
+    When a provider is registered, list_accessible_repos lists the repos the
+    pr-dashy App can reach (REST objects from /installation/repositories) instead
+    of the ambient gh user's viewer.repositories — the App has no viewer, and a
+    stale gh credential silently blanks the viewer query.
+    """
+
+    def tearDown(self) -> None:
+        gitrepos.set_installations_provider(None)
+
+    @staticmethod
+    def _rest_repo(full_name, *, private=True, archived=False, pushed_at="2026-06-20T00:00:00Z"):
+        owner, _, name = full_name.partition("/")
+        return {
+            "full_name": full_name, "name": name, "owner": {"login": owner},
+            "private": private, "archived": archived,
+            "html_url": f"https://github.com/{full_name}",
+            "default_branch": "main", "pushed_at": pushed_at,
+        }
+
+    def test_app_path_maps_rest_objects_to_chooser_dicts(self) -> None:
+        gitrepos.set_installations_provider(lambda: [
+            self._rest_repo("cairnea/KinDash", pushed_at="2026-06-19T00:00:00Z"),
+            self._rest_repo("steiner385/ccswitch", private=False,
+                            pushed_at="2026-06-20T00:00:00Z"),
+        ])
+        # The provider path must NOT shell out to gh at all — a subprocess here is a bug.
+        with mock.patch("ccswitch.gitrepos.subprocess.run",
+                        side_effect=AssertionError("viewer path taken")):
+            repos = gitrepos.list_accessible_repos()
+        # PUSHED_AT-desc, mapped to the chooser wire shape.
+        self.assertEqual([r["nameWithOwner"] for r in repos],
+                         ["steiner385/ccswitch", "cairnea/KinDash"])
+        self.assertEqual(repos[0]["owner"], "steiner385")
+        self.assertFalse(repos[0]["isPrivate"])
+        self.assertEqual(repos[0]["url"], "https://github.com/steiner385/ccswitch")
+        self.assertEqual(repos[0]["defaultBranch"], "main")
+        self.assertTrue(repos[1]["isPrivate"])
+
+    def test_app_path_excludes_archived_and_dedupes(self) -> None:
+        gitrepos.set_installations_provider(lambda: [
+            self._rest_repo("acme/active"),
+            self._rest_repo("acme/old", archived=True),
+            self._rest_repo("acme/active"),  # duplicate across two installations
+        ])
+        repos = gitrepos.list_accessible_repos()
+        self.assertEqual([r["nameWithOwner"] for r in repos], ["acme/active"])
+
+    def test_app_path_broken_app_fails_loud(self) -> None:
+        # A configured-but-broken App must raise GhError, never silently fall back
+        # to the ambient user credential the chooser was migrated off.
+        def broken() -> list[dict]:
+            raise gitrepos.GhError("App repo enumeration failed")
+
+        gitrepos.set_installations_provider(broken)
+        with self.assertRaises(gitrepos.GhError):
+            gitrepos.list_accessible_repos()
+
+    def test_no_provider_uses_viewer_path(self) -> None:
+        # CLI usage: no provider, so the gh viewer query still drives the chooser.
+        gitrepos.set_installations_provider(None)
+
+        def fake_run(args, capture_output, text, env, input=None, timeout=None):
+            out = _REPOS_JSON if "viewer" in " ".join(args) and "repositories" in " ".join(args) \
+                else json.dumps({"data": {"viewer": {"organizations": {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}}}})
+            return subprocess.CompletedProcess(args, 0, stdout=out, stderr="")
+
+        with mock.patch("ccswitch.gitrepos.subprocess.run", side_effect=fake_run):
+            repos = gitrepos.list_accessible_repos()
+        self.assertEqual({r["nameWithOwner"] for r in repos},
+                         {"cairnea/KinDash", "acme/widget"})
+
+
+class BranchListingAppTokenTests(unittest.TestCase):
+    """list_remote_branches threads the owner's App token (issue #912)."""
+
+    def tearDown(self) -> None:
+        gitrepos.set_token_provider(None)
+
+    def test_branches_use_the_owner_app_token(self) -> None:
+        gitrepos.set_token_provider(lambda owner: f"ghs_{owner}")
+        envs: list[dict] = []
+
+        def fake_run(args, capture_output, text, env, input=None, timeout=None):
+            envs.append(env)
+            if "branches" in args[2]:
+                return subprocess.CompletedProcess(args, 0, stdout="main\n", stderr="")
+            return subprocess.CompletedProcess(args, 0, stdout="main\n", stderr="")
+
+        with mock.patch("ccswitch.gitrepos.subprocess.run", side_effect=fake_run):
+            gitrepos.list_remote_branches("acme/widget")
+        # Both the branches read and the default-branch read must carry the token as
+        # GH_TOKEN — the whole point is authenticating as the App, not the ambient user.
+        self.assertTrue(envs)
+        for env in envs:
+            self.assertEqual(env.get("GH_TOKEN"), "ghs_acme")
+
+    def test_branches_without_provider_send_no_token(self) -> None:
+        gitrepos.set_token_provider(None)
+        envs: list[dict] = []
+
+        def fake_run(args, capture_output, text, env, input=None, timeout=None):
+            envs.append(env)
+            return subprocess.CompletedProcess(args, 0, stdout="main\n", stderr="")
+
+        with mock.patch.dict(os.environ, {"GH_TOKEN": "ambient"}):
+            with mock.patch("ccswitch.gitrepos.subprocess.run", side_effect=fake_run):
+                gitrepos.list_remote_branches("acme/widget")
+        # No App token → GH_TOKEN is stripped (the ambient one must not leak through).
+        for env in envs:
+            self.assertNotIn("GH_TOKEN", env)
+
+
 class StaleCredentialRegistryTests(unittest.TestCase):
     """The auth-error classification + stale-credential registry (issue #670)."""
 
@@ -777,6 +893,62 @@ class TokenSettingsUrlTests(unittest.TestCase):
         )
         self.assertIs(row["viaApp"], False)
         self.assertEqual(row["settingsUrl"], "https://github.com/settings/tokens")
+
+
+class AppTokenPublicHelpersTests(unittest.TestCase):
+    """``app_token_for_owner``/``app_token_for_repo`` are the public wrappers
+    other modules under ``server/`` use instead of reaching into the private
+    ``_app_token``."""
+
+    def setUp(self) -> None:
+        self.addCleanup(gitrepos.set_token_provider, None)
+
+    def test_app_token_for_owner_returns_provider_token(self) -> None:
+        gitrepos.set_token_provider(lambda owner: "ghs_tok")
+        self.assertEqual(gitrepos.app_token_for_owner("acme"), "ghs_tok")
+
+    def test_app_token_for_owner_none_with_no_provider(self) -> None:
+        self.assertIsNone(gitrepos.app_token_for_owner("acme"))
+
+    def test_app_token_for_owner_swallows_provider_exceptions(self) -> None:
+        def boom(owner: str) -> str | None:
+            raise RuntimeError("mint failed")
+
+        gitrepos.set_token_provider(boom)
+        self.assertIsNone(gitrepos.app_token_for_owner("acme"))
+
+    def test_app_token_for_repo_returns_provider_token_for_owner(self) -> None:
+        seen: list[str] = []
+
+        def provider(owner: str) -> str | None:
+            seen.append(owner)
+            return "ghs_tok"
+
+        gitrepos.set_token_provider(provider)
+        self.assertEqual(gitrepos.app_token_for_repo("acme/widget"), "ghs_tok")
+        self.assertEqual(seen, ["acme"])
+
+    def test_app_token_for_repo_none_with_no_provider(self) -> None:
+        self.assertIsNone(gitrepos.app_token_for_repo("acme/widget"))
+
+    def test_app_token_for_repo_none_for_empty_string(self) -> None:
+        gitrepos.set_token_provider(lambda owner: "ghs_tok")
+        self.assertIsNone(gitrepos.app_token_for_repo(""))
+
+    def test_app_token_for_repo_none_for_no_slash(self) -> None:
+        gitrepos.set_token_provider(lambda owner: "ghs_tok")
+        self.assertIsNone(gitrepos.app_token_for_repo("noslash"))
+
+    def test_app_token_for_repo_none_for_leading_slash(self) -> None:
+        gitrepos.set_token_provider(lambda owner: "ghs_tok")
+        self.assertIsNone(gitrepos.app_token_for_repo("/leading"))
+
+    def test_app_token_for_repo_swallows_provider_exceptions(self) -> None:
+        def boom(owner: str) -> str | None:
+            raise RuntimeError("mint failed")
+
+        gitrepos.set_token_provider(boom)
+        self.assertIsNone(gitrepos.app_token_for_repo("acme/widget"))
 
 
 if __name__ == "__main__":

@@ -78,14 +78,13 @@ def build_daemon(orchestrator=None):
     set_copilot_usage_reader(
         lambda name: orchestrator._copilot.usage(name) if orchestrator._copilot else None
     )
-    # git clone/fetch authenticate with a per-owner App installation token rather
-    # than the machine's ambient credential helper (issue #887). Registered HERE
-    # because the daemon is the process where gitrepos.ensure_clone runs. Called
-    # through the module attribute so the App config is read at mint time, not at
-    # import time. Returns None when no App is configured -> ambient fallback.
-    from ccswitch.gitrepos import set_token_provider
+    # git clone/fetch authenticate with a per-owner App installation token, and repo
+    # enumeration lists the App's installation repos, rather than the machine's ambient
+    # gh user (issues #887, #912). Registered HERE because the daemon is the process
+    # where gitrepos.ensure_clone runs; the edge and deploy controller register the same
+    # seams from their own entrypoints. No-ops to ambient/viewer when no App is configured.
     from server.github import app_auth as _app_auth
-    set_token_provider(lambda owner: _app_auth.token_for_owner(owner))
+    _app_auth.register_git_providers()
     register_orchestrator_rpc(app, orchestrator)
     app.state.x11 = orchestrator._x11
     register_x11(app, app.state.x11)

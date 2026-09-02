@@ -22,6 +22,7 @@ import logging
 import os
 
 from server.sessions.account_auth import helper_env
+from server.sessions.claude_bin import cli_path_kwargs
 from server.sessions.helper_call import pick_helper_config_dir, run_helper_call
 from server.sessions.model_catalog import ALIASES, TIER_ORDER
 
@@ -110,6 +111,7 @@ async def assess_model(
             env=helper_env(config_dir),
             allowed_tools=[],
             setting_sources=[],
+            **cli_path_kwargs(),
         )
     except Exception as exc:
         log.warning("assess_model: model call failed: %s", exc)

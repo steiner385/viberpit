@@ -1022,7 +1022,18 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 elif msg_type == "permissionResponse":
                     decision = msg.get("decision", "")
                     perm_id = msg.get("permId", "")
-                    await orchestrator.resolve_permission(session_id, perm_id, decision, identity)
+                    ok = await orchestrator.resolve_permission(
+                        session_id, perm_id, decision, identity)
+                    if not ok:
+                        # Same silent-drop shape as answerQuestion below: an
+                        # unresolvable decision must surface, not 200-and-vanish.
+                        log.warning("ws.resolve_permission rejected session=%s perm=%s identity=%s",
+                                    session_id, perm_id, identity)
+                        await _send({"type": "error", "code": "PERMISSION_NOT_PENDING",
+                                     "message": "That permission request is no longer pending "
+                                                "— the session may have moved on. Reload to "
+                                                "see its current state.",
+                                     "sessionId": session_id})
                     await orchestrator.note_user_interaction(session_id)
                     try:
                         async with db_session() as db:
@@ -1047,7 +1058,19 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                     mode = msg.get("mode", "option")
                     if mode not in ("option", "freeform", "chat"):
                         mode = "option"
-                    await orchestrator.answer_question(session_id, question_id, selected, identity, mode)
+                    ok = await orchestrator.answer_question(
+                        session_id, question_id, selected, identity, mode)
+                    if not ok:
+                        # Never a silent no-op: an unresolvable answer (no such pending
+                        # question, identity mismatch, no driver) used to return 200
+                        # and leave the user staring at a card that never reacts.
+                        log.warning("ws.answer_question rejected session=%s qid=%s identity=%s",
+                                    session_id, question_id, identity)
+                        await _send({"type": "error", "code": "QUESTION_NOT_PENDING",
+                                     "message": "That question is no longer pending — the "
+                                                "session may have moved on. Reload to see "
+                                                "its current state.",
+                                     "sessionId": session_id})
                     await orchestrator.note_user_interaction(session_id)
                     try:
                         async with db_session() as db:

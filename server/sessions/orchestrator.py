@@ -367,6 +367,21 @@ def self_host_name() -> str:
     return socket.gethostname().split(".")[0]
 
 
+def local_host_stamp() -> str | None:
+    """``Session.host`` for a session THIS daemon creates in-process.
+
+    The dispatcher stamps sessions it routes to a host, but a daemon's own spawns
+    (automation loops, a direct create on the primary) never pass through it. On a
+    WORKER those landed as host=NULL — which reads as "the primary's" everywhere
+    (``_owns_record``, a worker's ``rehydrate`` filter): the primary's rotation and
+    stuck-session loops acted on them, the worker dropped them on its next restart,
+    and the primary's ``_records`` (the fleet dashboard) never listed them. A worker
+    therefore stamps itself at creation. The primary keeps NULL: that IS its
+    ownership marker, so single-host installs never see a host value.
+    """
+    return self_host_name() if daemon_role() == "worker" else None
+
+
 class SessionOrchestrator:
     """Orchestrates session lifecycle: creation, rotation, termination.
 
@@ -1283,6 +1298,8 @@ class SessionOrchestrator:
                                name_is_auto, origin, origin_ref, model) -> SessionRecord:
         from datetime import datetime
         from server.sessions import session_queue as sq
+        now = datetime.utcnow()
+        host = local_host_stamp()
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name=name, account_name=account or "",
@@ -1290,7 +1307,7 @@ class SessionOrchestrator:
                 cwd=cwd or "", repo=repo, branch=None,
                 permission_mode=permission_mode, name_is_auto=name_is_auto,
                 origin=origin, origin_ref=origin_ref, model=model,
-                initial_prompt=initial_prompt))
+                initial_prompt=initial_prompt, host=host))
         priority = await sq.enqueue(session_id, {
             "name": name, "account": account, "initial_prompt": initial_prompt,
             "cols": cols, "rows": rows, "cwd": cwd, "branch": branch,
@@ -1303,8 +1320,8 @@ class SessionOrchestrator:
             id=session_id, name=name, account=account or "", claude_session_id="",
             cols=cols, rows=rows, cwd=cwd or "", repo=repo, branch=None,
             status="queued", name_is_auto=name_is_auto,
-            updated_at=datetime.utcnow(), origin=origin, origin_ref=origin_ref,
-            model=model)
+            created_at=now, updated_at=now, origin=origin, origin_ref=origin_ref,
+            model=model, host=host)
         self._records[session_id] = rec
         log.info("session.queued id=%s priority=%d origin=%s",
                  session_id, priority, origin)
@@ -1325,6 +1342,7 @@ class SessionOrchestrator:
         """
         from datetime import datetime
         now = datetime.utcnow()
+        host = local_host_stamp()
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name=name, account_name=account or "",
@@ -1334,7 +1352,7 @@ class SessionOrchestrator:
                 origin=origin, origin_ref=origin_ref,
                 model=None, pending_model=model,
                 pending_model_requested_by=identity, pending_model_requested_at=now,
-                initial_prompt=initial_prompt))
+                initial_prompt=initial_prompt, host=host))
             await record_audit(db, type="model_approval.requested", identity=identity,
                                detail={"session_id": session_id, "model": model,
                                        "account": account})
@@ -1349,8 +1367,8 @@ class SessionOrchestrator:
             id=session_id, name=name, account=account or "", claude_session_id="",
             cols=cols, rows=rows, cwd=cwd or "", repo=repo, branch=None,
             status="pending_approval", name_is_auto=name_is_auto,
-            updated_at=now, origin=origin, origin_ref=origin_ref,
-            model=None, pending_model=model)
+            created_at=now, updated_at=now, origin=origin, origin_ref=origin_ref,
+            model=None, pending_model=model, host=host)
         self._records[session_id] = rec
         log.info("session.pending_approval id=%s model=%s origin=%s",
                  session_id, model, origin)
@@ -1559,6 +1577,7 @@ class SessionOrchestrator:
                 if existing is not None:
                     await db.delete(existing)
                 await db.flush()
+                host = local_host_stamp()
                 db.add(DbSession(
                     id=session_id, name=kwargs.get("name"),
                     account_name=kwargs.get("account") or "",
@@ -1570,19 +1589,20 @@ class SessionOrchestrator:
                     model=None, pending_model=model,
                     pending_model_requested_by=requested_by,
                     pending_model_requested_at=requested_at,
-                    initial_prompt=kwargs.get("initial_prompt")))
+                    initial_prompt=kwargs.get("initial_prompt"), host=host))
             restored = dict(kwargs)
             restored["model"] = model
             self._pending_approvals[session_id] = restored
+            now = datetime.utcnow()
             self._records[session_id] = SessionRecord(
                 id=session_id, name=kwargs.get("name") or session_id,
                 account=kwargs.get("account") or "", claude_session_id="",
                 cols=kwargs.get("cols", 80), rows=kwargs.get("rows", 24),
                 cwd=kwargs.get("cwd") or "", repo=kwargs.get("repo"), branch=None,
                 status="pending_approval", name_is_auto=kwargs.get("name_is_auto", True),
-                updated_at=datetime.utcnow(), origin=kwargs.get("origin"),
+                created_at=now, updated_at=now, origin=kwargs.get("origin"),
                 origin_ref=kwargs.get("origin_ref"),
-                model=None, pending_model=model)
+                model=None, pending_model=model, host=host)
         except Exception:
             # Never let the recovery path mask the real spawn error.
             log.exception("session.model_approval_hold_restore_failed id=%s",
@@ -1919,12 +1939,18 @@ class SessionOrchestrator:
         # look up the account (needed for copilot env injection during driver.start()).
         # The model field is patched below once the driver resolves the actual alias.
         from datetime import datetime
+        _now = datetime.utcnow()
+        # A session promoted from the queue keeps its queue-time created_at (and
+        # host stamp); a fresh spawn is born now, on this host (worker) / NULL.
+        _prior = self._records.get(session_id)
+        _host = getattr(_prior, "host", None) or local_host_stamp()
         _pre_record = SessionRecord(
             id=session_id, name=name, account=account, claude_session_id="",
             cols=cols, rows=rows, cwd=cwd, repo=repo, branch=branch_name,
             status="idle", name_is_auto=name_is_auto,
-            updated_at=datetime.utcnow(), usage_unverified=usage_unverified,
-            origin=origin, origin_ref=origin_ref, model=None,
+            created_at=getattr(_prior, "created_at", None) or _now,
+            updated_at=_now, usage_unverified=usage_unverified,
+            origin=origin, origin_ref=origin_ref, model=None, host=_host,
         )
         self._records[session_id] = _pre_record
 
@@ -2003,6 +2029,7 @@ class SessionOrchestrator:
                     origin_ref=origin_ref,
                     model=model,
                     initial_prompt=initial_prompt,
+                    host=_host,
                 )
                 db.add(row)
 
@@ -3571,7 +3598,47 @@ class SessionOrchestrator:
                 if proj is not None:
                     proj.onboarding_state = "map_proposed"
                     await db.commit()
+            from server.pm.classification import map_branch_name
+            self._spawn(
+                self._pm_onboard_chain_critic(slug, repo, map_branch_name(slug)),
+                name=f"pm-critic-chain-{slug}")
         return rec
+
+    async def _pm_onboard_spawn_critic(self, slug: str, repo: str,
+                                       branch: str):
+        """Independent completeness-critic session on the open map PR branch
+        (design §3.2). Internal-only — spawned by the chain after synthesis; never
+        reached by the request layer, so it stays private (no facade/RPC forward).
+        Propose-only: augments the SAME PR, never opens a new one."""
+        from server.pm.classification import build_coverage_critic_prompt
+        account = await self._backlog_healthy_account()
+        if account is None:
+            return None
+        url = f"https://github.com/{repo}.git"
+        cwd = await asyncio.to_thread(
+            gitrepos.ensure_clone, await self._effective_repo_root(), repo, url)
+        default_branch = await self._sdlc_default_branch(repo)
+        prompt = build_coverage_critic_prompt(
+            slug=slug, repo=repo, default_branch=default_branch, branch=branch,
+            open_count=0, closed_count=0)
+        origin_ref = f"{slug}:feature-map-critic"
+        return await self._pm_onboard_ctx.spawn_session(
+            origin_ref=origin_ref, dedupe_key=origin_ref, repo=repo, cwd=cwd,
+            account=account, name=f"pm map-critic {slug}", initial_prompt=prompt,
+            detail={"slug": slug, "kind": "feature-map-critic", "branch": branch})
+
+    async def _pm_onboard_chain_critic(self, slug: str, repo: str, branch: str, *,
+                                       attempts: int = 30, delay: float = 30.0):
+        """Wait (bounded) for the map-synthesis PR on *branch* to appear, then spawn
+        ONE completeness-critic session against it (design §3.2). No webhook: polls
+        the PR poller's cache. Best-effort — a timeout just skips the critic."""
+        for _ in range(attempts):
+            if self.pr_for(repo, branch) is not None:
+                return await self._pm_onboard_spawn_critic(slug, repo, branch)
+            await asyncio.sleep(delay)
+        log.warning("pm_onboard.chain_critic: map PR for %s (%s) never appeared — "
+                    "skipping critic", slug, branch)
+        return None
 
     async def pm_classify_run(
             self, slug: str, *,
@@ -5734,6 +5801,9 @@ class SessionOrchestrator:
             origin=getattr(row, "origin", None),
             origin_ref=getattr(row, "origin_ref", None),
             assisted_by=getattr(row, "assisted_by", None),
+            # Initial value only: a record just rebuilt from its row has no driver.
+            # From here on the flag is DERIVED on every read (_sync_detached), never
+            # hand-maintained — see that method for the drift this used to cause.
             detached=True,
             status=row.status,
             name_is_auto=row.name_is_auto,
@@ -5953,13 +6023,31 @@ class SessionOrchestrator:
         except Exception:
             log.warning("rearm-on-attach failed session=%s", session_id, exc_info=True)
 
+    def _sync_detached(self, rec: SessionRecord) -> SessionRecord:
+        """``detached`` is DERIVED from driver presence at read time — never stored.
+
+        It used to be a hand-maintained shadow of ``_drivers`` membership: set True
+        when a record was rebuilt from its DB row at boot, cleared at exactly one
+        line of ``ensure_driver`` — after the driver was already registered and after
+        an awaited SDK ``set_model`` that can raise — and never cleared by the
+        reassign install path at all. Once wrong it stayed wrong: ``ensure_driver``'s
+        fast path returns an existing driver without touching the flag, and the edge
+        then took the read-only "detached" attach forever (no pending-question
+        re-emit, no live status) for a session that was live and blocked on
+        AskUserQuestion — the frozen "Answer needed" failure mode (2026-09-02).
+        Deriving it here makes it exactly the condition ``ensure_driver`` branches on."""
+        rec.detached = rec.id not in self._drivers
+        return rec
+
     def list_sessions(self) -> list[SessionRecord]:
-        """Return all in-memory SessionRecords."""
-        return list(self._records.values())
+        """Return all in-memory SessionRecords (``detached`` synced from ``_drivers``)."""
+        return [self._sync_detached(r) for r in self._records.values()]
 
     def get_session(self, session_id: str) -> SessionRecord | None:
-        """Return the in-memory SessionRecord for session_id, or None."""
-        return self._records.get(session_id)
+        """Return the in-memory SessionRecord for session_id, or None
+        (``detached`` synced from ``_drivers``)."""
+        rec = self._records.get(session_id)
+        return None if rec is None else self._sync_detached(rec)
 
     async def _refresh_live_branches(self) -> None:
         """Re-read each repo-backed session's branch from its live worktree HEAD.
@@ -6978,8 +7066,15 @@ class SessionOrchestrator:
             # detach → attach lost it to the account default). Placed after the
             # final driver assignment so the fresh-start fallback gets it too.
             if rec.model is not None:
-                await driver.set_model(rec.model)
-            rec.detached = False
+                try:
+                    await driver.set_model(rec.model)
+                except Exception:
+                    # The driver is live and registered; a failed model re-apply must
+                    # not become a failed resume — the caller would treat the session
+                    # as un-resumed (and log nothing) while its process runs on. It
+                    # continues on the launch model; the user can re-pick.
+                    log.warning("session.resume id=%s set_model(%r) failed — continuing "
+                                "on the launch model", session_id, rec.model, exc_info=True)
             # INVARIANT: a session holding a live driver is not capacity-exempt.
             # `complete` is exempt (see CAPACITY_EXEMPT_STATUSES) precisely because
             # its process was released; resuming it makes that false again. Without
@@ -7232,12 +7327,14 @@ class SessionOrchestrator:
         # The transcript mtime is the adopted session's real last-response time — seed the
         # "active … ago" clock from it (naive UTC to match the DB columns) instead of "now".
         adopted_last_turn = cand.last_activity.replace(tzinfo=None) if cand.last_activity else None
+        adopt_host = local_host_stamp()
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name=cand.name, account_name=cand.account,
                 claude_session_id=claude_session_id, status="idle", pid=None,
                 cwd=cand.cwd, repo=None, permission_mode=permission_mode,
                 name_is_auto=True, adopted_in_place=True, last_turn_at=adopted_last_turn,
+                host=adopt_host,
             ))
             await record_audit(
                 db, "session.adopt", identity,
@@ -7246,13 +7343,15 @@ class SessionOrchestrator:
             )
 
         from datetime import datetime
+        adopt_now = datetime.utcnow()
         rec = SessionRecord(
             id=session_id, name=cand.name, account=cand.account,
             claude_session_id=claude_session_id, cols=80, rows=24,
             cwd=cand.cwd, repo=None, status="idle", adopted_in_place=True,
             permission_mode=permission_mode,
-            updated_at=datetime.utcnow(),  # row-write time
+            created_at=adopt_now, updated_at=adopt_now,  # row-write time
             last_turn_at=adopted_last_turn,  # real last-response time from the transcript
+            host=adopt_host,
         )
         self._records[session_id] = rec
         log.info("session.adopt id=%s sid=%s resumed=%s killed=%s",
@@ -9063,24 +9162,31 @@ class SessionOrchestrator:
         return val is not False  # NULL/True → enabled; only an explicit False disables
 
     async def purge_oldest_archived(self, count: int) -> list[str]:
-        """Permanently delete the ``count`` oldest archived sessions (oldest first by
-        ``archived_at``). Returns the IDs actually deleted.
+        """Permanently delete the ``count`` oldest archived sessions. Returns the IDs
+        actually deleted.
 
         Selection is null-safe — legacy rows with no ``archived_at`` fall back to
         ``created_at`` so they still sort as oldest. Best-effort: a failure on one
         session is logged and skipped, never aborting the rest. ``count`` <= 0 no-ops.
+
+        Ordering: automation-origin sessions (``origin IS NOT NULL``) are purged first
+        so that human-launched sessions survive as long as any automation archive
+        exists to fill the cap (#921).  Within each origin tier, oldest first.
         """
         if count <= 0:
             return []
+        from sqlalchemy import case as sa_case
         from sqlalchemy import func as sa_func
         from sqlalchemy import select as sa_select
 
         async with db_session() as db:
+            # 0 = automation (origin set), 1 = human (origin NULL) → automation first
+            origin_priority = sa_case((DbSession.origin.is_(None), 1), else_=0)
             order_key = sa_func.coalesce(DbSession.archived_at, DbSession.created_at)
             stmt = (
                 sa_select(DbSession.id)
                 .where(DbSession.status == "archived")
-                .order_by(order_key.asc())
+                .order_by(origin_priority.asc(), order_key.asc())
                 .limit(count)
             )
             # Skip sessions that have already exhausted their delete strikes, so one
@@ -9157,6 +9263,22 @@ class SessionOrchestrator:
             except Exception:
                 log.exception("archive_limit: periodic sweep failed")
 
+    async def _fetch_archived_cwds(self) -> frozenset[str]:
+        """Return absolute cwd paths of all archived sessions from the DB (#921).
+
+        Archived sessions are popped from ``_records`` on archive, so the janitor's
+        in-memory live_cwds set would not otherwise include them — leaving their
+        stay-in-place worktrees unprotected from the 24 h sweep.
+        """
+        from sqlalchemy import select as sa_select
+        async with db_session() as db:
+            rows = (await db.execute(
+                sa_select(DbSession.cwd)
+                .where(DbSession.status == "archived")
+                .where(DbSession.cwd.is_not(None))
+            )).scalars().all()
+        return frozenset(os.path.abspath(r) for r in rows if r)
+
     async def _worktree_janitor_loop(self, interval: float) -> None:
         """Fires immediately on startup then every ``interval`` seconds (default 24 h).
 
@@ -9167,13 +9289,20 @@ class SessionOrchestrator:
         while True:
             if not self._shutting_down:
                 try:
-                    await asyncio.to_thread(self._janitor_sweep_once)
+                    archived_cwds = await self._fetch_archived_cwds()
+                    await asyncio.to_thread(self._janitor_sweep_once, archived_cwds)
                 except Exception:
                     log.exception("worktree-janitor: sweep failed")
             await asyncio.sleep(interval)
 
-    def _janitor_sweep_once(self) -> None:
-        """Synchronous sweep — called inside ``asyncio.to_thread``."""
+    def _janitor_sweep_once(self, archived_cwds: "frozenset[str] | None" = None) -> None:
+        """Synchronous sweep — called inside ``asyncio.to_thread``.
+
+        ``archived_cwds`` carries the absolute cwd paths of all archived sessions
+        fetched from the DB before entering the thread, so their stay-in-place
+        worktrees are protected even though archived sessions are absent from
+        ``_records`` (#921).
+        """
         from ccswitch.worktrees_janitor import sweep_orphaned_worktrees
 
         live_cwds: frozenset[str] = frozenset(
@@ -9184,7 +9313,7 @@ class SessionOrchestrator:
             os.path.abspath(wt.path)
             for wt in self._worktrees.values()
             if wt.path
-        )
+        ) | (archived_cwds or frozenset())
         counts = sweep_orphaned_worktrees(self._repo_root, live_cwds)
         log.info(
             "worktree-janitor: scanned=%d removed=%d kept_live=%d "
@@ -9717,6 +9846,10 @@ class SessionOrchestrator:
             try:
                 driver = await self.ensure_driver(sid, SYSTEM_IDENTITY)
             except Exception:
+                # Never swallow silently: this was the only trace of WHY a session
+                # came back wrong after a deploy, and it went nowhere.
+                log.warning("deploy.restore: ensure_driver failed session=%s", sid,
+                            exc_info=True)
                 driver = None
             if driver is None:
                 failed.append(sid)
@@ -9763,6 +9896,8 @@ class SessionOrchestrator:
             try:
                 driver = await self.ensure_driver(sid, SYSTEM_IDENTITY)
             except Exception:
+                log.warning("deploy.resume.retry: ensure_driver failed session=%s "
+                            "attempt=%d", sid, attempts + 1, exc_info=True)
                 driver = None
             if driver is not None:
                 self._resume_recovery.pop(sid, None)

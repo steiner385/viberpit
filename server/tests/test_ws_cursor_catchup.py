@@ -55,6 +55,20 @@ class _RingDriver:
         self._n = n
         self._emitted = False
 
+    # Registered in orch._drivers (detached derives from that), so the live-attach
+    # extras consult it like any live driver: nothing pending, no catalog, no seeding.
+    def pending_questions(self) -> list:
+        return []
+
+    def pending_permissions(self) -> list:
+        return []
+
+    async def server_info(self):
+        return None
+
+    def seed_idle_suggestions(self, *a, **k) -> None:
+        return None
+
     def current_status(self) -> str:
         return "idle"
 
@@ -130,6 +144,9 @@ def live_ring_edge(remote_edge):
     orch, client = remote_edge
     orch._records["s1"] = _rec("s1")
     driver = _RingDriver(4)
+    # The real ensure_driver registers the driver it returns; `detached` is DERIVED from
+    # that registration (no driver → read-only replay attach), so the mock must mirror it.
+    orch._drivers["s1"] = driver
     with mock.patch.object(orch, "ensure_driver", new=mock.AsyncMock(return_value=driver)), \
          mock.patch.object(orch, "transcript_path", new=mock.AsyncMock(return_value=None)):
         with client.websocket_connect("/ws", headers=_IDENT) as wsA:
@@ -175,6 +192,9 @@ def test_same_socket_reattach_with_cursor_catches_up(remote_edge):
     orch, client = remote_edge
     orch._records["s1"] = _rec("s1")
     driver = _RingDriver(4)
+    # The real ensure_driver registers the driver it returns; `detached` is DERIVED from
+    # that registration (no driver → read-only replay attach), so the mock must mirror it.
+    orch._drivers["s1"] = driver
     with mock.patch.object(orch, "ensure_driver", new=mock.AsyncMock(return_value=driver)), \
          mock.patch.object(orch, "transcript_path", new=mock.AsyncMock(return_value=None)):
         with client.websocket_connect("/ws", headers=_IDENT) as ws:
@@ -601,8 +621,10 @@ def test_cross_epoch_cursor_after_daemon_restart_forces_full_replay(tmp_path):
             with TestClient(app, raise_server_exceptions=False) as client:
                 sessions = client.app.state.sessions
                 # ---- Epoch E1: first attach establishes a cursor (srcSeq 0..3). ----
+                driver_a = _FiniteRingDriver(4)
+                orch_a._drivers["s1"] = driver_a   # mirrors the real ensure_driver (see live_ring_edge)
                 with mock.patch.object(orch_a, "ensure_driver",
-                                       new=mock.AsyncMock(return_value=_FiniteRingDriver(4))), \
+                                       new=mock.AsyncMock(return_value=driver_a)), \
                      mock.patch.object(orch_a, "transcript_path",
                                        new=mock.AsyncMock(return_value=None)):
                     with client.websocket_connect("/ws", headers=_IDENT) as wsA:
@@ -643,6 +665,7 @@ def test_cross_epoch_cursor_after_daemon_restart_forces_full_replay(tmp_path):
                                  "usage": {"input_tokens": 1}}},
                 ]))
                 driver_b = _RingDriver(4)  # blocking: publishes seq 0..3 then holds the stream
+                orch_b._drivers["s1"] = driver_b   # mirrors the real ensure_driver (see live_ring_edge)
                 with mock.patch.object(orch_b, "ensure_driver",
                                        new=mock.AsyncMock(return_value=driver_b)), \
                      mock.patch.object(orch_b, "transcript_path",

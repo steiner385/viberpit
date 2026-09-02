@@ -136,6 +136,16 @@ async def _lifespan(app: FastAPI):
     # ids and credential redaction. Idempotent; installs the redacting filter too.
     configure_logging()
 
+    # Repo/branch chooser + clone auth via the pr-dashy App (issues #887, #912). The
+    # edge process runs gitrepos.list_accessible_repos / list_remote_branches for the
+    # New Session chooser, so it MUST register these seams too — serve.py registers them
+    # for the daemon, but the daemon never serves /api/github/*. Before this the edge had
+    # no provider, so _app_token() returned None and the chooser authenticated as the
+    # ambient gh user, blanking (502) the moment that stored credential expired. Runs in
+    # both remote and in-process mode; no-ops to ambient/viewer when no App is configured.
+    from server.github import app_auth as _app_auth
+    _app_auth.register_git_providers()
+
     # An app not built by create_app (e.g. tests constructing FastAPI(lifespan=_lifespan)
     # directly) never sets app.state.remote_mode — default it to in-process. The local
     # persists across the yield, so the shutdown branch reads it too.
@@ -577,6 +587,16 @@ def create_app(
         app.state.daemon_client_ssl = None
         app.state.orchestrator = orchestrator
         app.state.sessions = InProcessOrchestratorAdapter(orchestrator)
+
+    # Repo/branch chooser + clone auth via the pr-dashy App (issues #887, #912). The
+    # edge process runs gitrepos.list_accessible_repos / list_remote_branches for the
+    # New Session chooser, so it MUST register these seams too — serve.py registers them
+    # for the daemon, but the daemon never serves /api/github/*. Before this the edge had
+    # no provider, so _app_token() returned None and the chooser authenticated as the
+    # ambient gh user, blanking (502) the moment that stored credential expired. Runs in
+    # both remote and in-process mode; no-ops to ambient/viewer when no App is configured.
+    from server.github import app_auth as _app_auth
+    _app_auth.register_git_providers()
 
     # X11 manager — None when feature is disabled or preflight fails (fail-loud warning)
     from server.config import get_settings as _gs

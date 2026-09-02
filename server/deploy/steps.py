@@ -14,10 +14,34 @@ log = logging.getLogger(__name__)
 Run = Callable[..., subprocess.CompletedProcess]
 _OK_CONCLUSIONS = {"success", "neutral", "skipped"}
 
+# The deploy controller only ever targets its own repo, whose owner gh resolves from
+# the git remote when it expands the ``{owner}/{repo}`` path template. Naming it here
+# lets the gate mint an App installation token for that owner (issue #912/#913) instead
+# of using whatever ambient credential the environment happens to hold.
+_DEPLOY_OWNER = "steiner385"
+
+
+def _gh_api_via_app(args: list[str], *, input: str | None = None) -> str:
+    """Run ``gh <args>`` as the deploy repo's App installation, returning stdout.
+
+    Issue #913: the previous ``subprocess.run(["gh", ...])`` used the raw process
+    environment, so a stale ambient ``GITHUB_TOKEN`` was honoured and the gate broke
+    the moment it expired. ``gitrepos._run_gh`` strips ambient tokens, pins the gh
+    config dir, and sets the App token when one is available (ambient/pinned fallback
+    otherwise). Non-zero still raises ``CalledProcessError`` — the contract
+    ``_gh_err_reason`` and the ``ci_verdict``/``publish_deployment`` callers rely on
+    (they read ``.stderr`` and treat any raise as unavailable)."""
+    from ccswitch import gitrepos
+
+    r = gitrepos._run_gh(args, token=gitrepos.app_token_for_owner(_DEPLOY_OWNER), input=input)
+    if r.returncode != 0:
+        raise subprocess.CalledProcessError(
+            r.returncode, r.args, output=r.stdout, stderr=r.stderr)
+    return r.stdout
+
 
 def _default_gh_api(path: str) -> str:
-    r = subprocess.run(["gh", "api", path], check=True, capture_output=True, text=True)
-    return r.stdout
+    return _gh_api_via_app(["api", path])
 
 
 def _required_contexts(gh_api: Callable[[str], str], branch: str = "master") -> set[str]:
@@ -651,9 +675,7 @@ def rollback_to(repo: str, sha: str, *, daemon_changed: bool, daemon_enabled: bo
 
 
 def _default_gh_api_json(path: str, body: str) -> str:
-    r = subprocess.run(["gh", "api", "-X", "POST", path, "--input", "-"],
-                       input=body, check=True, capture_output=True, text=True)
-    return r.stdout
+    return _gh_api_via_app(["api", "-X", "POST", path, "--input", "-"], input=body)
 
 
 def _gh_err_reason(e: Exception) -> str:

@@ -172,6 +172,20 @@ class _FakeEvent:
 
 
 class _FakeDriver:
+    # Registered in orch._drivers (detached derives from that), so the live-attach
+    # extras consult it like any live driver: nothing pending, no catalog, no seeding.
+    def pending_questions(self):
+        return []
+
+    def pending_permissions(self):
+        return []
+
+    async def server_info(self):
+        return None
+
+    def seed_idle_suggestions(self, *a, **k):
+        return None
+
     def current_status(self):
         return "idle"
 
@@ -206,8 +220,12 @@ class _FakeDriver:
 def test_ws_attach_streams_event_from_daemon(remote_edge):
     orch, client = remote_edge
     orch._records["s1"] = _rec("s1")
+    driver = _FakeDriver()
+    # The real ensure_driver registers the driver it returns; `detached` is DERIVED from
+    # that registration (no driver → read-only replay attach), so the mock must mirror it.
+    orch._drivers["s1"] = driver
     with mock.patch.object(orch, "ensure_driver",
-                           new=mock.AsyncMock(return_value=_FakeDriver())), \
+                           new=mock.AsyncMock(return_value=driver)), \
          mock.patch.object(orch, "transcript_path", new=mock.AsyncMock(return_value=None)):
         with client.websocket_connect("/ws", headers=_IDENT) as ws:
             ws.send_json({"type": "attach", "sessionId": "s1"})

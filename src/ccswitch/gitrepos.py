@@ -134,6 +134,70 @@ def _app_token(owner: str) -> str | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# App-installation *repo enumeration* provider (issue #912)
+# ---------------------------------------------------------------------------
+#
+# The repo chooser must list the repos the pr-dashy GitHub App can reach, NOT the
+# ambient gh user's ``viewer.repositories`` (which needs a user OAuth token — an
+# App installation token has no ``viewer``, and when the machine's stored gh
+# credential expires the query silently drops to anonymous and the chooser blanks).
+#
+# ``set_token_provider`` cannot serve this: it takes an owner as *input*, so it can
+# mint a token for a known owner but cannot *discover* which owners/repos the App
+# can access. Repo enumeration needs that discovery up front, so it gets its own
+# seam that returns the full repo list (via ``/installation/repositories``). Like
+# the token provider, the daemon (and edge) register it at startup; unset in CLI
+# usage, where the viewer path still applies.
+
+_installations_provider: "Callable[[], list[dict] | None] | None" = None
+
+
+def set_installations_provider(fn: "Callable[[], list[dict] | None] | None") -> None:
+    """Register (or clear) the provider that lists every repo the pr-dashy App can reach.
+
+    Distinct from :func:`set_token_provider`: that seam takes an owner as INPUT and so
+    cannot discover owners, which repo enumeration needs up front. The provider returns
+    raw GitHub REST repo objects (from ``/installation/repositories``), ``None`` when no
+    App is configured (CLI → viewer fallback), or RAISES :class:`GhError` when an App is
+    configured but broken — so the chooser fails loudly rather than degrading to the
+    ambient user credential it was migrated off (issue #912)."""
+    global _installations_provider
+    _installations_provider = fn
+
+
+def _installation_repos() -> "list[dict] | None":
+    """The registered installations provider's repo list, or None for viewer fallback.
+
+    Unlike :func:`_app_token` this deliberately does NOT swallow provider errors: a
+    configured-but-broken App must surface as :class:`GhError` (fail loud) instead of
+    silently falling through to the ambient user credential (issue #912)."""
+    fn = _installations_provider
+    if fn is None:
+        return None
+    return fn()
+
+
+def app_token_for_owner(owner: str) -> str | None:
+    """Installation token for ``owner``, or None to use ambient auth.
+
+    Public wrapper over :func:`_app_token` for consumers outside this module
+    (``server/`` call sites migrating off ambient ``gh`` credentials)."""
+    return _app_token(owner)
+
+
+def app_token_for_repo(name_with_owner: str) -> str | None:
+    """Installation token for the owner of ``owner/name``, or None.
+
+    Splits on the first ``/`` and returns ``None`` for empty or malformed
+    input rather than raising — callers are in polling loops where an
+    exception would take down the whole tick."""
+    owner, _sep, rest = (name_with_owner or "").partition("/")
+    if not owner or not rest:
+        return None
+    return _app_token(owner)
+
+
 def is_auth_error(stderr: str | None) -> bool:
     """True if ``stderr`` looks like a git/gh *authentication* failure.
 
@@ -277,7 +341,11 @@ def _gh_env() -> dict[str, str]:
 
 
 def _run_gh(
-    args: list[str], token: str | None = None, *, input: str | None = None
+    args: list[str],
+    token: str | None = None,
+    *,
+    input: str | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a ``gh`` command. Ambient ``GITHUB_TOKEN``/``GH_TOKEN`` are always stripped
     and the config dir is pinned (see :func:`_gh_env`); when ``token`` is given (a
@@ -286,18 +354,20 @@ def _run_gh(
     ``input`` is written to the child's stdin. Use it (with ``gh api ... -F
     field=@-``) to pass a large value that would otherwise overflow the per-argument
     kernel limit (MAX_ARG_STRLEN, 128 KiB) and raise ``OSError: Argument list too
-    long`` — e.g. the batched PR-status GraphQL query."""
+    long`` — e.g. the batched PR-status GraphQL query.
+
+    ``timeout`` bounds the child (seconds); on expiry ``subprocess`` raises
+    ``TimeoutExpired``, which callers that want a soft failure must catch themselves."""
     env = _gh_env()
     if token:
         env["GH_TOKEN"] = token
+    # Only pass ``timeout`` when set, so the common (timeout-less) call keeps its exact
+    # kwarg shape — the many tests that mock ``subprocess.run`` rely on that signature.
+    run_kwargs: dict = {"capture_output": True, "text": True, "env": env, "input": input}
+    if timeout is not None:
+        run_kwargs["timeout"] = timeout
     try:
-        return subprocess.run(
-            ["gh", *args],
-            capture_output=True,
-            text=True,
-            env=env,
-            input=input,
-        )
+        return subprocess.run(["gh", *args], **run_kwargs)
     except FileNotFoundError as exc:  # gh not installed
         raise GhError("the `gh` CLI is not installed or not on PATH") from exc
 
@@ -646,6 +716,31 @@ def _repo_node_to_dict(node: dict | None) -> dict | None:
     }
 
 
+def _installation_repo_to_dict(node: dict | None) -> dict | None:
+    """Map a GitHub REST repo object (``/installation/repositories``) to the chooser dict.
+
+    The App path returns REST objects, whose field names differ from the GraphQL nodes
+    :func:`_repo_node_to_dict` maps (``full_name``/``private``/``html_url``/``pushed_at``
+    vs ``nameWithOwner``/``isPrivate``/``url``/``pushedAt``). Both mappers live here so
+    the chooser wire shape has a single definition; archived repos are dropped by both.
+    """
+    if not node or node.get("archived"):
+        return None
+    name_with_owner = node.get("full_name")
+    if not name_with_owner:
+        return None
+    return {
+        "nameWithOwner": name_with_owner,
+        "name": node.get("name"),
+        "owner": (node.get("owner") or {}).get("login"),
+        "isPrivate": bool(node.get("private")),
+        "url": node.get("html_url"),
+        "defaultBranch": node.get("default_branch"),
+        "pushedAt": node.get("pushed_at"),
+    }
+
+
+
 def _paginate_graphql(query: str, extra_args: list[str], path: list[str]):
     """Yield ``nodes`` from a paginated GraphQL connection at ``data.<path>``.
 
@@ -695,30 +790,43 @@ def _list_viewer_orgs() -> list[str]:
 
 
 def list_accessible_repos() -> list[dict]:
-    """List repos the user's gh creds can access, most-recently-pushed first.
+    """List repos ccswitch can clone/branch/PR against, most-recently-pushed first.
 
-    Sources are unioned (deduped by ``nameWithOwner``):
+    Two paths, selected by whether an installations provider is registered:
 
-    1. ``viewer.repositories`` — repos the user owns or has an *explicit* tie to
-       (added collaborator / team member).
-    2. ``organization.repositories`` for every org in ``viewer.organizations`` —
-       the ONLY way to surface repos the user can reach solely via org
-       base-permission or implicit org-owner admin.  ``viewer.repositories``
-       omits those entirely (no affiliation matches) even though a direct
-       ``repository(owner,name)`` lookup returns them, so an org-owned repo the
-       user never got an explicit grant on would otherwise be invisible.
+    * **App path** (daemon/edge — issue #912): when
+      :func:`set_installations_provider` is registered, enumerate the repos the
+      pr-dashy GitHub App installation can reach (``/installation/repositories``).
+      This is the authoritative source in the hosted product — it authenticates as
+      the App, not the machine's ambient gh user (whose stored credential expires
+      and silently drops to anonymous, blanking the chooser). A configured-but-broken
+      App raises :class:`GhError` (fail loud), never degrading to the ambient user.
 
-    Archived repos are excluded -- they are read-only on GitHub and should not
-    be offered in the repository chooser.  Org enumeration is best-effort per
-    org so one inaccessible org can't blank the whole chooser.
+    * **Viewer path** (standalone CLI): no daemon registered a provider, so fall
+      back to the user's own ``gh`` credentials (``viewer.repositories`` unioned
+      with org repos). Archived repos are excluded.
 
     Returns dicts with keys:
     ``nameWithOwner, name, owner, isPrivate, url, defaultBranch, pushedAt``.
 
     Raises:
-        GhError: if the primary ``viewer.repositories`` query fails or the
+        GhError: on the App path, if App repo enumeration fails; on the viewer
+            path, if the primary ``viewer.repositories`` query fails or the
             response can't be parsed.
     """
+    installs = _installation_repos()
+    if installs is not None:
+        # App path (issue #912): the installation-repos provider already
+        # authenticated as the App and returned raw REST repo objects. Map, dedupe
+        # by nameWithOwner, and re-sort PUSHED_AT-desc to honour the contract.
+        app_by_name: dict[str, dict] = {}
+        for node in installs:
+            repo = _installation_repo_to_dict(node)
+            if repo:
+                app_by_name.setdefault(repo["nameWithOwner"], repo)
+        return sorted(
+            app_by_name.values(), key=lambda r: r.get("pushedAt") or "", reverse=True)
+
     by_name: dict[str, dict] = {}
 
     for node in _paginate_graphql(_REPOS_QUERY, [], ["viewer", "repositories"]):
@@ -753,8 +861,15 @@ def list_remote_branches(name_with_owner: str) -> dict:
     if not owner or not name:
         raise ValueError(f"expected '<owner>/<name>', got {name_with_owner!r}")
 
+    # Authenticate as the owner's App installation, not the ambient gh user — same
+    # gap as repo enumeration (issue #912): a private repo's branches 404 for an
+    # anonymous caller once the stored gh credential expires. None (CLI, or no
+    # installation for this owner) falls back to the ambient/pinned gh identity.
+    token = _app_token(owner)
+
     branches_r = _run_gh(
-        ["api", f"repos/{owner}/{name}/branches", "--paginate", "-q", ".[].name"]
+        ["api", f"repos/{owner}/{name}/branches", "--paginate", "-q", ".[].name"],
+        token=token,
     )
     if branches_r.returncode != 0:
         raise GhError(
@@ -764,7 +879,7 @@ def list_remote_branches(name_with_owner: str) -> dict:
     branches = [b.strip() for b in branches_r.stdout.splitlines() if b.strip()]
 
     default: str | None = None
-    default_r = _run_gh(["api", f"repos/{owner}/{name}", "-q", ".default_branch"])
+    default_r = _run_gh(["api", f"repos/{owner}/{name}", "-q", ".default_branch"], token=token)
     if default_r.returncode == 0:
         default = default_r.stdout.strip() or None
 
