@@ -140,7 +140,7 @@ def test_orchestrator_record_from_row_preserves_pending_model_requested_by():
 
 def test_migration_chain_has_exactly_one_head():
     """Parse all migration files and verify exactly one head (one revision that no other
-    revision names as its down_revision). Assert the head is 0015_pending_model_reason."""
+    revision names as its down_revision). Assert the head is 0016_host_heartbeats."""
     from pathlib import Path
     import re
 
@@ -166,4 +166,4 @@ def test_migration_chain_has_exactly_one_head():
     heads = [rev for rev in revisions.keys() if rev not in all_down_revisions]
 
     assert len(heads) == 1, f"Expected exactly one migration head, found {len(heads)}: {heads}"
-    assert heads[0] == "0015_pending_model_reason", f"Expected head to be 0015_pending_model_reason, got {heads[0]}"
+    assert heads[0] == "0016_host_heartbeats", f"Expected head to be 0016_host_heartbeats, got {heads[0]}"
