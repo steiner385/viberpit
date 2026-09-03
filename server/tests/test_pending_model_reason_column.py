@@ -138,9 +138,19 @@ def test_orchestrator_record_from_row_preserves_pending_model_requested_by():
     )
 
 
-def test_migration_chain_has_exactly_one_head():
-    """Parse all migration files and verify exactly one head (one revision that no other
-    revision names as its down_revision). Assert the head is 0016_host_heartbeats."""
+def test_migration_chain_is_linear_with_exactly_one_head():
+    """Parse all migration files and verify the revision graph is ONE unbroken line.
+
+    Asserts three things, none of which name today's newest revision — pinning the head's
+    NAME made this test fail on every new migration (it did, on 0016_deploy_state) without
+    catching a single real defect:
+
+      * exactly one head (no fork: two revisions sharing a down_revision);
+      * walking down from that head reaches every revision exactly once (no orphan whose
+        down_revision points at a deleted/renamed file, and no cycle);
+      * this file's own revision, 0015_pending_model_reason, is on that chain — the
+        migration under test is actually wired in, not stranded.
+    """
     from pathlib import Path
     import re
 
@@ -152,18 +162,42 @@ def test_migration_chain_has_exactly_one_head():
             continue
         content = migration_file.read_text()
 
-        # Extract revision and down_revision
-        rev_match = re.search(r'revision = "([^"]+)"', content)
-        down_rev_match = re.search(r'down_revision = "([^"]+)"', content)
+        # Anchored, and tolerant of BOTH declaration styles in this tree —
+        # `revision = "x"` and alembic's generated `revision: str = "x"` /
+        # `down_revision: Union[str, None] = "x" | None`. An unanchored `revision = "`
+        # search also matches inside `down_revision = "`, and a bare-form-only pattern
+        # silently skipped ten of the sixteen migrations, so the "one head" claim was
+        # only ever checked against a subset.
+        rev_match = re.search(r'^revision(?::[^=]+?)?\s*=\s*"([^"]+)"', content, re.MULTILINE)
+        down_rev_match = re.search(
+            r'^down_revision(?::[^=]+?)?\s*=\s*(?:"([^"]+)"|None)', content, re.MULTILINE)
 
         if rev_match:
             rev = rev_match.group(1)
             down_rev = down_rev_match.group(1) if down_rev_match else None
             revisions[rev] = down_rev
 
+    assert revisions, "no migration revisions parsed"
+
     # Find heads: revisions that no other revision names as its down_revision
     all_down_revisions = set(v for v in revisions.values() if v is not None)
     heads = [rev for rev in revisions.keys() if rev not in all_down_revisions]
 
     assert len(heads) == 1, f"Expected exactly one migration head, found {len(heads)}: {heads}"
-    assert heads[0] == "0016_host_heartbeats", f"Expected head to be 0016_host_heartbeats, got {heads[0]}"
+
+    # Walk head -> base. A linear chain visits every revision exactly once.
+    chain, seen, cur = [], set(), heads[0]
+    while cur is not None:
+        assert cur in revisions, (
+            f"revision {cur!r} is named as a down_revision but no migration defines it")
+        assert cur not in seen, f"cycle in the migration chain at {cur!r}"
+        seen.add(cur)
+        chain.append(cur)
+        cur = revisions[cur]
+
+    orphans = sorted(set(revisions) - seen)
+    assert not orphans, (
+        f"migration(s) {orphans} are not reachable from the head {heads[0]!r} — "
+        "chain down_revision off the newest revision")
+    assert "0015_pending_model_reason" in chain, (
+        "the migration this test file covers is not on the chain")

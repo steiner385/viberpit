@@ -130,6 +130,9 @@ class DeployController:
         local = ""
         daemon_changed = False
         controller_changed = False
+        # The new code is live on THIS host: set once the edge has passed the health gate
+        # and the functional probes, i.e. once a rollback is no longer on the table.
+        edge_landed = False
         try:
             # --- preflight ---
             # Every synchronous step below runs via asyncio.to_thread so the controller's
@@ -269,6 +272,10 @@ class DeployController:
             # probe the functional endpoints too before calling this a success.
             base = self.health_url.rsplit("/healthz", 1)[0] or self.health_url
             await asyncio.to_thread(self._steps.require_endpoints_healthy, base)
+            # Past this line the new code IS what this process will run after a restart:
+            # nothing below rolls the checkout back. The controller's self-refresh keys off
+            # this, not off status.error — a failed RUNNER sets error while the edge stands.
+            edge_landed = True
             log_event(log, logging.INFO, "deploy.edge.cutover", deploy_id=self._deploy_id)
             # The fleet's authoritative version moved: record it now (spec §1) so the skew
             # gate measures every runner — including one that failed above — against it.
@@ -352,9 +359,14 @@ class DeployController:
             # because the +10s timer used to be armed in the RESTART phase, where
             # resume/publish routinely outlast it: the process was replaced mid-deploy
             # and a completed upgrade was reported as "did not complete" (#865). A
-            # failed deploy schedules nothing: the rollback already restored the code
-            # this process is running.
-            if controller_changed and self.status.error is None:
+            # rolled-back (or preflight-failed) deploy schedules nothing: the rollback
+            # already restored the code this process is running.
+            #
+            # The gate is `edge_landed`, NOT `error is None`. Once the fan-out could fail
+            # the deploy on a lagging RUNNER while the edge kept the new code, keying off
+            # `error` left the controller executing stale deploy code with the new code on
+            # disk — precisely the #719/#865 hazard this restart exists to prevent.
+            if controller_changed and edge_landed:
                 scheduled = await asyncio.to_thread(self._steps.schedule_controller_restart)
                 if scheduled:
                     log_event(log, logging.INFO, "deploy.controller.refresh_scheduled",

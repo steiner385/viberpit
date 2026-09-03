@@ -795,6 +795,23 @@ async def test_controller_refresh_scheduled_only_after_deploy_reports():
 
 
 @pytest.mark.asyncio
+async def test_controller_refresh_still_scheduled_when_a_runner_failed():
+    """A failed RUNNER sets status.error but the edge keeps the new code (decision 1a), so
+    the controller IS now running against stale deploy code on disk. Gating the self-restart
+    on `error is None` skipped the refresh here and left exactly the #719/#865 hazard: the
+    fix on disk, the old code in the process. The gate is whether the EDGE landed."""
+    g = FakeGit("old0000000", "new1111111", ["server/sessions/orchestrator.py"])
+    s, calls = make_steps(changed=["server/sessions/orchestrator.py"])
+    s.deploy_code_changed = lambda changed: True
+    r, rc = make_runners(outcome="failed")
+    c = make_controller(g, s, runners=(r, rc))
+    st = await c.deploy_once()
+    assert st.error and "rocky" in st.error, "the deploy still reports the failed runner"
+    assert calls.rolled_back is False, "the edge landed and stays"
+    assert calls.controller_refresh_scheduled is True
+
+
+@pytest.mark.asyncio
 async def test_no_controller_refresh_after_failed_deploy():
     """A failed deploy rolls the checkout back to the running code, so there is no new
     deploy code to pick up — restarting the controller would only wipe live status."""
