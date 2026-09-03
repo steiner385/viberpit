@@ -64,9 +64,13 @@ Phases become `preflight, save, update, report, runners, restart, resume`. `save
 owns every daemon in the fleet, including dobby's local one.
 
 **Targets.** All `Host` rows with `enabled=true`. A row's most recent probe decides
-`online` (`healthy=true`); `healthy` null/false ⇒ status `offline`, skipped (§3 catches it
-later). Rows are read from the DB — the controller gains `server.db` access through the
-same `CCSWITCH_DB_URL` its env file already carries.
+whether it is reachable: `healthy=true`, or `healthy=false` with a *fenced* reason
+(`last_error` starting `version skew` / `protocol mismatch` — the host answered, it is just
+on the wrong code) ⇒ a deploy target (`runners.is_deployable`); `healthy` null (never
+probed) or false for any other reason (unreachable) ⇒ status `offline`, skipped (§3 catches
+it later). Amended at final review: treating fenced hosts as offline would have skipped a
+runner forever after its first failed deploy. Rows are read from the DB — the controller
+gains `server.db` access through the same `CCSWITCH_DB_URL` its env file already carries.
 
 **Per-runner lifecycle** (`server/deploy/runners.py`, one `RunnerDeploy` per host, run
 with a concurrency cap of **2**; decision 2a):
