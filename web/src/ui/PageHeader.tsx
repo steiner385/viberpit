@@ -1,6 +1,7 @@
 import * as React from 'react'
 import { cn } from '@/lib/utils'
 import { setBaseTitle, releaseBaseTitle } from '@/shell/documentTitle'
+import { useInteractive } from '@/shell/InteractionContext'
 
 export interface PageHeaderProps {
   title: string
@@ -15,6 +16,13 @@ export function PageHeader({ title, meta, actions, className }: PageHeaderProps)
   // stack. useState's initializer (not a ref) because this codebase's
   // react-hooks/refs rule rejects reading a ref during render.
   const [token] = React.useState(() => Symbol('page-header'))
+
+  // `actions` is the page's action cluster (New, Refresh, a menu). Kiosk is
+  // read-only, so it is not rendered at all rather than rendered disabled: a row
+  // of greyed-out buttons on a wall display is chrome that costs header width
+  // and invites a passer-by to poke at it. The title and `meta` stay — they are
+  // what the display is FOR.
+  const interactive = useInteractive()
 
   // Claim/update this instance's slot on every title change...
   React.useEffect(() => {
@@ -36,7 +44,7 @@ export function PageHeader({ title, meta, actions, className }: PageHeaderProps)
         <h1 className="text-lg font-semibold text-ink truncate">{title}</h1>
         {meta && <div className="text-sm text-ink-muted">{meta}</div>}
       </div>
-      {actions && <div className="flex items-center gap-2 shrink-0">{actions}</div>}
+      {interactive && actions && <div className="flex items-center gap-2 shrink-0">{actions}</div>}
     </header>
   )
 }

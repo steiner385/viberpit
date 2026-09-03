@@ -6,7 +6,7 @@ import * as React from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { DeployControllerProvider } from '@/lib/deployController'
-import { BannerStack } from '@/ui/BannerStack'
+import { BannerStack, type BannerStackItem } from '@/ui/BannerStack'
 import {
   useAccounts, useCloseSession, useConfig, usePermanentDeleteSession,
   useRenameSession, useSendPrompt, useSessions,
@@ -94,14 +94,17 @@ export interface RegionContext {
  * The matrix from umbrella §4.2, as data.
  *
  * Kiosk is `mode !== 'kiosk'` four times over rather than a `kioskRegions` set,
- * because the SHAPE of the rule is per region: the banners region stays and is
- * FILTERED by tone (Task 19, inside the stack), while the rail, list, dock and
- * drawer are absent outright. Collapsing those into one "kiosk hides these"
+ * because the SHAPE of the rule is per region: the banners region stays and its
+ * CONTENTS are filtered by tone (`bannersForMode`, applied where the shell hands
+ * the items to `BannerStack`), while the rail, list, dock and drawer are absent
+ * outright. Collapsing those into one "kiosk hides these"
  * list would lose that distinction the first time someone read it.
  */
 export const REGION_VISIBILITY: Record<RegionId, (c: RegionContext) => boolean> = {
-  // Kiosk FILTERS the stack to `tone === 'danger'` (Task 19); it does not hide
-  // the region, so a wall display can still shout that the daemon is down.
+  // Kiosk FILTERS the stack to `tone === 'danger'` (`bannersForMode` below); it
+  // does not hide the region, so a wall display can still shout that the daemon
+  // is down. With no danger banner live the region renders with zero children
+  // and `BannerStack`'s `[&:empty]:hidden` collapses it.
   'app.banners': () => true,
   'app.rail': (c) => c.mode !== 'kiosk',
   // Desktop is master-detail — the list stays beside an open item. Phone and
@@ -112,6 +115,39 @@ export const REGION_VISIBILITY: Record<RegionId, (c: RegionContext) => boolean> 
   'app.drawer': (c) => c.mode !== 'kiosk' && c.drawer !== null,
   'app.overlays': () => true,
 }
+
+/**
+ * The `D` cell of §4.2's matrix, as a function: kiosk keeps `app.banners`
+ * MOUNTED and narrows what goes in it to `tone === 'danger'`.
+ *
+ * A wall display has nobody in front of it, so an advisory ("a new version is
+ * available", "messages are held") is noise that occupies the top of a screen
+ * read from ten feet away, possibly for days. Only the two things a passer-by
+ * must act on — the daemon being down and every account being rate-limited,
+ * both `danger` in `useAppBanners` — earn that space.
+ *
+ * An item with no `tone` is documented as "treated as 'info'" by
+ * `BannerStackItem`, and `!== 'danger'` gives it exactly that treatment: a new
+ * banner declared without a tone is filtered OUT of kiosk rather than defaulting
+ * onto a wall display unreviewed.
+ *
+ * Exported so the filter can be asserted as a rule, the same way
+ * `REGION_VISIBILITY` is.
+ */
+export function bannersForMode(items: BannerStackItem[], mode: LayoutMode): BannerStackItem[] {
+  return mode === 'kiosk' ? items.filter((i) => i.tone === 'danger') : items
+}
+
+/**
+ * Kiosk's type scale, applied as an inline `--scale` on `<html>`.
+ *
+ * `index.css` defines `--scale: 1` on `:root` and every `--fs-*` step is
+ * `calc(<rem> * var(--scale))`, so overriding this ONE custom property enlarges
+ * the whole type scale coherently. Nothing else is needed, and nothing else
+ * should be added: a second kiosk-only size rule somewhere in the tree is how
+ * two type scales come to exist.
+ */
+export const KIOSK_SCALE = '1.25'
 
 export function AppShell() {
   // Read once at mount: a wall display changes its kiosk URL by reloading, and
@@ -154,6 +190,24 @@ function AppShellInner() {
 
   const workspace = useSessionsWorkspace(openDrawer)
 
+  // Kiosk enlarges the whole type scale by overriding `--scale` on `<html>`.
+  // It goes on the document element rather than on the shell's root `<div>`
+  // because overlays PORTAL out of that div into `#overlays` (a sibling of
+  // `#root`) — a dialog or sheet scoped to the shell subtree would keep desktop
+  // type while the page behind it grew. Removed on unmount so a test, or a
+  // future in-app exit from kiosk, does not leave the document permanently
+  // scaled.
+  React.useEffect(() => {
+    if (mode !== 'kiosk') return
+    const root = document.documentElement
+    root.style.setProperty('--scale', KIOSK_SCALE)
+    // A block body, not a concise one: `removeProperty` RETURNS the old value
+    // (a string), and an effect cleanup must return void.
+    return () => {
+      root.style.removeProperty('--scale')
+    }
+  }, [mode])
+
   // `?` opens the help drawer. Both old shells gated this on their Sessions tab
   // because neither could render a drawer anywhere else; `DrawerHost` is a
   // region now, so the key works app-wide — except in kiosk, which has no
@@ -180,7 +234,9 @@ function AppShellInner() {
 
   return (
     <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-canvas text-ink">
-      {shows('app.banners') && <BannerStack items={workspace.banners} className="shrink-0 px-2 pt-2" />}
+      {shows('app.banners') && (
+        <BannerStack items={bannersForMode(workspace.banners, mode)} className="shrink-0 px-2 pt-2" />
+      )}
       {shows('app.rail') && phone && <TopBar />}
 
       <div className="flex min-h-0 flex-1">

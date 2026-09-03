@@ -1,6 +1,7 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { axe, toHaveNoViolations } from 'jest-axe'
+import { InteractionProvider } from '@/shell/InteractionContext'
 import { Dialog } from './Dialog'
 import { Sheet } from './Sheet'
 
@@ -70,6 +71,80 @@ describe('Dialog', () => {
     render(<Dialog open onClose={() => {}} title="T"><button>x</button></Dialog>, { container: document.getElementById('root')! })
     expect(document.getElementById('overlays')!.querySelector('[role="dialog"]')).not.toBeNull()
     expect(document.getElementById('root')!.hasAttribute('inert')).toBe(true)
+  })
+})
+
+/**
+ * Kiosk refuses modals (Task 19).
+ *
+ * The default OUTSIDE a provider is `interactive: true` on purpose
+ * (`shell/InteractionContext.tsx`), which is why every case above — and every
+ * other dialog test in the suite — is unaffected by this. The first case here
+ * pins that default explicitly, so a future flip of it reddens this file rather
+ * than silently turning the whole suite read-only.
+ */
+describe('Dialog — read-only (kiosk) refusal', () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  afterEach(() => warn.mockClear())
+
+  it('still opens under interactive={true}, and outside any provider', () => {
+    const outside = render(<Dialog open onClose={() => {}} title="Rename session"><button>Save</button></Dialog>)
+    expect(screen.getByRole('dialog', { name: 'Rename session' })).toBeInTheDocument()
+    outside.unmount()
+
+    render(
+      <InteractionProvider interactive={true}>
+        <Dialog open onClose={() => {}} title="Rename session"><button>Save</button></Dialog>
+      </InteractionProvider>,
+    )
+    expect(screen.getByRole('dialog', { name: 'Rename session' })).toBeInTheDocument()
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it('renders no dialog node under interactive={false} and warns once with the title', () => {
+    const { rerender } = render(
+      <InteractionProvider interactive={false}>
+        <Dialog open onClose={() => {}} title="Rename session"><button>Save</button></Dialog>
+      </InteractionProvider>,
+    )
+    expect(screen.queryByRole('dialog')).toBeNull()
+    // Not merely unlabelled or hidden — the panel's own content is absent too.
+    expect(screen.queryByText('Save')).toBeNull()
+    expect(screen.queryByTestId('dialog-backdrop')).toBeNull()
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn.mock.calls[0][0]).toContain('Rename session')
+
+    // A re-render of a still-open refused dialog does not re-warn.
+    rerender(
+      <InteractionProvider interactive={false}>
+        <Dialog open onClose={() => {}} title="Rename session"><button>Save</button></Dialog>
+      </InteractionProvider>,
+    )
+    expect(warn).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not trap focus or inert #root when refused', () => {
+    document.body.innerHTML = '<div id="root"></div><div id="overlays"></div>'
+    render(
+      <InteractionProvider interactive={false}>
+        <Dialog open onClose={() => {}} aria-label="Confirm delete"><button>Delete</button></Dialog>
+      </InteractionProvider>,
+      { container: document.getElementById('root')! },
+    )
+    // The refusal must not leave the page behind it disabled — `inert` on
+    // `#root` with nothing on top is an app nobody can use.
+    expect(document.getElementById('root')!.hasAttribute('inert')).toBe(false)
+    expect(document.getElementById('overlays')!.querySelector('[role="dialog"]')).toBeNull()
+    expect(warn.mock.calls[0][0]).toContain('Confirm delete')
+  })
+
+  it('does not close-then-warn: a closed dialog under interactive={false} is silent', () => {
+    render(
+      <InteractionProvider interactive={false}>
+        <Dialog open={false} onClose={() => {}} title="Rename session"><button>Save</button></Dialog>
+      </InteractionProvider>,
+    )
+    expect(warn).not.toHaveBeenCalled()
   })
 })
 

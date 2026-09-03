@@ -98,6 +98,9 @@ vi.mock('@/ws/client', async (importOriginal) => {
 })
 
 import { LAYOUT_MODE_QUERIES, MEDIA, stubMatchMedia } from '@/test/matchMedia'
+// `regionCounts` reads the whole document (the overlay root is outside `#root`)
+// — shared with `kiosk.integration.test.tsx` rather than copied into it.
+import { regionCounts } from '@/test/regions'
 import { ThemeProvider } from '@/shell/theme'
 import { buildRoutes } from '@/shell/routes'
 import { LAYOUT_MODES, type LayoutMode } from './useViewport'
@@ -155,20 +158,6 @@ function renderShell({ path = '/sessions', mode = 'desktop', extraQueries = [] }
       </ThemeProvider>
     </QueryClientProvider>,
   )
-}
-
-/**
- * Every `data-region` node in the DOCUMENT, not just in the render container:
- * `app.overlays` is stamped on the portal root and `app.drawer`'s overlay panel
- * portals into it, both of which live outside `#root`.
- */
-function regionCounts(): Map<string, number> {
-  const counts = new Map<string, number>()
-  for (const el of document.querySelectorAll('[data-region]')) {
-    const id = el.getAttribute('data-region')!
-    counts.set(id, (counts.get(id) ?? 0) + 1)
-  }
-  return counts
 }
 
 /** The regions the matrix says must be on screen, for the context under test. */
