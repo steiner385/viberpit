@@ -55,6 +55,7 @@ from server.sessions import attachments as _attachments
 from server.sessions import dispatch
 from server.sessions import events as ev
 from server.sessions import host_heartbeat
+from server.sessions.liveness import heartbeat_interval_s
 from server.sessions import primary_lease
 from server.sessions import push as push_mod
 from server.sessions.commands import catalog as cmd_catalog
@@ -888,6 +889,11 @@ class SessionOrchestrator:
         # row's beat_at (server/sessions/liveness.py), never stored per-session.
         self._hb_task: asyncio.Task | None = None
         self._hb_fence: int | None = None
+        # True once our beat was REJECTED (another writer bumped the fence). Kept
+        # separate from `_hb_fence is None` so the loop can retry a failed initial
+        # register without also resurrecting a fenced daemon — those two states are
+        # opposites and must not share one sentinel.
+        self._hb_fenced: bool = False
         # Event bus — WS bridge subscribes here for lifecycle events
         self._event_subscribers: list[asyncio.Queue] = []
         # Serialises the check-build-register critical section in ensure_driver
@@ -1012,6 +1018,9 @@ class SessionOrchestrator:
         try:
             self._hb_fence = await host_heartbeat.register(self_host_name(), epoch=PROC_EPOCH)
         except Exception:
+            # Left un-registered, NOT fenced — _heartbeat_tick retries register() on
+            # each beat until it lands, so a DB blip at boot costs one interval rather
+            # than this host's heartbeat for the whole process lifetime.
             log.warning("host-heartbeat: initial register failed (DB error) — "
                         "will retry on the loop", exc_info=True)
             self._hb_fence = None
@@ -1130,14 +1139,30 @@ class SessionOrchestrator:
         triggers _on_fenced — a log-only stub in Phase 1; full stand-down lands in
         Phase 4 (Task 16), which MUST precede any code that bumps fences.
         """
-        interval = float(os.environ.get("CCSWITCH_HOST_HEARTBEAT_INTERVAL_S", "10"))
+        interval = heartbeat_interval_s()
         while True:
             await asyncio.sleep(interval)
             await self._heartbeat_tick()
 
     async def _heartbeat_tick(self) -> None:
         fence = self._hb_fence
-        if fence is None:                       # not registered / stood down
+        if fence is None:
+            # Two very different states share `_hb_fence is None`, and conflating them
+            # is dangerous: FENCED (someone declared us dead) must stay inert until the
+            # Phase 4 stand-down lands — blindly re-registering would adopt the bumped
+            # fence and resurrect a fenced daemon without ever standing down. NOT-YET-
+            # REGISTERED (a transient DB error during start()) is the opposite: it must
+            # retry, or one blip at boot silently disables this host's heartbeat for the
+            # whole process lifetime, and every session it owns eventually reads
+            # unreachable on a perfectly healthy host.
+            if self._hb_fenced:
+                return
+            try:
+                self._hb_fence = await host_heartbeat.register(
+                    self_host_name(), epoch=PROC_EPOCH)
+            except Exception:
+                log.warning("host-heartbeat: re-register failed (DB error) — "
+                            "retrying next beat", exc_info=True)
             return
         try:
             ok = await host_heartbeat.beat(self_host_name(), fence)
@@ -1146,7 +1171,8 @@ class SessionOrchestrator:
                         exc_info=True)
             return
         if not ok:
-            self._hb_fence = None               # stop beating until re-registered
+            self._hb_fenced = True              # inert until Phase 4 stand-down
+            self._hb_fence = None
             await self._on_fenced()
 
     async def _on_fenced(self) -> None:
