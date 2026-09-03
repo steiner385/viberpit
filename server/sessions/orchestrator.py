@@ -81,6 +81,7 @@ from server.config import env_float
 from server.time_iso import iso_utc
 from server.usage.poller import UsagePoller
 from server.github.pr_status import PullRequestInfo
+from server.hostname import self_host_name  # noqa: F401 — re-exported; the fleet identity lives in server.hostname
 from server.sessions.pr_fix import build_conflict_fix_prompt, build_pr_fix_prompt
 
 log = logging.getLogger(__name__)
@@ -367,24 +368,6 @@ _PRIMARY_ONLY_LOOP_ATTRS: frozenset[str] = frozenset({
     "_autopilot_task", "_cicd_task", "_archaudit_task", "_sweep_task",
     "_archive_limit_task", "_recurring_task",
 })
-
-
-def self_host_name() -> str:
-    """This daemon's fleet identity — the ``hosts.name`` the dispatcher stamps
-    onto sessions it sends here (``Session.host``).
-
-    ``CCSWITCH_HOST_NAME`` wins when set (operator-managed registries can use any
-    name). The fallback is the kernel hostname's first label, which matches how
-    auto-registered hosts are named (``_derive_host_name`` takes the first label
-    of the tailnet MagicDNS endpoint, and MagicDNS names ARE machine hostnames).
-    A worker whose identity doesn't match its registry row rehydrates zero
-    sessions after a restart — set the env var explicitly on renamed hosts.
-    """
-    name = os.environ.get("CCSWITCH_HOST_NAME", "").strip()
-    if name:
-        return name
-    import socket
-    return socket.gethostname().split(".")[0]
 
 
 def local_host_stamp() -> str | None:
