@@ -192,6 +192,14 @@ class BacklogRunner:
                     help="Model for spawned sessions. 'auto' assesses each job's "
                          "complexity and picks a tier; 'default' uses the "
                          "account's default model."),
+        ConfigField(key="respect_dependencies", label="Respect issue dependencies",
+                    type="bool", default=True,
+                    help="Skip issues whose dependencies are still open: native "
+                         "blocked-by relationships, 'Depends on #N' in the body, "
+                         "and epic list order (sub-issues / task-list checklists "
+                         "— list order is execution order). Skips are logged and "
+                         "counted; the issue becomes eligible the moment its "
+                         "blockers close."),
     ]
 
     def status(self, ctx) -> AutomationStatus:
@@ -201,6 +209,7 @@ class BacklogRunner:
         n = counts.get("in_flight", 0)
         return AutomationStatus(
             text=f"{n} implementing, {counts.get('eligible', 0)} eligible"
+                 + (f", {counts['blocked']} blocked" if counts.get("blocked") else "")
                  + (f", {counts['needs_human']} needs-human" if counts.get("needs_human") else ""),
             level="active" if n else ("warn" if counts.get("needs_human") else "idle"),
             counts=counts)
@@ -219,9 +228,11 @@ SelectBatch = Callable[[dict], Awaitable["Batch | None"]]
 Claim = Callable[["Batch"], Awaitable[bool]]
 Spawn = Callable[["Batch", str], Awaitable[Any]]
 CountInFlight = Callable[[], Awaitable[int]]
-# True count of eligible, unclaimed OPEN issues — the honest backlog gauge for
-# the Automation card, independent of how many runner slots are free.
-CountCandidates = Callable[[], Awaitable[int]]
+# (eligible, blocked): the true count of eligible, unclaimed OPEN issues — the
+# honest backlog gauge for the Automation card, independent of how many runner
+# slots are free — plus how many otherwise-eligible issues were skipped as
+# dependency-blocked this sweep (the "why isn't the backlog draining" note).
+CountCandidates = Callable[[], Awaitable["tuple[int, int]"]]
 HealthyAccount = Callable[[], Awaitable["str | None"]]
 PrStatusFor = Callable[[str], Awaitable["PullRequestInfo | None"]]
 PrDoctorActive = Callable[[str], Awaitable[bool]]
@@ -457,16 +468,19 @@ class BacklogRunnerLoop:
             states = {}
         # The honest backlog gauge: the true count of eligible, unclaimed issues,
         # independent of how many runner slots are free (a saturated runner still
-        # reports real depth). Best-effort — a query failure reports 0.
+        # reports real depth), plus how many were skipped as dependency-blocked
+        # this sweep. Best-effort — a query failure reports 0.
         eligible = 0
+        blocked = 0
         if self._count_candidates is not None:
             try:
-                eligible = await self._count_candidates()
+                eligible, blocked = await self._count_candidates()
             except Exception:  # pragma: no cover — a count read must not stall the tick
-                eligible = 0
+                eligible = blocked = 0
         setattr(self._ctx, "backlog_counts", {
             "in_flight": in_flight,
             "eligible": eligible,
+            "blocked": blocked,
             "needs_human": needs_human,
         })
 

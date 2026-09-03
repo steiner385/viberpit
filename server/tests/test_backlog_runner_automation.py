@@ -41,3 +41,26 @@ def test_status_idle_by_default():
 def test_registered_in_registry():
     from server.automations.registry import registry
     assert "backlog-runner" in [a.id for a in registry.all()]
+
+
+def test_config_schema_respect_dependencies_defaults_on():
+    from server.automations.backlog_runner import BacklogRunner
+    keys = {f.key: f for f in BacklogRunner().config_schema}
+    assert keys["respect_dependencies"].type == "bool"
+    assert keys["respect_dependencies"].default is True
+
+
+def test_status_shows_blocked_count():
+    from types import SimpleNamespace
+
+    from server.automations.backlog_runner import BacklogRunner
+    ctx = SimpleNamespace(backlog_counts={"in_flight": 1, "eligible": 2, "blocked": 3})
+    assert "3 blocked" in BacklogRunner().status(ctx).text
+
+
+def test_status_omits_blocked_when_zero():
+    from types import SimpleNamespace
+
+    from server.automations.backlog_runner import BacklogRunner
+    ctx = SimpleNamespace(backlog_counts={"in_flight": 1, "eligible": 2, "blocked": 0})
+    assert "blocked" not in BacklogRunner().status(ctx).text

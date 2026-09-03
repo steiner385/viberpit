@@ -20,6 +20,8 @@ from typing import Callable, Iterable
 
 from ccswitch import gitrepos
 
+from . import backlog_deps
+
 log = logging.getLogger(__name__)
 
 GhRun = Callable[..., "object"]
@@ -149,9 +151,19 @@ def _graphql_per_owner(repos: list[str], build_query: "Callable[[list[str]], str
 # were what produced over-bundling); it is excerpted before prompting. ``author``
 # and ``labels`` drive the unimplementable-issue filter (:func:`_is_unimplementable`,
 # #637) — the shared fragment fetches them for every issue query at no extra cost.
+# ``blockedBy`` / ``parent`` / ``trackedInIssues`` feed the dependency-readiness
+# gate (:mod:`.backlog_deps`): native blocked-by relationships, sub-issue list
+# order, and task-list epic order all arrive inline with the search, so gating
+# on them costs no extra API call (only free-text ``Depends on #N`` body refs
+# need a follow-up state lookup, batched in :func:`_resolve_dep_states`).
 _ISSUE_NODES = (
     "nodes { ... on Issue { number title body url author { login } "
-    "labels(first: 20) { nodes { name } } repository { nameWithOwner } } }"
+    "labels(first: 20) { nodes { name } } repository { nameWithOwner } "
+    "blockedBy(first: 20) { nodes { number state repository { nameWithOwner } } } "
+    "parent { number repository { nameWithOwner } "
+    "subIssues(first: 50) { nodes { number state repository { nameWithOwner } } } } "
+    "trackedInIssues(first: 5) { nodes { number body repository { nameWithOwner } "
+    "trackedIssues(first: 50) { nodes { number state repository { nameWithOwner } } } } } } }"
 )
 
 
@@ -226,13 +238,21 @@ def _build_candidates_query(repos: list[str], eligible_label: str,
 
 
 def query_candidates(config: dict, *, gh_run: GhRun = gitrepos._run_gh,
-                     now: datetime | None = None) -> list[dict]:
+                     now: datetime | None = None,
+                     blocked_out: "list[dict] | None" = None) -> list[dict]:
     """Return eligible, unclaimed OPEN issues as candidate dicts.
 
     Candidate shape (what the grouping optimizer and ``plan_to_batch`` consume)::
 
         {"ref": "owner/repo#N", "number": N, "repo": "owner/repo", "title": ...,
          "body": ..., "url": "https://github.com/owner/repo/issues/N"}
+
+    Issues with an unmet dependency are NOT candidates (``respect_dependencies``,
+    default on): native blocked-by relationships, ``Depends on #N`` body markers,
+    and epic list order (sub-issues / task-list checklists — list order is
+    execution order) all gate readiness via :mod:`.backlog_deps`. Each skip is
+    logged; pass *blocked_out* to also receive ``{"ref", "blockers"}`` dicts
+    (the dashboard's "why isn't the backlog draining" note).
 
     Two pools, fresh first: never-escalated issues, then ``needs-human`` issues
     untouched for ``needs_human_retry_days`` (missing key → the schema default,
@@ -281,7 +301,7 @@ def query_candidates(config: dict, *, gh_run: GhRun = gitrepos._run_gh,
         retry_nodes += list((data.get("retry") or {}).get("nodes") or [])
     nodes = fresh_nodes + retry_nodes
 
-    out: list[dict] = []
+    kept: list[tuple[dict, dict]] = []
     seen: set[str] = set()
     for node in nodes:
         if not node:
@@ -298,7 +318,7 @@ def query_candidates(config: dict, *, gh_run: GhRun = gitrepos._run_gh,
                      ref, node.get("title"), ((node.get("author") or {}).get("login")))
             continue
         seen.add(ref)
-        out.append({
+        kept.append((node, {
             "ref": ref,
             "number": number,
             "repo": repo,
@@ -308,8 +328,80 @@ def query_candidates(config: dict, *, gh_run: GhRun = gitrepos._run_gh,
             # url lets the ActionableItem link out to the issue; fall back to the
             # canonical /issues/N path if the API somehow omitted it (#467).
             "url": node.get("url") or f"https://github.com/{repo}/issues/{number}",
-        })
+        }))
+
+    if not config.get("respect_dependencies", True) or not kept:
+        return [cand for _, cand in kept]
+
+    # Dependency-readiness gate. Native blocked-by / sub-issue / epic states
+    # arrived inline with the search; only free-text body deps need resolving.
+    # Every fetched candidate is open by definition (the search says is:open),
+    # so a body dep pointing at another candidate resolves to OPEN for free.
+    states: dict[str, str] = {cand["ref"]: "OPEN" for _, cand in kept}
+    unresolved: set[str] = set()
+    for node, _cand in kept:
+        unresolved |= {r for r in backlog_deps.body_dep_refs(node) if r not in states}
+    if unresolved:
+        states.update(_resolve_dep_states(sorted(unresolved), gh_run=gh_run))
+
+    out: list[dict] = []
+    blocked = 0
+    for node, cand in kept:
+        blockers = backlog_deps.blocked_refs(node, states=states)
+        if blockers:
+            # An unresolvable blocker state fails CLOSED (still blocks): the
+            # sweep retries every tick, and honoring declared order is the
+            # feature's whole point. The skip is visible here + in blocked_out.
+            log.info("backlog_github.skip_blocked ref=%s blockers=%s",
+                     cand["ref"], ",".join(blockers))
+            if blocked_out is not None:
+                blocked_out.append({"ref": cand["ref"], "blockers": blockers})
+            blocked += 1
+            continue
+        out.append(cand)
+    if blocked:
+        log.info("backlog_github.blocked_summary count=%d eligible=%d", blocked, len(out))
     return out
+
+
+def _resolve_dep_states(refs: list[str], *, gh_run: GhRun) -> dict[str, str]:
+    """Resolve ``owner/repo#N`` refs to their GitHub state (OPEN/CLOSED/MERGED)
+    in one batched GraphQL call per owner (aliased ``issueOrPullRequest`` so a
+    dep may be an issue or a PR). A ref missing from the result (owner call
+    failed, nonexistent number) stays unresolved — the caller fails closed."""
+    by_repo: dict[str, list[str]] = {}
+    for ref in refs:
+        repo, number = _split_ref(ref)
+        if repo and number.isdigit():
+            by_repo.setdefault(repo, []).append(number)
+
+    def build(owner_repos: list[str]) -> str:
+        parts = ["query {"]
+        for i, repo in enumerate(owner_repos):
+            owner, _, name = repo.partition("/")
+            lookups = " ".join(
+                f"i{n}: issueOrPullRequest(number: {n}) "
+                "{ ... on Issue { number state } ... on PullRequest { number state } }"
+                for n in by_repo[repo])
+            parts.append(
+                f"r{i}: repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) "
+                f"{{ nameWithOwner {lookups} }}")
+        parts.append("}")
+        return "\n".join(parts)
+
+    states: dict[str, str] = {}
+    for data in _graphql_per_owner(list(by_repo), build, gh_run=gh_run, event="dep_states"):
+        for repo_obj in (data or {}).values():
+            if not isinstance(repo_obj, dict):
+                continue
+            name_with_owner = repo_obj.get("nameWithOwner")
+            if not name_with_owner:
+                continue
+            for value in repo_obj.values():
+                if (isinstance(value, dict) and value.get("number") is not None
+                        and value.get("state")):
+                    states[f"{name_with_owner}#{value['number']}"] = value["state"]
+    return states
 
 
 # --------------------------------------------------------------------------- #
