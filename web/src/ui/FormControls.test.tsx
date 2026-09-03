@@ -6,6 +6,11 @@ import { Textarea } from './Textarea'
 import { Select } from './Select'
 import { Field } from './Field'
 
+// Scope note: axe in jsdom covers roles, names and ARIA wiring only. No
+// stylesheet is applied here, so axe's `color-contrast` rule always returns
+// `incomplete`, and `toHaveNoViolations()` inspects `violations` alone — these
+// assertions therefore cannot fail on colour. Contrast is covered instead by
+// src/__tests__/contrast.test.ts, which does the WCAG maths on index.css.
 expect.extend(toHaveNoViolations)
 
 describe('form controls', () => {

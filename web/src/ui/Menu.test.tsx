@@ -239,4 +239,81 @@ describe('Menu', () => {
     expect(screen.getByRole('menu')).toBeInTheDocument()
     expect(document.activeElement).toBe(charlie)
   })
+
+  it('an unrelated parent re-render with a fresh inline `items` array does not reset the active item', () => {
+    // The sibling test above hoists `items` to a module constant, so it only
+    // pins the `onClose` half of the fix. Callers build the array inline —
+    // `items={[{ id: 'manual', … }]}` — which hands Menu a new array identity
+    // on every parent render. Memoizing on that identity re-ran the layout
+    // effect and snapped `active` back to the first enabled item, with DOM
+    // focus following (ruling R21).
+    function ToggleHost() {
+      const ref = useRef<HTMLButtonElement>(null)
+      const [open, setOpen] = useState(false)
+      const [tick, setTick] = useState(0)
+      return (
+        <>
+          <button ref={ref} onClick={() => setOpen(true)}>Mode</button>
+          <button onClick={() => setTick((t) => t + 1)}>Bump</button>
+          <span data-testid="tick">{tick}</span>
+          <Menu
+            open={open}
+            onClose={() => setOpen(false)}
+            anchorRef={ref}
+            label="Permission mode"
+            onSelect={() => {}}
+            // Fresh array, structurally identical, on every render.
+            items={[
+              { id: 'a', label: 'Alpha' },
+              { id: 'b', label: 'Bravo', disabled: true },
+              { id: 'c', label: 'Charlie' },
+              { id: 'd', label: 'Delta' },
+            ]}
+          />
+        </>
+      )
+    }
+    render(<ToggleHost />)
+    fireEvent.click(screen.getByText('Mode'))
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'ArrowDown' }) // Alpha -> Charlie
+    expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: /Charlie/ }))
+
+    fireEvent.click(screen.getByText('Bump'))
+    expect(screen.getByTestId('tick')).toHaveTextContent('1') // the re-render really happened
+    const charlie = screen.getByRole('menuitem', { name: /Charlie/ })
+    expect(charlie).toHaveAttribute('tabindex', '0') // `active` stayed put…
+    expect(document.activeElement).toBe(charlie) // …and so did DOM focus
+  })
+
+  it('a genuine change to the items does reset the active item', () => {
+    // The flip side of the memo key: it is a *value* signature, so an item
+    // becoming disabled (or the list changing shape) must still recompute.
+    function SwapHost() {
+      const ref = useRef<HTMLButtonElement>(null)
+      const [open, setOpen] = useState(false)
+      const [disableFirst, setDisableFirst] = useState(false)
+      return (
+        <>
+          <button ref={ref} onClick={() => setOpen(true)}>Mode</button>
+          <button onClick={() => setDisableFirst(true)}>Disable Alpha</button>
+          <Menu
+            open={open}
+            onClose={() => setOpen(false)}
+            anchorRef={ref}
+            label="Permission mode"
+            onSelect={() => {}}
+            items={[
+              { id: 'a', label: 'Alpha', disabled: disableFirst },
+              { id: 'c', label: 'Charlie' },
+            ]}
+          />
+        </>
+      )
+    }
+    render(<SwapHost />)
+    fireEvent.click(screen.getByText('Mode'))
+    expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: /Alpha/ }))
+    fireEvent.click(screen.getByText('Disable Alpha'))
+    expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: /Charlie/ }))
+  })
 })

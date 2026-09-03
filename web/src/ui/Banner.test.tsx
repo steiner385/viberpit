@@ -4,6 +4,11 @@ import { axe, toHaveNoViolations } from 'jest-axe'
 import { Banner } from './Banner'
 import { BannerStack } from './BannerStack'
 
+// Scope note: axe in jsdom covers roles, names and ARIA wiring only. No
+// stylesheet is applied here, so axe's `color-contrast` rule always returns
+// `incomplete`, and `toHaveNoViolations()` inspects `violations` alone — these
+// assertions therefore cannot fail on colour. Contrast is covered instead by
+// src/__tests__/contrast.test.ts, which does the WCAG maths on index.css.
 expect.extend(toHaveNoViolations)
 
 describe('Banner', () => {
@@ -78,5 +83,10 @@ describe('BannerStack', () => {
     const wrapper = container.querySelector('[data-region="app.banners"]')
     expect(wrapper).not.toBeNull()
     expect(wrapper!.childNodes.length).toBe(0)
+    // …and the class that collapses it. jsdom does not evaluate CSS, so this
+    // pins the mechanism, not the rendered height: without `[&:empty]:hidden`
+    // the empty wrapper leaves an 8px strip on every screen (ruling R26), and
+    // nothing else in the suite notices if the class is deleted.
+    expect(wrapper!.className).toContain('[&:empty]:hidden')
   })
 })
