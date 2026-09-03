@@ -54,6 +54,7 @@ from server.sessions.archive_move import mountpoint, restore_from_archive
 from server.sessions import attachments as _attachments
 from server.sessions import dispatch
 from server.sessions import events as ev
+from server.sessions import host_heartbeat
 from server.sessions import primary_lease
 from server.sessions import push as push_mod
 from server.sessions.commands import catalog as cmd_catalog
@@ -71,7 +72,7 @@ from server.sessions.recovery import (
 )
 from server.sessions.selection import AllAccountsBusy, Picked, select_account  # noqa: F401
 from server.sessions.background_tasks import scan_open_background_tasks, build_rearm_prompt, OpenBgTask
-from server.obs.context import log_event
+from server.obs.context import log_event, PROC_EPOCH
 from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
 from server.sessions.types import SessionRecord, SYSTEM_IDENTITY, RESUME_ELIGIBLE_STATUSES
@@ -883,6 +884,10 @@ class SessionOrchestrator:
         # start(). None on workers and on an orchestrator that never start()ed.
         self._lease_task: asyncio.Task | None = None
         self._lease_fence: int | None = None
+        # Per-host fenced heartbeat (spec 002 FR-101): liveness is DERIVED from this
+        # row's beat_at (server/sessions/liveness.py), never stored per-session.
+        self._hb_task: asyncio.Task | None = None
+        self._hb_fence: int | None = None
         # Event bus — WS bridge subscribes here for lifecycle events
         self._event_subscribers: list[asyncio.Queue] = []
         # Serialises the check-build-register critical section in ensure_driver
@@ -1002,6 +1007,15 @@ class SessionOrchestrator:
             self._goal_monitor(), name="goal-inference-monitor"
         )
         self._stall_task = asyncio.create_task(self._stall_loop(), name="stall-watchdog")
+        # Per-host fenced heartbeat: register our row (adopting any surviving fence)
+        # and beat it on an interval. DB failure here must not kill boot (NFR-5).
+        try:
+            self._hb_fence = await host_heartbeat.register(self_host_name(), epoch=PROC_EPOCH)
+        except Exception:
+            log.warning("host-heartbeat: initial register failed (DB error) — "
+                        "will retry on the loop", exc_info=True)
+            self._hb_fence = None
+        self._hb_task = asyncio.create_task(self._heartbeat_loop(), name="host-heartbeat")
         self._token_refresh_task = asyncio.create_task(
             self._token_refresh_monitor(), name="token-refresh-monitor"
         )
@@ -1106,6 +1120,46 @@ class SessionOrchestrator:
                     state.holder if state else "<released>",
                 )
 
+    async def _heartbeat_loop(self) -> None:
+        """Stamp this host's fenced heartbeat every interval (spec 002 FR-101).
+
+        Liveness for every session this host owns is derived from beat_at at the
+        edge (server/sessions/liveness.py) — the loop stores no per-session state.
+        A DB error is caught and retried next beat (NFR-5: DB down must not stop a
+        running daemon). A beat REJECTED by the fence (someone declared us dead)
+        triggers _on_fenced — a log-only stub in Phase 1; full stand-down lands in
+        Phase 4 (Task 16), which MUST precede any code that bumps fences.
+        """
+        interval = float(os.environ.get("CCSWITCH_HOST_HEARTBEAT_INTERVAL_S", "10"))
+        while True:
+            await asyncio.sleep(interval)
+            await self._heartbeat_tick()
+
+    async def _heartbeat_tick(self) -> None:
+        fence = self._hb_fence
+        if fence is None:                       # not registered / stood down
+            return
+        try:
+            ok = await host_heartbeat.beat(self_host_name(), fence)
+        except Exception:
+            log.warning("host-heartbeat: beat failed (DB error) — retrying next beat",
+                        exc_info=True)
+            return
+        if not ok:
+            self._hb_fence = None               # stop beating until re-registered
+            await self._on_fenced()
+
+    async def _on_fenced(self) -> None:
+        """Phase 1 stub: log-only. A fenced daemon must eventually stand down —
+        stop persisting, close its drivers, re-register at the new fence, rehydrate
+        (Phase 4 / Task 16). No fence-bumper exists yet, so in production this must
+        not fire; when it does it is loud."""
+        log.critical(
+            "host-heartbeat: FENCED — our beat was rejected, another writer bumped "
+            "the fence for host %r. Phase 1 stand-down is a no-op stub (full "
+            "stand-down is Task 16); no fence-bumper exists yet, so this should not "
+            "fire in production.", self_host_name())
+
     async def _refresh_idle_tokens_once(self) -> None:
         """Proactively refresh idle accounts' access tokens (best-effort).
 
@@ -1171,7 +1225,7 @@ class SessionOrchestrator:
                      "_sdlc_synth_task",
                      "_autopilot_task", "_cicd_task", "_archaudit_task", "_sweep_task",
                      "_archive_limit_task", "_janitor_task", "_recurring_task",
-                     "_lease_task", "_drain_timer"):
+                     "_lease_task", "_hb_task", "_drain_timer"):
             # Default None: stop() must be safe on an orchestrator that never
             # start()ed (tests build one via __new__/without start).
             task = getattr(self, attr, None)
