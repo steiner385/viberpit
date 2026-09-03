@@ -12,10 +12,10 @@
  * and own the active state. Pass `panelId` to wire `aria-controls` to real
  * `role="tabpanel"` regions (the mobile Dashboard does; the desktop master-detail
  * pane is not a tabpanel, so it omits it).
+ *
+ * This is now a thin adapter over the generic `Tabs` primitive in `web/src/ui/`.
  */
-import * as React from 'react'
-import { useRef } from 'react'
-import { cn } from '@/lib/utils'
+import { Tabs } from '@/ui/Tabs'
 import type { TabId } from './Dashboard'
 import type { TabDef } from './tabDefs'
 
@@ -31,70 +31,15 @@ export interface TabBarProps {
   className?: string
 }
 
-/** Accessible name for a tab: label + count + attention, matching the old aria-labels. */
-function tabAriaLabel({ label, count, attention }: TabDef): string {
-  if (attention) return count ? `${label} (${count}, needs attention)` : `${label} (needs attention)`
-  return count ? `${label} (${count})` : label
-}
-
 export function TabBar({ tabs, activeTab, onSelect, label, panelId, className }: TabBarProps) {
-  const btnRefs = useRef<(HTMLButtonElement | null)[]>([])
-
-  function handleKeyDown(e: React.KeyboardEvent, index: number) {
-    let next: number
-    if (e.key === 'ArrowRight') next = (index + 1) % tabs.length
-    else if (e.key === 'ArrowLeft') next = (index - 1 + tabs.length) % tabs.length
-    else if (e.key === 'Home') next = 0
-    else if (e.key === 'End') next = tabs.length - 1
-    else return
-    e.preventDefault()
-    btnRefs.current[next]?.focus()
-  }
-
   return (
-    <div
-      role="tablist"
-      aria-label={label}
-      // `overflow-x-auto` keeps all tabs swipe-reachable on narrow viewports; the
-      // scrollbar is hidden so the strip reads as a clean tab row, not a scroller.
-      className={cn(
-        'flex gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
-        className,
-      )}
-    >
-      {tabs.map((t, i) => (
-        <button
-          key={t.id}
-          ref={(el) => { btnRefs.current[i] = el }}
-          role="tab"
-          id={panelId ? `tab-${t.id}` : undefined}
-          aria-selected={activeTab === t.id}
-          aria-controls={panelId ? panelId(t.id) : undefined}
-          aria-label={tabAriaLabel(t)}
-          // Roving tabindex: only the active tab is in the tab sequence; arrows move within.
-          tabIndex={activeTab === t.id ? 0 : -1}
-          onKeyDown={(e) => handleKeyDown(e, i)}
-          onClick={() => onSelect(t.id)}
-          className={cn(
-            'shrink-0 whitespace-nowrap min-h-[44px] px-3 py-2 text-sm font-medium',
-            'border-b-2 -mb-px transition-colors flex items-center gap-1.5',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-inset',
-            activeTab === t.id
-              ? 'border-blue-600 text-blue-600 dark:border-blue-400 dark:text-blue-400'
-              : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200',
-          )}
-        >
-          {t.label}
-          {t.attention && (
-            <span aria-hidden="true" className="inline-block w-2 h-2 rounded-full bg-amber-500 dark:bg-amber-400" />
-          )}
-          {t.count != null && t.count > 0 && (
-            <span className="text-xs tabular-nums bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 rounded-full px-1.5 py-0.5 leading-none">
-              {t.count}
-            </span>
-          )}
-        </button>
-      ))}
-    </div>
+    <Tabs
+      items={tabs}
+      value={activeTab}
+      onChange={(id) => onSelect(id as TabId)}
+      label={label}
+      panelId={panelId ? (id) => panelId(id as TabId) : undefined}
+      className={className}
+    />
   )
 }

@@ -2,14 +2,12 @@ import { GitPullRequest, GitMerge, GitPullRequestClosed, Check, X, Dot, Rocket }
 import { cn } from '@/lib/utils'
 import type { PullRequestInfo } from '@/api/types'
 import { isActionablePrState } from '@/session/prStatus'
+import { TONE_TEXT, TONE_WASH, type Tone } from '@/ui/Badge'
 
-// Color per PR state — mirrors GitHub's semantics (open green, draft gray,
-// merged purple, closed red).
-const STATE_STYLES: Record<PullRequestInfo['state'], string> = {
-  open: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
-  draft: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300',
-  merged: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
-  closed: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
+// Tone per PR state — mirrors GitHub's semantics (open green, draft neutral,
+// merged info, closed danger).
+const STATE_TONE: Record<PullRequestInfo['state'], Tone> = {
+  open: 'success', draft: 'neutral', merged: 'info', closed: 'danger',
 }
 
 const STATE_ICON: Record<PullRequestInfo['state'], typeof GitPullRequest> = {
@@ -20,9 +18,9 @@ const STATE_ICON: Record<PullRequestInfo['state'], typeof GitPullRequest> = {
 }
 
 function ChecksIcon({ checks }: { checks: PullRequestInfo['checks'] }) {
-  if (checks === 'passing') return <Check size={11} aria-hidden className="text-green-600 dark:text-green-400" />
-  if (checks === 'failing') return <X size={11} aria-hidden className="text-red-600 dark:text-red-400" />
-  if (checks === 'pending') return <Dot size={11} aria-hidden className="text-amber-500" />
+  if (checks === 'passing') return <Check size={11} aria-hidden className="text-success" />
+  if (checks === 'failing') return <X size={11} aria-hidden className="text-danger" />
+  if (checks === 'pending') return <Dot size={11} aria-hidden className="text-warning" />
   return null
 }
 
@@ -34,8 +32,8 @@ export function PrPill({ pr }: { pr: PullRequestInfo }) {
   const StateIcon = STATE_ICON[pr.state]
   // Checks only matter while a PR is live. GitHub freezes a terminal PR's
   // rollup (a closed PR keeps `checks: 'failing'` forever) but there's nothing
-  // to act on, so we don't surface it — the state background (closed=red,
-  // merged=violet) already carries the terminal meaning. `data-checks` stays
+  // to act on, so we don't surface it — the state background (closed=danger,
+  // merged=info) already carries the terminal meaning. `data-checks` stays
   // factual for tests/inspection; only the visible icon + label are gated.
   const showChecks = isActionablePrState(pr.state)
   const checksLabel = showChecks && pr.checks !== 'none' ? `, checks ${pr.checks}` : ''
@@ -57,14 +55,14 @@ export function PrPill({ pr }: { pr: PullRequestInfo }) {
       aria-label={`Pull request #${pr.number}, ${pr.state}${checksLabel}${deployedLabel}${stageLabel}`}
       className={cn(
         'inline-flex items-center gap-1 text-xs font-medium px-1.5 py-0.5 rounded',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-        STATE_STYLES[pr.state],
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+        TONE_WASH[STATE_TONE[pr.state]], TONE_TEXT[STATE_TONE[pr.state]],
       )}
     >
       <StateIcon size={11} aria-hidden />
       <span className="tabular-nums">#{pr.number}</span>
       {showChecks && <ChecksIcon checks={pr.checks} />}
-      {pr.deployed && <Rocket size={11} aria-hidden className="text-emerald-600 dark:text-emerald-400" />}
+      {pr.deployed && <Rocket size={11} aria-hidden className="text-success" />}
       {showStage && (
         <span className="opacity-70 font-normal">{stage}</span>
       )}
