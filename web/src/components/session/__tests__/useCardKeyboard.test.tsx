@@ -22,6 +22,23 @@ describe('useCardKeyboard', () => {
     expect(screen.getByTestId('item-0')).toHaveFocus()
   })
 
+  it('auto-focus never scrolls (preventScroll), so a carousel card cannot yank the shared track', () => {
+    // Root cause of the broken carousel navigation: focusing an option makes the
+    // browser scroll the nearest scrollable ancestor (the snap track) to reveal
+    // it. Mid-navigation, onScroll briefly resolves back to the old card, whose
+    // autoFocus flips false→true, refocuses, and scrolls the track back — a
+    // feedback loop that pins the carousel to question 1. Focus must therefore
+    // never scroll: both the mount focus and the becomes-active refocus pass
+    // { preventScroll: true }.
+    const focusSpy = vi.spyOn(HTMLElement.prototype, 'focus')
+    const { rerender } = render(<Harness count={3} autoFocus={false} onActivate={vi.fn()} />)
+    expect(focusSpy).not.toHaveBeenCalled()
+    rerender(<Harness count={3} autoFocus onActivate={vi.fn()} />) // card becomes active
+    expect(screen.getByTestId('item-0')).toHaveFocus()
+    expect(focusSpy).toHaveBeenCalledWith({ preventScroll: true })
+    focusSpy.mockRestore()
+  })
+
   it('ArrowDown/ArrowUp move the highlight with wraparound', async () => {
     const user = userEvent.setup()
     render(<Harness count={3} onActivate={vi.fn()} />)
