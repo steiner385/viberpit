@@ -1,7 +1,15 @@
 """Unit tests for pure liveness derivation (spec 002 FR-102, Task 3)."""
 from datetime import datetime, timedelta
 import pytest
-from server.sessions.liveness import derive_liveness
+from server.sessions.liveness import (
+    DEAD_AFTER_DEFAULT_S,
+    DEAD_AFTER_ENV,
+    HEARTBEAT_INTERVAL_DEFAULT_S,
+    HEARTBEAT_INTERVAL_ENV,
+    derive_liveness,
+    heartbeat_interval_s,
+    host_dead_after_s,
+)
 
 NOW = datetime(2026, 9, 2, 12, 0, 0)
 
@@ -26,3 +34,33 @@ def test_missing_row_is_fresh_unknown():
     # NFR-3: absence of evidence is not evidence of death (rollout safety).
     lv = derive_liveness(None, NOW)
     assert lv.state == "fresh" and lv.last_confirmed_alive_at is None
+
+
+# --------------------------------------------------------------------------- #
+# Threshold knobs. These are read inside the session serializer (every session,
+# every request, with no try/except above it) and at the top of the daemon's
+# heartbeat loop, so a typo'd override must fall back — never raise. A raw
+# float() here used to mean CCSWITCH_HOST_DEAD_AFTER_S=300s 500s the whole
+# sessions page, and a bad interval killed the heartbeat task after one beat.
+# --------------------------------------------------------------------------- #
+
+def test_thresholds_default_when_unset(monkeypatch):
+    monkeypatch.delenv(HEARTBEAT_INTERVAL_ENV, raising=False)
+    monkeypatch.delenv(DEAD_AFTER_ENV, raising=False)
+    assert heartbeat_interval_s() == HEARTBEAT_INTERVAL_DEFAULT_S
+    assert host_dead_after_s() == DEAD_AFTER_DEFAULT_S
+
+
+def test_thresholds_honour_valid_override(monkeypatch):
+    monkeypatch.setenv(HEARTBEAT_INTERVAL_ENV, "5")
+    monkeypatch.setenv(DEAD_AFTER_ENV, "60")
+    assert heartbeat_interval_s() == 5.0
+    assert host_dead_after_s() == 60.0
+
+
+@pytest.mark.parametrize("bad", ["300s", "", "abc", "nan", "inf", "0", "-1"])
+def test_thresholds_fall_back_on_bad_value_instead_of_raising(monkeypatch, bad):
+    monkeypatch.setenv(HEARTBEAT_INTERVAL_ENV, bad)
+    monkeypatch.setenv(DEAD_AFTER_ENV, bad)
+    assert heartbeat_interval_s() == HEARTBEAT_INTERVAL_DEFAULT_S
+    assert host_dead_after_s() == DEAD_AFTER_DEFAULT_S
