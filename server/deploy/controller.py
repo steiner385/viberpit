@@ -111,7 +111,8 @@ class DeployController:
         targets = self._runner_targets
         if results and targets:
             await self._runners.rewind_runners(targets, results, sha=local,
-                                               local_name=self._local_name)
+                                               local_name=self._local_name,
+                                               daemon_changed=daemon_changed)
 
     async def deploy_once(self, target_sha: str | None = None) -> DeployStatus:
         """Run one deploy. Without *target_sha* the deploy targets origin/master's tip,
@@ -227,6 +228,15 @@ class DeployController:
             # /info by prefix, so a short /info sha still matches).
             short = await asyncio.to_thread(self._git.short_sha, self.repo, remote)
             targets = await self._runners.load_runner_targets()
+            if not targets:
+                # An empty fan-out is indistinguishable from a successful one in the phase
+                # state, and the usual cause is an unset CCSWITCH_DB_URL in a hand-run
+                # `python -m server.deploy --once` (docs/runbooks/rocky-session-host.md §5):
+                # the registry lookup lands on an empty default DB and every runner is
+                # silently left on the old code while the deploy reports green.
+                self.status.warnings.append(
+                    "runners: no enabled fleet hosts found — nothing was fanned out "
+                    "(is CCSWITCH_DB_URL pointing at the fleet database?)")
             results = await self._runners.deploy_runners(
                 targets, target_sha=remote, daemon_changed=daemon_changed,
                 deps_changed=deps_changed, local_name=self._local_name,

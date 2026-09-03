@@ -158,11 +158,38 @@ remote, in a `runners` phase that runs before the edge restart (`server/deploy/r
    `sudo -n systemctl restart ccswitch-daemon.service`.
 4. Verify `/info` reports the target (`checkoutSha`, and `sha` after a restart); `restore_deploy`.
 
-At most two runners are in flight at once. A runner that is unhealthy at deploy time is
-skipped (`offline`) and reconciles itself at its next boot (§5.1). A runner that fails is
+At most two runners are in flight at once. A runner the probe could not **reach** is skipped
+(`offline`) and reconciles itself at its next boot (§5.1); one that answered but is *fenced*
+by the version-skew or protocol gate is still deployed to — that is what un-fences it. A
+runner that fails is
 named in the deploy error; the edge still lands, and the failed runner is **fenced from
 dispatch** by the probe's version-skew gate (`Fleet` shows `version skew: …`) until you fix
 it — the Fleet "Update" button re-runs the same sequence at the deployed sha.
+
+A runner fenced by the skew gate is still a deploy **target** — reachable, just on the wrong
+commit — so the next deploy tries it again. To clear one by hand without a deploy:
+
+```bash
+ssh <host> sudo systemctl restart ccswitch-daemon.service   # blocks while turns drain
+```
+
+The unit's `ExecStartPre` runs `runner_sync` (§5.1), which fast-forwards the checkout to
+`deploy_state.deployed_sha`, and the next probe (≤30 s) clears the `version skew` error. The
+Fleet "Update" button does the same thing over SSH.
+
+**Running the deploy by hand.** `python -m server.deploy --once` from an interactive shell
+must load the service environment first:
+
+```bash
+set -a; source /etc/ccswitch/ccswitch.env; set +a
+python -m server.deploy --once
+```
+
+The `runners` phase reads the fleet registry from `CCSWITCH_DB_URL`. Unset, the lookup lands
+on an empty default database and the deploy **silently fans out to nobody** while reporting
+green — every runner is left on the old code. The tell is the warning
+`runners: no enabled fleet hosts found — nothing was fanned out`; if you see it, you almost
+certainly forgot the `source`.
 
 The deploy records the deployed sha in the `deploy_state` table once the edge is healthy.
 `CCSWITCH_DAEMON_SSH_HOST` / `CCSWITCH_DAEMON_SSH_REPO` are no longer read by the deploy;

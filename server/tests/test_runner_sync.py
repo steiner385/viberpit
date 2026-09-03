@@ -17,13 +17,21 @@ class Git:
     a subclass says otherwise.
     """
     def __init__(self, head, *, clean=True, ff=True, fetch_ok=True, pip_ok=True, deps_changed=False,
-                 checkout_ok=True):
+                 checkout_ok=True, branch="master", master_is_ancestor=True):
         self.head, self.clean, self.ff, self.fetch_ok, self.pip_ok = head, clean, ff, fetch_ok, pip_ok
         self.deps_changed = deps_changed
         self.checkout_ok = checkout_ok
+        # Which branch HEAD is on, and whether the LOCAL master is already contained in the
+        # deployed sha. Only a detached/other-branch HEAD makes the second question matter:
+        # `checkout master` moves HEAD onto local master, which ff-only can then only move
+        # forward — so local commits master carries and the deployed sha does not would be
+        # a silent BACKWARDS move.
+        self.branch, self.master_is_ancestor = branch, master_is_ancestor
         self.calls: list[list[str]] = []
 
     def is_ancestor(self, anc: str, desc: str) -> bool:
+        if anc == "master":
+            return self.master_is_ancestor
         return self.ff and anc == self.head and desc != self.head
 
     def __call__(self, argv, **kw):
@@ -33,6 +41,8 @@ class Git:
             a = ["git"] + a[3:]
         def done(rc=0, out=""):
             return subprocess.CompletedProcess(argv, rc, stdout=out, stderr="err")
+        if a[:4] == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+            return done(0, self.branch + "\n")
         if a[:3] == ["git", "rev-parse", "HEAD"]:
             return done(0, self.head + "\n")
         if a[:3] == ["git", "status", "--porcelain"]:
@@ -106,6 +116,29 @@ def test_diverged_refuses_without_reset():
     g = Git("a" * 40, ff=False)
     assert RS.sync("/repo", deployed_sha=TARGET, run=g) == "not-fast-forward"
     assert not any("reset" in " ".join(c) for c in g.calls)
+
+
+def test_diverged_local_master_is_not_checked_out():
+    """HEAD is fast-forwardable to the deployed sha, but it is on a BRANCH — and local
+    master carries commits the deployed sha does not. `git checkout master` would move HEAD
+    backwards onto them before the ff-only merge could object, quietly starting the daemon
+    on somebody's unmerged work. Refuse before touching HEAD."""
+    g = Git("a" * 40, branch="hotfix", master_is_ancestor=False)
+    assert RS.sync("/repo", deployed_sha=TARGET, run=g) == "not-fast-forward"
+    assert not any(c[:2] == ["git", "checkout"] for c in g.calls), "HEAD must not have moved"
+    assert not any("reset" in " ".join(c) for c in g.calls)
+
+
+def test_on_a_branch_with_clean_master_fast_forwards():
+    """The benign half: a branch whose local master is already contained in the deployed
+    sha is safe to check out, so the reconcile proceeds exactly as from master."""
+    g = Git("a" * 40, branch="hotfix", master_is_ancestor=True)
+    assert RS.sync("/repo", deployed_sha=TARGET, run=g) == "updated"
+    joined = [" ".join(c) for c in g.calls]
+    assert "git -C /repo checkout -q master" in joined
+    assert f"git -C /repo merge --ff-only {TARGET}" in joined
+    assert joined.index("git -C /repo checkout -q master") < \
+        joined.index(f"git -C /repo merge --ff-only {TARGET}")
 
 
 def test_fetch_failure_is_reported():

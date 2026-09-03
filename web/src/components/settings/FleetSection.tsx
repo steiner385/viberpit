@@ -106,13 +106,21 @@ export function FleetSection() {
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['fleet', 'hosts'] }),
   })
 
-  /** Outdated (sha trails the newest known one) AND upgradable in-app (ssh config set).
-   *  Compares against the checkout HEAD when known — it may be ahead of the running
-   *  process's sha after a deploy that advanced the checkout without restarting (#859). */
+  /** Outdated AND upgradable in-app (ssh config set).
+   *  Two ways to be outdated. The checkout HEAD may trail the newest known sha — compare
+   *  against it rather than the process sha, since a deploy can advance the checkout
+   *  without restarting (#859). But the checkout can also be bang up to date while the
+   *  PROCESS still runs older code: exactly the "version skew" the probe fences on, and
+   *  exactly what an Update (which restarts the daemon) fixes. Without this second case
+   *  the one host that most needs the button is the one host that never shows it. */
   const canUpdate = (h: FleetHost): boolean => {
     const compareSha = h.checkoutSha ?? h.sha
-    return Boolean(h.sshHost && h.repoPath && compareSha && newestSha && !shaMatch(compareSha, newestSha)) &&
-      h.upgrade?.state !== 'running'
+    const checkoutTrails = Boolean(
+      compareSha && newestSha && !shaMatch(compareSha, newestSha))
+    const processSkewed = Boolean(h.lastError?.startsWith('version skew'))
+    return Boolean(h.sshHost && h.repoPath) &&
+      h.upgrade?.state !== 'running' &&
+      (checkoutTrails || processSkewed)
   }
 
   if (isError) {
@@ -182,12 +190,12 @@ export function FleetSection() {
                       <button
                         type="button"
                         aria-label={`update ${h.name}`}
-                        title={`Update ${h.name} to ${newestSha}`}
+                        title={`Update ${h.name} to the deployed version`}
                         disabled={upgrade.isPending}
                         onClick={() => {
                           if (
                             window.confirm(
-                              `Update ${h.name} to ${newestSha}? Its daemon will restart.`,
+                              `Update ${h.name} to the deployed version? Its daemon will restart.`,
                             )
                           )
                             upgrade.mutate(h.name)

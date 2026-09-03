@@ -53,6 +53,10 @@ class RunnerTarget:
     healthy: bool | None
     ssh_host: str | None
     repo_path: str | None
+    # The probe's last_error, verbatim. Load-bearing: `healthy is False` alone cannot tell
+    # "unreachable" from "reached fine, but FENCED by the skew/protocol gate" — see
+    # is_deployable.
+    last_error: str | None = None
 
 
 @dataclass
@@ -116,9 +120,33 @@ def remote_rewind_commands(repo_path: str, sha: str) -> list[tuple[str, list[str
 
 
 REMOTE_RESTART = ["sudo", "-n", "systemctl", "restart", RUNNER_UNIT]
-# One concept, one literal: steps.py defines the local daemon-restart argv (steps.py's own
-# restart_local_daemon uses it too), so the two callers can never drift apart.
-LOCAL_RESTART = LOCAL_DAEMON_RESTART
+# The local daemon-restart argv lives in steps.LOCAL_DAEMON_RESTART (steps.py's own
+# restart_local_daemon uses it too) and is referenced directly at the call sites below, so
+# the two callers can never drift apart.
+
+
+def is_deployable(t: RunnerTarget) -> bool:
+    """Is this host something a deploy should try to update?
+
+    NOT the same question as "is it dispatchable". The probe sets healthy=False for two
+    quite different situations:
+
+    * the host could not be REACHED (``ConnectError: …``) — nothing to deploy to; and
+    * the host answered perfectly well but is FENCED by the version-skew or protocol gate.
+
+    The fenced case is precisely the host a deploy must fix. Treating `healthy is not True`
+    as "offline" meant a runner that failed one deploy was silently skipped by every later
+    one — and the deploy still reported green, so the host stayed fenced forever.
+    """
+    # Imported lazily: host_probe pulls in the ORM/session layer, which this module (and
+    # its tests) otherwise never need.
+    from server.sessions.host_probe import FENCED_REACHABLE_PREFIXES
+    if not t.enabled:
+        return False
+    if t.healthy is True:
+        return True
+    return (t.healthy is False and t.last_error is not None
+            and t.last_error.startswith(FENCED_REACHABLE_PREFIXES))
 
 
 def is_local(target: RunnerTarget, local_name: str) -> bool:
@@ -261,7 +289,7 @@ class RunnerDeploy:
         if not t.enabled:
             self._mark("disabled")
             return self.progress
-        if t.healthy is not True:
+        if not is_deployable(t):
             self._mark("offline")
             return self.progress
         local = is_local(t, self.local_name)
@@ -298,7 +326,7 @@ class RunnerDeploy:
                 await self._drain_then()
                 self._mark(step="restart")
                 if local:
-                    await self._local("restart", LOCAL_RESTART)
+                    await self._local("restart", LOCAL_DAEMON_RESTART)
                 else:
                     await self._ssh("restart", REMOTE_RESTART)
 
@@ -319,8 +347,16 @@ class RunnerDeploy:
             log.warning("deploy.runner.failed host=%s step=%s: %s", t.name, self.progress.step, exc)
         return self.progress
 
-    async def rewind(self, sha: str) -> None:
-        """Rollback: put a moved remote runner back on *sha* and restart it. Never raises."""
+    async def rewind(self, sha: str, *, daemon_changed: bool) -> None:
+        """Rollback: put a moved remote runner back on *sha*. Never raises.
+
+        The CHECKOUT always moves back — the deploy advanced it on every runner, whatever
+        the diff touched. The DAEMON is only drained and restarted when this deploy
+        restarted it: an edge-only deploy left the process on its prior commit (which is
+        *sha*), so restarting here would kill live turns to reach a state already true.
+        The drain is why the restart is conditional and not merely wasteful — a bare
+        restart takes in-flight turns down with it.
+        """
         t = self.target
         if is_local(t, self.local_name) or not t.ssh_host or not t.repo_path:
             return
@@ -328,9 +364,11 @@ class RunnerDeploy:
             for step, remote in remote_rewind_commands(t.repo_path, sha):
                 self._mark("running", step=f"rewind:{step}")
                 await self._ssh(step, remote)
-            self._mark(step="rewind:restart")
-            await self._ssh("restart", REMOTE_RESTART)
-            await self._verify(sha, require_process=True)
+            if daemon_changed:
+                await self._drain_then()
+                self._mark(step="rewind:restart")
+                await self._ssh("restart", REMOTE_RESTART)
+            await self._verify(sha, require_process=daemon_changed)
             self._mark("done", sha=sha)
         except Exception as exc:  # noqa: BLE001
             self._mark("failed", error=f"rewind failed: {exc}"[:500])
@@ -357,11 +395,18 @@ async def deploy_runners(targets: list[RunnerTarget], *, target_sha: str, daemon
 
 
 async def rewind_runners(targets: list[RunnerTarget], results: dict[str, HostProgress], *,
-                         sha: str, local_name: str, **runner_kwargs: Any) -> None:
-    """Rollback helper: rewind every runner whose checkout this deploy moved."""
+                         sha: str, local_name: str, daemon_changed: bool,
+                         **runner_kwargs: Any) -> None:
+    """Rollback helper: rewind every runner whose checkout this deploy moved.
+
+    *daemon_changed* is the deploy's own classification, threaded through so the rewind
+    restarts exactly the runners the deploy restarted — no more.
+    """
     moved = [t for t in targets if results.get(t.name) is not None and results[t.name].moved]
-    await asyncio.gather(*(RunnerDeploy(t, local_name=local_name, **runner_kwargs).rewind(sha)
-                           for t in moved), return_exceptions=True)
+    await asyncio.gather(
+        *(RunnerDeploy(t, local_name=local_name, **runner_kwargs).rewind(
+            sha, daemon_changed=daemon_changed) for t in moved),
+        return_exceptions=True)
 
 
 async def load_runner_targets() -> list[RunnerTarget]:
@@ -372,5 +417,6 @@ async def load_runner_targets() -> list[RunnerTarget]:
     async with db_session() as db:
         rows = (await db.execute(sa_select(Host).order_by(Host.name))).scalars().all()
     return [RunnerTarget(name=r.name, endpoint=r.endpoint, enabled=bool(r.enabled),
-                         healthy=r.healthy, ssh_host=r.ssh_host, repo_path=r.repo_path)
+                         healthy=r.healthy, ssh_host=r.ssh_host, repo_path=r.repo_path,
+                         last_error=r.last_error)
             for r in rows]

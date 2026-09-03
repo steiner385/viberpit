@@ -91,7 +91,7 @@ def test_unsafe_values_are_refused_before_any_command():
     rewind_calls: list = []
     rd2 = R.RunnerDeploy(bad, local_name="dobby", run=_recorder(rewind_calls),
                          client_factory=lambda e: FakeClient([]), fetch_info=_info("01d0000"))
-    asyncio.run(rd2.rewind("01d0000"))
+    asyncio.run(rd2.rewind("01d0000", daemon_changed=True))
     assert rd2.progress.state == "failed" and "ssh_host" in (rd2.progress.error or "")
     assert rewind_calls == []
 
@@ -189,7 +189,8 @@ def test_remote_without_ssh_config_is_unconfigured():
 
 def test_offline_and_disabled_targets_are_skipped_by_deploy_runners():
     off = R.RunnerTarget(name="off", endpoint="https://off", enabled=True, healthy=False,
-                         ssh_host="off", repo_path="/srv/cc")
+                         ssh_host="off", repo_path="/srv/cc",
+                         last_error="ConnectError: [Errno 111] Connection refused")
     unk = R.RunnerTarget(name="unk", endpoint="https://unk", enabled=True, healthy=None,
                          ssh_host="unk", repo_path="/srv/cc")
     dis = R.RunnerTarget(name="dis", endpoint="https://dis", enabled=False, healthy=True,
@@ -201,6 +202,58 @@ def test_offline_and_disabled_targets_are_skipped_by_deploy_runners():
         client_factory=lambda e: FakeClient([]), fetch_info=_info("abc1234")))
     assert {n: p.state for n, p in res.items()} == {"off": "offline", "unk": "offline", "dis": "disabled"}
     assert calls == []
+
+
+def _fenced(name, last_error):
+    return R.RunnerTarget(name=name, endpoint=f"https://{name}", enabled=True, healthy=False,
+                          ssh_host="rocky", repo_path="/home/tony/GitHub/ccswitch",
+                          last_error=last_error)
+
+
+def test_skew_fenced_runner_is_a_deploy_target():
+    """healthy=False does NOT mean unreachable. The probe fences a runner that answered
+    fine but is on the wrong commit — and a deploy is precisely what un-fences it. Treating
+    it as `offline` meant one failed deploy skipped that host from every LATER deploy while
+    still reporting green, so it stayed fenced (and out of dispatch) forever."""
+    calls: list = []
+    rpc: list = []
+    t = _fenced("rocky", "version skew: checkout=old0000 process=old0000 deployed=abc1234")
+    rd = R.RunnerDeploy(t, local_name="dobby", run=_recorder(calls),
+                        client_factory=lambda e: FakeClient(rpc), fetch_info=_info("abc1234"),
+                        verify_interval_s=0)
+    st = asyncio.run(rd.deploy(target_sha="abc1234", daemon_changed=True, deps_changed=False,
+                               local_daemon_enabled=True))
+    assert st.state == "done" and st.moved
+    assert [c[-1] for c in calls] == ["origin", "abc1234", "sync", "ccswitch-daemon.service"]
+    assert rpc == ["snapshot_deploy", "begin_drain", "drain_status", "close_events_connections",
+                   "restore_deploy"]
+
+
+def test_protocol_mismatched_runner_is_a_deploy_target():
+    """Same shape as the skew gate: reachable, fenced, and fixed by deploying to it."""
+    calls: list = []
+    t = _fenced("rocky", "protocol mismatch: daemon=1 edge=2")
+    rd = R.RunnerDeploy(t, local_name="dobby", run=_recorder(calls),
+                        client_factory=lambda e: FakeClient([]), fetch_info=_info("abc1234"),
+                        verify_interval_s=0)
+    st = asyncio.run(rd.deploy(target_sha="abc1234", daemon_changed=True, deps_changed=False,
+                               local_daemon_enabled=True))
+    assert st.state == "done"
+    assert any("systemctl" in c for c in (a for call in calls for a in call))
+
+
+def test_is_deployable_matches_the_probes_own_fenced_prefixes():
+    """The predicate reads a string the PROBE writes; pin it against the probe's constant
+    rather than against re-typed literals, so a reworded gate message cannot silently drop
+    a host out of every deploy."""
+    from server.sessions.host_probe import FENCED_REACHABLE_PREFIXES
+    for prefix in FENCED_REACHABLE_PREFIXES:
+        assert R.is_deployable(_fenced("h", f"{prefix}: details here"))
+    assert not R.is_deployable(_fenced("h", "ConnectError: refused"))
+    assert not R.is_deployable(_fenced("h", None))
+    assert not R.is_deployable(R.RunnerTarget(
+        name="h", endpoint="https://h", enabled=False, healthy=True, ssh_host="h",
+        repo_path="/srv/cc", last_error=None)), "disabled is never deployable"
 
 
 def test_failed_runner_does_not_stop_the_others_and_concurrency_is_capped():
@@ -234,18 +287,70 @@ def test_failed_runner_does_not_stop_the_others_and_concurrency_is_capped():
 
 
 def test_rewind_only_moved_hosts_and_uses_reset_hard():
-    calls: list = []
+    """A daemon-changing deploy restarted the runner, so the rewind must too — and it must
+    DRAIN first. A bare restart takes in-flight turns down with it, which is the whole
+    reason the forward path drains; a rollback is not a licence to skip it."""
+    timeline: list = []
+
+    def run(argv, **kw):
+        timeline.append(("run", " ".join(argv)))
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    class TimelineClient(FakeClient):
+        async def call(self, method, **kw):
+            timeline.append(("rpc", method))
+            return await super().call(method, **kw)
+
     res = {"rocky": R.HostProgress(state="done", moved=True),
            "other": R.HostProgress(state="failed", moved=False)}
     other = R.RunnerTarget(name="other", endpoint="https://o", enabled=True, healthy=True,
                            ssh_host="other", repo_path="/srv/cc")
     asyncio.run(R.rewind_runners([ROCKY, other], res, sha="01d0000", local_name="dobby",
-                                 run=_recorder(calls), client_factory=lambda e: FakeClient([]),
+                                 daemon_changed=True,
+                                 run=run, client_factory=lambda e: TimelineClient([]),
                                  fetch_info=_info("01d0000"), verify_interval_s=0))
-    joined = [" ".join(c) for c in calls]
+    joined = [c for k, c in timeline if k == "run"]
     assert any("reset --hard 01d0000" in j and "rocky" in j for j in joined)
     assert not any("other" in j for j in joined)
     assert joined[-1].endswith("sudo -n systemctl restart ccswitch-daemon.service")
+    # Shared timeline: only this proves the drain happens BEFORE the restart, not merely
+    # that both happened (the ssh argv and the RPC list are asserted separately elsewhere).
+    restart = next(i for i, e in enumerate(timeline)
+                   if e[0] == "run" and "systemctl restart" in e[1])
+    assert ("rpc", "begin_drain") in timeline
+    assert timeline.index(("rpc", "begin_drain")) < restart
+    assert timeline.index(("rpc", "close_events_connections")) < restart
+
+
+def test_rewind_edge_only_resets_without_restart_or_drain():
+    """An EDGE-ONLY deploy never restarted the runner, so its process is already on the
+    rollback sha. The checkout still has to come back (the deploy advanced it on every
+    host), but draining and restarting here would kill live turns to reach a state that is
+    already true."""
+    calls: list = []
+    rpc: list = []
+    res = {"rocky": R.HostProgress(state="done", moved=True)}
+    asyncio.run(R.rewind_runners([ROCKY], res, sha="01d0000", local_name="dobby",
+                                 daemon_changed=False,
+                                 run=_recorder(calls), client_factory=lambda e: FakeClient(rpc),
+                                 fetch_info=_info("01d0000"), verify_interval_s=0))
+    joined = [" ".join(c) for c in calls]
+    assert any("reset --hard 01d0000" in j for j in joined), "the checkout still rewinds"
+    assert not any("systemctl" in j for j in joined)
+    assert "begin_drain" not in rpc
+
+
+def test_rewind_edge_only_verifies_the_checkout_not_the_process():
+    """Corollary of the above: with the daemon left running old code, /info's process sha
+    stays whatever it was. Verifying it would time the rewind out and report a rollback
+    failure for a rollback that worked."""
+    async def fetch(endpoint):
+        return {"sha": "stale00", "checkoutSha": "01d0000"}
+    rd = R.RunnerDeploy(ROCKY, local_name="dobby", run=_recorder([]),
+                        client_factory=lambda e: FakeClient([]), fetch_info=fetch,
+                        verify_timeout_s=0.05, verify_interval_s=0.01)
+    asyncio.run(rd.rewind("01d0000", daemon_changed=False))
+    assert rd.progress.state == "done" and rd.progress.sha == "01d0000"
 
 
 def test_progress_callback_sees_each_step():

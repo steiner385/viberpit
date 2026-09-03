@@ -1,3 +1,4 @@
+import server.sessions.version_skew as VS
 from server.deploy.state import DeployState
 from server.sessions.version_skew import detect_skew
 
@@ -44,3 +45,34 @@ def test_no_daemon_sha_skips_process_check():
 def test_prefix_abbreviations_match():
     assert detect_skew(checkout_sha="bbbbbbbb1", process_sha="bbbbbb", state=S,
                        is_ancestor=lambda a, d: True) is None
+
+
+def test_process_sha_longer_than_daemon_sha_still_prefix_matches():
+    """The two shas are compared whole — short_sha_match is already prefix-symmetric, so
+    neither side is pre-truncated to the other's length."""
+    s = DeployState(deployed_sha="b" * 40, deployed_short="bbbbbbb", daemon_sha="ccccccc",
+                    deployed_at=None)
+    assert detect_skew(checkout_sha="bbbbbbb", process_sha="c" * 40, state=s,
+                       is_ancestor=lambda a, d: False) is None
+
+
+def test_edge_is_ancestor_caches_success_but_retries_a_failure(monkeypatch):
+    """An lru_cache would pin the FAILURE too, and the common failure is transient — the
+    edge has simply not fetched the runner's commit yet. Cached, that first False would
+    fence a current runner until the edge process restarted."""
+    VS._reset_ancestry_cache_for_tests()
+    calls: list = []
+
+    def flaky(repo, anc, desc):
+        calls.append((anc, desc))
+        if len(calls) == 1:
+            raise RuntimeError("git fetch has not run yet")
+        return True
+
+    monkeypatch.setattr(VS.deploy_git, "is_ancestor", flaky)
+    monkeypatch.setattr(VS, "repo_root", lambda: "/repo")
+    assert VS.edge_is_ancestor("aaa", "bbb") is False
+    assert VS.edge_is_ancestor("aaa", "bbb") is True, "the failure was retried, not cached"
+    assert VS.edge_is_ancestor("aaa", "bbb") is True
+    assert len(calls) == 2, "the SUCCESS is memoised — one git call per pair"
+    VS._reset_ancestry_cache_for_tests()

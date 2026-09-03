@@ -285,11 +285,17 @@ def test_default_target_prefers_deploy_state(tmp_path):
 def test_default_target_falls_back_to_origin_master_without_deploy_state(tmp_path):
     from server.db import init_db
 
+    # The fallback resolves origin/master with `rev-parse` (not `--short`) for the same
+    # reason as the deploy_state branch: the sha lands in `git merge --ff-only` on ANOTHER
+    # host, which may need more hex digits to disambiguate the same commit.
+    full = "e" * 40
+
     async def run():
         await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'u.db'}")
-        return await host_upgrade.default_target_sha(resolve_origin=lambda: "zzzzzzz")
+        return await host_upgrade.default_target_sha(resolve_origin=lambda: full)
 
-    assert asyncio.run(run()) == "zzzzzzz"
+    got = asyncio.run(run())
+    assert got == full and len(got) == 40
 
 
 # ------------------------------------------------- state via list endpoint

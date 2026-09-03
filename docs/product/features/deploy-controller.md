@@ -42,15 +42,16 @@ outcome rather than a frozen spinner.
 **Non-goals** — a general multi-environment CD pipeline (this deploys one self-hosted instance);
 container/orchestrator-based deploys (it drives `git` + `systemd` directly); zero-downtime for the
 edge HTTP layer itself (browsers reconnect after the edge restart — it is the *sessions* that are
-protected); deploying to arbitrary fleet hosts (per-host runner upgrades are the fleet capability;
-this controller targets the edge plus one configured remote daemon).
+protected); deploying to hosts outside the fleet registry (the fan-out targets the edge plus every
+registered `Host`, and nothing else).
 
 **Notes** —
-- **Phased deploy** (`server/deploy/controller.py`): PREFLIGHT (fetch, validate CI green, check
-  target ancestry) → SAVE (snapshot live sessions) → UPDATE (ff git, sync deps via `python -m pip`,
-  rebuild frontend) → REPORT → RESTART (drain, restart units, health-gate) → RESUME (reattach
-  dropped sessions). Every synchronous step runs via `asyncio.to_thread` so the loop keeps serving
-  `/status` and `/healthz`.
+- **Phased deploy** (`server/deploy/controller.py`), seven phases: PREFLIGHT (fetch, validate CI
+  green, check target ancestry) → SAVE (snapshot live sessions) → UPDATE (ff git, sync deps via
+  `python -m pip`, rebuild frontend) → REPORT → RUNNERS (fan out to every fleet daemon) → RESTART
+  (the edge: drain, restart units, health-gate) → RESUME (reattach dropped sessions). RUNNERS runs
+  *before* the edge restart — daemon-before-edge is load-bearing (#190). Every synchronous step runs
+  via `asyncio.to_thread` so the loop keeps serving `/status` and `/healthz`.
 - **Draining in-flight turns** (`server/deploy/drain.py`): `drain_and_wait` asks the daemon to
   `begin_drain`, polls `drain_status`, and waits until safe. Ordinary turns are capped at
   `CCSWITCH_DRAIN_TURN_CAP_SEC` (default 180s); a session mid-compaction (`condensing`) is
@@ -76,11 +77,19 @@ this controller targets the edge plus one configured remote daemon).
   controller schedules a deferred `systemd-run` restart so it runs after the status is persisted. On
   boot, a `running=True` status from a died-mid-deploy predecessor is reported as a terminal failure
   rather than a frozen spinner.
-- **Remote daemon over SSH** (`server/deploy/steps.py`, PRs #719, #708): when
-  `CCSWITCH_DAEMON_SSH_HOST`/`_SSH_REPO` are set, the daemon is updated over SSH (fetch → ff-only
-  merge or rollback reset → `sync` → `sudo systemctl restart`) daemon-first. The `sync` is
-  load-bearing: ext4 delayed allocation once left a git-rewritten `orchestrator.py` as zero bytes
-  after an unclean reboot (PR #815).
+- **Fleet fan-out** (`server/deploy/runners.py`, PRs #719, #708): the RUNNERS phase deploys to
+  **every** host in the fleet registry, not to one env-configured remote. Each `Host` row supplies
+  its own `ssh_host`/`repo_path`; per runner the lifecycle is snapshot → fetch → `merge --ff-only`
+  → pip (only when `pyproject.toml`/`uv.lock` changed) → `sync` → (drain → `sudo -n systemctl
+  restart ccswitch-daemon.service`, only on a daemon-changing diff) → verify `/info` → restore. Two
+  runners run at once and one runner's failure never stops another; the local daemon reuses the
+  controller's own checkout and restarts without SSH. A host the probe could not reach is reported
+  `offline`, but one merely *fenced* by the version-skew or protocol gate is still deployed to —
+  the deploy is what un-fences it. `CCSWITCH_DAEMON_SSH_HOST`/`_SSH_REPO` are no longer a deploy
+  path: they only seed the matching host row's `ssh_host`/`repo_path` once at edge startup. The
+  `sync` is load-bearing: ext4 delayed allocation once left a git-rewritten `orchestrator.py` as
+  zero bytes after an unclean reboot (PR #815). A runner also self-reconciles at boot via
+  `ExecStartPre=… -m server.deploy.runner_sync`.
 - Earlier hardening: PR #481 stopped systemd SIGKILLing the edge on every deploy; PR #870 made
   restore outcomes observable and replays interrupted turns on resume; `restore` from the SAVE
   snapshot drives the RESUME reattach.
@@ -89,7 +98,9 @@ this controller targets the edge plus one configured remote daemon).
 - `server/deploy/controller.py` — phased `DeployController`, rollback trigger, self-restart scheduling.
 - `server/deploy/drain.py` — `drain_and_wait` turn/condense caps.
 - `server/deploy/steps.py` — `ci_verdict`, `wait_healthy`, `require_endpoints_healthy`, `rollback_to`,
-  SSH remote-daemon update.
+  change classification (`classify_change`/`_EDGE_ONLY`).
+- `server/deploy/runners.py` — per-runner fan-out lifecycle, `is_deployable`, rollback `rewind`.
+- `server/deploy/runner_sync.py` — boot-time reconcile (`ExecStartPre` on the daemon unit).
 - `server/deploy/serve.py` — durable `DeployStatus` path + interrupted-deploy recovery.
 - `server/deploy/git.py`, `server/deploy/types.py` — git ancestry helpers, status/phase model.
 - `server/api/deploy.py` — `/api/deploy/status`, `/api/deploy/start` (`targetSha`).

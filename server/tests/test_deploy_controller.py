@@ -69,7 +69,8 @@ def make_steps(*, ci="green", healthy=True, changed=None):
 
 def make_runners(*, targets=None, outcome="done", moved=True, restore=None):
     """Fake runners module: records the fan-out call and returns the same state per host."""
-    calls = SimpleNamespace(deploy_kwargs=None, rewound=None, loaded=0)
+    calls = SimpleNamespace(deploy_kwargs=None, rewound=None, loaded=0,
+                            rewind_daemon_changed=None)
     mod = SimpleNamespace()
     hosts = targets if targets is not None else [
         RunnerTarget(name="rocky", endpoint="https://rocky:9443", enabled=True, healthy=True,
@@ -93,8 +94,9 @@ def make_runners(*, targets=None, outcome="done", moved=True, restore=None):
             out[t.name] = p
         return out
 
-    async def rewind(targets, results, *, sha, **kw):
+    async def rewind(targets, results, *, sha, daemon_changed, **kw):
         calls.rewound = (sorted(n for n, p in results.items() if p.moved), sha)
+        calls.rewind_daemon_changed = daemon_changed
 
     mod.load_runner_targets = load
     mod.deploy_runners = deploy
@@ -400,6 +402,22 @@ async def test_offline_runner_is_reported_not_failed():
 
 
 @pytest.mark.asyncio
+async def test_empty_fleet_adds_a_warning():
+    """An empty fan-out and a successful one are indistinguishable in the phase state, so a
+    deploy that reached NOBODY reported green. The usual cause is a hand-run
+    `python -m server.deploy --once` without CCSWITCH_DB_URL: the registry lookup lands on
+    an empty default DB and every runner is left on the old code."""
+    g = FakeGit("old0000000", "new1111111", ["server/x.py"])
+    s, _ = make_steps(changed=["server/x.py"])
+    r, rc = make_runners(targets=[])
+    c = make_controller(g, s, runners=(r, rc))
+    st = await c.deploy_once()
+    assert st.error is None and st.phases["runners"] == "done"
+    assert any("no enabled fleet hosts" in w and "CCSWITCH_DB_URL" in w for w in st.warnings), \
+        st.warnings
+
+
+@pytest.mark.asyncio
 async def test_unconfigured_online_runner_fails_the_deploy():
     g = FakeGit("old0000000", "new1111111", ["server/x.py"])
     s, _ = make_steps(changed=["server/x.py"])
@@ -463,7 +481,24 @@ async def test_edge_health_failure_rolls_back_edge_and_rewinds_moved_runners():
     assert st.error and "health gate" in st.error
     assert sc.rolled_back is True
     assert rc.rewound == (["rocky"], "old0000000")
+    # server/x.py is edge-only, so the fan-out never restarted a runner — the rewind must
+    # not restart (and drain) one either, just put the checkout back.
+    assert rc.rewind_daemon_changed is False
     assert stc.recorded == [], "a rolled-back deploy must not move the deployed version"
+
+
+@pytest.mark.asyncio
+async def test_rewind_restarts_runners_when_the_deploy_restarted_them():
+    """The other half of the pair: a daemon-changing deploy DID restart every runner, so
+    the rewind has to as well — the runners are running the code being rolled back."""
+    g = FakeGit("old0000000", "new1111111", ["server/sessions/orchestrator.py"])
+    s, sc = make_steps(healthy=False, changed=["server/sessions/orchestrator.py"])
+    r, rc = make_runners(moved=True)
+    c = make_controller(g, s, runners=(r, rc))
+    st = await c.deploy_once()
+    assert st.error and sc.rolled_back is True
+    assert rc.rewound == (["rocky"], "old0000000")
+    assert rc.rewind_daemon_changed is True
 
 
 @pytest.mark.asyncio

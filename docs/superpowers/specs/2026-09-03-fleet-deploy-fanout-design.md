@@ -90,9 +90,9 @@ with a concurrency cap of **2**; decision 2a):
    daemon-imported Python changed, so the running process already equals the new
    checkout's daemon code.
 4. **Verify**: poll `/info` until `checkoutSha` prefix-matches the target and — when
-   restarted — `sha` (process) does too, within the existing 90 s budget. Write
-   `hosts.sha`/`checkout_sha` directly on success so the dispatcher does not wait for the
-   next 30 s probe.
+   restarted — `sha` (process) does too, within the existing 90 s budget. The next probe
+   (≤30 s) records the new shas; the host stays healthy meanwhile, so no dispatch is lost.
+   (Decided at final review: keeps `RunnerDeploy` DB-free and injectable.)
 5. `restore_deploy` RPC (only if restarted), merged into `status.restore` per host.
 
 **Status.** `DeployStatus` gains `hosts: dict[name, {state, step, error, sha}]` with

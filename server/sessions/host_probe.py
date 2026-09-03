@@ -23,7 +23,17 @@ log = logging.getLogger(__name__)
 
 Fetch = Callable[[str], Awaitable[dict]]
 
-__all__ = ["probe_host", "probe_all", "probe_loop", "default_fetch"]
+__all__ = ["probe_host", "probe_all", "probe_loop", "default_fetch",
+           "FENCED_REACHABLE_PREFIXES"]
+
+# A host fenced by one of the two GATES below is unhealthy for DISPATCH but was reached
+# perfectly well over the network — so it is still a deploy TARGET (a deploy is exactly
+# what un-fences it). ONE constant, used both when composing the `last_error` text and by
+# ``server.deploy.runners.is_deployable`` when reading it back, so the two cannot drift:
+# a prefix that stops matching would silently turn "fenced" into "skipped by every deploy".
+_SKEW_PREFIX = "version skew"          # composed in server/sessions/version_skew.py
+_PROTOCOL_PREFIX = "protocol mismatch"
+FENCED_REACHABLE_PREFIXES: tuple[str, ...] = (_SKEW_PREFIX, _PROTOCOL_PREFIX)
 
 
 async def default_fetch(endpoint: str) -> dict:
@@ -60,7 +70,7 @@ async def probe_host(name: str, endpoint: str, *, fetch: Fetch,
         # Gate 1 — protocol: a daemon speaking another RPC protocol is never dispatchable.
         if daemon_proto is not None and daemon_proto != PROTOCOL_VERSION:
             values.update(healthy=False, last_error=(
-                f"protocol mismatch: daemon={daemon_proto} edge={PROTOCOL_VERSION}"), **metrics)
+                f"{_PROTOCOL_PREFIX}: daemon={daemon_proto} edge={PROTOCOL_VERSION}"), **metrics)
         else:
             # Gate 2 — version skew (spec §4): not on the deployed commit ⇒ fenced from
             # dispatch until a deploy fan-out, runner_sync, or an operator fixes it.

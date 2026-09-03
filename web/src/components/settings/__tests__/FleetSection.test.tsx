@@ -135,6 +135,19 @@ describe('FleetSection', () => {
     hosts[1] = { ...hosts[1], upgrade: idle }
   })
 
+  it('offers Update for a host whose checkout is current but whose PROCESS is skewed', async () => {
+    // The one host that most needs the button: the deploy advanced its checkout to the
+    // newest sha but the daemon restart failed, so it still RUNS old code and the probe
+    // fenced it with "version skew". Comparing only the checkout sha hid the button here.
+    const original = hosts[1]
+    hosts[1] = { ...hosts[1], checkoutSha: 'def5678', sha: 'old1111',
+      lastError: 'version skew: checkout=def5678 process=old1111 deployed=def5678' }
+    wrap(<FleetSection />)
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'update rocky' })).toBeInTheDocument())
+    hosts[1] = original
+  })
+
   it('shows the checkout sha when it differs from the process sha', async () => {
     const original = hosts[1]
     hosts[1] = { ...hosts[1], sha: 'proc111', checkoutSha: 'chk2222' }

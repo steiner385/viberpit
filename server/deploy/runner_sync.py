@@ -90,6 +90,18 @@ def sync(repo: str, *, deployed_sha: str | None, run: Run = subprocess.run) -> O
         log.error("runner_sync: HEAD %s is not an ancestor of deployed %s — diverged checkout; "
                   "see docs/runbooks/rocky-session-host.md §5 (reset recipe)", head[:7], deployed_sha[:7])
         return "not-fast-forward"
+    # Detached or on a branch? `checkout master` moves HEAD to the LOCAL master, which the
+    # ff-only merge below then only moves FORWARD — so if local master already carries
+    # commits the deployed sha does not, the checkout alone silently rewinds this runner
+    # onto them. Refuse BEFORE touching HEAD; the operator's work is not ours to discard.
+    branch = (_git(run, repo, "rev-parse", "--abbrev-ref", "HEAD").stdout or "").strip()
+    if branch != "master" and \
+            _git(run, repo, "merge-base", "--is-ancestor", "master", deployed_sha).returncode != 0:
+        log.error("runner_sync: local master has commits not on the deployed sha — refusing to "
+                  "switch branches (HEAD=%s on %r, deployed=%s); see "
+                  "docs/runbooks/rocky-session-host.md §5 (reset recipe)",
+                  head[:7], branch, deployed_sha[:7])
+        return "not-fast-forward"
     co = _git(run, repo, "checkout", "-q", "master")
     if co.returncode != 0:
         log.error("runner_sync: git checkout master failed: %s", (co.stderr or "").strip()[:500])

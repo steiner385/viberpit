@@ -42,12 +42,13 @@ def upgrade_wire(name: str) -> dict[str, Any]:
             "startedAt": st["started_at"], "target": st["target"]}
 
 
-def _origin_master_short(run=subprocess.run) -> str:
+def _origin_master_full(run=subprocess.run) -> str:
+    """origin/master's tip as a FULL sha — same reason as the deploy_state branch below."""
     deploy_git.fetch(repo_root(), run=run)
-    return deploy_git.short_sha(repo_root(), "origin/master", run=run)
+    return deploy_git.remote_sha(repo_root(), "origin/master", run=run)
 
 
-async def default_target_sha(resolve_origin: Callable[[], str] = _origin_master_short) -> str:
+async def default_target_sha(resolve_origin: Callable[[], str] = _origin_master_full) -> str:
     """The fleet's deployed sha (deploy_state), else origin/master's tip for a fleet that
     has never recorded a deploy. Never a commit AHEAD of what the edge runs.
 
@@ -56,7 +57,9 @@ async def default_target_sha(resolve_origin: Callable[[], str] = _origin_master_
     DIFFERENT host — one that may need more hex digits to disambiguate the same commit
     (steps.short_sha_match's own docstring: dobby abbreviated to 8 chars, rocky to 7).
     RunnerDeploy._verify is prefix-based, so a full target still verifies fine against a
-    short ``/info`` sha.
+    short ``/info`` sha. BOTH branches return a full sha — the no-deploy_state fallback
+    resolves ``origin/master`` with ``rev-parse`` (not ``rev-parse --short``) for exactly
+    the same reason.
     """
     from server.deploy.state import read_deploy_state
     state = await read_deploy_state()

@@ -2,12 +2,6 @@ import subprocess
 from server import version
 
 
-def _run_ok(out: str):
-    def run(argv, **kw):
-        return subprocess.CompletedProcess(argv, 0, stdout=out + "\n", stderr="")
-    return run
-
-
 def test_checkout_sha_is_fresh_after_ttl_and_cached_within_it():
     version._reset_checkout_cache_for_tests()
     t = [100.0]
