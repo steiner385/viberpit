@@ -61,7 +61,20 @@ def _same(a: object, b: object) -> bool:
     return a == b
 
 
-def diff_fields(desired: DesiredItem, mirror: MirrorItem) -> list[Mutation]:
+def diff_fields(desired: DesiredItem, mirror: MirrorItem,
+                own_values: Mapping[tuple[str, str], object] = {}) -> list[Mutation]:
+    """Plan the field mutations for one item.
+
+    ``own_values`` maps ``(item_node_id, field)`` → the value the reconciler last
+    APPLIED (``journal.own_applied_values``). The ownership rule (§3) is "human
+    edits win", and our own past write is not a human decision — but it DID stamp
+    the item's ``gh_updated_at`` with our write time, which would out-rank every
+    older decision forever (e.g. we push "In progress" for a live session; the
+    session ends; Status falls through to Ready carrying the older ``classified_at``
+    and can never be pushed again). So a mirrored value that still equals our own
+    last write is treated as UNSET for the ownership check. Nothing else changes:
+    a value a human has since altered no longer matches, and the initial-fill rule
+    in ``should_push`` is untouched."""
     out: list[Mutation] = []
     for field, decision, current, tag in (
             ("Status", desired.status, mirror.status, "status"),
@@ -69,7 +82,9 @@ def diff_fields(desired: DesiredItem, mirror: MirrorItem) -> list[Mutation]:
             ("Stage", desired.stage, mirror.stage, "stage")):
         if decision.value is None or _same(decision.value, current):
             continue
-        if not should_push(decision.decided_at, mirror.gh_updated_at, current):
+        own = own_values.get((mirror.item_node_id, field))
+        mirrored = None if (own is not None and _same(current, own)) else current
+        if not should_push(decision.decided_at, mirror.gh_updated_at, mirrored):
             continue
         out.append(Mutation("set_field", mirror.item_node_id, field, current,
                             decision.value, f"{tag}:{desired.ref}"))

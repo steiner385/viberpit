@@ -16,6 +16,22 @@ DRY_RUN_MARK = "dry_run"
 PARKED_PREFIX = "parked: "
 INTERRUPTED = "interrupted"
 STATES = ("pending", "applied", "failed", "parked", "dry_run")
+#: The Projects v2 fields the reconciler owns; the only ones whose applied values
+#: are replayed back into the diff engine's ownership check.
+OWNED_FIELDS = ("Status", "Score", "Stage")
+
+
+def own_write_key(node_id: str | None, field: str | None, value: object) -> tuple[str, str, str]:
+    """The echo-suppression key for one (item, field, value) triple.
+
+    THE single source of truth for that key shape: ``recent_own_writes`` (journal
+    side) and ``mirror_store.upsert_project_items`` (GitHub-read side) must agree
+    exactly or an echo is misread as a human edit. Numbers are normalized to float
+    before serializing because GitHub returns ``480`` for a Score we wrote as
+    ``480.0`` — same value, different JSON text."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        value = float(value)
+    return (node_id or "", field or "", json.dumps(value, sort_keys=True, default=str))
 
 
 def record_pending(db: Session, mutations: Sequence[Mutation], *, batch_id: str,
@@ -80,8 +96,52 @@ def applied_keys(db: Session) -> set[str]:
 def recent_own_writes(db: Session, since: datetime) -> set[tuple[str, str, str]]:
     rows = db.scalars(select(GhWriteJournal).where(
         GhWriteJournal.applied.is_(True), GhWriteJournal.updated_at >= since)).all()
-    return {(r.target_node_id or "", r.field or "",
-             json.dumps((r.new_value or {}).get("value"), sort_keys=True, default=str)) for r in rows}
+    return {own_write_key(r.target_node_id, r.field, (r.new_value or {}).get("value"))
+            for r in rows}
+
+
+def own_applied_values(db: Session) -> dict[tuple[str, str], object]:
+    """The value the reconciler last APPLIED per ``(item_node_id, field)``.
+
+    Feeds ``reconcile_diff.diff_fields(own_values=...)``: a mirrored value that is
+    still exactly our own last write is not a human decision, so it must not make
+    the field sticky (the field's ``gh_updated_at`` is OUR write time, which would
+    otherwise out-rank every older decision forever)."""
+    out: dict[tuple[str, str], object] = {}
+    latest: dict[tuple[str, str], datetime] = {}
+    rows = db.scalars(select(GhWriteJournal).where(
+        GhWriteJournal.applied.is_(True), GhWriteJournal.field.in_(OWNED_FIELDS))).all()
+    for r in rows:
+        key = (r.target_node_id or "", r.field or "")
+        seen = latest.get(key)
+        if seen is not None and seen >= r.updated_at:
+            continue
+        latest[key] = r.updated_at
+        out[key] = (r.new_value or {}).get("value")
+    return out
+
+
+def recent_dry_run_keys(db: Session, since: datetime) -> set[str]:
+    """Mutation keys that already have a dry-run row not older than *since*.
+
+    A dry run plans the same set every tick; without this the journal grows by the
+    whole plan every two minutes for as long as dry-run mode is left on."""
+    rows = db.scalars(select(GhWriteJournal).where(
+        GhWriteJournal.error == DRY_RUN_MARK, GhWriteJournal.created_at >= since)).all()
+    return {r.mutation_id for r in rows if r.mutation_id}
+
+
+def prune_dry_run(db: Session, older_than: datetime) -> int:
+    """Delete dry-run rows older than *older_than*; returns the count deleted.
+
+    Only dry-run rows: they record what WOULD have happened, so they have no audit
+    value once superseded, unlike applied/failed/parked rows which are the record."""
+    rows = db.scalars(select(GhWriteJournal).where(
+        GhWriteJournal.error == DRY_RUN_MARK,
+        GhWriteJournal.created_at < older_than)).all()
+    for row in rows:
+        db.delete(row)
+    return len(rows)
 
 
 def recover_interrupted(db: Session, older_than: datetime) -> int:

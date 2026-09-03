@@ -782,6 +782,9 @@ class SessionOrchestrator:
             journal_failure_count=self._gh_reconcile_journal_failure_count,
             journal_parked=self._gh_reconcile_journal_parked,
             journal_applied_keys=self._gh_reconcile_journal_applied_keys,
+            journal_own_values=self._gh_reconcile_journal_own_values,
+            journal_dry_run_keys=self._gh_reconcile_journal_dry_run_keys,
+            journal_prune_dry_run=self._gh_reconcile_journal_prune_dry_run,
             journal_recover=self._gh_reconcile_journal_recover,
             request_sync=self._gh_reconcile_request_sync,
             sha_fence=sha_fence.daemon_matches_origin_master,
@@ -3812,7 +3815,12 @@ class SessionOrchestrator:
 
     @staticmethod
     def _gh_reconcile_kill_switch() -> bool:
-        """CCSWITCH_GH_RECONCILE_ENABLED, re-read every cycle (env edit + no restart)."""
+        """CCSWITCH_GH_RECONCILE_ENABLED, re-read from settings every cycle.
+
+        Re-reading is not the same as picking up an edit: the value comes from the
+        daemon's process environment (systemd env file), so flipping the kill switch
+        off in ``/etc/ccswitch/daemon.env`` takes effect only after a daemon restart.
+        To stop the reconciler without one, set the automation's mode to ``off``."""
         from server.config import get_settings
         return bool(get_settings().gh_reconcile_enabled)
 
@@ -3875,6 +3883,25 @@ class SessionOrchestrator:
         from server.pm import journal
         async with db_session() as db:
             return await db.run_sync(journal.applied_keys)
+
+    async def _gh_reconcile_journal_own_values(self) -> dict[tuple[str, str], object]:
+        """The value we last APPLIED per (item node, field) — the diff engine uses it
+        to tell a human edit from our own write (which stamped gh_updated_at)."""
+        from server.pm import journal
+        async with db_session() as db:
+            return await db.run_sync(journal.own_applied_values)
+
+    async def _gh_reconcile_journal_dry_run_keys(self, since) -> set[str]:
+        """Mutation keys that already carry a dry-run row newer than *since*."""
+        from server.pm import journal
+        async with db_session() as db:
+            return await db.run_sync(lambda s: journal.recent_dry_run_keys(s, since))
+
+    async def _gh_reconcile_journal_prune_dry_run(self, older_than) -> int:
+        """Drop stale dry-run rows (a preview, not an audit record)."""
+        from server.pm import journal
+        async with db_session() as db:
+            return await db.run_sync(lambda s: journal.prune_dry_run(s, older_than))
 
     async def _gh_reconcile_journal_recover(self, older_than) -> int:
         """Mark pending rows older than *older_than* as interrupted (crash recovery)."""
