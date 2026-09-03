@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { useRef, useState } from 'react'
 import { useFocusTrap } from './useFocusTrap'
@@ -20,13 +20,13 @@ function Host({ onClose }: { onClose: () => void }) {
   )
 }
 
-function NestedHost() {
+function NestedHost({ onOuterClose, onInnerClose }: { onOuterClose?: () => void; onInnerClose?: () => void } = {}) {
   const [outerOpen, setOuterOpen] = useState(false)
   const [innerOpen, setInnerOpen] = useState(false)
   const outerRef = useRef<HTMLDivElement>(null)
   const innerRef = useRef<HTMLDivElement>(null)
-  useFocusTrap(outerRef, outerOpen, { onClose: () => setOuterOpen(false) })
-  useFocusTrap(innerRef, innerOpen, { onClose: () => setInnerOpen(false) })
+  useFocusTrap(outerRef, outerOpen, { onClose: () => { setOuterOpen(false); onOuterClose?.() } })
+  useFocusTrap(innerRef, innerOpen, { onClose: () => { setInnerOpen(false); onInnerClose?.() } })
   return (
     <div id="root">
       <button onClick={() => setOuterOpen(true)}>open-outer</button>
@@ -82,5 +82,30 @@ describe('useFocusTrap', () => {
 
     fireEvent.click(screen.getByText('close-outer'))
     expect(root.hasAttribute('inert')).toBe(false)
+  })
+
+  it('one Escape closes only the innermost stacked trap', () => {
+    // Every active trap installs its own `document` keydown listener.
+    // `stopPropagation()` stops other *nodes*, not sibling listeners on the same
+    // node, so one Escape used to invoke both `onClose` callbacks — and because
+    // listeners fire in registration order (outermost first), the outer trap is
+    // the one that gets to swallow the event. Only the trap on top of the stack
+    // may act on Escape.
+    const outer = vi.fn()
+    const inner = vi.fn()
+    render(<NestedHost onOuterClose={outer} onInnerClose={inner} />)
+    fireEvent.click(screen.getByText('open-outer'))
+    fireEvent.click(screen.getByText('open-inner'))
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(inner).toHaveBeenCalledTimes(1)
+    expect(outer).not.toHaveBeenCalled()
+    expect(screen.queryByText('close-inner')).toBeNull()
+    expect(screen.getByText('close-outer')).toBeInTheDocument()
+
+    // With the inner trap gone the outer is back on top and takes the next one.
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(outer).toHaveBeenCalledTimes(1)
+    expect(inner).toHaveBeenCalledTimes(1)
   })
 })
