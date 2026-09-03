@@ -198,7 +198,8 @@ export interface Session {
   /** Server-computed: this session was interrupted mid-work by a restart and can be resumed. */
   resumable?: boolean
   /** Pre-restart status when a daemon restart interrupted this session; drives the
-   *  orphaned-ask notice. Sent by server/sessions/types.py:to_dict. */
+   *  orphaned-ask notice. Sent by server/api/sessions.py:_record_to_dict (the browser
+   *  serializer — server/sessions/types.py:to_dict is the daemon→edge RPC one). */
   interruptedFromStatus?: string | null
   /** The automation_id that spawned this session (e.g. 'pr-doctor'); null/absent = human-created. */
   origin?: string | null

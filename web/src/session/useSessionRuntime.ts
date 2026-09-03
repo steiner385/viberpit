@@ -199,12 +199,15 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     [sessionId, permissionResponse],
   )
 
-  // Answer handler for question cards. The answer is delivered as a tool result,
-  // NOT a user prompt, so the server never echoes it back — optimistically echo the
-  // chosen labels into the transcript as a user bubble.
-  // Send an answer over WS. On a confirmed send, resolve the question locally and
-  // echo the chosen labels (the server delivers the answer as a tool result and
-  // never echoes it). Returns whether the frame actually went out.
+  // Answer handler for question cards. Send an answer over WS; on a confirmed
+  // send, resolve the question locally and carry the chosen labels on the card.
+  // Returns whether the frame actually went out.
+  //
+  // On the LIVE path the server delivers the answer as a tool result and never
+  // echoes it, so the local resolution is the only record of it. The ORPHANED
+  // path (a restart killed the waiter — see server/sessions/orphaned_asks.py) is
+  // the exception: there is no future left to resolve, so the server delivers the
+  // selection as the next turn's PROMPT, which does echo back as a user bubble.
   const deliverAnswer = useCallback(
     (questionId: string, selected: string[], mode: 'option' | 'freeform' | 'chat') => {
       const sent = answerQuestion(sessionId, questionId, selected, mode)

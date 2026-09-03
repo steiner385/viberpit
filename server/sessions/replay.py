@@ -548,6 +548,10 @@ def last_question_events(path: str) -> list["ev.Question"]:
     Only the most recent call is returned: a long session may have asked several
     times, and only the one open at the restart is still awaiting an answer.
     Never raises — a missing or corrupt transcript yields [].
+
+    Synchronous (so it stays exhaustively table-testable) but it reads and parses
+    a whole transcript, so callers on the event loop MUST wrap it in
+    ``asyncio.to_thread`` — as every other transcript reader in this module does.
     """
     latest: list[ev.Question] = []
     try:
@@ -561,8 +565,13 @@ def last_question_events(path: str) -> list["ev.Question"]:
                 content = msg.get("content")
                 if not isinstance(content, list):
                     continue
+                # _ts_ms, not the raw ISO string: Question.ts is float-millis on
+                # the wire (and numeric in the client's EvQuestion). A string
+                # would only show when the block does NOT already exist — i.e.
+                # the question fell outside the replay window — and the reducer
+                # would then mint a block with a string ts.
                 qs = [e for e in _assistant_block_events(
-                          content, d.get("uuid"), d.get("timestamp"), None)
+                          content, d.get("uuid"), _ts_ms(d), None)
                       if isinstance(e, ev.Question)]
                 if qs:
                     latest = qs

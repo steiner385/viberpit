@@ -76,11 +76,19 @@ nudged"):
   explanatory banner and keeps the card answerable. A permission or plan approval has no
   such replayable shape, so `InterruptedAskNotice.tsx` states plainly that the prompt was
   lost, nothing was approved, and offers "Ask again" (re-asking, not re-answering).
-- **Fixed for free:** autopilot's stuck-session handler
-  (`server/sessions/orchestrator.py`, `answer_question`) previously called
-  `ensure_driver` then `answer_question`, which returned `False` for every orphaned
-  question — autopilot was silently failing to unstick exactly these sessions. The same
-  orphan fallback now makes that call succeed.
+- **NOT fixed here — autopilot still cannot unstick an orphaned ask.** An earlier draft
+  of this note claimed autopilot's stuck-session handler previously called
+  `answer_question` and got `False` for orphaned questions, and that the fallback made
+  it succeed. Re-reading the code, that is wrong on both halves. The handler's answer
+  branch (`server/sessions/orchestrator.py`, `_autopilot_apply`) is gated on
+  `stuck.get("question_id") is not None`, and `stuck` is assembled from
+  `self._registry.pending(...)` / `self.pending_questions(...)` — the LIVE registries,
+  which are empty by construction for an orphaned session (that is what "orphaned"
+  means). So the branch never fires for one, and never did: no `answer_question` call
+  was being rejected, because none was being made. Autopilot's route to an orphaned ask
+  would be a separate change (build `stuck` from `orphaned_interaction` + the transcript
+  re-offer); it is deliberately out of scope here, where the answer path is driven by a
+  human at the card.
 
 ## Sweep result for other future-backed registries
 

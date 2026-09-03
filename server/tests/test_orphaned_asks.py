@@ -50,12 +50,35 @@ def test_answer_prompt_carries_the_selection_and_corrects_the_false_rejection():
     assert "not" in text.lower() and "reject" in text.lower()
 
 
-def test_answer_prompt_joins_a_multi_select():
-    text = orphaned_answer_prompt(["Alpha", "Beta"])
-    assert "Alpha" in text and "Beta" in text
+def test_answer_prompt_renders_multiple_entries_one_per_line():
+    """A group of orphaned questions is delivered as ONE prompt carrying
+    "<header>: <label>" per question (QuestionGroup.submitAll flattens them,
+    because only the first per-question frame can be delivered). A "; " join
+    makes that mapping unreadable, so each entry gets its own line."""
+    text = orphaned_answer_prompt(["Disposition: Close it", "Owner: Me"])
+    assert "- Disposition: Close it" in text
+    assert "- Owner: Me" in text
+    assert "; " not in text.split("Note:")[0]
+
+
+def test_answer_prompt_keeps_the_single_entry_form():
+    """One answer stays a one-liner — no bullet, no pluralisation."""
+    text = orphaned_answer_prompt(["Alpha"])
+    assert "My answer: Alpha" in text
+    assert "- Alpha" not in text
 
 
 def test_answer_prompt_handles_an_empty_selection():
     """Never emit a prompt that reads as an answer with nothing in it."""
     text = orphaned_answer_prompt([])
     assert text.strip()
+    assert "(no option selected)" in text
+
+
+def test_answer_prompt_survives_non_string_client_input():
+    """``selected`` comes straight off client JSON with no validation
+    (server/bridge/ws.py), and the call is not inside a try — a TypeError here
+    would kill the WS message loop for the whole socket."""
+    text = orphaned_answer_prompt([{"a": 1}, 42])   # type: ignore[list-item]
+    assert "42" in text
+    assert "a" in text

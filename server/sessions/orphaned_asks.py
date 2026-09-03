@@ -11,19 +11,23 @@ side-effect-free so it is exhaustively table-testable, mirroring ``status.py``.
 """
 from __future__ import annotations
 
-# Pre-restart statuses that mean a human was being asked something. Deliberately
-# the exact complement of RESUME_ELIGIBLE_STATUSES (server/sessions/types.py):
-# #938 resumes dropped WORK and explicitly excludes these three; this module owns
-# them. If one set grows, the other must be reconsidered.
-ORPHANABLE_ASK_STATUSES: frozenset[str] = frozenset({
-    "waiting_question", "waiting_input", "ready_review",
-})
-
+# Pre-restart statuses that mean a human was being asked something, mapped to the
+# kind of ask that was lost.
 _KIND_BY_STATUS: dict[str, str] = {
     "waiting_question": "question",
     "waiting_input": "permission",
     "ready_review": "plan",
 }
+
+# Derived from the mapping above, never re-listed: two hand-maintained copies of
+# one set is exactly the drift shape this repo bans.
+#
+# These are the CONTRAST PAIR that server/sessions/types.py:22-25 draws against
+# RESUME_ELIGIBLE_STATUSES — not its complement (most statuses, e.g. "idle" or
+# "done", are in neither set). #938 resumes dropped WORK and explicitly excludes
+# these three awaiting-human states; this module owns them. If either set grows,
+# the other must be reconsidered.
+ORPHANABLE_ASK_STATUSES: frozenset[str] = frozenset(_KIND_BY_STATUS)
 
 
 def orphaned_ask_kind(interrupted_by_restart: bool,
@@ -48,11 +52,24 @@ def orphaned_answer_prompt(selected: list[str]) -> str:
     use. The tool use was rejected... STOP what you are doing." The assistant
     reads that immediately before this prompt, so without an explicit correction
     it stops instead of acting on the answer.
+
+    ``selected`` comes straight off client JSON (server/bridge/ws.py takes it from
+    the frame unvalidated), so every entry is coerced with ``str()`` — a
+    non-string entry used to raise TypeError out of the WS message loop and kill
+    the socket. Multiple entries render one per line: a group of orphaned
+    questions is delivered as ONE prompt carrying "<header>: <label>" per
+    question, and a "; " join makes that mapping unreadable.
     """
-    answer = "; ".join(s for s in selected if s) or "(no option selected)"
+    entries = [str(s) for s in selected if s]
+    if not entries:
+        body = "My answer: (no option selected)"
+    elif len(entries) == 1:
+        body = f"My answer: {entries[0]}"
+    else:
+        body = "My answers:\n" + "\n".join(f"- {e}" for e in entries)
     return (
         "[Answering the question that a daemon restart interrupted]\n\n"
-        f"My answer: {answer}\n\n"
+        f"{body}\n\n"
         "Note: that question's tool call was closed out automatically when the "
         "daemon restarted, and the transcript may show it as rejected or "
         "interrupted. I did not reject it — the restart did. Please treat the "

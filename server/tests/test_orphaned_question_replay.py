@@ -13,11 +13,13 @@ def _write(tmp_path, rows):
     return str(p)
 
 
-def _ask(tool_id, header, options):
-    return {"type": "assistant", "uuid": f"u-{tool_id}", "message": {"role": "assistant", "content": [
-        {"type": "tool_use", "id": tool_id, "name": "AskUserQuestion", "input": {"questions": [
-            {"header": header, "question": f"{header}?", "multiSelect": False,
-             "options": [{"label": o} for o in options]}]}}]}}
+def _ask(tool_id, header, options, timestamp="2026-09-03T12:00:00.000Z"):
+    return {"type": "assistant", "uuid": f"u-{tool_id}", "timestamp": timestamp,
+            "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": tool_id, "name": "AskUserQuestion",
+                 "input": {"questions": [
+                     {"header": header, "question": f"{header}?", "multiSelect": False,
+                      "options": [{"label": o} for o in options]}]}}]}}
 
 
 def test_question_event_carries_orphaned_on_the_wire():
@@ -63,3 +65,23 @@ def test_last_question_events_is_empty_without_a_question(tmp_path):
 
 def test_last_question_events_never_raises_on_a_missing_file(tmp_path):
     assert last_question_events(str(tmp_path / "nope.jsonl")) == []
+
+
+def test_last_question_events_ts_is_numeric_millis(tmp_path):
+    """Question.ts is float-millis on the wire (and numeric in the client's
+    EvQuestion). Passing the raw ISO `timestamp` string through would mint a
+    block with a string ts whenever the question fell outside the replay window
+    — i.e. exactly the case the re-offer exists for."""
+    path = _write(tmp_path, [_ask("toolu_A", "Disposition", ["Close it"])])
+    out = last_question_events(path)
+    assert out and isinstance(out[0].ts, float)
+
+
+def test_last_question_events_ts_is_none_when_the_timestamp_is_unusable(tmp_path):
+    """No timestamp / a garbage one degrades to None, never to a string."""
+    for bad in (None, "not-a-date"):
+        row = _ask("toolu_A", "Disposition", ["Close it"], timestamp=bad)
+        if bad is None:
+            row.pop("timestamp")
+        out = last_question_events(_write(tmp_path, [row]))
+        assert out and out[0].ts is None

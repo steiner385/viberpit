@@ -16,6 +16,16 @@ describe('InterruptedAskNotice', () => {
       .toContain('plan')
   })
 
+  it('scopes the live region to the copy, not the button', () => {
+    render(<InterruptedAskNotice interruptedFromStatus="waiting_input" onAskAgain={vi.fn()} />)
+    // role="status" on the outer wrapper would make the announcement include the
+    // "Ask again" button label; it belongs on the span carrying the message.
+    const status = screen.getByRole('status')
+    expect(status.textContent?.toLowerCase()).toContain('permission')
+    expect(status.textContent?.toLowerCase()).not.toContain('ask again')
+    expect(screen.getByTestId('interrupted-ask-notice')).not.toHaveAttribute('role')
+  })
+
   it('asks again on click', () => {
     const onAskAgain = vi.fn()
     render(<InterruptedAskNotice interruptedFromStatus="waiting_input" onAskAgain={onAskAgain} />)

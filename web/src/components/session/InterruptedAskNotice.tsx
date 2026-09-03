@@ -30,14 +30,15 @@ export function InterruptedAskNotice({ interruptedFromStatus, onAskAgain }: Prop
   return (
     <div
       data-testid="interrupted-ask-notice"
-      role="status"
       className={cn(
         'flex-shrink-0 border-t border-amber-200 dark:border-amber-800',
         'bg-amber-50/60 dark:bg-amber-950/20 px-3 py-2 text-xs',
         'text-amber-900 dark:text-amber-200 flex items-center gap-3',
       )}
     >
-      <span className="flex-1">{copy}</span>
+      {/* The live region is the COPY, not the wrapper: role="status" on the outer
+          div makes it announce the "Ask again" button label too. */}
+      <span role="status" className="flex-1">{copy}</span>
       <button
         type="button"
         onClick={onAskAgain}

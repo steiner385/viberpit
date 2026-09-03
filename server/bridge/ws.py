@@ -177,7 +177,11 @@ async def _orphaned_question_frames(orchestrator, session_id: str) -> list[dict]
     if not path:
         return []
     from server.sessions.replay import last_question_events
-    return [q.to_wire() for q in last_question_events(path)]
+    # Off the event loop: last_question_events reads and json-parses the ENTIRE
+    # transcript, and this runs on every attach. A multi-MB transcript would stall
+    # the whole daemon loop. Same treatment as replay_window / replay_events.
+    qs = await asyncio.to_thread(last_question_events, path)
+    return [q.to_wire() for q in qs]
 
 
 async def _run_replay_and_complete(orchestrator, enqueue: "Callable[[dict], None]",
