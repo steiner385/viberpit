@@ -30,9 +30,9 @@ export function UsageBadge({ pct, label, resetsAt, markerPct, compact, className
   const clampedPct = Math.min(100, Math.max(0, pct))
   // Color classes supplementary only — text carries the info
   const barColor =
-    clampedPct >= 90 ? 'bg-red-600 dark:bg-red-500' :
-    clampedPct >= 70 ? 'bg-amber-600 dark:bg-amber-500' :
-    'bg-emerald-600 dark:bg-emerald-500'
+    clampedPct >= 90 ? 'bg-danger' :
+    clampedPct >= 70 ? 'bg-warning' :
+    'bg-success'
 
   const ariaLabel = label
     ? `${label} usage: ${clampedPct}%`
@@ -52,14 +52,14 @@ export function UsageBadge({ pct, label, resetsAt, markerPct, compact, className
         title={title}
         aria-label={`${ariaLabel} — ${resetPhrase}`}
       >
-        <span className="relative h-1 w-10 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+        <span className="relative h-1 w-10 rounded-full bg-surface-raised overflow-hidden">
           <span
             className={cn('h-full block rounded-full', barColor)}
             style={{ width: `${clampedPct}%` }}
             aria-hidden="true"
           />
         </span>
-        <span className="text-[10px] font-medium tabular-nums text-gray-500 dark:text-gray-400">
+        <span className="text-[10px] font-medium tabular-nums text-ink-muted">
           {clampedPct}%
         </span>
       </span>
@@ -74,15 +74,15 @@ export function UsageBadge({ pct, label, resetsAt, markerPct, compact, className
     >
       <span className="flex items-baseline gap-1 leading-none">
         {label && (
-          <span className="text-[10px] font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+          <span className="text-[10px] font-medium uppercase tracking-wide text-ink-muted">
             {label}
           </span>
         )}
-        <span className="text-xs font-medium tabular-nums text-gray-900 dark:text-gray-100">
+        <span className="text-xs font-medium tabular-nums text-ink">
           {clampedPct}%
         </span>
       </span>
-      <span className="relative h-1 w-12 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+      <span className="relative h-1 w-12 rounded-full bg-surface-raised overflow-hidden">
         <span
           className={cn('h-full block rounded-full transition-all', barColor)}
           style={{ width: `${clampedPct}%` }}
@@ -90,7 +90,7 @@ export function UsageBadge({ pct, label, resetsAt, markerPct, compact, className
         />
         {markerPct != null && (
           <span
-            className="absolute top-0 h-full w-px bg-gray-900/70 dark:bg-gray-100/70"
+            className="absolute top-0 h-full w-px bg-ink/70"
             style={{ left: `${Math.min(100, Math.max(0, markerPct))}%` }}
             data-testid="reserve-marker"
             aria-hidden="true"
