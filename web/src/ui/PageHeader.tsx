@@ -23,6 +23,16 @@ let pageHeaderSeq = 0
 /** Zone 1 of every page: the only h1 on the page, synced to document.title (WCAG 2.4.2). */
 export function PageHeader({ title, meta, actions, className }: PageHeaderProps) {
   React.useEffect(() => {
+    // PageHeader takes ownership of document.title here (WCAG 2.4.2). But
+    // web/src/hooks/useNeedsYouTitle.ts (consumed by Dashboard.tsx) ALSO
+    // writes document.title today — unconditionally, on its own effect, and
+    // its cleanup resets to the bare base title, which will clobber
+    // whatever PageHeader just set. The two are not coordinated. This is
+    // harmless right now only because PageHeader has no consumers yet.
+    // Whoever first renders PageHeader on a page that also uses
+    // useNeedsYouTitle MUST reconcile ownership — decide whether the
+    // "needs you" prefix composes into the page title and which one wins —
+    // before shipping that page.
     const id = ++pageHeaderSeq
     document.title = `${title} — ${BASE_TITLE}`
     return () => {
