@@ -111,6 +111,8 @@ def test_deps_endpoint_returns_edges_and_drift(tmp_path):  # noqa: ARG001
         assert body["drift"]["proseOnly"] == [
             {"src": "steiner385/cc-account-switcher#950",
              "dst": "steiner385/cc-account-switcher#949"}]
+        assert any(e["dst"] == "steiner385/KinDash#12"
+                   for e in body["drift"]["unresolvedTargets"])
         assert "steiner385/cc-account-switcher#960" in body["drift"]["missingFromProject"]
 
 

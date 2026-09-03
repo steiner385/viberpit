@@ -291,6 +291,7 @@ async def project_deps(
             select(GhProjectItem).where(GhProjectItem.gh_project_id == gh.id)
         )).scalars().all()
         by_id = {w.id: ref for ref, w in items.items()}
+        # work_item_id=None (draft/unresolved items) never matches a by_id key
         project_refs = {by_id[i.work_item_id] for i in linked if i.work_item_id in by_id}
 
     all_dep_rows = (await db.execute(select(WorkItemDep))).scalars().all()
