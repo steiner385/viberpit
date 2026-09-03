@@ -273,7 +273,7 @@ def register_orchestrator_rpc(app, orch) -> None:
         "archive_session", "resume_interrupted", "rename_session", "note_user_interaction", "set_autopilot_paused", "interrupt",
         "set_permission_mode", "cancel_queued", "resolve_permission", "answer_question",
         "transcript_path", "resolve_transcript_path", "transcript_search_text",
-        "pending_questions", "pop_pending_initial_prompt",
+        "pending_questions", "orphaned_interaction", "pop_pending_initial_prompt",
         "pop_pending_initial_attachment_ids", "command_catalog", "run_command", "list_archived",
         "latest_suggestions", "latest_suggestions_many",
         "generate_suggestions_now", "seed_idle_suggestions",

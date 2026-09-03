@@ -626,6 +626,9 @@ class RemoteOrchestrator:
     async def pending_questions(self, session_id):
         return await self._client.call("pending_questions", session_id=session_id)
 
+    async def orphaned_interaction(self, session_id):
+        return await self._client.call("orphaned_interaction", session_id=session_id)
+
     async def pop_pending_initial_prompt(self, session_id):
         return await self._client.call("pop_pending_initial_prompt", session_id=session_id)
 
