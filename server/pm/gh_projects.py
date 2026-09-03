@@ -32,15 +32,34 @@ def _after(cursor: str | None) -> str:
     return f', after: "{cursor}"' if cursor else ""
 
 
+_PROJECTS_SELECTION = (
+    " projectsV2(first: 20%s) {"
+    " pageInfo { endCursor hasNextPage }"
+    " nodes { id number title closed updatedAt } }")
+
+
 def build_viewer_projects_query(cursor: str | None) -> str:
-    return (
-        "query { viewer { projectsV2(first: 20%s) {"
-        " pageInfo { endCursor hasNextPage }"
-        " nodes { id number title closed updatedAt } } } }" % _after(cursor))
+    return "query { viewer {%s } }" % (_PROJECTS_SELECTION % _after(cursor))
+
+
+def build_owner_projects_query(owner: str, cursor: str | None) -> str:
+    """Projects v2 rooted at ``user(login: owner)`` — identical selection to the
+    viewer query but usable under a GitHub App installation token, where
+    ``viewer`` resolves to the App bot rather than the owner (Phase 0 finding).
+    The ambient ``gh`` credential lacks ``read:project``, so discovery must go
+    through the App token, hence this ``user``-rooted variant."""
+    return 'query { user(login: "%s") {%s } }' % (
+        owner, _PROJECTS_SELECTION % _after(cursor))
 
 
 def parse_viewer_projects(payload: dict) -> tuple[list[GhProjectView], str | None, bool]:
-    conn = (payload.get("data") or {}).get("viewer", {}).get("projectsV2", {}) or {}
+    """Parse a projectsV2 connection under either ``data.viewer`` (viewer query)
+    or ``data.user`` (owner query) — both roots carry the identical selection, so
+    one parser serves ``build_viewer_projects_query`` and
+    ``build_owner_projects_query`` alike."""
+    data = payload.get("data") or {}
+    root = data.get("viewer") or data.get("user") or {}
+    conn = (root or {}).get("projectsV2", {}) or {}
     views = [
         GhProjectView(node_id=n["id"], number=n["number"], title=n.get("title") or "",
                       updated_at=n.get("updatedAt"))

@@ -1,6 +1,7 @@
 from server.pm.gh_projects import (
-    build_project_items_query, build_viewer_projects_query, parse_project_fields,
-    parse_project_items, parse_viewer_projects, build_issue_relations_query, parse_issue_relations)
+    build_owner_projects_query, build_project_items_query,
+    build_viewer_projects_query, parse_project_fields, parse_project_items,
+    parse_viewer_projects, build_issue_relations_query, parse_issue_relations)
 
 
 def _projects_payload():
@@ -39,10 +40,43 @@ def _items_payload():
         ]}}}}
 
 
+def _owner_projects_payload():
+    """Same projectsV2 connection, rooted at ``data.user`` (owner query)."""
+    return {"data": {"user": {"projectsV2": {
+        "pageInfo": {"endCursor": "C1", "hasNextPage": False},
+        "nodes": [
+            {"id": "PVT_1", "number": 7, "title": "cc-account-switcher", "closed": False,
+             "updatedAt": "2026-09-01T10:00:00Z"},
+            {"id": "PVT_2", "number": 8, "title": "Old board", "closed": True,
+             "updatedAt": "2026-01-01T10:00:00Z"},
+        ]}}}}
+
+
 def test_parse_viewer_projects_skips_closed_and_pages():
     views, cursor, more = parse_viewer_projects(_projects_payload())
     assert [(v.number, v.title) for v in views] == [(7, "cc-account-switcher")]
     assert cursor == "C1" and more is False
+
+
+def test_parse_viewer_projects_accepts_user_root():
+    """Under an App token discovery roots at ``user(login:)`` (viewer = the bot),
+    so the parser must read the same connection under ``data.user`` too."""
+    views, cursor, more = parse_viewer_projects(_owner_projects_payload())
+    assert [(v.number, v.title) for v in views] == [(7, "cc-account-switcher")]
+    assert cursor == "C1" and more is False
+
+
+def test_build_owner_projects_query_roots_at_user():
+    q = build_owner_projects_query("steiner385", None)
+    assert 'user(login: "steiner385")' in q
+    assert "projectsV2(first: 20)" in q
+    assert "after:" not in q
+
+
+def test_build_owner_projects_query_embeds_cursor():
+    q = build_owner_projects_query("steiner385", "C1")
+    assert 'after: "C1"' in q
+    assert 'user(login: "steiner385")' in q
 
 
 def test_parse_project_fields_caches_ids_and_options():
