@@ -1,4 +1,4 @@
-import type { NavBadgeKey } from './navDefs'
+import type { NavBadgeKey, NavDef } from './navDefs'
 import { useAccounts, useSessions, useArchivedSessions, useAllPrs, useAutomations } from '@/api/hooks'
 import { inFlightPrCount } from '@/session/prStatus'
 
@@ -34,4 +34,17 @@ export function useNavBadges(): NavBadges {
     archived: archivedSessions.length || undefined,
     settings: hasNeedsReauth || undefined,
   }
+}
+
+/**
+ * How a section's badge value becomes `NavItem` props.
+ *
+ * A number is a count; `true` is an attention flag; `undefined` is nothing. That
+ * mapping is the badge convention itself, so it lives beside the badges rather
+ * than being restated by each region — `NavRail` and `NavBar` both call this,
+ * and the `More` control sums the sections it hides through it too.
+ */
+export function navBadgeProps(def: NavDef, badges: NavBadges): { count?: number; attention?: boolean } {
+  const v = def.badge ? badges[def.badge] : undefined
+  return typeof v === 'number' ? { count: v } : { attention: v === true }
 }

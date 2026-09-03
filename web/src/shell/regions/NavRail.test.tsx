@@ -12,7 +12,13 @@ import { MemoryRouter, useLocation } from 'react-router-dom'
 expect.extend(toHaveNoViolations)
 
 const badges = vi.fn()
-vi.mock('@/shell/useNavBadges', () => ({ useNavBadges: () => badges() }))
+// Partial mock: `navBadgeProps` lives in this module too and is the real badge
+// convention the rail renders through — only the data hook (which needs the API
+// layer) is replaced.
+vi.mock('@/shell/useNavBadges', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/shell/useNavBadges')>()
+  return { ...actual, useNavBadges: () => badges() }
+})
 
 import type { NavBadges } from '@/shell/useNavBadges'
 import { ViewportProvider } from '@/shell/useViewport'
@@ -141,9 +147,23 @@ describe('NavRail', () => {
     // Collapsed: no visible label, and the name comes from real text — not an
     // aria-label, which is free to drift from whatever is on screen.
     const sessions = screen.getByRole('link', { name: 'Sessions (3)' })
-    expect(sessions.querySelector('span:not(.sr-only)')).toBeNull()
+    // Was `querySelector('span:not(.sr-only)')` toBeNull, i.e. "nothing visible
+    // at all". A collapsed item now draws its count badge over the icon (the
+    // test below asserts that), so the claim narrows to the one it was making:
+    // the LABEL is not visible. Everything else in this test is unchanged.
+    const visible = [...sessions.querySelectorAll('span')].filter((s) => !s.classList.contains('sr-only'))
+    expect(visible.map((s) => s.textContent)).not.toContain('Sessions')
     expect(sessions.querySelector('.sr-only')?.textContent).toBe('Sessions (3)')
     expect(sessions).not.toHaveAttribute('aria-label')
+  })
+
+  it('draws the count badge on the collapsed rail, where there is no label to carry it', () => {
+    renderRail('/sessions', [W768, W1024])
+    const sessions = screen.getByRole('link', { name: 'Sessions (3)' })
+    const visible = [...sessions.querySelectorAll('span')].filter((s) => !s.classList.contains('sr-only'))
+    expect(visible.map((s) => s.textContent)).toContain('3')
+    // Still decorative: the count is announced once, via the sr-only name.
+    expect(visible[0]).toHaveAttribute('aria-hidden', 'true')
   })
 
   it('expands at the wide tier and persists the choice', async () => {

@@ -25,6 +25,13 @@ import { badgedName } from '@/ui/badgedName'
  * and the visible label and `Badge`s are `aria-hidden`; both are rendered from
  * the same props in this one component, so they cannot disagree.
  *
+ * Badges are drawn in BOTH forms, and that is deliberate: `showLabel` decides
+ * where the badge goes, never whether one exists. With a label it sits inline at
+ * the end of the row; without one — the phone bar, the collapsed rail — it
+ * overlays the icon's top-right corner, which is the only pixel a sighted user
+ * has left. Gating it on `showLabel` silently deleted the count from every phone
+ * screen, since `ui/Tabs.tsx` (the strip this replaces) always drew it.
+ *
  * The name is one node rather than a visible label plus a hidden " (3)" because
  * the accname algorithm trims each element's contribution: sibling spans are
  * announced "Sessions(3)", which is not what the tab strip says today. Verified
@@ -66,8 +73,24 @@ export function NavItem(props: NavItemProps) {
       <Icon size={20} aria-hidden="true" className="shrink-0" />
       {showLabel && <span aria-hidden="true" className="truncate">{label}</span>}
       <span className="sr-only">{name}</span>
-      {attention && <Badge tone="warning" dot className={showLabel ? undefined : 'absolute top-1 right-1'} />}
-      {showLabel && count ? <Badge tone="neutral" count={count} aria-hidden="true" className="ml-auto" /> : null}
+      {showLabel ? (
+        <>
+          {attention && <Badge tone="warning" dot />}
+          {count ? <Badge tone="neutral" count={count} aria-hidden="true" className="ml-auto" /> : null}
+        </>
+      ) : count ? (
+        // Label-less: the badge overlays the icon's top-right corner, and when
+        // the item also needs attention it carries the attention tone rather
+        // than sharing that corner with a dot.
+        <Badge
+          tone={attention ? 'warning' : 'neutral'}
+          count={count}
+          aria-hidden="true"
+          className="absolute top-0.5 right-0.5 px-1 text-2xs"
+        />
+      ) : attention ? (
+        <Badge tone="warning" dot className="absolute top-1 right-1" />
+      ) : null}
     </>
   )
 

@@ -1,13 +1,12 @@
 import * as React from 'react'
-import { useLocation, useSearchParams } from 'react-router-dom'
-import { Monitor, Moon, Plus, Sparkles, Sun, HelpCircle, PanelLeftClose, PanelLeftOpen, type LucideIcon } from 'lucide-react'
+import { useLocation } from 'react-router-dom'
+import { PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { IconButton } from '@/ui/IconButton'
-import { Menu } from '@/ui/Menu'
-import { NAV_BY_ID, NAV_DEFS, navDefForPath, type NavDef } from '@/shell/navDefs'
-import { useNavBadges } from '@/shell/useNavBadges'
+import { NAV_BY_ID, NAV_DEFS, navDefForPath } from '@/shell/navDefs'
+import { navBadgeProps, useNavBadges } from '@/shell/useNavBadges'
 import { useViewport } from '@/shell/useViewport'
-import { useTheme, type ThemeChoice } from '@/shell/theme'
+import { GlobalActions } from './GlobalActions'
 import { NavItem } from './NavItem'
 
 /**
@@ -21,6 +20,9 @@ import { NavItem } from './NavItem'
  *
  * Active detection goes through `navDefForPath(pathname)` rather than an
  * equality test, so `/sessions/abc` keeps Sessions lit.
+ *
+ * The bottom cluster's app-level controls live in `GlobalActions`, shared with
+ * the phone `NavBar`'s More sheet.
  */
 
 const RAIL_EXPANDED_KEY = 'ccswitch.railExpanded'
@@ -46,20 +48,10 @@ function writeRailExpanded(v: boolean): void {
   }
 }
 
-/** The theme picker's options. `setChoice` is fed an id straight off this list, so
- *  there is no second string-validating copy of `ThemeChoice` to keep in step. */
-const THEME_CHOICES: { id: ThemeChoice; label: string; icon: LucideIcon }[] = [
-  { id: 'system', label: 'System', icon: Monitor },
-  { id: 'light', label: 'Light', icon: Sun },
-  { id: 'dark', label: 'Dark', icon: Moon },
-]
-
 export function NavRail() {
   const { pathname } = useLocation()
-  const [searchParams, setSearchParams] = useSearchParams()
   const badges = useNavBadges()
   const { width } = useViewport()
-  const { choice, setChoice } = useTheme()
 
   const [expandedPref, setExpandedPref] = React.useState(readRailExpanded)
   // Expansion is offered only at the wide tier; the stored preference survives a
@@ -73,28 +65,13 @@ export function NavRail() {
     })
   }
 
-  const themeRef = React.useRef<HTMLButtonElement>(null)
-  const [themeOpen, setThemeOpen] = React.useState(false)
-  const closeThemeMenu = React.useCallback(() => setThemeOpen(false), [])
-
   const activeId = navDefForPath(pathname)?.id
   const settings = NAV_BY_ID.settings
-
-  /** Drawers are URL state, not local state, so they survive a reload and a share. */
-  const openDrawer = (name: 'assistant' | 'help') => {
-    const next = new URLSearchParams(searchParams)
-    next.set('drawer', name)
-    setSearchParams(next)
-  }
-
-  const badgeProps = (def: NavDef) => {
-    const v = def.badge ? badges[def.badge] : undefined
-    return typeof v === 'number' ? { count: v } : { attention: v === true }
-  }
 
   return (
     <nav
       data-region="app.rail"
+      data-rail="left"
       role="navigation"
       aria-label="Sections"
       className={cn(
@@ -110,45 +87,20 @@ export function NavRail() {
           label={def.label}
           showLabel={expanded}
           active={activeId === def.id}
-          {...badgeProps(def)}
+          {...navBadgeProps(def, badges)}
         />
       ))}
 
       <div className="flex-1" />
 
-      <NavItem to="/sessions?dialog=new" icon={Plus} label="New session" showLabel={expanded} />
-      <NavItem onClick={() => openDrawer('assistant')} icon={Sparkles} label="Assistant" showLabel={expanded} />
-      <NavItem onClick={() => openDrawer('help')} icon={HelpCircle} label="Help" showLabel={expanded} />
-      <NavItem
-        onClick={() => setThemeOpen((o) => !o)}
-        buttonRef={themeRef}
-        icon={THEME_CHOICES.find((t) => t.id === choice)?.icon ?? Monitor}
-        label="Theme"
-        showLabel={expanded}
-      />
-      <Menu
-        open={themeOpen}
-        onClose={closeThemeMenu}
-        anchorRef={themeRef}
-        label="Theme"
-        items={THEME_CHOICES.map((t) => ({
-          id: t.id,
-          label: t.label,
-          icon: <t.icon size={16} aria-hidden="true" />,
-          selected: t.id === choice,
-        }))}
-        onSelect={(id) => {
-          const picked = THEME_CHOICES.find((t) => t.id === id)
-          if (picked) setChoice(picked.id)
-        }}
-      />
+      <GlobalActions showLabel={expanded} />
       <NavItem
         to={settings.path}
         icon={settings.icon}
         label={settings.label}
         showLabel={expanded}
         active={activeId === 'settings'}
-        {...badgeProps(settings)}
+        {...navBadgeProps(settings, badges)}
       />
 
       {canExpand && (
