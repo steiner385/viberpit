@@ -24,6 +24,18 @@ def test_observed_deps_merges_native_prose_and_order():
     assert not any(d.dst_ref == d.src_ref for d in deps)
 
 
+def test_order_edges_exclude_cross_repo_sub_issues():
+    other = "steiner385/KinDash"
+    rels = [_rel(945, subs=[f"{REPO}#950", f"{other}#12", f"{REPO}#951"])]
+    deps = list(observed_deps(REPO, rels, {}))
+    # Order edges chain only same-repo siblings: 951 -> 950 (skipping the
+    # interposed cross-repo #12). No order edge touches the cross-repo ref.
+    assert ObservedDep(f"{REPO}#951", f"{REPO}#950", "order") in deps
+    assert not any(
+        d.source == "order" and (d.src_ref == f"{other}#12" or d.dst_ref == f"{other}#12")
+        for d in deps)
+
+
 def test_plan_dep_rows_diffs_create_reactivate_deactivate():
     observed = [ObservedDep("a#1", "a#2", "native"), ObservedDep("a#1", "a#3", "prose")]
     existing = [

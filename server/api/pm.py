@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, select, tuple_
 
 from server.audit import record_audit
 from server.auth.middleware import current_identity
@@ -299,16 +299,45 @@ async def project_deps(
     dep_rows = [d for d in all_dep_rows
                 if d.src_ref and "#" in d.src_ref and d.src_ref.rsplit("#", 1)[0] in repos]
 
+    # Cross-product visibility (spec goal): a dep may target another onboarded
+    # product's mirrored issue. Resolve dst refs that are NOT in the project-scoped
+    # items map against ALL mirrored WorkItems (single query, kind "issue"), so their
+    # dstState is populated and they don't land in unresolvedTargets. Genuinely
+    # unmirrored targets stay null → unresolvedTargets.
+    cross_states: dict[str, str | None] = {}
+    cross_refs = {d.dst_ref for d in dep_rows
+                  if d.dst_ref and "#" in d.dst_ref and d.dst_ref not in items}
+    if cross_refs:
+        parsed: list[tuple[str, int]] = []
+        for ref in cross_refs:
+            r_repo, _, r_num = ref.rpartition("#")
+            if r_repo and r_num.isdigit():
+                parsed.append((r_repo, int(r_num)))
+        if parsed:
+            cross_items = (await db.execute(
+                select(WorkItem).where(
+                    WorkItem.kind == "issue",
+                    tuple_(WorkItem.repo, WorkItem.number).in_(parsed),
+                )
+            )).scalars().all()
+            cross_states = {f"{w.repo}#{w.number}": w.state for w in cross_items}
+
+    def _dst_state(ref: str) -> str | None:
+        if ref in items:
+            return items[ref].state
+        return cross_states.get(ref)
+
     edges = [DepEdgeView(
         src_ref=d.src_ref or "",
         dst_ref=d.dst_ref or "",
         source=d.source or "",
         active=bool(d.active),
-        dst_state=items[d.dst_ref].state if d.dst_ref in items else None,
+        dst_state=_dst_state(d.dst_ref or ""),
     ) for d in dep_rows]
 
     drift = compute_drift(edges, open_refs, project_refs,
-                          {ref: items[ref].body for ref in open_refs})
+                          {ref: items[ref].body for ref in open_refs},
+                          epic_refs={ref for ref, w in items.items() if w.is_epic})
     if gh is None:
         drift.missing_from_project = []
 

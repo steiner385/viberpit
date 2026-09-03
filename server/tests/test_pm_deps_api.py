@@ -71,7 +71,11 @@ def test_deps_endpoint_returns_edges_and_drift(tmp_path):  # noqa: ARG001
                                  kind="issue", title="i950", state="open")
                 wi960 = WorkItem(repo="steiner385/cc-account-switcher", number=960,
                                  kind="issue", title="i960", state="open")
-                db.add_all([wi945, wi949, wi950, wi960])
+                # Cross-product mirrored target: a different onboarded product's
+                # issue, mirrored (kind issue, state open) but NOT in ccswitch's repos.
+                wi_kd12 = WorkItem(repo="steiner385/KinDash", number=12,
+                                   kind="issue", title="kd12", state="open")
+                db.add_all([wi945, wi949, wi950, wi960, wi_kd12])
                 await db.flush()
 
                 ghp = GhProject(project_id=proj.id, gh_project_number=7,
@@ -82,10 +86,18 @@ def test_deps_endpoint_returns_edges_and_drift(tmp_path):  # noqa: ARG001
                 # Only 950 on the board — 960 is open but NOT on the board
                 db.add(GhProjectItem(gh_project_id=ghp.id, work_item_id=wi950.id))
 
-                # native dep: 950 → KinDash#12 (dst unmirrored → unresolvedTargets)
+                # native dep: 950 → KinDash#12 (cross-product but MIRRORED →
+                # resolves to dstState "open", NOT unresolved)
                 db.add(WorkItemDep(
                     src_ref="steiner385/cc-account-switcher#950",
                     dst_ref="steiner385/KinDash#12",
+                    source="native",
+                    active=True,
+                ))
+                # native dep: 950 → KinDash#99 (truly unmirrored → unresolvedTargets)
+                db.add(WorkItemDep(
+                    src_ref="steiner385/cc-account-switcher#950",
+                    dst_ref="steiner385/KinDash#99",
                     source="native",
                     active=True,
                 ))
@@ -111,8 +123,16 @@ def test_deps_endpoint_returns_edges_and_drift(tmp_path):  # noqa: ARG001
         assert body["drift"]["proseOnly"] == [
             {"src": "steiner385/cc-account-switcher#950",
              "dst": "steiner385/cc-account-switcher#949"}]
-        assert any(e["dst"] == "steiner385/KinDash#12"
-                   for e in body["drift"]["unresolvedTargets"])
+
+        edge_by_dst = {e["dst"]: e for e in body["edges"]}
+        # Cross-product MIRRORED target resolves: dstState "open", not unresolved.
+        assert edge_by_dst["steiner385/KinDash#12"]["dstState"] == "open"
+        unresolved_dsts = {e["dst"] for e in body["drift"]["unresolvedTargets"]}
+        assert "steiner385/KinDash#12" not in unresolved_dsts
+        # Truly unmirrored target still IS unresolved.
+        assert edge_by_dst["steiner385/KinDash#99"]["dstState"] is None
+        assert "steiner385/KinDash#99" in unresolved_dsts
+
         assert "steiner385/cc-account-switcher#960" in body["drift"]["missingFromProject"]
 
 

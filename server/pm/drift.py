@@ -2,7 +2,7 @@
 conventions ccswitch consumes disagree (spec 003 Phase A deliverable)."""
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Set
 from dataclasses import dataclass, field
 
 from server.automations.backlog_deps import parse_checklist_refs
@@ -27,7 +27,8 @@ class DriftReport:
 
 def compute_drift(edges: list[DepEdgeView], open_refs: set[str],
                   project_refs: set[str],
-                  bodies: Mapping[str, str | None]) -> DriftReport:
+                  bodies: Mapping[str, str | None],
+                  epic_refs: Set[str] = frozenset()) -> DriftReport:
     report = DriftReport()
     active = [e for e in edges if e.active]
     native = {(e.src_ref, e.dst_ref) for e in active if e.source == "native"}
@@ -42,6 +43,8 @@ def compute_drift(edges: list[DepEdgeView], open_refs: set[str],
                 {"src": edge.src_ref, "dst": edge.dst_ref, "source": edge.source})
     report.missing_from_project = sorted(open_refs - project_refs)
     for ref in sorted(open_refs):
+        if ref in epic_refs:
+            continue
         repo = ref.rsplit("#", 1)[0]
         if parse_checklist_refs(bodies.get(ref), repo):
             report.checklist_epics.append(ref)

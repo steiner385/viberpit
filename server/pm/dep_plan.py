@@ -54,7 +54,11 @@ def observed_deps(repo: str, rels: list[IssueRelView],
         src = f"{rel.repo}#{rel.number}"
         for dst in rel.blocked_by:
             add(src, dst, "native")
-        for prev, cur in zip(rel.sub_issue_refs, rel.sub_issue_refs[1:]):
+        # Cross-repo sub-issues are excluded from Phase A order edges (src-prefix
+        # scoping in mirror_store requires same-repo src); Phase B compiler revisits.
+        same_repo_subs = [ref for ref in rel.sub_issue_refs
+                          if ref.startswith(f"{rel.repo}#")]
+        for prev, cur in zip(same_repo_subs, same_repo_subs[1:]):
             add(cur, prev, "order")
     for src, body in bodies.items():
         for dst in parse_body_dep_refs(body, repo):
