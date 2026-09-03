@@ -282,6 +282,11 @@ function AppShellInner() {
       }
     },
     {
+      // Two rows, one drawer: `?` yields to a focused text entry (it is a
+      // character there), the ⌘/Ctrl chord does not. The guard is the
+      // difference, so the registry carries two rows and they share an effect.
+      'app.help': () => openDrawer('help'),
+      'app.assistant': () => openDrawer('assistant'),
       'compose.help': () => openDrawer('help'),
       'compose.nav': (e) => workspace.navigateList(e.key === 'ArrowUp' ? 'up' : 'down'),
       'insession.detach': () => gestures.current?.onDetach(),

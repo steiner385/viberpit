@@ -18,7 +18,7 @@ export type KeyboardLike = Pick<
   'key' | 'code' | 'altKey' | 'ctrlKey' | 'metaKey' | 'shiftKey'
 >
 
-export type ShortcutGroup = 'compose' | 'list-mode' | 'list-mode-header' | 'in-session'
+export type ShortcutGroup = 'app' | 'compose' | 'list-mode' | 'list-mode-header' | 'in-session'
 
 /**
  * Where a shortcut is allowed to fire. Evaluated against live context on each
@@ -91,6 +91,34 @@ export function meta(pred: (e: KeyboardLike) => boolean) {
   return (e: KeyboardLike): boolean => e.metaKey && !e.ctrlKey && !e.altKey && pred(e)
 }
 
+/** Ctrl-chord predicate — REQUIRES Ctrl, bails on Alt/Meta (Shift allowed). */
+export function ctrl(pred: (e: KeyboardLike) => boolean) {
+  return (e: KeyboardLike): boolean => e.ctrlKey && !e.metaKey && !e.altKey && pred(e)
+}
+
+/**
+ * The platform's primary chord modifier: ⌘ on Apple, Ctrl everywhere else.
+ *
+ * Composed from `meta()` and `ctrl()` rather than re-spelling the modifier test
+ * a third time. That matters more than it looks: a hand-rolled
+ * `(e.metaKey || e.ctrlKey) && !e.altKey` would accept ⌘+Ctrl+/ as well, and
+ * would be a fourth private answer to "which modifiers disqualify a chord"
+ * alongside `plain()`, `meta()` and `insession.forceDetach`'s old inline test
+ * (now routed through `ctrl()`).
+ *
+ * Deliberately NOT platform-sniffed. `isApplePlatform()` decides what the help
+ * sheet PRINTS; it must not decide what fires, because a Mac user on an external
+ * PC keyboard, a Linux box with ⌘ mapped to Super, and a remote-desktop session
+ * all report platforms that disagree with the keyboard in front of the user. A
+ * binding gated on the sniff would be dead for them with no way to tell why.
+ * Accepting either modifier costs nothing: no row here also wants the other one.
+ */
+export function cmdOrCtrl(pred: (e: KeyboardLike) => boolean) {
+  const onMeta = meta(pred)
+  const onCtrl = ctrl(pred)
+  return (e: KeyboardLike): boolean => onMeta(e) || onCtrl(e)
+}
+
 /** True on Apple platforms, where the help sheet shows `keysMac`. */
 export function isApplePlatform(): boolean {
   if (typeof navigator === 'undefined') return false
@@ -113,6 +141,71 @@ export function shortcutAllowed(s: Shortcut, c: ShortcutContext): boolean {
 }
 
 export const SHORTCUTS: Shortcut[] = [
+  // ── App-global chords (⌘ on Apple, Ctrl elsewhere) — WIRED ───────────
+  //
+  // Unlike every other row here, these fire with a text entry focused: a
+  // ⌘/Ctrl chord is not a character, so there is nothing for the composer to
+  // claim. `compose.help` below stays a SEPARATE row for exactly that reason —
+  // `?` IS a character and must yield to a focused field, and one row cannot
+  // carry two `when`s. Both open the same drawer; the guard is what differs.
+  //
+  // Both are blocked in kiosk: `REGION_VISIBILITY['app.drawer']` is false there,
+  // so a wall display's keyboard would otherwise fire a handler with no region
+  // to open into.
+  { id: 'app.help', keys: 'Ctrl+/', keysMac: '⌘/',
+    description: 'Open this help panel (works while typing)', group: 'app',
+    match: cmdOrCtrl((e) => e.key === '/'),
+    when: (c) => c.interactive && !c.overlayOpen },
+  { id: 'app.assistant', keys: 'Ctrl+;', keysMac: '⌘;',
+    description: 'Open the assistant drawer', group: 'app',
+    match: cmdOrCtrl((e) => e.key === ';'),
+    when: (c) => c.interactive && !c.overlayOpen },
+  //
+  // ── NOT BOUND, and why — the Desktop-parity rows this app cannot have ─
+  //
+  // Claude Code *Desktop* is Electron and owns its window, so it can bind ⌘N,
+  // ⌘W and Ctrl+Tab. A web page cannot. Chrome and Safari do not DISPATCH the
+  // keydown for a shortcut their own UI reserves — there is no event to call
+  // `preventDefault()` on — and the deliberate reason is that a page which
+  // could swallow them would be able to trap a keyboard-only user inside
+  // itself. The enumerated reserved sets (w3c/uievents#7, Masayuki Nakano,
+  // 2016-01: lists.w3.org/Archives/Public/public-webapps-github/2016Jan/0255):
+  //
+  //   Chrome + Safari, macOS : ⌘N ⌘W ⌘Q ⌘T Ctrl+Tab Ctrl+Shift+Tab
+  //   Chrome, Windows        : Ctrl+N Ctrl+W Ctrl+T Ctrl+Tab Ctrl+Shift+Tab
+  //                            Ctrl+PageUp Ctrl+PageDown
+  //
+  // So these four rows are dropped rather than shipped:
+  //
+  //   · `app.newSession`  ⌘N / Ctrl+N       — reserved: NEW WINDOW.
+  //   · `session.close`   ⌘W / Ctrl+W       — reserved: CLOSE TAB. On macOS it
+  //     is also the ⌘W menu item, handled above the web content entirely.
+  //   · `session.next`    Ctrl+Tab          — reserved: NEXT TAB.
+  //   · `session.prev`    Ctrl+Shift+Tab    — reserved: PREVIOUS TAB.
+  //
+  // The help sheet renders from this array, so a row here is a PROMISE that the
+  // key does something. Shipping a promise the browser silently eats is worse
+  // than the missing shortcut: the user presses it, a tab closes, and the sheet
+  // still says it detaches a session.
+  //
+  // The spec's fallback for next/previous — ⌘⇧] / ⌘⇧[ — is no better. Those are
+  // Safari's and Chrome's own next/previous-tab bindings on macOS (Apple's
+  // Safari shortcut reference, support.apple.com/guide/safari/cpsh003), so even
+  // where the page CAN preventDefault them, binding them would break tab
+  // switching for anyone with the app open. **No replacement binding is
+  // invented here.** Next/previous-session has no keyboard binding in this PR,
+  // and picking one is a human decision, not this task's.
+  //
+  // Consequences that outlive this comment:
+  //   · Ruling R2 (Task 8 must re-check the session-cycling handler once list
+  //     filters land) has NOTHING to re-check — no such handler exists. If a
+  //     future PR adds one, its order must come from
+  //     `useSessionListState().ordering.orderedSessions`, the same order the
+  //     list renders, or cycling will navigate to a filtered-out session.
+  //   · `?dialog=new` is still reachable without a chord: the rail's New button
+  //     is a `<Link>` to `/sessions?dialog=new`, and detach is still Esc / ←.
+  // Pinned by "the un-bindable Desktop chords bind nothing" in shortcuts.test.ts.
+  //
   // ── List mode — WIRED ────────────────────────────────────────────────
   { id: 'list.open', keys: 'Enter / → / Space', description: 'Open the focused session',
     group: 'list-mode', action: { type: 'open' },
@@ -182,8 +275,15 @@ export const SHORTCUTS: Shortcut[] = [
     when: (c) => c.sessionOpen && !c.overlayOpen && !c.hasOpenAction && !c.yieldsToTextEntry },
   { id: 'insession.forceDetach', keys: 'Ctrl+Z', description: 'Force-detach to the list',
     group: 'in-session',
-    match: (e) => e.ctrlKey && !e.altKey && !e.metaKey && (e.key === 'z' || e.key === 'Z'),
+    // `ctrl()`, not an inline modifier test: this row spelled its own
+    // `e.ctrlKey && !e.altKey && !e.metaKey` until `cmdOrCtrl` needed the same
+    // rule, at which point the inline copy became the second answer to a
+    // question the helpers own.
+    match: ctrl((e) => e.key === 'z' || e.key === 'Z'),
     when: (c) => c.sessionOpen && !c.overlayOpen && !c.yieldsToTextEntry },
+  // NOT here: ⌘W / Ctrl+W (detach), Ctrl+Tab / Ctrl+Shift+Tab (next/previous
+  // session). All three are reserved by the browser's own UI — see the
+  // "NOT BOUND, and why" block at the top of this array for the evidence.
   // `Shift+Tab` (cycle permission mode) is deliberately NOT listed: sub-spec B D8
   // removes the binding, and the handler that carried it (`useInSessionKeys`, now
   // deleted) is gone — the AppShell cutover made a window-level

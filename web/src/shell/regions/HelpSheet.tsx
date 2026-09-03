@@ -27,9 +27,15 @@ import { NAV_DEFS } from '@/shell/navDefs'
  * §4.2 exists to prevent ("ONE `Sheet`, content by `?drawer=`").
  */
 
-/** Shortcut groups in the order they are taught: what you can do at the prompt,
- *  then in the list, then inside a session. */
+/** Shortcut groups in the order they are taught: the chords that work anywhere,
+ *  then what you can do at the prompt, then in the list, then inside a session.
+ *
+ *  Every `ShortcutGroup` must appear here — a group missing from this list is a
+ *  set of registry rows the help sheet silently omits, which is the drift
+ *  `DrawerHost.test.tsx`'s "lists every registry shortcut description" guard
+ *  exists to catch. */
 const GROUPS: { group: ShortcutGroup; title: string }[] = [
+  { group: 'app', title: 'Anywhere' },
   { group: 'compose', title: 'Compose mode' },
   { group: 'list-mode', title: 'List-focus mode' },
   { group: 'list-mode-header', title: 'Group headers' },

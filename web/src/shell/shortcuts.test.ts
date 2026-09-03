@@ -9,6 +9,8 @@ import {
   isApplePlatform,
   plain,
   meta,
+  ctrl,
+  cmdOrCtrl,
   type KeyboardLike,
   type Shortcut,
   type ShortcutContext,
@@ -47,7 +49,10 @@ const headerAction = (e: KeyboardLike) => matchShortcut(e, inGroup('list-mode-he
  * RULE, and naming the candidates is what makes "a row the shell cannot act on
  * is skipped, not swallowed" assertable.
  */
-const SHELL_HANDLED = ['compose.help', 'compose.nav', 'insession.detach', 'insession.forceDetach']
+const SHELL_HANDLED = [
+  'app.help', 'app.assistant',
+  'compose.help', 'compose.nav', 'insession.detach', 'insession.forceDetach',
+]
 const shellRow = (e: KeyboardLike, c: ShortcutContext) =>
   matchShortcut(e, (s) => SHELL_HANDLED.includes(s.id), c)?.id
 
@@ -144,26 +149,49 @@ const KEY_BY_GLYPH: Record<string, string> = {
 
 function keyForGlyph(glyph: string): string | null {
   if (glyph in KEY_BY_GLYPH) return KEY_BY_GLYPH[glyph]
-  if (/^[a-z?]$/.test(glyph)) return glyph // 'c', 'r', 'a', 'd', '?'
+  if (/^[a-z?;/]$/.test(glyph)) return glyph // 'c', 'r', 'a', 'd', '?', ';', '/'
+  return null
+}
+
+/**
+ * A whole display string read as ONE chord (`Ctrl+Z`, `⌘/`), or null.
+ *
+ * Tried BEFORE the `/`-split below, because `/` is both this file's "or"
+ * separator and a bindable key: `Ctrl+/` splits into `['Ctrl+', '']`, and the
+ * guard would have reported "no synthetic event could be built" for a row whose
+ * binding is perfectly real. Parsing the chord first is the fix; loosening the
+ * guard to skip unparseable strings would have been the bug, since "this row's
+ * display string promises a key its matcher rejects" is the whole point.
+ */
+function chordFromKeys(keys: string): KeyboardLike | null {
+  const asCtrl = /^Ctrl\+(.+)$/.exec(keys)
+  if (asCtrl) {
+    const key = keyForGlyph(asCtrl[1].toLowerCase())
+    return key === null ? null : ev({ key, ctrlKey: true })
+  }
+  const asMeta = /^⌘(.+)$/.exec(keys)
+  if (asMeta) {
+    const key = keyForGlyph(asMeta[1].toLowerCase())
+    return key === null ? null : ev({ key, metaKey: true })
+  }
   return null
 }
 
 /**
  * Every key a row's own display string promises, as a synthetic event.
  *
- * `Ctrl+X` is parsed too, not just bare glyphs: `insession.forceDetach` is
- * documented as `Ctrl+Z` and carries a matcher now, and a reachability guard that
- * skipped every modifier combo would be blind to exactly the rows whose matcher
- * has to spell a modifier by hand.
+ * Modifier chords are parsed too, not just bare glyphs: `insession.forceDetach`
+ * is documented as `Ctrl+Z` and `app.help` as `Ctrl+/` / `⌘/`, and a
+ * reachability guard that skipped every modifier combo would be blind to exactly
+ * the rows whose matcher has to spell a modifier out.
  */
 function eventsFromKeys(keys: string): KeyboardLike[] {
+  const chord = chordFromKeys(keys.trim())
+  if (chord !== null) return [chord]
   return keys
     .split('/')
     .map((part) => {
-      const glyph = part.trim()
-      const ctrl = /^Ctrl\+(.)$/.exec(glyph)
-      if (ctrl) return ev({ key: ctrl[1].toLowerCase(), ctrlKey: true })
-      const key = keyForGlyph(glyph)
+      const key = keyForGlyph(part.trim())
       return key === null ? null : ev({ key })
     })
     .filter((e): e is KeyboardLike => e !== null)
@@ -222,16 +250,22 @@ describe('shortcuts registry — integrity', () => {
 
   it('every wired row is REACHABLE: its matcher fires for a key from its own display string', () => {
     for (const s of SHORTCUTS.filter((x): x is Shortcut & { match: NonNullable<Shortcut['match']> } => !!x.match)) {
-      const events = eventsFromKeys(s.keys)
-      expect(
-        events.length,
-        `${s.id}: no synthetic event could be built from keys "${s.keys}"`,
-      ).toBeGreaterThan(0)
-      for (const e of events) {
+      // BOTH display strings, not just `keys`: a Mac is shown `keysMac` and
+      // nothing else, so a `keysMac` the matcher rejects is a binding that is
+      // dead on exactly one platform — the failure mode no non-Apple test run
+      // can see.
+      for (const keys of [s.keys, s.keysMac].filter((k): k is string => k !== undefined)) {
+        const events = eventsFromKeys(keys)
         expect(
-          s.match(e),
-          `${s.id}: match() rejects "${e.key}", which its own keys string "${s.keys}" promises`,
-        ).toBe(true)
+          events.length,
+          `${s.id}: no synthetic event could be built from keys "${keys}"`,
+        ).toBeGreaterThan(0)
+        for (const e of events) {
+          expect(
+            s.match(e),
+            `${s.id}: match() rejects "${e.key}", which its own keys string "${keys}" promises`,
+          ).toBe(true)
+        }
       }
     }
   })
@@ -315,6 +349,29 @@ describe('displayKeys / isApplePlatform', () => {
     expect(displayKeys(plainRow)).toBe('Enter')
   })
 
+  it('SHIPPED rows exercise the Apple branch — not only the fixtures above', () => {
+    // Until Task 5 no row in `SHORTCUTS` carried a `keysMac`, so `displayKeys`'
+    // Apple branch was reachable only from the two literals in this file. A
+    // registry that loses its last `keysMac` makes the branch dead code again.
+    const withMac = SHORTCUTS.filter((s) => s.keysMac !== undefined)
+    expect(withMac.map((s) => s.id), 'no shipped row carries keysMac').not.toHaveLength(0)
+
+    setPlatform('MacIntel')
+    for (const s of withMac) expect(displayKeys(s), `${s.id} on MacIntel`).toBe(s.keysMac)
+    setPlatform('Win32')
+    for (const s of withMac) expect(displayKeys(s), `${s.id} on Win32`).toBe(s.keys)
+  })
+
+  it('a platform-varying row is a ⌘ chord on Apple and the SAME key on Ctrl elsewhere', () => {
+    for (const s of SHORTCUTS.filter((x) => x.keysMac !== undefined)) {
+      expect(s.keysMac, `${s.id} keysMac`).toMatch(/^⌘/)
+      expect(s.keys, `${s.id} keys`).toMatch(/^Ctrl\+/)
+      // The two must name the same terminal key, or a Mac user is told to press
+      // something the matcher does not accept.
+      expect(s.keysMac?.slice(1), `${s.id}`).toBe(s.keys.replace(/^Ctrl\+/, ''))
+    }
+  })
+
   it('every shipped row renders something on both platforms', () => {
     for (const p of ['MacIntel', 'Win32']) {
       setPlatform(p)
@@ -359,6 +416,51 @@ describe('plain() / meta()', () => {
   it('both still honour the underlying predicate', () => {
     expect(plainA(ev({ key: 'b' }))).toBe(false)
     expect(metaA(ev({ key: 'b', metaKey: true }))).toBe(false)
+  })
+})
+
+describe('ctrl() / cmdOrCtrl()', () => {
+  const ctrlA = ctrl((e) => e.key === 'a')
+  const chordA = cmdOrCtrl((e) => e.key === 'a')
+
+  it('ctrl() REQUIRES Ctrl and bails on Alt/Meta, but allows Shift', () => {
+    expect(ctrlA(ev({ key: 'a', ctrlKey: true }))).toBe(true)
+    expect(ctrlA(ev({ key: 'a', ctrlKey: true, shiftKey: true }))).toBe(true)
+    expect(ctrlA(ev({ key: 'a' }))).toBe(false)
+    expect(ctrlA(ev({ key: 'a', ctrlKey: true, metaKey: true }))).toBe(false)
+    expect(ctrlA(ev({ key: 'a', ctrlKey: true, altKey: true }))).toBe(false)
+  })
+
+  it('cmdOrCtrl() accepts EITHER modifier — the same binding on both platforms', () => {
+    expect(chordA(ev({ key: 'a', metaKey: true }))).toBe(true)
+    expect(chordA(ev({ key: 'a', ctrlKey: true }))).toBe(true)
+  })
+
+  it('cmdOrCtrl() takes EXACTLY one: bare, both-together and Alt all fail', () => {
+    // The failure a hand-rolled `(metaKey || ctrlKey) && !altKey` would have:
+    // ⌘+Ctrl+a is a distinct chord (window managers and remote-desktop clients
+    // bind it) and must not read as the app's.
+    expect(chordA(ev({ key: 'a' }))).toBe(false)
+    expect(chordA(ev({ key: 'a', metaKey: true, ctrlKey: true }))).toBe(false)
+    expect(chordA(ev({ key: 'a', metaKey: true, altKey: true }))).toBe(false)
+    expect(chordA(ev({ key: 'a', ctrlKey: true, altKey: true }))).toBe(false)
+  })
+
+  it('cmdOrCtrl() is disjoint from plain(), so no chord steals an unmodified key', () => {
+    const plainA2 = plain((e) => e.key === 'a')
+    for (const e of [
+      ev({ key: 'a' }),
+      ev({ key: 'a', metaKey: true }),
+      ev({ key: 'a', ctrlKey: true }),
+      ev({ key: 'a', shiftKey: true }),
+    ]) {
+      expect(plainA2(e) && chordA(e)).toBe(false)
+    }
+  })
+
+  it('still honours the underlying predicate', () => {
+    expect(ctrlA(ev({ key: 'b', ctrlKey: true }))).toBe(false)
+    expect(chordA(ev({ key: 'b', metaKey: true }))).toBe(false)
   })
 })
 
@@ -420,6 +522,58 @@ describe('matchShortcut — the shell scope', () => {
     expect(shellRow(ev({ key: 'z', metaKey: true }), ctx({ sessionOpen: true }))).toBeUndefined()
   })
 
+  // ── the app-global chords (Task 5) ─────────────────────────────────────────
+
+  it('⌘/ and Ctrl+/ both reach the app-global help row, on either platform', () => {
+    expect(shellRow(ev({ key: '/', metaKey: true }), ctx())).toBe('app.help')
+    expect(shellRow(ev({ key: '/', ctrlKey: true }), ctx())).toBe('app.help')
+  })
+
+  it('⌘; and Ctrl+; both reach the assistant row', () => {
+    expect(shellRow(ev({ key: ';', metaKey: true }), ctx())).toBe('app.assistant')
+    expect(shellRow(ev({ key: ';', ctrlKey: true }), ctx())).toBe('app.assistant')
+  })
+
+  it('the chords fire WITH a text entry focused — unlike `?`, which is a character there', () => {
+    // The whole reason `app.help` is a second row rather than a widened
+    // `compose.help`: one row cannot carry two `when`s, and these two guards
+    // genuinely differ.
+    expect(shellRow(ev({ key: '?' }), ctx({ active: input }))).toBeUndefined()
+    expect(shellRow(ev({ key: '/', metaKey: true }), ctx({ active: input }))).toBe('app.help')
+    expect(shellRow(ev({ key: ';', metaKey: true }), ctx({ active: input }))).toBe('app.assistant')
+    // …and even mid-prompt, where the composer claims the raw key.
+    expect(shellRow(ev({ key: '/', metaKey: true }), ctx({ yieldsToTextEntry: true }))).toBe('app.help')
+  })
+
+  it('the chords are blocked in kiosk — a wall display has no drawer to open into', () => {
+    // The first row-level `when` assertion for a CONTEXT-blocked row: kiosk is
+    // `interactive: false`, and `REGION_VISIBILITY['app.drawer']` is false
+    // there, so a handler that fired would open a region that is not mounted.
+    expect(shellRow(ev({ key: '/', metaKey: true }), ctx({ interactive: false }))).toBeUndefined()
+    expect(shellRow(ev({ key: '/', ctrlKey: true }), ctx({ interactive: false }))).toBeUndefined()
+    expect(shellRow(ev({ key: ';', metaKey: true }), ctx({ interactive: false }))).toBeUndefined()
+    expect(shellRow(ev({ key: ';', ctrlKey: true }), ctx({ interactive: false }))).toBeUndefined()
+  })
+
+  it('the chords are blocked under a modal or an open menu', () => {
+    expect(shellRow(ev({ key: '/', metaKey: true }), ctx({ overlayOpen: true }))).toBeUndefined()
+    expect(shellRow(ev({ key: ';', metaKey: true }), ctx({ overlayOpen: true }))).toBeUndefined()
+  })
+
+  it('the chords need EXACTLY one modifier — bare / and ; still type a character', () => {
+    expect(shellRow(ev({ key: '/' }), ctx())).toBeUndefined()
+    expect(shellRow(ev({ key: ';' }), ctx())).toBeUndefined()
+    expect(shellRow(ev({ key: '/', metaKey: true, ctrlKey: true }), ctx())).toBeUndefined()
+    expect(shellRow(ev({ key: '/', metaKey: true, altKey: true }), ctx())).toBeUndefined()
+  })
+
+  it('⌘⇧/ — the macOS Help-menu chord — is not ours: it reports "?", not "/"', () => {
+    // `meta()` allows Shift, so the only thing keeping ⌘⇧/ out is that the
+    // browser reports the shifted character. Pinned so a future matcher written
+    // against `e.code` does not silently start swallowing it.
+    expect(shellRow(ev({ key: '?', metaKey: true, shiftKey: true }), ctx())).toBeUndefined()
+  })
+
   it('a row the caller cannot act on is skipped, and the walk continues past it', () => {
     // `list.up` matches ArrowUp and sits FIRST in the registry, ahead of
     // `compose.nav`. The shell has no handler for it, so the walk goes on rather
@@ -428,6 +582,63 @@ describe('matchShortcut — the shell scope', () => {
     expect(matchShortcut(ev({ key: 'ArrowUp' }), () => true, ctx())?.id).toBe('list.up')
     expect(shellRow(ev({ key: 'ArrowUp' }), ctx())).toBe('compose.nav')
     expect(matchShortcut(ev({ key: 'ArrowUp' }), () => false, ctx())).toBeUndefined()
+  })
+})
+
+// ─── The Desktop-parity rows that CANNOT be bound in a browser ───────────────
+//
+// Claude Code Desktop is Electron and owns its window; a web page does not.
+// Chrome and Safari do not dispatch the keydown for a shortcut their own UI
+// reserves, so there is no event to `preventDefault()` — deliberately, because
+// a page that could swallow them could trap a keyboard-only user inside itself
+// (w3c/uievents#7, Masayuki Nakano, 2016-01, which enumerates the sets).
+//
+// jsdom reserves nothing and will happily deliver every one of these, so this
+// file cannot prove a browser withholds them. What it CAN prove, and what
+// matters, is the half that is ours: the registry binds nothing to them and the
+// help sheet therefore promises nothing about them. A row here that did nothing
+// in a real browser would be a lie the sheet repeats every time it is opened.
+describe('the un-bindable Desktop chords bind nothing', () => {
+  /** Maximally permissive: every guard satisfied, so a match would be the ROW
+   *  existing, never a context accidentally blocking it. */
+  const anywhere = ctx({ sessionOpen: true, inSessions: true, interactive: true })
+
+  const RESERVED: [string, KeyboardLike][] = [
+    ['⌘N (new window)', ev({ key: 'n', metaKey: true })],
+    ['Ctrl+N (new window)', ev({ key: 'n', ctrlKey: true })],
+    ['⌘W (close tab)', ev({ key: 'w', metaKey: true })],
+    ['Ctrl+W (close tab)', ev({ key: 'w', ctrlKey: true })],
+    ['Ctrl+Tab (next tab)', ev({ key: 'Tab', ctrlKey: true })],
+    ['Ctrl+Shift+Tab (previous tab)', ev({ key: 'Tab', ctrlKey: true, shiftKey: true })],
+    // The spec's own fallback for next/previous session — Safari's and Chrome's
+    // next/previous-TAB bindings on macOS. Dropped too; no replacement invented.
+    ['⌘⇧] (next tab)', ev({ key: ']', metaKey: true, shiftKey: true })],
+    ['⌘⇧[ (previous tab)', ev({ key: '[', metaKey: true, shiftKey: true })],
+  ]
+
+  it.each(RESERVED)('%s reaches no row in the whole registry', (label, e) => {
+    // `() => true` for `canAct`: not "the shell has no handler", but "no row
+    // anywhere — list, header, compose, in-session — matches this event".
+    expect(matchShortcut(e, () => true, anywhere), label).toBeUndefined()
+    // …and it is not selectable by a focused row or group header either.
+    expect(matchShortcut(e, () => true), label).toBeUndefined()
+  })
+
+  it('the dropped row ids are absent, so the drop is a decision and not an oversight', () => {
+    const ids = SHORTCUTS.map((s) => s.id)
+    for (const id of ['app.newSession', 'session.close', 'session.next', 'session.prev']) {
+      expect(ids, `${id} is un-bindable in a browser and must stay out`).not.toContain(id)
+    }
+  })
+
+  it('no row DOCUMENTS a reserved chord — the help sheet renders from `keys`', () => {
+    // The stronger half: a row could bind something else and still print
+    // "⌘W" beside it, which is the promise this whole decision is about.
+    const reserved = /(⌘|Cmd|Ctrl)\s*\+?\s*(N|W|Tab)\b|⌘\s*⇧\s*[[\]]/i
+    for (const s of SHORTCUTS) {
+      expect(s.keys, `${s.id} keys`).not.toMatch(reserved)
+      expect(s.keysMac ?? '', `${s.id} keysMac`).not.toMatch(reserved)
+    }
   })
 })
 

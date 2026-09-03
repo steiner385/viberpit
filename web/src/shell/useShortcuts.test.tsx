@@ -198,9 +198,140 @@ describe('? opens the help drawer', () => {
 
   it('NOT in kiosk — a wall display has no drawer to open into', async () => {
     const user = userEvent.setup()
-    renderApp({ path: '/sessions', mode: 'kiosk' })
+    const app = renderApp({ path: '/sessions', mode: 'kiosk' })
     await user.keyboard('?')
     expect(helpDrawer()).not.toBeInTheDocument()
+    // Added in Task 5, as a sibling of the same defect found in the new ⌘/ case:
+    // kiosk hides `app.drawer` outright, so "no dialog in the document" is true
+    // whether or not the row's `interactive` guard did anything. `?drawer=` is
+    // the guard's only observable, so it is the one asserted.
+    expect(app.search()).not.toMatch(/drawer=/)
+  })
+})
+
+// ── the app-global chords: ⌘/ Ctrl+/ and ⌘; Ctrl+; (Task 5) ─────────────────
+//
+// The two Desktop-parity bindings that survive contact with a browser. The
+// other four (⌘N, ⌘W, Ctrl+Tab, Ctrl+Shift+Tab) are reserved by the browser's
+// own UI and are asserted to bind NOTHING, at the bottom of this file.
+
+const assistantDrawer = () => screen.queryByRole('dialog', { name: /assistant/i })
+
+describe('⌘/ · Ctrl+/ opens the help drawer', () => {
+  it('on Ctrl+/ — the non-Apple binding', async () => {
+    const user = userEvent.setup()
+    renderApp({ path: '/sessions', mode: 'desktop' })
+    railLink().focus()
+    await user.keyboard('{Control>}/{/Control}')
+    expect(helpDrawer()).toBeInTheDocument()
+  })
+
+  it('on ⌘/ — the Apple binding, accepted on every platform', async () => {
+    // The matcher takes either modifier rather than sniffing the platform: a
+    // Mac on an external PC keyboard and a Linux box with ⌘ mapped to Super
+    // both report a platform that disagrees with the keys in front of the user.
+    const user = userEvent.setup()
+    renderApp({ path: '/sessions', mode: 'desktop' })
+    railLink().focus()
+    await user.keyboard('{Meta>}/{/Meta}')
+    expect(helpDrawer()).toBeInTheDocument()
+  })
+
+  it('YES mid-draft in the composer — a chord is not a character there', async () => {
+    // The contrast that justifies a second row rather than a widened
+    // `compose.help`: three cases up, `?` typed into this same box produced the
+    // character and no drawer.
+    const user = userEvent.setup()
+    await renderSession()
+    await user.click(composer())
+    await user.type(composer(), 'wip')
+    await user.keyboard('{Meta>}/{/Meta}')
+    expect(helpDrawer()).toBeInTheDocument()
+    expect(composer()).toHaveValue('wip')
+  })
+
+  it('NOT in kiosk — a wall display has no drawer region to open into', async () => {
+    const user = userEvent.setup()
+    const app = renderApp({ path: '/sessions', mode: 'kiosk' })
+    await user.keyboard('{Meta>}/{/Meta}')
+    await user.keyboard('{Control>}/{/Control}')
+    expect(helpDrawer()).not.toBeInTheDocument()
+    // The URL, not just the absence of a node. `REGION_VISIBILITY['app.drawer']`
+    // is false in kiosk, so the drawer would be missing from the document even
+    // if the row HAD fired and written `?drawer=help` — the assertion above
+    // passes for a reason that has nothing to do with the guard under test.
+    // (Verified: deleting `c.interactive` from the row's `when` left it green.)
+    // `?drawer=` is the row's only observable effect, so that is what is asserted.
+    expect(app.search()).not.toMatch(/drawer=/)
+  })
+})
+
+describe('⌘; · Ctrl+; opens the assistant drawer', () => {
+  it('on Ctrl+;', async () => {
+    const user = userEvent.setup()
+    renderApp({ path: '/sessions', mode: 'desktop' })
+    railLink().focus()
+    await user.keyboard('{Control>};{/Control}')
+    await waitFor(() => expect(assistantDrawer()).toBeInTheDocument())
+  })
+
+  it('on ⌘;', async () => {
+    const user = userEvent.setup()
+    renderApp({ path: '/sessions', mode: 'desktop' })
+    railLink().focus()
+    await user.keyboard('{Meta>};{/Meta}')
+    await waitFor(() => expect(assistantDrawer()).toBeInTheDocument())
+  })
+
+  it('NOT in kiosk', async () => {
+    const user = userEvent.setup()
+    const app = renderApp({ path: '/sessions', mode: 'kiosk' })
+    await user.keyboard('{Meta>};{/Meta}')
+    await user.keyboard('{Control>};{/Control}')
+    expect(assistantDrawer()).not.toBeInTheDocument()
+    // See the help row's kiosk case: the missing node proves nothing here, the
+    // un-written `?drawer=` param does.
+    expect(app.search()).not.toMatch(/drawer=/)
+  })
+})
+
+// ── the Desktop chords a browser reserves ───────────────────────────────────
+//
+// jsdom reserves nothing: it delivers ⌘W and Ctrl+Tab to the page exactly as it
+// delivers any other key. A real Chrome or Safari does NOT — it never dispatches
+// the keydown for a shortcut its own UI owns, so `preventDefault()` is not just
+// ignored, it is never reached. These cases therefore cannot prove the browser
+// withholds the key. They prove OUR half: nothing in the app acts on them, so
+// the help sheet is not printing a promise the browser eats.
+
+describe('the browser-reserved Desktop chords do nothing here', () => {
+  it('⌘W / Ctrl+W does not detach — the browser closes the tab instead', async () => {
+    const user = userEvent.setup()
+    const app = await renderSession()
+    await user.keyboard('{Meta>}w{/Meta}')
+    expect(app.path()).toBe('/sessions/s1')
+    await user.keyboard('{Control>}w{/Control}')
+    expect(app.path()).toBe('/sessions/s1')
+  })
+
+  it('Ctrl+Tab / Ctrl+Shift+Tab does not cycle sessions — the browser cycles tabs', async () => {
+    const user = userEvent.setup()
+    const app = await renderSession()
+    await user.keyboard('{Control>}{Tab}{/Control}')
+    expect(app.path()).toBe('/sessions/s1')
+    await user.keyboard('{Control>}{Shift>}{Tab}{/Shift}{/Control}')
+    expect(app.path()).toBe('/sessions/s1')
+  })
+
+  it('⌘N / Ctrl+N does not open the New Session dialog — the browser opens a window', async () => {
+    const user = userEvent.setup()
+    const app = renderApp({ path: '/sessions', mode: 'desktop' })
+    await waitFor(() => expect(row('One')).toBeInTheDocument())
+    await user.keyboard('{Meta>}n{/Meta}')
+    await user.keyboard('{Control>}n{/Control}')
+    expect(screen.queryByRole('dialog', { name: /new session/i })).not.toBeInTheDocument()
+    expect(app.path()).toBe('/sessions')
+    expect(app.search()).toBe('')
   })
 })
 

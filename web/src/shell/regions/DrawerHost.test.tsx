@@ -150,6 +150,52 @@ describe('DrawerHost', () => {
     expect(dlg.textContent ?? '').not.toMatch(/Ctrl\+X/)
   })
 
+  /**
+   * The Apple branch of `displayKeys()`, rendered through the real sheet.
+   *
+   * Until Task 5 no row in `SHORTCUTS` carried a `keysMac`, so every assertion
+   * above — including the KEYS drift guard — exercised only the non-Apple side,
+   * and `HelpSheet`'s `displayKeys(b)` would have passed just as well written as
+   * `b.keys`. A Mac user must be shown `⌘/`, never `Ctrl+/`: telling them to
+   * press a modifier their keyboard has in a different place is a shortcut they
+   * will conclude is broken.
+   *
+   * jsdom reports `navigator.platform` as `''`, so it is redefined rather than
+   * cast into place (R10), and restored so the non-Apple assertions elsewhere in
+   * this file keep testing what they say they do.
+   */
+  it('shows the ⌘ glyphs on an Apple platform, and Ctrl elsewhere', () => {
+    const original = window.navigator.platform
+    const setPlatform = (value: string) =>
+      Object.defineProperty(window.navigator, 'platform', { value, configurable: true })
+
+    const withMac = SHORTCUTS.filter((s) => s.keysMac !== undefined)
+    expect(withMac.map((s) => s.id), 'no row carries keysMac').not.toHaveLength(0)
+
+    try {
+      setPlatform('MacIntel')
+      renderAt(['/sessions?drawer=help'])
+      const mac = screen.getByRole('dialog', { name: /help/i })
+      for (const s of withMac) {
+        expect(within(mac).getAllByText(s.keysMac ?? '').length, `${s.id} on MacIntel`)
+          .toBeGreaterThan(0)
+        expect(within(mac).queryByText(s.keys), `${s.id} shows its Ctrl twin on a Mac`).toBeNull()
+      }
+
+      cleanup()
+
+      setPlatform('Win32')
+      renderAt(['/sessions?drawer=help'])
+      const win = screen.getByRole('dialog', { name: /help/i })
+      for (const s of withMac) {
+        expect(within(win).getAllByText(s.keys).length, `${s.id} on Win32`).toBeGreaterThan(0)
+        expect(within(win).queryByText(s.keysMac ?? ''), `${s.id} shows ⌘ on Windows`).toBeNull()
+      }
+    } finally {
+      setPlatform(original)
+    }
+  })
+
   it('has Navigation and Tips sections', () => {
     renderAt(['/sessions?drawer=help'])
     const dlg = within(screen.getByRole('dialog', { name: /help/i }))
