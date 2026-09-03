@@ -77,6 +77,33 @@ export function DeployControllerProvider({ children }: { children: ReactNode }) 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
 }
 
+/**
+ * Assert that a `DeployControllerProvider` is above this point in the tree.
+ *
+ * `useDeployController()` below deliberately degrades to an inert controller
+ * (`visible: false`) when there is no provider, so that leaf components render
+ * in unit tests. For a LEAF that is the right trade: it draws nothing and
+ * nothing is lost. For the component whose whole job is to host `DeployOverlay`
+ * it is the worst possible failure — mounted in the wrong place it would render
+ * silently forever, and the symptom would be "a deploy ran and the user saw no
+ * progress overlay at all", with nothing in the console to say why.
+ *
+ * `shell/regions/Overlays` therefore asserts the provider rather than reading
+ * through the lenient hook. Same idiom as `useViewport()` and
+ * `useSessionRuntimeContext()`: a region whose parent must supply a provider
+ * says so by throwing at mount, where a test or the first dev load catches it.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function useRequireDeployController(): void {
+  const v = useContext(Ctx)
+  if (!v) {
+    throw new Error(
+      'useRequireDeployController: no DeployControllerProvider above this component. ' +
+        'app.overlays hosts DeployOverlay and must render inside DeployControllerProvider.',
+    )
+  }
+}
+
 // eslint-disable-next-line react-refresh/only-export-components
 export function useDeployController(): DeployControllerValue {
   const v = useContext(Ctx)
