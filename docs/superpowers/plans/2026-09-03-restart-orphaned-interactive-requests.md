@@ -834,7 +834,7 @@ Create `web/src/session/__tests__/reducer.orphanedQuestion.test.ts`:
 
 ```ts
 import { describe, it, expect } from 'vitest'
-import { reduce, initialState } from '../reducer'
+import { transcriptReducer, initialTranscript } from '../reducer'
 
 const q = (over: Record<string, unknown> = {}) => ({
   type: 'question', questionId: 'toolu_A-0', turnId: 't1', header: 'Disposition',
@@ -842,7 +842,7 @@ const q = (over: Record<string, unknown> = {}) => ({
   options: [{ label: 'Close it' }], ...over,
 })
 
-function questionBlock(state: ReturnType<typeof reduce>) {
+function questionBlock(state: ReturnType<typeof transcriptReducer>) {
   for (const t of state.turns) {
     for (const b of t.blocks) if (b.kind === 'question') return b
   }
@@ -851,37 +851,37 @@ function questionBlock(state: ReturnType<typeof reduce>) {
 
 describe('orphaned question', () => {
   it('a replayed question starts read-only', () => {
-    let s = reduce(initialState, { type: 'replayReset' } as never)
-    s = reduce(s, q() as never)
+    let s = transcriptReducer(initialTranscript, { type: 'replayReset' } as never)
+    s = transcriptReducer(s, q() as never)
     const b = questionBlock(s)
     expect(b?.kind === 'question' && b.live).toBeFalsy()
   })
 
   it('an orphaned re-offer upgrades the replayed card to live and marks it orphaned', () => {
-    let s = reduce(initialState, { type: 'replayReset' } as never)
-    s = reduce(s, q() as never)
-    s = reduce(s, { type: 'replayComplete' } as never)
-    s = reduce(s, q({ orphaned: true }) as never)
+    let s = transcriptReducer(initialTranscript, { type: 'replayReset' } as never)
+    s = transcriptReducer(s, q() as never)
+    s = transcriptReducer(s, { type: 'replayComplete' } as never)
+    s = transcriptReducer(s, q({ orphaned: true }) as never)
     const b = questionBlock(s)
     expect(b?.kind === 'question' && b.live).toBe(true)
     expect(b?.kind === 'question' && b.orphaned).toBe(true)
   })
 
   it('does not append a duplicate card — the ids match replay', () => {
-    let s = reduce(initialState, { type: 'replayReset' } as never)
-    s = reduce(s, q() as never)
-    s = reduce(s, { type: 'replayComplete' } as never)
-    s = reduce(s, q({ orphaned: true }) as never)
+    let s = transcriptReducer(initialTranscript, { type: 'replayReset' } as never)
+    s = transcriptReducer(s, q() as never)
+    s = transcriptReducer(s, { type: 'replayComplete' } as never)
+    s = transcriptReducer(s, q({ orphaned: true }) as never)
     const all = s.turns.flatMap((t) => t.blocks).filter((b) => b.kind === 'question')
     expect(all).toHaveLength(1)
   })
 
   it('never resurrects an already-answered question', () => {
-    let s = reduce(initialState, { type: 'replayReset' } as never)
-    s = reduce(s, q() as never)
-    s = reduce(s, { type: 'replayComplete' } as never)
-    s = reduce(s, { type: 'questionResolved', questionId: 'toolu_A-0', turnId: 't1', selected: ['Close it'] } as never)
-    s = reduce(s, q({ orphaned: true }) as never)
+    let s = transcriptReducer(initialTranscript, { type: 'replayReset' } as never)
+    s = transcriptReducer(s, q() as never)
+    s = transcriptReducer(s, { type: 'replayComplete' } as never)
+    s = transcriptReducer(s, { type: 'questionResolved', questionId: 'toolu_A-0', turnId: 't1', selected: ['Close it'] } as never)
+    s = transcriptReducer(s, q({ orphaned: true }) as never)
     const b = questionBlock(s)
     expect(b?.kind === 'question' && b.live).toBeFalsy()
   })
@@ -1129,7 +1129,7 @@ In `web/src/components/session/SessionBody.tsx`, render it immediately before `<
 ```tsx
             <InterruptedAskNotice
               interruptedFromStatus={session?.interruptedFromStatus}
-              onAskAgain={() => rt.onSend(
+              onAskAgain={() => rt.onPrompt(
                 'The permission or plan approval you were waiting on was lost when the '
                 + 'daemon restarted — I never saw it. Please re-request whatever you need '
                 + 'approved, or tell me where things stand.',
@@ -1137,7 +1137,7 @@ In `web/src/components/session/SessionBody.tsx`, render it immediately before `<
             />
 ```
 
-Import it at the top, and resolve `session` from the `useSessions()` data already available in this component (it is used for the model/account rows) — reuse that lookup rather than adding a second fetch. Use whatever prompt-sending callback the file already exposes on `rt` (it is `onSend` at time of writing; confirm against the `SessionRuntime` type and use the real name).
+Import it at the top, and resolve `session` from the `useSessions()` data already available in this component (it is used for the model/account rows) — reuse that lookup rather than adding a second fetch. The runtime's prompt-send callback is `rt.onPrompt` (verified against `useSessionRuntime`'s return object); check its exact signature and adapt the call if it takes more than the text.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
