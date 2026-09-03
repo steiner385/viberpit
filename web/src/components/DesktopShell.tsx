@@ -65,6 +65,7 @@ import {
   useAllPrs,
   useAutomations,
 } from '@/api/hooks'
+import { useFleetHosts, enabledHosts } from '@/api/fleet'
 import { TabBar } from './TabBar'
 import { buildTabs } from './tabDefs'
 import { inFlightPrCount } from '@/session/prStatus'
@@ -157,6 +158,8 @@ export function DesktopShell() {
   const { data: archivedSessions = [] } = useArchivedSessions()
   const reposQuery = useGithubRepos()
   const { data: models = [] } = useModels()
+  const { data: fleetData } = useFleetHosts()
+  const enabledFleetHosts = enabledHosts(fleetData)
   const { data: config } = useConfig()
 
   const createSession = useCreateSession()
@@ -374,7 +377,7 @@ export function DesktopShell() {
   function handleCollapseHighlighted() { if (highlightedGroupKey) collapseGroup(highlightedGroupKey) }
   function handleToggleHighlighted() { if (highlightedGroupKey) toggleCollapse(highlightedGroupKey) }
 
-  function handleDispatch({ initialPrompt, repo, account, model, attachmentIds }: { initialPrompt: string; repo: string | null; account: string | null; model: string | null; attachmentIds: string[] }): Promise<void> {
+  function handleDispatch({ initialPrompt, repo, account, model, host, attachmentIds }: { initialPrompt: string; repo: string | null; account: string | null; model: string | null; host: string | null; attachmentIds: string[] }): Promise<void> {
     const repoInfo = repo ? (reposQuery.data ?? []).find((r) => r.nameWithOwner === repo) : undefined
     return new Promise((resolve, reject) => {
       createSession.mutate(
@@ -384,6 +387,7 @@ export function DesktopShell() {
           branch: repoInfo?.defaultBranch ?? undefined,
           account: account ?? undefined,
           model: model ?? undefined,
+          host: host ?? undefined,
           attachmentIds: attachmentIds.length ? attachmentIds : undefined,
         },
         {
@@ -565,6 +569,7 @@ export function DesktopShell() {
       reposError={reposQuery.isError}
       accounts={accounts}
       models={models}
+      hosts={enabledFleetHosts}
       onDispatch={handleDispatch}
       onNavigate={navigate}
       onOpenHighlighted={handleOpenHighlighted}
