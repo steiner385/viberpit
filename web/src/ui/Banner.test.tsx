@@ -83,5 +83,10 @@ describe('BannerStack', () => {
     const wrapper = container.querySelector('[data-region="app.banners"]')
     expect(wrapper).not.toBeNull()
     expect(wrapper!.childNodes.length).toBe(0)
+    // …and the class that collapses it. jsdom does not evaluate CSS, so this
+    // pins the mechanism, not the rendered height: without `[&:empty]:hidden`
+    // the empty wrapper leaves an 8px strip on every screen (ruling R26), and
+    // nothing else in the suite notices if the class is deleted.
+    expect(wrapper!.className).toContain('[&:empty]:hidden')
   })
 })
