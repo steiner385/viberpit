@@ -8,6 +8,7 @@ import { ReviewView } from './components/ReviewView'
 import { GlobalUpdateBanner } from './components/GlobalUpdateBanner'
 import { DaemonRestartBanner } from './components/DaemonRestartBanner'
 import { GitCredentialBanner } from './components/GitCredentialBanner'
+import { BannerStack } from './ui/BannerStack'
 import { BrandMark } from './components/BrandMark'
 import { useMediaQuery } from './lib/useMediaQuery'
 import { DeployControllerProvider } from './lib/deployController'
@@ -186,9 +187,11 @@ function App() {
   const isWide = useMediaQuery('(min-width: 1024px)')
   return (
     <DeployControllerProvider>
-      <GlobalUpdateBanner />
-      <DaemonRestartBanner />
-      <GitCredentialBanner />
+      <BannerStack className="px-4 pt-2" items={[
+        { id: 'update', priority: 30, node: <GlobalUpdateBanner /> },
+        { id: 'daemon', priority: 90, node: <DaemonRestartBanner /> },
+        { id: 'git-credential', priority: 80, node: <GitCredentialBanner /> },
+      ]} />
       {isWide ? (
         <DesktopShell />
       ) : (

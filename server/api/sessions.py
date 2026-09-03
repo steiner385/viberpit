@@ -40,6 +40,7 @@ from server.sessions.facade import call_with_deadline
 from server.sessions.permissions import resolve_permission_mode
 from server.sessions.selection import AllAccountsBusy
 from server.sessions.fleet_router import UnknownHost, NoHostAvailable
+from server.sessions import host_heartbeat
 from server.time_iso import iso_utc
 
 if TYPE_CHECKING:
@@ -121,6 +122,7 @@ def _record_to_dict(
     record, repo: Any = _UNSET, suggestions: list[str] | None = None,
     prs: list | None = None, summary: str = "", defer_seconds: int | None = None,
     queue_position: int | None = None, queue_stall_reason: dict[str, Any] | None = None,
+    heartbeats: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Convert an in-memory SessionRecord to the wire-format dict.
 
@@ -146,6 +148,20 @@ def _record_to_dict(
     """
     from datetime import datetime, timedelta, timezone
     from server.sessions.goals import effective_goal
+    from server.sessions.liveness import derive_liveness
+    # Per-session liveness is DERIVED at the edge from the owning host's heartbeat
+    # (spec 002 FR-102/FR-103), never stored. host=None (primary/in-process) and a
+    # host with no heartbeat row are BOTH fresh-unknown (NFR-3: absence of a row is
+    # never evidence of death). `heartbeats` is snapshotted once per request by the
+    # caller — never fetched per session (NFR-4).
+    _hb_host = getattr(record, "host", None)
+    _hb = heartbeats.get(_hb_host) if (heartbeats is not None and _hb_host is not None) else None
+    _liveness = derive_liveness(
+        _hb.beat_at if _hb is not None else None,
+        datetime.utcnow(),
+        interval_s=float(os.environ.get("CCSWITCH_HOST_HEARTBEAT_INTERVAL_S", "10")),
+        dead_after_s=float(os.environ.get("CCSWITCH_HOST_DEAD_AFTER_S", "300")),
+    )
     goal_text, goal_source = effective_goal(record)
     cooldown_until = None
     _last = getattr(record, "last_user_interaction_at", None)
@@ -207,6 +223,12 @@ def _record_to_dict(
         "prs": [p.to_dict() for p in (prs or [])],
         "usageUnverified": getattr(record, "usage_unverified", False),
         "interruptedByRestart": getattr(record, "interrupted_by_restart", False),
+        # Liveness derived at the edge from the owning host's heartbeat snapshot
+        # (spec 002 FR-103). Never stored — always computed from host_heartbeats.
+        "liveness": _liveness.state,
+        "lastConfirmedAliveAt": (
+            iso_utc(_liveness.last_confirmed_alive_at)
+            if _liveness.last_confirmed_alive_at is not None else None),
         "summary": summary or "",
         "queuePosition": queue_position,
         "queueStallReason": queue_stall_reason,
@@ -437,11 +459,18 @@ async def list_sessions(
         except Exception:
             log.warning("list_sessions: session_queue_positions fetch failed", exc_info=True)
     stall_reason = await _compute_queue_stall_reason(records)
+    try:
+        heartbeats = await host_heartbeat.snapshot()
+    except Exception:                          # DB down: degrade to fresh, never false-dead (NFR-5)
+        log.warning("list_sessions: heartbeat snapshot failed — liveness degrades to fresh",
+                    exc_info=True)
+        heartbeats = {}
     return [
         _record_to_dict(
             r, repo=repo, suggestions=s, prs=pr_list, summary=summary,
             defer_seconds=defer_seconds, queue_position=positions.get(r.id),
-            queue_stall_reason=stall_reason if r.status == "queued" else None)
+            queue_stall_reason=stall_reason if r.status == "queued" else None,
+            heartbeats=heartbeats)
         for r, repo, s, pr_list, summary in zip(records, repos, suggs, prs, summaries)
     ]
 
@@ -903,7 +932,14 @@ async def get_session(
             queue_position = (_pos_res or {}).get(session_id)
         except Exception:
             log.warning("get_session: session_queue_positions fetch failed", exc_info=True)
-    return _record_to_dict(record, repo=await _resolve_repo(record), queue_position=queue_position)
+    try:
+        heartbeats = await host_heartbeat.snapshot()
+    except Exception:
+        log.warning("get_session: heartbeat snapshot failed — liveness degrades to fresh",
+                    exc_info=True)
+        heartbeats = {}
+    return _record_to_dict(record, repo=await _resolve_repo(record),
+                           queue_position=queue_position, heartbeats=heartbeats)
 
 
 @router.patch("/{session_id}")

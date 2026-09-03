@@ -3,7 +3,11 @@
 ## Scope and conformance target
 
 **Management surfaces** (Dashboard, session list, account strip, SessionActions overflow menu,
-EmptyState, AllLimitedBanner, UsageBadge/StatusPill) target **WCAG 2.1 Level AA** in full.
+empty states, banners, usage badges and status pills) target **WCAG 2.1 Level AA** in full.
+
+Those surfaces are now built from the shared primitives in `web/src/ui/` — `StatusPill`,
+`Banner`/`BannerStack`, `EmptyState`, `Button`/`IconButton`, `Dialog`/`Sheet`, `Menu`, `Tabs` —
+rather than from per-component markup, so a fix to one primitive reaches every surface using it.
 
 **Terminal surface** (xterm.js PTY view) is **partial conformance** — see the documented exception
 below. All other surfaces are fully AA-conformant.
@@ -53,7 +57,16 @@ state. With `role="status"` the container is a live region and `aria-label` is p
 
 - **Color is never the sole means of conveying status.** `StatusPill` always pairs an icon with
   a text label (`OK`, `Limited`, `Needs login`, etc.); `UsageBadge` includes a numeric percentage.
-- **Touch targets ≥ 44 × 44 px** (`min-h-[44px]`) on all interactive elements.
+- **Touch targets ≥ 44 × 44 px** on all interactive elements. The mechanism is the `--target`
+  token (44px in `web/src/index.css`) surfaced as Tailwind's `min-h-target` / `min-w-target`:
+  `IconButton` carries both in its base class, and `Button` carries `min-h-target` on its `lg`
+  size — so an on-screen `Button` in a touch context must be `size="lg"` (`sm` is 36px, `md`
+  40px). Moving the floor into `Button`'s base class is tracked in issue #953.
+- **Colour contrast ≥ 4.5:1** for normal text on every tone/wash and ink/surface token pair, in
+  light and dark. This is enforced arithmetically by `web/src/__tests__/contrast.test.ts`, which
+  parses `web/src/index.css` and applies the WCAG 2.x relative-luminance formula. The `axe`
+  assertions elsewhere in the suite cannot cover it: jsdom applies no stylesheet, so axe's
+  `color-contrast` rule reports `incomplete` and never a violation.
 - **Focus management:** dialogs trap focus; closing a dialog returns focus to the trigger
   element (verified in `SessionList.test.tsx` and `SessionActions.test.tsx`).
 - **Keyboard navigation:** all interactive elements reachable by Tab; overflow menus are

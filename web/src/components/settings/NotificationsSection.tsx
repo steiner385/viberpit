@@ -171,7 +171,7 @@ function QuietHoursForm({ initial, qc }: { initial: QuietHours | undefined; qc: 
         <Button type="button" onClick={handleSave} disabled={save.isPending} className="min-h-[44px]">
           {save.isPending ? 'Saving…' : 'Save'}
         </Button>
-        <Button type="button" variant="outline" onClick={handleClear} disabled={save.isPending} className="min-h-[44px]">
+        <Button type="button" variant="secondary" onClick={handleClear} disabled={save.isPending} className="min-h-[44px]">
           Clear
         </Button>
       </div>
@@ -559,7 +559,7 @@ function AddRuleForm({
       {add.isError && <p role="alert" className="text-sm text-danger">{errMessage(add.error)}</p>}
 
       <div className="flex flex-wrap justify-end gap-2">
-        <Button type="button" variant="outline" onClick={handleTest} disabled={test.isPending} className="min-h-[44px]">
+        <Button type="button" variant="secondary" onClick={handleTest} disabled={test.isPending} className="min-h-[44px]">
           {test.isPending ? 'Testing…' : 'Test routing'}
         </Button>
         <Button type="submit" disabled={add.isPending || (action === 'channel' && !channelId)} className="min-h-[44px]">

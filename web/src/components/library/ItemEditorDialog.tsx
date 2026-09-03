@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef } from 'react'
 import {
   useLibraryItemContent,
   useSaveLibraryItem,
@@ -6,6 +6,11 @@ import {
 } from '@/api/hooks'
 import type { LibraryItemKind } from '@/api/hooks'
 import { ApiRequestError } from '@/api/client'
+import { Dialog } from '@/ui/Dialog'
+import { Button } from '@/ui/Button'
+import { Field } from '@/ui/Field'
+import { Input } from '@/ui/Input'
+import { Textarea } from '@/ui/Textarea'
 
 interface ItemEditorDialogProps {
   kind: LibraryItemKind
@@ -54,7 +59,6 @@ function starterTemplate(kind: LibraryItemKind, name: string): string {
 
 export function ItemEditorDialog({ kind, id, plugin, readonly = false, initialContent, onClose }: ItemEditorDialogProps) {
   const isCreate = id === null
-  const dialogRef = useRef<HTMLDivElement>(null)
   const firstFieldRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null)
 
   // Create-mode name state
@@ -85,33 +89,6 @@ export function ItemEditorDialog({ kind, id, plugin, readonly = false, initialCo
     if (!isDirty) setIsDirty(true)
     setEditedContent(val)
   }
-
-  // Focus first field on mount
-  useEffect(() => {
-    firstFieldRef.current?.focus()
-  }, [])
-
-  // Escape closes; Tab traps focus
-  useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') { onClose(); return }
-      if (e.key === 'Tab') {
-        const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-        )
-        if (!focusable || focusable.length === 0) return
-        const first = focusable[0]
-        const last = focusable[focusable.length - 1]
-        if (e.shiftKey) {
-          if (document.activeElement === first) { e.preventDefault(); last.focus() }
-        } else {
-          if (document.activeElement === last) { e.preventDefault(); first.focus() }
-        }
-      }
-    }
-    document.addEventListener('keydown', handleKeyDown)
-    return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [onClose])
 
   const effectiveId = isCreate ? newName : id!
   const nameIsValid = !isCreate || isValidId(kind, newName)
@@ -167,115 +144,89 @@ export function ItemEditorDialog({ kind, id, plugin, readonly = false, initialCo
   const nameLabel = kind === 'skills' ? 'Skill name' : 'Command path'
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/50"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="item-editor-dialog-title"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
-    >
-      <div
-        ref={dialogRef}
-        className="w-full max-w-lg rounded-xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 shadow-xl p-6 space-y-4"
-      >
-        <h2
-          id="item-editor-dialog-title"
-          className="text-lg font-semibold text-gray-900 dark:text-gray-100"
+    <Dialog open onClose={onClose} title={title} size="lg" initialFocus={firstFieldRef}>
+      {/* Name / path input in create mode */}
+      {isCreate && (
+        <Field
+          label={nameLabel}
+          htmlFor="item-editor-name"
+          error={newName.length > 0 && !nameIsValid ? (
+            kind === 'skills'
+              ? 'Use lowercase letters, numbers, and hyphens only (start with letter/digit).'
+              : 'Path segments: letters/numbers/._- (max 4, start with letter/digit).'
+          ) : undefined}
         >
-          {title}
-        </h2>
+          <Input
+            ref={(el) => { firstFieldRef.current = el }}
+            id="item-editor-name"
+            type="text"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            placeholder={placeholder}
+            aria-label={nameLabel}
+            invalid={newName.length > 0 && !nameIsValid}
+          />
+        </Field>
+      )}
 
-        {/* Name / path input in create mode */}
-        {isCreate && (
-          <div className="space-y-1">
-            <label
-              htmlFor="item-editor-name"
-              className="block text-sm text-gray-700 dark:text-gray-300"
-            >
-              {nameLabel}
-            </label>
-            <input
-              ref={(el) => { firstFieldRef.current = el }}
-              id="item-editor-name"
-              type="text"
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              placeholder={placeholder}
-              aria-label={nameLabel}
-              className="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-            {newName.length > 0 && !nameIsValid && (
-              <p className="text-xs text-red-600 dark:text-red-400" role="alert">
-                {kind === 'skills'
-                  ? 'Use lowercase letters, numbers, and hyphens only (start with letter/digit).'
-                  : 'Path segments: letters/numbers/._- (max 4, start with letter/digit).'}
-              </p>
-            )}
-          </div>
-        )}
+      {/* Display item id when editing */}
+      {!isCreate && (
+        <p className="text-sm text-ink-muted">
+          {kind === 'skills' ? id : `/${(id ?? '').replace(/\//g, ':')}`}
+          {plugin && (
+            <span className="ml-2 text-xs px-1.5 py-0.5 rounded-full border border-edge opacity-70">
+              {plugin}
+            </span>
+          )}
+        </p>
+      )}
 
-        {/* Display item id when editing */}
-        {!isCreate && (
-          <p className="text-sm text-gray-500 dark:text-gray-400">
-            {kind === 'skills' ? id : `/${(id ?? '').replace(/\//g, ':')}`}
-            {plugin && (
-              <span className="ml-2 text-xs px-1.5 py-0.5 rounded-full border border-edge opacity-70">
-                {plugin}
-              </span>
-            )}
-          </p>
-        )}
+      {/* Content textarea */}
+      {contentQuery.isLoading && !isCreate && (
+        <div className="text-sm text-ink-muted">Loading…</div>
+      )}
+      <Textarea
+        ref={(el) => { if (!isCreate) firstFieldRef.current = el }}
+        aria-label="Content"
+        value={content}
+        onChange={(e) => handleContentChange(e.target.value)}
+        readOnly={isReadonly}
+        disabled={contentLoading}
+        className="font-mono h-72"
+      />
 
-        {/* Content textarea */}
-        {contentQuery.isLoading && !isCreate && (
-          <div className="text-sm opacity-70">Loading…</div>
-        )}
-        <textarea
-          ref={(el) => { if (!isCreate) firstFieldRef.current = el }}
-          aria-label="Content"
-          value={content}
-          onChange={(e) => handleContentChange(e.target.value)}
-          readOnly={isReadonly}
-          disabled={contentLoading}
-          className="font-mono text-sm w-full h-72 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 px-2 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y disabled:opacity-60"
-        />
+      {/* Save/delete error */}
+      {saveError && (
+        <p className="text-xs text-danger" role="alert">{saveError}</p>
+      )}
 
-        {/* Save/delete error */}
-        {saveError && (
-          <p className="text-xs text-red-600 dark:text-red-400" role="alert">{saveError}</p>
-        )}
-
-        {/* Footer */}
-        <div className="flex gap-3 justify-end pt-2">
-          <button
+      {/* Footer */}
+      <div className="flex gap-3 justify-end pt-2">
+        <Button type="button" variant="secondary" onClick={onClose}>
+          Cancel
+        </Button>
+        {!isCreate && !isReadonly && (
+          <Button
             type="button"
-            onClick={onClose}
-            className="rounded border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-700"
+            variant="danger"
+            onClick={handleDelete}
+            disabled={deleteMutation.isPending || saveMutation.isPending}
           >
-            Cancel
-          </button>
-          {!isCreate && !isReadonly && (
-            <button
-              type="button"
-              onClick={handleDelete}
-              disabled={deleteMutation.isPending || saveMutation.isPending}
-              className="rounded border border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 px-3 py-2 text-sm hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-60"
-            >
-              Delete
-            </button>
-          )}
-          {!isReadonly && (
-            <button
-              type="button"
-              onClick={handleSave}
-              disabled={!canSave}
-              className="rounded bg-blue-600 text-white px-3 py-2 text-sm hover:bg-blue-700 disabled:opacity-60"
-            >
-              {saveMutation.isPending ? 'Saving…' : 'Save'}
-            </button>
-          )}
-        </div>
+            Delete
+          </Button>
+        )}
+        {!isReadonly && (
+          <Button
+            type="button"
+            size="lg"
+            onClick={handleSave}
+            disabled={!canSave}
+            loading={saveMutation.isPending}
+          >
+            {saveMutation.isPending ? 'Saving…' : 'Save'}
+          </Button>
+        )}
       </div>
-    </div>
+    </Dialog>
   )
 }

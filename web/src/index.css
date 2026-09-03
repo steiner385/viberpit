@@ -19,8 +19,8 @@
   /* surfaces & ink */
   --t-canvas: #f6f7f9;  --t-surface: #ffffff;  --t-surface-raised: #eef1f5;
   --t-edge: #d9dde3;    --t-edge-strong: #b9c1cc;
-  --t-ink: #1a1f29;     --t-ink-muted: #69707d;  --t-ink-faint: #8b929e;
-  --t-accent: #2563eb;  --t-accent-ink: #ffffff; --t-accent-wash: #e8effc;
+  --t-ink: #1a1f29;     --t-ink-muted: #646a77;  --t-ink-faint: #8b929e;
+  --t-accent: #2461e7;  --t-accent-ink: #ffffff; --t-accent-wash: #e8effc;
 
   /* semantic status — base is AA as text on surface; -strong is AA behind white
      text; -wash is a tint for backgrounds.
@@ -29,12 +29,16 @@
      ready-merge button) must stay AA in BOTH themes, so the fill itself must
      not change with the theme — see plotroom.css's UX-H5 rationale, which
      holds --accent-strong/--done-strong/--amber-strong at the same AA-vs-white
-     values in its light and dark blocks. */
-  --t-success: #15803d; --t-success-wash: #e6f4ea; --t-success-strong: #15803d;
+     values in its light and dark blocks.
+     Every tone/wash and ink/surface pair below is held at >= 4.5:1 (WCAG AA for
+     normal text — pills and banner copy are 12px) by
+     src/__tests__/contrast.test.ts. Retune a hex here and that test tells you
+     which pair you broke; do not add a parallel `-on-wash` token family. */
+  --t-success: #147c3b; --t-success-wash: #e6f4ea; --t-success-strong: #15803d;
   --t-warning: #9a5d00; --t-warning-wash: #fbf0dc; --t-warning-strong: #9a5d00;
-  --t-danger:  #d23b3b; --t-danger-wash:  #fbe9e7; --t-danger-strong:  #b42318;
+  --t-danger:  #c23636; --t-danger-wash:  #fbe9e7; --t-danger-strong:  #b42318;
   --t-info:    #4f6d8f; --t-info-wash:    #e9eef5; --t-info-strong:    #3d5674;
-  --t-neutral: #69707d; --t-neutral-wash: #eceff3; --t-neutral-strong: #5b6472;
+  --t-neutral: #646a77; --t-neutral-wash: #eceff3; --t-neutral-strong: #5b6472;
 
   /* layers (lowest → highest) */
   --layer-raised: 1; --layer-sticky: 20; --layer-nav: 25; --layer-popover: 30;
@@ -137,6 +141,9 @@
 
   --font-sans: system-ui, 'Segoe UI', Roboto, sans-serif;
   --font-mono: ui-monospace, Consolas, monospace;
+
+  --animate-sheet-right: slide-in-right 200ms ease-out;
+  --animate-sheet-bottom: slide-in-bottom 200ms ease-out;
 }
 
 /* The app is a fixed-viewport column: the *document* must never scroll. Without
@@ -215,6 +222,14 @@ body {
     color: transparent;
     animation: working-shimmer 1.8s linear infinite;
   }
+}
+@keyframes slide-in-right {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+@keyframes slide-in-bottom {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
 }
 @keyframes working-shimmer {
   from { background-position: 200% 0; }

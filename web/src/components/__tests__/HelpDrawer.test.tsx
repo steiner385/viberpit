@@ -26,7 +26,7 @@ describe('HelpDrawer', () => {
     const user = userEvent.setup()
     render(<HelpDrawer onClose={onClose} />)
     await user.keyboard('{Escape}')
-    await user.click(screen.getByTestId('help-drawer-backdrop'))
+    await user.click(screen.getByTestId('sheet-backdrop'))
     expect(onClose).toHaveBeenCalledTimes(2)
   })
 })

@@ -1,4 +1,7 @@
-// Ported from plotroom@5166b52 frontend/src/hooks/useFocusTrap.ts; edits: render-phase ref write → useLayoutEffect (react-hooks/refs rule)
+// Ported from plotroom@5166b52 frontend/src/hooks/useFocusTrap.ts; edits: render-phase ref write → useLayoutEffect (react-hooks/refs rule).
+// Promoted to web/src/ui/ with an `inertRoot` option: while a trap is active it sets `inert` on
+// an element (default `#root`) so background content is unfocusable/unclickable; a module-level
+// depth counter allows nested traps to stack without the inner trap's close lifting `inert` early.
 import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react';
 
 /**
@@ -7,6 +10,30 @@ import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react';
  */
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+// Module-level stack of active traps, outermost first. Every active trap
+// installs its own `document` keydown listener, and `stopPropagation()` only
+// stops other *nodes* — sibling listeners on the same node still run — so one
+// Escape used to invoke every stacked trap's `onClose`. `stopImmediatePropagation()`
+// alone does not fix it either: listeners fire in registration order, which is
+// outermost-first, so the outer trap would swallow Escape and close the wrong
+// dialog. Hence an explicit stack — only the trap on top acts on Escape, and it
+// stops the event immediately so nothing after it (or on `window`) sees it.
+const trapStack: symbol[] = [];
+
+// Module-level depth counter: a dialog can open a second (nested) dialog, so
+// the `inert` attribute must only be removed once the outermost trap closes.
+let inertDepth = 0;
+function setRootInert(id: string, on: boolean) {
+  // Count first, unconditionally: increments and decrements must pair up even if
+  // the element is missing at one end, or a decrement could be stolen from an
+  // outer trap and lift `inert` while its dialog is still open.
+  inertDepth = Math.max(0, inertDepth + (on ? 1 : -1));
+  const root = document.getElementById(id);
+  if (!root) return;
+  if (inertDepth > 0) root.setAttribute('inert', '');
+  else root.removeAttribute('inert');
+}
 
 /**
  * Shared focus-trap hook — extracted from ProtectionMap's inline drawer trap.
@@ -28,6 +55,8 @@ export function useFocusTrap(
   opts: {
     onClose: () => void;
     returnFocusRef?: RefObject<HTMLElement | null>;
+    /** Element id that becomes `inert` while the trap is active (default 'root'). Pass null to skip. */
+    inertRoot?: string | null;
   },
 ): void {
   // Capture opts in a ref so the effect cleanup always sees the current values
@@ -43,8 +72,22 @@ export function useFocusTrap(
     // Save element that had focus before the trap activated.
     const previousFocus = document.activeElement as HTMLElement | null;
 
+    const inertId = optsRef.current.inertRoot === undefined ? 'root' : optsRef.current.inertRoot;
+    if (inertId) setRootInert(inertId, true);
+
+    const token = Symbol('focus-trap');
+    trapStack.push(token);
+
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        // Only the innermost trap closes: this listener also runs for outer
+        // traps stacked beneath this dialog (see trapStack above).
+        if (trapStack[trapStack.length - 1] !== token) return;
+        // Swallow Escape here so it never reaches a background `window`-level
+        // shortcut handler (e.g. SessionView's Esc-to-back), or an outer trap's
+        // listener, while this trap is active — every hand-rolled dialog this
+        // hook replaces did the same via its own per-dialog `stopPropagation()`.
+        e.stopImmediatePropagation();
         optsRef.current.onClose();
         return;
       }
@@ -83,6 +126,12 @@ export function useFocusTrap(
 
     return () => {
       document.removeEventListener('keydown', onKey);
+      // Splice by identity, not pop: teardown order is not guaranteed to be
+      // LIFO (an outer dialog can unmount while an inner one is still open),
+      // and popping would hand "innermost" to the wrong trap.
+      const at = trapStack.indexOf(token);
+      if (at !== -1) trapStack.splice(at, 1);
+      if (inertId) setRootInert(inertId, false);
       // Return focus: explicit ref takes priority, then previous element.
       const returnTarget =
         optsRef.current.returnFocusRef?.current ?? previousFocus;
