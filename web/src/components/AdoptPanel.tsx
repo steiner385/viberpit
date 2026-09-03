@@ -1,7 +1,9 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { relTime } from '@/lib/relativeTime'
 import { useAdoptable, useAdoptSession } from '@/api/hooks'
+import { Dialog } from '@/ui/Dialog'
+import { Button } from '@/ui/Button'
 import type { AdoptionCandidate } from '@/api/types'
 
 /** Plain-language copy for skip reasons (UX SHOULD #5 — never show machine codes). */
@@ -27,57 +29,37 @@ interface ConfirmProps {
 function ConfirmDialog({ candidate, onCancel, onConfirm }: ConfirmProps) {
   const [ack, setAck] = useState(false)
   const active = candidate.pidAlive
+  const cancelRef = useRef<HTMLButtonElement>(null)
   return (
-    <div
-      role="dialog"
-      aria-label="Take over this session?"
-      aria-modal="true"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
-    >
-      <div className="max-w-md rounded-lg bg-white dark:bg-gray-800 p-5 shadow-xl space-y-4">
-        <h3 className="font-semibold text-gray-900 dark:text-gray-100">Take over this session?</h3>
-        <p className="text-sm text-gray-700 dark:text-gray-300">
-          ccswitch will {active ? 'stop' : 'resume'} the <code>claude</code> process running in{' '}
-          <b>{elide(candidate.cwd)}</b>
-          {candidate.pid != null && active ? <> (PID {candidate.pid})</> : null} under{' '}
-          <b>{candidate.account}</b> and resume the conversation <b>&ldquo;{candidate.name}&rdquo;</b>{' '}
-          here.{' '}
-          {active && 'Any unsaved work in that terminal will be lost. '}
-          This can&rsquo;t be undone.
-        </p>
-        {active && (
-          <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-            <input
-              type="checkbox"
-              checked={ack}
-              onChange={(e) => setAck(e.target.checked)}
-            />
-            I understand this will stop PID {candidate.pid}.
-          </label>
-        )}
-        <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onCancel}
-            autoFocus
-            className="rounded-md px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            disabled={active && !ack}
-            onClick={onConfirm}
-            className={cn(
-              'rounded-md px-3 py-1.5 text-sm font-medium text-white',
-              'bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed',
-            )}
-          >
-            Stop &amp; take over
-          </button>
-        </div>
+    <Dialog open onClose={onCancel} title="Take over this session?" size="md" initialFocus={cancelRef}>
+      <p className="text-sm text-ink-muted">
+        ccswitch will {active ? 'stop' : 'resume'} the <code>claude</code> process running in{' '}
+        <b>{elide(candidate.cwd)}</b>
+        {candidate.pid != null && active ? <> (PID {candidate.pid})</> : null} under{' '}
+        <b>{candidate.account}</b> and resume the conversation <b>&ldquo;{candidate.name}&rdquo;</b>{' '}
+        here.{' '}
+        {active && 'Any unsaved work in that terminal will be lost. '}
+        This can&rsquo;t be undone.
+      </p>
+      {active && (
+        <label className="flex items-center gap-2 text-sm text-ink-muted">
+          <input
+            type="checkbox"
+            checked={ack}
+            onChange={(e) => setAck(e.target.checked)}
+          />
+          I understand this will stop PID {candidate.pid}.
+        </label>
+      )}
+      <div className="flex justify-end gap-2">
+        <Button ref={cancelRef} type="button" variant="secondary" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button type="button" variant="danger" disabled={active && !ack} onClick={onConfirm}>
+          Stop &amp; take over
+        </Button>
       </div>
-    </div>
+    </Dialog>
   )
 }
 

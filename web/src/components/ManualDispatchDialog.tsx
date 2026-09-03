@@ -2,6 +2,9 @@ import { useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { useBacklogCandidates, useDispatchBacklogGroup } from '@/api/hooks'
 import type { BacklogCandidate } from '@/api/automations'
+import { Dialog } from '@/ui/Dialog'
+import { Button } from '@/ui/Button'
+import { Input } from '@/ui/Input'
 
 export function ManualDispatchDialog({
   open,
@@ -63,74 +66,51 @@ export function ManualDispatchDialog({
     }
   }
 
-  if (!open) return null
-
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Custom dispatch"
-    >
-      <div className="bg-canvas rounded-lg border border-edge p-4 w-full max-w-lg max-h-[80vh] flex flex-col gap-3 shadow-xl">
-        <div className="flex items-center justify-between">
-          <h3 className="font-semibold">Custom dispatch</h3>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="text-ink-muted hover:text-ink"
-          >
-            ✕
-          </button>
-        </div>
-        <input
-          type="search"
-          placeholder="Filter issues…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="rounded border border-edge bg-canvas px-3 py-1 text-sm w-full"
-        />
-        <div className="overflow-y-auto flex-1 min-h-0">
-          {isLoading && <p className="text-sm text-ink-muted">Loading…</p>}
-          {!isLoading && candidates.length === 0 && (
-            <p className="text-sm text-ink-muted">No eligible issues.</p>
-          )}
-          {Array.from(byRepo.entries()).map(([repo, items]) => (
-            <div key={repo} className="mb-3">
-              <p className="text-xs font-medium text-ink-muted mb-1">{repo}</p>
-              <ul className="space-y-1">
-                {items.map((c) => (
-                  <li key={c.ref} className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      aria-label={`select ${c.ref}`}
-                      checked={selected.has(c.ref)}
-                      onChange={() => toggle(c.ref)}
-                    />
-                    <span className="truncate">
-                      <span className="text-ink-muted">#{c.number}</span>{' '}
-                      {c.title}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </div>
-        <div className="flex justify-end">
-          <button
-            type="button"
-            onClick={run}
-            disabled={selected.size === 0 || dispatch.isPending}
-            className="rounded bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700 disabled:opacity-40"
-          >
-            {dispatch.isPending
-              ? 'Dispatching…'
-              : `Dispatch ${selected.size} issue${selected.size !== 1 ? 's' : ''}`}
-          </button>
-        </div>
+    <Dialog open={open} onClose={onClose} title="Custom dispatch" size="lg" bodyClassName="flex flex-col gap-3 max-h-[80vh]">
+      <Input
+        type="search"
+        placeholder="Filter issues…"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+      />
+      <div className="overflow-y-auto flex-1 min-h-0">
+        {isLoading && <p className="text-sm text-ink-muted">Loading…</p>}
+        {!isLoading && candidates.length === 0 && (
+          <p className="text-sm text-ink-muted">No eligible issues.</p>
+        )}
+        {Array.from(byRepo.entries()).map(([repo, items]) => (
+          <div key={repo} className="mb-3">
+            <p className="text-xs font-medium text-ink-muted mb-1">{repo}</p>
+            <ul className="space-y-1">
+              {items.map((c) => (
+                <li key={c.ref} className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    aria-label={`select ${c.ref}`}
+                    checked={selected.has(c.ref)}
+                    onChange={() => toggle(c.ref)}
+                  />
+                  <span className="truncate">
+                    <span className="text-ink-muted">#{c.number}</span>{' '}
+                    {c.title}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
       </div>
-    </div>
+      <div className="flex justify-end gap-3">
+        <Button type="button" variant="ghost" onClick={onClose}>
+          Close
+        </Button>
+        <Button type="button" variant="primary" onClick={run} disabled={selected.size === 0} loading={dispatch.isPending}>
+          {dispatch.isPending
+            ? 'Dispatching…'
+            : `Dispatch ${selected.size} issue${selected.size !== 1 ? 's' : ''}`}
+        </Button>
+      </div>
+    </Dialog>
   )
 }

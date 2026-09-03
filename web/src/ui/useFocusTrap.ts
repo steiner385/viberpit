@@ -67,6 +67,11 @@ export function useFocusTrap(
 
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        // Swallow Escape here so it never reaches a background `window`-level
+        // shortcut handler (e.g. SessionView's Esc-to-back) while a trap is
+        // active — every hand-rolled dialog this hook replaces did the same
+        // via its own per-dialog `e.stopPropagation()`.
+        e.stopPropagation();
         optsRef.current.onClose();
         return;
       }
