@@ -344,15 +344,13 @@ export function SessionList({
         />
       )}
 
-      {/* id and aria attrs mirror the original session-listbox contract for DispatchBar. */}
-      <div
-        id="session-listbox"
-        aria-label="Sessions"
-        aria-activedescendant={
-          selectedId ? `row-${selectedId}` : selectedGroupKey ? `group-header-${selectedGroupKey}` : undefined
-        }
-        className="space-y-2"
-      >
+      {/* The `aria-controls` target of the DispatchBar textarea — that textarea is
+          also where `aria-activedescendant` lives, and the only place it is valid.
+          A second copy used to sit here on this plain <div>: aria-activedescendant
+          is not an allowed attribute on a role-less element (axe
+          `aria-allowed-attr`), so assistive tech ignored it while it drifted from
+          the real one. DispatchBar owns the cursor; this element owns the id. */}
+      <div id="session-listbox" aria-label="Sessions" className="space-y-2">
         {groups ? (
           <GroupedList
             groups={groups}
