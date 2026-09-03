@@ -23,6 +23,7 @@ export interface FleetHost {
   loadAvg: number | null
   memAvailableMb: number | null
   sha: string | null
+  checkoutSha: string | null
   protocol: number | null
   lastProbeAt: string | null
   lastError: string | null
@@ -105,10 +106,22 @@ export function FleetSection() {
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['fleet', 'hosts'] }),
   })
 
-  /** Outdated (sha trails the newest known one) AND upgradable in-app (ssh config set). */
-  const canUpdate = (h: FleetHost): boolean =>
-    Boolean(h.sshHost && h.repoPath && h.sha && newestSha && !shaMatch(h.sha, newestSha)) &&
-    h.upgrade?.state !== 'running'
+  /** Outdated AND upgradable in-app (ssh config set).
+   *  Two ways to be outdated. The checkout HEAD may trail the newest known sha — compare
+   *  against it rather than the process sha, since a deploy can advance the checkout
+   *  without restarting (#859). But the checkout can also be bang up to date while the
+   *  PROCESS still runs older code: exactly the "version skew" the probe fences on, and
+   *  exactly what an Update (which restarts the daemon) fixes. Without this second case
+   *  the one host that most needs the button is the one host that never shows it. */
+  const canUpdate = (h: FleetHost): boolean => {
+    const compareSha = h.checkoutSha ?? h.sha
+    const checkoutTrails = Boolean(
+      compareSha && newestSha && !shaMatch(compareSha, newestSha))
+    const processSkewed = Boolean(h.lastError?.startsWith('version skew'))
+    return Boolean(h.sshHost && h.repoPath) &&
+      h.upgrade?.state !== 'running' &&
+      (checkoutTrails || processSkewed)
+  }
 
   if (isError) {
     return <p className="text-sm text-red-600 dark:text-red-400">Could not load the fleet.</p>
@@ -170,16 +183,19 @@ export function FleetSection() {
                   </td>
                   <td className="pr-2 font-mono text-xs">
                     {h.sha ?? '—'}
+                    {h.checkoutSha && h.sha && !shaMatch(h.checkoutSha, h.sha) && (
+                      <div className="font-sans text-xs text-ink-muted">checkout {h.checkoutSha}</div>
+                    )}
                     {canUpdate(h) && (
                       <button
                         type="button"
                         aria-label={`update ${h.name}`}
-                        title={`Update ${h.name} to ${newestSha}`}
+                        title={`Update ${h.name} to the deployed version`}
                         disabled={upgrade.isPending}
                         onClick={() => {
                           if (
                             window.confirm(
-                              `Update ${h.name} to ${newestSha}? Its daemon will restart.`,
+                              `Update ${h.name} to the deployed version? Its daemon will restart.`,
                             )
                           )
                             upgrade.mutate(h.name)

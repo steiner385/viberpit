@@ -410,10 +410,11 @@ def create_daemon_app() -> FastAPI:
 
     @app.get("/info")
     async def info() -> dict:
-        from server.version import running_git_sha
+        from server.version import checkout_git_sha, running_git_sha
         orch = getattr(app.state, "orchestrator", None)
         active = len(getattr(orch, "_records", {}) or {})
-        return {"sha": running_git_sha(), "protocol": proto.PROTOCOL_VERSION,
+        return {"sha": running_git_sha(), "checkoutSha": checkout_git_sha(),
+                "protocol": proto.PROTOCOL_VERSION,
                 "epoch": _app_epoch, **_capacity_snapshot(active)}
 
     @app.get("/healthz")

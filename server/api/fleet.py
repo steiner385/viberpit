@@ -76,6 +76,7 @@ def host_to_wire(h: Host) -> dict:
         "loadAvg": h.load_avg,
         "memAvailableMb": h.mem_available_mb,
         "sha": h.sha,
+        "checkoutSha": h.checkout_sha,
         "protocol": h.protocol,
         "lastProbeAt": h.last_probe_at.isoformat() if h.last_probe_at else None,
         "lastError": h.last_error,

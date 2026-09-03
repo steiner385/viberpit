@@ -146,43 +146,69 @@ or the sshfs process itself died) rather than just stalled.
 
 ## 5. Deploy
 
-`server/deploy/steps.py::restart_units` restarts the daemon over SSH instead of locally when
-`CCSWITCH_DAEMON_SSH_HOST` is set (this mechanism ships on `feat/deploy-remote-daemon-restart`
-(PR #708) — confirm it's merged into the checkout you're deploying from before relying on it).
-When set, it **bypasses the local `daemon_enabled` guard for the remote restart** — dobby's local
-`ccswitch-daemon.service` is deliberately disabled once the daemon has moved to rocky, so gating on
-that flag would silently restart nothing. `daemon_changed` still gates it.
+A deploy fans out to **every** host in the fleet registry (`Settings → Fleet`), local and
+remote, in a `runners` phase that runs before the edge restart (`server/deploy/runners.py`):
 
-**The deploy also updates rocky's checkout, not just its unit.** Restarting alone relaunches the
-same stale commit: rocky has its OWN clone at `/home/tony/GitHub/ccswitch`, and until 2026-08-21
-nothing in the deploy fetched or checked out there. Deploying #715 therefore gave dobby's edge the
-`cloned_repos` RPC *caller* while rocky's daemon stayed on `f310aa6` without the *handler*, and
-every repo listing returned `409 {"detail": "cloned_repos"}` — the New Session dropdown showed
-"— could not load repos —". Rocky reported "0 commits behind" the whole time, because its
-`origin/master` ref was itself stale.
+1. `snapshot_deploy` on the host's daemon (best-effort).
+2. Bring its checkout to the target: `ssh <ssh_host> git -C <repo_path> fetch --quiet origin`,
+   `merge --ff-only <sha>`, pip (`<repo>/.venv/bin/python -m pip install -e '<repo>[server]'`)
+   only if `pyproject.toml`/`uv.lock` changed, then `sync`. dobby's own daemon uses the
+   controller's checkout, already updated.
+3. Only when the diff was daemon-changing: drain (same caps as before), then
+   `sudo -n systemctl restart ccswitch-daemon.service`.
+4. Verify `/info` reports the target (`checkoutSha`, and `sha` after a restart); `restore_deploy`.
 
-`restart_units` now runs, in order:
+At most two runners are in flight at once. A runner the probe could not **reach** is skipped
+(`offline`) and reconciles itself at its next boot (§5.1); one that answered but is *fenced*
+by the version-skew or protocol gate is still deployed to — that is what un-fences it. A
+runner that fails is
+named in the deploy error; the edge still lands, and the failed runner is **fenced from
+dispatch** by the probe's version-skew gate (`Fleet` shows `version skew: …`) until you fix
+it — the Fleet "Update" button re-runs the same sequence at the deployed sha.
 
-```
-ssh <host> git -C <repo> fetch --quiet origin
-ssh <host> git -C <repo> merge --ff-only <deployed-sha>
-ssh <host> sudo systemctl restart ccswitch-daemon.service
-```
+A runner fenced by the skew gate is still a deploy **target** — reachable, just on the wrong
+commit — so the next deploy tries it again. To clear one by hand without a deploy:
 
-The `systemctl restart` returns only after the remote daemon has drained its in-flight turns
-(SIGTERM drain, bounded by the deploy drain caps) — the ssh step can legitimately take minutes.
-
-Fast-forward only — a diverged remote checkout aborts the deploy rather than losing local commits.
-This requires **`CCSWITCH_DAEMON_SSH_REPO`**, the checkout path on the remote host:
-
-```
-CCSWITCH_DAEMON_SSH_REPO=/home/tony/GitHub/ccswitch
+```bash
+ssh <host> sudo systemctl restart ccswitch-daemon.service   # blocks while turns drain
 ```
 
-If `CCSWITCH_DAEMON_SSH_HOST` is set and this is missing (or is not a safe absolute path), the
-deploy raises `DeployError` **before any command runs**, including the edge restart. That is
-deliberate: a deploy that cannot update the remote daemon must fail loudly rather than restart it
-into staleness, which is the failure this whole section exists to describe.
+The unit's `ExecStartPre` runs `runner_sync` (§5.1), which fast-forwards the checkout to
+`deploy_state.deployed_sha`, and the next probe (≤30 s) clears the `version skew` error. The
+Fleet "Update" button does the same thing over SSH.
+
+**Running the deploy by hand.** `python -m server.deploy --once` from an interactive shell
+must load the service environment first:
+
+```bash
+set -a; source /etc/ccswitch/ccswitch.env; set +a
+python -m server.deploy --once
+```
+
+The `runners` phase reads the fleet registry from `CCSWITCH_DB_URL`. Unset, the lookup lands
+on an empty default database and the deploy **silently fans out to nobody** while reporting
+green — every runner is left on the old code. The tell is the warning
+`runners: no enabled fleet hosts found — nothing was fanned out`; if you see it, you almost
+certainly forgot the `source`.
+
+The deploy records the deployed sha in the `deploy_state` table once the edge is healthy.
+`CCSWITCH_DAEMON_SSH_HOST` / `CCSWITCH_DAEMON_SSH_REPO` are no longer read by the deploy;
+they only seed the matching host's `ssh_host` / `repo_path` once at edge startup. Set those
+two fields in the Fleet UI for every remote runner (the deploy fails loudly with
+`unconfigured` for an online runner without them).
+
+### 5.1 Boot-time reconcile
+
+`ExecStartPre=… -m server.deploy.runner_sync` on the daemon unit fast-forwards the checkout to
+`deploy_state.deployed_sha` when the runner is behind (clean tree, ff-only, pip if the
+lockfile changed, `sync`). It always exits 0: a dirty or diverged checkout is logged at ERROR
+(`journalctl -u ccswitch-daemon | grep runner_sync`) and the daemon starts anyway, fenced by
+the skew gate until you apply the reset recipe below.
+
+**One-time bootstrap on an existing runner:** apply the reset recipe (below), install the
+unit file with the new `ExecStartPre` (`sudo cp deploy/ccswitch-daemon-remote.service
+/etc/systemd/system/ccswitch-daemon.service && sudo systemctl daemon-reload`), and restart
+the daemon when the Sessions page shows nothing mid-turn.
 
 ### A hotfixed remote host cannot fast-forward
 
@@ -211,49 +237,6 @@ ssh tony@rocky 'sudo systemctl restart ccswitch-daemon'   # blocks while in-flig
 Check for local work first (`git log --branches --not --remotes`, `git stash list`) —
 `reset --hard` discards it, and the whole point of `--ff-only` in the deploy is that it
 will not make that decision for you.
-
-**Version skew is measured between hosts, not against each host's own upstream.** To check:
-
-```bash
-# edge
-git -C /home/tony/GitHub/cc-account-switcher-deploy rev-parse --short HEAD
-# daemon (authoritative — the RUNNING code, not the checkout)
-curl -s --unix-socket /run/ccswitch/deploy.sock http://localhost/status | jq -r .pending.liveSha
-ssh tony@rocky 'git -C /home/tony/GitHub/ccswitch rev-parse --short HEAD'
-```
-
-```bash
-run(["ssh", daemon_host, "sudo", "systemctl", "restart", "ccswitch-daemon.service"], ...)
-```
-
-`CCSWITCH_DAEMON_SSH_HOST` is validated against `^[A-Za-z0-9][A-Za-z0-9_.-]*(@[A-Za-z0-9][A-Za-z0-9_.-]*)?$`
-before it's used to build the ssh argv — a value starting with `-` (ssh-flag injection) raises
-`DeployError` before any command runs, including the local edge restart. Live value on dobby:
-
-```
-CCSWITCH_DAEMON_SSH_HOST=tony@rocky
-```
-
-This lives in `/etc/ccswitch/ccswitch.env`, which `ccswitch-deploy-controller.service` sources via
-its unit's `EnvironmentFile=`. **A manual `python -m server.deploy --once` invocation from an
-interactive shell does NOT source that file** — systemd's `EnvironmentFile=` is unit-scoped, not a
-shell-sourceable file. For a manual deploy, export it first:
-
-```bash
-set -a; source /etc/ccswitch/ccswitch.env; set +a
-.venv/bin/python -m server.deploy --once
-```
-
-Without that export, a manual deploy silently falls back to `restart_units`'s local-only branch,
-which restarts `ccswitch.service` but skips the daemon entirely (dobby's unit is disabled) — rocky
-keeps running whatever code it was already running.
-
-**Deploy order when doing it by hand:** daemon (rocky) first, then edge (dobby). This mirrors
-`restart_units`'s own ordering (issue #190 — a browser reconnect-flush race) and matters more in the
-cross-host case: a new edge build talking to an old daemon can silently degrade — e.g. an RPC the
-new edge expects but the old daemon doesn't implement yet fails or is ignored rather than
-erroring loudly. Restart the daemon, confirm it's healthy (§3's with-cert curl), *then* restart the
-edge.
 
 ## 6. Certificate renewal
 

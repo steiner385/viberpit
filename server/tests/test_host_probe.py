@@ -148,3 +148,23 @@ def test_probe_loop_survives_a_failing_tick(monkeypatch):
 
     asyncio.run(asyncio.wait_for(run(), timeout=5))
     assert calls["n"] >= 3, "loop must continue past the raising tick"
+
+
+def test_probe_records_checkout_sha_separately_from_process_sha(tmp_path):
+    from sqlalchemy import select as sa_select
+    from server.db import db_session
+    from server.db.models import Host
+    from server.ipc.protocol import PROTOCOL_VERSION
+    from server.sessions.host_probe import probe_host
+
+    async def fake_fetch(endpoint):
+        return {"sha": "proc111", "checkoutSha": "chk2222", "protocol": PROTOCOL_VERSION}
+
+    async def run():
+        await _seed(tmp_path, "chk.db", Host(name="r", endpoint="https://r:9443"))()
+        await probe_host("r", "https://r:9443", fetch=fake_fetch)
+        async with db_session() as db:
+            return (await db.execute(sa_select(Host).where(Host.name == "r"))).scalars().first()
+
+    row = asyncio.run(run())
+    assert row.sha == "proc111" and row.checkout_sha == "chk2222"

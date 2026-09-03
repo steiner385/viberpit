@@ -30,21 +30,18 @@ def test_bg_rescan_breadcrumb_shape(caplog):
     assert rec.fields["session_id"] == "s1"
 
 
-def test_deploy_drain_breadcrumb_shape(caplog):
-    """log_event emits a record with event='deploy.drain.start' and deploy_id field."""
+def test_deploy_edge_cutover_breadcrumb_shape(caplog):
+    """log_event emits a record with event='deploy.edge.cutover' and deploy_id field.
+
+    The drain/daemon-stop/daemon-start breadcrumbs are gone from the controller: draining
+    and restarting a daemon is per-runner work, done (and logged) inside
+    ``server.deploy.runners.RunnerDeploy``.
+    """
     log = logging.getLogger("server.deploy")
     with caplog.at_level(logging.INFO, logger="server.deploy"):
-        log_event(log, logging.INFO, "deploy.drain.start", deploy_id="dep-1")
-    rec = [r for r in caplog.records if getattr(r, "event", None) == "deploy.drain.start"][-1]
+        log_event(log, logging.INFO, "deploy.edge.cutover", deploy_id="dep-1")
+    rec = [r for r in caplog.records if getattr(r, "event", None) == "deploy.edge.cutover"][-1]
     assert rec.fields["deploy_id"] == "dep-1"
-
-
-def test_deploy_daemon_stop_breadcrumb_shape(caplog):
-    log = logging.getLogger("server.deploy")
-    with caplog.at_level(logging.INFO, logger="server.deploy"):
-        log_event(log, logging.INFO, "deploy.daemon.stop", deploy_id="dep-2")
-    rec = [r for r in caplog.records if getattr(r, "event", None) == "deploy.daemon.stop"][-1]
-    assert rec.fields["deploy_id"] == "dep-2"
 
 
 def test_deploy_sessions_reattach_breadcrumb_shape(caplog):
@@ -158,9 +155,16 @@ async def test_bg_rescan_no_tasks_emits_zero(tmp_path, caplog):
 
 
 def _make_deploy_controller(*, daemon_enabled=True, daemon_changed=True,
-                             drain_result="ready", restore_result=None):
-    """Build a DeployController with all external calls mocked."""
+                             restore_result=None):
+    """Build a DeployController with all external calls mocked.
+
+    The per-daemon RPCs (snapshot, drain, close_events, restart, restore) moved into
+    ``server.deploy.runners``: the controller now fans out through ``runners_mod`` and
+    reads each runner's restore result off the returned HostProgress, so this harness
+    fakes that module instead of a DaemonClient factory.
+    """
     from server.deploy.controller import DeployController
+    from server.deploy.runners import HostProgress, RunnerTarget
 
     git_mod = MagicMock()
     git_mod.fetch.return_value = None
@@ -177,63 +181,40 @@ def _make_deploy_controller(*, daemon_enabled=True, daemon_changed=True,
     steps_mod.classify_change.return_value = (
         "daemon_changed" if daemon_changed else "edge_only"
     )
-    steps_mod.restart_units.return_value = []
+    steps_mod.deploy_code_changed.return_value = False
+    steps_mod.restart_edge.return_value = ["ccswitch.service"]
+    steps_mod.remote_runners_configured.return_value = False
     steps_mod.wait_healthy.return_value = True
     steps_mod.publish_deployment.return_value = None
 
-    drain_mod = MagicMock()
-    drain_mod.drain_and_wait = AsyncMock(return_value=drain_result)
+    restore_resp = restore_result if restore_result is not None else {"restored": ["s1"],
+                                                                     "failed": []}
+    target = RunnerTarget(name="rocky", endpoint="https://rocky:9443", enabled=True,
+                          healthy=True, ssh_host="rocky", repo_path="/srv/cc")
+    runners_mod = MagicMock()
+    runners_mod.FAILED_STATES = frozenset({"failed", "unconfigured"})
+    runners_mod.load_runner_targets = AsyncMock(return_value=[target])
+    runners_mod.deploy_runners = AsyncMock(return_value={
+        "rocky": HostProgress(state="done", sha="bbb123", moved=True,
+                              restore=restore_resp if daemon_changed else None)})
+    runners_mod.rewind_runners = AsyncMock(return_value=None)
 
-    restore_resp = restore_result or {"restored": ["s1"], "failed": []}
-    client = AsyncMock()
-    client.call = AsyncMock(side_effect=lambda method, **kw: (
-        None if method == "snapshot_deploy" else restore_resp
-    ))
+    state_mod = MagicMock()
+    state_mod.record_deploy = AsyncMock(return_value=None)
 
     dc = DeployController(
         repo="/fake/repo",
         health_url="http://localhost/health",
         venv_python="/fake/python",
-        daemon_client_factory=lambda: client,
         daemon_enabled=daemon_enabled,
         steps_mod=steps_mod,
         git_mod=git_mod,
-        drain_mod=drain_mod,
+        runners_mod=runners_mod,
+        state_mod=state_mod,
+        local_name="dobby",
         changed_files_fn=lambda r, a, b: ["server/sessions/orchestrator.py"],
     )
     return dc
-
-
-@pytest.mark.asyncio
-async def test_deploy_drain_start_breadcrumb(caplog):
-    """deploy_once emits deploy.drain.start when daemon_changed=True."""
-    dc = _make_deploy_controller(daemon_enabled=True, daemon_changed=True)
-
-    with caplog.at_level(logging.INFO, logger="server.deploy"):
-        await dc.deploy_once()
-
-    drain_recs = [r for r in caplog.records
-                  if getattr(r, "event", None) == "deploy.drain.start"]
-    assert len(drain_recs) == 1
-    assert drain_recs[0].fields["deploy_id"] is not None
-
-
-@pytest.mark.asyncio
-async def test_deploy_daemon_stop_start_breadcrumbs(caplog):
-    """deploy_once emits daemon stop + start breadcrumbs when daemon restarts."""
-    dc = _make_deploy_controller(daemon_enabled=True, daemon_changed=True)
-
-    with caplog.at_level(logging.INFO, logger="server.deploy"):
-        await dc.deploy_once()
-
-    stop_recs = [r for r in caplog.records
-                 if getattr(r, "event", None) == "deploy.daemon.stop"]
-    start_recs = [r for r in caplog.records
-                  if getattr(r, "event", None) == "deploy.daemon.start"]
-    assert len(stop_recs) == 1
-    assert len(start_recs) == 1
-    # All share the same deploy_id
-    assert stop_recs[0].fields["deploy_id"] == start_recs[0].fields["deploy_id"]
 
 
 @pytest.mark.asyncio
@@ -251,7 +232,8 @@ async def test_deploy_edge_cutover_breadcrumb(caplog):
 
 @pytest.mark.asyncio
 async def test_deploy_sessions_reattach_breadcrumb(caplog):
-    """deploy_once emits deploy.sessions.reattach with recovered/lost counts."""
+    """The RESUME phase folds every runner's restore into one breadcrumb with
+    recovered/lost counts."""
     dc = _make_deploy_controller(
         daemon_enabled=True, daemon_changed=True,
         restore_result={"restored": ["s1", "s2"], "failed": ["s3"]},
@@ -266,46 +248,26 @@ async def test_deploy_sessions_reattach_breadcrumb(caplog):
     rec = reattach_recs[0]
     assert rec.fields["recovered"] == 2
     assert rec.fields["lost"] == 1
-    # The full RPC result must land in the controller's journal: the status
-    # object is wiped by the controller's own scheduled self-restart (issue #864).
+    # The full outcome must land in the controller's journal: the status object is
+    # wiped by the controller's own scheduled self-restart (issue #864).
     assert rec.fields["restored"] == ["s1", "s2"]
     assert rec.fields["failed"] == ["s3"]
 
 
 @pytest.mark.asyncio
-async def test_deploy_restore_rpc_failure_is_logged(caplog):
-    """A failed restore_deploy RPC must leave a durable log line, not just a
-    status warning that the controller's self-restart wipes (issue #864)."""
-    dc = _make_deploy_controller(daemon_enabled=True, daemon_changed=True)
-
-    async def _call(method, **kw):
-        if method == "restore_deploy":
-            raise RuntimeError("daemon went away")
-        return None
-
-    # Rewire the shared mock client the factory hands out.
-    dc._client_factory().call = AsyncMock(side_effect=_call)
-
-    with caplog.at_level(logging.INFO, logger="server.deploy"):
-        st = await dc.deploy_once()
-
-    assert any("session restore call failed" in w for w in st.warnings)
-    assert any("restore_deploy" in r.getMessage() for r in caplog.records
-               if r.levelno >= logging.WARNING)
-
-
-@pytest.mark.asyncio
-async def test_deploy_no_drain_when_edge_only(caplog):
-    """deploy_once does NOT emit drain/daemon breadcrumbs when change is edge_only."""
+async def test_deploy_edge_only_reattaches_nothing_but_still_cuts_over(caplog):
+    """An edge-only deploy restarts no daemon, so no runner reports a restore — the
+    reattach breadcrumb reports zero and edge.cutover still fires."""
     dc = _make_deploy_controller(daemon_enabled=True, daemon_changed=False)
 
     with caplog.at_level(logging.INFO, logger="server.deploy"):
         await dc.deploy_once()
 
-    drain_recs = [r for r in caplog.records
-                  if getattr(r, "event", None) == "deploy.drain.start"]
-    assert len(drain_recs) == 0
-    # edge.cutover should still fire
+    reattach_recs = [r for r in caplog.records
+                     if getattr(r, "event", None) == "deploy.sessions.reattach"]
+    assert len(reattach_recs) == 1
+    assert reattach_recs[0].fields["recovered"] == 0
+    assert reattach_recs[0].fields["lost"] == 0
     cutover_recs = [r for r in caplog.records
                     if getattr(r, "event", None) == "deploy.edge.cutover"]
     assert len(cutover_recs) == 1
@@ -321,6 +283,6 @@ async def test_deploy_id_consistent_across_breadcrumbs(caplog):
 
     deploy_recs = [r for r in caplog.records
                    if getattr(r, "event", "").startswith("deploy.") and getattr(r, "fields", None)]
-    assert len(deploy_recs) >= 4  # drain.start, daemon.stop, daemon.start, edge.cutover, reattach
+    assert len(deploy_recs) >= 2  # edge.cutover, sessions.reattach
     ids = {r.fields["deploy_id"] for r in deploy_recs}
     assert len(ids) == 1, f"Expected one deploy_id across all breadcrumbs, got: {ids}"

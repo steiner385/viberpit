@@ -199,116 +199,103 @@ def _recorder(calls, fail_on: str | None = None):
     return run
 
 
-def test_run_upgrade_command_sequence():
-    """The exact ssh argv sequence is the contract: fetch, ff-only merge, pip via
-    `python -m pip` (bin/pip has a stale shebang after a venv move, PR #860),
-    sync-before-restart (the 2026-08-29 zero-byte-module incident), restart."""
-    calls: list[list[str]] = []
+class _Client:
+    async def call(self, method, **kw):
+        return {"state": "ready"} if method == "drain_status" else {}
+    async def aclose(self):
+        pass
 
-    async def fake_fetch(endpoint):
-        return {"sha": "def5678"}
+
+def _fetch(sha):
+    async def f(endpoint):
+        return {"sha": sha, "checkoutSha": sha}
+    return f
+
+
+async def _target():
+    return "def5678"
+
+
+def test_run_upgrade_targets_the_deployed_sha_and_runs_the_shared_sequence():
+    """The Fleet UI button is the SAME RunnerDeploy the deploy fan-out uses: an explicit
+    target sha (the deployed one, never a bare origin/master), ff-only, sync before restart."""
+    calls: list[list[str]] = []
 
     async def run():
         return await host_upgrade.run_upgrade(
             "rocky", ssh_host="deploy@rocky", repo_path="/srv/ccswitch",
-            endpoint="https://rocky:9443", run=_recorder(calls),
-            fetch_info=fake_fetch, resolve_target=lambda: "def5678")
+            endpoint="https://rocky:9443", run=_recorder(calls), fetch_info=_fetch("def5678"),
+            resolve_target=_target, client_factory=lambda e: _Client(), verify_interval_s=0)
 
     st = asyncio.run(run())
-    assert st["state"] == "done" and st["error"] is None
+    assert st["state"] == "done" and st["error"] is None and st["target"] == "def5678"
     assert calls == [
         _SSH_PREFIX + ["git", "-C", "/srv/ccswitch", "fetch", "--quiet", "origin"],
-        _SSH_PREFIX + ["git", "-C", "/srv/ccswitch", "merge", "--ff-only",
-                       "origin/master"],
-        _SSH_PREFIX + ["/srv/ccswitch/.venv/bin/python", "-m", "pip", "install",
-                       "-e", "'/srv/ccswitch[server]'", "--quiet"],
+        _SSH_PREFIX + ["git", "-C", "/srv/ccswitch", "merge", "--ff-only", "def5678"],
+        _SSH_PREFIX + ["/srv/ccswitch/.venv/bin/python", "-m", "pip", "install", "-e",
+                       "'/srv/ccswitch[server]'", "--quiet"],
         _SSH_PREFIX + ["sync"],
-        _SSH_PREFIX + ["sudo", "-n", "systemctl", "restart",
-                       "ccswitch-daemon.service"],
+        _SSH_PREFIX + ["sudo", "-n", "systemctl", "restart", "ccswitch-daemon.service"],
     ]
-    # Belt and braces for the #860 trap: pip runs as `<python> -m pip`, and the
-    # moved-venv-broken `bin/pip` launcher never appears in any argv.
-    pip_call = calls[2]
-    assert pip_call[pip_call.index("-m") + 1] == "pip"
     assert not any("bin/pip" in arg for call in calls for arg in call)
 
 
 def test_run_upgrade_failure_records_step_and_error():
     calls: list[list[str]] = []
 
-    async def fake_fetch(endpoint):  # pragma: no cover — never reached
-        raise AssertionError("must not poll /info after a failed step")
-
     async def run():
         return await host_upgrade.run_upgrade(
             "rocky", ssh_host="deploy@rocky", repo_path="/srv/ccswitch",
-            endpoint="https://rocky:9443",
-            run=_recorder(calls, fail_on="--ff-only"),
-            fetch_info=fake_fetch, resolve_target=lambda: "def5678")
+            endpoint="https://rocky:9443", run=_recorder(calls, fail_on="--ff-only"),
+            fetch_info=_fetch("def5678"), resolve_target=_target,
+            client_factory=lambda e: _Client())
 
     st = asyncio.run(run())
-    assert st["state"] == "failed"
-    assert st["step"] == "merge"
+    assert st["state"] == "failed" and st["step"] == "merge"
     assert "merge failed" in st["error"] and "boom" in st["error"]
-    assert len(calls) == 2, "must stop at the failed step, not plough on"
+    assert len(calls) == 2
 
 
 def test_run_upgrade_fails_when_sha_never_matches():
-    """A restart that comes back on stale code is a FAILURE — 'restarted' alone
-    is exactly the stale-rocky condition this feature exists to end."""
-    calls: list[list[str]] = []
-
-    async def fake_fetch(endpoint):
-        return {"sha": "abc0000"}  # still the old sha
-
     async def run():
         return await host_upgrade.run_upgrade(
             "rocky", ssh_host="deploy@rocky", repo_path="/srv/ccswitch",
-            endpoint="https://rocky:9443", run=_recorder(calls),
-            fetch_info=fake_fetch, resolve_target=lambda: "def5678",
-            verify_timeout_s=0.0)
+            endpoint="https://rocky:9443", run=_recorder([]), fetch_info=_fetch("abc0000"),
+            resolve_target=_target, client_factory=lambda e: _Client(),
+            verify_timeout_s=0.05, verify_interval_s=0.01)
 
     st = asyncio.run(run())
-    assert st["state"] == "failed"
-    assert "def5678" in st["error"]
+    assert st["state"] == "failed" and st["step"] == "verify"
 
 
-def test_run_upgrade_tolerates_info_errors_while_restarting():
-    """/info is unreachable while the daemon restarts; errors poll again rather
-    than failing the upgrade."""
-    attempts = {"n": 0}
-
-    async def flaky_fetch(endpoint):
-        attempts["n"] += 1
-        if attempts["n"] < 3:
-            raise ConnectionError("daemon restarting")
-        return {"sha": "def5678"}
+def test_default_target_prefers_deploy_state(tmp_path):
+    from server.db import init_db
+    from server.deploy.state import record_deploy
 
     async def run():
-        return await host_upgrade.run_upgrade(
-            "rocky", ssh_host="deploy@rocky", repo_path="/srv/ccswitch",
-            endpoint="https://rocky:9443", run=_recorder([]),
-            fetch_info=flaky_fetch, resolve_target=lambda: "def5678",
-            verify_timeout_s=30.0, verify_interval_s=0.0)
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 't.db'}")
+        await record_deploy(sha="c" * 40, short="ccccccc", daemon_changed=True)
+        return await host_upgrade.default_target_sha(resolve_origin=lambda: "zzzzzzz")
 
-    st = asyncio.run(run())
-    assert st["state"] == "done"
-    assert attempts["n"] == 3
+    # The FULL sha, not deployed_short: a short sha is only minimal-unique on the edge
+    # that abbreviated it and can be ambiguous on the runner it's merged into.
+    assert asyncio.run(run()) == "c" * 40
 
 
-def test_run_upgrade_matches_short_sha_prefix():
-    """Hosts abbreviate the same commit to different lengths (#788): a 7-char
-    daemon sha must satisfy an 8-char target."""
-    async def fake_fetch(endpoint):
-        return {"sha": "def5678"}
+def test_default_target_falls_back_to_origin_master_without_deploy_state(tmp_path):
+    from server.db import init_db
+
+    # The fallback resolves origin/master with `rev-parse` (not `--short`) for the same
+    # reason as the deploy_state branch: the sha lands in `git merge --ff-only` on ANOTHER
+    # host, which may need more hex digits to disambiguate the same commit.
+    full = "e" * 40
 
     async def run():
-        return await host_upgrade.run_upgrade(
-            "rocky", ssh_host="deploy@rocky", repo_path="/srv/ccswitch",
-            endpoint="https://rocky:9443", run=_recorder([]),
-            fetch_info=fake_fetch, resolve_target=lambda: "def56789")
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'u.db'}")
+        return await host_upgrade.default_target_sha(resolve_origin=lambda: full)
 
-    assert asyncio.run(run())["state"] == "done"
+    got = asyncio.run(run())
+    assert got == full and len(got) == 40
 
 
 # ------------------------------------------------- state via list endpoint

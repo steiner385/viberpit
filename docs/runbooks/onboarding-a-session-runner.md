@@ -299,6 +299,8 @@ CCSWITCH_FLEET_HOSTS=rocky=https://rocky.tail0dd570.ts.net:9443,<host>=https://<
 
 - [ ] Host appears in `GET /api/fleet/hosts` response.
 - [ ] `max_sessions` is set to `<cap>` (protects the host from session starvation; the dispatcher respects it automatically).
+- [ ] Set `sshHost` (`[user@]host`) and `repoPath` via `PUT /api/fleet/hosts/{name}` or the Fleet UI
+  — a deploy refuses (`unconfigured`) an online runner without them.
 
 ---
 
@@ -319,6 +321,8 @@ Expected: `"healthy": true`, `sha` matches the edge's deployed SHA, `protocol` m
 - [ ] `healthy: true`.
 - [ ] `sha` matches the edge.
 - [ ] `protocol` matches.
+- [ ] `checkoutSha` and `sha` both match the edge; `lastError` empty (a `version skew: …` there
+  means the runner is fenced until updated).
 - [ ] Smoke test: create a session with the Runner override set to `<host>`. Confirm:
   - The `HostBadge` in the session header shows `<host>`.
   - The PTY is running on `<host>` (check `journalctl -u ccswitch-daemon.service -f` on `<host>` while attaching).

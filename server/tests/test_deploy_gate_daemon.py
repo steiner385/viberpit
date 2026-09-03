@@ -119,12 +119,12 @@ def test_daemon_ok_prefix_match_unit():
 # --- edge-only deploys leave the daemon behind (2026-08-26 #776 rollback) -----------
 #
 # An edge-only deploy (daemon_changed=False) deliberately does NOT touch the remote
-# daemon — restart_units skips it — so it stays on whatever (older) commit it was
-# already running. The #719 daemon-sha check was unconditional, so it demanded the
-# daemon be at the deploy TARGET even on these deploys: #776 was a pure web/ change,
-# rocky was still on the previous daemon commit, and the gate rolled it back. The
-# daemon-sha assertion must apply only when the daemon was actually advanced; the
-# daemon must always still be REACHABLE.
+# daemon — the runners phase leaves it on its prior commit — so it stays on whatever
+# (older) commit it was already running. The #719 daemon-sha check was unconditional,
+# so it demanded the daemon be at the deploy TARGET even on these deploys: #776 was a
+# pure web/ change, rocky was still on the previous daemon commit, and the gate rolled
+# it back. The daemon-sha assertion must apply only when the daemon was actually
+# advanced; the daemon must always still be REACHABLE.
 
 def test_edge_only_deploy_tolerates_a_daemon_left_on_an_older_commit():
     body = _body(sha="8b5f5ac5", daemon="ok", daemonSha="f26c56e")

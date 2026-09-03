@@ -46,6 +46,7 @@ def serve(socket_path: str | None = None) -> None:
     daemon_enabled = _daemon_enabled()
     app, _, _ = build_controller_app(repo=repo, health_url=f"http://{host}:{port}/healthz",
                                      venv_python=venv_python, daemon_enabled=daemon_enabled,
-                                     status_path=deploy_status_path())
+                                     status_path=deploy_status_path(),
+                                     init_db_url=os.environ.get("CCSWITCH_DB_URL", ""))
     log.info("deploy controller serving on %s", sock)
     uvicorn.run(app, uds=sock, log_level="info")

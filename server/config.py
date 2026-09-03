@@ -112,9 +112,9 @@ try:
         #
         # Deployed topology: rocky is the SOLE targeted session runner. dobby is the
         # edge/master (web UI, config, reauth, deploy) and its local ccswitch-daemon is
-        # deliberately disabled after the rocky session-host cutover — see
-        # server/deploy/steps.py::restart_units (CCSWITCH_DAEMON_SSH_HOST), which pins the
-        # remote daemon restart to rocky. Production therefore sets this to rocky ONLY, in
+        # deliberately disabled after the rocky session-host cutover. A deploy now fans
+        # out to every row here (server/deploy/runners.py), reaching each host over its
+        # registered ``ssh_host``. Production therefore sets this to rocky ONLY, in
         # the out-of-band /etc/ccswitch/ccswitch.env:
         #   CCSWITCH_FLEET_HOSTS=rocky=https://rocky.tail0dd570.ts.net:9443
         # Adding dobby (…,dobby=https://dobby:9443) is a supported but currently-unenabled

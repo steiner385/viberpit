@@ -100,8 +100,9 @@ _EDGE_ONLY = re.compile(
 )
 
 
-# Code the deploy controller itself executes. restart_units restarts the edge and
-# the daemon, but the controller is the process RUNNING the deploy — it cannot
+# Code the deploy controller itself executes. restart_edge (and, for runners,
+# server.deploy.runners) restart the edge and the daemon, but the controller is
+# the process RUNNING the deploy — it cannot
 # restart itself inline without killing that deploy, so it never did. The result
 # was a controller executing whatever code it started with: on 2026-08-21 #719's
 # remote-daemon update landed on disk at 18:18 and the controller kept running its
@@ -287,136 +288,21 @@ SSH_REPO_RE = re.compile(r"^/[A-Za-z0-9._/-]+$")
 # A git rev passed to `git merge --ff-only`. Hex only, never a ref expression.
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
+# One source of truth for the local daemon-unit restart argv: server.deploy.runners
+# imports this as its own LOCAL_RESTART rather than re-literalling the same list.
+LOCAL_DAEMON_RESTART: list[str] = ["sudo", "systemctl", "restart", "ccswitch-daemon.service"]
 
-def restart_units(*, daemon_changed: bool, daemon_enabled: bool,
-                  target_sha: str | None = None, rewind_remote: bool = False,
-                  run: Run = subprocess.run) -> list[str]:
-    """Restart systemd units in order: daemon first (if changed), then edge.
 
-    Order is load-bearing (browser reconnect-flush race, #190).
-
-    The daemon may live on a remote host (see rocky session-host cutover): when
-    ``CCSWITCH_DAEMON_SSH_HOST`` is set, the daemon restart is issued over SSH instead of
-    locally, and the local ``daemon_enabled`` guard is bypassed for it — dobby's local unit
-    is deliberately *disabled* once the daemon has moved to rocky, so gating on it would
-    make every deploy silently restart nothing and leave rocky running stale code (the
-    Postgres cutover incident this change exists to prevent). rocky is the SINGLE targeted
-    session runner: this env var names exactly one remote daemon, and the fleet registry is
-    seeded to match via ``CCSWITCH_FLEET_HOSTS`` (see ``server/config.py``) — both are set
-    in ``/etc/ccswitch/ccswitch.env`` and must agree, so a deploy that pushes rocky's code
-    and a dispatcher that can see rocky stay consistent. ``daemon_changed`` still gates
-    the remote restart: it reflects whether daemon-relevant files changed in this deploy's
-    diff, so skipping an unneeded restart avoids unnecessary daemon churn.
-
-    A remote daemon has its OWN checkout, so this also UPDATES that checkout before
-    restarting it. Restarting alone just relaunches the same stale commit: on 2026-08-21,
-    deploying #715 gave dobby's edge the ``cloned_repos`` RPC caller while rocky's daemon
-    stayed on f310aa6 without the handler, and every repo listing returned
-    ``409 {"detail": "cloned_repos"}``. The remote is fast-forwarded (never reset) to
-    *target_sha*, so an operator's local commits abort the deploy instead of being lost.
-
-    Requires ``CCSWITCH_DAEMON_SSH_REPO`` (the checkout path on the remote host) whenever a
-    remote daemon actually needs restarting. Missing or unsafe values raise before any
-    command runs — a deploy that cannot update the remote must fail, not silently restart it.
-
-    ``rewind_remote`` flips the remote update from fast-forward to ``reset --hard``, and
-    exists solely for ``rollback_to``. A rollback moves BACKWARD, which ``--ff-only``
-    cannot do at all — and the ``or "origin/master"`` fallback below aims an un-targeted
-    call at the newest commit, i.e. precisely the one being rolled back. Rewinding
-    therefore REQUIRES an explicit target_sha: "wherever origin happens to point" is the
-    bug, not a usable default.
-
-    Returns the ordered list of units restarted.
-    """
-    units: list[str] = []
-    daemon_host = os.environ.get("CCSWITCH_DAEMON_SSH_HOST")
-    if daemon_host and not SSH_HOST_RE.match(daemon_host):
-        # Fail loud, before issuing ANY command (including the edge restart below) — a
-        # deploy that cannot safely restart the remote daemon must stop, not silently fall
-        # back to a local restart. Falling back would resurrect the exact silent-no-op
-        # hazard this feature exists to prevent, and would mask a misconfiguration or attack.
-        raise DeployError(
-            "restart",
-            f"CCSWITCH_DAEMON_SSH_HOST={daemon_host!r} is not a valid [user@]host value; "
-            "refusing to build an ssh command from it",
-        )
-    # Validate everything the remote path needs BEFORE running anything, so a
-    # misconfiguration cannot leave the edge restarted against a stale daemon.
-    daemon_repo = os.environ.get("CCSWITCH_DAEMON_SSH_REPO")
-    if daemon_host and daemon_changed:
-        if not daemon_repo:
-            raise DeployError(
-                "restart",
-                "CCSWITCH_DAEMON_SSH_HOST is set but CCSWITCH_DAEMON_SSH_REPO is not; "
-                "refusing to restart a remote daemon whose code this deploy cannot update "
-                "(a restarted-but-stale daemon serves the previous commit's RPC surface)",
-            )
-        if not SSH_REPO_RE.match(daemon_repo):
-            raise DeployError(
-                "restart",
-                f"CCSWITCH_DAEMON_SSH_REPO={daemon_repo!r} is not a safe absolute path; "
-                "refusing to build an ssh command from it",
-            )
-        if target_sha is not None and not _SHA_RE.match(target_sha):
-            raise DeployError(
-                "restart",
-                f"target_sha={target_sha!r} is not a hex git sha; "
-                "refusing to build an ssh command from it",
-            )
-        if rewind_remote and not target_sha:
-            raise DeployError(
-                "restart",
-                "rewind_remote requires an explicit target_sha; refusing to reset a "
-                "remote daemon to origin/master during a rollback (that is the commit "
-                "being rolled back)",
-            )
-
-    # DAEMON FIRST — order is load-bearing (browser reconnect-flush race, #190).
-    if daemon_host:
-        if daemon_changed:
-            assert daemon_repo is not None  # guaranteed by the validation above
-            # Update the remote checkout, then restart. Fast-forward only: a diverged
-            # remote aborts the deploy rather than losing whatever is there.
-            run(["ssh", daemon_host, "git", "-C", daemon_repo, "fetch", "--quiet", "origin"],
-                check=True, capture_output=True)
-            if rewind_remote:
-                # Rollback only. target_sha is guaranteed non-empty by the validation above.
-                run(["ssh", daemon_host, "git", "-C", daemon_repo, "reset", "--hard",
-                     target_sha],
-                    check=True, capture_output=True)
-            else:
-                run(["ssh", daemon_host, "git", "-C", daemon_repo, "merge", "--ff-only",
-                     target_sha or "origin/master"],
-                    check=True, capture_output=True)
-            # Flush the checkout to disk BEFORE restarting into it. ext4 mounts with
-            # delayed allocation by default (rocky: `ext4 rw,relatime`), so a file git
-            # has just rewritten has its new SIZE journaled while its data blocks sit
-            # unallocated in page cache for tens of seconds. A host that dies inside
-            # that window brings the file back as ZERO BYTES.
-            #
-            # 2026-08-29: this step rewrote six files on rocky at 21:29:42, rocky
-            # hard-reset at 21:30:02 (journal ends mid-line, no shutdown sequence), and
-            # ext4 replay left server/sessions/orchestrator.py — 7,864 lines — empty. An
-            # empty module still imports, so the daemon died on `ImportError: cannot
-            # import name 'SessionOrchestrator'` and crash-looped 57 times. systemd's
-            # Restart=always can never recover that: every restart re-reads the same
-            # empty file, and the health watchdog stands down precisely because it
-            # expects systemd to own recovery. Production was down until the checkout
-            # was restored by hand.
-            #
-            # check=True: restarting into an unflushed checkout is the exact failure
-            # this prevents, so a sync that does not succeed must abort the deploy.
-            run(["ssh", daemon_host, "sync"], check=True, capture_output=True)
-            run(["ssh", daemon_host, "sudo", "systemctl", "restart", "ccswitch-daemon.service"],
-                check=True, capture_output=True)
-            units.append("ccswitch-daemon.service")
-    elif daemon_changed and daemon_enabled:
-        run(["sudo", "systemctl", "restart", "ccswitch-daemon.service"],
-            check=True, capture_output=True)
-        units.append("ccswitch-daemon.service")
+def restart_edge(*, run: Run = subprocess.run) -> list[str]:
+    """Restart the edge unit. Runner (daemon) restarts — local AND remote — are owned by
+    ``server.deploy.runners`` and run BEFORE this (daemon-before-edge order is load-bearing:
+    the browser reconnect-flush race, #190). Returns the units restarted."""
     run(["sudo", "systemctl", "restart", "ccswitch.service"], check=True, capture_output=True)
-    units.append("ccswitch.service")
-    return units
+    return ["ccswitch.service"]
+
+
+def restart_local_daemon(*, run: Run = subprocess.run) -> None:
+    run(LOCAL_DAEMON_RESTART, check=True, capture_output=True)
 
 
 def _default_fetch(url: str) -> str:
@@ -438,16 +324,14 @@ def _default_fetch(url: str) -> str:
         return ""
 
 
-def remote_daemon_configured() -> bool:
-    """True when a REMOTE session daemon is configured (``CCSWITCH_DAEMON_SSH_HOST``).
+def remote_runners_configured(hosts=None) -> bool:
+    """True when the fleet has an enabled REMOTE runner (a host with ``ssh_host``).
 
-    Reads the SAME env var ``restart_units`` uses to decide whether the daemon restart is
-    issued over ssh, so the health window and the restart path can never disagree about the
-    topology. A remote daemon means the edge must RE-ATTACH to it over the tailnet after the
-    edge's own restart — a slow, settling dependency even when the daemon's code did not change
-    (see the health-window note below).
+    Sizes the health window: after its own restart the edge must re-attach to remote
+    daemons over a settling tailnet even on an edge-only deploy (#780). *hosts* is the
+    ``load_runner_targets()`` list; None → False (single-host install).
     """
-    return bool(os.environ.get("CCSWITCH_DAEMON_SSH_HOST"))
+    return any(h.enabled and h.ssh_host for h in (hosts or []))
 
 
 # Health-gate poll windows. wait_healthy returns on the FIRST healthy poll, so a
@@ -455,7 +339,7 @@ def remote_daemon_configured() -> bool:
 # something is actually wrong.
 HEALTH_POLL_INTERVAL_S = 2.0
 # Single-host edge-only deploy (NO remote daemon): nothing slow to wait for, so fail fast.
-# This short window applies only when ``remote_daemon_configured()`` is False; with a remote
+# This short window applies only when ``remote_runners_configured()`` is False; with a remote
 # daemon the edge must re-attach to it after restart, so the controller uses the longer
 # window below even for an edge-only deploy (see controller.deploy_once).
 HEALTH_ATTEMPTS_EDGE_ONLY = 15
@@ -497,7 +381,7 @@ def wait_healthy(expected_sha: str, *, url: str, attempts: int = 15, sleep_s: fl
       * daemonSha, when reported AND *require_daemon_sha*, must match expected_sha.
         That is the #719 skew class: an edge deployed with a new RPC caller while
         the daemon still lacks the handler. But an EDGE-ONLY deploy
-        (daemon_changed=False) never touches the daemon — restart_units skips it —
+        (daemon_changed=False) never touches the daemon — server.deploy.runners skips it —
         so it stays on its previous (older) commit by design. Requiring it to be on
         the target then rolls back every edge-only deploy once the daemon has
         drifted behind the edge (the 2026-08-26 #776 rollback). So the sha
@@ -642,36 +526,18 @@ def require_endpoints_healthy(base_url: str, paths=None, **kw) -> None:
 
 def rollback_to(repo: str, sha: str, *, daemon_changed: bool, daemon_enabled: bool,
                 run: Run = subprocess.run) -> None:
-    """Reset to a known-good commit, rebuild frontend (best-effort), restart both units together.
-
-    Args:
-        repo: Path to repo root.
-        sha: Git commit SHA to reset to.
-        daemon_changed: Whether daemon code changed (controls daemon restart).
-        daemon_enabled: Whether daemon systemd unit is enabled.
-        run: Callable for subprocess execution (defaults to subprocess.run).
-
-    Behavior:
-        1. git reset --hard <sha> — first, reset to the good commit.
-        2. Rebuild frontend best-effort — a rollback build failure only leaves web/dist stale;
-           it must not raise (catches DeployError).
-        3. Restart BOTH units together via restart_units() so they run the same (old) code —
-           never split-version. A REMOTE daemon is rewound to *sha* too (rewind_remote):
-           this call used to omit target_sha entirely, so restart_units fast-forwarded the
-           remote to `origin/master` — the very commit being rolled back. On 2026-08-25 the
-           health gate rejected f26c56ee and this left dobby's edge on 0d15f128 while
-           rocky's daemon stayed on the rejected commit, from the function that promises
-           exactly the opposite.
-    """
+    """Reset the EDGE checkout to a known-good commit, rebuild the frontend (best-effort)
+    and restart the local units. Remote runners this deploy moved are rewound by the
+    controller via ``runners.rewind_runners`` — the two together restore one version
+    fleet-wide (2026-08-25: rollback left rocky on the rejected commit)."""
     run(["git", "-C", repo, "reset", "--hard", sha], check=True, capture_output=True)
-    # Rebuild best-effort — a rollback build failure only leaves web/dist stale; never raise.
     try:
         build_frontend(repo, run=run)
     except DeployError:
         pass
-    # Restart BOTH together so they run the same (old) code — split-version is worse.
-    restart_units(daemon_changed=daemon_changed, daemon_enabled=daemon_enabled,
-                  target_sha=sha, rewind_remote=True, run=run)
+    if daemon_changed and daemon_enabled:
+        restart_local_daemon(run=run)
+    restart_edge(run=run)
 
 
 def _default_gh_api_json(path: str, body: str) -> str:

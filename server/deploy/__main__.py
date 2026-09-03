@@ -5,7 +5,7 @@ import os
 import subprocess
 import sys
 
-from server.deploy.controller import DeployController, default_daemon_factory
+from server.deploy.controller import DeployController
 
 
 def _daemon_enabled() -> bool:
@@ -39,9 +39,16 @@ def main(argv: list[str] | None = None) -> int:
     daemon_enabled = (args.daemon_enabled == "true") if args.daemon_enabled else _daemon_enabled()
 
     controller = DeployController(args.repo, health_url=health_url, venv_python=venv_python,
-                                  daemon_enabled=daemon_enabled,
-                                  daemon_client_factory=default_daemon_factory(daemon_enabled))
-    status = asyncio.run(controller.deploy_once())
+                                  daemon_enabled=daemon_enabled)
+
+    async def _run():
+        # The runners phase reads the fleet registry, so the engine must exist on THIS
+        # loop (an asyncpg pool is loop-bound).
+        from server.db import init_db
+        await init_db(db_url=os.environ.get("CCSWITCH_DB_URL"))
+        return await controller.deploy_once()
+
+    status = asyncio.run(_run())
     for phase, state in status.phases.items():
         print(f"[deploy] {phase}: {state}")
     for w in status.warnings:
