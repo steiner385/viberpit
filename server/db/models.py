@@ -1030,6 +1030,9 @@ class Initiative(Base):
     status: Mapped[str | None] = mapped_column(String, nullable=True, default="proposed")
     origin: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     origin_ref: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # --- spec 003 overlay (epic pointer for GitHub Projects v2 mirror) ---
+    epic_repo: Mapped[str | None] = mapped_column(String, nullable=True)
+    epic_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # --- PM product layer (phase 1 groundwork; design 2026-08-31) ---
     # Owning project; nullable so pre-PM initiatives keep working unlinked.
     project_id: Mapped[str | None] = mapped_column(
@@ -1247,6 +1250,10 @@ class WorkItem(Base):
     url: Mapped[str | None] = mapped_column(String, nullable=True)
     # PR→issue closing references (list of ints), from closingIssuesReferences.
     linked_issue_numbers: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # --- spec 003 overlay (epic hierarchy + projects v2 mirror) ---
+    parent_work_item_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("work_items.id"), nullable=True, index=True)
+    is_epic: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     gh_created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
     gh_updated_at: Mapped[datetime | None] = mapped_column(
@@ -1267,6 +1274,103 @@ class WorkItem(Base):
     classified_by: Mapped[str | None] = mapped_column(String, nullable=True)
     classified_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+
+
+# ---------------------------------------------------------------------------
+# spec 003 — Phase A: GitHub Projects v2 read-only mirror
+# ---------------------------------------------------------------------------
+
+DEP_SOURCES = ("native", "prose", "order")
+
+
+class GhProject(Base):
+    """Read-only mirror of one GitHub Projects v2 board (one per product — spec 003 D3)."""
+
+    __tablename__ = "gh_projects"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    project_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("projects.id"), nullable=True, index=True)
+    gh_project_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gh_node_id: Mapped[str | None] = mapped_column(String, nullable=True, unique=True)
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    field_cache: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    watermark: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+
+
+class GhProjectItem(Base):
+    """Read-only mirror of one Projects v2 item; substrate of the global queue (spec 003 §5)."""
+
+    __tablename__ = "gh_project_items"
+    __table_args__ = (
+        UniqueConstraint("gh_project_id", "gh_item_node_id", name="uq_gh_project_item"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    gh_project_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("gh_projects.id"), nullable=True, index=True)
+    work_item_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("work_items.id"), nullable=True, index=True)
+    gh_item_node_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stage: Mapped[str | None] = mapped_column(String, nullable=True)
+    gh_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+
+
+class WorkItemDep(Base):
+    """One observed dependency edge; ``source`` records provenance (spec 003 §5)."""
+
+    __tablename__ = "work_item_deps"
+    __table_args__ = (
+        UniqueConstraint("src_ref", "dst_ref", "source", name="uq_work_item_dep"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    src_work_item_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("work_items.id"), nullable=True, index=True)
+    dst_work_item_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("work_items.id"), nullable=True, index=True)
+    src_ref: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    dst_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    source: Mapped[str | None] = mapped_column(String, nullable=True)  # DEP_SOURCES
+    active: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+
+
+class GhWriteJournal(Base):
+    """Write-ahead journal for reconciler mutations (spec 003 §6). Written from Phase B on;
+    the schema lands with the rest of the mirror so migration 0018 is the complete record."""
+
+    __tablename__ = "gh_write_journal"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    target_node_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    field: Mapped[str | None] = mapped_column(String, nullable=True)
+    old_value: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    new_value: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    mutation_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    initiated_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    applied: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
+    error: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
