@@ -387,4 +387,29 @@ describe('AppShell — accessibility', () => {
     // target), so there is nothing left for a retry to fix.
     expect(await axe(document.body, AXE_OPTIONS)).toHaveNoViolations()
   })
+
+  /**
+   * Push mode is the ordinary desktop (≥1280px) shape of the drawer, and it was
+   * the one shape no axe pass ever rendered: the four cases above never pass
+   * `extraQueries`, so `drawerPushes` is false in all of them and the drawer is
+   * always an overlay — which mounts no resizer at all. `DrawerHost.test.tsx`'s
+   * own pass runs on the panel alone, so it cannot see a sibling either.
+   *
+   * The resizer is a focusable `role="separator"`, so its PLACEMENT is the whole
+   * question — the identical defect Task 17 found and fixed for `ContextList`,
+   * whose handle sat outside every landmark until it moved inside the `<aside>`.
+   */
+  it('has no axe violations with the drawer in push mode', async () => {
+    renderShell({ path: '/sessions?drawer=help', mode: 'desktop', extraQueries: [MEDIA.drawerPush] })
+    await screen.findByTestId('page-sessions')
+    await withSessionRows('desktop')
+
+    // The lower bound: push mode really is on, so a pass over a document with no
+    // resizer in it cannot be mistaken for a clean one.
+    const resizer = screen.getByRole('separator', { name: 'Resize drawer' })
+    expect(resizer).toBeVisible()
+    expect(regionCounts().get('app.drawer')).toBe(1)
+
+    expect(await axe(document.body, AXE_OPTIONS)).toHaveNoViolations()
+  })
 })

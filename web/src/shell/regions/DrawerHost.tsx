@@ -39,7 +39,9 @@ import { HelpSheet } from './HelpSheet'
  *
  * As an overlay the panel portals to `#overlays`, outside the layout tree. The
  * marker therefore goes on the panel rather than on a wrapper left behind in the
- * grid, so `[data-region="app.drawer"]` always names the thing on screen.
+ * grid, so `[data-region="app.drawer"]` always names the thing on screen. Push
+ * mode adds a wrapper (see below) but keeps the marker where it is, so the
+ * region is the same node in both modes.
  */
 
 const DRAWERS: Record<DrawerName, { title: string; content: ReactNode }> = {
@@ -61,30 +63,50 @@ export function DrawerHost() {
 
   const { title, content } = DRAWERS[drawer]
 
+  const sheet = (
+    <Sheet
+      open
+      onClose={close}
+      title={title}
+      side="right"
+      mode={drawerPushes ? 'push' : 'overlay'}
+      width={width}
+      data-region="app.drawer"
+    >
+      {content}
+    </Sheet>
+  )
+
+  // As an overlay there is no resizer and the panel portals to `#overlays`, so
+  // there is nothing to wrap and a wrapper would be an empty node left behind in
+  // the layout grid.
+  if (!drawerPushes) return sheet
+
   return (
-    <>
-      {drawerPushes && (
-        <SidebarResizer
-          width={width}
-          onResize={setWidth}
-          panelSide="right"
-          min={DRAWER_MIN}
-          max={DRAWER_MAX}
-          label="Resize drawer"
-        />
-      )}
-      <Sheet
-        open
-        onClose={close}
-        title={title}
-        side="right"
-        mode={drawerPushes ? 'push' : 'overlay'}
+    // The push-mode drag handle is INSIDE a landmark, not a sibling of every
+    // landmark — the identical defect Task 17 fixed for `ContextList`, whose
+    // handle sat outside them all (see the comment beside its `SidebarResizer`).
+    // It is a focusable `role="separator"`, so as a bare sibling of `<nav>`,
+    // `<aside>` and `<main>` it was page content in no landmark at all: axe
+    // `region`, the rule this branch turned fully on. The panel itself is a
+    // `role="dialog"`, which axe excludes from `region` — the handle is not, so
+    // it needs this wrapper rather than a place inside the dialog's scroll body.
+    //
+    // `complementary` is the honest role: in push mode the drawer is an inline
+    // supporting column beside `<main>`, not a modal. Named from the drawer's
+    // own title so it is distinct from the list column's `complementary`
+    // (axe `landmark-unique`).
+    <aside aria-label={title} className="flex min-h-0 shrink-0">
+      <SidebarResizer
         width={width}
-        data-region="app.drawer"
-      >
-        {content}
-      </Sheet>
-    </>
+        onResize={setWidth}
+        panelSide="right"
+        min={DRAWER_MIN}
+        max={DRAWER_MAX}
+        label="Resize drawer"
+      />
+      {sheet}
+    </aside>
   )
 }
 

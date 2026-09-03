@@ -263,4 +263,25 @@ describe('DrawerHost', () => {
     renderAt(['/sessions?drawer=assistant'])
     expect(await axe(regionEl())).toHaveNoViolations()
   })
+
+  /**
+   * Push mode, which no axe pass rendered before: the two cases above are
+   * overlays, which mount no resizer at all.
+   *
+   * The property is CONTAINMENT — the focusable `role="separator"` handle is
+   * inside a landmark rather than a bare sibling of every landmark, the defect
+   * Task 17 fixed for `ContextList`. It is asserted structurally here because
+   * axe's `region` rule needs the whole document to judge it, and this file's
+   * body also holds an un-landmarked routing probe; the document-level pass is
+   * `AppShell.test.tsx`'s "has no axe violations with the drawer in push mode".
+   */
+  it('has no axe violations in push mode, and the resizer is inside the landmark', async () => {
+    stubMatchMedia([MEDIA.tablet, MEDIA.desktop, MEDIA.drawerPush])
+    renderAt(['/sessions?drawer=help'])
+
+    const landmark = screen.getByRole('complementary', { name: 'Help & Shortcuts' })
+    expect(landmark).toContainElement(screen.getByRole('separator', { name: /resize drawer/i }))
+    expect(landmark).toContainElement(regionEl())
+    expect(await axe(landmark)).toHaveNoViolations()
+  })
 })
