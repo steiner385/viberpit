@@ -83,7 +83,7 @@ export function MainPaneSession({ sessionId, onClosed, onDetach, onOpenSession }
     <div className="flex flex-col h-full min-h-0">
       <div className={cn(
         'flex items-center gap-2 px-3 py-2 flex-shrink-0',
-        'bg-gray-100 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700',
+        'bg-surface-raised border-b border-edge',
       )}>
         <button
           type="button"
@@ -106,7 +106,7 @@ export function MainPaneSession({ sessionId, onClosed, onDetach, onOpenSession }
         )}
 
         <span className="flex-1 min-w-0 flex items-baseline gap-2">
-          <span className="min-w-0 text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">{rt.title}</span>
+          <span className="min-w-0 text-sm font-semibold text-ink truncate">{rt.title}</span>
           <SessionGoalText goal={rt.goal} source={rt.goalSource} title={rt.title} />
         </span>
 
@@ -129,7 +129,7 @@ export function MainPaneSession({ sessionId, onClosed, onDetach, onOpenSession }
           canRename
         />
       </div>
-      <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-white dark:bg-gray-950">
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-surface">
         <SessionBody rt={rt} />
       </div>
       <CommandResultOverlay
