@@ -24,6 +24,8 @@ const buttonVariants = cva(
       size: {
         sm: 'h-9 px-3',
         md: 'h-10 px-4 py-2',
+        // lg is the only size with min-h-target (44px touch target). Any
+        // destructive or primary confirm action in a dialog footer must use lg.
         lg: 'h-11 min-h-target px-6',
       },
     },

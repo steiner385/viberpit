@@ -136,6 +136,7 @@ Each ships with a vitest + `jest-axe` test and a story-like `*.example.tsx` fixt
 | Primitive | API (essentials) | Replaces in PR 2 |
 |---|---|---|
 | `Button` | `variant: primary\|secondary\|ghost\|danger` · `size: sm\|md\|lg` · `loading` · `iconLeft/iconRight` | current `Button` (45 sites) |
+| | **Convention:** `size="lg"` is the only size that carries `min-h-target` (44 px touch target). Any destructive or primary confirm action in a dialog or modal footer **must** use `size="lg"`. This is an enforced rule, not just guidance — omitting `size="lg"` on a confirm button makes it fail the touch-target requirement on coarse-pointer devices. | |
 | `IconButton` | requires `aria-label`; `size: sm\|md`; `min-h/w-target` when `pointer: coarse` | header/rail/card icon buttons |
 | `Input`, `Textarea`, `Select` | native elements, `invalid`, `size`; `Textarea` `autoGrow` (moves `lib/autoGrow`) | not swept in PR 2 (C) |
 | `Field` | `label`, `help`, `error`, `htmlFor` wiring, `required` | new |

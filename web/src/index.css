@@ -141,6 +141,9 @@
 
   --font-sans: system-ui, 'Segoe UI', Roboto, sans-serif;
   --font-mono: ui-monospace, Consolas, monospace;
+
+  --animate-sheet-right: slide-in-right 200ms ease-out;
+  --animate-sheet-bottom: slide-in-bottom 200ms ease-out;
 }
 
 /* The app is a fixed-viewport column: the *document* must never scroll. Without
@@ -219,6 +222,14 @@ body {
     color: transparent;
     animation: working-shimmer 1.8s linear infinite;
   }
+}
+@keyframes slide-in-right {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+@keyframes slide-in-bottom {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
 }
 @keyframes working-shimmer {
   from { background-position: 200% 0; }
