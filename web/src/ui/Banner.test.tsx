@@ -69,6 +69,16 @@ describe('BannerStack', () => {
     expect(document.querySelectorAll('[data-region="app.banners"]').length).toBe(1)
   })
 
+  it('ignores item.tone entirely — it is metadata for the shell, not a rendering input', () => {
+    // tone is optional and BannerStack does not read it: order and rendering are
+    // unaffected regardless of what a caller sets it to (or omits it).
+    render(<BannerStack items={[
+      { id: 'a', priority: 1, tone: 'danger', node: <Banner tone="info" title="A" /> },
+      { id: 'b', priority: 2, node: <Banner tone="info" title="B" /> },
+    ]} />)
+    expect(screen.getAllByText(/A|B/).map((el) => el.textContent)).toEqual(['B', 'A'])
+  })
+
   it('renders an empty wrapper when all items render null internally', () => {
     // Simulate items whose components render null (e.g., DaemonRestartBanner when idle).
     // The item.node is not null, but the component function returns null. jsdom does not

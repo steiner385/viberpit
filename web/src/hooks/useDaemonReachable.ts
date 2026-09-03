@@ -8,8 +8,14 @@ const POLL_INTERVAL_MS = 10_000
  * Checks on every WebSocket reconnect (deploy restart always triggers one)
  * and on a 10-second interval while the daemon is known to be down.
  * Returns true once healthy (and on initial load before the first check).
+ *
+ * NOT the same hook as `useDaemonHealth` in `@/api/hooks` — that one is a
+ * react-query hook returning `{ data: { available, … } }` and is mocked in
+ * roughly a dozen test files. This one returns a plain `boolean` and backs
+ * only `DaemonRestartBanner`. Do not merge them — they answer different
+ * questions (reachability-by-polling vs. a queried health record).
  */
-export function useDaemonHealth(): boolean {
+export function useDaemonReachable(): boolean {
   const [daemonOk, setDaemonOk] = useState(true)
 
   useEffect(() => {

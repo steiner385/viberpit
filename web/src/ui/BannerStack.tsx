@@ -1,7 +1,14 @@
 import * as React from 'react'
 import { cn } from '@/lib/utils'
 
-export interface BannerStackItem { id: string; priority: number; node: React.ReactNode }
+export interface BannerStackItem {
+  id: string
+  priority: number
+  node: React.ReactNode
+  /** Used by the shell to filter the stack (kiosk shows `danger` only).
+   *  Optional so existing call sites keep compiling; treated as 'info'. */
+  tone?: 'info' | 'warning' | 'danger'
+}
 
 /**
  * The one *component* banners render through (region app.banners) — not one instance: App

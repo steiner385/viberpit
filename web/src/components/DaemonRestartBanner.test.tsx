@@ -1,13 +1,13 @@
 import { render, screen } from '@testing-library/react'
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { DaemonRestartBanner } from './DaemonRestartBanner'
-import * as health from '@/hooks/useDaemonHealth'
+import * as health from '@/hooks/useDaemonReachable'
 import * as epochRestart from '@/hooks/useEpochRestart'
 
 afterEach(() => vi.restoreAllMocks())
 
 function mockDaemon(ok: boolean, recovering = false) {
-  vi.spyOn(health, 'useDaemonHealth').mockReturnValue(ok)
+  vi.spyOn(health, 'useDaemonReachable').mockReturnValue(ok)
   vi.spyOn(epochRestart, 'useEpochRestart').mockReturnValue(recovering)
 }
 
