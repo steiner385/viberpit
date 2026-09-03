@@ -329,6 +329,31 @@ describe('AppShell — an open drawer survives a section change (§4.2)', () => 
     expect(regionCounts().get('app.drawer')).toBe(1)
   })
 
+  /**
+   * The other half of the same rule, recorded because it is a DECISION (S4):
+   * `useDrawerPreservingTo` is applied by `NavItem` and by nothing else, so a
+   * content navigation — opening a session from the list — drops `?drawer=` and
+   * closes the drawer. `drawerParam.ts` carries the reasoning; this pins the
+   * behaviour so it cannot change by accident in either direction.
+   */
+  it('closes the drawer on a content navigation — preservation is nav-only', async () => {
+    const user = userEvent.setup()
+    renderShell({
+      path: '/sessions?drawer=help',
+      mode: 'desktop',
+      extraQueries: [MEDIA.drawerPush],
+    })
+    await screen.findByTestId('page-sessions')
+    // The lower bound: the drawer really is open before the click, so "closed
+    // after" is not "never opened".
+    expect(regionCounts().get('app.drawer')).toBe(1)
+
+    await user.click(await screen.findByRole('button', { name: 'Open session First' }))
+
+    await screen.findByTestId('page-session')
+    expect(regionCounts().has('app.drawer')).toBe(false)
+  })
+
   it('leaves nav targets alone when no drawer is open', async () => {
     renderShell({ path: '/sessions', mode: 'desktop' })
     await screen.findByTestId('page-sessions')

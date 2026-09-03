@@ -61,6 +61,36 @@ export function withDrawer(to: string, drawer: DrawerName): string {
  * destination the nav item had already built, and would leave the rendered
  * `href` disagreeing with where a click actually lands: middle-click and
  * "copy link address" would silently drop the drawer.
+ *
+ * ## Scope: NAV targets only, deliberately (S4)
+ *
+ * This applies to the rail and bar links and to nothing else. Every other
+ * navigation — clicking a session row, the archive-advance, `MainPaneSession`'s
+ * Back and prev/next chevrons, opening a just-created session from the dock —
+ * drops `?drawer=` and therefore closes the drawer. That asymmetry is a
+ * decision, not an oversight, and it is pinned by a test beside the preserving
+ * one (`AppShell.test.tsx`, "an open drawer survives a section change").
+ *
+ * The reasons, in order:
+ *
+ * - **The rule is about sections.** Switching SECTION with a drawer docked open
+ *   is the case §4.2 names, and it is the one where closing the drawer would be
+ *   surprising: nothing about the drawer changed, only what is beside it.
+ *   Opening an ITEM is a different gesture — the user asked for a session, and
+ *   giving the main pane its width back is a reasonable answer to that.
+ * - **"All navigation alike" means all of it.** There are thirteen programmatic
+ *   `navigate()` calls in `shell/` and `features/` alone, plus `<Link>`s inside
+ *   pages (`pipeline/PrRow`'s session link). A `useDrawerPreservingNavigate()`
+ *   applied to some of them would replace a visible inconsistency with a subtler
+ *   one, which is the shape this repo's rules exist to prevent.
+ * - **Below 1280 the question does not arise.** The drawer is a focus-trapping
+ *   overlay there, so the only navigations reachable while it is open are the
+ *   ones it renders itself. This is a push-mode (≥1280) phenomenon.
+ *
+ * When it should change: the Assistant drawer (PR 12) is the one whose whole
+ * value is following you across the app. That is the PR that should introduce a
+ * single navigation helper and route every call site through it — with the
+ * drawer's own `persist` flag deciding, rather than the caller.
  */
 export function useDrawerPreservingTo(): (to: string) => string {
   const drawer = useDrawerName()
