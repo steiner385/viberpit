@@ -21,7 +21,7 @@ export type Block =
   | { kind: 'image';      id: string; images: Array<{ url: string; mime: string; name: string }>; ts?: number }
   | { kind: 'tool';       id: string; toolId: string; name: string; toolKind: ToolKind; input: Record<string, unknown>; result?: { ok: boolean; payload: Record<string, unknown>; ts?: number }; ts?: number }
   | { kind: 'permission'; id: string; permId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean; ts?: number }
-  | { kind: 'question';   id: string; questionId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; live?: boolean; answered?: string[]; ts?: number }
+  | { kind: 'question';   id: string; questionId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; live?: boolean; orphaned?: boolean; answered?: string[]; ts?: number }
   | { kind: 'notice';     id: string; text: string; ts?: number }
   | { kind: 'error';      id: string; code: string; message: string; resetsAt?: string | null; ts?: number }
   | { kind: 'recovering'; id: string; message: string; ts?: number }
@@ -683,7 +683,7 @@ export function transcriptReducer(
 
     // ── question ─────────────────────────────────────────────────────────────
     case 'question': {
-      const { questionId, turnId, header, question, options, multiSelect } = ev
+      const { questionId, turnId, header, question, options, multiSelect, orphaned } = ev
       const [turns, idx] = ensureAssistantTurn(state.turns, turnId)
       const turn = turns[idx]
 
@@ -701,7 +701,9 @@ export function transcriptReducer(
           const nextTurns = replaceTurn(turns, idx, (t) => ({
             ...t,
             blocks: t.blocks.map((b) =>
-              b.kind === 'question' && b.questionId === questionId ? { ...b, live: true } : b,
+              b.kind === 'question' && b.questionId === questionId
+                ? { ...b, live: true, orphaned: !!orphaned }
+                : b,
             ),
           }))
           return { ...state, turns: nextTurns }
@@ -709,7 +711,7 @@ export function transcriptReducer(
         return { ...state, turns }
       }
 
-      const newBlock: Block = { kind: 'question', id: questionId, questionId, header, question, options, multiSelect, live: !state.replaying, ts: ev.ts }
+      const newBlock: Block = { kind: 'question', id: questionId, questionId, header, question, options, multiSelect, live: !state.replaying, orphaned: !!orphaned, ts: ev.ts }
       const nextTurns = replaceTurn(turns, idx, (t) => ({
         ...t,
         blocks: [...t.blocks, newBlock],

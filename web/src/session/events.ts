@@ -16,7 +16,7 @@ export interface EvPermissionRequest { type: 'permissionRequest'; permId: string
 // as the request frame so a mid-turn reattach (ring resupply re-delivers the request)
 // clears the recreated card instead of resurrecting an already-decided permission.
 export interface EvPermissionResolved { type: 'permissionResolved'; permId: string; turnId: string; allowed: boolean; ts?: number }
-export interface EvQuestion      { type: 'question';      questionId: string; turnId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; ts?: number }
+export interface EvQuestion      { type: 'question';      questionId: string; turnId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; orphaned?: boolean; ts?: number }
 // A question's future settled server-side — answered (selected carries the labels) or
 // dismissed (selected null). Rides the same stream as the question frame so a mid-turn
 // reattach (ring resupply re-delivers the question) re-resolves the recreated block.

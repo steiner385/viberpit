@@ -535,3 +535,48 @@ async def replay_window(jsonl_path: str, *, before: int | None = None, limit: in
 
 async def replay_events(jsonl_path: str, *, max_turns: int | None = 20) -> list:
     return await asyncio.to_thread(_parse, jsonl_path, max_turns)
+
+
+def last_question_events(path: str) -> list["ev.Question"]:
+    """Question events for the LAST AskUserQuestion tool_use in *path*, marked orphaned.
+
+    Reuses the same reconstruction the full replay uses (``_assistant_block_events``)
+    so the re-offer can never drift from what the transcript already rendered — in
+    particular the ``f"{tool_use_id}-{index}"`` ids, which is what lets the client's
+    reducer UPGRADE the card already on screen instead of appending a duplicate.
+
+    Only the most recent call is returned: a long session may have asked several
+    times, and only the one open at the restart is still awaiting an answer.
+    Never raises — a missing or corrupt transcript yields [].
+
+    Synchronous (so it stays exhaustively table-testable) but it reads and parses
+    a whole transcript, so callers on the event loop MUST wrap it in
+    ``asyncio.to_thread`` — as every other transcript reader in this module does.
+    """
+    latest: list[ev.Question] = []
+    try:
+        with open(path, errors="ignore") as fh:
+            for line in fh:
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                msg = d.get("message") or {}
+                content = msg.get("content")
+                if not isinstance(content, list):
+                    continue
+                # _ts_ms, not the raw ISO string: Question.ts is float-millis on
+                # the wire (and numeric in the client's EvQuestion). A string
+                # would only show when the block does NOT already exist — i.e.
+                # the question fell outside the replay window — and the reducer
+                # would then mint a block with a string ts.
+                qs = [e for e in _assistant_block_events(
+                          content, d.get("uuid"), _ts_ms(d), None)
+                      if isinstance(e, ev.Question)]
+                if qs:
+                    latest = qs
+    except OSError:
+        return []
+    for q in latest:
+        q.orphaned = True
+    return latest

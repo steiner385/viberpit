@@ -142,4 +142,35 @@ describe('QuestionGroup', () => {
     await user.click(screen.getByRole('checkbox', { name: /yes/i }))   // back to empty
     expect(submit).toBeDisabled()
   })
+
+  // ── Orphaned group (waiter died with the daemon) ──────────────────────────
+  // The server delivers an orphaned answer as the next turn's PROMPT, which
+  // flips the session to in_progress and clears the interrupted flags. A second
+  // per-question frame would therefore find nothing orphaned and come back as
+  // QUESTION_NOT_PENDING — every answer but the first silently lost, while the
+  // client had already marked all N cards answered.
+  describe('orphaned group', () => {
+    const orph = (id: string): QuestionBlock => ({ ...mk(id), orphaned: true })
+
+    it('sends exactly ONE onAnswer carrying every answer, header-labelled', async () => {
+      const user = userEvent.setup()
+      const onAnswer = vi.fn()
+      render(<QuestionGroup questions={[orph('a'), orph('b')]} onAnswer={onAnswer} />)
+      await user.click(screen.getAllByRole('radio', { name: 'Yes' })[0]) // a → Yes
+      await user.click(screen.getAllByRole('radio', { name: 'No' })[1])  // b → No
+      await user.click(screen.getByRole('button', { name: /submit all answers/i }))
+      expect(onAnswer).toHaveBeenCalledTimes(1)
+      expect(onAnswer).toHaveBeenCalledWith('a', ['H-a: Yes', 'H-b: No'], 'option')
+    })
+
+    it('still sends one frame for a single orphaned question', async () => {
+      const user = userEvent.setup()
+      const onAnswer = vi.fn()
+      render(<QuestionGroup questions={[orph('a')]} onAnswer={onAnswer} />)
+      await user.click(screen.getByRole('radio', { name: 'Yes' }))
+      await user.click(screen.getByRole('button', { name: /submit all answers/i }))
+      expect(onAnswer).toHaveBeenCalledTimes(1)
+      expect(onAnswer).toHaveBeenCalledWith('a', ['H-a: Yes'], 'option')
+    })
+  })
 })

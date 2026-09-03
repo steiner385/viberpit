@@ -116,9 +116,14 @@ class PermissionResolved:
 class Question:
     question_id: str; turn_id: str; header: str; question: str; options: list[dict]; multi_select: bool = False
     ts: float | None = field(default_factory=_now_ms)
+    # True when this question's waiter died with the daemon (see
+    # server/sessions/orphaned_asks.py). The card is re-offered as answerable, but
+    # answering sends a NEW prompt — there is no future left to resolve.
+    orphaned: bool = False
     def to_wire(self): return {"type": "question", "questionId": self.question_id, "turnId": self.turn_id,
                                "header": self.header, "question": self.question, "options": self.options,
-                               "multiSelect": self.multi_select, "ts": self.ts}
+                               "multiSelect": self.multi_select, "ts": self.ts,
+                               "orphaned": self.orphaned}
 
 @dataclass
 class QuestionResolved:

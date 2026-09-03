@@ -70,6 +70,7 @@ _PER_SESSION: frozenset[str] = frozenset({
     "session_queue_cancel", "cancel_queued", "archive_session", "permanent_delete",
     "rename_session", "note_user_interaction", "set_autopilot_paused", "interrupt",
     "set_permission_mode", "resolve_permission", "answer_question", "pending_questions",
+    "orphaned_interaction",
     "pending_permissions", "transcript_path", "transcript_events",
     "resolve_transcript_path", "transcript_window", "transcript_search_text",
     "command_catalog", "run_command", "latest_suggestions", "generate_suggestions_now",

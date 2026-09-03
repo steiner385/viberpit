@@ -97,7 +97,34 @@ export function QuestionGroup({ questions, onAnswer }: Props) {
     setActive(Math.max(0, Math.min(lastIndex, i)))
   }
 
+  // An orphaned group has no live waiter to resolve: the server delivers the
+  // answer as the next turn's PROMPT (send_prompt), which flips the session to
+  // in_progress and clears the interrupted flags. So only the FIRST per-question
+  // frame would land — answers 2..N would find no orphaned interaction, return
+  // false and come back as QUESTION_NOT_PENDING, while every card had already
+  // been optimistically marked answered. Silent partial delivery.
+  //
+  // Fix stays entirely on the client and leaves the wire protocol alone
+  // (answerQuestion is still questionId + selected[]): send ONE frame carrying
+  // every question's answer, each entry labelled "<header>: <label>" so the
+  // question→answer mapping survives the flattening. The server renders a
+  // multi-entry selection one per line (orphaned_answer_prompt).
+  const orphaned = !!questions[0]?.orphaned
+
   const submitAll = () => {
+    if (orphaned) {
+      const first = questions[0]
+      if (!first) return
+      const flattened = questions.flatMap((q) => {
+        const a = answers.get(q.questionId)
+        return (a?.selected ?? []).map((label) => `${q.header}: ${label}`)
+      })
+      if (flattened.length > 0) {
+        onAnswer(first.questionId, flattened, answers.get(first.questionId)?.mode)
+      }
+      return
+    }
+    // Live path — unchanged: one frame per question, each resolving its own future.
     for (const q of questions) {
       const a = answers.get(q.questionId)
       if (a) onAnswer(q.questionId, a.selected, a.mode)

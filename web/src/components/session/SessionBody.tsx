@@ -17,6 +17,7 @@ import { WorkingIndicator } from './WorkingIndicator'
 import { CondensingProgress } from './CondensingProgress'
 import { PendingQuestionPanel } from './PendingQuestionPanel'
 import { PendingPermissionPanel } from './PendingPermissionPanel'
+import { InterruptedAskNotice } from './InterruptedAskNotice'
 import { YourTurnPanel } from './YourTurnPanel'
 import { PendingModelApprovalPanel } from './PendingModelApprovalPanel'
 import { SessionAriaLive } from './SessionAriaLive'
@@ -218,6 +219,16 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
                 permission below the fold left the user with a "Permission needed" status
                 and no reachable buttons (just a "scroll up" banner). Pinning it above the
                 composer keeps the controls always visible. */}
+            <InterruptedAskNotice
+              interruptedFromStatus={sessionRecord?.interruptedFromStatus}
+              onAskAgain={() => rt.onPrompt(
+                'The permission or plan approval you were waiting on was lost when the '
+                + 'daemon restarted — I never saw it. Please re-request whatever you need '
+                + 'approved, or tell me where things stand.',
+                [],
+              )}
+            />
+
             <PendingPermissionPanel
               turns={rt.state.turns}
               permissionMode={rt.mode}

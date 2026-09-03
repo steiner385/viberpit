@@ -75,8 +75,9 @@ def orch_env(tmp_path):
 
 def test_answer_question_unknown_session_returns_false(orch_env):
     """answer_question on a non-existent session returns False without crashing."""
-    orch, _client = orch_env
-    assert orch.answer_question("no-such-session", "q-id", ["Yes"], "me") is False
+    orch, client = orch_env
+    assert client.portal.call(
+        lambda: orch.answer_question("no-such-session", "q-id", ["Yes"], "me")) is False
 
 
 def test_answer_question_delegates_to_driver(orch_env):
@@ -98,7 +99,8 @@ def test_answer_question_delegates_to_driver(orch_env):
     qid, fut = client.portal.call(_register)
 
     # answer_question via orchestrator.
-    result = orch.answer_question(session_id, qid, ["Option X"], "me")
+    result = client.portal.call(
+        lambda: orch.answer_question(session_id, qid, ["Option X"], "me"))
     assert result is True
 
     # The future should now be resolved.
@@ -147,7 +149,7 @@ def test_pending_questions_delegates_to_driver(orch_env):
     assert p["multi_select"] is True
 
     # After resolving, pending_questions must return [].
-    orch.answer_question(session_id, qid, ["Yes"], "me")
+    client.portal.call(lambda: orch.answer_question(session_id, qid, ["Yes"], "me"))
     assert orch.pending_questions(session_id) == []
 
     client.portal.call(orch.close_session, session_id)
@@ -167,7 +169,8 @@ def test_answer_question_forwards_freeform_mode(orch_env):
 
     qid, fut = client.portal.call(_register)
 
-    assert orch.answer_question(session_id, qid, ["my words"], "me", mode="freeform") is True
+    assert client.portal.call(
+        lambda: orch.answer_question(session_id, qid, ["my words"], "me", mode="freeform")) is True
 
     async def _check():
         return await fut

@@ -27,6 +27,7 @@ from ccswitch import accounts as _accounts
 from ccswitch import gitrepos
 from server.auth.middleware import current_identity
 from server.sessions.search import parse_terms, session_matches
+from server.sessions.types import RESUME_ELIGIBLE_STATUSES
 from server.audit import record_audit
 from server.config import get_settings
 from server.db import db_session, get_db
@@ -248,6 +249,15 @@ def _record_to_dict(
         "prs": [p.to_dict() for p in (prs or [])],
         "usageUnverified": getattr(record, "usage_unverified", False),
         "interruptedByRestart": getattr(record, "interrupted_by_restart", False),
+        # Pre-restart status, and whether that status means dropped WORK (resumable,
+        # #938's "Resume interrupted" batch) rather than a dropped ASK (which
+        # InterruptedAskNotice / the orphaned-question re-offer handle instead).
+        # This is the BROWSER serializer; SessionRecord.to_dict is the daemon→edge
+        # RPC one. Both must emit these or the feature is dead on the wire.
+        "interruptedFromStatus": getattr(record, "interrupted_from_status", None),
+        "resumable": bool(getattr(record, "interrupted_by_restart", False)
+                          and getattr(record, "interrupted_from_status", None)
+                          in RESUME_ELIGIBLE_STATUSES),
         "summary": summary or "",
         "queuePosition": queue_position,
         "queueStallReason": queue_stall_reason,

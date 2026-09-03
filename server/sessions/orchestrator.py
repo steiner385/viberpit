@@ -61,6 +61,7 @@ from server.sessions import push as push_mod
 from server.sessions.commands import catalog as cmd_catalog
 from server.sessions.commands import dispatcher as cmd_dispatcher
 from server.sessions.driver import SessionDriver
+from server.sessions.orphaned_asks import orphaned_answer_prompt, orphaned_ask_kind
 from server.sessions.permissions import PermissionRegistry, resolve_permission_mode
 from server.sessions.sdk_factory import real_sdk_factory, real_suggestion_factory, real_summary_factory
 from server.sessions.replay import replay_events
@@ -4901,7 +4902,7 @@ class SessionOrchestrator:
             opts = stuck.get("options") or []
             idx = decision.answer_index or 0
             selected = [opts[idx]] if 0 <= idx < len(opts) else []
-            ok = bool(self.answer_question(
+            ok = bool(await self.answer_question(
                 session_id, stuck["question_id"], selected, SYSTEM_IDENTITY, "option"))
         elif act == "nudge" and decision.prompt:
             await self.ensure_driver(session_id, SYSTEM_IDENTITY)
@@ -7729,14 +7730,51 @@ class SessionOrchestrator:
         d = self._drivers.get(session_id)
         return d.resolve_permission(perm_id, decision, identity) if d else False
 
-    def answer_question(self, session_id, question_id, selected, identity, mode="option") -> bool:
+    def orphaned_interaction(self, session_id: str) -> str | None:
+        """The kind of human-facing ask a restart orphaned for this session, or None.
+
+        One accessor over the flags rehydrate() sets, so every caller (the answer
+        fallback, the WS attach re-offer, the UI notice) asks the same question of
+        the same source. See server/sessions/orphaned_asks.py.
+        """
+        rec = self._records.get(session_id)
+        if rec is None:
+            return None
+        return orphaned_ask_kind(
+            getattr(rec, "interrupted_by_restart", False),
+            getattr(rec, "interrupted_from_status", None))
+
+    async def answer_question(self, session_id, question_id, selected, identity,
+                              mode="option") -> bool:
         """Resolve a pending AskUserQuestion with the user's selected answers and mode.
 
-        Returns True if resolved, False if no driver for session_id or unknown question_id.
-        Mirrors resolve_permission.
+        Live path first, unchanged: resolve the driver's future. If that declines AND
+        the session's question was orphaned by a restart, there is no future left to
+        resolve — the honest delivery is a NEW prompt carrying the selection (see
+        orphaned_answer_prompt, which also disowns the rejection the CLI synthesises
+        for the dangling tool_use). Returns True if the answer reached the session.
         """
         d = self._drivers.get(session_id)
-        return d.answer_question(question_id, selected, identity, mode) if d else False
+        if d is not None and d.answer_question(question_id, selected, identity, mode):
+            return True
+        if self.orphaned_interaction(session_id) != "question":
+            return False
+        return await self._deliver_orphaned_answer(session_id, selected, identity)
+
+    async def _deliver_orphaned_answer(self, session_id: str, selected: list[str],
+                                       identity: str) -> bool:
+        """Send an orphaned question's answer as the next turn's prompt."""
+        if await self.ensure_driver(session_id, identity) is None:
+            log.warning("orphaned_answer: no driver for %s — answer not delivered",
+                        session_id)
+            return False
+        result = await self.send_prompt(session_id, orphaned_answer_prompt(list(selected)))
+        if result != "sent":
+            log.warning("orphaned_answer: send_prompt returned %r for %s", result, session_id)
+            return False
+        log_event(log, logging.INFO, "session.orphaned_answer_delivered",
+                  session_id=session_id, **{"selected": list(selected)})
+        return True
 
     def pending_questions(self, session_id: str) -> list[dict]:
         """Return still-pending question payloads for session_id ([] if no driver).

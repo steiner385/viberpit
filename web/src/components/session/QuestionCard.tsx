@@ -177,6 +177,17 @@ export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, re
     </>
   )
 
+  const orphanedNotice = block.orphaned && !readOnly && (
+    <div
+      data-testid="orphaned-question-notice"
+      className="mb-2 rounded border border-amber-300 dark:border-amber-700 bg-amber-100/70 dark:bg-amber-900/30 px-2 py-1.5 text-xs text-amber-900 dark:text-amber-200"
+    >
+      A daemon restart interrupted this question, so the original turn is gone.
+      Your choice will be sent as a new message and the session will continue from
+      there.
+    </div>
+  )
+
   // Read-only — historical/replayed, OR resolved in place once answered. When the
   // user has answered, `block.answered` carries the chosen labels: highlight those
   // options so the card reads as "here's what you picked", anchored where it was asked.
@@ -299,6 +310,7 @@ export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, re
     return (
       <div role="group" aria-labelledby={headerId} className={containerClass}>
         {heading}
+        {orphanedNotice}
         {/* Grouped: selectedLabel highlights the staged option ('' = nothing
             staged yet, so no radio is checked). Uncontrolled (undefined): fall
             back to the roving keyboard highlight (activeIndex) as before. */}
@@ -335,6 +347,7 @@ export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, re
   return (
     <div role="group" aria-labelledby={headerId} className={containerClass}>
       {heading}
+      {orphanedNotice}
       <MultiSelectOptions
         block={block}
         autoFocus={autoFocusOptions}
