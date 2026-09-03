@@ -129,6 +129,27 @@ _SHUTDOWN_DB_TIMEOUT_S = 10.0
 _security_warned = False
 
 
+async def seed_host_ssh_from_env() -> None:
+    """One-time bridge from the retired CCSWITCH_DAEMON_SSH_HOST/_REPO deploy path: when
+    both are set and a Host row is named after the ssh host's hostname part with NULL
+    ssh_host/repo_path, fill them in so the fan-out can reach it without a UI edit.
+    Values already set are never overwritten (the registry is the source of truth)."""
+    ssh_host = os.environ.get("CCSWITCH_DAEMON_SSH_HOST", "").strip()
+    repo = os.environ.get("CCSWITCH_DAEMON_SSH_REPO", "").strip()
+    if not ssh_host or not repo:
+        return
+    from server.deploy.steps import SSH_HOST_RE, SSH_REPO_RE
+    if not SSH_HOST_RE.match(ssh_host) or not SSH_REPO_RE.match(repo):
+        return
+    name = ssh_host.split("@", 1)[-1].split(".", 1)[0]
+    from sqlalchemy import update as _upd
+    from server.db import db_session as _dbs
+    from server.db.models import Host as _Host
+    async with _dbs() as _db:
+        await _db.execute(_upd(_Host).where(_Host.name == name, _Host.ssh_host.is_(None))
+                          .values(ssh_host=ssh_host, repo_path=repo))
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     """App startup/shutdown: init DB, install log filter, start orchestrator."""
@@ -198,6 +219,8 @@ async def _lifespan(app: FastAPI):
                     _db.add(_Host(name=_name, endpoint=_ep, enabled=True))
         _logging.getLogger("server").info(
             "fleet: seeded %d host(s) from CCSWITCH_FLEET_HOSTS", len(_fleet_map))
+
+    await seed_host_ssh_from_env()
 
     from server.automations.registry import registry as _automation_registry
     try:

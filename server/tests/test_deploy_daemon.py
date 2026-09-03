@@ -1,7 +1,4 @@
 from pathlib import Path
-from types import SimpleNamespace
-
-from server.deploy import steps
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -14,21 +11,6 @@ def test_daemon_unit_has_required_keys():
     assert "WantedBy=multi-user.target" in unit
 
 
-def test_daemon_restarts_before_edge_when_daemon_changed():
-    order = []
-    def run(cmd, **kw):
-        if "restart" in cmd:
-            order.append(cmd[-1])
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-    steps.restart_units(daemon_changed=True, daemon_enabled=True, run=run)
-    assert order == ["ccswitch-daemon.service", "ccswitch.service"]
-
-
-def test_daemon_skipped_when_not_enabled():
-    order = []
-    def run(cmd, **kw):
-        if "restart" in cmd:
-            order.append(cmd[-1])
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-    steps.restart_units(daemon_changed=True, daemon_enabled=False, run=run)
-    assert order == ["ccswitch.service"]
+# Daemon-before-edge ordering (local AND remote) now lives in
+# server.deploy.runners (test_deploy_runners.py) and the controller ordering test —
+# steps.restart_edge is edge-only and has no daemon branch to order against.
