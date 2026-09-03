@@ -1,7 +1,26 @@
 /**
- * SessionView tests.
+ * The session pane — transcript, permission/question panels, status strip.
  *
- * Mocks useSessionSocket the same way App.test.tsx does — importOriginal +
+ * Was `components/session/__tests__/SessionView.test.tsx`. `SessionView` had no
+ * call site after Task 17 and is deleted (Task 18 / Item 2); `MainPaneSession`
+ * is what `shell/routes.tsx` renders for `/sessions/:id`, in every layout mode.
+ * Every assertion below is the original one — the subject changed, the contract
+ * did not.
+ *
+ * Two of them ("seeds the initialPrompt", "does not duplicate the seeded prompt
+ * on echo") are the `PageHost` + `sessionNavState` contract: the seed is a
+ * `SessionRuntimeProvider` prop now, fed from router state, so they are asserted
+ * through the provider rather than through a pane prop.
+ *
+ * ## The harness renders the pane AND the composer
+ *
+ * `app.main` and `app.dock` are two regions inside ONE `SessionRuntimeProvider`
+ * (`PageHost` renders the page and the dock inside it). Several cases below are
+ * about the relationship between the two — a permission panel pinned ABOVE the
+ * composer, a prompt that still sends while a question is armed — so the harness
+ * composes them the way the shell does instead of approximating it.
+ *
+ * Mocks useSessionSocket the same way `App.test.tsx` does — importOriginal +
  * override just the hook. We capture the 'sessionEvent' handler via the on()
  * spy so we can feed synthetic events and assert the rendered transcript.
  */
@@ -10,7 +29,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, act, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { SessionView } from '../SessionView'
+import { MainPaneSession } from './MainPaneSession'
+import { SessionComposer } from '@/components/session/SessionComposer'
+import {
+  SessionRuntimeProvider, useSessionRuntimeContext,
+} from '@/components/session/SessionRuntimeProvider'
 import type { SessionEvent } from '@/session/events'
 
 // ── Stable mock socket shared across all calls to useSessionSocket() ──────────
@@ -89,9 +112,34 @@ function wrapper({ children }: { children: React.ReactNode }) {
   return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
 }
 
+/** The dock's composer, reading the same runtime the pane does. */
+function DockComposer() {
+  const rt = useSessionRuntimeContext()
+  return <SessionComposer rt={rt} />
+}
+
+/** `app.main` + `app.dock` for one open session — the shell's composition. */
+function renderPane(
+  { sessionId = 's1', onDetach = vi.fn(), initialPrompt }:
+  { sessionId?: string; onDetach?: () => void; initialPrompt?: string } = {},
+) {
+  return render(
+    <SessionRuntimeProvider sessionId={sessionId} initialPrompt={initialPrompt}>
+      <MainPaneSession
+        sessionId={sessionId}
+        onClosed={vi.fn()}
+        onDetach={onDetach}
+        onOpenSession={vi.fn()}
+      />
+      <DockComposer />
+    </SessionRuntimeProvider>,
+    { wrapper },
+  )
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-describe('SessionView', () => {
+describe('MainPaneSession', () => {
   beforeEach(() => {
     capturedHandlers = {}
     // Reset individual spies manually because vi.clearAllMocks() would also
@@ -113,39 +161,44 @@ describe('SessionView', () => {
   })
 
   it('renders the Back button with the correct aria-label', () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
+    renderPane()
     expect(screen.getByRole('button', { name: /back to session list/i })).toBeInTheDocument()
   })
 
-  it('fills its parent with flex-1 min-h-0 (no viewport units) so the composer stays pinned', () => {
+  it('fills its parent (no viewport units) so the composer stays pinned', () => {
     // Regression guard: the single viewport-height source of truth is
     // `#root { height: 100dvh }` (index.css) — see documentScrollClamp.test.ts.
-    // A shell that re-measures the viewport itself (`h-dvh`/`h-screen`) overflows
+    // A pane that re-measures the viewport itself (`h-dvh`/`h-screen`) overflows
     // the moment an in-flow sibling (update banner) renders above it, making the
     // document scrollable and letting focus/scrollIntoView drag the app partly
-    // off-screen (dead whitespace below the composer). Shells must derive height
-    // from the clamped root: `flex-1 min-h-0`.
-    const { container } = render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
+    // off-screen (dead whitespace below the composer).
+    //
+    // The invariant is unchanged; the class that expresses it moved with the
+    // component. `SessionView` WAS the flex child of the app column and used
+    // `flex-1 min-h-0`; `MainPaneSession` is a page rendered inside `PageHost`
+    // (which is itself `flex-1 min-h-0`), so it fills its parent with
+    // `h-full min-h-0`. What must never appear is a viewport unit.
+    const { container } = renderPane()
     const root = container.firstChild as HTMLElement
-    expect(root.className).toContain('flex-1')
+    expect(root.className).toContain('h-full')
     expect(root.className).toContain('min-h-0')
     expect(root.className).not.toContain('h-dvh')
     expect(root.className).not.toContain('h-screen')
   })
 
   it('shows the sessionId prefix as title when no title event received', () => {
-    render(<SessionView sessionId="abcd1234efgh" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
+    renderPane({ sessionId: 'abcd1234efgh' })
     // Title should be the first 8 chars of the sessionId
     expect(screen.getByText('abcd1234')).toBeInTheDocument()
   })
 
   it('seeds the initialPrompt as a user message immediately on open', () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} initialPrompt="fix the bug" />, { wrapper })
+    renderPane({ initialPrompt: 'fix the bug' })
     expect(screen.getByText('fix the bug')).toBeInTheDocument()
   })
 
   it('does not duplicate the seeded prompt when the SDK echoes it back', () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} initialPrompt="fix the bug" />, { wrapper })
+    renderPane({ initialPrompt: 'fix the bug' })
     // The real user event arrives with the server turnId; the reducer adopts the
     // optimistic seed in place rather than appending a duplicate.
     emitSessionEvent({ type: 'user', turnId: 'real-1', text: 'fix the bug' })
@@ -153,7 +206,7 @@ describe('SessionView', () => {
   })
 
   it('renders assistant text after turnStart + textDelta + turnEnd events', async () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
+    renderPane()
 
     emitSessionEvent({ type: 'turnStart', turnId: 't1' })
     emitSessionEvent({ type: 'textDelta', turnId: 't1', text: 'Hello from assistant' })
@@ -165,7 +218,7 @@ describe('SessionView', () => {
   })
 
   it('renders a PermissionCard when permissionRequest event arrives', async () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
+    renderPane()
 
     emitSessionEvent({ type: 'turnStart', turnId: 't1' })
     emitSessionEvent({
@@ -185,7 +238,7 @@ describe('SessionView', () => {
   })
 
   it('pins an actionable permission panel above the composer when an open permission exists', async () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
+    renderPane()
 
     emitSessionEvent({ type: 'replayComplete' })
     emitSessionEvent({ type: 'turnStart', turnId: 't1' })
@@ -211,7 +264,7 @@ describe('SessionView', () => {
 
   it('calls permissionResponse and dispatches _resolvePermission when Yes clicked', async () => {
     const user = userEvent.setup()
-    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
+    renderPane()
 
     emitSessionEvent({ type: 'turnStart', turnId: 't1' })
     emitSessionEvent({
@@ -239,7 +292,7 @@ describe('SessionView', () => {
   })
 
   it('live question is not rendered inline — it shows the "action needed" banner instead', async () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
+    renderPane()
 
     // replayComplete marks replaying=false so subsequent questions are live (live: true).
     emitSessionEvent({ type: 'replayComplete' })
@@ -268,7 +321,7 @@ describe('SessionView', () => {
   })
 
   it('shows title when title event fires', async () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
+    renderPane()
 
     emitSessionEvent({ type: 'title', title: 'My Session Title', source: 'claude' })
 
@@ -278,7 +331,7 @@ describe('SessionView', () => {
   })
 
   it('shows error banner when error sessionEvent fires', async () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
+    renderPane()
 
     emitSessionEvent({ type: 'error', code: 'RATE_LIMITED', message: 'Too many requests' })
 
@@ -288,7 +341,7 @@ describe('SessionView', () => {
   })
 
   it('I3: shows error banner when direct WS error frame fires (SESSION_NOT_FOUND etc.)', async () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
+    renderPane()
 
     // This is a direct 'error' WS message, NOT wrapped in a sessionEvent batch.
     emitErrorEvent({ type: 'error', code: 'SESSION_NOT_FOUND', message: 'Session not found' })
@@ -299,7 +352,7 @@ describe('SessionView', () => {
   })
 
   it('I5: rotation divider shows reason when WsRotatedMsg includes reason', async () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
+    renderPane()
 
     emitRotatedEvent({
       type: 'rotated',
@@ -315,7 +368,7 @@ describe('SessionView', () => {
   })
 
   it('interleaves the rotation divider inline between the turns it occurred between', async () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
+    renderPane()
 
     // Turn 1, then a rotation, then turn 2.
     emitSessionEvent({ type: 'turnStart', turnId: 't1' })
@@ -337,7 +390,7 @@ describe('SessionView', () => {
   })
 
   it('aria-live region announces "History loaded" once replay completes', async () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
+    renderPane()
     const live = screen.getByLabelText('Session output')
     // Suppressed while replaying (initial state).
     expect(live).toHaveTextContent('')
@@ -346,7 +399,7 @@ describe('SessionView', () => {
   })
 
   it('aria-live region mirrors the latest assistant text after replay completes', async () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
+    renderPane()
     const live = screen.getByLabelText('Session output')
     emitSessionEvent({ type: 'replayComplete' })
     emitSessionEvent({ type: 'turnStart', turnId: 't1' })
@@ -356,7 +409,7 @@ describe('SessionView', () => {
   })
 
   it('renders StatusBar with Ready for idle state', () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
+    renderPane()
     expect(screen.getByRole('status')).toHaveTextContent('Ready')
   })
 
@@ -364,7 +417,7 @@ describe('SessionView', () => {
     // Status is shown once, by the StatusBar folded into the meta strip. The top
     // bar deliberately carries NO card-style StatusPill (it duplicated this exact
     // state one line down), so the title gets the full width of the nav row.
-    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
+    renderPane()
     // No card-style pill anywhere in the header.
     expect(screen.queryByLabelText(/^Status: /)).not.toBeInTheDocument()
     // Idle on open → the StatusBar reads "Ready".
@@ -378,16 +431,17 @@ describe('SessionView', () => {
     })
   })
 
-  it('calls onBack when Back button is clicked', async () => {
+  it('Back detaches the socket and calls onDetach', async () => {
     const user = userEvent.setup()
     const onBack = vi.fn()
-    render(<SessionView sessionId="s1" onBack={onBack} onDone={vi.fn()} />, { wrapper })
+    renderPane({ onDetach: onBack })
     await user.click(screen.getByRole('button', { name: /back to session list/i }))
+    expect(mockDetach).toHaveBeenCalledWith('s1')
     expect(onBack).toHaveBeenCalledOnce()
   })
 })
 
-describe('SessionView question escape hatches', () => {
+describe('MainPaneSession question escape hatches', () => {
   beforeEach(() => {
     capturedHandlers = {}
     mockPermissionResponse.mockClear()
@@ -406,7 +460,7 @@ describe('SessionView question escape hatches', () => {
   })
 
   function renderAndAskQuestion() {
-    const utils = render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
+    const utils = renderPane()
     // replayComplete marks replaying=false so the question is emitted as live (live: true).
     emitSessionEvent({ type: 'replayComplete' })
     emitSessionEvent({ type: 'turnStart', turnId: 't1' })

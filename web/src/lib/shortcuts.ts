@@ -83,7 +83,8 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'insession.detach', keys: '← / Esc', description: 'Detach back to the session list', group: 'in-session' },
   { id: 'insession.forceDetach', keys: 'Ctrl+Z', description: 'Force-detach to the list', group: 'in-session' },
   // `Shift+Tab` (cycle permission mode) is deliberately NOT listed: sub-spec B D8
-  // removes the binding, and PR 4 removes the handler in `SessionView.tsx`. The
+  // removes the binding, and PR 4 removes the handler in
+  // `session/useInSessionKeys.ts`. The
   // registry is the only thing the help sheets render from, so dropping the row
   // here is how the documentation goes away — a `HelpSheet`-local filter would be
   // a second, invisible owner of "which shortcuts are documented". Between this

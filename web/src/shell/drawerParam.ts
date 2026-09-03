@@ -1,5 +1,7 @@
 import { useCallback } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import {
+  isOverlayName, useClearOverlayParam, useOverlayParam, useSetOverlayParam, withOverlayParam,
+} from './overlayParam'
 
 /**
  * The `?drawer=` contract, in one place.
@@ -11,10 +13,10 @@ import { useSearchParams } from 'react-router-dom'
  * is exactly how the param name and the drawer that reads it drift apart. The
  * name lives here; callers pass a `DrawerName` and never touch the query string.
  *
- * Both writers use `replace` — umbrella §4.4, "overlay params use
- * `setSearchParams(…, { replace: true })`". Opening a drawer is not a place in
- * the app you can be sent Back to; with `push`, Back out of a drawer would step
- * through every open/close of it before it left the page.
+ * The MECHANICS — allow-listed read, `replace` write — moved to
+ * `overlayParam.ts` in Task 18, when `?dialog=` needed the same three hooks.
+ * What stays here is this param's own vocabulary and the one rule that is
+ * genuinely drawer-specific: an open drawer survives a section change.
  */
 export const DRAWER_PARAM = 'drawer'
 
@@ -25,7 +27,7 @@ export const DRAWER_NAMES = ['assistant', 'help'] as const
 export type DrawerName = (typeof DRAWER_NAMES)[number]
 
 export function isDrawerName(value: string | null | undefined): value is DrawerName {
-  return value !== null && value !== undefined && (DRAWER_NAMES as readonly string[]).includes(value)
+  return isOverlayName(value, DRAWER_NAMES)
 }
 
 /**
@@ -36,36 +38,16 @@ export function isDrawerName(value: string | null | undefined): value is DrawerN
  * sheet the user has to dismiss.
  */
 export function useDrawerName(): DrawerName | null {
-  const [searchParams] = useSearchParams()
-  const raw = searchParams.get(DRAWER_PARAM)
-  return isDrawerName(raw) ? raw : null
+  return useOverlayParam(DRAWER_PARAM, DRAWER_NAMES)
 }
 
 export function useOpenDrawer(): (name: DrawerName) => void {
-  const [searchParams, setSearchParams] = useSearchParams()
-  return useCallback(
-    (name: DrawerName) => {
-      const next = new URLSearchParams(searchParams)
-      next.set(DRAWER_PARAM, name)
-      setSearchParams(next, { replace: true })
-    },
-    [searchParams, setSearchParams],
-  )
+  return useSetOverlayParam<DrawerName>(DRAWER_PARAM)
 }
 
-/**
- * `to` with the open drawer carried over — the pure half of the rule below.
- *
- * Merges rather than appends: `GlobalActions` already ships a nav target that
- * carries a query string (`/sessions?dialog=new`), so a naive `` `${to}?drawer=` ``
- * would produce two `?` and a path nothing matches.
- */
+/** `to` with the open drawer carried over — the pure half of the rule below. */
 export function withDrawer(to: string, drawer: DrawerName): string {
-  const [beforeHash, hash] = to.split('#')
-  const [path, query = ''] = beforeHash.split('?')
-  const params = new URLSearchParams(query)
-  params.set(DRAWER_PARAM, drawer)
-  return `${path}?${params}${hash === undefined ? '' : `#${hash}`}`
+  return withOverlayParam(to, DRAWER_PARAM, drawer)
 }
 
 /**
@@ -86,10 +68,5 @@ export function useDrawerPreservingTo(): (to: string) => string {
 }
 
 export function useCloseDrawer(): () => void {
-  const [searchParams, setSearchParams] = useSearchParams()
-  return useCallback(() => {
-    const next = new URLSearchParams(searchParams)
-    next.delete(DRAWER_PARAM)
-    setSearchParams(next, { replace: true })
-  }, [searchParams, setSearchParams])
+  return useClearOverlayParam(DRAWER_PARAM)
 }

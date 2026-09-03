@@ -97,26 +97,13 @@ vi.mock('@/ws/client', async (importOriginal) => {
   }
 })
 
-import { MEDIA, stubMatchMedia } from '@/test/matchMedia'
+import { LAYOUT_MODE_QUERIES, MEDIA, stubMatchMedia } from '@/test/matchMedia'
 import { ThemeProvider } from '@/shell/theme'
 import { buildRoutes } from '@/shell/routes'
 import { LAYOUT_MODES, type LayoutMode } from './useViewport'
 import { AppShell, REGION_IDS, REGION_VISIBILITY, type RegionContext, type RegionId } from './AppShell'
 
 // ── harness ──────────────────────────────────────────────────────────────────
-
-/**
- * The layout queries that report true in each mode.
- *
- * Kiosk is not a width — it is `?kiosk=1` on top of a real viewport, which is
- * why it shares desktop's queries and gets its own `kiosk` flag below.
- */
-const MODE_QUERIES: Record<LayoutMode, readonly string[]> = {
-  phone: [],
-  tablet: [MEDIA.tablet],
-  desktop: [MEDIA.tablet, MEDIA.desktop],
-  kiosk: [MEDIA.tablet, MEDIA.desktop],
-}
 
 function Page({ name }: { name: string }) {
   return <div data-testid={`page-${name}`}>{name}</div>
@@ -154,7 +141,7 @@ interface RenderOpts {
 }
 
 function renderShell({ path = '/sessions', mode = 'desktop', extraQueries = [] }: RenderOpts = {}) {
-  stubMatchMedia([...MODE_QUERIES[mode], ...extraQueries])
+  stubMatchMedia([...LAYOUT_MODE_QUERIES[mode], ...extraQueries])
   // `readKioskConfig()` reads `window.location.search`, not the router's — a
   // wall display is configured by the URL it was launched with.
   if (mode === 'kiosk') window.history.replaceState(null, '', '/?kiosk=1')
@@ -377,8 +364,15 @@ describe('AppShell — accessibility', () => {
     await withSessionRows(mode)
     // The overlay root sits outside the render container; assert on the whole
     // body so an open drawer's panel is included in the pass.
-    await waitFor(async () => {
-      expect(await axe(document.body, AXE_OPTIONS)).toHaveNoViolations()
-    })
+    //
+    // ONE axe run, not a `waitFor` around one. `waitFor` retries its callback
+    // inside a 1000ms budget, and a single axe pass over the whole shell — page,
+    // list, dock, rail and an open drawer — does not reliably finish inside it
+    // when the suite runs in parallel. That made this case fail with "Timed out
+    // in waitFor" rather than with a violation: a red test that says nothing
+    // about accessibility. The waits it was standing in for are explicit above
+    // (`findByTestId`, then `withSessionRows` for the dock's `aria-controls`
+    // target), so there is nothing left for a retry to fix.
+    expect(await axe(document.body, AXE_OPTIONS)).toHaveNoViolations()
   })
 })

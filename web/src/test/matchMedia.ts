@@ -14,7 +14,7 @@
 // `vi.stubGlobal`. Folding it in would change how that file's stub is torn down,
 // which is a different concern from the one this module owns.
 import { vi } from 'vitest'
-import type { WidthTier } from '@/shell/useViewport'
+import type { LayoutMode, WidthTier } from '@/shell/useViewport'
 
 /**
  * Every layout query `useViewport` reads. Named rather than inlined so a test
@@ -41,6 +41,20 @@ export const WIDTH_TIER_QUERIES: Record<WidthTier, readonly string[]> = {
   tablet: [MEDIA.tablet],
   desktop: [MEDIA.tablet, MEDIA.desktop],
   wide: [MEDIA.tablet, MEDIA.desktop, MEDIA.drawerPush, MEDIA.wide],
+}
+
+/**
+ * The queries that report true in each LAYOUT MODE — the width tiers collapsed
+ * to what `useViewport().mode` reports.
+ *
+ * Kiosk is not a width: it is `?kiosk=1` on top of a real viewport, so it shares
+ * desktop's queries and is selected by the URL instead (`renderApp` does that).
+ */
+export const LAYOUT_MODE_QUERIES: Record<LayoutMode, readonly string[]> = {
+  phone: [],
+  tablet: [MEDIA.tablet],
+  desktop: [MEDIA.tablet, MEDIA.desktop],
+  kiosk: [MEDIA.tablet, MEDIA.desktop],
 }
 
 /** Stub `matchMedia` so that every query in `matching` reports true. */

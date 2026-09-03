@@ -24,7 +24,7 @@
 // assertion here is NOT evidence of adequate contrast. Contrast is checked
 // separately by src/__tests__/contrast.test.ts against the tokens in index.css.
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, within, act } from '@testing-library/react'
+import { cleanup, render, screen, within, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { axe, toHaveNoViolations } from 'jest-axe'
 import { createMemoryRouter, RouterProvider, Outlet, useLocation } from 'react-router-dom'
@@ -132,6 +132,45 @@ describe('DrawerHost', () => {
     for (const s of SHORTCUTS) {
       expect(within(dlg).getAllByText(s.description).length, s.id).toBeGreaterThan(0)
     }
+  })
+
+  // Migrated from `components/__tests__/HelpDrawer.test.tsx` (Task 18); the
+  // component it tested was deleted in Task 17 and replaced by `HelpSheet`.
+  it("renders each shortcut's KEYS, not only its description", () => {
+    // The description loop above passes on a sheet that lists what every
+    // shortcut DOES and never says which key does it. `HelpDrawer.test.tsx`
+    // caught that with two literals (`c`, `a / Backspace`); this derives the
+    // whole set from the registry, so a binding that renders no key fails here.
+    renderAt(['/sessions?drawer=help'])
+    const dlg = screen.getByRole('dialog', { name: /help/i })
+    for (const s of SHORTCUTS) {
+      expect(within(dlg).getAllByText(s.keys).length, `${s.id} keys`).toBeGreaterThan(0)
+    }
+    // …and nothing still shows the pre-registry Ctrl bindings.
+    expect(dlg.textContent ?? '').not.toMatch(/Ctrl\+X/)
+  })
+
+  it('has Navigation and Tips sections', () => {
+    renderAt(['/sessions?drawer=help'])
+    const dlg = within(screen.getByRole('dialog', { name: /help/i }))
+    expect(dlg.getByRole('heading', { name: /navigation/i })).toBeInTheDocument()
+    expect(dlg.getByRole('heading', { name: /tips/i })).toBeInTheDocument()
+  })
+
+  it('Escape and a backdrop click each clear ?drawer=', async () => {
+    const user = userEvent.setup()
+
+    const escaped = renderAt(['/sessions?drawer=help'])
+    await user.keyboard('{Escape}')
+    expect(escaped.state.location.search).toBe('')
+    expect(region()).toBeNull()
+
+    cleanup()
+
+    const clicked = renderAt(['/sessions?drawer=help'])
+    await user.click(screen.getByTestId('sheet-backdrop'))
+    expect(clicked.state.location.search).toBe('')
+    expect(region()).toBeNull()
   })
 
   it('does not document Shift+Tab (D8 removes the binding in PR 4)', () => {

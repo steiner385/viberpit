@@ -7,6 +7,7 @@ import { useCreateSession, useGithubRepos, useModels } from '@/api/hooks'
 import { useEnabledFleetHosts } from '@/api/fleet'
 import type { Account } from '@/api/types'
 import { setLastRepo } from '@/lib/lastRepo'
+import { isPendingSessionId } from '@/lib/pendingSessions'
 import { NAV_BY_ID } from '@/shell/navDefs'
 import { useOpenSessionId } from '@/shell/openSessionId'
 import { sessionOpenState } from '@/session/sessionNavState'
@@ -134,6 +135,12 @@ function NewSessionBar({
   const { ordering, nav } = list
 
   function openSession(id: string, initialPrompt?: string) {
+    // An optimistic placeholder has no session on the server yet — opening one
+    // would attach a socket to an id the daemon has never heard of. Both old
+    // shells guarded their own "open" entry point with this; Task 18 restored it
+    // here after `KeyboardSessions.test.tsx`'s Enter/Alt+digit cases were
+    // re-hosted on the shell and turned red.
+    if (isPendingSessionId(id)) return
     // Path from `NAV_DEFS`, not a literal, so the dock cannot drift from the
     // route table the rest of the shell is built from.
     navigate(`${NAV_BY_ID.sessions.path}/${id}`, sessionOpenState(initialPrompt))

@@ -1,8 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { Dashboard } from '../Dashboard'
+import { renderApp } from '@/test/renderApp'
 import * as hooks from '@/api/hooks'
 
 vi.mock('@/api/hooks', () => ({
@@ -71,12 +70,7 @@ const NOOP_MUTATION = {
   isPending: false,
 }
 
-function wrapper({ children }: { children: React.ReactNode }) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
-}
-
-describe('SessionActions (via Dashboard)', () => {
+describe('session-card actions (via AppShell)', () => {
   beforeEach(() => {
     vi.mocked(hooks.useAccounts).mockReturnValue({
       data: [],
@@ -159,60 +153,25 @@ describe('SessionActions (via Dashboard)', () => {
     vi.mocked(hooks.useBulkPermanentDeleteSessions).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useBulkPermanentDeleteSessions>)
   })
 
-  it('renders the "+ New" button', () => {
-    render(<Dashboard />, { wrapper })
-    expect(screen.getByRole('button', { name: /new session/i })).toBeInTheDocument()
-  })
-
-  it('opens a New Session dialog when "+ New" is clicked', async () => {
-    const user = userEvent.setup()
-    render(<Dashboard />, { wrapper })
-
-    await user.click(screen.getByRole('button', { name: /new session/i }))
-
-    const dialog = screen.getByRole('dialog', { name: /new session/i })
-    expect(dialog).toBeInTheDocument()
-    // Scope to the dialog: the session cards behind it now expose a "Rename …"
-    // button whose accessible name also contains "name".
-    expect(within(dialog).getByLabelText(/name/i)).toBeInTheDocument()
-  })
-
-  it('closes the dialog when Cancel is clicked', async () => {
-    const user = userEvent.setup()
-    render(<Dashboard />, { wrapper })
-
-    await user.click(screen.getByRole('button', { name: /new session/i }))
-    expect(screen.getByRole('dialog', { name: /new session/i })).toBeInTheDocument()
-
-    await user.click(screen.getByRole('button', { name: /cancel/i }))
-    await waitFor(() => {
-      expect(screen.queryByRole('dialog', { name: /new session/i })).not.toBeInTheDocument()
-    })
-  })
-
-  it('closes the dialog when Escape is pressed', async () => {
-    const user = userEvent.setup()
-    render(<Dashboard />, { wrapper })
-
-    await user.click(screen.getByRole('button', { name: /new session/i }))
-    expect(screen.getByRole('dialog', { name: /new session/i })).toBeInTheDocument()
-
-    await user.keyboard('{Escape}')
-    await waitFor(() => {
-      expect(screen.queryByRole('dialog', { name: /new session/i })).not.toBeInTheDocument()
-    })
-  })
+  // Task 18: the four "+ New opens/closes the New Session dialog" cases that
+  // opened this file are re-pinned in `App.dialogs.test.tsx`, which now covers
+  // opening from `?dialog=new` in every layout mode, opening from the rail's
+  // link, Cancel, and the param clearing without a history push. The New Session
+  // control on the list column is pinned by `SessionListColumn.test.tsx`
+  // ("marks the New Session button when the new-session slot is the target").
+  // What is left here is the part that is genuinely the shell's: the per-card ⋯
+  // menu and the dialogs `AppShell` owns behind it.
 
   it('renders a `…` menu button for session actions on each card', () => {
     // Rename/Archive/Delete live in the unified `…` menu on every breakpoint.
-    render(<Dashboard />, { wrapper })
+    renderApp({ path: '/sessions', mode: 'desktop' })
 
     expect(screen.getAllByRole('button', { name: /more actions for session/i }).length).toBeGreaterThan(0)
   })
 
   it('clicking rename in the ⋯ menu shows a rename dialog', async () => {
     const user = userEvent.setup()
-    render(<Dashboard />, { wrapper })
+    renderApp({ path: '/sessions', mode: 'desktop' })
 
     await user.click(screen.getByRole('button', { name: /more actions for session alpha session/i }))
     await user.click(screen.getByRole('menuitem', { name: /rename/i }))
@@ -222,7 +181,7 @@ describe('SessionActions (via Dashboard)', () => {
 
   it('clicking delete in the ⋯ menu shows a permanent-delete confirmation dialog', async () => {
     const user = userEvent.setup()
-    render(<Dashboard />, { wrapper })
+    renderApp({ path: '/sessions', mode: 'desktop' })
 
     await user.click(screen.getByRole('button', { name: /more actions for session alpha session/i }))
     await user.click(screen.getByRole('menuitem', { name: /delete/i }))
@@ -238,7 +197,7 @@ describe('SessionActions (via Dashboard)', () => {
     } as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
 
     const user = userEvent.setup()
-    render(<Dashboard />, { wrapper })
+    renderApp({ path: '/sessions', mode: 'desktop' })
 
     await user.click(screen.getByRole('button', { name: /more actions for session alpha session/i }))
     await user.click(screen.getByRole('menuitem', { name: /delete/i }))

@@ -100,6 +100,20 @@ describe('useNavBadges', () => {
     expect(result2.current.settings).toBeUndefined()
   })
 
+  // Migrated from `DashboardTabs.test.tsx`'s three needs-reauth cases (Task 18),
+  // which asserted the amber dot on the Settings TAB. The tab is gone; the rule
+  // that decides the dot is here, and `needs-relogin` — a status the case above
+  // never exercises — is the half that would silently stop badging.
+  it.each([
+    ['needs-reauth' as const, true],
+    ['needs-relogin' as const, true],
+    ['ok' as const, undefined],
+  ])('an account with status %s gives settings = %s', (status, expected) => {
+    useAccounts.mockReturnValue({ data: [account({ status })] })
+    const { result } = renderHook(() => useNavBadges())
+    expect(result.current.settings).toBe(expected)
+  })
+
   it('DEC-4: sessions counts every session in the section, including queued ones', () => {
     // DesktopShell used to count orderedSessions.length (queued excluded) — that
     // was an artifact of it never rendering PendingApprovalSection. The decision

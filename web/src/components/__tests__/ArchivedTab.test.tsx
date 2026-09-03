@@ -1,9 +1,8 @@
 /**
- * ArchivedTab.test.tsx
+ * ArchivedTab.test.tsx — the Archived panel (was: the Dashboard Archived tab)
  *
- * Tests for the Archived tab in Dashboard:
- * - Tab renders and switches
- * - Arrow-key nav cycles through all 3 tabs
+ * Tests for `ArchivedManager`, the Archived page's panel:
+ * - Empty state
  * - Archived list rows render with name/account/date
  * - Review calls onReviewSession
  * - Unarchive calls the hook
@@ -13,7 +12,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { Dashboard } from '../Dashboard'
+import { ArchivedManager } from '../ArchivedManager'
 import * as hooks from '@/api/hooks'
 import type { ArchivedSession } from '@/api/types'
 
@@ -122,98 +121,43 @@ function setupDefaultMocks() {
   vi.mocked(hooks.useBulkPermanentDeleteSessions).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useBulkPermanentDeleteSessions>)
 }
 
-// ── Tab presence and switching ────────────────────────────────────────────────
+// ── The panel itself ─────────────────────────────────────────────────────────
+//
+// Task 18: the five tab-strip cases that opened this file are gone with
+// `TabBar`. Three (the strip lists Archived, Archived is not selected by
+// default, clicking it switches) are re-pinned by `NavRail.test.tsx`'s
+// per-nav-def link cases and `routes.test.tsx`'s "every nav destination exists";
+// the four roving-focus cases are dropped, because the rail is a `nav` of links
+// and roving tabindex is a tablist affordance that no longer exists. "shows
+// count badge when archived sessions exist" is re-pinned by
+// `useNavBadges.test.tsx`. See the Task 18 disposition map.
 
-describe('Dashboard — Archived tab', () => {
+describe('ArchivedManager', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     setupDefaultMocks()
   })
 
-  it('renders Sessions, Settings, and Archived tabs', () => {
-    render(<Dashboard />, { wrapper })
-
-    expect(screen.getByRole('tab', { name: /sessions/i })).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: /settings/i })).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: /archived/i })).toBeInTheDocument()
-  })
-
-  it('Archived tab is NOT selected by default', () => {
-    render(<Dashboard />, { wrapper })
-
-    const archivedTab = screen.getByRole('tab', { name: /archived/i })
-    expect(archivedTab).toHaveAttribute('aria-selected', 'false')
-  })
-
-  it('clicking Archived tab switches to the Archived panel', async () => {
-    const user = userEvent.setup()
+  it('shows the empty state when there are no archived sessions', () => {
     vi.mocked(hooks.useArchivedSessions).mockReturnValue({
       data: [],
       isLoading: false,
     } as ReturnType<typeof hooks.useArchivedSessions>)
 
-    render(<Dashboard />, { wrapper })
-    await user.click(screen.getByRole('tab', { name: /archived/i }))
-
-    const tab = screen.getByRole('tab', { name: /archived/i })
-    expect(tab).toHaveAttribute('aria-selected', 'true')
+    render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
 
     expect(screen.getByText(/no archived sessions/i)).toBeInTheDocument()
-  })
-
-  // ── Arrow-key nav cycles the tab strip ───────────────────────────────────────
-
-  it('ArrowRight from Sessions moves focus to Pipeline', async () => {
-    const user = userEvent.setup()
-    render(<Dashboard />, { wrapper })
-
-    screen.getByRole('tab', { name: /sessions/i }).focus()
-    await user.keyboard('{ArrowRight}')
-
-    expect(document.activeElement).toBe(screen.getByRole('tab', { name: /pipeline/i }))
-  })
-
-  it('ArrowRight from Pipeline moves focus to Automations', async () => {
-    const user = userEvent.setup()
-    render(<Dashboard />, { wrapper })
-
-    screen.getByRole('tab', { name: /pipeline/i }).focus()
-    await user.keyboard('{ArrowRight}')
-
-    expect(document.activeElement).toBe(screen.getByRole('tab', { name: /automations/i }))
-  })
-
-  it('ArrowRight from Archived moves focus to Insights', async () => {
-    const user = userEvent.setup()
-    render(<Dashboard />, { wrapper })
-
-    screen.getByRole('tab', { name: /archived/i }).focus()
-    await user.keyboard('{ArrowRight}')
-
-    expect(document.activeElement).toBe(screen.getByRole('tab', { name: /insights/i }))
-  })
-
-  it('ArrowLeft from Archived moves focus to Products', async () => {
-    const user = userEvent.setup()
-    render(<Dashboard />, { wrapper })
-
-    screen.getByRole('tab', { name: /archived/i }).focus()
-    await user.keyboard('{ArrowLeft}')
-
-    expect(document.activeElement).toBe(screen.getByRole('tab', { name: /products/i }))
   })
 
   // ── Archived list rows ───────────────────────────────────────────────────────
 
   it('renders archived rows with name, account, and archived date', async () => {
-    const user = userEvent.setup()
     vi.mocked(hooks.useArchivedSessions).mockReturnValue({
       data: [makeArchived({ name: 'Alpha', account: 'myaccount', archivedAt: '2026-06-15T00:00:00Z' })],
       isLoading: false,
     } as ReturnType<typeof hooks.useArchivedSessions>)
 
-    render(<Dashboard />, { wrapper })
-    await user.click(screen.getByRole('tab', { name: /archived/i }))
+    render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
 
     expect(screen.getByText('Alpha')).toBeInTheDocument()
     expect(screen.getByText(/myaccount/)).toBeInTheDocument()
@@ -222,29 +166,22 @@ describe('Dashboard — Archived tab', () => {
   })
 
   it('falls back to short id when name is empty', async () => {
-    const user = userEvent.setup()
     vi.mocked(hooks.useArchivedSessions).mockReturnValue({
       data: [makeArchived({ id: 'abc12345def', name: '' })],
       isLoading: false,
     } as ReturnType<typeof hooks.useArchivedSessions>)
 
-    render(<Dashboard />, { wrapper })
-    await user.click(screen.getByRole('tab', { name: /archived/i }))
+    render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
 
     expect(screen.getByText('abc12345')).toBeInTheDocument()
   })
 
-  it('shows count badge when archived sessions exist', () => {
-    vi.mocked(hooks.useArchivedSessions).mockReturnValue({
-      data: [makeArchived(), makeArchived({ id: 'arc-2', name: 'Beta' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useArchivedSessions>)
-
-    render(<Dashboard />, { wrapper })
-
-    // Badge "2" should appear in the tab
-    expect(screen.getByText('2')).toBeInTheDocument()
-  })
+  // "shows count badge when archived sessions exist" lived here because the
+  // badge was on `Dashboard`'s Archived TAB. The badge is now the nav rail's,
+  // fed by `useNavBadges`, and is pinned by `useNavBadges.test.tsx` ("pipeline
+  // counts in-flight PRs; archived and automations count their own data") plus
+  // `NavRail.test.tsx`'s badge cases. It is not an `ArchivedManager` behaviour
+  // and there is nothing here to assert it against.
 
   // ── Review button ─────────────────────────────────────────────────────────────
 
@@ -256,8 +193,7 @@ describe('Dashboard — Archived tab', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useArchivedSessions>)
 
-    render(<Dashboard onReviewSession={onReview} />, { wrapper })
-    await user.click(screen.getByRole('tab', { name: /archived/i }))
+    render(<ArchivedManager onReviewSession={onReview} />, { wrapper })
     await user.click(screen.getByRole('button', { name: /review alpha/i }))
 
     expect(onReview).toHaveBeenCalledWith('arc-1')
@@ -277,8 +213,7 @@ describe('Dashboard — Archived tab', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useArchivedSessions>)
 
-    render(<Dashboard />, { wrapper })
-    await user.click(screen.getByRole('tab', { name: /archived/i }))
+    render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
     await user.click(screen.getByRole('button', { name: /unarchive alpha/i }))
 
     expect(unarchiveMutate).toHaveBeenCalledWith('arc-1', expect.anything())
@@ -293,8 +228,7 @@ describe('Dashboard — Archived tab', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useArchivedSessions>)
 
-    render(<Dashboard />, { wrapper })
-    await user.click(screen.getByRole('tab', { name: /archived/i }))
+    render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
     await user.click(screen.getByRole('button', { name: /delete alpha permanently/i }))
 
     expect(screen.getByRole('dialog')).toBeInTheDocument()
@@ -313,8 +247,7 @@ describe('Dashboard — Archived tab', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useArchivedSessions>)
 
-    render(<Dashboard />, { wrapper })
-    await user.click(screen.getByRole('tab', { name: /archived/i }))
+    render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
     await user.click(screen.getByRole('button', { name: /delete alpha permanently/i }))
 
     const confirmBtn = screen.getByRole('button', { name: /delete permanently/i })
@@ -335,8 +268,7 @@ describe('Dashboard — Archived tab', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useArchivedSessions>)
 
-    render(<Dashboard />, { wrapper })
-    await user.click(screen.getByRole('tab', { name: /archived/i }))
+    render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
     await user.click(screen.getByRole('button', { name: /delete alpha permanently/i }))
 
     await user.click(screen.getByRole('button', { name: /cancel/i }))
@@ -359,8 +291,7 @@ describe('Dashboard — Archived tab', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useArchivedSessions>)
 
-    render(<Dashboard />, { wrapper })
-    await user.click(screen.getByRole('tab', { name: /archived/i }))
+    render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
     await user.click(screen.getByRole('button', { name: /delete alpha permanently/i }))
 
     await user.keyboard('{Escape}')
@@ -404,8 +335,7 @@ describe('Dashboard — Archived tab', () => {
   it('selecting a row reveals the bulk action bar with a count', async () => {
     const user = userEvent.setup()
     twoArchived()
-    render(<Dashboard />, { wrapper })
-    await user.click(screen.getByRole('tab', { name: /archived/i }))
+    render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
 
     expect(screen.queryByRole('region', { name: /bulk actions/i })).not.toBeInTheDocument()
     await user.click(screen.getByRole('checkbox', { name: /select alpha/i }))
@@ -417,8 +347,7 @@ describe('Dashboard — Archived tab', () => {
   it('Select all selects every row', async () => {
     const user = userEvent.setup()
     twoArchived()
-    render(<Dashboard />, { wrapper })
-    await user.click(screen.getByRole('tab', { name: /archived/i }))
+    render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
 
     await user.click(screen.getByRole('checkbox', { name: /select all/i }))
     expect(screen.getByRole('region', { name: /bulk actions/i })).toHaveTextContent(/2 selected/i)
@@ -431,8 +360,7 @@ describe('Dashboard — Archived tab', () => {
       mutate: bulkMutate, isPending: false,
     } as unknown as ReturnType<typeof hooks.useBulkUnarchiveSessions>)
     twoArchived()
-    render(<Dashboard />, { wrapper })
-    await user.click(screen.getByRole('tab', { name: /archived/i }))
+    render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
 
     await user.click(screen.getByRole('checkbox', { name: /select alpha/i }))
     await user.click(screen.getByRole('checkbox', { name: /select beta/i }))
@@ -451,8 +379,7 @@ describe('Dashboard — Archived tab', () => {
       mutate: bulkDeleteMutate, isPending: false,
     } as unknown as ReturnType<typeof hooks.useBulkPermanentDeleteSessions>)
     twoArchived()
-    render(<Dashboard />, { wrapper })
-    await user.click(screen.getByRole('tab', { name: /archived/i }))
+    render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
 
     await user.click(screen.getByRole('checkbox', { name: /select alpha/i }))
     await user.click(screen.getByRole('button', { name: /^delete \(1\)/i }))
@@ -465,8 +392,7 @@ describe('Dashboard — Archived tab', () => {
   it('shift-clicking a second row selects the whole range between the two clicks', async () => {
     const user = userEvent.setup()
     fourArchived()
-    render(<Dashboard />, { wrapper })
-    await user.click(screen.getByRole('tab', { name: /archived/i }))
+    render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
 
     // Anchor on Alpha (index 0), then shift-click Gamma (index 2) → Alpha, Beta, Gamma.
     await user.click(screen.getByRole('checkbox', { name: /select alpha/i }))
@@ -482,8 +408,7 @@ describe('Dashboard — Archived tab', () => {
   it('shift-click range works upward (anchor below the shift-clicked row)', async () => {
     const user = userEvent.setup()
     fourArchived()
-    render(<Dashboard />, { wrapper })
-    await user.click(screen.getByRole('tab', { name: /archived/i }))
+    render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
 
     // Anchor on Delta (index 3), then shift-click Beta (index 1) → Beta, Gamma, Delta.
     await user.click(screen.getByRole('checkbox', { name: /select delta/i }))
@@ -499,8 +424,7 @@ describe('Dashboard — Archived tab', () => {
   it('shift-clicking with no prior selection just selects the single row', async () => {
     const user = userEvent.setup()
     fourArchived()
-    render(<Dashboard />, { wrapper })
-    await user.click(screen.getByRole('tab', { name: /archived/i }))
+    render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
 
     await shiftClick(user, screen.getByRole('checkbox', { name: /select gamma/i }))
 
@@ -511,8 +435,7 @@ describe('Dashboard — Archived tab', () => {
   it('Clear deselects all and hides the action bar', async () => {
     const user = userEvent.setup()
     twoArchived()
-    render(<Dashboard />, { wrapper })
-    await user.click(screen.getByRole('tab', { name: /archived/i }))
+    render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
 
     await user.click(screen.getByRole('checkbox', { name: /select alpha/i }))
     await user.click(screen.getByRole('button', { name: /clear/i }))

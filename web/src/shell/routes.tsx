@@ -46,6 +46,7 @@
    drift this file exists to prevent. */
 import type { ReactElement } from 'react'
 import { Navigate, Outlet, useNavigate, useParams, useSearchParams, type RouteObject } from 'react-router-dom'
+import { DIALOG_PARAM } from './dialogParam'
 import { NAV_BY_ID, settingsSectionPath } from './navDefs'
 import {
   SESSIONS_PATH, ARCHIVED_PATH,
@@ -89,9 +90,19 @@ const INSIGHTS_PATH = NAV_BY_ID.insights.path
  */
 function SessionsPage() {
   const { id } = useParams()
+  const navigate = useNavigate()
   const onDone = useArchiveAdvance(id)
   return id
-    ? <MainPaneSession sessionId={id} onClosed={onDone} />
+    ? (
+      <MainPaneSession
+        sessionId={id}
+        onClosed={onDone}
+        // Detaching (Back, ← / Esc / Ctrl+Z) goes to the list, not to the
+        // neighbour: the session is still there, the user just left it.
+        onDetach={() => navigate(SESSIONS_PATH)}
+        onOpenSession={(next) => navigate(sessionPath(next))}
+      />
+      )
     : <WelcomePane />
 }
 
@@ -216,7 +227,7 @@ function SettingsIndexRedirect() {
  */
 function SettingsDialogRedirect() {
   const [params] = useSearchParams()
-  if (params.get('dialog') === 'settings') return <Navigate to={settingsSectionPath(null)} replace />
+  if (params.get(DIALOG_PARAM) === 'settings') return <Navigate to={settingsSectionPath(null)} replace />
   return <Outlet />
 }
 

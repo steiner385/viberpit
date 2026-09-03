@@ -11,13 +11,17 @@ import {
   useAccounts, useCloseSession, useConfig, usePermanentDeleteSession,
   useRenameSession, useSendPrompt, useSessions,
 } from '@/api/hooks'
+import { NewSessionDialogHost } from '@/features/sessions/NewSessionDialogHost'
 import { RenameDialog } from '@/features/sessions/RenameDialog'
 import { PermanentDeleteDialog } from '@/components/PermanentDeleteDialog'
 import { useGlobalHelpKey } from '@/components/useGlobalHelpKey'
+import { useGlobalListNav } from '@/components/useGlobalListNav'
 import { useSessionListState } from '@/features/sessions/useSessionListState'
 import type { SessionListColumnProps } from '@/features/sessions/SessionListColumn'
+import { isPendingSessionId } from '@/lib/pendingSessions'
 import { nextSessionAfterClose } from '@/session/nextAfterArchive'
 import { SESSIONS_PATH, sessionPath } from '@/session/sessionNavState'
+import { useDialogName } from './dialogParam'
 import { useDrawerName, useOpenDrawer, type DrawerName } from './drawerParam'
 import { InteractionProvider } from './InteractionContext'
 import { readKioskConfig } from './kiosk'
@@ -156,6 +160,17 @@ function AppShellInner() {
   // drawer region to open into.
   useGlobalHelpKey({ enabled: mode !== 'kiosk', onShowHelp: () => openDrawer('help') })
 
+  // ↑/↓ move the list highlight even when focus is parked somewhere in the
+  // chrome rather than in the prompt (the rail, a heading). `Dashboard` mounted
+  // this — `useGlobalListNav` was orphaned by the cutover, its own hook test
+  // still green, and the behaviour simply gone (found re-hosting
+  // `KeyboardSessions.test.tsx`). Gated on the Sessions section, which is what
+  // `activeTab === 'sessions'` meant, and off in kiosk, which has no list.
+  useGlobalListNav({
+    enabled: mode !== 'kiosk' && region.inSessions,
+    onNavigate: workspace.navigateList,
+  })
+
   const phone = mode === 'phone'
   const listVisible = shows('app.list')
   // Phone and tablet hand the single content band to EITHER the list or the
@@ -233,6 +248,43 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
   // `undefined` = no banner; `null` = limited with no known reset time.
   const [allLimitedReset, setAllLimitedReset] = React.useState<string | null | undefined>(undefined)
 
+  // The all-limited banner's three ways out, all ported from the two old shells
+  // (each carried its own copy; this is the surviving one). Task 17 moved the
+  // state here but not these rules, so without them the banner could only be
+  // dismissed by hand.
+  //
+  // 1. An account became selectable again — a non-null `rank` means the ranker
+  //    would pick it, so the banner is stale. A STANDING condition: while it
+  //    holds, the banner may not come back.
+  if (allLimitedReset !== undefined && accounts.some((a) => a.rank !== null)) {
+    setAllLimitedReset(undefined)
+  }
+  // 2. The user OPENED the New Session dialog: they are acting on the banner, so
+  //    it stops shouting. `Dashboard` did this inside `openNewDialog`, a click
+  //    handler; the dialog is a `<Link>` now, so the trigger is the param going
+  //    open — an EDGE, not a standing condition, which is why it is written as
+  //    the documented "adjust state when a prop changes" pair rather than folded
+  //    into the test above. Folded in, it would clear the banner on every render
+  //    while the dialog is open, and the 409 that RAISES the banner arrives while
+  //    it still is: the banner would be set and wiped in the same commit, and the
+  //    user would never learn why nothing started.
+  const newDialogOpen = useDialogName() === 'new'
+  const [dialogWasOpen, setDialogWasOpen] = React.useState(newDialogOpen)
+  if (dialogWasOpen !== newDialogOpen) {
+    setDialogWasOpen(newDialogOpen)
+    if (newDialogOpen) setAllLimitedReset(undefined)
+  }
+  // 3. The reset time passed. `setTimeout` rather than a render-time compare so
+  //    `Date.now()` is not read during render (react-hooks/purity).
+  React.useEffect(() => {
+    if (allLimitedReset === undefined || allLimitedReset === null) return
+    const id = setTimeout(
+      () => setAllLimitedReset(undefined),
+      Math.max(0, new Date(allLimitedReset).getTime() - Date.now()),
+    )
+    return () => clearTimeout(id)
+  }, [allLimitedReset])
+
   const banners = useAppBanners({
     allLimitedReset,
     onDismissAllLimited: () => setAllLimitedReset(undefined),
@@ -270,7 +322,11 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
     adoptionEnabled: config?.adoptionEnabled,
     listMode,
     onNew: () => navigate(SESSIONS_PATH),
-    onOpen: (id) => navigate(sessionPath(id)),
+    // Same rule as the dock's `openSession` (one predicate, two entry points —
+    // exactly as `Dashboard` and `DesktopShell` each guarded their own): an
+    // optimistic placeholder has no server session, so a click on one must not
+    // navigate to an id the daemon has never heard of.
+    onOpen: (id) => { if (!isPendingSessionId(id)) navigate(sessionPath(id)) },
     onRename: (id) => setRenameTarget({ id, name: nameOf(id) }),
     onClose: (id) => {
       closeSession.mutate(id)
@@ -297,6 +353,9 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
 
   const dialogs = (
     <>
+      {/* `?dialog=new` — DEC-5, open in every layout mode. The host reads the
+          param itself; the shell only supplies what is app-level about it. */}
+      <NewSessionDialogHost accounts={accounts} onAllLimited={setAllLimitedReset} />
       {renameTarget && (
         <RenameDialog
           sessionId={renameTarget.id}
@@ -328,5 +387,5 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
     </>
   )
 
-  return { banners, list: listProps, dock: dockProps, dialogs }
+  return { banners, list: listProps, dock: dockProps, dialogs, navigateList: list.nav.navigate }
 }

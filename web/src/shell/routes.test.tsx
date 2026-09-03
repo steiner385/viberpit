@@ -236,6 +236,30 @@ describe('route table — pages', () => {
     expect(screen.getByTestId('page-subagent')).toHaveTextContent('abc/x')
   })
 
+  /**
+   * The scroll-wrapper invariant, inherited from `automationTab.test.tsx`.
+   *
+   * `PageHost` is a clipped flex column (`flex-1 min-h-0`), so a page whose
+   * content can grow must own an `overflow-y-auto` region or it overflows with
+   * nowhere to scroll — an expanded automation card, a long settings section.
+   * `Dashboard` expressed this on its tab panels; the wrappers in `routes.tsx`
+   * express it now, which is why this assertion lives here. (The old test also
+   * required `min-h-0`; the wrappers use `h-full` instead, because the clamped
+   * height comes from `PageHost` rather than from a sibling flex row.)
+   *
+   * Pipeline, Initiatives and Projects are deliberately absent: each manages its
+   * own inner scrolling and would fail this as written.
+   */
+  it.each(['/automations', '/insights', '/archived', '/settings/automation'])(
+    '%s owns a vertical scroll container',
+    (path) => {
+      renderAt(path)
+      const page = screen.getByTestId(/^page-/).parentElement!
+      expect(page.className, path).toContain('overflow-y-auto')
+      expect(page.className, path).toContain('h-full')
+    },
+  )
+
   it('gives an archived transcript the review page, not the session page', () => {
     // /archived/:id reuses the `:id` param name on purpose (it is what makes
     // PageHost's section gate load-bearing). If the two ever collapsed into one

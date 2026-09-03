@@ -232,6 +232,28 @@ describe('ContextList — the resizer', () => {
 })
 
 describe('ContextList — the list survives a :id change', () => {
+  // Migrated from `DesktopShell/DesktopListScroll.test.tsx` (Task 18). That file
+  // asserted the SCROLL POSITION survived, because `DesktopShell` remounted the
+  // whole shell on every session change and carried a `listScrollTop` +
+  // `restoreListScroll` pair to paper over it. The remount is gone (`PageHost`
+  // scopes the runtime provider), so node IDENTITY is the stronger property: it
+  // implies the scroll position without a workaround, and it fails if the
+  // remount ever comes back. Both of that file's transitions are covered — from
+  // the list into a session, and between two sessions.
+  it('keeps the SAME scroll node when a session is opened from the list', async () => {
+    const user = userEvent.setup()
+    renderList({ path: '/sessions' })
+
+    const before = screen.getByTestId('session-list-scroll')
+    before.scrollTop = 120
+
+    await user.click(screen.getByRole('button', { name: 'go /sessions/b' }))
+
+    const after = screen.getByTestId('session-list-scroll')
+    expect(after).toBe(before)
+    expect(after.scrollTop).toBe(120)
+  })
+
   it('keeps the SAME scroll node when the route moves from /sessions/a to /sessions/b', async () => {
     const user = userEvent.setup()
     renderList({ path: '/sessions/a' })

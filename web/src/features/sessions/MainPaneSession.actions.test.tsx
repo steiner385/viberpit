@@ -1,16 +1,28 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type { ReactNode } from 'react'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { SessionView } from '../SessionView'
+import { MainPaneSession } from './MainPaneSession'
+import { SessionRuntimeProvider } from '@/components/session/SessionRuntimeProvider'
 import * as hooks from '@/api/hooks'
+
+/**
+ * The session header's Archive / ⋯ actions.
+ *
+ * Was `SessionViewActions.test.tsx`. `SessionView` is deleted (Task 18 / Item 2)
+ * and `MainPaneSession` is the one session pane; `canRename` moved with it,
+ * because the phone list row has no rename button and the list is not on screen
+ * beside an open session, so the overflow menu is still rename's only home
+ * there. It also absorbs `DesktopSessionActions.test.tsx`'s single case ("renders
+ * the in-session Archive + more-actions controls"), which was the same
+ * assertion against the other shell.
+ */
 
 const detach = vi.fn()
 vi.mock('@/ws/client', () => ({
   useSessionSocket: () => ({ detach }),
 }))
 
-// Minimal runtime stub — SessionView only needs these fields for the header + body shells.
+// Minimal runtime stub — the pane only needs these fields for the header + body shells.
 vi.mock('@/session/useSessionRuntime', () => ({
   useSessionRuntime: () => ({
     title: 'My Session',
@@ -24,17 +36,15 @@ vi.mock('@/session/useSessionRuntime', () => ({
   }),
 }))
 
-// SessionBody / SessionComposer are heavy; stub them so we test only the header wiring.
-// The stub renders `actionsSlot` because the archive/⋮ actions now live in the meta
-// strip's right cluster (SessionBody → SessionMeta), handed down by SessionView — so
-// this is exactly the wiring these tests exercise.
-vi.mock('../SessionBody', () => ({
-  SessionBody: ({ actionsSlot }: { actionsSlot?: ReactNode }) => (
-    <div data-testid="body">{actionsSlot}</div>
-  ),
+// SessionBody is heavy; stub it so this file tests only the header wiring.
+// (`SessionView` handed its actions DOWN into the body's meta strip via
+// `actionsSlot`; `MainPaneSession` renders them in its own header row, so the
+// stub takes no slot — the assertions below are unchanged either way, because
+// they query by accessible name rather than by position.)
+vi.mock('@/components/session/SessionBody', () => ({
+  SessionBody: () => <div data-testid="body" />,
 }))
-vi.mock('../SessionComposer', () => ({ SessionComposer: () => <div data-testid="composer" /> }))
-vi.mock('../CommandResultOverlay', () => ({ CommandResultOverlay: () => null }))
+vi.mock('@/components/session/CommandResultOverlay', () => ({ CommandResultOverlay: () => null }))
 
 vi.mock('@/api/hooks', () => ({
   useCloseSession: vi.fn(),
@@ -67,9 +77,22 @@ beforeEach(() => {
   vi.mocked(hooks.useRenameSession).mockReturnValue(renameMutation() as unknown as ReturnType<typeof hooks.useRenameSession>)
 })
 
-describe('SessionView header — archive/delete', () => {
+function renderPane({ onDetach, onClosed }: { onDetach: () => void; onClosed: () => void }) {
+  return render(
+    <SessionRuntimeProvider sessionId="s1">
+      <MainPaneSession
+        sessionId="s1"
+        onClosed={onClosed}
+        onDetach={onDetach}
+        onOpenSession={vi.fn()}
+      />
+    </SessionRuntimeProvider>,
+  )
+}
+
+describe('MainPaneSession header — archive/delete', () => {
   it('renders the in-session Archive control', () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />)
+    renderPane({ onDetach: vi.fn(), onClosed: vi.fn() })
     expect(screen.getByRole('button', { name: /archive session my session/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /more session actions/i })).toBeInTheDocument()
   })
@@ -78,7 +101,7 @@ describe('SessionView header — archive/delete', () => {
     const user = userEvent.setup()
     const onBack = vi.fn()
     const onDone = vi.fn()
-    render(<SessionView sessionId="s1" onBack={onBack} onDone={onDone} />)
+    renderPane({ onDetach: onBack, onClosed: onDone })
 
     await user.click(screen.getByRole('button', { name: /archive session my session/i }))
 
@@ -90,7 +113,7 @@ describe('SessionView header — archive/delete', () => {
   it('Escape closes the overflow menu without exiting the session', async () => {
     const user = userEvent.setup()
     const onBack = vi.fn()
-    render(<SessionView sessionId="s1" onBack={onBack} onDone={vi.fn()} />)
+    renderPane({ onDetach: onBack, onClosed: vi.fn() })
 
     // Open the overflow menu.
     await user.click(screen.getByRole('button', { name: /more session actions/i }))
@@ -106,7 +129,7 @@ describe('SessionView header — archive/delete', () => {
 
   it('exposes Rename in the overflow menu (its only home on mobile)', async () => {
     const user = userEvent.setup()
-    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />)
+    renderPane({ onDetach: vi.fn(), onClosed: vi.fn() })
 
     await user.click(screen.getByRole('button', { name: /more session actions/i }))
     expect(screen.getByRole('menuitem', { name: /rename/i })).toBeInTheDocument()
@@ -115,7 +138,7 @@ describe('SessionView header — archive/delete', () => {
   it('clicking Rename opens the rename dialog (and does not exit the session)', async () => {
     const user = userEvent.setup()
     const onBack = vi.fn()
-    render(<SessionView sessionId="s1" onBack={onBack} onDone={vi.fn()} />)
+    renderPane({ onDetach: onBack, onClosed: vi.fn() })
 
     await user.click(screen.getByRole('button', { name: /more session actions/i }))
     await user.click(screen.getByRole('menuitem', { name: /rename/i }))
@@ -130,7 +153,7 @@ describe('SessionView header — archive/delete', () => {
     vi.mocked(hooks.useRenameSession).mockReturnValue({ mutate, isPending: false } as unknown as ReturnType<typeof hooks.useRenameSession>)
 
     const user = userEvent.setup()
-    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />)
+    renderPane({ onDetach: vi.fn(), onClosed: vi.fn() })
 
     await user.click(screen.getByRole('button', { name: /more session actions/i }))
     await user.click(screen.getByRole('menuitem', { name: /rename/i }))
@@ -147,7 +170,7 @@ describe('SessionView header — archive/delete', () => {
   it('Escape closes the delete confirm dialog without exiting the session', async () => {
     const user = userEvent.setup()
     const onBack = vi.fn()
-    render(<SessionView sessionId="s1" onBack={onBack} onDone={vi.fn()} />)
+    renderPane({ onDetach: onBack, onClosed: vi.fn() })
 
     // Open the overflow menu, then click Delete permanently to open the confirm dialog.
     await user.click(screen.getByRole('button', { name: /more session actions/i }))

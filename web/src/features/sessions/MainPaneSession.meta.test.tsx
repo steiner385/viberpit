@@ -1,12 +1,18 @@
 /**
- * SessionView ↔ SessionMeta integration: the status strip reflects account
+ * MainPaneSession ↔ SessionMeta integration: the status strip reflects account
  * (from useSessions, overridden by rotation), model + context (from reducer),
  * and account quota (from useAccounts).
+ *
+ * Was `SessionView.meta.test.tsx`. `SessionView` is deleted (Task 18 / Item 2);
+ * the pane the shell actually renders is `MainPaneSession`, and it reads the
+ * runtime from the provider `PageHost` mounts, so the harness supplies one.
+ * Every assertion is unchanged.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, act, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { SessionView } from '../SessionView'
+import { MainPaneSession } from './MainPaneSession'
+import { SessionRuntimeProvider } from '@/components/session/SessionRuntimeProvider'
 import type { SessionEvent } from '@/session/events'
 
 let capturedHandlers: Record<string, ((...args: unknown[]) => void)[]> = {}
@@ -56,10 +62,21 @@ function emitRotated(msg: Record<string, unknown>) {
 
 function wrapper({ children }: { children: React.ReactNode }) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  return (
+    <QueryClientProvider client={queryClient}>
+      <SessionRuntimeProvider sessionId="s1">{children}</SessionRuntimeProvider>
+    </QueryClientProvider>
+  )
 }
 
-describe('SessionView status strip', () => {
+function renderPane() {
+  return render(
+    <MainPaneSession sessionId="s1" onClosed={vi.fn()} onDetach={vi.fn()} onOpenSession={vi.fn()} />,
+    { wrapper },
+  )
+}
+
+describe('MainPaneSession status strip', () => {
   beforeEach(() => {
     capturedHandlers = {}
     mockOn.mockClear()
@@ -70,7 +87,7 @@ describe('SessionView status strip', () => {
   })
 
   it('shows the session name (AI title) as the header title', () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
+    renderPane()
     // The same generated title shown on the dashboard session card appears in
     // the terminal header — not the raw sessionId prefix.
     expect(screen.getByText('Fix OAuth login bug')).toBeInTheDocument()
@@ -78,7 +95,7 @@ describe('SessionView status strip', () => {
   })
 
   it('shows the account from useSessions and quota from useAccounts', () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
+    renderPane()
     expect(screen.getByLabelText(/switch account/i)).toHaveValue('work-max')
     const quota = screen.getByLabelText(/account quota/i)
     expect(quota).toHaveTextContent('42%')
@@ -86,7 +103,7 @@ describe('SessionView status strip', () => {
   })
 
   it('shows the live model after a sessionMeta event, while the picker stays on the record choice', async () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
+    renderPane()
     emitSessionEvent({ type: 'sessionMeta', model: 'claude-sonnet-4-5', sessionId: 's1' })
     await waitFor(() => {
       expect(screen.getByLabelText(/model in use/i)).toHaveTextContent('Sonnet 4.5')
@@ -98,7 +115,7 @@ describe('SessionView status strip', () => {
   })
 
   it('shows remaining context after a turnEnd with usage', async () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
+    renderPane()
     emitSessionEvent({ type: 'sessionMeta', model: 'claude-sonnet-4-5', sessionId: 's1' })
     // 50k of 200k used → 75% remaining
     emitSessionEvent({
@@ -112,7 +129,7 @@ describe('SessionView status strip', () => {
   })
 
   it('overrides the account with the latest rotation target', async () => {
-    render(<SessionView sessionId="s1" onBack={vi.fn()} onDone={vi.fn()} />, { wrapper })
+    renderPane()
     emitRotated({ type: 'rotated', sessionId: 's1', fromAccount: 'work-max', toAccount: 'backup-max' })
     await waitFor(() => {
       expect(screen.getByLabelText(/switch account/i)).toHaveValue('backup-max')

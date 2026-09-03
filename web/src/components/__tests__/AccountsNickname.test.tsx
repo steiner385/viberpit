@@ -3,7 +3,8 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
-import { Dashboard } from '../Dashboard'
+import { SettingsView } from '../settings/SettingsView'
+import { NewSessionDialog } from '@/features/sessions/NewSessionDialog'
 import * as hooks from '@/api/hooks'
 import type { Account } from '@/api/types'
 
@@ -144,7 +145,7 @@ describe('AccountsStrip — nickname display & edit', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
-    render(<Dashboard initialTab="settings" />, { wrapper })
+    render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
 
     expect(screen.getByText('work')).toBeInTheDocument()
@@ -157,7 +158,7 @@ describe('AccountsStrip — nickname display & edit', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
-    render(<Dashboard initialTab="settings" />, { wrapper })
+    render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
 
     expect(screen.getByText('My Work Account')).toBeInTheDocument()
@@ -172,7 +173,7 @@ describe('AccountsStrip — nickname display & edit', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
-    render(<Dashboard initialTab="settings" />, { wrapper })
+    render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
 
     expect(screen.getByRole('button', { name: /rename work/i })).toBeInTheDocument()
@@ -185,7 +186,7 @@ describe('AccountsStrip — nickname display & edit', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
-    render(<Dashboard initialTab="settings" />, { wrapper })
+    render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
 
     await user.click(screen.getByRole('button', { name: /rename work/i }))
@@ -202,7 +203,7 @@ describe('AccountsStrip — nickname display & edit', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
-    render(<Dashboard initialTab="settings" />, { wrapper })
+    render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
 
     await user.click(screen.getByRole('button', { name: /rename work/i }))
@@ -221,7 +222,7 @@ describe('AccountsStrip — nickname display & edit', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
-    render(<Dashboard initialTab="settings" />, { wrapper })
+    render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
 
     await user.click(screen.getByRole('button', { name: /rename work/i }))
@@ -239,7 +240,7 @@ describe('AccountsStrip — nickname display & edit', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
-    render(<Dashboard initialTab="settings" />, { wrapper })
+    render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
 
     await user.click(screen.getByRole('button', { name: /rename work/i }))
@@ -260,7 +261,7 @@ describe('AccountsStrip — nickname display & edit', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
-    render(<Dashboard initialTab="settings" />, { wrapper })
+    render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
 
     await user.click(screen.getByRole('button', { name: /rename work/i }))
@@ -311,7 +312,7 @@ describe('AccountRow — null usage guard (needs-reauth accounts)', () => {
     } as ReturnType<typeof hooks.useAccounts>)
 
     // Should not throw — previously crashed with "Cannot read properties of null"
-    expect(() => render(<Dashboard initialTab="settings" />, { wrapper })).not.toThrow()
+    expect(() => render(<SettingsView />, { wrapper })).not.toThrow()
   })
 
   it('does not render any UsageBadge when account.usage is null', async () => {
@@ -321,7 +322,7 @@ describe('AccountRow — null usage guard (needs-reauth accounts)', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
-    render(<Dashboard initialTab="settings" />, { wrapper })
+    render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
 
     // UsageBadge renders with aria-label "session usage: N%" / "weekly usage: N%".
@@ -337,7 +338,7 @@ describe('AccountRow — null usage guard (needs-reauth accounts)', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
-    render(<Dashboard initialTab="settings" />, { wrapper })
+    render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
 
     expect(screen.getByText('kindash')).toBeInTheDocument()
@@ -370,25 +371,37 @@ describe('NewSessionDialog — account select uses nickname', () => {
     vi.mocked(hooks.useBulkPermanentDeleteSessions).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useBulkPermanentDeleteSessions>)
   })
 
-  it('shows nickname as option label in account select when set', async () => {
-    const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [
-        makeAccount({ name: 'work', nickname: 'Work Account' }),
-        makeAccount({ name: 'personal', nickname: null }),
-      ],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+  // These two mount the dialog directly rather than opening it from a shell:
+  // `accounts` is a PROP of `NewSessionDialog`, so a host adds nothing but a
+  // click. (Task 18: the host that used to open it, `Dashboard`, is deleted;
+  // the `?dialog=new` wiring is covered by `App.dialogs.test.tsx`.)
+  function renderDialog(accounts: Account[]) {
+    return render(
+      <NewSessionDialog
+        accounts={accounts}
+        onClose={vi.fn()}
+        onSubmit={vi.fn()}
+        isPending={false}
+      />,
+      { wrapper },
+    )
+  }
 
-    render(<Dashboard initialTab="sessions" />, { wrapper })
+  function accountSelect(): HTMLSelectElement {
+    // The select's id, not its label: "Account" is ambiguous with the
+    // "Accounts" section heading.
+    const el = document.getElementById('new-session-account')
+    expect(el).toBeInstanceOf(HTMLSelectElement)
+    return el as HTMLSelectElement
+  }
 
-    // Open new session dialog
-    await user.click(screen.getAllByRole('button', { name: /new session/i })[0])
+  it('shows nickname as option label in account select when set', () => {
+    renderDialog([
+      makeAccount({ name: 'work', nickname: 'Work Account' }),
+      makeAccount({ name: 'personal', nickname: null }),
+    ])
 
-    // Use the select's id directly to avoid ambiguity with the "Accounts" section heading
-    const accountSelect = document.getElementById('new-session-account') as HTMLSelectElement
-    expect(accountSelect).toBeTruthy()
-    const options = Array.from(accountSelect.options).map((o) => ({ value: o.value, label: o.text }))
+    const options = Array.from(accountSelect().options).map((o) => ({ value: o.value, label: o.text }))
 
     const workOption = options.find((o) => o.value === 'work')
     expect(workOption?.label).toBe('Work Account')
@@ -397,20 +410,10 @@ describe('NewSessionDialog — account select uses nickname', () => {
     expect(personalOption?.label).toBe('personal')
   })
 
-  it('option value stays the real account name even when nickname is shown', async () => {
-    const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'work', nickname: 'My Work' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+  it('option value stays the real account name even when nickname is shown', () => {
+    renderDialog([makeAccount({ name: 'work', nickname: 'My Work' })])
 
-    render(<Dashboard initialTab="sessions" />, { wrapper })
-
-    await user.click(screen.getAllByRole('button', { name: /new session/i })[0])
-
-    const accountSelect = document.getElementById('new-session-account') as HTMLSelectElement
-    expect(accountSelect).toBeTruthy()
-    const workOpt = Array.from(accountSelect.options).find((o) => o.value === 'work')
+    const workOpt = Array.from(accountSelect().options).find((o) => o.value === 'work')
     expect(workOpt).toBeTruthy()
     expect(workOpt?.text).toBe('My Work')
   })
