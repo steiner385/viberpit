@@ -2,12 +2,13 @@
 import { render, screen, act, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { DeployControllerProvider, useDeployController } from './deployController'
+import { DEPLOY_PHASES } from './deployPhases'
 import * as hooks from '@/api/hooks'
 import type { DeployProgress } from '@/api/types'
 
-const allDone = {
-  preflight: 'done', save: 'done', update: 'done', report: 'done', restart: 'done', resume: 'done',
-}
+// Built from DEPLOY_PHASES (not hand-enumerated) so an added/removed phase can't
+// silently leave this fixture "all done" one phase short of the real thing.
+const allDone = Object.fromEntries(DEPLOY_PHASES.map(p => [p.key, 'done']))
 
 function setStatus(deploy: Partial<DeployProgress>, over: { isError?: boolean; failureCount?: number } = {}) {
   vi.spyOn(hooks, 'useDeployStatus').mockReturnValue(

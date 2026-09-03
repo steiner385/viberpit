@@ -4,7 +4,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { DeployPanel } from './DeployPanel'
 import * as hooks from '@/api/hooks'
 import * as controller from '@/lib/deployController'
+import { DEPLOY_PHASES } from '@/lib/deployPhases'
 import type { PendingDeploy, DeployProgress } from '@/api/types'
+
+// Built from DEPLOY_PHASES (not hand-enumerated) so an added/removed phase can't
+// silently leave this fixture "all done" one phase short of the real thing.
+const allPhasesDoneFixture = Object.fromEntries(DEPLOY_PHASES.map(p => [p.key, 'done']))
 
 function mockHooks(
   pending: Partial<PendingDeploy>,
@@ -131,7 +136,7 @@ describe('DeployPanel', () => {
     mockHooks(
       { behind: false, commits: [], ci: 'green' },
       { running: false,
-        phases: { preflight: 'done', save: 'done', update: 'done', report: 'done', restart: 'done', resume: 'done' },
+        phases: allPhasesDoneFixture,
         warnings: ['drain cap — restarting anyway'],
         restore: { restored: ['s1', 's2'], failed: [] } })
     const { container } = render(<DeployPanel />)
