@@ -3,6 +3,11 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { axe, toHaveNoViolations } from 'jest-axe'
 import { Tabs } from './Tabs'
 
+// Scope note: axe in jsdom covers roles, names and ARIA wiring only. No
+// stylesheet is applied here, so axe's `color-contrast` rule always returns
+// `incomplete`, and `toHaveNoViolations()` inspects `violations` alone — these
+// assertions therefore cannot fail on colour. Contrast is covered instead by
+// src/__tests__/contrast.test.ts, which does the WCAG maths on index.css.
 expect.extend(toHaveNoViolations)
 const items = [{ id: 'a', label: 'Alpha', count: 3 }, { id: 'b', label: 'Beta', attention: true }, { id: 'c', label: 'Gamma' }]
 
