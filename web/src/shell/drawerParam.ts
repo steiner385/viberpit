@@ -53,6 +53,38 @@ export function useOpenDrawer(): (name: DrawerName) => void {
   )
 }
 
+/**
+ * `to` with the open drawer carried over — the pure half of the rule below.
+ *
+ * Merges rather than appends: `GlobalActions` already ships a nav target that
+ * carries a query string (`/sessions?dialog=new`), so a naive `` `${to}?drawer=` ``
+ * would produce two `?` and a path nothing matches.
+ */
+export function withDrawer(to: string, drawer: DrawerName): string {
+  const [beforeHash, hash] = to.split('#')
+  const [path, query = ''] = beforeHash.split('?')
+  const params = new URLSearchParams(query)
+  params.set(DRAWER_PARAM, drawer)
+  return `${path}?${params}${hash === undefined ? '' : `#${hash}`}`
+}
+
+/**
+ * Rewrites a nav target so an open drawer survives a section change
+ * (sub-spec B §4.2: "the drawer element stays mounted while `?drawer=` is set
+ * across route changes").
+ *
+ * It lives here, next to the param it preserves, and is applied by `NavItem` —
+ * the one component that turns a nav target into a `<Link>`. The alternative,
+ * intercepting navigation in `AppShell`, would mean the shell re-deciding a
+ * destination the nav item had already built, and would leave the rendered
+ * `href` disagreeing with where a click actually lands: middle-click and
+ * "copy link address" would silently drop the drawer.
+ */
+export function useDrawerPreservingTo(): (to: string) => string {
+  const drawer = useDrawerName()
+  return useCallback((to: string) => (drawer ? withDrawer(to, drawer) : to), [drawer])
+}
+
 export function useCloseDrawer(): () => void {
   const [searchParams, setSearchParams] = useSearchParams()
   return useCallback(() => {

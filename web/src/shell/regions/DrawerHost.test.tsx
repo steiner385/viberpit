@@ -32,19 +32,10 @@ import { ViewportProvider } from '@/shell/useViewport'
 import { NAV_DEFS } from '@/shell/navDefs'
 import { SHORTCUTS } from '@/lib/shortcuts'
 import { DRAWER_STORAGE_KEY, DRAWER_DEFAULT } from '@/shell/drawerWidth'
+import { MEDIA, stubMatchMedia } from '@/test/matchMedia'
 import { DrawerHost } from './DrawerHost'
 
 expect.extend(toHaveNoViolations)
-
-/** Stub matchMedia so that every query in `matching` reports true. */
-function stubMatchMedia(matching: string[]) {
-  vi.stubGlobal('matchMedia', (q: string) => ({
-    matches: matching.includes(q),
-    media: q,
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-  }))
-}
 
 function Layout() {
   const { pathname, search } = useLocation()
@@ -194,7 +185,7 @@ describe('DrawerHost', () => {
   })
 
   it('is a non-modal push column at the drawer-push breakpoint', () => {
-    stubMatchMedia(['(min-width: 768px)', '(min-width: 1024px)', '(min-width: 1280px)'])
+    stubMatchMedia([MEDIA.tablet, MEDIA.desktop, MEDIA.drawerPush])
     renderAt(['/sessions?drawer=help'])
     expect(region()).not.toHaveAttribute('aria-modal')
     expect(screen.queryByTestId('sheet-backdrop')).not.toBeInTheDocument()
@@ -202,7 +193,7 @@ describe('DrawerHost', () => {
   })
 
   it('renders at the persisted width and writes nudges back to ccswitch.drawerWidth', async () => {
-    stubMatchMedia(['(min-width: 768px)', '(min-width: 1024px)', '(min-width: 1280px)'])
+    stubMatchMedia([MEDIA.tablet, MEDIA.desktop, MEDIA.drawerPush])
     localStorage.setItem(DRAWER_STORAGE_KEY, '520')
     const user = userEvent.setup()
     renderAt(['/sessions?drawer=help'])

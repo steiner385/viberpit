@@ -1,8 +1,23 @@
+/* eslint-disable react-refresh/only-export-components -- mixed export file: the
+   provider component lives beside the hook that reads it and the mode/tier
+   tables it is built from. Same convention as shell/theme.tsx and
+   shell/InteractionContext.tsx. */
 import * as React from 'react'
 import { useMediaQuery } from '@/lib/useMediaQuery'
 
-export type LayoutMode = 'phone' | 'tablet' | 'desktop' | 'kiosk'
-export type WidthTier = 'phone' | 'tablet' | 'desktop' | 'wide'
+/**
+ * Every layout mode, as a value — `AppShell`'s region-visibility matrix has to
+ * enumerate them (7 regions × every mode), and a hand-written list in the test
+ * would go stale the day a mode is added, leaving the new mode's whole column
+ * unasserted while the suite stayed green. `LayoutMode` is derived from it, the
+ * same way `NavId` is derived from `NAV_DEFS` (ruling R6), so the value and the
+ * type cannot disagree.
+ */
+export const LAYOUT_MODES = ['phone', 'tablet', 'desktop', 'kiosk'] as const
+export type LayoutMode = (typeof LAYOUT_MODES)[number]
+
+export const WIDTH_TIERS = ['phone', 'tablet', 'desktop', 'wide'] as const
+export type WidthTier = (typeof WIDTH_TIERS)[number]
 
 /** The kiosk half of the viewport, supplied by AppShell (see shell/kiosk.ts). */
 export interface ViewportKiosk {
@@ -72,7 +87,6 @@ export function ViewportProvider({
 }
 
 // Colocating the hook with its provider is the conventional pattern (see shell/theme.tsx).
-// eslint-disable-next-line react-refresh/only-export-components
 export function useViewport(): Viewport {
   const v = React.useContext(ViewportContext)
   if (!v) throw new Error('useViewport must be used within a ViewportProvider')

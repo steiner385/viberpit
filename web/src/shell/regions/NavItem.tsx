@@ -4,6 +4,7 @@ import type { LucideIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/ui/Badge'
 import { badgedName } from '@/ui/badgedName'
+import { useDrawerPreservingTo } from '@/shell/drawerParam'
 
 /**
  * One nav control, rendered the same way everywhere in the shell.
@@ -67,6 +68,9 @@ const ITEM_CLASS =
 export function NavItem(props: NavItemProps) {
   const { icon: Icon, label, count, attention, showLabel = false, active = false, className } = props
   const name = badgedName({ label, count, attention })
+  // An open drawer survives a section change (sub-spec B §4.2). Applied here
+  // because this is where a nav target becomes an href — see `useDrawerPreservingTo`.
+  const withOpenDrawer = useDrawerPreservingTo()
 
   const body = (
     <>
@@ -103,7 +107,7 @@ export function NavItem(props: NavItemProps) {
 
   if (props.to !== undefined) {
     return (
-      <Link to={props.to} aria-current={active ? 'page' : undefined} className={classes}>
+      <Link to={withOpenDrawer(props.to)} aria-current={active ? 'page' : undefined} className={classes}>
         {body}
       </Link>
     )

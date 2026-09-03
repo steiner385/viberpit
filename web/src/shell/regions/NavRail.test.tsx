@@ -21,6 +21,7 @@ vi.mock('@/shell/useNavBadges', async (importOriginal) => {
 })
 
 import type { NavBadges } from '@/shell/useNavBadges'
+import { MEDIA, stubMatchMedia } from '@/test/matchMedia'
 import { ViewportProvider } from '@/shell/useViewport'
 import { ThemeProvider, THEME_STORAGE_KEY } from '@/shell/theme'
 import { NAV_DEFS } from '@/shell/navDefs'
@@ -36,19 +37,9 @@ function navBadges(over: Partial<NavBadges> = {}): NavBadges {
   }
 }
 
-const W768 = '(min-width: 768px)'
-const W1024 = '(min-width: 1024px)'
-const W1440 = '(min-width: 1440px)'
-
-/** Same matchMedia stub `useViewport.test.tsx` uses — every listed query matches. */
-function stubMatchMedia(matching: string[]) {
-  vi.stubGlobal('matchMedia', (q: string) => ({
-    matches: matching.includes(q),
-    media: q,
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-  }))
-}
+const W768 = MEDIA.tablet
+const W1024 = MEDIA.desktop
+const W1440 = MEDIA.wide
 
 /** Surfaces the current URL so assertions can read it (App.test.tsx pattern). */
 function LocationProbe() {

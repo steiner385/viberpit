@@ -43,6 +43,7 @@ vi.mock('@/api/hooks', async (importOriginal) => {
 
 import type { Account, Session } from '@/api/types'
 import { NAV_DEFS } from '@/shell/navDefs'
+import { stubMatchMedia, WIDTH_TIER_QUERIES } from '@/test/matchMedia'
 import { ViewportProvider } from '@/shell/useViewport'
 import { SIDEBAR_MAX, SIDEBAR_STORAGE_KEY } from '@/lib/sidebarWidth'
 import { useSessionListState } from '@/features/sessions/useSessionListState'
@@ -80,26 +81,7 @@ const noop = () => {}
 
 // ── viewport harness ─────────────────────────────────────────────────────────
 
-const W768 = '(min-width: 768px)'
-const W1024 = '(min-width: 1024px)'
-const W1440 = '(min-width: 1440px)'
-
-const TIERS = {
-  phone: [] as string[],
-  tablet: [W768],
-  desktop: [W768, W1024],
-  wide: [W768, W1024, W1440],
-}
-
-/** Same matchMedia stub `useViewport.test.tsx` / `NavRail.test.tsx` use. */
-function stubMatchMedia(matching: string[]) {
-  vi.stubGlobal('matchMedia', (q: string) => ({
-    matches: matching.includes(q),
-    media: q,
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-  }))
-}
+const TIERS = WIDTH_TIER_QUERIES
 
 /** Navigates on click — a real route change, not a remount of the tree. */
 function GoTo({ to }: { to: string }) {

@@ -1,16 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
+import { MEDIA, stubMatchMedia } from '@/test/matchMedia'
 import { ViewportProvider, useViewport } from './useViewport'
-
-/** Stub matchMedia so that every query in `matching` reports true. */
-function stubMatchMedia(matching: string[]) {
-  vi.stubGlobal('matchMedia', (q: string) => ({
-    matches: matching.includes(q),
-    media: q,
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-  }))
-}
 
 function Probe() {
   const v = useViewport()
@@ -23,11 +14,11 @@ function renderAt(matching: string[], kiosk: Parameters<typeof ViewportProvider>
   return screen.getByTestId('v').textContent
 }
 
-const W768 = '(min-width: 768px)'
-const W1024 = '(min-width: 1024px)'
-const W1280 = '(min-width: 1280px)'
-const W1440 = '(min-width: 1440px)'
-const COARSE = '(pointer: coarse)'
+const W768 = MEDIA.tablet
+const W1024 = MEDIA.desktop
+const W1280 = MEDIA.drawerPush
+const W1440 = MEDIA.wide
+const COARSE = MEDIA.coarsePointer
 
 function DrawerProbe() {
   return <span data-testid="push">{String(useViewport().drawerPushes)}</span>

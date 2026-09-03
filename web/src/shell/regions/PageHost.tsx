@@ -1,5 +1,6 @@
 import * as React from 'react'
 import { Outlet, useLocation } from 'react-router-dom'
+import { cn } from '@/lib/utils'
 import { useSessions } from '@/api/hooks'
 import { useNeedsYouTitle } from '@/hooks/useNeedsYouTitle'
 import { SessionRuntimeProvider } from '@/components/session/SessionRuntimeProvider'
@@ -17,6 +18,22 @@ export interface PageHostProps {
    * is how the region and the shell come to disagree.
    */
   dock?: React.ReactNode
+  /**
+   * Hide the PAGE — not the region, and never the dock.
+   *
+   * Phone and tablet give the one content band to EITHER the list or the page
+   * (sub-spec B §4.1, "list | main"), and `AppShell` decides which. It cannot
+   * express that by leaving `app.main` unrendered: the matrix has `app.main`
+   * present in every mode, `useNeedsYouTitle` and the session runtime live here,
+   * and — the half that bites — the dock is INSIDE this region, so hiding the
+   * region would take the phone's dispatch bar with it. On `/sessions` with the
+   * list up, the list and the prompt bar are exactly what ships today
+   * (`Dashboard`), and the welcome pane behind them is what must not show.
+   *
+   * The page is hidden, not unmounted, so a mode change or a list open/close
+   * does not remount the routed page and throw away its scroll and query state.
+   */
+  pageHidden?: boolean
 }
 
 /**
@@ -69,7 +86,7 @@ export interface PageHostProps {
  * `shell/documentTitle.ts` rather than writing `document.title`, so hoisting it
  * to a permanently-mounted region cannot clobber a page's own title.
  */
-export function PageHost({ dock }: PageHostProps) {
+export function PageHost({ dock, pageHidden = false }: PageHostProps) {
   const { state } = useLocation()
   const { data: sessions = [] } = useSessions()
   useNeedsYouTitle(sessions)
@@ -80,8 +97,20 @@ export function PageHost({ dock }: PageHostProps) {
   const openSessionId = useOpenSessionId()
 
   const body = (
-    <div data-region="app.main" className="flex-1 min-h-0 flex flex-col">
-      <Outlet />
+    <div
+      data-region="app.main"
+      className={cn('min-h-0 flex flex-col', pageHidden ? 'shrink-0' : 'flex-1')}
+    >
+      {/* Always wrapped, so toggling `pageHidden` changes an attribute rather
+          than the element tree — a conditional wrapper would remount the page.
+          The `hidden` ATTRIBUTE, not a `hidden` class: it also takes the page
+          out of the accessibility tree, so a screen reader on a phone is not
+          walking a welcome pane that is not on screen. The layout classes are
+          dropped while hidden because `display: flex` would override the UA's
+          `[hidden] { display: none }`. */}
+      <div hidden={pageHidden} className={pageHidden ? undefined : 'flex-1 min-h-0 flex flex-col'}>
+        <Outlet />
+      </div>
       {dock}
     </div>
   )
