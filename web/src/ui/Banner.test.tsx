@@ -63,4 +63,20 @@ describe('BannerStack', () => {
     expect(titles).toEqual(['High', 'Low'])
     expect(document.querySelectorAll('[data-region="app.banners"]').length).toBe(1)
   })
+
+  it('renders an empty wrapper when all items render null internally', () => {
+    // Simulate items whose components render null (e.g., DaemonRestartBanner when idle).
+    // The item.node is not null, but the component function returns null. jsdom does not
+    // apply CSS, so it cannot evaluate [&:empty]:hidden; we test the structural precondition:
+    // the wrapper exists and has zero child nodes. The visual collapse is delivered by the
+    // CSS rule, which the browser applies but jsdom does not.
+    const InactiveBanner = () => null
+    const { container } = render(<BannerStack items={[
+      { id: 'a', priority: 1, node: <InactiveBanner /> },
+      { id: 'b', priority: 2, node: <InactiveBanner /> },
+    ]} />)
+    const wrapper = container.querySelector('[data-region="app.banners"]')
+    expect(wrapper).not.toBeNull()
+    expect(wrapper!.childNodes.length).toBe(0)
+  })
 })

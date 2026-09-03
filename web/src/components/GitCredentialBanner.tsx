@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { X } from 'lucide-react'
+import { X, KeyRound } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Banner } from '@/ui/Banner'
 import { IconButton } from '@/ui/IconButton'
@@ -39,6 +39,7 @@ export function GitCredentialBanner() {
         <Banner
           key={alert.repo}
           tone="danger"
+          icon={<KeyRound size={18} aria-hidden="true" />}
           className="border-x-0 border-t-0 rounded-none justify-center"
           title={
             <>

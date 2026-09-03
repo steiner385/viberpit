@@ -5,8 +5,8 @@ export interface BannerStackItem { id: string; priority: number; node: React.Rea
 
 /**
  * The one place banners render (region app.banners). Highest priority first; a null `node`
- * is skipped. Renders null when nothing is live, so mount sites need no [&:empty]:hidden
- * wrapper of their own.
+ * is skipped. When all items render null internally, the wrapper renders with zero children
+ * and is hidden by [&:empty]:hidden — it does not return null in this case.
  *
  * This exists to close a structural gap: banners used to be mounted separately per shell
  * (App.tsx, the mobile Dashboard, DesktopShell), which let a banner ship on one shell and
@@ -17,7 +17,7 @@ export function BannerStack({ items, className }: { items: BannerStackItem[]; cl
   const visible = items.filter((i) => i.node != null).sort((a, b) => b.priority - a.priority)
   if (visible.length === 0) return null
   return (
-    <div data-region="app.banners" className={cn('flex flex-col gap-2', className)}>
+    <div data-region="app.banners" className={cn('flex flex-col gap-2 [&:empty]:hidden', className)}>
       {visible.map((i) => <React.Fragment key={i.id}>{i.node}</React.Fragment>)}
     </div>
   )
