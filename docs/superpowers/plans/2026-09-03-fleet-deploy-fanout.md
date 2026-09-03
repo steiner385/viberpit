@@ -2285,13 +2285,22 @@ In both `except` branches, replace the `rollback_to` calls with a helper that al
 
 (store `self._runner_targets = targets` and `self._runner_results = results` right after `deploy_runners` returns, and reset both to `None` at the top of `deploy_once`). The `finally` block is unchanged.
 
-`server/deploy/app.py`: drop the `daemon_client_factory=default_daemon_factory(daemon_enabled)` argument and the import. `server/deploy/serve.py`: before `build_controller_app`, initialise the DB the controller now reads:
+`server/deploy/app.py`: drop the `daemon_client_factory=default_daemon_factory(daemon_enabled)` argument and the import. The controller now reads the DB (`load_runner_targets`, `record_deploy`), so initialise it INSIDE the app's lifespan — on the loop uvicorn runs, never in a separate `asyncio.run` (asyncpg pools are loop-bound; an engine created on another loop fails on first use):
 
 ```python
-    import asyncio
-    from server.db import init_db
-    asyncio.run(init_db(db_url=os.environ.get("CCSWITCH_DB_URL")))
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        if init_db_url is not None:
+            from server.db import init_db
+            await init_db(db_url=init_db_url)
+        task = asyncio.create_task(loop.run(), name="deploy-detect-loop")
+        try:
+            yield
+        finally:
+            task.cancel()
 ```
+
+with a new keyword `init_db_url: str | None = None` on `build_controller_app` (tests pass nothing → no DB touched), and `serve.py` passing `init_db_url=os.environ.get("CCSWITCH_DB_URL")`.
 
 - [ ] **Step 5: Run the deploy suites**
 
@@ -2338,29 +2347,42 @@ TARGET = "b" * 40
 
 
 class Git:
-    """Scripted git: HEAD, cleanliness, ancestry; records argv."""
+    """Scripted git: HEAD, cleanliness, ancestry; records argv.
+
+    Real argv is ``["git", "-C", repo, <subcommand>, ...]``; the fake strips the
+    ``-C repo`` pair before matching. Ancestry is DIRECTIONAL: with ``ff=True`` only
+    "HEAD is an ancestor of the target" is true (the runner is behind); the reverse
+    question ("target is an ancestor of HEAD" = the runner is ahead) is false unless
+    a subclass says otherwise.
+    """
     def __init__(self, head, *, clean=True, ff=True, fetch_ok=True, pip_ok=True, deps_changed=False):
         self.head, self.clean, self.ff, self.fetch_ok, self.pip_ok = head, clean, ff, fetch_ok, pip_ok
         self.deps_changed = deps_changed
         self.calls: list[list[str]] = []
 
+    def is_ancestor(self, anc: str, desc: str) -> bool:
+        return self.ff and anc == self.head and desc != self.head
+
     def __call__(self, argv, **kw):
         self.calls.append(list(argv))
+        a = list(argv)
+        if a[:2] == ["git", "-C"]:
+            a = ["git"] + a[3:]
         def done(rc=0, out=""):
             return subprocess.CompletedProcess(argv, rc, stdout=out, stderr="err")
-        if argv[:3] == ["git", "rev-parse", "HEAD"]:
+        if a[:3] == ["git", "rev-parse", "HEAD"]:
             return done(0, self.head + "\n")
-        if argv[:3] == ["git", "status", "--porcelain"]:
+        if a[:3] == ["git", "status", "--porcelain"]:
             return done(0, "" if self.clean else " M server/x.py\n")
-        if argv[:2] == ["git", "fetch"]:
+        if a[:2] == ["git", "fetch"]:
             return done(0 if self.fetch_ok else 1)
-        if argv[:3] == ["git", "merge-base", "--is-ancestor"]:
-            return done(0 if self.ff else 1)
-        if argv[:2] == ["git", "checkout"]:
+        if a[:3] == ["git", "merge-base", "--is-ancestor"]:
+            return done(0 if self.is_ancestor(a[-2], a[-1]) else 1)
+        if a[:2] == ["git", "checkout"]:
             return done(0)
-        if argv[:2] == ["git", "merge"]:
+        if a[:2] == ["git", "merge"]:
             return done(0 if self.ff else 1)
-        if argv[:2] == ["git", "diff"]:
+        if a[:2] == ["git", "diff"]:
             return done(0, "uv.lock\n" if self.deps_changed else "")
         if "pip" in argv:
             return done(0 if self.pip_ok else 1)
@@ -2378,7 +2400,7 @@ def test_no_state_is_a_noop():
 def test_in_sync_touches_nothing():
     g = Git(TARGET)
     assert RS.sync("/repo", deployed_sha=TARGET, run=g) == "in-sync"
-    assert [c[:2] for c in g.calls] == [["git", "rev-parse"]]
+    assert len(g.calls) == 1 and "rev-parse" in g.calls[0]
 
 
 def test_fast_forwards_a_behind_runner_and_syncs():
@@ -2403,15 +2425,9 @@ def test_runs_pip_when_lockfile_changed():
 def test_ahead_of_deployed_is_left_alone():
     """A deploy in progress fast-forwarded the checkout BEFORE deploy_state moved: HEAD is
     a descendant of deployed_sha. Reconcile only ever moves forward."""
-    g = Git("c" * 40, ff=False)
-    # ancestry query: is deployed an ancestor of HEAD? scripted True via a second Git
     class Ahead(Git):
-        def __call__(self, argv, **kw):
-            if argv[:3] == ["git", "merge-base", "--is-ancestor"]:
-                anc, desc = argv[-2], argv[-1]
-                return subprocess.CompletedProcess(argv, 0 if (anc == TARGET and desc == "c" * 40) else 1,
-                                                   stdout="", stderr="")
-            return super().__call__(argv, **kw)
+        def is_ancestor(self, anc, desc):
+            return anc == TARGET and desc == "c" * 40   # deployed IS an ancestor of HEAD
     g = Ahead("c" * 40)
     assert RS.sync("/repo", deployed_sha=TARGET, run=g) == "ahead"
     assert not any(c[:2] == ["git", "merge"] for c in g.calls)
