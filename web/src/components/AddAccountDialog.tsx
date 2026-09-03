@@ -13,7 +13,10 @@ import * as React from 'react'
 import { useState, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/lib/utils'
+import { Dialog } from '@/ui/Dialog'
 import { Button } from '@/ui/Button'
+import { Field } from '@/ui/Field'
+import { Input } from '@/ui/Input'
 import {
   useAddAccount, useAddAccountStatus, useCancelAddAccount,
   useAddCopilotAccount, useCopilotAddStatus, useCancelCopilotAdd,
@@ -31,7 +34,6 @@ interface AddAccountDialogProps {
 }
 
 export function AddAccountDialog({ onClose, initialProvider, initialName }: AddAccountDialogProps) {
-  const dialogRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const [name, setName] = useState(initialName ?? '')
   const [started, setStarted] = useState(false)
@@ -60,31 +62,6 @@ export function AddAccountDialog({ onClose, initialProvider, initialName }: AddA
   // While the in-page reauth browser is showing, widen the dialog so the 1280×800
   // virtual display isn't crushed into the narrow add-account form width.
   const showVnc = isRunning && !!status?.vncSession
-
-  React.useEffect(() => {
-    inputRef.current?.focus()
-  }, [])
-
-  React.useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape' && !isRunning && !copilotStarted) { onClose(); return }
-      if (e.key === 'Tab') {
-        const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), input, [tabindex]:not([tabindex="-1"])',
-        )
-        if (!focusable || focusable.length === 0) return
-        const first = focusable[0]
-        const last = focusable[focusable.length - 1]
-        if (e.shiftKey) {
-          if (document.activeElement === first) { e.preventDefault(); last.focus() }
-        } else {
-          if (document.activeElement === last) { e.preventDefault(); first.focus() }
-        }
-      }
-    }
-    document.addEventListener('keydown', handleKeyDown)
-    return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [onClose, isRunning, copilotStarted])
 
   // Refresh the accounts list once the Anthropic add transitions into success — the new
   // account only appears in the list after its slot is written.
@@ -147,225 +124,193 @@ export function AddAccountDialog({ onClose, initialProvider, initialName }: AddA
   const copilotFailed = copilotStatus?.state === 'failed'
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/50"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="add-account-dialog-title"
-      onClick={(e) => { if (e.target === e.currentTarget && !isRunning && !copilotStarted) onClose() }}
+    <Dialog
+      open
+      onClose={onClose}
+      title="Add account"
+      size={showVnc ? 'xl' : 'sm'}
+      initialFocus={inputRef}
+      dismissable={!isRunning && !copilotStarted}
+      className="transition-[max-width] motion-reduce:transition-none"
     >
-      <div
-        ref={dialogRef}
-        className={cn(
-          'w-full rounded-xl transition-[max-width] motion-reduce:transition-none',
-          showVnc ? 'max-w-5xl' : 'max-w-sm',
-          'bg-white dark:bg-gray-800',
-          'border border-gray-200 dark:border-gray-600',
-          'shadow-xl p-6 space-y-4',
-        )}
-      >
-        <h2
-          id="add-account-dialog-title"
-          className="text-lg font-semibold text-gray-900 dark:text-gray-100"
+      {/* Provider toggle */}
+      <div className="flex rounded-lg border border-edge overflow-hidden text-sm">
+        <button
+          type="button"
+          onClick={() => { setProvider('anthropic'); setCopilotStarted(false) }}
+          className={cn(
+            'flex-1 py-2 px-3 text-center transition-colors',
+            provider === 'anthropic'
+              ? 'bg-accent text-accent-ink'
+              : 'bg-surface text-ink hover:bg-surface-raised',
+          )}
+          aria-pressed={provider === 'anthropic'}
         >
-          Add account
-        </h2>
+          Anthropic (OAuth)
+        </button>
+        <button
+          type="button"
+          onClick={() => { setProvider('copilot'); setStarted(false); setOptimisticIdle(false) }}
+          className={cn(
+            'flex-1 py-2 px-3 text-center transition-colors',
+            provider === 'copilot'
+              ? 'bg-accent text-accent-ink'
+              : 'bg-surface text-ink hover:bg-surface-raised',
+          )}
+          aria-pressed={provider === 'copilot'}
+        >
+          GitHub Copilot
+        </button>
+      </div>
 
-        {/* Provider toggle */}
-        <div className="flex rounded-lg border border-gray-200 dark:border-gray-600 overflow-hidden text-sm">
-          <button
-            type="button"
-            onClick={() => { setProvider('anthropic'); setCopilotStarted(false) }}
-            className={cn(
-              'flex-1 py-2 px-3 text-center transition-colors',
-              provider === 'anthropic'
-                ? 'bg-blue-600 text-white'
-                : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600',
-            )}
-            aria-pressed={provider === 'anthropic'}
-          >
-            Anthropic (OAuth)
-          </button>
-          <button
-            type="button"
-            onClick={() => { setProvider('copilot'); setStarted(false); setOptimisticIdle(false) }}
-            className={cn(
-              'flex-1 py-2 px-3 text-center transition-colors',
-              provider === 'copilot'
-                ? 'bg-blue-600 text-white'
-                : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600',
-            )}
-            aria-pressed={provider === 'copilot'}
-          >
-            GitHub Copilot
-          </button>
-        </div>
+      <Field
+        label="Account name"
+        htmlFor="add-account-name"
+        error={nameError || undefined}
+        help={!nameError ? <>A short identifier (letters, numbers, <code>. _ -</code>). You can add a friendly nickname afterwards.</> : undefined}
+        className="mt-4"
+      >
+        <Input
+          ref={inputRef}
+          id="add-account-name"
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              if (provider === 'anthropic') handleSubmit()
+              else handleCopilotSubmit()
+            }
+          }}
+          disabled={isRunning || isSuccess || copilotStarted}
+          placeholder="e.g. work"
+          aria-label="Account name"
+          invalid={!!nameError}
+        />
+      </Field>
 
-        <div className="space-y-1">
-          <label
-            htmlFor="add-account-name"
-            className="block text-sm text-gray-700 dark:text-gray-300"
-          >
-            Account name
-          </label>
-          <input
-            ref={inputRef}
-            id="add-account-name"
-            type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault()
-                if (provider === 'anthropic') handleSubmit()
-                else handleCopilotSubmit()
-              }
-            }}
-            disabled={isRunning || isSuccess || copilotStarted}
-            placeholder="e.g. work"
-            aria-label="Account name"
-            className={cn(
-              'w-full rounded border border-gray-300 dark:border-gray-600',
-              'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100',
-              'px-2 py-2 text-sm',
-              'focus:outline-none focus:ring-2 focus:ring-blue-500',
-              'disabled:opacity-60',
-            )}
-          />
-          {nameError ? (
-            <p className="text-xs text-red-600 dark:text-red-400" role="alert">
-              {nameError}
+      {/* Anthropic OAuth flow status */}
+      {provider === 'anthropic' && isRunning && (
+        status?.vncSession ? (
+          <>
+            <p className="mt-4 text-xs text-amber-600 dark:text-amber-400">
+              Sign in to Claude in the window below…
             </p>
-          ) : (
-            <p className="text-xs text-gray-500 dark:text-gray-400">
-              A short identifier (letters, numbers, <code>. _ -</code>). You can add a
-              friendly nickname afterwards.
-            </p>
+            <ReauthBrowserPanel vncSession={status.vncSession} />
+          </>
+        ) : (
+          <p className="mt-4 text-xs text-amber-600 dark:text-amber-400">
+            Opening Chrome on the host screen — sign in there…
+          </p>
+        )
+      )}
+      {provider === 'anthropic' && isSuccess && (
+        <p className="mt-4 text-xs text-green-600 dark:text-green-400">
+          ✓ Account added.
+        </p>
+      )}
+      {provider === 'anthropic' && isError && status?.message && (
+        <p className="mt-4 text-xs text-danger" role="alert">
+          {status.message}
+        </p>
+      )}
+
+      {/* Copilot device-flow status */}
+      {provider === 'copilot' && copilotStatus?.state === 'awaiting_authorization' && copilotStatus.userCode && (
+        <div className="mt-4 space-y-2 rounded-lg border border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-3">
+          <p className="text-xs text-amber-700 dark:text-amber-300">
+            Enter this code at the link below to authorize:
+          </p>
+          <p className="text-lg font-mono font-bold tracking-widest text-amber-900 dark:text-amber-100 text-center">
+            {copilotStatus.userCode}
+          </p>
+          {copilotStatus.verificationUri && (
+            <a
+              href={copilotStatus.verificationUri}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="block text-xs text-accent hover:underline text-center"
+            >
+              {copilotStatus.verificationUri}
+            </a>
           )}
         </div>
+      )}
+      {provider === 'copilot' && copilotStatus?.state === 'pending' && copilotStarted && (
+        <p className="mt-4 text-xs text-amber-600 dark:text-amber-400">
+          Starting device authorization…
+        </p>
+      )}
+      {provider === 'copilot' && copilotFailed && (
+        <p className="mt-4 text-xs text-danger" role="alert">
+          Authorization failed. Please try again.
+        </p>
+      )}
 
-        {/* Anthropic OAuth flow status */}
-        {provider === 'anthropic' && isRunning && (
-          status?.vncSession ? (
-            <>
-              <p className="text-xs text-amber-600 dark:text-amber-400">
-                Sign in to Claude in the window below…
-              </p>
-              <ReauthBrowserPanel vncSession={status.vncSession} />
-            </>
-          ) : (
-            <p className="text-xs text-amber-600 dark:text-amber-400">
-              Opening Chrome on the host screen — sign in there…
-            </p>
-          )
-        )}
-        {provider === 'anthropic' && isSuccess && (
-          <p className="text-xs text-green-600 dark:text-green-400">
-            ✓ Account added.
-          </p>
-        )}
-        {provider === 'anthropic' && isError && status?.message && (
-          <p className="text-xs text-red-600 dark:text-red-400" role="alert">
-            {status.message}
-          </p>
-        )}
-
-        {/* Copilot device-flow status */}
-        {provider === 'copilot' && copilotStatus?.state === 'awaiting_authorization' && copilotStatus.userCode && (
-          <div className="space-y-2 rounded-lg border border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-3">
-            <p className="text-xs text-amber-700 dark:text-amber-300">
-              Enter this code at the link below to authorize:
-            </p>
-            <p className="text-lg font-mono font-bold tracking-widest text-amber-900 dark:text-amber-100 text-center">
-              {copilotStatus.userCode}
-            </p>
-            {copilotStatus.verificationUri && (
-              <a
-                href={copilotStatus.verificationUri}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="block text-xs text-blue-600 dark:text-blue-400 hover:underline text-center"
-              >
-                {copilotStatus.verificationUri}
-              </a>
-            )}
-          </div>
-        )}
-        {provider === 'copilot' && copilotStatus?.state === 'pending' && copilotStarted && (
-          <p className="text-xs text-amber-600 dark:text-amber-400">
-            Starting device authorization…
-          </p>
-        )}
-        {provider === 'copilot' && copilotFailed && (
-          <p className="text-xs text-red-600 dark:text-red-400" role="alert">
-            Authorization failed. Please try again.
-          </p>
-        )}
-
-        <div className="flex gap-3 justify-end pt-2">
-          {provider === 'anthropic' ? (
-            <>
-              {isRunning ? (
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={handleCancel}
-                  aria-label="Cancel add"
-                >
-                  Cancel
-                </Button>
-              ) : (
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={onClose}
-                >
-                  {isSuccess ? 'Done' : 'Cancel'}
-                </Button>
-              )}
-              {!isSuccess && (
-                <Button
-                  type="button"
-                  onClick={handleSubmit}
-                  disabled={!canSubmit}
-                  className="min-h-[44px]"
-                >
-                  {isRunning ? 'Adding…' : 'Add'}
-                </Button>
-              )}
-            </>
-          ) : (
-            <>
-              {copilotStarted ? (
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={handleCopilotCancel}
-                  aria-label="Cancel add"
-                >
-                  Cancel
-                </Button>
-              ) : (
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={onClose}
-                >
-                  Cancel
-                </Button>
-              )}
+      <div className="flex gap-3 justify-end pt-4">
+        {provider === 'anthropic' ? (
+          <>
+            {isRunning ? (
               <Button
                 type="button"
-                onClick={handleCopilotSubmit}
-                disabled={!copilotCanSubmit}
-                className="min-h-[44px]"
+                variant="secondary"
+                onClick={handleCancel}
+                aria-label="Cancel add"
               >
-                {copilotStarted ? 'Authorizing…' : 'Add'}
+                Cancel
               </Button>
-            </>
-          )}
-        </div>
+            ) : (
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={onClose}
+              >
+                {isSuccess ? 'Done' : 'Cancel'}
+              </Button>
+            )}
+            {!isSuccess && (
+              <Button
+                type="button"
+                size="lg"
+                onClick={handleSubmit}
+                disabled={!canSubmit}
+              >
+                {isRunning ? 'Adding…' : 'Add'}
+              </Button>
+            )}
+          </>
+        ) : (
+          <>
+            {copilotStarted ? (
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={handleCopilotCancel}
+                aria-label="Cancel add"
+              >
+                Cancel
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={onClose}
+              >
+                Cancel
+              </Button>
+            )}
+            <Button
+              type="button"
+              size="lg"
+              onClick={handleCopilotSubmit}
+              disabled={!copilotCanSubmit}
+            >
+              {copilotStarted ? 'Authorizing…' : 'Add'}
+            </Button>
+          </>
+        )}
       </div>
-    </div>
+    </Dialog>
   )
 }

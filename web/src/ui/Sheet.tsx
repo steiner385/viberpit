@@ -16,6 +16,8 @@ export interface SheetProps {
   mode?: 'overlay' | 'push'
   width?: number | string
   initialFocus?: React.RefObject<HTMLElement | null>
+  /** Element to return focus to on close (e.g. the button that opened the sheet). */
+  returnFocusRef?: React.RefObject<HTMLElement | null>
   className?: string
   children: React.ReactNode
 }
@@ -28,13 +30,14 @@ export function Sheet({
   mode = 'overlay',
   width = 448,
   initialFocus,
+  returnFocusRef,
   className,
   children,
 }: SheetProps) {
   const panelRef = React.useRef<HTMLDivElement>(null)
   const titleId = React.useId()
   const trapActive = open && mode === 'overlay'
-  useFocusTrap(panelRef, trapActive, { onClose })
+  useFocusTrap(panelRef, trapActive, { onClose, returnFocusRef })
 
   React.useEffect(() => {
     if (open && mode === 'overlay' && initialFocus?.current) initialFocus.current.focus()

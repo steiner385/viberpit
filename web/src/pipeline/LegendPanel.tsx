@@ -1,11 +1,13 @@
-// Ported from plotroom@5166b52 frontend/src/LegendPanel.tsx; edits: none
-import { useId, useRef, type ReactNode, type RefObject } from 'react';
+// Ported from plotroom@5166b52 frontend/src/LegendPanel.tsx; edits: migrated onto the
+// shared `Sheet` primitive (portal/trap/backdrop), which now owns focus trapping —
+// the direct `useFocusTrap` call this component used to make is gone.
+import type { ReactNode, RefObject } from 'react';
 import { TILE_DEFINITIONS } from './StatusStrip';
 import {
   METRIC_DEFINITIONS, SUBLINE_TERMS, LANE_STATE_DEFINITIONS, LANE_DEFINITIONS,
   SETTINGS_DEFINITIONS, DESIGNER_DEFINITIONS, METRIC_SECTION_GROUPS,
 } from './definitions';
-import { useFocusTrap } from '@/ui/useFocusTrap';
+import { Sheet } from '@/ui/Sheet';
 
 interface LegendPanelProps {
   open: boolean;
@@ -65,34 +67,10 @@ function ExampleBar({ kind, name, fillPct, time, band, tick, nameTitle }: {
 // SAME copy, so the two layers can't drift.
 
 export function LegendPanel({ open, onClose, returnFocusRef }: LegendPanelProps) {
-  const panelRef = useRef<HTMLDivElement>(null);
-  const headingId = useId();
-
-  // Esc to close + focus management + Tab-trap (via shared hook).
-  useFocusTrap(panelRef, open, { onClose, returnFocusRef });
-
-  if (!open) return null;
-
   return (
-    <>
-      <div className="settings-overlay" data-testid="legend-overlay" onClick={onClose} />
-      <div
-        className="settings-panel legend-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={headingId}
-        ref={panelRef}
-        tabIndex={-1}
-      >
-        <header className="settings-head">
-          <h2 id={headingId}>Legend</h2>
-          <button type="button" className="settings-close" aria-label="Close legend" onClick={onClose}>
-            ×
-          </button>
-        </header>
-
-        <div className="settings-body">
-          {/* Delivery spine — the 5-state lane vocabulary (spec §16); the
+    <Sheet open={open} onClose={onClose} title="Legend" side="right" width={420} returnFocusRef={returnFocusRef}>
+      <div className="settings-body legend-panel">
+        {/* Delivery spine — the 5-state lane vocabulary (spec §16); the
               glyphs mirror the live rail rendering exactly. */}
           <section className="settings-section">
             <h3>Delivery spine</h3>
@@ -312,8 +290,7 @@ export function LegendPanel({ open, onClose, returnFocusRef }: LegendPanelProps)
               </div>
             ))}
           </section>
-        </div>
       </div>
-    </>
+    </Sheet>
   );
 }

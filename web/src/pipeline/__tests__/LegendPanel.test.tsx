@@ -41,14 +41,14 @@ describe('LegendPanel', () => {
   it('overlay click closes the panel', () => {
     const onClose = vi.fn();
     render(<LegendPanel open={true} onClose={onClose} />);
-    fireEvent.click(screen.getByTestId('legend-overlay'));
+    fireEvent.click(screen.getByTestId('sheet-backdrop'));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('close button closes the panel', () => {
     const onClose = vi.fn();
     render(<LegendPanel open={true} onClose={onClose} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Close legend' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Close Legend' }));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
@@ -71,17 +71,17 @@ describe('LegendPanel', () => {
   // ---- section content: real rendered examples reusing the live CSS classes ----
 
   it('pipeline track section draws one example node per state with the real classes', () => {
-    const { container } = render(<LegendPanel open={true} onClose={() => {}} />);
+    render(<LegendPanel open={true} onClose={() => {}} />);
     for (const cls of ['done', 'active', 'fail', 'pending', 'parked']) {
-      expect(container.querySelector(`.legend-ex .node.${cls} .c`)).not.toBeNull();
+      expect(document.querySelector(`.legend-ex .node.${cls} .c`)).not.toBeNull();
     }
     // glyphs match the live track rendering
-    expect(container.querySelector('.legend-ex .node.done .c')!.textContent).toBe('✓');
-    expect(container.querySelector('.legend-ex .node.fail .c')!.textContent).toBe('✗');
-    expect(container.querySelector('.legend-ex .node.parked .c')!.textContent).toBe('!');
+    expect(document.querySelector('.legend-ex .node.done .c')!.textContent).toBe('✓');
+    expect(document.querySelector('.legend-ex .node.fail .c')!.textContent).toBe('✗');
+    expect(document.querySelector('.legend-ex .node.parked .c')!.textContent).toBe('!');
     // segment fill examples: done + partial
-    expect(container.querySelector('.legend-ex .seg.done')).not.toBeNull();
-    expect(container.querySelector('.legend-ex .seg.part')).not.toBeNull();
+    expect(document.querySelector('.legend-ex .seg.done')).not.toBeNull();
+    expect(document.querySelector('.legend-ex .seg.part')).not.toBeNull();
   });
 
   it('row sub-line section defines the live vocabulary', () => {
@@ -100,37 +100,37 @@ describe('LegendPanel', () => {
   });
 
   it('job bars section renders one example bar per row kind with the real classes', () => {
-    const { container } = render(<LegendPanel open={true} onClose={() => {}} />);
+    render(<LegendPanel open={true} onClose={() => {}} />);
     for (const cls of ['g-done', 'g-running', 'g-overdue', 'g-failed', 'g-queued']) {
-      expect(container.querySelector(`.legend-gantt .g-row.${cls} .g-bar i`)).not.toBeNull();
+      expect(document.querySelector(`.legend-gantt .g-row.${cls} .g-bar i`)).not.toBeNull();
     }
     // striped runner-wait fills (plain + amber escalation)
-    expect(container.querySelector('.legend-gantt .g-row.g-runner-wait')).not.toBeNull();
-    expect(container.querySelector('.legend-gantt .g-row.g-runner-wait-amber')).not.toBeNull();
+    expect(document.querySelector('.legend-gantt .g-row.g-runner-wait')).not.toBeNull();
+    expect(document.querySelector('.legend-gantt .g-row.g-runner-wait-amber')).not.toBeNull();
     // p10–p90 band + p50 expected tick examples
-    expect(container.querySelector('.legend-gantt .g-bar .band')).not.toBeNull();
-    expect(container.querySelector('.legend-gantt .g-bar .exp')).not.toBeNull();
+    expect(document.querySelector('.legend-gantt .g-bar .band')).not.toBeNull();
+    expect(document.querySelector('.legend-gantt .g-bar .exp')).not.toBeNull();
     // the ⧗ / ⊘ queued-state texts are explained
     expect(screen.getAllByText(/⧗ waiting for runner/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/⊘ blocked on/).length).toBeGreaterThan(0);
   });
 
   it('job bars section shows one required example row (no g-advisory) and one advisory example row (g-advisory) with correct name styling', () => {
-    const { container } = render(<LegendPanel open={true} onClose={() => {}} />);
+    render(<LegendPanel open={true} onClose={() => {}} />);
     // advisory example row: must have g-advisory class
-    expect(container.querySelector('.legend-gantt .g-row.g-advisory')).not.toBeNull();
+    expect(document.querySelector('.legend-gantt .g-row.g-advisory')).not.toBeNull();
     // required example row: must NOT have g-advisory class — at least one g-row without it
-    const rows = Array.from(container.querySelectorAll('.legend-gantt .g-row'));
+    const rows = Array.from(document.querySelectorAll('.legend-gantt .g-row'));
     expect(rows.some((r) => !r.classList.contains('g-advisory'))).toBe(true);
   });
 
   it('queue train section renders one mini car per type with the real classes', () => {
-    const { container } = render(<LegendPanel open={true} onClose={() => {}} />);
-    expect(container.querySelector('.legend-train .car.building:not(.failed)')).not.toBeNull();
-    expect(container.querySelector('.legend-train .car.building.failed')).not.toBeNull();
-    expect(container.querySelector('.legend-train .car.queued')).not.toBeNull();
-    expect(container.querySelector('.legend-train .car.unmergeable')).not.toBeNull();
-    expect(container.querySelector('.legend-train .car.queue-blocked')).not.toBeNull();
+    render(<LegendPanel open={true} onClose={() => {}} />);
+    expect(document.querySelector('.legend-train .car.building:not(.failed)')).not.toBeNull();
+    expect(document.querySelector('.legend-train .car.building.failed')).not.toBeNull();
+    expect(document.querySelector('.legend-train .car.queued')).not.toBeNull();
+    expect(document.querySelector('.legend-train .car.unmergeable')).not.toBeNull();
+    expect(document.querySelector('.legend-train .car.queue-blocked')).not.toBeNull();
     // car headers match the live rendering
     expect(screen.getByText('▶ group')).toBeInTheDocument();
     expect(screen.getByText('✗ failing')).toBeInTheDocument();
@@ -139,11 +139,11 @@ describe('LegendPanel', () => {
   });
 
   it('status tiles section shows a swatch and definition per bucket', () => {
-    const { container } = render(<LegendPanel open={true} onClose={() => {}} />);
+    render(<LegendPanel open={true} onClose={() => {}} />);
     for (const cls of ['tile-running', 'tile-queued', 'tile-deploy', 'tile-failed', 'tile-ready', 'tile-merged']) {
-      expect(container.querySelector(`.legend-swatch.${cls}`)).not.toBeNull();
+      expect(document.querySelector(`.legend-swatch.${cls}`)).not.toBeNull();
     }
-    const dtLabels = [...container.querySelectorAll('.legend-swatch')]
+    const dtLabels = [...document.querySelectorAll('.legend-swatch')]
       .map((s) => s.parentElement!.textContent!.trim());
     expect(dtLabels).toEqual(['CI running', 'In queue', 'Deploying', 'Failed', 'Ready', 'Merged / other']);
   });
