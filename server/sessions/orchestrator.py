@@ -60,7 +60,7 @@ from server.sessions import primary_lease
 from server.sessions import push as push_mod
 from server.sessions.commands import catalog as cmd_catalog
 from server.sessions.commands import dispatcher as cmd_dispatcher
-from server.sessions.driver import SessionDriver
+from server.sessions.driver import SessionDriver, _CLOSE_GRACE_SEC
 from server.sessions.orphaned_asks import orphaned_answer_prompt, orphaned_ask_kind
 from server.sessions.permissions import PermissionRegistry, resolve_permission_mode
 from server.sessions.sdk_factory import real_sdk_factory, real_suggestion_factory, real_summary_factory
@@ -8549,7 +8549,12 @@ class SessionOrchestrator:
                 continue
             self._recovery.record_stall(sid, now=now)
             log.warning("stall watchdog: interrupting wedged turn session=%s", sid)
-            await driver.interrupt()
+            # Bounded: a CLI that ignores the control channel otherwise parks this
+            # tick for the SDK's 60 s and skips every later driver's stall check (and
+            # the disabled-account sweep). If it doesn't land, the stall cap above
+            # escalates to a recompose on a later tick.
+            await bounded_wait(driver.interrupt(), timeout=_CLOSE_GRACE_SEC,
+                               phase=f"stall.interrupt:{sid}")
 
     async def _check_disabled_account_sessions(self) -> None:
         """Rotate any live sessions off accounts that have been disabled.
@@ -9393,7 +9398,18 @@ class SessionOrchestrator:
 
         try:
             if old_driver is not None:
-                await old_driver.interrupt()
+                # Best-effort, BOUNDED. interrupt() awaits a control-channel reply from
+                # the CLI; a CLI that has stopped answering (wedged after a usage-limit
+                # result, or dead with its pipes held open by a child) makes the SDK
+                # raise a plain Exception after 60 s — not CLIConnectionError, so it
+                # escaped driver.interrupt() and aborted THIS method before aclose()
+                # or the relaunch. The wedged driver stayed installed and every
+                # rotation / manual-switch retry failed the same way, once a minute,
+                # until a human intervened (2026-09-03). The old driver is being
+                # replaced regardless; aclose() does its own bounded interrupt + reap
+                # (#846), so a failed courtesy interrupt must never block the swap.
+                await bounded_wait(old_driver.interrupt(), timeout=_CLOSE_GRACE_SEC,
+                                   phase=f"reassign.interrupt:{record.id}")
                 await old_driver.aclose()
             cfg = compose(new_account)
             configdir.trust_project(new_account, cwd)
