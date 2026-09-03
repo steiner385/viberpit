@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  DEPLOY_PHASES, phaseState, allPhasesDone, deployProgress, deployOutcome,
+  DEPLOY_PHASES, phaseState, allPhasesDone, deployProgress, deployOutcome, hostRows,
 } from './deployPhases'
 import type { DeployProgress } from '@/api/types'
 
@@ -9,9 +9,9 @@ const D = (over: Partial<DeployProgress>): DeployProgress => ({
 })
 
 describe('deployPhases', () => {
-  it('lists the 6 phases in deploy order', () => {
+  it('lists the 7 phases in deploy order', () => {
     expect(DEPLOY_PHASES.map(p => p.key)).toEqual(
-      ['preflight', 'save', 'update', 'report', 'restart', 'resume'])
+      ['preflight', 'save', 'update', 'report', 'runners', 'restart', 'resume'])
     expect(DEPLOY_PHASES.every(p => p.label && p.description)).toBe(true)
   })
 
@@ -23,7 +23,7 @@ describe('deployPhases', () => {
 
   it('deployProgress counts done phases out of total', () => {
     expect(deployProgress(D({ phases: { preflight: 'done', save: 'done' } })))
-      .toEqual({ done: 2, total: 6 })
+      .toEqual({ done: 2, total: 7 })
   })
 
   it('allPhasesDone is true only when every phase is done', () => {
@@ -54,5 +54,18 @@ describe('deployPhases', () => {
     // ...but an error or any started phase still classifies as before.
     expect(deployOutcome(D({ error: 'boom' }))).toBe('failure')
     expect(deployOutcome(D({ phases: { preflight: 'running' } }))).toBe('failure')
+  })
+
+  it('hostRows lists per-host runner progress sorted by name', () => {
+    const d = D({ hosts: { rocky: { state: 'done', step: null, error: null, sha: 'abc' },
+                           dobby: { state: 'offline', step: null, error: null, sha: null } } })
+    expect(hostRows(d).map(([n]) => n)).toEqual(['dobby', 'rocky'])
+    expect(hostRows(undefined)).toEqual([])
+  })
+
+  it('a failed runners phase is a failed deploy even with every other phase done', () => {
+    const all = Object.fromEntries(DEPLOY_PHASES.map(p => [p.key, 'done']))
+    expect(deployOutcome(D({ phases: { ...all, runners: 'failed' }, error: 'runners: rocky failed' })))
+      .toBe('failure')
   })
 })

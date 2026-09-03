@@ -1,13 +1,18 @@
 // web/src/components/DeployOverlay.tsx
+import { Fragment } from 'react'
 import { useDeployController } from '@/lib/deployController'
 import { useDeployStatus, usePendingDeploy } from '@/api/hooks'
-import { DEPLOY_PHASES, phaseState, deployProgress } from '@/lib/deployPhases'
+import { DEPLOY_PHASES, phaseState, deployProgress, hostRows } from '@/lib/deployPhases'
 import { Dialog } from '@/ui/Dialog'
 import { Button } from '@/ui/Button'
 
 const DOT: Record<string, string> = {
   done: 'bg-emerald-500', running: 'bg-amber-500 animate-pulse',
   failed: 'bg-red-500', pending: 'bg-gray-300 dark:bg-gray-600',
+}
+
+const HOST_DOT: Record<string, string> = {
+  ...DOT, offline: 'bg-gray-400', disabled: 'bg-gray-400', unconfigured: 'bg-red-500',
 }
 
 export function DeployOverlay() {
@@ -73,11 +78,24 @@ export function DeployOverlay() {
               const s = phaseState(deploy, p.key)
               const active = p.key === activeKey
               return (
-                <li key={p.key} className={`flex items-center gap-3 text-sm ${active ? 'font-medium' : ''}`}>
-                  <span className={`h-2.5 w-2.5 rounded-full ${active ? DOT.running : DOT[s]}`} aria-hidden />
-                  <span className="w-20 text-ink">{p.label}</span>
-                  <span className="flex-1 text-ink-muted">{p.description}</span>
-                </li>
+                <Fragment key={p.key}>
+                  <li className={`flex items-center gap-3 text-sm ${active ? 'font-medium' : ''}`}>
+                    <span className={`h-2.5 w-2.5 rounded-full ${active ? DOT.running : DOT[s]}`} aria-hidden />
+                    <span className="w-20 text-ink">{p.label}</span>
+                    <span className="flex-1 text-ink-muted">{p.description}</span>
+                  </li>
+                  {p.key === 'runners' && hostRows(deploy).map(([name, h]) => (
+                    <li key={`host:${name}`} className="ml-6 flex items-center gap-3 text-xs">
+                      <span className={`h-2 w-2 rounded-full ${HOST_DOT[h.state] ?? DOT.pending}`} aria-hidden />
+                      <span className="w-24 font-mono text-ink">{name}</span>
+                      <span className="flex-1 text-ink-muted">
+                        {h.state === 'running' ? (h.step ?? 'working') : h.state}
+                        {h.sha ? <> · <span className="font-mono">{h.sha.slice(0, 7)}</span></> : null}
+                        {h.error ? <span className="text-danger"> — {h.error}</span> : null}
+                      </span>
+                    </li>
+                  ))}
+                </Fragment>
               )
             })}
           </ol>

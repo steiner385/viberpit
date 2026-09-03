@@ -98,4 +98,19 @@ describe('DeployOverlay', () => {
     expect(screen.getByText(/couldn.t be resumed/i)).toBeInTheDocument()
     expect(screen.getByText(/s2/)).toBeInTheDocument()
   })
+
+  it('renders one sub-row per runner under the Runners phase', () => {
+    mock({
+      ctrl: { visible: true, intent: 'idle' },
+      deploy: {
+        running: true, phases: { runners: 'running' }, error: null, warnings: [], targetSha: 'abc1234',
+        hosts: { rocky: { state: 'running', step: 'merge', error: null, sha: null },
+                 dobby: { state: 'done', step: null, error: null, sha: 'abc1234' } },
+      },
+    })
+    render(<DeployOverlay />)
+    expect(screen.getByText('rocky')).toBeInTheDocument()
+    expect(screen.getByText(/merge/)).toBeInTheDocument()
+    expect(screen.getByText('dobby')).toBeInTheDocument()
+  })
 })

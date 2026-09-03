@@ -1,4 +1,4 @@
-import type { DeployProgress } from '@/api/types'
+import type { DeployProgress, DeployHostProgress } from '@/api/types'
 
 export interface DeployPhaseMeta { key: string; label: string; description: string }
 
@@ -7,6 +7,7 @@ export const DEPLOY_PHASES: DeployPhaseMeta[] = [
   { key: 'save', label: 'Save', description: 'Backing up live sessions' },
   { key: 'update', label: 'Update', description: 'Pulling latest code' },
   { key: 'report', label: 'Report', description: 'Recording the change' },
+  { key: 'runners', label: 'Runners', description: 'Updating session hosts' },
   { key: 'restart', label: 'Restart', description: 'Restarting service' },
   { key: 'resume', label: 'Resume', description: 'Restoring your sessions' },
 ]
@@ -25,6 +26,12 @@ export function deployProgress(deploy: DeployProgress | undefined): { done: numb
 
 export function allPhasesDone(deploy: DeployProgress | undefined): boolean {
   return DEPLOY_PHASES.every(p => phaseState(deploy, p.key) === 'done')
+}
+
+/** Per-fleet-runner rows for the `runners` phase, sorted by host name. Empty
+ *  (never a placeholder error) when the deploy is a no-op with no hosts to update. */
+export function hostRows(deploy: DeployProgress | undefined): Array<[string, DeployHostProgress]> {
+  return Object.entries(deploy?.hosts ?? {}).sort(([a], [b]) => a.localeCompare(b))
 }
 
 export type DeployOutcome = 'success' | 'failure' | 'idle'

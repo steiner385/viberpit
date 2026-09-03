@@ -106,10 +106,14 @@ export function FleetSection() {
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['fleet', 'hosts'] }),
   })
 
-  /** Outdated (sha trails the newest known one) AND upgradable in-app (ssh config set). */
-  const canUpdate = (h: FleetHost): boolean =>
-    Boolean(h.sshHost && h.repoPath && h.sha && newestSha && !shaMatch(h.sha, newestSha)) &&
-    h.upgrade?.state !== 'running'
+  /** Outdated (sha trails the newest known one) AND upgradable in-app (ssh config set).
+   *  Compares against the checkout HEAD when known — it may be ahead of the running
+   *  process's sha after a deploy that advanced the checkout without restarting (#859). */
+  const canUpdate = (h: FleetHost): boolean => {
+    const compareSha = h.checkoutSha ?? h.sha
+    return Boolean(h.sshHost && h.repoPath && compareSha && newestSha && !shaMatch(compareSha, newestSha)) &&
+      h.upgrade?.state !== 'running'
+  }
 
   if (isError) {
     return <p className="text-sm text-red-600 dark:text-red-400">Could not load the fleet.</p>
@@ -171,6 +175,9 @@ export function FleetSection() {
                   </td>
                   <td className="pr-2 font-mono text-xs">
                     {h.sha ?? '—'}
+                    {h.checkoutSha && h.sha && !shaMatch(h.checkoutSha, h.sha) && (
+                      <div className="font-sans text-xs text-ink-muted">checkout {h.checkoutSha}</div>
+                    )}
                     {canUpdate(h) && (
                       <button
                         type="button"

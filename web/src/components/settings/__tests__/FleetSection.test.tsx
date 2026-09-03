@@ -134,4 +134,13 @@ describe('FleetSection', () => {
       expect(screen.getByText(/update failed: merge failed/)).toBeInTheDocument())
     hosts[1] = { ...hosts[1], upgrade: idle }
   })
+
+  it('shows the checkout sha when it differs from the process sha', async () => {
+    const original = hosts[1]
+    hosts[1] = { ...hosts[1], sha: 'proc111', checkoutSha: 'chk2222' }
+    wrap(<FleetSection />)
+    expect(await screen.findByText(/proc111/)).toBeInTheDocument()
+    expect(screen.getByText(/checkout chk2222/)).toBeInTheDocument()
+    hosts[1] = original
+  })
 })

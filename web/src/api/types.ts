@@ -348,6 +348,13 @@ export interface PendingDeploy {
   deployableCount?: number
 }
 
+export interface DeployHostProgress {
+  state: 'pending' | 'running' | 'done' | 'failed' | 'offline' | 'disabled' | 'unconfigured'
+  step: string | null
+  error: string | null
+  sha: string | null
+}
+
 export interface DeployProgress {
   running: boolean
   phases: Record<string, string>
@@ -360,6 +367,9 @@ export interface DeployProgress {
   // `replayed` = mid-turn sessions whose interrupted prompt was re-issued after
   // the restart (issue #864) — a subset of `restored`.
   restore?: { restored?: string[]; failed: string[]; gaveUp?: string[]; replayed?: string[] }
+  // Per-fleet-runner progress during the `runners` phase, keyed by host name.
+  // Absent/empty when the deploy was a no-op (already up to date).
+  hosts?: Record<string, DeployHostProgress>
 }
 
 export interface DeployStatusResponse {
