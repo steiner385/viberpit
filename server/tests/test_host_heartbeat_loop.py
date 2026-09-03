@@ -80,3 +80,44 @@ async def test_tick_swallows_db_error(isolated_db, monkeypatch):
 
     # Fence must be left unchanged (retry on next beat, not a stand-down).
     assert orch._hb_fence == 1
+
+
+# ---------------------------------------------------------------------------
+# 4. A daemon whose initial register() failed (DB blip at boot) must RETRY on
+#    the loop. Without this, one transient error at start() silently disables
+#    this host's heartbeat for the whole process lifetime, and every session it
+#    owns eventually reads "unreachable" on a perfectly healthy host.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_tick_retries_register_when_never_registered(isolated_db):
+    orch = _new_orch()
+    orch._hb_fence = None        # start()'s register() raised
+    orch._hb_fenced = False      # ...but we were never fenced
+
+    await orch._heartbeat_tick()
+
+    assert orch._hb_fence is not None, "tick must re-register after a failed boot register"
+    snap = await host_heartbeat.snapshot()
+    assert self_host_name() in snap
+
+
+# ---------------------------------------------------------------------------
+# 5. ...but a FENCED daemon must stay inert. Re-registering would adopt the
+#    bumped fence and resurrect a daemon that never stood down — the exact
+#    thing Phase 4 (Task 16) has to gate. Same sentinel, opposite requirement.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_tick_does_not_reregister_after_being_fenced(isolated_db, monkeypatch):
+    orch = _new_orch()
+    orch._hb_fence = None
+    orch._hb_fenced = True       # a prior beat was rejected
+
+    register_mock = AsyncMock(return_value=99)
+    monkeypatch.setattr(host_heartbeat, "register", register_mock)
+
+    await orch._heartbeat_tick()
+
+    register_mock.assert_not_awaited()
+    assert orch._hb_fence is None, "a fenced daemon must not silently re-acquire a fence"

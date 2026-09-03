@@ -21,7 +21,35 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
+from server.config import env_float
+
 LivenessState = Literal["fresh", "stale", "unreachable", "dead"]
+
+# The two liveness tuning knobs (spec 002 FR-101/FR-102) live HERE, once: the daemon
+# loop that writes heartbeats and the edge that reads them must agree on the names,
+# the defaults, and the clamp, and three hand-rolled copies of
+# ``float(os.environ.get(...))`` is exactly the drift ``env_float`` was extracted to
+# stop (constitution VI; see server/tests/test_config_env_float.py).
+#
+# Routing through ``env_float`` also makes a typo'd override survivable rather than
+# fatal: a raw ``float()`` on ``CCSWITCH_HOST_DEAD_AFTER_S=300s`` raises, and these
+# values are read inside the session serializer and at the top of the heartbeat loop
+# — a 500 on the whole sessions page, and a daemon that beats once and then never
+# again (which, once Phase 4 adoption lands, becomes a false takeover of a live host).
+HEARTBEAT_INTERVAL_ENV = "CCSWITCH_HOST_HEARTBEAT_INTERVAL_S"
+HEARTBEAT_INTERVAL_DEFAULT_S = 10.0
+DEAD_AFTER_ENV = "CCSWITCH_HOST_DEAD_AFTER_S"
+DEAD_AFTER_DEFAULT_S = 300.0
+
+
+def heartbeat_interval_s() -> float:
+    """Configured beat interval in seconds; the ``fresh`` window is 2x this."""
+    return env_float(HEARTBEAT_INTERVAL_ENV, HEARTBEAT_INTERVAL_DEFAULT_S, minimum=1.0)
+
+
+def host_dead_after_s() -> float:
+    """Configured silence (seconds) before a host's sessions read ``unreachable``."""
+    return env_float(DEAD_AFTER_ENV, DEAD_AFTER_DEFAULT_S, minimum=1.0)
 
 
 @dataclass(frozen=True)
@@ -35,8 +63,8 @@ def derive_liveness(
     beat_at: datetime | None,
     now: datetime,
     *,
-    interval_s: float = 10.0,
-    dead_after_s: float = 300.0,
+    interval_s: float = HEARTBEAT_INTERVAL_DEFAULT_S,
+    dead_after_s: float = DEAD_AFTER_DEFAULT_S,
     declared_dead: bool = False,
 ) -> Liveness:
     """Derive liveness state from a heartbeat timestamp.

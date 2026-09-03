@@ -148,19 +148,23 @@ def _record_to_dict(
     """
     from datetime import datetime, timedelta, timezone
     from server.sessions.goals import effective_goal
-    from server.sessions.liveness import derive_liveness
+    from server.sessions.liveness import derive_liveness, heartbeat_interval_s, host_dead_after_s
     # Per-session liveness is DERIVED at the edge from the owning host's heartbeat
     # (spec 002 FR-102/FR-103), never stored. host=None (primary/in-process) and a
     # host with no heartbeat row are BOTH fresh-unknown (NFR-3: absence of a row is
     # never evidence of death). `heartbeats` is snapshotted once per request by the
     # caller — never fetched per session (NFR-4).
+    #
+    # Thresholds come from the shared env_float-backed accessors: this runs inside the
+    # serializer for EVERY session, with no try/except above it, so a raw float() on a
+    # typo'd knob would 500 the entire sessions page.
     _hb_host = getattr(record, "host", None)
     _hb = heartbeats.get(_hb_host) if (heartbeats is not None and _hb_host is not None) else None
     _liveness = derive_liveness(
         _hb.beat_at if _hb is not None else None,
         datetime.utcnow(),
-        interval_s=float(os.environ.get("CCSWITCH_HOST_HEARTBEAT_INTERVAL_S", "10")),
-        dead_after_s=float(os.environ.get("CCSWITCH_HOST_DEAD_AFTER_S", "300")),
+        interval_s=heartbeat_interval_s(),
+        dead_after_s=host_dead_after_s(),
     )
     goal_text, goal_source = effective_goal(record)
     cooldown_until = None
