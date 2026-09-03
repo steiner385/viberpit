@@ -24,8 +24,9 @@ Every mutation is a single conditional statement (rowcount-checked) or a PK-guar
 INSERT — no dialect-specific locking; SQLite + Postgres, same SQL.
 
 **All timestamps are the DATABASE's clock, never the writer's or reader's** (spec 002
-FR-102): ``beat_at`` is written with ``CURRENT_TIMESTAMP`` and ``snapshot()`` /
-``declare_dead`` compare it against ``CURRENT_TIMESTAMP`` read from the same DB. A
+FR-102): ``beat_at`` is written with the DB clock (``db_utc_now()`` — naive UTC on
+every dialect) and ``snapshot()`` / ``declare_dead`` compare it against the same clock
+read from the same DB. A
 daemon host whose local clock lags the edge by minutes therefore can never be falsely
 demoted — the skew that used to read a healthy worker as ``unreachable`` is gone by
 construction.
@@ -36,14 +37,12 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import DateTime
-from sqlalchemy import func
 from sqlalchemy import insert as sa_insert
 from sqlalchemy import select as sa_select
-from sqlalchemy import type_coerce
 from sqlalchemy import update as sa_update
 
 from server.db import db_session
+from server.db.clock import db_utc_now
 from server.db.models import HostHeartbeat
 
 log = logging.getLogger(__name__)
@@ -70,16 +69,12 @@ class HostHeartbeats:
     hosts: dict[str, HeartbeatState]
 
 
-# ``func.current_timestamp()`` is standard SQL supported identically by SQLite and
-# Postgres (``func.now()`` is NOT — SQLite has no now()). Coerced to DateTime so the
-# scalar comes back as a parsed ``datetime`` on every dialect.
-_DB_NOW = type_coerce(func.current_timestamp(), DateTime)
-
-
 async def _db_now(db) -> datetime:
     """The database server's current timestamp — the single clock all liveness math
-    is measured against (spec 002 FR-102)."""
-    return (await db.execute(sa_select(_DB_NOW))).scalar_one()
+    is measured against (spec 002 FR-102) — as naive UTC, the same shape as the
+    ``beat_at`` column it is subtracted from. NOT a bare ``func.current_timestamp()``:
+    on Postgres that is a ``timestamptz`` and comes back AWARE (see server/db/clock.py)."""
+    return (await db.execute(sa_select(db_utc_now()))).scalar_one()
 
 
 async def register(host: str, *, epoch: str | None = None) -> int:
@@ -93,7 +88,7 @@ async def register(host: str, *, epoch: str | None = None) -> int:
     async with db_session() as db:
         try:
             await db.execute(sa_insert(HostHeartbeat).values(
-                host=host, fence=1, beat_at=func.current_timestamp(), epoch=epoch))
+                host=host, fence=1, beat_at=db_utc_now(), epoch=epoch))
         except Exception:
             await db.rollback()
             if epoch is not None:
@@ -120,7 +115,7 @@ async def beat(host: str, fence: int) -> bool:
             sa_update(HostHeartbeat)
             .where(HostHeartbeat.host == host,
                    HostHeartbeat.fence == fence)
-            .values(beat_at=func.current_timestamp())
+            .values(beat_at=db_utc_now())
         )
         return result.rowcount == 1  # type: ignore[attr-defined]  # CursorResult at runtime
 

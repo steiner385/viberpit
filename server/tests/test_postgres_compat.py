@@ -1,3 +1,4 @@
+import contextlib
 import os
 import pytest
 
@@ -606,3 +607,180 @@ async def test_rollup_passed_sql_fold_on_postgres(pg_engine, pg_url):
     }, "SQL day bucketing must match the Python reference and upsert per bucket"
     assert [r.test_id for r in raw] == ["keep"], (
         "failed rows must survive the fold; every folded row must be deleted")
+
+
+# --------------------------------------------------------------------------- #
+# DB-clock expressions (spec 002 FR-102) — the dialect difference SQLite hides
+#
+# On Postgres ``CURRENT_TIMESTAMP`` is a ``timestamptz``: SELECTed, asyncpg hands
+# back an AWARE datetime; written into a naive ``timestamp`` column it is cast
+# through the session ``TimeZone`` (prod = America/New_York) and lands as LOCAL
+# wall clock. SQLite returns a naive UTC string on both sides, so the only tests
+# that exercised host_heartbeat.snapshot() (SQLite) stayed green while every
+# /api/sessions call on prod raised ``TypeError: can't subtract offset-naive and
+# offset-aware datetimes`` and demoted every session to "Status unknown"
+# (2026-09-03). These exercise the REAL writer + reader paths on Postgres.
+# --------------------------------------------------------------------------- #
+
+@contextlib.asynccontextmanager
+async def _module_db_on(pg_url):
+    """Point the module-level db_session() (what host_heartbeat and the
+    orchestrator call internally) at the Postgres test database, restoring the
+    prior engine afterwards — other tests on this worker depend on it."""
+    import server.db as db_module
+    prev_engine, prev_factory = db_module._engine, db_module._session_factory
+    await db_module.init_db(pg_url)
+    try:
+        yield
+    finally:
+        if db_module._engine is not None:
+            with contextlib.suppress(Exception):
+                await db_module._engine.dispose()
+        db_module._engine, db_module._session_factory = prev_engine, prev_factory
+
+
+async def _delete_heartbeat(pg_engine, host: str) -> None:
+    from sqlalchemy import delete
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from server.db.models import HostHeartbeat
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as s:
+        await s.execute(delete(HostHeartbeat).where(HostHeartbeat.host == host))
+        await s.commit()
+
+
+# Both skews below vanish on a UTC host, and CI's runner AND its Postgres service
+# are UTC — so each test pins the offset it depends on instead of trusting the
+# environment, otherwise a regression would be invisible exactly where it matters.
+_SKEW_TZ = "America/New_York"   # production's Postgres session TimeZone
+
+
+@contextlib.asynccontextmanager
+async def _database_timezone(pg_engine, pg_url, tz: str):
+    """Set the test database's default ``TimeZone`` for NEW connections (what the
+    module engine opened inside _module_db_on will use), then reset it."""
+    from urllib.parse import urlsplit
+    from sqlalchemy import text
+    db_name = urlsplit(pg_url).path.lstrip("/")
+    async with pg_engine.connect() as conn:
+        await conn.execute(text(f'ALTER DATABASE "{db_name}" SET timezone TO \'{tz}\''))
+        await conn.commit()
+    try:
+        yield
+    finally:
+        async with pg_engine.connect() as conn:
+            await conn.execute(text(f'ALTER DATABASE "{db_name}" RESET timezone'))
+            await conn.commit()
+
+
+@contextlib.contextmanager
+def _process_local_timezone(monkeypatch, tz: str):
+    """Pin this process's local timezone (what ``datetime.astimezone()`` on a NAIVE
+    value — asyncpg's naive→timestamptz path — resolves against)."""
+    import time
+    monkeypatch.setenv("TZ", tz)
+    time.tzset()
+    try:
+        yield
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_host_heartbeat_snapshot_reads_naive_db_clock_on_postgres(pg_engine, pg_url):
+    """register → beat → snapshot() on Postgres must not raise, and the DB clock
+    it returns must be naive like the beat_at column it is subtracted from."""
+    from server.sessions import host_heartbeat as hb
+    host = "dtcheck-hb-snapshot"
+    try:
+        async with _module_db_on(pg_url):
+            fence = await hb.register(host, epoch="dtcheck-epoch")
+            assert await hb.beat(host, fence) is True
+            snap = await hb.snapshot()   # raised TypeError on every /api/sessions call
+        assert snap.now.tzinfo is None, "DB clock must be naive to match the naive column"
+        state = snap.hosts[host]
+        assert state.beat_at.tzinfo is None
+        assert abs(state.age_s) < 60, f"a beat moments ago must read as fresh, got {state.age_s}s"
+    finally:
+        await _delete_heartbeat(pg_engine, host)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_host_heartbeat_beat_at_is_stored_as_utc_on_postgres(pg_engine, pg_url):
+    """beat_at must follow the schema-wide naive-UTC convention every other column
+    uses (``datetime.utcnow()``), not the Postgres session's local wall clock —
+    otherwise iso_utc() tags a local time as UTC and lastConfirmedAliveAt is off
+    by the host's UTC offset. Only observable when the Postgres session TimeZone
+    is not UTC, so it is pinned to production's here."""
+    from datetime import datetime
+    from server.sessions import host_heartbeat as hb
+    host = "dtcheck-hb-utc"
+    try:
+        async with _database_timezone(pg_engine, pg_url, _SKEW_TZ), _module_db_on(pg_url):
+            fence = await hb.register(host)
+            assert await hb.beat(host, fence) is True
+            snap = await hb.snapshot()
+        skew = abs((datetime.utcnow() - snap.hosts[host].beat_at).total_seconds())
+        assert skew < 60, f"beat_at is {skew:.0f}s from naive UTC — stored as session-local wall clock"
+    finally:
+        await _delete_heartbeat(pg_engine, host)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_host_heartbeat_declare_dead_binds_db_clock_cutoff_on_postgres(pg_engine, pg_url):
+    """declare_dead() binds a DB-clock-derived cutoff against the naive beat_at
+    column. asyncpg rejects an AWARE value bound to a ``timestamp`` parameter
+    (DataError) — the latent twin of the snapshot() failure, unfired only because
+    nothing calls declare_dead in production yet."""
+    from server.sessions import host_heartbeat as hb
+    host = "dtcheck-hb-dead"
+    try:
+        async with _module_db_on(pg_url):
+            fence = await hb.register(host)
+            # Fresh beat: not dead yet (and, above all, no bind error).
+            assert await hb.declare_dead(host, dead_after_s=300, observed_fence=fence) is None
+            # Zero grace: the beat is at-or-before "now", so the fence bumps exactly once.
+            assert await hb.declare_dead(host, dead_after_s=0, observed_fence=fence) == fence + 1
+            assert await hb.beat(host, fence) is False, "old holder must be fenced out"
+    finally:
+        await _delete_heartbeat(pg_engine, host)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_autopilot_reversal_hint_lookback_is_not_shifted_by_local_offset_on_postgres(
+        pg_engine, pg_url, monkeypatch):
+    """The reversal-hint lookback filters the AWARE ``AutomationEvent.ts`` column.
+    A NAIVE ``datetime.utcnow()`` bound to a ``timestamptz`` parameter does not
+    fail — asyncpg reads it as *local* time, so on an EDT host the 30-day window
+    boundary silently lands 4 h late. An event 2 h inside the true boundary must
+    still be counted. The process's local zone is pinned to EDT/EST so the shift
+    exists on a UTC CI runner too."""
+    from datetime import timedelta
+    from sqlalchemy import delete
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from server.db.models import Automation, AutomationEvent, _utcnow
+    from server.sessions.orchestrator import SessionOrchestrator
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    event_id = "dtcheck-reversal-inside-window"
+    async with Session() as s:
+        if await s.get(Automation, "autopilot") is None:
+            s.add(Automation(id="autopilot"))
+        s.add(AutomationEvent(
+            id=event_id, automation_id="autopilot", kind="archive_reversed",
+            summary="dtcheck", target="o/r", detail={"goal": "dtcheck goal"},
+            ts=_utcnow() - timedelta(days=30) + timedelta(hours=2)))
+        await s.commit()
+    try:
+        with _process_local_timezone(monkeypatch, _SKEW_TZ):
+            async with _module_db_on(pg_url):
+                # `self` is never referenced in the body, so calling it unbound exercises
+                # the exact production coroutine without a live orchestrator.
+                hint = await SessionOrchestrator._autopilot_reversal_hint(None, "o/r")
+        assert hint is not None and "1 recently auto-archived" in hint, (
+            f"event 2h inside the 30-day window was not counted: {hint!r}")
+    finally:
+        async with Session() as s:
+            await s.execute(delete(AutomationEvent).where(AutomationEvent.id == event_id))
+            await s.commit()
