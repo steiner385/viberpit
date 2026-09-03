@@ -365,7 +365,8 @@ def daemon_role() -> str:
 # start() gates their creation on daemon_role()=="primary"; the single source of
 # truth for the completeness test in test_primary_lease.
 _PRIMARY_ONLY_LOOP_ATTRS: frozenset[str] = frozenset({
-    "_backlog_task", "_sdlc_intake_task", "_pm_sync_task", "_sdlc_synth_task",
+    "_backlog_task", "_sdlc_intake_task", "_pm_sync_task", "_gh_reconcile_task",
+    "_sdlc_synth_task",
     "_autopilot_task", "_cicd_task", "_archaudit_task", "_sweep_task",
     "_archive_limit_task", "_recurring_task",
 })
@@ -759,6 +760,36 @@ class SessionOrchestrator:
             save_relations=self._pm_sync_save_relations,
         )
         self._pm_sync_task: asyncio.Task | None = None
+        # GitHub Reconcile control loop (spec 003 §6): the WRITE half of the mirror —
+        # converges Projects v2 fields, board membership and native blocked-by edges
+        # toward the decision layer. Same injected-seam mold as pm-sync and it reuses
+        # pm-sync's GraphQL/field-cache seams verbatim (a mutation document rides the
+        # same PAT-preferring fetch). Safety rails are seams too: the SHA fence, the
+        # env kill switch and the write-ahead journal.
+        from server.automations.gh_reconcile import GhReconcileLoop
+        from server.github import sha_fence
+        self._gh_reconcile_ctx = AutomationContext("gh-reconcile")
+        self._gh_reconcile_loop = GhReconcileLoop(
+            self._gh_reconcile_ctx,
+            read_config=self._gh_reconcile_read_config,
+            list_products=self._pm_sync_list_products,
+            load_facts=self._gh_reconcile_load_facts,
+            mutate=self._pm_sync_fetch_projects,
+            journal_record=self._gh_reconcile_journal_record,
+            journal_applied=self._gh_reconcile_journal_applied,
+            journal_failed=self._gh_reconcile_journal_failed,
+            journal_park=self._gh_reconcile_journal_park,
+            journal_failure_count=self._gh_reconcile_journal_failure_count,
+            journal_parked=self._gh_reconcile_journal_parked,
+            journal_applied_keys=self._gh_reconcile_journal_applied_keys,
+            journal_recover=self._gh_reconcile_journal_recover,
+            request_sync=self._gh_reconcile_request_sync,
+            sha_fence=sha_fence.daemon_matches_origin_master,
+            kill_switch=self._gh_reconcile_kill_switch,
+            save_field_cache=self._pm_sync_save_project_fields,
+            now_utc=self._pm_sync_now_utc,
+        )
+        self._gh_reconcile_task: asyncio.Task | None = None
         # PM archaeology onboarding (design 2026-08-31 §5): the map-synthesis and
         # classification sessions ride the SAME spawn seam as the SDLC loops.
         # No polling loop in phase 2 — the /propose-map and /classify API routes
@@ -1052,6 +1083,13 @@ class SessionOrchestrator:
             self._pm_sync_task = asyncio.create_task(
                 self._pm_sync_tick_loop(interval=60.0), name="pm-sync-loop"
             )
+            # GitHub Reconcile control loop: one converge pass per interval. Slower
+            # than pm-sync on purpose — it writes to GitHub, and each cycle's inputs
+            # only move as fast as the mirror pm-sync refreshes. Off by default (DB
+            # row disabled AND the env kill switch), and every tick is SHA-fenced.
+            self._gh_reconcile_task = asyncio.create_task(
+                self._gh_reconcile_tick_loop(interval=120.0), name="gh-reconcile-loop"
+            )
             # SDLC Synthesizer control loop: one tick per interval (propose spec/plan
             # artifacts + enrich PR metadata). A disabled row makes each tick cheap.
             self._sdlc_synth_task = asyncio.create_task(
@@ -1240,7 +1278,7 @@ class SessionOrchestrator:
         # pins the full set by task name.
         for attr in ("_titling_task", "_goal_task", "_rotation_task", "_stall_task",
                      "_token_refresh_task", "_backlog_task", "_sdlc_intake_task",
-                     "_pm_sync_task",
+                     "_pm_sync_task", "_gh_reconcile_task",
                      "_sdlc_synth_task",
                      "_autopilot_task", "_cicd_task", "_archaudit_task", "_sweep_task",
                      "_archive_limit_task", "_janitor_task", "_recurring_task",
@@ -3734,6 +3772,138 @@ class SessionOrchestrator:
                 await self._bump_automation_active("pm-sync")
         except Exception:  # pragma: no cover — a heartbeat failure must not stall
             log.debug("pm_sync.bump_active_failed", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # GitHub Reconcile control-loop dependencies (injected into GhReconcileLoop)
+    #
+    # Everything GitHub-facing is REUSED from the pm-sync seams above (the
+    # PAT-preferring GraphQL fetch, the product list, the field-cache writer) —
+    # a mutation document is just a document. Only the journal, the facts loader,
+    # the sync request and the kill switch are new, and each is a thin wrapper
+    # over one pure function so the loop's logic stays in the automation module.
+    # ------------------------------------------------------------------
+
+    async def _gh_reconcile_read_config(self) -> tuple[str, dict]:
+        """The gh-reconcile row's (mode, config) merged onto schema defaults.
+
+        Mirrors ``_sdlc_synth_read_config``: three modes, and anything other than
+        an enabled row carrying ``dry_run``/``apply`` resolves to ``off`` — a bad
+        or absent row can never write to GitHub."""
+        from sqlalchemy import select
+        from server.automations.base import validate_config
+        from server.automations.gh_reconcile import GhReconcile
+        from server.db.models import Automation
+        enabled, mode, raw = False, None, {}
+        try:
+            async with db_session() as db:
+                row = (await db.execute(select(Automation).where(
+                    Automation.id == "gh-reconcile"))).scalar_one_or_none()
+                if row is not None:
+                    enabled, mode = bool(row.enabled), row.mode
+                    raw = dict(row.config) if row.config else {}
+        except Exception:
+            log.debug("gh_reconcile.config.load_failed", exc_info=True)
+        try:
+            config = validate_config(GhReconcile.config_schema, raw)
+        except ValueError:
+            config = validate_config(GhReconcile.config_schema, {})
+        effective = mode if (enabled and mode in ("dry_run", "apply")) else "off"
+        return effective, config
+
+    @staticmethod
+    def _gh_reconcile_kill_switch() -> bool:
+        """CCSWITCH_GH_RECONCILE_ENABLED, re-read every cycle (env edit + no restart)."""
+        from server.config import get_settings
+        return bool(get_settings().gh_reconcile_enabled)
+
+    async def _gh_reconcile_load_facts(self, product, now):
+        """One product's reconcile inputs (mirror, decisions, deps, node ids)."""
+        from server.pm import reconcile_inputs
+        async with db_session() as db:
+            return await db.run_sync(
+                lambda s: reconcile_inputs.load_product_facts(s, product, now=now))
+
+    async def _gh_reconcile_request_sync(self, project_id: str) -> None:
+        """Ask pm-sync for a forced pass over the product's repos.
+
+        The reconciler uses this both BEFORE writing (a stale mirror is refused,
+        not written through) and AFTER (so our own writes are re-ingested and
+        echo-suppressed rather than read back as human edits)."""
+        from sqlalchemy import select
+        from server.db.models import ProjectRepo
+        now = self._pm_sync_now_utc()
+        async with db_session() as db:
+            rows = (await db.execute(select(ProjectRepo).where(
+                ProjectRepo.project_id == project_id))).scalars().all()
+            for row in rows:
+                row.sync_requested_at = now
+
+    async def _gh_reconcile_journal_record(self, mutations: list, batch_id: str,
+                                           now, dry_run: bool) -> list[str]:
+        """Write-ahead: persist the batch as pending BEFORE it is sent."""
+        from server.pm import journal
+        async with db_session() as db:
+            return await db.run_sync(lambda s: journal.record_pending(
+                s, mutations, batch_id=batch_id, now=now, dry_run=dry_run))
+
+    async def _gh_reconcile_journal_applied(self, row_ids: list[str], now) -> None:
+        from server.pm import journal
+        async with db_session() as db:
+            await db.run_sync(lambda s: journal.mark_applied(s, row_ids, now))
+
+    async def _gh_reconcile_journal_failed(self, row_id: str, error: str, now) -> None:
+        from server.pm import journal
+        async with db_session() as db:
+            await db.run_sync(lambda s: journal.mark_failed(s, row_id, error, now))
+
+    async def _gh_reconcile_journal_park(self, row_id: str, reason: str, now) -> None:
+        from server.pm import journal
+        async with db_session() as db:
+            await db.run_sync(lambda s: journal.park(s, row_id, reason, now))
+
+    async def _gh_reconcile_journal_failure_count(self, mutation_id: str) -> int:
+        from server.pm import journal
+        async with db_session() as db:
+            return await db.run_sync(lambda s: journal.failure_count(s, mutation_id))
+
+    async def _gh_reconcile_journal_parked(self, mutation_id: str) -> bool:
+        from server.pm import journal
+        async with db_session() as db:
+            return await db.run_sync(lambda s: journal.is_parked(s, mutation_id))
+
+    async def _gh_reconcile_journal_applied_keys(self) -> set[str]:
+        from server.pm import journal
+        async with db_session() as db:
+            return await db.run_sync(journal.applied_keys)
+
+    async def _gh_reconcile_journal_recover(self, older_than) -> int:
+        """Mark pending rows older than *older_than* as interrupted (crash recovery)."""
+        from server.pm import journal
+        async with db_session() as db:
+            return await db.run_sync(
+                lambda s: journal.recover_interrupted(s, older_than))
+
+    async def _gh_reconcile_tick_loop(self, interval: float) -> None:
+        """Periodic driver for the gh-reconcile control loop (mirrors _pm_sync_tick_loop)."""
+        while True:
+            await self._gh_reconcile_tick_once()
+            await asyncio.sleep(interval)
+
+    async def _gh_reconcile_tick_once(self) -> None:
+        """One reconcile tick + an enabled-only ``last_active_at`` heartbeat.
+        Best-effort — neither the tick nor the heartbeat may crash the loop."""
+        if not await self._schedule_allows_tick("gh-reconcile"):
+            return
+        try:
+            await self._gh_reconcile_loop.tick()
+        except Exception:  # pragma: no cover — tick() already swallows; belt+braces
+            log.warning("gh_reconcile.tick_loop_error", exc_info=True)
+        try:
+            mode, _ = await self._gh_reconcile_read_config()
+            if mode != "off":
+                await self._bump_automation_active("gh-reconcile")
+        except Exception:  # pragma: no cover — a heartbeat failure must not stall
+            log.debug("gh_reconcile.bump_active_failed", exc_info=True)
 
     # ---------------------- pm onboarding seams (2026-08-31) --------------- #
 
@@ -6978,6 +7148,8 @@ class SessionOrchestrator:
             "backlog-runner": getattr(self, "_backlog_ctx", None),
             "autopilot": getattr(self, "_autopilot_ctx", None),
             "cicd-doctor": getattr(self, "_cicd_ctx", None),
+            "pm-sync": getattr(self, "_pm_sync_ctx", None),
+            "gh-reconcile": getattr(self, "_gh_reconcile_ctx", None),
         }
         out: dict[str, dict] = {}
         for a in registry.all():

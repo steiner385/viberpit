@@ -67,7 +67,10 @@ class GhReconcile:
     modes: tuple[str, ...] = ("off", "dry_run", "apply")
     config_schema = [
         ConfigField("max_mutations_per_cycle", "Blast cap (mutations per cycle)", "int", 50,
-                    "Exceeding this halts the product's cycle loudly; nothing is applied."),
+                    "Exceeding this halts the product's cycle loudly; nothing is applied. Board "
+                    "field bootstrap runs first and is not capped: up to three bounded mutations "
+                    "per product (create Score, create Stage, set Status options) may apply "
+                    "before this cap is evaluated."),
         ConfigField("migrate_cap", "Blast cap while migrate is on", "int", 500,
                     "Used instead of the normal cap for the one-time migration run."),
         ConfigField("migrate", "One-time migration", "bool", False,
