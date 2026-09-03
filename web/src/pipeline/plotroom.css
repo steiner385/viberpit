@@ -684,8 +684,11 @@ section h2 { font-size: 14px; margin: 18px 0 8px; color: var(--muted); }
 .lint-info { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 
 /* --- Legend slide-over (reuses the settings overlay/panel shell) --- */
-/* the legend's example "active" node must not pulse — the slide-in is the
-   only animation the panel adds (and it is reduced-motion gated already) */
+/* the legend's example "active" node is a static swatch, not a live node, so it
+   must not pulse. (This note used to add "the slide-in is the only animation the
+   panel adds"; that stopped being true when @keyframes prdash-settings-slide-in
+   was deleted and the panel moved onto the Sheet primitive, which animates
+   nothing — so this rule is now the panel's only animation-related declaration.) */
 .legend-panel .node.active .c { animation: none; }
 .legend-row { display: flex; align-items: center; gap: 12px; margin: 8px 0; }
 .legend-ex { flex-shrink: 0; display: flex; align-items: center; min-width: 30px;
