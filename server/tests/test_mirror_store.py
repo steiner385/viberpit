@@ -90,3 +90,62 @@ def test_upsert_relations_sets_parents_and_plans_deps():
     native = [d for d in db.query(WorkItemDep).all()
               if d.source == "native" and d.dst_ref == "steiner385/KinDash#12"][0]
     assert native.active is False
+
+
+def test_upsert_relations_backfills_fks_when_target_later_mirrored():
+    """FKs resolve to NULL at creation when the target isn't mirrored yet; a
+    later pass — once repo-sync catches up — must backfill them (issue #973)."""
+    db = _db()
+    _seed(db)
+    rels = [IssueRelView(repo=REPO, number=950, blocked_by=[f"{REPO}#949"],
+                         parent_ref=None, sub_issue_refs=[])]
+    mirror_store.upsert_relations(db, REPO, rels)
+    dep = db.query(WorkItemDep).filter_by(source="native").one()
+    assert dep.dst_work_item_id is None  # #949 not mirrored yet
+    # repo-sync catches up: #949 lands in work_items.
+    db.add(WorkItem(repo=REPO, number=949, kind="issue", state="open"))
+    db.commit()
+    # A refresh pass with the SAME observed edge backfills the FK (no reactivate,
+    # the row stayed active) — exercises the refresh path, not just reactivate.
+    mirror_store.upsert_relations(db, REPO, rels)
+    dep = db.query(WorkItemDep).filter_by(source="native").one()
+    assert dep.dst_work_item_id == db.query(WorkItem).filter_by(number=949).one().id
+
+
+def test_upsert_relations_only_touches_the_given_repo():
+    """The src_ref prefix filter must scope reconciliation to *this* repo — a dep
+    row owned by another repo is never deactivated by an unrelated repo's pass."""
+    db = _db()
+    _seed(db)
+    other = "steiner385/KinDash"
+    db.add(WorkItemDep(src_ref=f"{other}#5", dst_ref=f"{other}#4",
+                       source="native", active=True))
+    db.commit()
+    mirror_store.upsert_relations(db, REPO, [])  # REPO sees no edges
+    foreign = db.query(WorkItemDep).filter_by(src_ref=f"{other}#5").one()
+    assert foreign.active is True  # untouched by REPO's pass
+
+
+def test_upsert_project_items_keys_multiple_items_by_node_id():
+    """Preloaded existing-items dict must key correctly across many items and
+    still upsert-in-place on a second pass (no duplicate rows)."""
+    db = _db()
+    project = _seed(db)
+    gid = mirror_store.upsert_gh_project(db, project.id, GhProjectView(
+        node_id="PVT_1", number=7, title="x", updated_at=None))
+    now = datetime.now(timezone.utc)
+    items = [
+        GhProjectItemView(item_node_id="PVTI_1", repo=REPO, number=950, kind="issue",
+                          status="Ready", score=None, stage=None, updated_at=None),
+        GhProjectItemView(item_node_id="PVTI_2", repo=REPO, number=951, kind="issue",
+                          status="Blocked", score=None, stage=None, updated_at=None),
+    ]
+    mirror_store.upsert_project_items(db, gid, items, now)
+    assert db.query(GhProjectItem).count() == 2
+    # second pass flips a status in place — no new rows.
+    items[0] = GhProjectItemView(item_node_id="PVTI_1", repo=REPO, number=950,
+                                 kind="issue", status="Done", score=None,
+                                 stage=None, updated_at=None)
+    mirror_store.upsert_project_items(db, gid, items, now)
+    assert db.query(GhProjectItem).count() == 2
+    assert db.query(GhProjectItem).filter_by(gh_item_node_id="PVTI_1").one().status == "Done"

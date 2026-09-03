@@ -76,6 +76,16 @@ def test_project_lifecycle():
                       headers=IDENTITY_HEADERS)
         assert resp.status_code == 422
 
+        # malformed owner/repo rejected — the GraphQL builders %-interpolate these
+        # strings, so a quote/space/missing-slash must never reach persistence
+        # (issue #973). Each is a distinct 422 with the invalid_repo error code.
+        for bad in ('steiner385/Kin"Dash', "steiner385 / KinDash",
+                    "no-slash", "steiner385/", "a/b/c"):
+            resp = c.post("/api/pm/projects", json={
+                "name": "Bad", "repos": [{"repo": bad}]}, headers=IDENTITY_HEADERS)
+            assert resp.status_code == 422, f"{bad!r} should be rejected: {resp.text}"
+            assert resp.json()["detail"]["error"] == "invalid_repo"
+
         # list carries repos + counts
         resp = c.get("/api/pm/projects", headers=IDENTITY_HEADERS)
         assert resp.status_code == 200
