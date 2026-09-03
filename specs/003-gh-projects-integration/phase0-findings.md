@@ -109,3 +109,58 @@ required using the verified name:**
 gh auth refresh -s delete_repo
 gh repo delete steiner385/gh-projects-spike-003 --yes
 ```
+
+---
+
+## 2026-09-03 addendum: credential re-probe after App grant + PAT provisioning
+
+### (a) Org-level App grant — mutations verified
+
+`organization_projects: write` permission granted to the pr-dashy App installation for
+`steiner385`. The full Projects v2 **org-board** mutation set was verified under the App token:
+`createProjectV2`, `createProjectV2Field`, `addProjectV2ItemById` (private-repo issues),
+aliased `updateProjectV2ItemFieldValue` batch, and `deleteProjectV2` — all returned SUCCESS.
+The App token is therefore the right credential for org-owned boards.
+
+### (b) User-owned boards: GitHub platform gap — PAT required
+
+The App installation token **cannot** see user-owned Projects v2 at all. A probe with 24+
+boards present (`users/steiner385/projects`) returned `{"totalCount":0,"nodes":[]}` — no
+errors, just an empty list. This is confirmed as a GitHub platform limitation: no App
+permission exists for user-level Projects (the `organization_projects` permission only covers
+org-owned boards). This finding has no workaround within the App token model.
+
+A classic PAT with `project` + `repo` scopes was verified against the full user-owned
+mutation set: `createProjectV2`, `createProjectV2Field`, `addProjectV2ItemById` (private-repo
+issues), aliased `updateProjectV2ItemFieldValue` batch, and `deleteProjectV2` — all SUCCESS.
+The PAT is provisioned as `CCSWITCH_GH_PROJECT_TOKEN` in the daemon env
+(`dobby:/etc/ccswitch/daemon.env`).
+
+### (c) CORRECTION to Q1: App token "reads user projectsV2 OK" was a false positive
+
+The Phase 0 table entry "GitHub App installation token reads user Projects v2 — **Yes** —
+`totalCount:0, nodes:[]`" was a false positive. `totalCount:0` with no GraphQL errors means
+the query executed successfully but returned nothing — the App is blind to user boards, not
+forbidden. The probe ran with zero boards present; a subsequent probe with 24+ boards confirmed
+the App always returns empty for `user(login:).projectsV2`. **Phase A discovery must use the
+PAT, not the App token.** This PR (`fix/003-project-fetch-pat`) wires the PAT preference into
+`_pm_sync_fetch_projects`.
+
+### (d) Cross-installation limitation: org-hosted boards cannot resolve user-repo issue nodes
+
+The org installation token (`pr-dashy[bot]`) cannot resolve node IDs for issues in
+user-owned repos (`steiner385/cc-account-switcher`, `steiner385/KinDash`). Consequently,
+`addProjectV2ItemById` from an org-hosted board targeting user-repo issues fails under the App
+token. Org-hosted boards for user repos are not viable as an App-only solution; the PAT (which
+has `repo` scope and can see both repos) is required for item-level sync.
+
+### (e) Decision: hybrid credential model
+
+| Operation | Credential |
+|---|---|
+| Projects v2 reads and writes (all owners) | `CCSWITCH_GH_PROJECT_TOKEN` (classic PAT, `project`+`repo`) |
+| Everything else (PRs, issues, webhooks, branch protection, etc.) | GitHub App installation token (`token_for_owner`) |
+
+Boards created: `users/steiner385/projects/26` ("ccswitch") and `#27` ("KinDash"), titles
+matched to product slugs. Remaining ops item: delete the archived spike repo
+`steiner385/gh-projects-spike-003` (see cleanup note above).

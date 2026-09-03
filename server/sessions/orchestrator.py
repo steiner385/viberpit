@@ -3453,16 +3453,20 @@ class SessionOrchestrator:
     async def _pm_sync_fetch_projects(self, owner: str, query: str) -> dict:
         """Owner-aware GraphQL fetch for the Projects v2 mirror.
 
-        The ambient ``gh`` credential lacks ``read:project`` (Phase 0 finding),
-        so project-scoped queries run under ``owner``'s GitHub App installation
-        token: ``_gh_run`` re-sets ``GH_TOKEN`` from the token argument and strips
-        the ambient one, so the token is injected via the child env only — never
-        logged. If no App token is available for the owner (no provider / no
-        installation / mint failed), fall back to the plain ambient fetch and let
-        any scope error surface through the caller's per-product handling."""
+        Token resolution order (injected via child env only — never logged):
+        1. ``CCSWITCH_GH_PROJECT_TOKEN`` — a classic PAT with ``project``+``repo``
+           scopes; the only credential verified against user-owned Projects v2
+           (GitHub Apps have no user-level Projects permission; Phase 0 addendum
+           2026-09-03).  Used for ALL owners when set.
+        2. GitHub App installation token via ``token_for_owner(owner)`` — works
+           for org-owned boards and is the Phase A default when the PAT is absent.
+        3. Ambient ``gh`` credential (plain fetch) when neither token is available;
+           lets scope errors surface through the caller's per-product handling."""
         import json
         from server.github import app_auth
-        token = await asyncio.to_thread(app_auth.token_for_owner, owner)
+        token: str | None = os.environ.get("CCSWITCH_GH_PROJECT_TOKEN") or None
+        if token is None:
+            token = await asyncio.to_thread(app_auth.token_for_owner, owner)
         if token is None:
             return await self._pm_sync_fetch(query)
         proc = await asyncio.to_thread(
