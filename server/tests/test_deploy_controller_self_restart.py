@@ -1,10 +1,10 @@
 """A deploy that changes deploy code must restart the deploy controller.
 
-restart_units restarts ccswitch.service and (remotely) ccswitch-daemon.service —
-never ccswitch-deploy-controller.service. So the process that RUNS deploys keeps
-executing whatever code it started with.
+A deploy restarts ccswitch.service (steps.restart_edge) and every fleet daemon
+(server.deploy.runners) — never ccswitch-deploy-controller.service. So the process
+that RUNS deploys keeps executing whatever code it started with.
 
-Observed 2026-08-21: #719 taught restart_units to update a remote daemon's
+Observed 2026-08-21: #719 taught the (then) restart_units to update a remote daemon's
 checkout, that landed on disk at 18:18, and the controller kept running its
 16:56 code. The very next deploy therefore did NOT update rocky, which stayed on
 a stale commit — the failure #719 exists to prevent, reintroduced by the deployer

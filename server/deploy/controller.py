@@ -4,54 +4,17 @@ import json
 import logging
 import os
 import subprocess
-from typing import Any, Callable
+from typing import Callable
 
 from server.deploy import git as _git
+from server.deploy import runners as _runners
+from server.deploy import state as _state
 from server.deploy import steps as _steps
-from server.deploy import drain as _drain
 from server.deploy.types import DeployError, DeployStatus, Phase, PhaseState
+from server.hostname import self_host_name
 from server.obs.context import log_event, new_request_id
 
 log = logging.getLogger("server.deploy.controller")
-
-
-def default_daemon_factory(daemon_enabled: bool) -> "Callable[[], Any] | None":
-    """Return a factory that constructs a DaemonClient, or None if daemon is disabled.
-
-    Resolves the daemon the same way the edge does (``sessiond_endpoint``: the
-    ``CCSWITCH_SESSIOND_ENDPOINT`` URL, else the legacy socket path). It used to take the
-    legacy UDS path unconditionally, so on a host whose daemon listens only on https
-    (dobby, 2026-08-30: no ``sessiond.sock`` exists) every pre-deploy RPC failed —
-    "session snapshot failed (continuing)" on each upgrade, and on a daemon-changing
-    deploy the drain could not run either: the daemon was restarted "anyway", mid-turn.
-    """
-    if not daemon_enabled:
-        return None
-    from server.ipc.client import DaemonClient
-    from server.ipc.paths import sessiond_endpoint
-    return lambda: DaemonClient(sessiond_endpoint())
-
-
-async def _aclose_quietly(client: Any) -> None:
-    """Release a per-deploy ``DaemonClient``.
-
-    ``default_daemon_factory`` builds a NEW client per call site, and each one owns two
-    ``httpx.AsyncClient``s, two transports and — on the TLS branch — two certifi-loaded SSL
-    contexts. Left unclosed they survive until GC, holding their sockets: exactly the
-    "short-lived caller leaks the reserved health socket" shape ``DaemonClient.aclose``
-    exists to prevent.
-
-    Tolerant by design. The factory is an injection point and test doubles are plain
-    objects with only ``call``; a deploy must never fail because teardown found no
-    ``aclose``. Best-effort, logged at debug.
-    """
-    closer = getattr(client, "aclose", None)
-    if closer is None:
-        return
-    try:
-        await closer()
-    except Exception:  # noqa: BLE001 — teardown must never fail a deploy
-        log.debug("deploy: daemon client teardown failed", exc_info=True)
 
 
 def _default_changed_files(repo: str, a: str, b: str) -> list[str] | None:
@@ -65,22 +28,28 @@ def _default_changed_files(repo: str, a: str, b: str) -> list[str] | None:
 
 class DeployController:
     def __init__(self, repo: str, *, health_url: str, venv_python: str,
-                 daemon_client_factory: Callable[[], Any] | None = None,
                  daemon_enabled: bool = False,
-                 steps_mod=_steps, git_mod=_git, drain_mod=_drain,
+                 steps_mod=_steps, git_mod=_git, runners_mod=_runners, state_mod=_state,
+                 local_name: str | None = None,
                  changed_files_fn: Callable[[str, str, str], list[str] | None] = _default_changed_files,
                  status_path: str | None = None):
         self.repo = repo
         self.health_url = health_url
         self.venv_python = venv_python
-        self._client_factory = daemon_client_factory
         self.daemon_enabled = daemon_enabled
         self._steps = steps_mod
         self._git = git_mod
-        self._drain = drain_mod
+        self._runners = runners_mod
+        self._state = state_mod
+        # Which fleet host IS this process — the runner whose checkout is `repo` itself
+        # and whose unit restarts without ssh.
+        self._local_name = local_name or self_host_name()
         self._changed_files = changed_files_fn
         self._lock_acquired = False
         self._status_path = status_path
+        # Set by the runners phase; read by _rollback to rewind the checkouts it moved.
+        self._runner_targets: list | None = None
+        self._runner_results: dict | None = None
         # A deploy that changes deploy code schedules a restart of THIS process, so a
         # fresh controller may be born seconds after a deploy finished. Starting from an
         # empty DeployStatus made /status report that completed upgrade as "did not
@@ -125,6 +94,25 @@ class DeployController:
         self.status.phases[phase.value] = state.value
         self._persist_status()
 
+    def _on_host_progress(self, name: str, progress) -> None:
+        """Stream one runner's progress onto /status as it happens — the fan-out runs
+        several hosts at once and can take minutes, so waiting for the whole phase to
+        finish would leave the UI blind to which host is where."""
+        self.status.hosts[name] = progress.to_wire()
+        self._persist_status()
+
+    async def _rollback(self, local: str, *, daemon_changed: bool) -> None:
+        """Undo this deploy: the edge + local daemon via steps, then every REMOTE runner
+        whose checkout the runners phase already advanced."""
+        await asyncio.to_thread(self._steps.rollback_to, self.repo, local,
+                                daemon_changed=daemon_changed,
+                                daemon_enabled=self.daemon_enabled)
+        results = self._runner_results
+        targets = self._runner_targets
+        if results and targets:
+            await self._runners.rewind_runners(targets, results, sha=local,
+                                               local_name=self._local_name)
+
     async def deploy_once(self, target_sha: str | None = None) -> DeployStatus:
         """Run one deploy. Without *target_sha* the deploy targets origin/master's tip,
         exactly as always. With *target_sha* — the green-frontier path, used when the tip
@@ -137,6 +125,8 @@ class DeployController:
         self._lock_acquired = True
         self.status = DeployStatus(target_sha="", running=True)
         self._deploy_id = new_request_id()
+        self._runner_targets = None
+        self._runner_results = None
         local = ""
         daemon_changed = False
         controller_changed = False
@@ -189,16 +179,11 @@ class DeployController:
                 raise DeployError("preflight", f"CI verdict={verdict}")
             self._set(Phase.PREFLIGHT, PhaseState.DONE)
 
-            # --- save (snapshot live sessions; best-effort) ---
-            self._set(Phase.SAVE, PhaseState.RUNNING)
-            if self._client_factory is not None:
-                client = self._client_factory()
-                try:
-                    await client.call("snapshot_deploy")
-                except Exception:
-                    self.status.warnings.append("session snapshot failed (continuing)")
-                finally:
-                    await _aclose_quietly(client)
+            # --- save ---
+            # Session snapshots are per-runner now: each daemon in the fleet snapshots its
+            # OWN sessions at the top of its lifecycle, inside the runners phase. There is
+            # no fleet-wide snapshot left for the controller to take, but the phase is kept
+            # so the wire shape (and the UI's phase list) does not change.
             self._set(Phase.SAVE, PhaseState.DONE)
 
             # --- update ---
@@ -219,60 +204,53 @@ class DeployController:
             self._set(Phase.REPORT, PhaseState.RUNNING)
             changed = await asyncio.to_thread(self._changed_files, self.repo, local, remote)
             daemon_changed = self._steps.classify_change(changed) == "daemon_changed"
+            # Whether each runner must reinstall its venv. Fails safe on an uncomputable
+            # diff (changed is None), exactly as classify_change does.
+            deps_changed = (changed is None) or any(
+                f in ("pyproject.toml", "uv.lock") for f in changed)
             # The controller cannot restart itself inline — it is the process running
             # this deploy — so note it now; the deferred restart is scheduled in the
             # finally, once the status is terminal.
             controller_changed = self._steps.deploy_code_changed(changed)
             self._set(Phase.REPORT, PhaseState.DONE)
 
-            # --- restart ---
-            self._set(Phase.RESTART, PhaseState.RUNNING)
-            if daemon_changed and self._client_factory is not None:
-                client = self._client_factory()
-                log_event(log, logging.INFO, "deploy.drain.start", deploy_id=self._deploy_id)
-                try:
-                    result = await self._drain.drain_and_wait(client)
-                finally:
-                    await _aclose_quietly(client)
-                if result != "ready":
-                    self.status.warnings.append(f"drain {result} — restarting anyway")
-            if daemon_changed and self.daemon_enabled:
-                log_event(log, logging.INFO, "deploy.daemon.stop", deploy_id=self._deploy_id)
-            # Drop the edge's /events WebSocket before stopping the daemon. The long-lived
-            # connection holds uvicorn's graceful shutdown open for ~45s; closing it here
-            # lets the old daemon exit on SIGTERM instead of waiting for the edge to
-            # reconnect. Best-effort: a failure here must not abort the deploy (issue #740).
-            if daemon_changed and self._client_factory is not None:
-                _ec_client = self._client_factory()
-                try:
-                    await _ec_client.call("close_events_connections")
-                except Exception:
-                    log.debug("deploy: close_events_connections RPC failed (best-effort)",
-                              exc_info=True)
-                finally:
-                    await _aclose_quietly(_ec_client)
-            # Resolve the target sha BEFORE restarting: a remote daemon has its own
-            # checkout and restart_units fast-forwards it to exactly this commit, so
-            # both hosts land on the same code instead of the edge racing ahead.
+            # --- runners (every fleet daemon, local + remote; spec §2) ---
+            # Each runner snapshots, updates its own checkout, drains+restarts (only when
+            # the diff touched daemon code), verifies /info and restores its sessions.
+            # It runs BEFORE the edge restarts: daemon-before-edge is load-bearing (#190).
+            self._set(Phase.RUNNERS, PhaseState.RUNNING)
+            # The edge's health gate and the deploy_state row speak the SHORT sha; the
+            # runners merge/reset their checkouts to the FULL one (RunnerDeploy verifies
+            # /info by prefix, so a short /info sha still matches).
             short = await asyncio.to_thread(self._git.short_sha, self.repo, remote)
+            targets = await self._runners.load_runner_targets()
+            results = await self._runners.deploy_runners(
+                targets, target_sha=remote, daemon_changed=daemon_changed,
+                deps_changed=deps_changed, local_name=self._local_name,
+                local_daemon_enabled=self.daemon_enabled,
+                on_progress=self._on_host_progress)
+            self._runner_targets, self._runner_results = targets, results
+            for name, p in results.items():
+                self.status.hosts[name] = p.to_wire()
+            runner_failures = [f"{n} failed at {p.step or '?'}: {p.error or p.state}"
+                               for n, p in results.items() if p.state in self._runners.FAILED_STATES]
+            self._set(Phase.RUNNERS, PhaseState.FAILED if runner_failures else PhaseState.DONE)
+
+            # --- restart (the edge) ---
+            self._set(Phase.RESTART, PhaseState.RUNNING)
             try:
-                await asyncio.to_thread(self._steps.restart_units,
-                                        daemon_changed=daemon_changed,
-                                        daemon_enabled=self.daemon_enabled,
-                                        target_sha=short)
+                await asyncio.to_thread(self._steps.restart_edge)
             except Exception as e:
                 raise DeployError("restart", str(e)) from e
-            if daemon_changed and self.daemon_enabled:
-                log_event(log, logging.INFO, "deploy.daemon.start", deploy_id=self._deploy_id)
-            # Give the gate the longer window whenever a REMOTE daemon is in play — not just
+            # Give the gate the longer window whenever a REMOTE runner is in play — not just
             # when it was restarted. A remote restart returns before uvicorn is serving, so the
             # edge reports daemon:"unavailable" for tens of seconds; but even an EDGE-ONLY
             # deploy must re-attach the restarted edge to the remote daemon over a settling
             # tailnet, during which /healthz blocks and reports the daemon unavailable just the
             # same (the 2026-08-26 #780 rollback of a frontend-only deploy). Size the window by
-            # remote-daemon PRESENCE, not code-change; require_daemon_sha below still keys off
+            # remote-runner PRESENCE, not code-change; require_daemon_sha below still keys off
             # daemon_changed, since an edge-only deploy leaves the daemon on its prior commit.
-            _needs_daemon_window = daemon_changed or self._steps.remote_daemon_configured()
+            _needs_daemon_window = daemon_changed or self._steps.remote_runners_configured(targets)
             _attempts = (self._steps.HEALTH_ATTEMPTS_WITH_DAEMON if _needs_daemon_window
                          else self._steps.HEALTH_ATTEMPTS_EDGE_ONLY)
             # Only assert the daemon's sha when THIS deploy advanced it. An edge-only
@@ -292,48 +270,49 @@ class DeployController:
             base = self.health_url.rsplit("/healthz", 1)[0] or self.health_url
             await asyncio.to_thread(self._steps.require_endpoints_healthy, base)
             log_event(log, logging.INFO, "deploy.edge.cutover", deploy_id=self._deploy_id)
+            # The fleet's authoritative version moved: record it now (spec §1) so the skew
+            # gate measures every runner — including one that failed above — against it.
+            try:
+                await self._state.record_deploy(sha=remote, short=short,
+                                                daemon_changed=daemon_changed)
+            except Exception:
+                log.warning("deploy: could not record deploy_state", exc_info=True)
+                self.status.warnings.append("deployed version not recorded (deploy_state)")
             self._set(Phase.RESTART, PhaseState.DONE)
 
-            # --- resume (eager re-launch; only when the daemon actually restarted) ---
-            if daemon_changed and self._client_factory is not None:
-                self._set(Phase.RESUME, PhaseState.RUNNING)
-                client = self._client_factory()
-                try:
-                    self.status.restore = await client.call("restore_deploy")
-                    failed = self.status.restore.get("failed", [])
-                    recovered = len(self.status.restore.get("restored", []))
-                    lost = len(failed)
-                    # Log the full RPC result, not just counts: this status object is
-                    # the only other surface for it, and the controller's scheduled
-                    # self-restart wipes it seconds later (issue #864).
-                    log_event(log, logging.INFO, "deploy.sessions.reattach",
-                              deploy_id=self._deploy_id, recovered=recovered, lost=lost,
-                              restored=self.status.restore.get("restored", []),
-                              failed=failed,
-                              replayed=self.status.restore.get("replayed", []))
-                    if failed:
-                        self.status.warnings.append(f"resume failed for {len(failed)} session(s): {', '.join(failed)}")
-                except Exception:
-                    # Durable trace of the failure — the warning below lives on the
-                    # status object, which the self-restart wipes (issue #864).
-                    log.warning("deploy: restore_deploy RPC failed — restore outcome "
-                                "unknown", exc_info=True)
-                    self.status.warnings.append("session restore call failed")
-                finally:
-                    await _aclose_quietly(client)
-                self._set(Phase.RESUME, PhaseState.DONE)
-            else:
-                # Edge-only deploy: the daemon never restarted, so no sessions were dropped
-                # and there is nothing to restore. The phase still COMPLETED (trivially) —
-                # record it DONE. If left unset, the frontend's allPhasesDone() gate reads the
-                # missing phase as 'pending' and reports a spurious deploy *failure* even though
-                # nothing failed and deploy.error is None.
-                self._set(Phase.RESUME, PhaseState.DONE)
+            # --- resume: per-runner restores already ran inside the runners phase ---
+            # An edge-only deploy restarted no daemon, so every runner's restore is empty —
+            # the phase still COMPLETED and must be recorded DONE, or the frontend's
+            # allPhasesDone() gate reads the missing phase as 'pending' and reports a
+            # spurious deploy failure with deploy.error still None.
+            self._set(Phase.RESUME, PhaseState.RUNNING)
+            restored: list[str] = []
+            failed_sessions: list[str] = []
+            for name, p in results.items():
+                r = p.restore or {}
+                restored += list(r.get("restored", []))
+                failed_sessions += list(r.get("failed", []))
+            self.status.restore = {"restored": restored, "failed": failed_sessions}
+            # The full outcome, not just counts: this status object is wiped seconds later
+            # by the controller's own scheduled self-restart (issue #864).
+            log_event(log, logging.INFO, "deploy.sessions.reattach",
+                      deploy_id=self._deploy_id, recovered=len(restored),
+                      lost=len(failed_sessions), restored=restored, failed=failed_sessions)
+            if failed_sessions:
+                self.status.warnings.append(
+                    f"resume failed for {len(failed_sessions)} session(s): "
+                    f"{', '.join(failed_sessions)}")
+            self._set(Phase.RESUME, PhaseState.DONE)
 
             # --- publish (best-effort) ---
             publish_err = await asyncio.to_thread(self._steps.publish_deployment, remote)
             if publish_err:
                 self.status.warnings.append(f"could not publish GitHub deployment: {publish_err}")
+            if runner_failures:
+                # Decision 1a: the edge landed and stays; report the deploy as failed with
+                # the offending hosts named. Never a rollback — one lagging runner must not
+                # drag the whole fleet back.
+                self.status.error = "runners: " + "; ".join(runner_failures)
             return self.status
         except DeployError as e:
             self._set(Phase[e.phase.upper()], PhaseState.FAILED)
@@ -344,9 +323,7 @@ class DeployController:
             self.status.running = False
             # Roll back only if we already fast-forwarded (preflight failures changed nothing).
             if e.phase != "preflight" and local:
-                await asyncio.to_thread(self._steps.rollback_to, self.repo, local,
-                                        daemon_changed=daemon_changed,
-                                        daemon_enabled=self.daemon_enabled)
+                await self._rollback(local, daemon_changed=daemon_changed)
             return self.status
         except Exception as e:  # noqa: BLE001 — a deploy must always end in a reported state
             # Anything that is not a DeployError (an OSError from a missing launcher, a
@@ -364,9 +341,7 @@ class DeployController:
             self.status.error = f"{failed or 'deploy'}: unexpected {type(e).__name__}: {e}"
             self.status.running = False
             if failed not in (None, Phase.PREFLIGHT.value) and local:
-                await asyncio.to_thread(self._steps.rollback_to, self.repo, local,
-                                        daemon_changed=daemon_changed,
-                                        daemon_enabled=self.daemon_enabled)
+                await self._rollback(local, daemon_changed=daemon_changed)
             return self.status
         finally:
             self.status.running = False

@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from server.deploy.controller import DeployController, default_daemon_factory
+from server.deploy.controller import DeployController
 from server.deploy.detect import DetectLoop, compute_pending, edge_live_sha
 from server.deploy.types import DeployStatus
 
@@ -42,7 +42,8 @@ class _ControllerLike(Protocol):
 def build_controller_app(*, repo: str, health_url: str, venv_python: str, daemon_enabled: bool,
                          detect_loop: DetectLoop | None = None,
                          controller: _ControllerLike | None = None,
-                         status_path: str | None = None):
+                         status_path: str | None = None,
+                         init_db_url: str | None = None):
     # liveSha comes from the RUNNING edge (/healthz), not the checkout's HEAD — a
     # checkout fast-forwarded without a unit restart must show as behind, not
     # deployed (#859). edge_live_sha falls back to checkout HEAD when unreachable.
@@ -52,11 +53,17 @@ def build_controller_app(*, repo: str, health_url: str, venv_python: str, daemon
                                   live_sha_fn=functools.partial(edge_live_sha, health_url)))
     ctrl = controller or DeployController(repo, health_url=health_url, venv_python=venv_python,
                                           daemon_enabled=daemon_enabled,
-                                          daemon_client_factory=default_daemon_factory(daemon_enabled),
                                           status_path=status_path)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # The controller reads the DB (load_runner_targets, record_deploy), so the engine
+        # must exist — and it must be created HERE, on the loop uvicorn runs, never in a
+        # separate asyncio.run: an asyncpg pool is loop-bound and fails on first use if it
+        # was built on another loop. Tests pass no init_db_url and touch no DB.
+        if init_db_url is not None:
+            from server.db import init_db
+            await init_db(db_url=init_db_url)
         task = asyncio.create_task(loop.run(), name="deploy-detect-loop")
         try:
             yield

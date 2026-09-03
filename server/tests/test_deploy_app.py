@@ -84,22 +84,45 @@ def test_status_includes_restore(client):
     body = c.get("/status").json()
     assert body["deploy"]["restore"] == {"restored": ["s1"], "failed": ["s2"]}
 
-def test_build_controller_app_wires_daemon_factory_when_enabled():
-    """build_controller_app with daemon_enabled=True yields a controller with a non-None
-    factory that returns a DaemonClient; daemon_enabled=False yields None factory."""
-    from server.ipc.client import DaemonClient
-    from server.deploy import app as deploy_app
+def test_build_controller_app_wires_the_real_runner_and_state_modules():
+    """The fan-out and the deploy_state write are the controller's only remaining
+    collaborators (per-daemon RPCs moved into server.deploy.runners). The default build
+    must wire the real modules and this host's own fleet identity."""
+    from server.deploy import runners as runners_mod
+    from server.deploy import state as state_mod
+    from server.hostname import self_host_name
 
-    _, _, ctrl_enabled = deploy_app.build_controller_app(
+    _, _, ctrl = deploy_app.build_controller_app(
         repo="/r", health_url="http://h", venv_python="/v", daemon_enabled=True)
-    assert ctrl_enabled._client_factory is not None
-    # The factory must be callable and return a DaemonClient instance.
-    client = ctrl_enabled._client_factory()
-    assert isinstance(client, DaemonClient)
+    assert ctrl._runners is runners_mod
+    assert ctrl._state is state_mod
+    assert ctrl._local_name == self_host_name()
+    assert ctrl.daemon_enabled is True
 
-    _, _, ctrl_disabled = deploy_app.build_controller_app(
-        repo="/r", health_url="http://h", venv_python="/v", daemon_enabled=False)
-    assert ctrl_disabled._client_factory is None
+
+def test_lifespan_initialises_the_db_only_when_a_url_is_given(monkeypatch):
+    """The controller reads the fleet registry, so the engine must be built on the loop
+    uvicorn runs — an asyncpg pool is loop-bound. Tests pass no url and touch no DB."""
+    import server.db as db_mod
+    calls: list[str | None] = []
+
+    async def fake_init_db(db_url=None):
+        calls.append(db_url)
+    monkeypatch.setattr(db_mod, "init_db", fake_init_db)
+
+    app, _, _ = deploy_app.build_controller_app(
+        repo="/r", health_url="http://h", venv_python="/v", daemon_enabled=False,
+        controller=FakeController(), init_db_url="sqlite+aiosqlite:///:memory:")
+    with TestClient(app):
+        pass
+    assert calls == ["sqlite+aiosqlite:///:memory:"]
+
+    app2, _, _ = deploy_app.build_controller_app(
+        repo="/r", health_url="http://h", venv_python="/v", daemon_enabled=False,
+        controller=FakeController())
+    with TestClient(app2):
+        pass
+    assert calls == ["sqlite+aiosqlite:///:memory:"], "no url → no DB touched"
 
 
 def test_default_detect_loop_probes_edge_healthz_for_live_sha():
