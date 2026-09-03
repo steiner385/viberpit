@@ -1,9 +1,9 @@
 import * as React from 'react'
-import { Outlet, useLocation, useParams } from 'react-router-dom'
+import { Outlet, useLocation } from 'react-router-dom'
 import { useSessions } from '@/api/hooks'
 import { useNeedsYouTitle } from '@/hooks/useNeedsYouTitle'
 import { SessionRuntimeProvider } from '@/components/session/SessionRuntimeProvider'
-import { navDefForPath } from '@/shell/navDefs'
+import { useOpenSessionId } from '@/shell/openSessionId'
 import { readInitialPrompt } from '@/session/sessionNavState'
 
 export interface PageHostProps {
@@ -52,7 +52,8 @@ export interface PageHostProps {
  * must not attach a live runtime, and any future detail route (an initiative, a
  * product) would silently do the same. The section comes from `navDefForPath`,
  * the same map the route table is built from, so there is no second list of
- * "paths that own a session runtime" to drift.
+ * "paths that own a session runtime" to drift. Task 12 moved that derivation to
+ * `shell/openSessionId` so the dock branches on the identical value.
  *
  * ## Landmark
  *
@@ -69,12 +70,14 @@ export interface PageHostProps {
  * to a permanently-mounted region cannot clobber a page's own title.
  */
 export function PageHost({ dock }: PageHostProps) {
-  const { id } = useParams()
-  const { pathname, state } = useLocation()
+  const { state } = useLocation()
   const { data: sessions = [] } = useSessions()
   useNeedsYouTitle(sessions)
 
-  const openSessionId = id && navDefForPath(pathname)?.id === 'sessions' ? id : null
+  // Shared with `PromptDock` (see `shell/openSessionId`): the provider gate and
+  // the dock's composer/dispatch branch must be the SAME answer, or the dock
+  // renders `SessionComposer` outside the provider and throws.
+  const openSessionId = useOpenSessionId()
 
   const body = (
     <div data-region="app.main" className="flex-1 min-h-0 flex flex-col">

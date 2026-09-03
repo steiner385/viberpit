@@ -347,11 +347,18 @@ export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued
           onToggle={voice.toggle}
         />
 
+        {/* Programmatic picker only — the labelled control is the "Attach image"
+            button beside it. Kept out of the a11y tree (and out of the tab
+            order, which `aria-hidden` on a focusable element would otherwise
+            break) so it is not announced as an unlabelled form field: `hidden`
+            is a class, and axe under jsdom sees no stylesheet. */}
         <input
           ref={fileRef}
           type="file"
           accept="image/*,application/pdf,text/plain,text/csv,application/json,application/zip,.zip"
           multiple
+          tabIndex={-1}
+          aria-hidden="true"
           className="hidden"
           onChange={(e) => { if (e.target.files) void att.addFiles(e.target.files); e.target.value = '' }}
         />

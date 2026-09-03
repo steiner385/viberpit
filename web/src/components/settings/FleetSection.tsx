@@ -3,6 +3,12 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { api } from '@/api/client'
 import { usePendingDeploy } from '@/api/hooks'
+// The host shape, the query and its KEY live in `@/api/fleet` — one fetch,
+// shared with the prompt bar's Runner dropdown (DEC-2). The four mutations
+// below invalidate through `FLEET_HOSTS_KEY` rather than re-spelling
+// `['fleet','hosts']`: an open-coded invalidation that drifts from the query
+// key does not error, it just silently stops refreshing — a host the operator
+// adds, enables or removes would sit there until a reload.
 import { FLEET_HOSTS_KEY, useFleetHosts, type FleetHost } from '@/api/fleet'
 
 /** Prefix match, not ===: hosts abbreviate the same commit to different
@@ -34,6 +40,7 @@ function capacityLabel(h: FleetHost): string {
  */
 export function FleetSection() {
   const queryClient = useQueryClient()
+  // 15s, not the default 30s: this table shows live health and probe results.
   const { data, isLoading, isError } = useFleetHosts(15_000)
   // Newest known sha: the deploy's pending target when it reports one, else the
   // edge's own live sha. A host whose sha trails it (and that has ssh config)
