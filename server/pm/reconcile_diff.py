@@ -45,10 +45,10 @@ class DepView:
 
 def should_push(decided_at: datetime | None, gh_updated_at: datetime | None,
                 mirrored_value: object) -> bool:
-    if decided_at is None:
-        return mirrored_value is None
-    if gh_updated_at is None:
+    if mirrored_value is None:
         return True
+    if decided_at is None or gh_updated_at is None:
+        return decided_at is not None
     return decided_at > gh_updated_at
 
 

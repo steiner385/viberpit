@@ -27,8 +27,10 @@ def test_diff_fields_emits_only_changed_and_pushable():
     assert [(m.kind, m.field, m.old_value, m.new_value) for m in muts] == [
         ("set_field", "Status", "Backlog", "Ready")]
     assert muts[0].target_node_id == "PVTI_5" and muts[0].initiated_by == "status:o/r#5"
-    # human edited after the decision -> nothing
-    assert diff_fields(desired, _mirror(status="Backlog", gh_updated_at=T2)) == []
+    # set fields suppressed when human-edited, but unset fields always fillable
+    muts = diff_fields(desired, _mirror(status="Backlog", gh_updated_at=T2))
+    assert [(m.kind, m.field, m.old_value, m.new_value) for m in muts] == [
+        ("set_field", "Score", None, 480.0)]
 
 
 def test_mutation_key_is_stable_and_value_sensitive():
@@ -53,3 +55,7 @@ def test_compile_edges_prose_without_native_twin():
     assert [(m.target_node_id, m.new_value, m.initiated_by) for m in muts] == [
         ("I_5", "I_3", "compile:prose:o/r#5->o/r#3")]   # #6 has native twin; #7 unresolved node; #8 inactive
     assert compile_edges(deps, nodes, already={muts[0].key()}) == []
+
+
+def test_initial_fill_pushes_even_when_item_updated_after_decision():
+    assert should_push(T1, T2, None) is True
