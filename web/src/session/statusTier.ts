@@ -4,7 +4,7 @@ import {
   ListOrdered, UserCheck, WifiOff,
 } from 'lucide-react'
 import type { ComponentType } from 'react'
-import type { SessionStatus } from '@/api/types'
+import { TERMINAL_STATUSES, type SessionStatus } from '@/api/types'
 
 export type StatusTier = 'busy' | 'needs-you' | 'your-turn' | 'waiting' | 'error' | 'unreachable'
 
@@ -25,12 +25,23 @@ const SLATE = 'text-slate-500 dark:text-slate-400'
 // A daemon not confirmed alive within the truth bound (spec 002 FR-104): a
 // "Working…" pulse and a "Ready"/"Your turn" affordance are equally promises it
 // cannot keep. Non-terminal sessions demote to this; terminal ones never do.
-export const UNREACHABLE: StatusPresentation = {
+// Module-private: the demotion is applied here in statusPresentation(), never by
+// callers, so nothing outside this file needs the constant (#961 item 7).
+const UNREACHABLE: StatusPresentation = {
   tier: 'unreachable', label: 'Unreachable', Icon: WifiOff, textClass: SLATE,
 }
 
+// The heartbeat snapshot could NOT be read (liveness 'unknown' — DB down at the edge):
+// we could not confirm the host is gone, only that we could not check. Surfaced as a
+// gentler, non-actionable degraded pill so degradation is visible but a transient blip
+// does not scream "Unreachable" across the whole board (spec 002 NFR-5). Reuses the
+// 'unreachable' tier (muted, non-pulsing) to avoid a parallel tier vocabulary.
+const UNKNOWN_LIVENESS: StatusPresentation = {
+  tier: 'unreachable', label: 'Status unknown', Icon: HelpCircle, textClass: SLATE,
+}
+
 // Terminal states are truthfully finished without a live daemon — never demoted.
-const TERMINAL = new Set(['complete', 'ended', 'archived'])
+// Single source of truth for the vocabulary lives in api/types.ts (#961 item 5).
 
 // One table, keyed by the rich status string. 'working' is a tolerated legacy alias.
 //
@@ -107,11 +118,16 @@ const seenUnknownStatuses = new Set<string>()
 export function statusPresentation(
   state: string, opts?: StatusPresentationOpts,
 ): StatusPresentation {
+  // Liveness demotion is checked FIRST — before the interrupted-by-restart relabel
+  // (#961 item 3). A non-fresh host cannot honor a "Working…"/"Ready" promise; it
+  // equally cannot honor the actionable "Interrupted — re-send to resume" affordance,
+  // so rendering that pill over a dead daemon is exactly the FR-104 failure. 'unknown'
+  // (a failed snapshot, not an observed death) surfaces as its own gentler pill.
+  if (opts?.liveness && opts.liveness !== 'fresh' && !TERMINAL_STATUSES.has(state)) {
+    return opts.liveness === 'unknown' ? UNKNOWN_LIVENESS : UNREACHABLE
+  }
   if (opts?.interruptedByRestart && RESTART_STRANDABLE.has(state)) {
     return INTERRUPTED_BY_RESTART
-  }
-  if (opts?.liveness && opts.liveness !== 'fresh' && !TERMINAL.has(state)) {
-    return UNREACHABLE
   }
   // Cast to widen the key type for lookup only: `state` arrives as a plain string off
   // the wire, so an unknown value must still be *handled* (FALLBACK + the warn below)

@@ -30,7 +30,7 @@ async def test_tick_beats_registered_row(isolated_db):
 
     await orch._heartbeat_tick()
 
-    snap = await host_heartbeat.snapshot()
+    snap = (await host_heartbeat.snapshot()).hosts
     assert self_host_name() in snap, "host row must be present after a tick"
     # The fence must not change on a successful beat.
     assert snap[self_host_name()].fence == orch._hb_fence
@@ -98,7 +98,7 @@ async def test_tick_retries_register_when_never_registered(isolated_db):
     await orch._heartbeat_tick()
 
     assert orch._hb_fence is not None, "tick must re-register after a failed boot register"
-    snap = await host_heartbeat.snapshot()
+    snap = (await host_heartbeat.snapshot()).hosts
     assert self_host_name() in snap
 
 

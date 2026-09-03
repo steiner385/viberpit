@@ -156,9 +156,9 @@ Note the signature refinement the race test forces: `declare_dead(host, *, dead_
 
 **Interfaces:**
 - Produces:
-  - `LivenessState = Literal["fresh", "stale", "unreachable", "dead"]`
+  - `LivenessState = Literal["fresh", "stale", "unreachable", "dead", "unknown"]`
   - `@dataclass(frozen=True) Liveness(state: LivenessState, last_confirmed_alive_at: datetime | None)`
-  - `def derive_liveness(beat_at: datetime | None, now: datetime, *, interval_s: float = 10.0, dead_after_s: float = 300.0, declared_dead: bool = False) -> Liveness`
+  - `def derive_liveness(beat_at: datetime | None, now: datetime, *, interval_s: float = 10.0, dead_after_s: float = 300.0, declared_dead: bool = False, snapshot_failed: bool = False) -> Liveness`
 
 - [ ] **Step 1: Write the failing table-driven test**
 
@@ -221,7 +221,7 @@ def test_missing_row_is_fresh_unknown():
 
 **Interfaces:**
 - Consumes: `host_heartbeat.snapshot()` (Task 2), `derive_liveness` (Task 3).
-- Produces: payload fields `"liveness": "fresh"|"stale"|"unreachable"|"dead"` and `"lastConfirmedAliveAt": <iso8601 | null>` on session list + detail responses.
+- Produces: payload fields `"liveness": "fresh"|"stale"|"unreachable"|"dead"|"unknown"` and `"lastConfirmedAliveAt": <iso8601 | null>` on session list + detail responses. The liveness keys are OMITTED entirely on mutation responses that fetched no snapshot, so a field-level cache merge never clobbers a demotion with a stale `fresh`. A failed snapshot reports `"unknown"` (NFR-5), never `fresh`.
 
 - [ ] **Step 1: Failing test** — API test (existing auth-pinned client fixture pattern): create a session row stamped `host="w1"`; seed a `HostHeartbeat` row aged 999 s; GET the list; assert `liveness == "unreachable"`. Second test: session with `host=None` (in-process) → `"fresh"` with null `lastConfirmedAliveAt`. Third: no heartbeat row at all → `"fresh"` (rollout rule).
 - [ ] **Step 2: Run → FAIL.**
@@ -231,7 +231,7 @@ def test_missing_row_is_fresh_unknown():
 ### Task 6: Frontend truth — liveness demotion + Unknown fallback
 
 **Files:**
-- Modify: `web/src/api/types.ts` (Session gains `liveness?: 'fresh'|'stale'|'unreachable'|'dead'`, `lastConfirmedAliveAt?: string | null`)
+- Modify: `web/src/api/types.ts` (Session gains `liveness?: 'fresh'|'stale'|'unreachable'|'dead'|'unknown'`, `lastConfirmedAliveAt?: string | null`; also the single home for the `TERMINAL_STATUSES` / `INACTIVE_SESSION_STATUSES` / `ARCHIVABLE_STATUSES` vocabularies)
 - Modify: `web/src/session/statusTier.ts`
 - Modify: callers that pass opts to `statusPresentation()` (grep `statusPresentation(` and `interruptedByRestart` across `web/src/` — SessionCard, triageTier, anywhere building opts) to thread `liveness`
 - Modify: `web/src/components/SessionCard.tsx` — "last seen X ago" subline when demoted (relative time from `lastConfirmedAliveAt`, same relative-time util the card already uses — grep for the existing formatter before adding one)

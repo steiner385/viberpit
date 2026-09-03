@@ -6,6 +6,7 @@ import {
   useAutomationActionable, useAutomationTrigger,
 } from '@/api/hooks'
 import { fetchPrDoctorJob, type Automation, type ActionSpec } from '@/api/automations'
+import { INACTIVE_SESSION_STATUSES } from '@/api/types'
 import { ConsolidatePanel } from '@/components/ConsolidatePanel'
 import { BacklogGroupsPanel } from '@/components/BacklogGroupsPanel'
 import { ManualDispatchDialog } from '@/components/ManualDispatchDialog'
@@ -13,9 +14,6 @@ import { ManualDispatchDialog } from '@/components/ManualDispatchDialog'
 const LEVEL_DOT: Record<string, string> = {
   idle: 'bg-gray-400', active: 'bg-blue-500', warn: 'bg-amber-500', error: 'bg-red-500',
 }
-
-// Mirrors backend INACTIVE_SESSION_STATUSES (server/db/models.py).
-const INACTIVE_SESSION_STATUSES = new Set(['ended', 'archived'])
 
 // --- Spawned sessions section ------------------------------------------------
 

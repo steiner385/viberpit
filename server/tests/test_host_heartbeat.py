@@ -20,6 +20,35 @@ async def test_register_is_idempotent_on_fence(isolated_db):
 
 
 @pytest.mark.asyncio
+async def test_register_refreshes_epoch_on_collision(isolated_db):
+    """A restarted daemon adopts the surviving fence but must stamp its OWN epoch —
+    otherwise the row carries the dead incarnation's epoch forever (#961 item 1)."""
+    assert await hb.register("w1", epoch="epoch-A") == 1
+
+    async def _epoch() -> str | None:
+        async with db_session() as db:
+            row = await db.get(HostHeartbeat, "w1")
+            assert row is not None
+            return row.epoch
+
+    assert await _epoch() == "epoch-A"
+    # Re-register (same host, new process) with a new epoch: fence is adopted (still 1),
+    # but the epoch must now reflect the new incarnation.
+    assert await hb.register("w1", epoch="epoch-B") == 1
+    assert await _epoch() == "epoch-B"
+
+
+@pytest.mark.asyncio
+async def test_register_collision_without_epoch_leaves_epoch_intact(isolated_db):
+    """A re-register that carries no epoch must not blank an existing one."""
+    await hb.register("w1", epoch="epoch-A")
+    await hb.register("w1")  # no epoch
+    async with db_session() as db:
+        row = await db.get(HostHeartbeat, "w1")
+        assert row is not None and row.epoch == "epoch-A"
+
+
+@pytest.mark.asyncio
 async def test_beat_fails_after_fence_bump(isolated_db):
     fence = await hb.register("w1")
     await _age("w1", 999)

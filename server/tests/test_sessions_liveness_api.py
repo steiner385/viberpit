@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from server.api.sessions import _record_to_dict
+from server.api.sessions import _SNAPSHOT_FAILED, _record_to_dict
 from server.sessions.types import SessionRecord
 from server.sessions.host_heartbeat import HeartbeatState
 
@@ -71,3 +71,41 @@ def test_missing_row_is_fresh_null():
     assert d["liveness"] == "fresh"
     assert d["lastConfirmedAliveAt"] is None
     assert d["status"] == "in_progress"
+
+
+def test_failed_snapshot_is_unknown_not_fresh():
+    """A FAILED snapshot (DB down at the edge) → unknown, NOT fresh (NFR-5).
+
+    Degradation must be visible; a healthy-looking "fresh" over an unread heartbeat
+    table is exactly the false-fresh the spec forbids.
+    """
+    rec = _make_record(host="w1")
+    d = _record_to_dict(rec, heartbeats=_SNAPSHOT_FAILED)
+    assert d["liveness"] == "unknown"
+    assert d["lastConfirmedAliveAt"] is None
+
+
+def test_no_snapshot_omits_liveness_keys():
+    """A mutation endpoint that fetched no snapshot (heartbeats=None) must OMIT the
+    liveness keys entirely — so a field-level cache merge preserves whatever demotion
+    the last list/get computed instead of clobbering it with a stale "fresh" (#961 item 7).
+    """
+    rec = _make_record(host="w1")
+    d = _record_to_dict(rec)  # no heartbeats arg
+    assert "liveness" not in d
+    assert "lastConfirmedAliveAt" not in d
+    # Everything else still serializes.
+    assert d["status"] == "in_progress"
+
+
+def test_liveness_evaluated_against_db_now_not_edge_clock():
+    """Thresholds use the supplied DB clock (heartbeats_now), not the edge's wall clock
+    (FR-102). A beat that looks 999 s old against the edge but only 5 s old against the
+    DB clock the snapshot was read at must read fresh — no false demotion under skew.
+    """
+    beat = datetime.utcnow() - timedelta(seconds=999)
+    hosts = {"w1": HeartbeatState(host="w1", beat_at=beat, fence=1, epoch=None, age_s=999)}
+    rec = _make_record(host="w1")
+    # DB clock is only 5 s ahead of the beat, though the edge wall clock is ~999 s ahead.
+    d = _record_to_dict(rec, heartbeats=hosts, heartbeats_now=beat + timedelta(seconds=5))
+    assert d["liveness"] == "fresh"

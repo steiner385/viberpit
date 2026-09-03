@@ -80,6 +80,44 @@ export function isPreSpawnStatus(status: string | null | undefined): boolean {
   return !!status && PRE_SPAWN_STATUSES.has(status as SessionStatus)
 }
 
+// ---------------------------------------------------------------------------
+// Session-status vocabularies — the single home for "which statuses count as X"
+// (constitution VI). These used to live as three independent inline Sets in
+// statusTier.ts, AutomationsTab.tsx and SessionList.tsx, which silently drifted;
+// they are DISTINCT concepts (a session can be terminal-for-liveness without
+// being bulk-archivable), so they stay separate named sets — but co-located here
+// beside PRE_SPAWN_STATUSES so every classification has ONE definition.
+//
+// 'archived' is a real backend lifecycle status but is deliberately NOT in the
+// SessionStatus union (it never arrives on a live session payload), so the sets
+// that include it are typed ReadonlySet<string> rather than <SessionStatus>.
+// ---------------------------------------------------------------------------
+
+/**
+ * Terminal statuses: a session in one of these is truthfully finished WITHOUT a
+ * live daemon, so host liveness never demotes it (statusTier.ts). A "Working…"
+ * pulse or an "Unreachable" pill over a genuinely-complete session would both be
+ * lies — see the liveness demotion in statusPresentation().
+ */
+export const TERMINAL_STATUSES: ReadonlySet<string> = new Set(['complete', 'ended', 'archived'])
+
+/**
+ * Inactive statuses: the session is no longer live ('ended' — process gone;
+ * 'archived' — cwd moved out, kept for review). Mirrors the backend's
+ * INACTIVE_SESSION_STATUSES (server/db/models.py); used to route a click to the
+ * review vs. open handler and to count "active" sessions.
+ */
+export const INACTIVE_SESSION_STATUSES: ReadonlySet<string> = new Set(['ended', 'archived'])
+
+/**
+ * Archivable statuses: a resting, finished session a bulk "Archive done" action
+ * may sweep. Narrower than TERMINAL (excludes already-'archived') and includes
+ * 'done', which TERMINAL does not (a 'done' session is between turns, not finished).
+ */
+export const ARCHIVABLE_STATUSES: ReadonlySet<SessionStatus> = new Set<SessionStatus>([
+  'done', 'complete', 'ended',
+])
+
 /** A sub-agent (Task/Agent call) summary, nested under its session in the list. */
 export interface SubAgentSummary {
   agentId: string            // the spawning Task tool-use id (= key into reducer state.subAgents)
@@ -151,8 +189,9 @@ export interface Session {
    *  came back idle via rehydrate). The dashboard labels it "re-send to resume". Transient. */
   interruptedByRestart?: boolean
   /** Derived at the edge from the owning host's heartbeat (spec 002 FR-103).
-   *  Absent/`fresh` ⇒ no demotion. */
-  liveness?: 'fresh' | 'stale' | 'unreachable' | 'dead'
+   *  Absent/`fresh` ⇒ no demotion. `unknown` ⇒ the heartbeat snapshot could not be
+   *  read (DB down at the edge) — visibly degraded, never silently fresh (NFR-5). */
+  liveness?: 'fresh' | 'stale' | 'unreachable' | 'dead' | 'unknown'
   /** ISO8601 of the owning host's last confirmed heartbeat, or null (in-process
    *  sessions and hosts with no heartbeat row). */
   lastConfirmedAliveAt?: string | null

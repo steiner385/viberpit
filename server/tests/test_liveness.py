@@ -36,6 +36,16 @@ def test_missing_row_is_fresh_unknown():
     assert lv.state == "fresh" and lv.last_confirmed_alive_at is None
 
 
+def test_snapshot_failed_is_unknown_not_fresh():
+    # NFR-5: a FAILED snapshot (DB down at the edge) is not the same as a missing row.
+    # We have no evidence at all, so degradation must be visible — never false-fresh.
+    lv = derive_liveness(None, NOW, snapshot_failed=True)
+    assert lv.state == "unknown" and lv.last_confirmed_alive_at is None
+    # snapshot_failed wins even if a (stale) beat happens to be supplied.
+    lv2 = derive_liveness(NOW - timedelta(seconds=5), NOW, snapshot_failed=True)
+    assert lv2.state == "unknown"
+
+
 # --------------------------------------------------------------------------- #
 # Threshold knobs. These are read inside the session serializer (every session,
 # every request, with no try/except above it) and at the top of the daemon's
