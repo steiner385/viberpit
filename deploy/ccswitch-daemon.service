@@ -24,6 +24,10 @@ EnvironmentFile=/etc/ccswitch/ccswitch.env
 # transcript-audit V4 rationale as ccswitch.service: bound SIGTERM so the daemon
 # lifespan shutdown — x11 teardown, reauth shutdown, orchestrator stop — actually
 # runs instead of being SIGKILLed).
+# Boot-time version reconcile (spec: fleet deploy fan-out §3): fast-forward this checkout to
+# deploy_state.deployed_sha when it is behind. Always exits 0 — a runner that cannot
+# reconcile still starts; the edge's skew gate keeps it out of dispatch until fixed.
+ExecStartPre=/home/tony/GitHub/cc-account-switcher-deploy/.venv/bin/python -m server.deploy.runner_sync --repo /home/tony/GitHub/cc-account-switcher-deploy
 ExecStart=/home/tony/GitHub/cc-account-switcher-deploy/.venv/bin/python -m server.ipc
 # Restart=always, NOT on-failure: an out-of-band SIGTERM (a stray kill/pkill, not a
 # `systemctl stop`) makes the daemon exit with Result=success, which on-failure does

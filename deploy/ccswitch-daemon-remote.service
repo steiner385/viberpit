@@ -23,6 +23,10 @@ RuntimeDirectoryPreserve=yes
 StateDirectory=ccswitch
 WorkingDirectory=/home/tony/GitHub/ccswitch
 EnvironmentFile=/etc/ccswitch/ccswitch.env
+# Boot-time version reconcile (spec: fleet deploy fan-out §3): fast-forward this checkout to
+# deploy_state.deployed_sha when it is behind. Always exits 0 — a runner that cannot
+# reconcile still starts; the edge's skew gate keeps it out of dispatch until fixed.
+ExecStartPre=/home/tony/GitHub/ccswitch/.venv/bin/python -m server.deploy.runner_sync --repo /home/tony/GitHub/ccswitch
 ExecStart=/home/tony/GitHub/ccswitch/.venv/bin/python -m server.ipc
 # Restart=always, NOT on-failure: an out-of-band SIGTERM exits with Result=success,
 # which on-failure does NOT restart — the daemon would then stay dead and the edge
