@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, select, tuple_
 
 from server.audit import record_audit
 from server.auth.middleware import current_identity
@@ -19,11 +19,14 @@ from server.db import get_db
 from server.db.models import (
     PROJECT_EDGE_KINDS,
     Feature,
+    GhProject,
+    GhProjectItem,
     Project,
     ProjectEdge,
     ProjectRepo,
     TriageProposal,
     WorkItem,
+    WorkItemDep,
 )
 
 router = APIRouter(prefix="/api/pm", tags=["pm"])
@@ -258,6 +261,101 @@ async def create_edge(
     await record_audit(db=db, type="pm.edge.create", identity=identity,
                        detail={"src": slug, "dst": body.dstSlug, "kind": body.kind})
     return _edge_to_dict(edge, {src.id: src.slug, dst.id: dst.slug})
+
+
+@router.get("/projects/{slug}/deps")
+async def project_deps(
+    slug: str,
+    _identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Return dep edges + drift audit for a project (spec 003 Phase A)."""
+    from server.pm.drift import DepEdgeView, compute_drift
+
+    p = await _load_project(db, slug)
+    repos = {r.repo for r in (await db.execute(
+        select(ProjectRepo).where(ProjectRepo.project_id == p.id)
+    )).scalars().all() if r.repo}
+    work_items_raw = (await db.execute(
+        select(WorkItem).where(WorkItem.repo.in_(repos), WorkItem.kind == "issue")
+    )).scalars().all()
+    items: dict[str, WorkItem] = {f"{w.repo}#{w.number}": w for w in work_items_raw}
+    open_refs = {ref for ref, w in items.items() if (w.state or "open") == "open"}
+
+    gh = (await db.execute(
+        select(GhProject).where(GhProject.project_id == p.id)
+    )).scalar_one_or_none()
+    project_refs: set[str] = set()
+    if gh is not None:
+        linked = (await db.execute(
+            select(GhProjectItem).where(GhProjectItem.gh_project_id == gh.id)
+        )).scalars().all()
+        by_id = {w.id: ref for ref, w in items.items()}
+        # work_item_id=None (draft/unresolved items) never matches a by_id key
+        project_refs = {by_id[i.work_item_id] for i in linked if i.work_item_id in by_id}
+
+    all_dep_rows = (await db.execute(select(WorkItemDep))).scalars().all()
+    # Filter in Python: keep only deps whose src belongs to a project repo.
+    dep_rows = [d for d in all_dep_rows
+                if d.src_ref and "#" in d.src_ref and d.src_ref.rsplit("#", 1)[0] in repos]
+
+    # Cross-product visibility (spec goal): a dep may target another onboarded
+    # product's mirrored issue. Resolve dst refs that are NOT in the project-scoped
+    # items map against ALL mirrored WorkItems (single query, kind "issue"), so their
+    # dstState is populated and they don't land in unresolvedTargets. Genuinely
+    # unmirrored targets stay null → unresolvedTargets.
+    cross_states: dict[str, str | None] = {}
+    cross_refs = {d.dst_ref for d in dep_rows
+                  if d.dst_ref and "#" in d.dst_ref and d.dst_ref not in items}
+    if cross_refs:
+        parsed: list[tuple[str, int]] = []
+        for ref in cross_refs:
+            r_repo, _, r_num = ref.rpartition("#")
+            if r_repo and r_num.isdigit():
+                parsed.append((r_repo, int(r_num)))
+        if parsed:
+            cross_items = (await db.execute(
+                select(WorkItem).where(
+                    WorkItem.kind == "issue",
+                    tuple_(WorkItem.repo, WorkItem.number).in_(parsed),
+                )
+            )).scalars().all()
+            cross_states = {f"{w.repo}#{w.number}": w.state for w in cross_items}
+
+    def _dst_state(ref: str) -> str | None:
+        if ref in items:
+            return items[ref].state
+        return cross_states.get(ref)
+
+    edges = [DepEdgeView(
+        src_ref=d.src_ref or "",
+        dst_ref=d.dst_ref or "",
+        source=d.source or "",
+        active=bool(d.active),
+        dst_state=_dst_state(d.dst_ref or ""),
+    ) for d in dep_rows]
+
+    drift = compute_drift(edges, open_refs, project_refs,
+                          {ref: items[ref].body for ref in open_refs},
+                          epic_refs={ref for ref, w in items.items() if w.is_epic})
+    if gh is None:
+        drift.missing_from_project = []
+
+    return {
+        "project": None if gh is None else {
+            "number": gh.gh_project_number,
+            "title": gh.title,
+            "lastSyncedAt": gh.last_synced_at.isoformat() if gh.last_synced_at else None,
+        },
+        "edges": [{"src": e.src_ref, "dst": e.dst_ref, "source": e.source,
+                   "active": e.active, "dstState": e.dst_state} for e in edges],
+        "drift": {
+            "proseOnly": drift.prose_only,
+            "unresolvedTargets": drift.unresolved_targets,
+            "missingFromProject": drift.missing_from_project,
+            "checklistEpics": drift.checklist_epics,
+        },
+    }
 
 
 @router.delete("/projects/{slug}/edges/{edge_id}", status_code=status.HTTP_204_NO_CONTENT)

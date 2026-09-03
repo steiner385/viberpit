@@ -1,7 +1,10 @@
 /**
  * PM product-layer API client — types + fetchers over `/api/pm` (phase 1).
  * Mirrors `api/sdlc.ts`: plain fetchers here, hooks in `api/hooks.ts`.
+ * Exception: hooks that are tightly coupled to a single fetcher (e.g.
+ * useProjectDeps) may live here to keep the interface co-located.
  */
+import { useQuery } from '@tanstack/react-query'
 import { api } from './client'
 
 export const PROJECT_ONBOARDING_STATES = [
@@ -100,4 +103,41 @@ export function proposeMap(slug: string): Promise<{ sessionId: string | null }> 
 export function runClassify(slug: string): Promise<{ dispatched: number }> {
   return api.post<{ dispatched: number }>(
     `/pm/projects/${encodeURIComponent(slug)}/classify`)
+}
+
+// ── Phase A: dependency mirror + drift audit ──────────────────────────────────
+
+export interface DepEdge {
+  src: string
+  dst: string
+  source: string
+  active: boolean
+  dstState: string | null
+}
+
+export interface DriftSummary {
+  proseOnly: { src: string; dst: string }[]
+  unresolvedTargets: { src: string; dst: string; source: string }[]
+  missingFromProject: string[]
+  checklistEpics: string[]
+}
+
+export interface ProjectDeps {
+  project: { number: number | null; title: string | null; lastSyncedAt: string | null } | null
+  edges: DepEdge[]
+  drift: DriftSummary
+}
+
+export function fetchProjectDeps(slug: string): Promise<ProjectDeps> {
+  return api.get<ProjectDeps>(`/pm/projects/${encodeURIComponent(slug)}/deps`)
+}
+
+export function useProjectDeps(slug: string, enabled = true) {
+  return useQuery({
+    queryKey: ['pm', 'deps', slug],
+    queryFn: () => fetchProjectDeps(slug),
+    enabled,
+    staleTime: 5_000,
+    refetchInterval: 15_000,
+  })
 }

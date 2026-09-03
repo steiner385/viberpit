@@ -8,6 +8,7 @@ import { useState } from 'react'
 import { useCreateProject, useProjects, useSyncProject } from '@/api/hooks'
 import type { Project } from '@/api/pm'
 
+import { DependencyPanel } from './DependencyPanel'
 import { OnboardingWizard } from './OnboardingWizard'
 import { TriageReviewList } from './TriageReviewList'
 import './projects.css'
@@ -73,6 +74,7 @@ function ProjectCard({ project }: { project: Project }) {
         <span>{project.featureCount} features</span>
       </div>
       {project.slug && <OnboardingWizard slug={project.slug} />}
+      {project.slug && <DependencyPanel slug={project.slug} />}
       <div className="pm-card-actions">
         <button
           onClick={() => project.slug && sync.mutate(project.slug)}

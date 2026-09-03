@@ -23,6 +23,17 @@ vi.mock('@/api/pm', async (importOriginal) => ({
               backfillDone: false, lastSyncedAt: null }],
     edges: [], featureCount: 0, workItemCount: 0,
   }),
+  fetchProjectDeps: vi.fn().mockResolvedValue({
+    project: null, edges: [],
+    drift: { proseOnly: [], unresolvedTargets: [], missingFromProject: [], checklistEpics: [] },
+  }),
+  useProjectDeps: vi.fn().mockReturnValue({
+    data: {
+      project: null, edges: [],
+      drift: { proseOnly: [], unresolvedTargets: [], missingFromProject: [], checklistEpics: [] },
+    },
+    isLoading: false,
+  }),
 }))
 
 function renderTab() {
