@@ -16,6 +16,7 @@ import { DeployOverlay } from './components/DeployOverlay'
 import { useSessions, useArchivedSessions } from './api/hooks'
 import { useSessionOrdering } from './session/useSessionOrdering'
 import { nextSessionAfterClose } from './session/nextAfterArchive'
+import { readInitialPrompt, sessionOpenState } from './session/sessionNavState'
 
 // Routing is the source of truth for which view is shown:
 //   /sessions | /pipeline | /automations | /archived | /insights | /settings
@@ -57,7 +58,7 @@ function DashboardRoute({ tab }: { tab: TabId }) {
           activeTab={tab}
           onTabChange={(next) => navigate(next === 'sessions' ? '/sessions' : `/${next}`)}
           onOpenSession={(id, prompt) =>
-            navigate(`/session/${id}`, prompt ? { state: { initialPrompt: prompt } } : undefined)
+            navigate(`/session/${id}`, sessionOpenState(prompt))
           }
           onReviewSession={(id) => navigate(`/review/${id}`)}
           dialog={dialog}
@@ -132,7 +133,8 @@ function SessionRoute() {
   // Carried via navigation state when a session is opened straight from create,
   // so the user's prompt shows immediately (seeded into the transcript). Absent
   // on a normal open / refresh / deep-link, in which case nothing is seeded.
-  const initialPrompt = (location.state as { initialPrompt?: string } | null)?.initialPrompt
+  // Both halves of that contract live in session/sessionNavState.
+  const initialPrompt = readInitialPrompt(location.state)
   if (!sessionId) return <Navigate to="/sessions" replace />
   const handleDone = () => {
     // Fall back to the full ordering: the open session may be hidden from the
