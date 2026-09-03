@@ -21,8 +21,9 @@ describe('statusTier', () => {
     expect(statusTier(state)).toBe(tier)
   })
 
-  it('falls back to your-turn for an unknown state', () => {
-    expect(statusTier('totally-unknown')).toBe('your-turn')
+  it('falls back to neutral "Unknown" (waiting tier) for an unknown state', () => {
+    expect(statusTier('totally-unknown')).toBe('waiting')
+    expect(statusPresentation('totally-unknown').label).toBe('Unknown')
   })
 })
 
