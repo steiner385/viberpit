@@ -1,6 +1,7 @@
 // Ported from plotroom@5166b52 frontend/src/__tests__/PrRow.test.tsx; edits: import repointing (../PrRow, ../types)
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
+import { InteractionProvider } from '@/shell/InteractionContext';
 import * as PrRowMod from '../PrRow';
 import type { PrView, CheckView } from '../types';
 
@@ -107,7 +108,11 @@ describe('PrRow', () => {
   });
 
   it('expandable=false (kiosk): clicking the row does not open the check panel', () => {
-    render(<PrRow pr={pr({})} hasDeploy expandable={false} />);
+    render(
+      <InteractionProvider interactive={false}>
+        <PrRow pr={pr({})} hasDeploy />
+      </InteractionProvider>,
+    );
     fireEvent.click(screen.getByText('#8962'));
     expect(screen.queryByText('fast-checks / ESLint')).not.toBeInTheDocument();
   });
@@ -506,7 +511,11 @@ describe('PrRow ready+auto-merge action', () => {
   });
 
   it('is hidden in kiosk (non-expandable) mode', () => {
-    render(<PrRow pr={draft()} hasDeploy expandable={false} />);
+    render(
+      <InteractionProvider interactive={false}>
+        <PrRow pr={draft()} hasDeploy />
+      </InteractionProvider>,
+    );
     expect(screen.queryByTestId('pr-ready-merge')).toBeNull();
   });
 
@@ -557,7 +566,11 @@ describe('PrRow keyboard expand (UX-H1)', () => {
   });
 
   it('is inert (no role/tabindex) in non-expandable kiosk mode', () => {
-    const { container } = render(<PrRow pr={pr({})} hasDeploy expandable={false} />);
+    const { container } = render(
+      <InteractionProvider interactive={false}>
+        <PrRow pr={pr({})} hasDeploy />
+      </InteractionProvider>,
+    );
     const main = container.querySelector('.pr-main')!;
     expect(main).not.toHaveAttribute('role');
     expect(main).not.toHaveAttribute('tabindex');

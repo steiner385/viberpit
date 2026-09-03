@@ -21,7 +21,7 @@ import { Archive, MoreVertical, Pencil, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useCloseSession, usePermanentDeleteSession, useRenameSession } from '@/api/hooks'
 import { PermanentDeleteDialog } from '@/components/PermanentDeleteDialog'
-import { RenameDialog } from '@/components/Dashboard'
+import { RenameDialog } from '@/features/sessions/RenameDialog'
 
 interface Props {
   sessionId: string
@@ -162,9 +162,10 @@ export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark
         />
       )}
 
-      {/* Rename reuses the shared dialog from Dashboard (same one the desktop
-          sidebar card uses) — no parallel rename UI. Unlike archive/delete it
-          stays in place (no onDone), so the header just refreshes its title. */}
+      {/* Rename reuses the shared `features/sessions/RenameDialog` — the same
+          one `AppShell` opens from a list row, so there is no parallel rename
+          UI. Unlike archive/delete it stays in place (no onDone), so the header
+          just refreshes its title. */}
       {renameOpen && (
         <RenameDialog
           sessionId={sessionId}

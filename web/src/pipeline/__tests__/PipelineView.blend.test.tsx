@@ -2,6 +2,7 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, expect, it, beforeEach, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import type { ReactNode } from 'react'
+import { InteractionProvider } from '@/shell/InteractionContext'
 import { PipelineView } from '../PipelineView'
 import type { DashboardState } from '../types'
 
@@ -19,7 +20,11 @@ beforeEach(() => localStorage.clear())
 
 describe('PipelineView blend edits', () => {
   it('kiosk renders tiles as non-interactive divs and rows non-expandable', () => {
-    wrap(<PipelineView state={state} focusedRepo={null} kiosk />)
+    wrap(
+      <InteractionProvider interactive={false}>
+        <PipelineView state={state} focusedRepo={null} />
+      </InteractionProvider>,
+    )
     // StatusStrip kiosk mode: tiles are not buttons (plotroom StatusStrip interactive=false)
     expect(screen.queryByRole('button', { name: /CI running/i })).toBeNull()
     // A count/label div still renders for the running bucket.

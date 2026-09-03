@@ -6,13 +6,14 @@
 // notification bell, kiosk auto-cycle — around the ported PipelineView.
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { useFixPr } from '@/api/hooks'
+import { InteractionProvider } from '@/shell/InteractionContext'
 import { ApiBaseProvider } from './ApiBaseContext'
 import { useDashboard } from './useDashboard'
 import { PipelineView } from './PipelineView'
 import { HealthHeader } from './HealthHeader'
 import { LegendPanel } from './LegendPanel'
 import { PipelineSwitcher, useFocusedPipeline } from './PipelineSwitcher'
-import { readKioskConfig } from './kiosk'
+import { readKioskConfig } from '@/shell/kiosk'
 import { useKioskCycle } from './useKioskCycle'
 import type { Bucket } from './StatusStrip'
 import type { LaneStatus } from './types'
@@ -45,7 +46,7 @@ function Inner({ onOpenInsights }: { onOpenInsights?: () => void }) {
     [fixPr.mutate], // eslint-disable-line react-hooks/exhaustive-deps -- .mutate is the stable handle; depending on `fixPr` would break the stable-ref contract above
   )
   const { state, stale, notifySupported, notifyEnabled, toggleNotify } = useDashboard()
-  const [{ kiosk, cycleSeconds }] = useState(readKioskConfig)
+  const [{ enabled: kiosk, cycleSeconds }] = useState(readKioskConfig)
   const repos = useMemo(() => (state?.repos ?? []).map((r) => r.repo), [state])
   const [focused, focus] = useFocusedPipeline(repos, true, !kiosk)
   useKioskCycle(kiosk, cycleSeconds, repos, focused, focus)
@@ -58,7 +59,7 @@ function Inner({ onOpenInsights }: { onOpenInsights?: () => void }) {
     else onOpenInsights?.()
   }, [onOpenInsights])
   return (
-    <>
+    <InteractionProvider interactive={!kiosk}>
       {!kiosk && (
         <div className="pipeline-chrome-bar">
           <PipelineSwitcher repos={repos} focused={focused} onFocus={focus} />
@@ -94,8 +95,8 @@ function Inner({ onOpenInsights }: { onOpenInsights?: () => void }) {
       {stale && <p className="pipeline-stale" role="status">data stale — reconnecting…</p>}
       <LegendPanel open={legendOpen} onClose={() => setLegendOpen(false)} returnFocusRef={legendBtnRef} />
       <PipelineView state={state} focusedRepo={focused} onFixPr={onFixPr}
-        activeFilter={filter} onFilter={setFilter} kiosk={kiosk} />
-    </>
+        activeFilter={filter} onFilter={setFilter} />
+    </InteractionProvider>
   )
 }
 

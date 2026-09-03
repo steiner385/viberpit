@@ -1,0 +1,273 @@
+/**
+ * The Sessions workspace the shell owns — `useSessionsWorkspace` in `AppShell`.
+ *
+ * These are the cases that were about the SHELL rather than about a region: the
+ * destructive-action dialogs it hosts, the advance-to-neighbour that follows
+ * them, the list's grouping control, and the all-limited banner's lifetime. They
+ * came from `DesktopShell.test.tsx`, `DesktopAdvanceOnArchive.test.tsx` and
+ * `DashboardTabs.test.tsx`, each of which had to mount a whole shell to reach
+ * them — as does this file, which is the point: there is one shell now.
+ *
+ * Related coverage lives with its own subject and is not repeated here:
+ * `useArchiveAdvance.test.tsx` (the session-route half of advance-on-archive),
+ * `SessionListColumn.test.tsx` (what the list renders), `PromptDock.test.tsx`
+ * (the cursor the prompt and the list share).
+ */
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { act, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { renderApp } from '@/test/renderApp'
+import * as hooks from '@/api/hooks'
+import type { Account, Session } from '@/api/types'
+
+const NOOP = { mutate: vi.fn(), isPending: false, isSuccess: false }
+
+vi.mock('@/api/hooks', () => ({
+  useQueueMove: vi.fn(() => ({ mutate: vi.fn() })),
+  useQueueCancel: vi.fn(() => ({ mutate: vi.fn() })),
+  useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
+  useAllPrs: vi.fn(() => ({ data: [] })),
+  useDaemonHealth: vi.fn(() => ({ data: { available: false } })),
+  useGenerateSuggestions: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(() => Promise.resolve([])), isPending: false })),
+  useConfig: vi.fn(() => ({ data: { adoptionEnabled: false } })),
+  useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
+  useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useAccounts: vi.fn(),
+  useSessions: vi.fn(),
+  useCreateSession: vi.fn(),
+  useRenameSession: vi.fn(),
+  useCloseSession: vi.fn(),
+  useRefreshAccount: vi.fn(),
+  useUpdateAccount: vi.fn(),
+  useDeleteAccount: vi.fn(),
+  useSetAccountEnabled: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useGithubRepos: vi.fn(() => ({ data: [], isLoading: false, isError: false })),
+  useModels: vi.fn(() => ({ data: [] })),
+  useGithubBranches: vi.fn(() => ({ data: { default: null, branches: [] }, isLoading: false })),
+  useSettings: vi.fn(() => ({ data: { defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null }, isLoading: false })),
+  useUpdateSettings: vi.fn(() => NOOP),
+  useSetAutopilotPaused: () => ({ mutate: vi.fn() }),
+  useFixPr: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useAutomations: vi.fn(() => ({ data: [] })),
+  useReauthAccount: vi.fn(() => NOOP),
+  useReauthStatus: vi.fn(() => ({ data: { state: 'idle', message: null, startedAt: null }, isLoading: false })),
+  useCancelReauth: vi.fn(() => NOOP),
+  useArchivedSessions: vi.fn(() => ({ data: [], isLoading: false })),
+  useUnarchiveSession: vi.fn(() => NOOP),
+  usePermanentDeleteSession: vi.fn(),
+  useBulkUnarchiveSessions: vi.fn(() => NOOP),
+  useBulkPermanentDeleteSessions: vi.fn(() => NOOP),
+  useBulkArchiveSessions: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useSendPrompt: vi.fn(() => ({ mutate: vi.fn() })),
+  usePendingDeploy: () => ({ data: { behind: false, commits: [], ci: 'green' } }),
+  useDeployStatus: () => ({ data: { running: false, phases: {} } }),
+  useStartDeploy: () => ({ mutate: vi.fn(), isPending: false }),
+  useSessionsViewing: vi.fn(),
+  useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
+  useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useResumeInterrupted: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useAssessDispatch: vi.fn(() => ({ assess: vi.fn() })),
+  QK: {
+    accounts: ['accounts'], sessions: ['sessions'], archived: ['archived-sessions'],
+    config: ['config'], githubRepos: ['github-repos'],
+    githubBranches: (repo?: string) => ['github-branches', repo], settings: ['settings'],
+  },
+}))
+
+vi.mock('@/session/useSessionSearch', () => ({
+  useSessionSearch: () => ({ query: '', setQuery: vi.fn(), matchedIds: null, isFiltered: false }),
+}))
+
+vi.mock('@/ws/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/ws/client')>()
+  return {
+    ...actual,
+    useSessionSocket: () => ({
+      attach: vi.fn(), detach: vi.fn(), interrupt: vi.fn(), prompt: vi.fn(),
+      sendInterrupt: vi.fn(), permissionResponse: vi.fn(), answerQuestion: vi.fn(),
+      setPermissionMode: vi.fn(), cancelQueued: vi.fn(), command: vi.fn(),
+      activity: vi.fn(), on: vi.fn(), off: vi.fn(),
+      connectionState: 'connected' as const, socket: null,
+    }),
+  }
+})
+
+/** Typed factories — real values, never `as unknown as T` (R10). */
+function session(over: Partial<Session> = {}): Session {
+  return {
+    id: 's1', name: 'One', accountName: 'alice', status: 'idle',
+    createdAt: '2026-06-19T10:00:00Z', prs: [],
+    ...over,
+  }
+}
+
+function account(over: Partial<Account> = {}): Account {
+  return {
+    name: 'alice', status: 'ok',
+    usage: { session: { pct: 10, resetsAt: null }, weekly: { pct: 10, resetsAt: null } },
+    liveSessions: { active: 0, idle: 0 }, rank: null, rankReason: null,
+    ...over,
+  }
+}
+
+const TWO = [session({ id: 's1', name: 'One' }), session({ id: 's2', name: 'Two' })]
+
+function setSessions(list: Session[]) {
+  vi.mocked(hooks.useSessions).mockReturnValue(
+    { data: list, isLoading: false } as ReturnType<typeof hooks.useSessions>,
+  )
+}
+
+function setAccounts(list: Account[]) {
+  vi.mocked(hooks.useAccounts).mockReturnValue(
+    { data: list, isLoading: false } as ReturnType<typeof hooks.useAccounts>,
+  )
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  localStorage.clear()
+  setSessions(TWO)
+  setAccounts([account()])
+  vi.mocked(hooks.useCreateSession).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useCreateSession>)
+  vi.mocked(hooks.useRenameSession).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useRenameSession>)
+  vi.mocked(hooks.useCloseSession).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useCloseSession>)
+  vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
+})
+
+describe('the shell hosts the destructive-action dialogs', () => {
+  it('deleting a session opens a confirm dialog; the mutation runs only on confirm', async () => {
+    const user = userEvent.setup()
+    const deleteMutate = vi.fn()
+    vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(
+      { mutate: deleteMutate, isPending: false, isSuccess: false } as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>,
+    )
+    renderApp({ path: '/sessions', mode: 'desktop' })
+
+    await user.click(await screen.findByRole('button', { name: /more actions for session one/i }))
+    await user.click(screen.getByRole('menuitem', { name: /delete/i }))
+
+    // Destructive: the confirm dialog appears and nothing is deleted yet.
+    const dialog = screen.getByRole('dialog')
+    expect(deleteMutate).not.toHaveBeenCalled()
+
+    await user.click(within(dialog).getByRole('button', { name: /delete permanently/i }))
+    expect(deleteMutate).toHaveBeenCalledWith('s1', expect.anything())
+  })
+
+  it('renaming from a list row opens the rename dialog with that session', async () => {
+    const user = userEvent.setup()
+    renderApp({ path: '/sessions', mode: 'desktop' })
+
+    await user.click(await screen.findByRole('button', { name: /more actions for session two/i }))
+    await user.click(screen.getByRole('menuitem', { name: /rename/i }))
+
+    const dialog = screen.getByRole('dialog', { name: /rename session/i })
+    expect(within(dialog).getByLabelText(/session name/i)).toHaveValue('Two')
+  })
+})
+
+describe('the shell advances the open session when it leaves the list', () => {
+  it('permanently deleting the OPEN session advances to the neighbour', async () => {
+    const user = userEvent.setup()
+    const deleteMutate = vi.fn((_id: string, opts?: { onSuccess?: () => void }) => opts?.onSuccess?.())
+    vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(
+      { mutate: deleteMutate, isPending: false, isSuccess: false } as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>,
+    )
+    const app = renderApp({ path: '/sessions/s1', mode: 'desktop' })
+
+    await user.click(await screen.findByRole('button', { name: /more actions for session one/i }))
+    await user.click(screen.getByRole('menuitem', { name: /delete/i }))
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: /delete permanently/i }))
+
+    await waitFor(() => expect(app.path()).toBe('/sessions/s2'))
+  })
+
+  it('archiving a session that is NOT open leaves the open one alone', async () => {
+    const user = userEvent.setup()
+    const closeMutate = vi.fn()
+    vi.mocked(hooks.useCloseSession).mockReturnValue(
+      { mutate: closeMutate, isPending: false, isSuccess: false } as unknown as ReturnType<typeof hooks.useCloseSession>,
+    )
+    const app = renderApp({ path: '/sessions/s1', mode: 'desktop' })
+
+    await user.click(await screen.findByRole('button', { name: /more actions for session two/i }))
+    await user.click(screen.getByRole('menuitem', { name: /archive/i }))
+
+    expect(closeMutate).toHaveBeenCalledWith('s2')
+    // `advanceFrom` bails unless the REMOVED session is the open one.
+    expect(app.path()).toBe('/sessions/s1')
+  })
+})
+
+describe('the shell drives the session list controls', () => {
+  it('groups the session list by status when selected', async () => {
+    const user = userEvent.setup()
+    setSessions([
+      session({ id: 's1', name: 'One', status: 'idle' }),
+      session({ id: 's2', name: 'Two', status: 'in_progress' }),
+    ])
+    renderApp({ path: '/sessions', mode: 'desktop' })
+
+    await user.selectOptions(await screen.findByLabelText('Group by'), 'status')
+    // Two sessions from DIFFERENT tiers → both group headers must render
+    // (idle → 'your-turn' tier, header "Done"; in_progress → 'busy', "Working").
+    expect(screen.getByText('Done')).toBeInTheDocument()
+    expect(screen.getByText('Working')).toBeInTheDocument()
+  })
+})
+
+describe('the all-limited banner', () => {
+  /** Raise the banner the way the app does: a 409 out of the create flow. */
+  async function raiseBanner(user: ReturnType<typeof userEvent.setup>) {
+    let onError: ((e: { status: number; body: unknown }) => void) | undefined
+    vi.mocked(hooks.useCreateSession).mockReturnValue({
+      mutate: vi.fn((_i: unknown, cbs?: { onError?: (e: { status: number; body: unknown }) => void }) => {
+        onError = cbs?.onError
+      }),
+      isPending: false,
+    } as unknown as ReturnType<typeof hooks.useCreateSession>)
+
+    const app = renderApp({ path: '/sessions?dialog=new', mode: 'desktop' })
+    await user.click(await screen.findByRole('button', { name: /^create$/i }))
+    act(() => onError?.({ status: 409, body: { error: { code: 'all_accounts_limited' }, earliestReset: null } }))
+    return app
+  }
+
+  it('shows once every account is at its limit', async () => {
+    const user = userEvent.setup()
+    await raiseBanner(user)
+    expect(screen.getByRole('alert')).toHaveTextContent(/all accounts at limit/i)
+  })
+
+  it('clears when the user opens the New Session dialog — but not before', async () => {
+    const user = userEvent.setup()
+    const app = await raiseBanner(user)
+    // The 409 that raised it arrived while the dialog was still open, so
+    // "dialog open ⇒ no banner" must NOT be a standing rule.
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+
+    // Close it (the host does this itself on a 409; here we assert the URL edge).
+    await act(async () => { await app.router.navigate('/sessions') })
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+
+    // Re-opening is the user acting on the banner: it stops shouting.
+    await act(async () => { await app.router.navigate('/sessions?dialog=new') })
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+  })
+
+  it('auto-clears once an account becomes selectable again', async () => {
+    const user = userEvent.setup()
+    const app = await raiseBanner(user)
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+
+    // A non-null rank means the ranker would pick this account: the banner is
+    // stale. The shell clears it at render time, so any re-render suffices — a
+    // location tick is how the app itself re-renders (see KeyboardSessions).
+    setAccounts([account({ rank: 1 })])
+    await act(async () => { await app.router.navigate('/sessions?tick=1') })
+
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+  })
+})

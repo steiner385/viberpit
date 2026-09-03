@@ -3,7 +3,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
-import { Dashboard } from '../Dashboard'
+import { SettingsView } from '../settings/SettingsView'
 import * as hooks from '@/api/hooks'
 import type { Account } from '@/api/types'
 
@@ -86,7 +86,7 @@ describe('AccountRow — enable/disable', () => {
       data: [makeAccount({ name: 'work', enabled: true })], isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
-    render(<Dashboard initialTab="settings" />, { wrapper })
+    render(<SettingsView />, { wrapper })
     await user.click(screen.getByRole('button', { name: /disable account work/i }))
 
     expect(setEnabledMutate).toHaveBeenCalledWith({ name: 'work', enabled: false })
@@ -98,7 +98,7 @@ describe('AccountRow — enable/disable', () => {
       data: [makeAccount({ name: 'work', enabled: false })], isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
-    render(<Dashboard initialTab="settings" />, { wrapper })
+    render(<SettingsView />, { wrapper })
 
     expect(screen.getByText(/disabled/i)).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: /enable account work/i }))

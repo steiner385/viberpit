@@ -162,7 +162,17 @@ describe('SessionList', () => {
     expect(other).toHaveAttribute('data-selected', 'false')
   })
 
-  it('session container has aria-activedescendant when a session is selected', () => {
+  // Successor to 'session container has aria-activedescendant when a session is
+  // selected'. That assertion had two halves and both are still pinned, just in
+  // their correct homes:
+  //   · the container is the DispatchBar's aria-controls target → asserted here;
+  //   · the active row is announced as `row-<id>` → asserted on the DispatchBar
+  //     textarea, where the attribute is valid, by KeyboardSessions.test.tsx
+  //     ('dispatch textarea has aria-activedescendant pointing at the selected
+  //     row') and DesktopShell.test.tsx.
+  // The copy on this div was invalid ARIA (aria-activedescendant on a role-less
+  // element) and is now asserted absent so it cannot come back.
+  it('session container is the aria-controls target and carries no aria-activedescendant of its own', () => {
     render(
       <SessionList
         sessions={SESSIONS}
@@ -177,7 +187,10 @@ describe('SessionList', () => {
       { wrapper },
     )
     const container = document.getElementById('session-listbox')!
-    expect(container).toHaveAttribute('aria-activedescendant', 'row-sess-1')
+    expect(container).toBeTruthy()
+    expect(container.hasAttribute('aria-activedescendant')).toBe(false)
+    // The selected row is still identifiable by the id the textarea points at.
+    expect(document.getElementById('row-sess-1')).toBeTruthy()
   })
 
   it('shows EmptyState when sessions list is empty', () => {

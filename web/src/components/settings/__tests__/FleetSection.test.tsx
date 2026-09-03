@@ -31,10 +31,14 @@ const deployStatus = {
   deploy: { running: false, phases: {}, error: null, warnings: [], targetSha: '' },
 }
 
+// What GET /fleet/hosts currently serves. Reassigned by the invalidation test so
+// a refetch is visible as a new ROW rather than as a call count.
+let listed = hosts
+
 vi.mock('@/api/client', () => ({
   api: {
     get: vi.fn(async (path: string) =>
-      path.startsWith('/deploy') ? deployStatus : { hosts }),
+      path.startsWith('/deploy') ? deployStatus : { hosts: listed }),
     put: vi.fn(async () => hosts[0]),
     post: vi.fn(async () => ({ started: true })),
   },
@@ -47,7 +51,10 @@ function wrap(ui: React.ReactNode) {
   return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>)
 }
 
-beforeEach(() => vi.clearAllMocks())
+beforeEach(() => {
+  listed = hosts
+  vi.clearAllMocks()
+})
 
 describe('FleetSection', () => {
   it('lists every host', async () => {
@@ -155,5 +162,32 @@ describe('FleetSection', () => {
     expect(await screen.findByText(/proc111/)).toBeInTheDocument()
     expect(screen.getByText(/checkout chk2222/)).toBeInTheDocument()
     hosts[1] = original
+  })
+
+  // The add/patch/remove/upgrade mutations invalidate `FLEET_HOSTS_KEY` and the
+  // table reads the same key through `useFleetHosts`. Both halves used to spell
+  // `['fleet','hosts']` by hand, in five separate places — and a spelling that
+  // drifts does not throw, it just stops refreshing: the host an operator added
+  // sits invisible until they reload. Asserting the new ROW appears (not that
+  // `invalidateQueries` was called) is the user-visible form of that guarantee.
+  it('shows a newly added host without a reload', async () => {
+    wrap(<FleetSection />)
+    await waitFor(() => expect(screen.getByText('dobby')).toBeInTheDocument())
+    expect(screen.queryByText('newhost')).toBeNull()
+
+    // What the refetch triggered by the invalidation will serve.
+    listed = [...hosts, { ...hosts[0], name: 'newhost', endpoint: 'https://newhost:9443' }]
+
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'newhost' } })
+    fireEvent.change(screen.getByLabelText('Endpoint'), {
+      target: { value: 'https://newhost:9443' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Add host' }))
+
+    await waitFor(() =>
+      expect(api.post).toHaveBeenCalledWith('/fleet/hosts', {
+        name: 'newhost', endpoint: 'https://newhost:9443',
+      }))
+    await waitFor(() => expect(screen.getByText('newhost')).toBeInTheDocument())
   })
 })

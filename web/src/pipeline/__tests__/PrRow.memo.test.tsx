@@ -92,12 +92,11 @@ describe('areEqual comparator (#178)', () => {
   it('returns true (bail out) when all props are content-equal clones', () => {
     // Simulate SSE frame: JSON.parse produces a new object with same content
     const basePr = pr();
-    const prev = { pr: basePr, hasDeploy: true, queueCulprit: null, expandable: true };
+    const prev = { pr: basePr, hasDeploy: true, queueCulprit: null };
     const next = {
       pr: JSON.parse(JSON.stringify(basePr)) as PrView,
       hasDeploy: true,
       queueCulprit: null,
-      expandable: true,
     };
     // areEqual returning true means React.memo will skip the re-render
     expect(areEqual(prev, next)).toBe(true);
@@ -107,8 +106,8 @@ describe('areEqual comparator (#178)', () => {
     const basePr = pr();
     const changedPr: PrView = JSON.parse(JSON.stringify(basePr));
     (changedPr.stage as { percent: number }).percent = 95;
-    const prev = { pr: basePr, hasDeploy: true, queueCulprit: null, expandable: true };
-    const next = { pr: changedPr, hasDeploy: true, queueCulprit: null, expandable: true };
+    const prev = { pr: basePr, hasDeploy: true, queueCulprit: null };
+    const next = { pr: changedPr, hasDeploy: true, queueCulprit: null };
     expect(areEqual(prev, next)).toBe(false);
   });
 
@@ -116,34 +115,36 @@ describe('areEqual comparator (#178)', () => {
     const basePr = pr();
     const changedPr: PrView = JSON.parse(JSON.stringify(basePr));
     changedPr.checks[0].conclusion = 'FAILURE';
-    const prev = { pr: basePr, hasDeploy: true, queueCulprit: null, expandable: true };
-    const next = { pr: changedPr, hasDeploy: true, queueCulprit: null, expandable: true };
+    const prev = { pr: basePr, hasDeploy: true, queueCulprit: null };
+    const next = { pr: changedPr, hasDeploy: true, queueCulprit: null };
     expect(areEqual(prev, next)).toBe(false);
   });
 
   it('returns false (re-render) when hasDeploy changes', () => {
     const basePr = pr();
     const clonePr: PrView = JSON.parse(JSON.stringify(basePr));
-    const prev = { pr: basePr, hasDeploy: true, queueCulprit: null, expandable: true };
-    const next = { pr: clonePr, hasDeploy: false, queueCulprit: null, expandable: true };
+    const prev = { pr: basePr, hasDeploy: true, queueCulprit: null };
+    const next = { pr: clonePr, hasDeploy: false, queueCulprit: null };
     expect(areEqual(prev, next)).toBe(false);
   });
 
   it('returns false (re-render) when queueCulprit changes', () => {
     const basePr = pr();
     const clonePr: PrView = JSON.parse(JSON.stringify(basePr));
-    const prev = { pr: basePr, hasDeploy: true, queueCulprit: null, expandable: true };
-    const next = { pr: clonePr, hasDeploy: true, queueCulprit: 9001, expandable: true };
+    const prev = { pr: basePr, hasDeploy: true, queueCulprit: null };
+    const next = { pr: clonePr, hasDeploy: true, queueCulprit: 9001 };
     expect(areEqual(prev, next)).toBe(false);
   });
 
-  it('returns false (re-render) when expandable changes', () => {
-    const basePr = pr();
-    const clonePr: PrView = JSON.parse(JSON.stringify(basePr));
-    const prev = { pr: basePr, hasDeploy: true, queueCulprit: null, expandable: true };
-    const next = { pr: clonePr, hasDeploy: true, queueCulprit: null, expandable: false };
-    expect(areEqual(prev, next)).toBe(false);
-  });
+  // `expandable` was removed as a PrRowProps field in Task 5 (it now comes from
+  // shell/InteractionContext, not a prop) — there is no longer a field here for
+  // areEqual to compare. The re-render-on-change concern moves with it: a
+  // context change always propagates to a memoized consumer regardless of the
+  // memo comparator, so it needs no areEqual test. The read-only *behavior* on
+  // that change is covered directly in PrRow.test.tsx ('expandable=false
+  // (kiosk): clicking the row does not open the check panel', 'is hidden in
+  // kiosk (non-expandable) mode', 'is inert (no role/tabindex) in
+  // non-expandable kiosk mode').
 });
 
 // ---------------------------------------------------------------------------
@@ -169,8 +170,8 @@ describe('PrRow React.memo wiring (#178)', () => {
     const clonedPr: PrView = JSON.parse(JSON.stringify(basePr));
     expect(
       areEqual(
-        { pr: basePr, hasDeploy: true, queueCulprit: null, expandable: true },
-        { pr: clonedPr, hasDeploy: true, queueCulprit: null, expandable: true },
+        { pr: basePr, hasDeploy: true, queueCulprit: null },
+        { pr: clonedPr, hasDeploy: true, queueCulprit: null },
       ),
     ).toBe(true);
   });
@@ -179,14 +180,14 @@ describe('PrRow React.memo wiring (#178)', () => {
     // Start at 72% ci stage
     const basePr = pr();
     const { rerender } = render(
-      <PrRow pr={basePr} hasDeploy queueCulprit={null} expandable />,
+      <PrRow pr={basePr} hasDeploy queueCulprit={null} />,
     );
     expect(screen.getByText('72%')).toBeInTheDocument();
 
     // Change percent to 95% — content is genuinely different
     const changedPr: PrView = JSON.parse(JSON.stringify(basePr));
     (changedPr.stage as { percent: number }).percent = 95;
-    rerender(<PrRow pr={changedPr} hasDeploy queueCulprit={null} expandable />);
+    rerender(<PrRow pr={changedPr} hasDeploy queueCulprit={null} />);
 
     // DOM must update — stale-UI guard:
     // if areEqual wrongly returned true, "72%" would remain and "95%" be absent

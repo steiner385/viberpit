@@ -1,6 +1,6 @@
 import { Loader2 } from 'lucide-react'
 import { Banner } from '@/ui/Banner'
-import { useDaemonHealth } from '@/hooks/useDaemonHealth'
+import { useDaemonReachable } from '@/hooks/useDaemonReachable'
 import { useEpochRestart } from '@/hooks/useEpochRestart'
 
 /**
@@ -8,14 +8,14 @@ import { useEpochRestart } from '@/hooks/useEpochRestart'
  *
  * Two triggers:
  *  - WS close code 1012 (epoch change / planned restart) → immediate via useEpochRestart.
- *  - /healthz polling → catches unplanned outages via useDaemonHealth.
+ *  - /healthz polling → catches unplanned outages via useDaemonReachable.
  *
  * Auto-clears once /healthz reports daemon healthy — no manual dismiss needed.
  * pointer-events-none so the fixed top-0 bar never intercepts clicks beneath it (#620).
  */
 export function DaemonRestartBanner() {
   const epochRestart = useEpochRestart()
-  const daemonOk = useDaemonHealth()
+  const daemonOk = useDaemonReachable()
   if (daemonOk && !epochRestart) return null
   return (
     <Banner

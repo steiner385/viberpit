@@ -3,7 +3,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
-import { Dashboard } from '../Dashboard'
+import { SettingsView } from '../settings/SettingsView'
 import * as hooks from '@/api/hooks'
 import type { Account } from '@/api/types'
 
@@ -143,7 +143,7 @@ describe('AccountRow — extra usage credits', () => {
     const user = userEvent.setup()
     mockAccounts(makeAccount({ name: 'work', allowExtraUsage: true }))
 
-    render(<Dashboard initialTab="settings" />, { wrapper })
+    render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
     await user.click(screen.getByRole('button', { name: /rename work/i }))
 
@@ -155,7 +155,7 @@ describe('AccountRow — extra usage credits', () => {
     const user = userEvent.setup()
     mockAccounts(makeAccount({ name: 'work', nickname: null, allowExtraUsage: false }))
 
-    render(<Dashboard initialTab="settings" />, { wrapper })
+    render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
     await user.click(screen.getByRole('button', { name: /rename work/i }))
     await user.click(screen.getByRole('checkbox', { name: /extra usage credits for work/i }))
@@ -170,7 +170,7 @@ describe('AccountRow — extra usage credits', () => {
     const user = userEvent.setup()
     mockAccounts(makeAccount({ name: 'work', nickname: null, allowExtraUsage: true }))
 
-    render(<Dashboard initialTab="settings" />, { wrapper })
+    render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
     await user.click(screen.getByRole('button', { name: /rename work/i }))
     await user.click(screen.getByRole('checkbox', { name: /extra usage credits for work/i }))
@@ -185,7 +185,7 @@ describe('AccountRow — extra usage credits', () => {
     const user = userEvent.setup()
     mockAccounts(makeAccount({ name: 'work', allowExtraUsage: false }))
 
-    render(<Dashboard initialTab="settings" />, { wrapper })
+    render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
     await user.click(screen.getByRole('button', { name: /rename work/i }))
     await user.click(screen.getByRole('checkbox', { name: /extra usage credits for work/i }))
@@ -201,7 +201,7 @@ describe('AccountRow — extra usage credits', () => {
       makeAccount({ name: 'personal', allowExtraUsage: false }),
     )
 
-    render(<Dashboard initialTab="settings" />, { wrapper })
+    render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
 
     expect(screen.getAllByText(/extra usage/i)).toHaveLength(1)
@@ -219,7 +219,7 @@ describe('AccountRow — extra usage credits', () => {
       },
     }))
 
-    render(<Dashboard initialTab="settings" />, { wrapper })
+    render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
 
     expect(screen.getByText(/not enabled upstream/i)).toBeInTheDocument()
@@ -229,7 +229,7 @@ describe('AccountRow — extra usage credits', () => {
     const user = userEvent.setup()
     mockAccounts(makeAccount({ name: 'work', allowExtraUsage: true }))
 
-    render(<Dashboard initialTab="settings" />, { wrapper })
+    render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
 
     expect(screen.queryByText(/not enabled upstream/i)).not.toBeInTheDocument()
@@ -247,7 +247,7 @@ describe('AccountRow — extra usage credits', () => {
       },
     }))
 
-    render(<Dashboard initialTab="settings" />, { wrapper })
+    render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
 
     expect(screen.queryByText(/not enabled upstream/i)).not.toBeInTheDocument()

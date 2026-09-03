@@ -1,6 +1,7 @@
 import * as React from 'react'
 import { createPortal } from 'react-dom'
 import { cn } from '@/lib/utils'
+import { useInteractive } from '@/shell/InteractionContext'
 import { getOverlayRoot } from './portal'
 import { useFocusTrap } from './useFocusTrap'
 
@@ -40,13 +41,41 @@ export function Dialog({
   const titleId = React.useId()
   const descId = React.useId()
   const noop = React.useCallback(() => {}, [])
-  useFocusTrap(panelRef, open, { onClose: dismissable ? onClose : noop })
+
+  // Kiosk (`InteractionProvider interactive={false}`) refuses modals outright.
+  // The refusal lives in the PRIMITIVE and not in `AppShell` because a dialog
+  // can be opened from anywhere — a page, a drawer, a websocket event
+  // (`ModelSwitchDialog`, `CommandResultOverlay`) — and this component is the
+  // only place that sees all of them. A wall display cannot dismiss a modal, so
+  // one that slipped through would cover the display until someone walked over
+  // with a keyboard.
+  const interactive = useInteractive()
+  const shown = open && interactive
+
+  // `console.warn` from an EFFECT, not from render: render runs twice under
+  // StrictMode and again on every parent re-render, so warning inline would
+  // print the same refusal indefinitely. The flag resets when the dialog closes,
+  // so each attempt to open one is reported exactly once.
+  const warned = React.useRef(false)
+  React.useEffect(() => {
+    if (open && !interactive) {
+      if (warned.current) return
+      warned.current = true
+      console.warn(`Dialog refused in read-only (kiosk) mode: ${title ?? ariaLabel}`)
+    } else {
+      warned.current = false
+    }
+  }, [open, interactive, title, ariaLabel])
+
+  // `shown`, not `open`: a refused dialog must not trap focus or `inert` #root
+  // either — it is not on screen to trap focus into.
+  useFocusTrap(panelRef, shown, { onClose: dismissable ? onClose : noop })
 
   React.useEffect(() => {
-    if (open && initialFocus?.current) initialFocus.current.focus()
-  }, [open, initialFocus])
+    if (shown && initialFocus?.current) initialFocus.current.focus()
+  }, [shown, initialFocus])
 
-  if (!open) return null
+  if (!shown) return null
 
   const handleBackdropClick = dismissable ? onClose : undefined
 

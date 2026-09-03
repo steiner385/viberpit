@@ -82,7 +82,14 @@ export const SHORTCUTS: Shortcut[] = [
   // ── In-session — DISPLAY-ONLY ────────────────────────────────────────
   { id: 'insession.detach', keys: '← / Esc', description: 'Detach back to the session list', group: 'in-session' },
   { id: 'insession.forceDetach', keys: 'Ctrl+Z', description: 'Force-detach to the list', group: 'in-session' },
-  { id: 'insession.permMode', keys: 'Shift+Tab', description: 'Cycle permission mode', group: 'in-session' },
+  // `Shift+Tab` (cycle permission mode) is deliberately NOT listed: sub-spec B D8
+  // removes the binding, and the handler in `session/useInSessionKeys.ts` is gone
+  // too — the AppShell cutover made a window-level `preventDefault()` on Shift+Tab
+  // untenable (it killed reverse-tab app-wide and escalated a live session's
+  // permission mode), so D8's removal was brought forward into this PR. The
+  // registry is the only thing the help sheets render from, so dropping the row
+  // here is how the documentation goes away — a `HelpSheet`-local filter would be
+  // a second, invisible owner of "which shortcuts are documented".
 ]
 
 export function matchListShortcut(e: KeyboardLike): ListRowAction | undefined {

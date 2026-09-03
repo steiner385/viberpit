@@ -1,5 +1,25 @@
+// web/src/api/fleet.ts
+//
+// The fleet-host list, fetched in ONE place.
+//
+// `['fleet', 'hosts']` was open-coded SIX times — fetched in
+// `settings/FleetSection.tsx` (the management table, 15s) and `Dashboard.tsx`
+// (the DispatchBar's Runner dropdown, 30s), each with its own `api.get` call,
+// its own cadence and its own copy of the `enabled` filter, and invalidated at
+// four more sites in `FleetSection`'s add/patch/remove/upgrade mutations. Task 12
+// needs a seventh (`shell/regions/PromptDock`, DEC-2: the Runner picker stops
+// being phone-only).
+//
+// Readers and invalidators must share one spelling or the failure is SILENT:
+// change the key here and a mismatched `invalidateQueries` still resolves, still
+// logs nothing, and simply stops refreshing — an operator adds, enables or
+// removes a host and the table does not move until they reload. So
+// `FLEET_HOSTS_KEY` is exported for invalidation as much as for the query.
+//
+// `FleetHost` moved here from `settings/FleetSection.tsx` with it: the shape of
+// an API response belongs beside the call that fetches it, not inside the
+// component that happened to render it first.
 import { useQuery } from '@tanstack/react-query'
-
 import { api } from './client'
 
 export interface HostUpgrade {
@@ -30,16 +50,19 @@ export interface FleetHost {
   upgrade: HostUpgrade | null
 }
 
+/** The query key, exported so invalidations cannot misspell it. */
 export const FLEET_HOSTS_KEY = ['fleet', 'hosts'] as const
 
 /**
- * The fleet host registry — the ONE query behind every Runner dropdown and the
- * Settings › Fleet table. Lives in its own module (not `hooks.ts`) so the ~40
- * tests that hand-roll a `vi.mock('@/api/hooks', () => ({...}))` factory keep
- * working without each one learning a new export.
+ * Every configured host, healthy or not — the ONE query behind every Runner
+ * dropdown and the Settings › Fleet table. Lives in its own module (not
+ * `hooks.ts`) so the ~40 tests that hand-roll a `vi.mock('@/api/hooks')`
+ * factory keep working without each one learning a new export.
  *
- * Both shells must read this: the Runner dropdown vanished at ≥1024px because
- * only the mobile Dashboard fetched hosts (#807 wired one shell, not both).
+ * `refetchInterval` is a parameter because the two readers genuinely differ:
+ * the settings table watches live health and probe results (15s), while a
+ * dropdown of runner names does not (30s). Both cadences were already in the
+ * tree; unifying the fetch is the point, not unifying the poll.
  */
 export function useFleetHosts(refetchInterval = 30_000) {
   return useQuery<{ hosts: FleetHost[] }>({
@@ -49,7 +72,17 @@ export function useFleetHosts(refetchInterval = 30_000) {
   })
 }
 
-/** Hosts an operator has enabled — the only ones a session may be pinned to. */
-export function enabledHosts(data: { hosts: FleetHost[] } | undefined): FleetHost[] {
+/**
+ * The hosts a session may actually be dispatched to — the ones an operator has
+ * enabled.
+ *
+ * This is the hook form of what `enabledHosts(data)` used to be. That helper
+ * existed so `Dashboard` and `DesktopShell` could each filter the query result
+ * they separately held; with one shell there is one dock (`shell/regions/
+ * PromptDock`), one caller, and no reason to hand out an unfiltered list and a
+ * filter to pair with it.
+ */
+export function useEnabledFleetHosts(): FleetHost[] {
+  const { data } = useFleetHosts()
   return (data?.hosts ?? []).filter((h) => h.enabled)
 }

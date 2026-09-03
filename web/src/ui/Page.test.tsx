@@ -1,11 +1,15 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { PageHeader } from './PageHeader'
 import { PageContent } from './PageContent'
 import { EmptyState } from './EmptyState'
 import { Skeleton } from './Skeleton'
+import { resetDocumentTitle } from '@/shell/documentTitle'
+import { InteractionProvider } from '@/shell/InteractionContext'
 
 describe('page primitives', () => {
+  beforeEach(resetDocumentTitle)
+
   it('PageHeader renders the h1 and sets document.title', () => {
     render(<PageHeader title="Automations" actions={<button>New</button>} />)
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Automations')
@@ -43,6 +47,19 @@ describe('page primitives', () => {
     expect(document.title).toBe('New Page — ccswitch')
   })
 
+  it('an inner header unmounting restores the still-mounted outer header\'s title', () => {
+    // The reverse of the race above: B (newer) mounts on top of A (older,
+    // still mounted and visible), then B unmounts first while A is still on
+    // screen. The title should return to A's, not fall back to the bare app
+    // name.
+    render(<PageHeader title="Alpha" />)
+    expect(document.title).toBe('Alpha — ccswitch')
+    const b = render(<PageHeader title="Beta" />)
+    expect(document.title).toBe('Beta — ccswitch')
+    b.unmount()
+    expect(document.title).toBe('Alpha — ccswitch')
+  })
+
   it('PageContent exposes busy state and Skeleton is decorative', () => {
     const { rerender } = render(<PageContent busy><Skeleton lines={3} /></PageContent>)
     expect(screen.getByTestId('page-content')).toHaveAttribute('aria-busy', 'true')
@@ -74,5 +91,43 @@ describe('page primitives', () => {
     )
     expect(screen.getByTestId('empty-icon')).toBeInTheDocument()
     expect(screen.getByText('Create one to get started')).toBeInTheDocument()
+  })
+})
+
+/**
+ * Task 19: `page.header` actions are the interactive half of the header, so
+ * kiosk drops them. The title and `meta` stay — a wall display exists to show
+ * exactly those.
+ *
+ * The `interactive={true}` case is asserted alongside the false one, and the
+ * `beforeEach` above is inherited by neither describe, so `resetDocumentTitle`
+ * runs here too via this block's own hook.
+ */
+describe('PageHeader — read-only (kiosk) actions', () => {
+  beforeEach(resetDocumentTitle)
+
+  it('renders actions under interactive={true}', () => {
+    render(
+      <InteractionProvider interactive={true}>
+        <PageHeader title="Automations" meta="3 active" actions={<button>New</button>} />
+      </InteractionProvider>,
+    )
+    expect(screen.getByRole('button', { name: 'New' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Automations')
+    expect(screen.getByText('3 active')).toBeInTheDocument()
+  })
+
+  it('drops actions under interactive={false} but keeps the title and meta', () => {
+    render(
+      <InteractionProvider interactive={false}>
+        <PageHeader title="Automations" meta="3 active" actions={<button>New</button>} />
+      </InteractionProvider>,
+    )
+    expect(screen.queryByRole('button', { name: 'New' })).toBeNull()
+    // The positive lower bound: the header itself is still on screen, so
+    // "no New button" cannot be satisfied by a header that failed to render.
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Automations')
+    expect(screen.getByText('3 active')).toBeInTheDocument()
+    expect(document.title).toBe('Automations — ccswitch')
   })
 })
