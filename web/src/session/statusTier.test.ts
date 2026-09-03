@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { statusPresentation, statusTier } from './statusTier'
+import { statusPresentation, statusTier, TIER_ACCENT } from './statusTier'
+import type { StatusTier } from './statusTier'
 
 describe('retrying presentation', () => {
   it('is amber, busy tier, overloaded label', () => {
@@ -41,5 +42,25 @@ describe('condensing status', () => {
   })
   it('is grouped with the busy tier', () => {
     expect(statusTier('condensing')).toBe('busy')
+  })
+})
+
+describe('TIER_ACCENT rail/dot opacity hierarchy', () => {
+  // The muted rail is deliberate: a rail at full strength would compete with the
+  // status dot. Family-only assertions (/neutral/) pass either way, so pin the opacity.
+  it('mutes the your-turn rail relative to its dot', () => {
+    expect(TIER_ACCENT['your-turn'].rail).toContain('/40')
+    expect(TIER_ACCENT['your-turn'].dot).not.toContain('/40')
+  })
+  it('mutes the waiting rail relative to its dot', () => {
+    expect(TIER_ACCENT.waiting.rail).toContain('/40')
+    expect(TIER_ACCENT.waiting.dot).not.toContain('/40')
+  })
+})
+
+describe('TIER_ACCENT pulse gating', () => {
+  const PULSING: StatusTier[] = ['needs-you', 'error']
+  it.each(Object.keys(TIER_ACCENT) as StatusTier[])('pulses only on action-required tiers: %s', (tier) => {
+    expect(TIER_ACCENT[tier].pulse).toBe(PULSING.includes(tier))
   })
 })

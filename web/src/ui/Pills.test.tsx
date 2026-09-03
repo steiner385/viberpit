@@ -27,4 +27,11 @@ describe('pills & surfaces', () => {
     expect(container.innerHTML).not.toMatch(/dark:|gray-|amber-/)
     expect(await axe(container)).toHaveNoViolations()
   })
+
+  it('renders no status rail when no tone is given', () => {
+    const { container } = render(<Card>plain</Card>)
+    expect(container.querySelector('[data-tone]')).toBeNull()
+    // The toned case above renders exactly one rail <span>; an untoned Card must render none.
+    expect(container.querySelectorAll('span[aria-hidden="true"]').length).toBe(0)
+  })
 })
