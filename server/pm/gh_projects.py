@@ -38,27 +38,36 @@ _PROJECTS_SELECTION = (
     " nodes { id number title closed updatedAt } }")
 
 
-def build_viewer_projects_query(cursor: str | None) -> str:
-    return "query { viewer {%s } }" % (_PROJECTS_SELECTION % _after(cursor))
-
-
 def build_owner_projects_query(owner: str, cursor: str | None) -> str:
-    """Projects v2 rooted at ``user(login: owner)`` — identical selection to the
-    viewer query but usable under a GitHub App installation token, where
-    ``viewer`` resolves to the App bot rather than the owner (Phase 0 finding).
-    The ambient ``gh`` credential lacks ``read:project``, so discovery must go
-    through the App token, hence this ``user``-rooted variant."""
-    return 'query { user(login: "%s") {%s } }' % (
+    """Projects v2 rooted at ``repositoryOwner(login: owner)`` — usable under a
+    GitHub App installation token, where ``viewer`` resolves to the App bot
+    rather than the owner (Phase 0 finding), AND for both User and
+    Organization owners (verified live against the GitHub API): ``user(login:)``
+    404s on an org login (e.g. ``cairnea`` on ``cairnea/kindash``), while
+    ``repositoryOwner`` resolves either via the ``ProjectV2Owner`` interface."""
+    return 'query { repositoryOwner(login: "%s") { ... on ProjectV2Owner {%s } } }' % (
         owner, _PROJECTS_SELECTION % _after(cursor))
 
 
+def _projects_root(data: dict) -> dict:
+    """Return the first owner root present in a projectsV2 discovery payload.
+    ``viewer`` is a leftover viewer-rooted shape; ``user``/``repositoryOwner``
+    are the owner-rooted query's roots — ``repositoryOwner`` (current) resolves
+    both Users and Organizations, ``user`` (legacy) only Users."""
+    for key in ("repositoryOwner", "user", "viewer"):
+        root = data.get(key)
+        if root:
+            return root
+    return {}
+
+
 def parse_viewer_projects(payload: dict) -> tuple[list[GhProjectView], str | None, bool]:
-    """Parse a projectsV2 connection under either ``data.viewer`` (viewer query)
-    or ``data.user`` (owner query) — both roots carry the identical selection, so
-    one parser serves ``build_viewer_projects_query`` and
-    ``build_owner_projects_query`` alike."""
+    """Parse a projectsV2 connection under ``data.repositoryOwner`` (current
+    owner query), or the legacy ``data.user`` / ``data.viewer`` roots — all
+    carry the identical selection, so one parser serves every root
+    ``build_owner_projects_query`` has ever used."""
     data = payload.get("data") or {}
-    root = data.get("viewer") or data.get("user") or {}
+    root = _projects_root(data)
     conn = (root or {}).get("projectsV2", {}) or {}
     views = [
         GhProjectView(node_id=n["id"], number=n["number"], title=n.get("title") or "",

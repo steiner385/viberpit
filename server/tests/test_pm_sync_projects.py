@@ -4,7 +4,8 @@ The mirror pass is driven by new optional seams on ``PmSyncLoop`` (all default
 to ``None`` / no-ops so every pre-existing ``test_pm_sync_loop.py`` test still
 passes unmodified). Discovery is OWNER-AWARE: under the GitHub App token
 ``viewer`` resolves to the App bot, so project discovery iterates the distinct
-owners of the products' repos and roots the query at ``user(login: owner)``,
+owners of the products' repos and roots the query at
+``repositoryOwner(login: owner)`` (resolves both Users and Organizations),
 riding a dedicated ``fetch_gh_projects(owner, query)`` seam. Relations queries
 are repo-scoped and keep using the plain repo-scoped ``fetch`` seam.
 """
@@ -27,11 +28,11 @@ class Ctx:
         self.events.append((level, text, kw))
 
 
-# ---- canned GraphQL payloads (owner-rooted discovery; Phase 0 finding) -------
+# ---- canned GraphQL payloads (repositoryOwner-rooted discovery) -------------
 
 
 def _owner_projects_payload(title="cc-account-switcher"):
-    return {"data": {"user": {"projectsV2": {
+    return {"data": {"repositoryOwner": {"projectsV2": {
         "pageInfo": {"endCursor": None, "hasNextPage": False},
         "nodes": [
             {"id": "PVT_1", "number": 7, "title": title, "closed": False,
