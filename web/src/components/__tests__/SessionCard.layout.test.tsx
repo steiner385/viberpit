@@ -94,7 +94,7 @@ describe('SessionCard two-line skeleton', () => {
   it('the status phrase carries the presentation label and its tier text color', () => {
     renderCard({ ...base, status: 'waiting_input' })
     const phrase = screen.getByLabelText('Status: Permission needed')
-    expect(phrase.className).toMatch(/amber/)
+    expect(phrase.className).toMatch(/warning/)
   })
 
   it('marker cluster, PRs and usage live in line 1, not line 2', () => {
@@ -114,10 +114,10 @@ describe('SessionCard two-line skeleton', () => {
 
 describe('SessionCard status rail', () => {
   it.each([
-    ['in_progress', /emerald/],
-    ['waiting_input', /amber/],
-    ['needs_attention', /red/],
-    ['done', /gray|slate/],
+    ['in_progress', /success/],
+    ['waiting_input', /warning/],
+    ['needs_attention', /danger/],
+    ['done', /neutral/],
   ] as const)('colors the rail by tier for %s', (status, color) => {
     renderCard({ ...base, status })
     expect(screen.getByTestId('card-status-rail').className).toMatch(color)

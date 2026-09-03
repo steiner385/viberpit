@@ -233,7 +233,7 @@ function SnapshotRow({ snapshot }: { snapshot: Snapshot }) {
         <div className="ml-auto flex gap-2">
           <Button
             type="button"
-            variant="outline"
+            variant="secondary"
             size="sm"
             onClick={() => loadDiff.mutate()}
             disabled={loadDiff.isPending}
@@ -242,7 +242,7 @@ function SnapshotRow({ snapshot }: { snapshot: Snapshot }) {
           </Button>
           <Button
             type="button"
-            variant="destructive"
+            variant="danger"
             size="sm"
             onClick={handleRestore}
             disabled={restore.isPending}
@@ -394,7 +394,7 @@ function ImportPanel() {
           </div>
           <Button
             type="button"
-            variant="destructive"
+            variant="danger"
             onClick={handleApply}
             disabled={apply.isPending}
             className="min-h-[44px]"

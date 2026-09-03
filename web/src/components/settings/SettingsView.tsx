@@ -6,6 +6,7 @@
  * /library?section=X links redirect losslessly.
  */
 import { useSearchParams } from 'react-router-dom'
+import { Tabs } from '@/ui/Tabs'
 import { GeneralSection } from './GeneralSection'
 import { AccountsManager } from '../AccountsManager'
 import { AutomationView } from '../AutomationView'
@@ -51,21 +52,13 @@ export function SettingsView() {
 
   return (
     <div className="max-w-3xl mx-auto w-full">
-      <div role="tablist" aria-label="Settings sections" className="flex gap-1 mb-4 border-b border-edge overflow-x-auto">
-        {SECTIONS.map((s) => (
-          <button
-            key={s.id}
-            role="tab"
-            aria-selected={section === s.id}
-            className={`px-3 py-2 text-sm rounded-t-md min-h-[44px] whitespace-nowrap ${
-              section === s.id ? 'font-semibold border-b-2 border-current' : 'opacity-70 hover:opacity-100'
-            }`}
-            onClick={() => setParams((p) => { p.set('section', s.id); return p }, { replace: true })}
-          >
-            {s.label}
-          </button>
-        ))}
-      </div>
+      <Tabs
+        items={SECTIONS}
+        value={section}
+        onChange={(id) => setParams((p) => { p.set('section', id); return p }, { replace: true })}
+        label="Settings sections"
+        className="mb-4 border-b border-edge"
+      />
       {section === 'general' && <GeneralSection />}
       {section === 'accounts' && <AccountsManager />}
       {section === 'automation' && <AutomationView />}

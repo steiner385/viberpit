@@ -16,10 +16,10 @@ export interface StatusPresentation {
   textClass: string
 }
 
-const NEEDS_YOU = 'text-amber-700 dark:text-amber-400'
-const ERROR = 'text-red-700 dark:text-red-400'
-const BUSY = 'text-emerald-700 dark:text-emerald-400'
-const CALM = 'text-gray-600 dark:text-gray-400'
+const NEEDS_YOU = 'text-warning'
+const ERROR = 'text-danger'
+const BUSY = 'text-success'
+const CALM = 'text-ink-muted'
 
 // One table, keyed by the rich status string. 'working' is a tolerated legacy alias.
 //
@@ -118,12 +118,17 @@ export function statusTier(state: string): StatusTier {
  * to the presentation table so status → color stays a single source of truth.
  * `pulse` marks the action-required tiers whose dot animates (motion-safe).
  */
+export const TIER_TONE: Record<StatusTier, 'success' | 'warning' | 'danger' | 'neutral' | 'info'> = {
+  busy: 'success', 'needs-you': 'warning', error: 'danger', 'your-turn': 'neutral', waiting: 'info',
+}
+
 export const TIER_ACCENT: Record<StatusTier, { rail: string; dot: string; pulse: boolean }> = {
-  busy: { rail: 'bg-emerald-500 dark:bg-emerald-400', dot: 'bg-emerald-500 dark:bg-emerald-400', pulse: false },
-  'needs-you': { rail: 'bg-amber-500 dark:bg-amber-400', dot: 'bg-amber-500 dark:bg-amber-400', pulse: true },
-  error: { rail: 'bg-red-500 dark:bg-red-400', dot: 'bg-red-500 dark:bg-red-400', pulse: true },
-  'your-turn': { rail: 'bg-gray-300 dark:bg-gray-600', dot: 'bg-gray-400 dark:bg-gray-500', pulse: false },
-  waiting: { rail: 'bg-slate-300 dark:bg-slate-600', dot: 'bg-slate-400 dark:bg-slate-500', pulse: false },
+  busy: { rail: 'bg-success', dot: 'bg-success', pulse: false },
+  'needs-you': { rail: 'bg-warning', dot: 'bg-warning', pulse: true },
+  error: { rail: 'bg-danger', dot: 'bg-danger', pulse: true },
+  // Deliberately muted relative to the dot (see module docstring above).
+  'your-turn': { rail: 'bg-neutral/40', dot: 'bg-neutral', pulse: false },
+  waiting: { rail: 'bg-info/40', dot: 'bg-info', pulse: false },
 }
 
 export const TIER_RANK: Record<StatusTier, number> = {

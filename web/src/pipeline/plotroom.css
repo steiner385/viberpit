@@ -4,10 +4,6 @@
     0%, 100% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent); }
     50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--accent) 11%, transparent); }
   }
-@keyframes prdash-settings-slide-in {
-    from { transform: translateX(100%); }
-    to   { transform: translateX(0); }
-  }
 @keyframes prdash-skeleton-shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
 
 .prdash-root {
@@ -324,30 +320,6 @@ section h2 { font-size: 14px; margin: 18px 0 8px; color: var(--muted); }
   outline: 2px solid var(--accent); outline-offset: 2px;
 }
 
-.settings-overlay {
-  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.32);
-  z-index: var(--z-overlay);
-}
-.settings-panel {
-  position: fixed; top: 0; right: 0; bottom: 0; z-index: var(--z-drawer);
-  width: min(460px, 92vw); background: var(--surface);
-  border-left: 1px solid var(--border); box-shadow: -8px 0 24px rgba(0, 0, 0, 0.18);
-  display: flex; flex-direction: column; overflow-y: auto;
-}
-@media (prefers-reduced-motion: no-preference) {
-  .settings-panel { animation: prdash-settings-slide-in 180ms ease-out; }
-}
-.settings-head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 14px 18px; border-bottom: 1px solid var(--border);
-  position: sticky; top: 0; background: var(--surface); z-index: var(--z-raised);
-}
-.settings-head h2 { margin: 0; font-size: 17px; }
-.settings-close {
-  background: none; border: none; cursor: pointer; font-size: 22px;
-  line-height: 1; color: var(--muted); padding: 0 4px;
-}
-.settings-close:hover { color: var(--text); }
 .settings-body { padding: 14px 18px 24px; }
 .settings-loading, .settings-error { padding: 14px 18px; color: var(--muted); }
 .settings-error { color: var(--fail); }
