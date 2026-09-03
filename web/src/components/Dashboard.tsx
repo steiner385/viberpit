@@ -31,6 +31,7 @@ import { ProjectsTab } from '@/projects/ProjectsTab'
 import { TabBar } from './TabBar'
 import { buildTabs } from './tabDefs'
 import { inFlightPrCount } from '@/session/prStatus'
+import { isPreSpawnStatus } from '@/api/types'
 import { PermanentDeleteDialog } from '@/components/PermanentDeleteDialog'
 import {
   useAccounts,
@@ -419,7 +420,7 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
     [sessions],
   )
   const nonQueuedSessions = useMemo(
-    () => sessions.filter(s => s.status !== 'queued' && s.status !== 'pending_approval'),
+    () => sessions.filter(s => !isPreSpawnStatus(s.status)),
     [sessions],
   )
   const { groupBy, sortBy, setGroupBy, setSortBy, groups, orderedSessions: liveSessions, navItems, collapsedKeys, toggleCollapse, expandGroup, collapseGroup } =

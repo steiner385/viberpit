@@ -10,6 +10,8 @@ import json
 import logging
 from pathlib import Path
 
+from .transcript_entries import is_harness_user_entry
+
 log = logging.getLogger(__name__)
 
 _CUSTOM_KEYS = ("customTitle",)
@@ -77,9 +79,13 @@ def _prompt_text(message: dict) -> str:
 
 
 def read_user_prompts_from_file(path: str | Path) -> list[str]:
-    """Return the ordered, non-empty user prompts from a transcript file.
+    """Return the ordered, non-empty HUMAN prompts from a transcript file.
 
-    Excludes assistant messages and tool-result echoes. Never raises: returns
+    Excludes assistant messages, tool-result echoes, and the CLI's own ``type:"user"``
+    bookkeeping (``isMeta`` context, the ``/model`` local-command records a
+    ``set_model`` journals, interrupt markers — see ``transcript_entries``): the
+    fallback titler summarises these, so a session whose only "prompts" were the
+    ``/model fable`` records got named "Set model to Fable". Never raises: returns
     ``[]`` for a missing/unreadable/garbage file.
     """
     if not path:
@@ -107,7 +113,7 @@ def read_user_prompts_from_file(path: str | Path) -> list[str]:
         if not isinstance(message, dict):
             continue
         prompt = _prompt_text(message)
-        if prompt:
+        if prompt and not is_harness_user_entry(obj, prompt):
             prompts.append(prompt)
     return prompts
 

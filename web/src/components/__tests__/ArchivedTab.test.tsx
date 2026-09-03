@@ -71,6 +71,7 @@ vi.mock('@/api/hooks', () => ({
     settings: ['settings'],
   },
   useAssessDispatch: vi.fn(() => ({ assess: vi.fn() })),
+  useResumeInterrupted: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }))
 
 vi.mock('@/session/useSessionSearch', () => ({

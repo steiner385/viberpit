@@ -569,6 +569,12 @@ class RemoteOrchestrator:
     async def archive_session(self, session_id):
         return await self._client.call("archive_session", session_id=session_id)
 
+    async def resume_interrupted(self, session_id: str, identity: str = SYSTEM_IDENTITY) -> str:
+        """Proxy the owning daemon's resume_interrupted (re-attach + nudge a
+        restart-interrupted session). Returns "resumed" / "skipped:<reason>" / "no_driver"."""
+        return await self._client.call(
+            "resume_interrupted", session_id=session_id, identity=identity)
+
     async def permanent_delete(self, session_id):
         return await self._client.call("permanent_delete", session_id=session_id)
 

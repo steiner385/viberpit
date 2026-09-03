@@ -717,3 +717,43 @@ describe('SessionCard — null usage guard (needs-reauth account)', () => {
     expect(screen.getByText('Needs Reauth Session')).toBeInTheDocument()
   })
 })
+
+describe('SessionList — Resume interrupted button', () => {
+  const sharedProps = {
+    accounts: ACCOUNTS,
+    onNew: vi.fn(),
+    onOpen: vi.fn(),
+    onRename: vi.fn(),
+    onClose: vi.fn(),
+    onDelete: vi.fn(),
+  }
+
+  beforeEach(() => vi.clearAllMocks())
+
+  it('renders "Resume interrupted (2)" when two sessions have resumable:true', () => {
+    const sessions: Session[] = [
+      { ...SESSIONS[0], resumable: true },
+      { ...SESSIONS[1], resumable: true },
+      {
+        id: 'sess-3',
+        name: 'Not resumable',
+        accountName: 'alice',
+        status: 'idle',
+        createdAt: '2026-06-19T12:00:00Z',
+        updatedAt: '2026-06-19T12:00:00Z',
+        resumable: false,
+      },
+    ]
+    render(<SessionList {...sharedProps} sessions={sessions} />, { wrapper })
+    expect(screen.getByRole('button', { name: /resume interrupted \(2\)/i })).toBeInTheDocument()
+  })
+
+  it('does not render the Resume interrupted button when no sessions are resumable', () => {
+    const sessions: Session[] = [
+      { ...SESSIONS[0], resumable: false },
+      { ...SESSIONS[1] },
+    ]
+    render(<SessionList {...sharedProps} sessions={sessions} />, { wrapper })
+    expect(screen.queryByRole('button', { name: /resume interrupted/i })).not.toBeInTheDocument()
+  })
+})

@@ -49,6 +49,9 @@ export type SessionStatus =
   | 'idle'
   | 'in_progress'
   | 'condensing'
+  // Emitted by server/sessions/status.py (MID_TURN_STATUSES) but missing here until
+  // statusTier's PRESENTATION was typed against this union — the drift ran both ways.
+  | 'retrying'
   | 'waiting_input'
   | 'waiting_question'
   | 'ready_review'
@@ -60,6 +63,22 @@ export type SessionStatus =
   | 'ended'
   | 'queued'
   | 'pending_approval'
+
+/**
+ * Statuses a session holds BEFORE its driver exists — parked at the launch-time
+ * model gate, or waiting for a capacity slot. No runtime slot, no transcript yet;
+ * a WS attach in this state is read-only. Mirrors the server's pre-spawn shapes
+ * (`_hold_for_approval` / `_enqueue_session`), which both defer the initial prompt
+ * until a LIVE attach — so a view open across the transition must re-attach.
+ */
+export const PRE_SPAWN_STATUSES: ReadonlySet<SessionStatus> = new Set<SessionStatus>([
+  'pending_approval',
+  'queued',
+])
+
+export function isPreSpawnStatus(status: string | null | undefined): boolean {
+  return !!status && PRE_SPAWN_STATUSES.has(status as SessionStatus)
+}
 
 /** A sub-agent (Task/Agent call) summary, nested under its session in the list. */
 export interface SubAgentSummary {
@@ -131,6 +150,8 @@ export interface Session {
   /** Issue #434: the session's in-flight turn was dropped by a daemon wedge/restart (it
    *  came back idle via rehydrate). The dashboard labels it "re-send to resume". Transient. */
   interruptedByRestart?: boolean
+  /** Server-computed: this session was interrupted mid-work by a restart and can be resumed. */
+  resumable?: boolean
   /** The automation_id that spawned this session (e.g. 'pr-doctor'); null/absent = human-created. */
   origin?: string | null
   /** The automation's reference key (e.g. 'owner/repo#123'); null/absent when origin is absent. */

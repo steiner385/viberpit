@@ -38,6 +38,40 @@ def test_transcript_text_excludes_tooljson_images_and_sidechains(tmp_path):
     assert "sidechain" not in text
 
 
+def test_transcript_text_excludes_harness_user_entries(tmp_path):
+    # The CLI journals several `type:"user"` records nobody typed. None should be
+    # indexed as searchable human text (issue #941 — search must agree with replay
+    # and the titler via the shared `is_harness_user_entry` predicate).
+    path = _write(
+        tmp_path,
+        # A real human prompt — this MUST be indexed.
+        '{"type":"user","message":{"role":"user","content":"HUMAN fix the parser"}}',
+        # `/model` local-command bookkeeping journaled by driver.set_model().
+        '{"type":"user","message":{"role":"user","content":"<command-name>/model</command-name>"}}',
+        '{"type":"user","message":{"role":"user","content":'
+        '"<local-command-stdout>Set model to FABEL_NOISE</local-command-stdout>"}}',
+        # A background task's termination, delivered as a plain-string user entry.
+        '{"type":"user","message":{"role":"user","content":'
+        '"<task-notification>TASKNOTE_NOISE done</task-notification>"}}',
+        # Harness-injected context (a Skill body, the resume prompt) — flagged isMeta.
+        '{"type":"user","isMeta":true,"message":{"role":"user","content":"METANOISE skill body"}}',
+        # The auto-compaction summary — flagged isCompactSummary, not isMeta.
+        '{"type":"user","isCompactSummary":true,"message":{"role":"user","content":"COMPACTNOISE summary"}}',
+        # The interrupt marker.
+        '{"type":"user","message":{"role":"user","content":'
+        '"[Request interrupted by user]INTERRUPTNOISE"}}',
+        # Assistant text is still indexed regardless.
+        '{"type":"assistant","message":{"role":"assistant","content":['
+        '{"type":"text","text":"ASSISTANT here is the patch"}]}}',
+    )
+    text = transcript_text(path)
+    assert "HUMAN fix the parser" in text
+    assert "ASSISTANT here is the patch" in text
+    for noise in ("FABEL_NOISE", "command-name", "TASKNOTE_NOISE", "task-notification",
+                  "METANOISE", "COMPACTNOISE", "INTERRUPTNOISE"):
+        assert noise not in text, f"{noise!r} leaked into search text"
+
+
 def test_transcript_text_missing_file_returns_empty():
     assert transcript_text("/no/such/file.jsonl") == ""
 

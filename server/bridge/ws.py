@@ -48,6 +48,7 @@ from server.ipc import protocol as proto
 from server.ipc.client import DaemonTimeout, DaemonUnavailable
 from server.obs.context import bind_session, log_event
 from server.obs.tasks import supervise
+from server.sessions.commands.catalog import parse_command_line
 from server.sessions.events import ErrorEvent, PermissionRequest, tool_kind
 from server.sessions.facade import call_with_deadline
 from server.sessions.replay import replay_window
@@ -504,6 +505,29 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             except Exception:
                 log.warning("ws.attach: command_catalog failed for %s", session_id, exc_info=True)
 
+        async def _run_command_and_reply(session_id: str, name: str, args: str) -> bool:
+            """Dispatch a slash command and emit its commandResult frame, exactly
+            as the interactive `command` frame does. Returns True if the command
+            was known (handled — whether it succeeded or errored), False if
+            unknown so the caller can decide the fallback (the command frame
+            reports "unknown command"; the initial-prompt path re-sends the text
+            as a normal prompt). Single source for command dispatch-and-reply so
+            the two entry points can't drift."""
+            try:
+                result = await orchestrator.run_command(session_id, name, args,
+                                                        identity=identity)
+            except KeyError:
+                return False
+            except Exception:
+                log.warning("ws.command failed session=%s name=%s", session_id, name, exc_info=True)
+                await _send(redact_event({"type": "commandResult", "sessionId": session_id,
+                             "name": name, "ok": False, "error": "command failed"}))
+                return True
+            if result is not None:
+                await _send(redact_event({"type": "commandResult", "sessionId": session_id,
+                             "ok": True, **result}))
+            return True
+
         async def _emit_live_extras(session_id: str, driver, events: list) -> None:
             """Post-attach live wiring: suggestion seeding, command catalog, pending
             permission/question re-emit, live status, and the deferred initial prompt.
@@ -581,19 +605,49 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             except Exception:
                 log.warning("ws.attach: queue re-emit failed for %s", session_id, exc_info=True)
 
-            # Send the deferred initial prompt (if any) now that the client is watching.
-            # The prompt was stored in create_session instead of being sent immediately
-            # so that its events stream live to this first attach rather than racing the
-            # transcript-file write or arriving before any subscriber is registered on
-            # the driver. Only fires on the first attach (pop clears the entry);
-            # reconnects fall through to live-stream only. Best-effort like every
-            # other step here: a raise would propagate out of _handle_attach's
-            # try, close the just-opened stream, and kill the whole attach — the
-            # client would spin on a dead socket over a deferred nicety.
+            # Send the deferred initial prompt (if any) now that the client is watching
+            # a live stream.
+            await _send_deferred_initial_prompt(session_id)
+
+        async def _send_deferred_initial_prompt(session_id: str) -> None:
+            """Pop + send the session's deferred initial prompt, if one is staged.
+
+            The prompt is stored at spawn instead of being sent immediately so that
+            its events stream live to a watching client rather than racing the
+            transcript-file write or arriving before any subscriber is registered on
+            the driver. The pop clears the entry, so it fires at most once; a plain
+            reconnect finds nothing and falls through to live-stream only.
+
+            Called from BOTH places this socket opens a live stream — _handle_attach's
+            live path and the lazy _ensure_live a typed prompt triggers — because the
+            "first attach" can happen BEFORE the spawn: a `pending_approval` / `queued`
+            session viewed while it waits attaches on the read-only detached path,
+            which never pops. When the spawn then lands (approval, a freed slot), only
+            a later live-stream open on this same socket can deliver the prompt
+            (incident 2026-09-02: a Fable session approved from its open view sat
+            idle, the user's "continue" ran instead, and the titler named it after the
+            CLI's `/model` bookkeeping). Best-effort like every other attach step: a
+            raise would propagate out of the attach, close the just-opened stream and
+            kill the whole attach — the client would spin on a dead socket over a
+            deferred nicety.
+            """
             try:
                 pending_prompt = await orchestrator.pop_pending_initial_prompt(session_id)
                 pending_attachment_ids = await orchestrator.pop_pending_initial_attachment_ids(session_id)
-                if pending_prompt is not None or pending_attachment_ids:
+                # A bare slash command typed as the initial prompt runs through the
+                # SAME dispatch as one typed mid-session (/model, /account, /clear,
+                # /context, /help, custom commands) — so it executes as a command
+                # instead of being sent to the model as literal text. Only when it
+                # has no attachments (a command carrying images isn't a thing) and
+                # parses as a single-line command; an unknown command falls back to
+                # a normal prompt, mirroring the composer's runCommandFromText.
+                handled = False
+                if pending_prompt and not pending_attachment_ids:
+                    parsed = parse_command_line(pending_prompt)
+                    if parsed is not None:
+                        handled = await _run_command_and_reply(session_id, parsed[0], parsed[1])
+                if not handled and (pending_prompt is not None or pending_attachment_ids):
+                    log.info("ws.attach: sending deferred initial prompt for %s", session_id)
                     await orchestrator.send_prompt(
                         session_id, pending_prompt or "", pending_attachment_ids)
             except Exception:
@@ -897,6 +951,10 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             # session that had never been live before (e.g. one predating catalog caching,
             # or only ever resumed lazily) — so its NEXT detached view shows the palette.
             await _emit_command_catalog(session_id)
+            # A prompt deferred at spawn goes FIRST: this socket may have attached on
+            # the detached path before the session was spawned (see the helper), and
+            # the user's typed prompt must queue behind the original one, not replace it.
+            await _send_deferred_initial_prompt(session_id)
             # Flip the header from the read-only 'Ready' to the live state as the
             # resumed turn begins. Best-effort; rides out_q like every other
             # session-scoped frame (raw + tagged, batcher redacts — and batching is
@@ -1104,20 +1162,9 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 elif msg_type == "command":
                     name = msg.get("name", "")
                     args = msg.get("args", "")
-                    try:
-                        result = await orchestrator.run_command(session_id, name, args,
-                                                                identity=identity)
-                    except KeyError:
+                    if not await _run_command_and_reply(session_id, name, args):
                         await _send(redact_event({"type": "commandResult", "sessionId": session_id,
                                      "name": name, "ok": False, "error": "unknown command"}))
-                    except Exception:
-                        log.warning("ws.command failed session=%s name=%s", session_id, name, exc_info=True)
-                        await _send(redact_event({"type": "commandResult", "sessionId": session_id,
-                                     "name": name, "ok": False, "error": "command failed"}))
-                    else:
-                        if result is not None:
-                            await _send(redact_event({"type": "commandResult", "sessionId": session_id,
-                                         "ok": True, **result}))
                 else:
                     await _send({"type": "error", "code": "UNKNOWN_TYPE",
                                  "message": f"Unknown message type: {msg_type!r}"})

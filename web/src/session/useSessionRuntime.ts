@@ -18,6 +18,7 @@ import type { SessionEvent, Command } from '@/session/events'
 import { selectSubAgents, selectVisibleTurns, selectVisibleSubAgents } from '@/session/selectors'
 import { remainingContextPct, remainingFromContextUsage } from '@/lib/contextWindow'
 import { useSessions, useAccounts, useSettings } from '@/api/hooks'
+import { isPreSpawnStatus } from '@/api/types'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { fetchOlderTurns } from '@/api/transcript'
 
@@ -330,6 +331,25 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
   const toolDetailMode: ToolDetailMode = appSettings?.defaultToolDetail ?? 'auto'
   const thinkingCollapsed = appSettings?.thinkingCollapsed ?? true
   const sessionRecord = sessions?.find((s) => s.id === sessionId)
+
+  // Re-attach when this session leaves a PRE-SPAWN state (`pending_approval` /
+  // `queued`) while the view is open. The mount-time attach above ran BEFORE the
+  // driver existed, so the bridge took its read-only detached path; the server
+  // defers the initial prompt "until the first WS attach" and only a LIVE attach
+  // pops + sends it. Without a fresh attach the prompt is orphaned: a Fable session
+  // approved from its own view sat empty, and the titler named it after the CLI's
+  // `/model` bookkeeping (2026-09-02). Keyed on the record's status — the approve
+  // mutation invalidates the sessions query, and the poll covers approvals (or a
+  // freed queue slot) that happen elsewhere. The ref carries the session id so a
+  // route change can't pair the old session's status with the new one's.
+  const recordStatus = sessionRecord?.status
+  const prevStatusRef = useRef<{ id: string; status: string | undefined }>({ id: sessionId, status: undefined })
+  useEffect(() => {
+    const prev = prevStatusRef.current
+    prevStatusRef.current = { id: sessionId, status: recordStatus }
+    if (prev.id !== sessionId || prev.status === undefined || recordStatus === undefined) return
+    if (isPreSpawnStatus(prev.status) && !isPreSpawnStatus(recordStatus)) attach(sessionId)
+  }, [sessionId, recordStatus, attach])
 
   // Header title: prefer the session's name (the AI-generated/auto title, the
   // same value shown on the dashboard card) so the two stay consistent. Fall

@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react'
-import { Archive } from 'lucide-react'
+import { Archive, RotateCcw } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useAutomations, useFixPr, useGenerateSuggestions, useSetAutopilotPaused, useBulkArchiveSessions } from '@/api/hooks'
+import { useAutomations, useFixPr, useGenerateSuggestions, useSetAutopilotPaused, useBulkArchiveSessions, useResumeInterrupted } from '@/api/hooks'
 import { SessionCard } from './SessionCard'
 import { GroupedList } from './GroupedList'
 import { EmptyState } from './EmptyState'
@@ -150,6 +150,7 @@ export function SessionList({
   const genSuggestions = useGenerateSuggestions()
   const setAutopilot = useSetAutopilotPaused()
   const bulkArchive = useBulkArchiveSessions()
+  const resumeInterrupted = useResumeInterrupted()
 
   const [selectMode, setSelectMode] = useState(false)
   const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set())
@@ -215,6 +216,10 @@ export function SessionList({
   }
 
   const archivableDoneCount = sessions.filter((s) => ARCHIVABLE_STATUSES.has(s.status)).length
+  const resumableIds = sessions.filter((s) => s.resumable).map((s) => s.id)
+  const handleResumeInterrupted = () => {
+    if (resumableIds.length > 0) resumeInterrupted.mutate(resumableIds)
+  }
 
   if (isLoading) {
     return (
@@ -299,6 +304,17 @@ export function SessionList({
     <div className="space-y-2">
       {/* Bulk-select toolbar */}
       <div className="flex items-center justify-end gap-2">
+        {!selectMode && resumableIds.length > 0 && (
+          <button
+            type="button"
+            onClick={handleResumeInterrupted}
+            disabled={resumeInterrupted.isPending}
+            className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 py-1"
+          >
+            <RotateCcw size={12} aria-hidden="true" />
+            Resume interrupted ({resumableIds.length})
+          </button>
+        )}
         {!selectMode && archivableDoneCount > 0 && (
           <button
             type="button"

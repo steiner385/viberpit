@@ -182,12 +182,28 @@ TIER_ORDER: list[str] = ["haiku", "sonnet", "opus", "fable"]
 _TIER_ALIASES: frozenset[str] = frozenset(TIER_ORDER)
 
 
-def model_tier(model: str | None) -> str | None:
-    """The tier of a model alias or pinned id, or None when it has no fixed tier
-    (None / "" / "default" / "best" / unknown ids)."""
+def normalized_alias(model: str | None) -> str | None:
+    """*model* lowercased with its context tag stripped (``fable[1m]`` → ``fable``),
+    or None when no model is given.
+
+    The single normalization used by both ``model_tier`` and the approval policy's
+    denylist matching, so an untiered alias like ``best`` is matched the same way a
+    tiered one is.
+    """
     if not model:
         return None
-    base = model.strip().lower().split("[", 1)[0]  # drop context tag like [1m]
+    return model.strip().lower().split("[", 1)[0]
+
+
+def model_tier(model: str | None) -> str | None:
+    """The tier of a model alias or pinned id, or None when it has no fixed tier
+    (None / "" / "default" / "best" / unknown ids).
+
+    A None tier does NOT mean "ungated" — the approval policy also matches the bare
+    alias, so `best` and `default` can be put on the denylist by name."""
+    base = normalized_alias(model)
+    if base is None:
+        return None
     m = re.match(r"^claude-(opus|sonnet|haiku|fable)-", base)
     if m:
         return m.group(1)

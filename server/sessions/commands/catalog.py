@@ -5,7 +5,28 @@ Single source of truth for WHAT commands exist (constitution VI): we never scan
 `kind` is assigned here, server-side, so the client never re-derives command semantics.
 """
 from __future__ import annotations
+import re
 from dataclasses import dataclass
+
+# Split a raw prompt into (command-name, args) IFF it is a single-line
+# slash command. Mirrors the Composer's runCommandFromText regex exactly
+# (web/src/components/session/Composer.tsx) so a slash command typed as an
+# initial prompt is recognized identically to one typed mid-session.
+_CMD_LINE = re.compile(r"^(\S+)\s*(.*)$")
+
+
+def parse_command_line(raw: str) -> tuple[str, str] | None:
+    """Return (name, args) if `raw` is a single-line `/command [args]`, else None.
+
+    `name` has its leading slash stripped. A multi-line string, or one that
+    doesn't begin with `/`, is prose — not a command.
+    """
+    if not raw.startswith("/") or "\n" in raw:
+        return None
+    m = _CMD_LINE.match(raw[1:])
+    if not m:
+        return None
+    return m.group(1), m.group(2)
 
 # Commands handled by a dedicated client-side render (no model turn).
 CLIENT = {"help", "context"}
