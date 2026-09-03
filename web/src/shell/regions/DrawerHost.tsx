@@ -1,0 +1,102 @@
+import type { ReactNode } from 'react'
+import { Sheet } from '@/ui/Sheet'
+import { SidebarResizer } from '@/components/SidebarResizer'
+import { useDrawerName, useCloseDrawer, type DrawerName } from '@/shell/drawerParam'
+import { DRAWER_MIN, DRAWER_MAX, useDrawerWidth } from '@/shell/drawerWidth'
+import { useViewport } from '@/shell/useViewport'
+import { HelpSheet } from './HelpSheet'
+
+/**
+ * `app.drawer` — ONE `Sheet`, its content chosen by `?drawer=` (sub-spec B §4.2).
+ *
+ * ## Why one host and not one component per drawer
+ *
+ * Each drawer mounting its own `Sheet` would allow two open at once, and would
+ * give each its own answer to "overlay or push", "how wide", and "how does
+ * closing spell the URL". Here those are answered once, and `DRAWERS` is a
+ * `Record<DrawerName, …>`, so a new name added to `drawerParam.ts` fails to
+ * compile until it has content and a title.
+ *
+ * ## An unknown value is not a drawer
+ *
+ * `useDrawerName()` returns `null` for anything not in `DRAWER_NAMES`, and this
+ * component renders NOTHING for `null` — no wrapper, no empty sheet, no region
+ * marker. A stale `?drawer=assistantv2` link must land on the page, not on a
+ * modal with nothing in it that the user has to dismiss to reach the app.
+ *
+ * ## Placement (D13)
+ *
+ * From 1280px the drawer is a layout column (`mode="push"` — inline, no
+ * backdrop, no focus trap, resizable) and below it an overlay sheet. The
+ * threshold itself is `useViewport().drawerPushes`, because `useViewport` is the
+ * only module allowed to read a layout media query (there is a source-walking
+ * guard in `useViewport.test.tsx`) and 1280 falls between its width tiers.
+ * Whether the drawer is mounted AT ALL in a given mode — kiosk hides it — is the
+ * shell's region-visibility matrix (Task 16), not this component's business, for
+ * the same reason `PromptDock` does not check the mode either.
+ *
+ * ## `data-region` rides on the panel
+ *
+ * As an overlay the panel portals to `#overlays`, outside the layout tree. The
+ * marker therefore goes on the panel rather than on a wrapper left behind in the
+ * grid, so `[data-region="app.drawer"]` always names the thing on screen.
+ */
+
+const DRAWERS: Record<DrawerName, { title: string; content: ReactNode }> = {
+  help: { title: 'Help & Shortcuts', content: <HelpSheet /> },
+  // PR 12 replaces this with `AssistantSheet` (a transcript + composer over
+  // `POST /api/assistant/session`). Until that backend exists the drawer is
+  // deliberately inert: a composer wired to nothing would take prompts and drop
+  // them, which is worse than an honest placeholder.
+  assistant: { title: 'Assistant', content: <AssistantPlaceholder /> },
+}
+
+export function DrawerHost() {
+  const drawer = useDrawerName()
+  const close = useCloseDrawer()
+  const { drawerPushes } = useViewport()
+  const [width, setWidth] = useDrawerWidth()
+
+  if (!drawer) return null
+
+  const { title, content } = DRAWERS[drawer]
+
+  return (
+    <>
+      {drawerPushes && (
+        <SidebarResizer
+          width={width}
+          onResize={setWidth}
+          panelSide="right"
+          min={DRAWER_MIN}
+          max={DRAWER_MAX}
+          label="Resize drawer"
+        />
+      )}
+      <Sheet
+        open
+        onClose={close}
+        title={title}
+        side="right"
+        mode={drawerPushes ? 'push' : 'overlay'}
+        width={width}
+        data-region="app.drawer"
+      >
+        {content}
+      </Sheet>
+    </>
+  )
+}
+
+function AssistantPlaceholder() {
+  return (
+    <div data-testid="drawer-assistant" className="space-y-3 text-sm text-ink-muted">
+      <p className="text-ink font-medium">Assistant is coming.</p>
+      <p>
+        It will answer questions about what your sessions are doing and act on this app on your
+        behalf, with the page you are on as context.
+      </p>
+      <p>Nothing to configure — it appears here when the backend ships.</p>
+    </div>
+  )
+}

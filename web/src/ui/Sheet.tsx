@@ -6,7 +6,16 @@ import { getOverlayRoot } from './portal'
 import { useFocusTrap } from './useFocusTrap'
 import { IconButton } from './IconButton'
 
-export interface SheetProps {
+/**
+ * Everything else lands on the panel element (the `Button`/`Card` convention).
+ * `AppShell` needs this: an overlay sheet portals out of the layout tree, so its
+ * `data-region` marker has to ride on the panel itself — a marker left behind in
+ * the layout would claim the region is present while the panel it names is
+ * somewhere else entirely.
+ */
+type PanelAttributes = Omit<React.HTMLAttributes<HTMLDivElement>, 'title' | 'onClose' | 'children'>
+
+export interface SheetProps extends PanelAttributes {
   open: boolean
   onClose: () => void
   title: string
@@ -33,6 +42,7 @@ export function Sheet({
   returnFocusRef,
   className,
   children,
+  ...panelProps
 }: SheetProps) {
   const panelRef = React.useRef<HTMLDivElement>(null)
   const titleId = React.useId()
@@ -47,6 +57,7 @@ export function Sheet({
 
   const panel = (
     <div
+      {...panelProps}
       ref={panelRef}
       role="dialog"
       aria-modal={mode === 'overlay' ? 'true' : undefined}

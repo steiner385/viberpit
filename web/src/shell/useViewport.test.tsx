@@ -25,8 +25,19 @@ function renderAt(matching: string[], kiosk: Parameters<typeof ViewportProvider>
 
 const W768 = '(min-width: 768px)'
 const W1024 = '(min-width: 1024px)'
+const W1280 = '(min-width: 1280px)'
 const W1440 = '(min-width: 1440px)'
 const COARSE = '(pointer: coarse)'
+
+function DrawerProbe() {
+  return <span data-testid="push">{String(useViewport().drawerPushes)}</span>
+}
+
+function drawerPushesAt(matching: string[]) {
+  stubMatchMedia(matching)
+  render(<ViewportProvider kiosk={null}><DrawerProbe /></ViewportProvider>)
+  return screen.getByTestId('push').textContent
+}
 
 describe('useViewport', () => {
   beforeEach(() => { vi.unstubAllGlobals() })
@@ -65,6 +76,22 @@ describe('useViewport', () => {
   it('a disabled kiosk config does not override the mode', () => {
     expect(renderAt([W768, W1024], { enabled: false, cycleSeconds: 30, pages: ['pipeline'] }))
       .toBe('desktop/desktop/false')
+  })
+
+  // D13's drawer threshold sits BETWEEN the tier breakpoints: the drawer pushes
+  // from 1280, while `width` only changes at 1024 and 1440. These pin the gap —
+  // a consumer deriving push from `width === 'wide'` would be wrong for the
+  // whole 1280–1439 band, which is where most laptops sit.
+  it('the drawer overlays below 1280', () => {
+    expect(drawerPushesAt([W768, W1024])).toBe('false')
+  })
+
+  it('the drawer pushes from 1280, below the wide tier', () => {
+    expect(drawerPushesAt([W768, W1024, W1280])).toBe('true')
+  })
+
+  it('the drawer pushes at the wide tier', () => {
+    expect(drawerPushesAt([W768, W1024, W1280, W1440])).toBe('true')
   })
 
   it('throws when used outside the provider', () => {

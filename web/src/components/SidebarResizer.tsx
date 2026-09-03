@@ -8,17 +8,40 @@ const STEP = 16
 interface SidebarResizerProps {
   width: number
   onResize: (px: number) => void
+  /** Which side of the handle the resized panel is on. A left-hand panel (the
+   *  sidebar) grows as the handle moves right; a right-hand one (`app.drawer`)
+   *  grows as it moves left. Getting this wrong makes the panel run away from
+   *  the pointer, so it is a parameter rather than an assumption. */
+  panelSide?: 'left' | 'right'
+  min?: number
+  max?: number
+  /** Accessible name — there can be two handles on screen at once (list column
+   *  and drawer), and "Resize sidebar" twice names neither. */
+  label?: string
 }
 
 /**
- * Vertical drag handle that sits between the sidebar and the main pane. It is
- * the visual divider too (replacing the sidebar's right border). Pointer-drag
- * to resize; when focused, ← / → nudge by 16px and Home / End jump to the
+ * Vertical drag handle between a resizable panel and the pane beside it. It is
+ * the visual divider too (replacing that panel's border). Pointer-drag to
+ * resize; when focused, ← / → nudge by 16px and Home / End jump to the
  * min / max. Exposes ARIA separator semantics with valuenow/min/max so assistive
  * tech announces the current width.
+ *
+ * The defaults are the sidebar's, which is what every existing caller wants;
+ * `app.drawer` passes its own band, label and `panelSide="right"`. One handle
+ * with four parameters beats two handles that drift on keyboard behaviour.
  */
-export function SidebarResizer({ width, onResize }: SidebarResizerProps) {
+export function SidebarResizer({
+  width,
+  onResize,
+  panelSide = 'left',
+  min = SIDEBAR_MIN,
+  max = SIDEBAR_MAX,
+  label = 'Resize sidebar',
+}: SidebarResizerProps) {
   const draggingRef = useRef(false)
+  /** +1 when dragging right grows the panel, -1 when it shrinks it. */
+  const dir = panelSide === 'left' ? 1 : -1
 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     e.preventDefault()
@@ -27,7 +50,7 @@ export function SidebarResizer({ width, onResize }: SidebarResizerProps) {
     const startW = width
     function onMove(ev: PointerEvent) {
       if (!draggingRef.current) return
-      onResize(startW + (ev.clientX - startX))
+      onResize(startW + dir * (ev.clientX - startX))
     }
     function onUp() {
       draggingRef.current = false
@@ -36,23 +59,25 @@ export function SidebarResizer({ width, onResize }: SidebarResizerProps) {
     }
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
-  }, [width, onResize])
+  }, [width, onResize, dir])
 
   const onKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'ArrowLeft') { e.preventDefault(); onResize(width - STEP) }
-    else if (e.key === 'ArrowRight') { e.preventDefault(); onResize(width + STEP) }
-    else if (e.key === 'Home') { e.preventDefault(); onResize(SIDEBAR_MIN) }
-    else if (e.key === 'End') { e.preventDefault(); onResize(SIDEBAR_MAX) }
-  }, [width, onResize])
+    // ← / → move the HANDLE; which way that grows the panel depends on the side
+    // it is on, so the arrows mirror with the pointer rather than against it.
+    if (e.key === 'ArrowLeft') { e.preventDefault(); onResize(width - dir * STEP) }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); onResize(width + dir * STEP) }
+    else if (e.key === 'Home') { e.preventDefault(); onResize(min) }
+    else if (e.key === 'End') { e.preventDefault(); onResize(max) }
+  }, [width, onResize, dir, min, max])
 
   return (
     <div
       role="separator"
       aria-orientation="vertical"
-      aria-label="Resize sidebar"
+      aria-label={label}
       aria-valuenow={width}
-      aria-valuemin={SIDEBAR_MIN}
-      aria-valuemax={SIDEBAR_MAX}
+      aria-valuemin={min}
+      aria-valuemax={max}
       tabIndex={0}
       title="Drag to resize · ← → to nudge"
       onPointerDown={onPointerDown}

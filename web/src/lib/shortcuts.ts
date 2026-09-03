@@ -82,7 +82,13 @@ export const SHORTCUTS: Shortcut[] = [
   // ── In-session — DISPLAY-ONLY ────────────────────────────────────────
   { id: 'insession.detach', keys: '← / Esc', description: 'Detach back to the session list', group: 'in-session' },
   { id: 'insession.forceDetach', keys: 'Ctrl+Z', description: 'Force-detach to the list', group: 'in-session' },
-  { id: 'insession.permMode', keys: 'Shift+Tab', description: 'Cycle permission mode', group: 'in-session' },
+  // `Shift+Tab` (cycle permission mode) is deliberately NOT listed: sub-spec B D8
+  // removes the binding, and PR 4 removes the handler in `SessionView.tsx`. The
+  // registry is the only thing the help sheets render from, so dropping the row
+  // here is how the documentation goes away — a `HelpSheet`-local filter would be
+  // a second, invisible owner of "which shortcuts are documented". Between this
+  // change and PR 4 the key still works but is undocumented, which is the safer
+  // half of the gap to be on.
 ]
 
 export function matchListShortcut(e: KeyboardLike): ListRowAction | undefined {

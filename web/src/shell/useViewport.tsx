@@ -15,6 +15,17 @@ export interface Viewport {
   mode: LayoutMode
   /** Always the real width tier, even in kiosk — kiosk layouts use it for column counts. */
   width: WidthTier
+  /**
+   * `app.drawer` is a grid column (`Sheet mode="push"`) rather than an overlay.
+   *
+   * D13's threshold — `width === 'wide' || (desktop && ≥1280)` — falls BETWEEN
+   * the tier breakpoints, so it cannot be derived from `width` by a consumer.
+   * It is answered here rather than by `DrawerHost` because this module is the
+   * only permitted layout `matchMedia` reader (see the guard in
+   * `useViewport.test.tsx`), and because a threshold owned by its one consumer
+   * is a threshold the next consumer copies slightly wrong.
+   */
+  drawerPushes: boolean
   coarsePointer: boolean
   kiosk: ViewportKiosk | null
 }
@@ -39,6 +50,7 @@ export function ViewportProvider({
 }) {
   const atTablet = useMediaQuery('(min-width: 768px)')
   const atDesktop = useMediaQuery('(min-width: 1024px)')
+  const atDrawerPush = useMediaQuery('(min-width: 1280px)')
   const atWide = useMediaQuery('(min-width: 1440px)')
   const coarsePointer = useMediaQuery('(pointer: coarse)')
 
@@ -48,10 +60,13 @@ export function ViewportProvider({
     return {
       mode: kiosk?.enabled ? 'kiosk' : natural,
       width,
+      // `wide` is ≥1440, so it is already inside ≥1280; the disjunction in D13
+      // collapses to the one query rather than needing both.
+      drawerPushes: atDrawerPush,
       coarsePointer,
       kiosk: kiosk ?? null,
     }
-  }, [atTablet, atDesktop, atWide, coarsePointer, kiosk])
+  }, [atTablet, atDesktop, atDrawerPush, atWide, coarsePointer, kiosk])
 
   return <ViewportContext.Provider value={value}>{children}</ViewportContext.Provider>
 }

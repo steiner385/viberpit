@@ -27,6 +27,15 @@ describe('navDefs', () => {
     }
   })
 
+  // `help` is a required field, so the compiler already refuses a section with
+  // none; this catches the way round the type cannot — an empty or placeholder
+  // string added to silence it. `HelpSheet` renders these verbatim.
+  it('gives every entry real help text', () => {
+    for (const d of NAV_DEFS) {
+      expect(d.help.trim().length, `${d.id} help`).toBeGreaterThan(20)
+    }
+  })
+
   it('only Sessions owns a list column', () => {
     expect(NAV_DEFS.filter((d) => d.hasList).map((d) => d.id)).toEqual(['sessions'])
   })
