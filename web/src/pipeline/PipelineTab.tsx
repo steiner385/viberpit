@@ -6,6 +6,7 @@
 // notification bell, kiosk auto-cycle — around the ported PipelineView.
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { useFixPr } from '@/api/hooks'
+import { InteractionProvider } from '@/shell/InteractionContext'
 import { ApiBaseProvider } from './ApiBaseContext'
 import { useDashboard } from './useDashboard'
 import { PipelineView } from './PipelineView'
@@ -58,7 +59,7 @@ function Inner({ onOpenInsights }: { onOpenInsights?: () => void }) {
     else onOpenInsights?.()
   }, [onOpenInsights])
   return (
-    <>
+    <InteractionProvider interactive={!kiosk}>
       {!kiosk && (
         <div className="pipeline-chrome-bar">
           <PipelineSwitcher repos={repos} focused={focused} onFocus={focus} />
@@ -94,8 +95,8 @@ function Inner({ onOpenInsights }: { onOpenInsights?: () => void }) {
       {stale && <p className="pipeline-stale" role="status">data stale — reconnecting…</p>}
       <LegendPanel open={legendOpen} onClose={() => setLegendOpen(false)} returnFocusRef={legendBtnRef} />
       <PipelineView state={state} focusedRepo={focused} onFixPr={onFixPr}
-        activeFilter={filter} onFilter={setFilter} kiosk={kiosk} />
-    </>
+        activeFilter={filter} onFilter={setFilter} />
+    </InteractionProvider>
   )
 }
 

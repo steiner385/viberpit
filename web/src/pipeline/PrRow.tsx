@@ -2,6 +2,7 @@
 /* eslint-disable react-refresh/only-export-components */
 import { useState, useMemo, memo, type MouseEvent, type KeyboardEvent } from 'react';
 import { Link } from 'react-router-dom';
+import { useInteractive } from '@/shell/InteractionContext';
 import { useApiBase } from './ApiBaseContext';
 import type { PrView } from './types';
 import { formatDur, formatEta, formatSince, stageLabel } from './format';
@@ -104,8 +105,6 @@ type PrRowProps = {
   pr: PrView; hasDeploy: boolean;
   /** Repo-level RepoQueueView.unmergeableCulprit (queue-blocked sub line). */
   queueCulprit?: number | null;
-  /** false in kiosk mode (issue #20): row is read-only — no expand-on-click. */
-  expandable?: boolean;
   /** ccswitch extension (spec §6): fire the "fix this PR" flow for the authoring
    *  session. Only invoked when pr.session.fixable is true and a handler is given.
    *  MUST be a reference-stable callback (useCallback in the caller) — areEqual
@@ -122,8 +121,11 @@ type PrRowProps = {
  * function or class-instance fields. Stringifying is O(size of one PR) — far
  * cheaper than reconciling the entire subtree on an unchanged row.
  *
- * Explicitly checks the three scalar props separately so that a change to any
+ * Explicitly checks the two scalar props separately so that a change to either
  * of them still forces a re-render even if `pr` itself is byte-for-byte equal.
+ * (Read-only/expandable comes from InteractionContext, not a prop — a context
+ * change always propagates through a memoized component regardless of this
+ * comparator, so it needs no entry here.)
  *
  * ccswitch blend: onFixPr is compared by identity (like the scalar props) so a
  * changed handler forces a re-render; callers pass a stable ref (see PrRowProps).
@@ -132,14 +134,14 @@ export function areEqual(prev: PrRowProps, next: PrRowProps): boolean {
   return (
     prev.hasDeploy === next.hasDeploy &&
     prev.queueCulprit === next.queueCulprit &&
-    prev.expandable === next.expandable &&
     prev.onFixPr === next.onFixPr &&
     JSON.stringify(prev.pr) === JSON.stringify(next.pr)
   );
 }
 
-function PrRowInner({ pr, hasDeploy, queueCulprit = null, expandable = true, onFixPr }: PrRowProps) {
+function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr }: PrRowProps) {
   const { apiUrl } = useApiBase();
+  const expandable = useInteractive(); // false in kiosk mode (issue #20): row is read-only — no expand-on-click.
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [actionResult, setActionResult] = useState<{ ok: boolean; msg: string } | null>(null);
