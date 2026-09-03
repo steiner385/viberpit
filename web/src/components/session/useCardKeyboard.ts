@@ -30,10 +30,11 @@ export interface CardKeyboardApi {
  * - `preventDefault()` stops native browser defaults (Enter submitting a form,
  *   Space scrolling the page).
  * - `stopPropagation()` stops React synthetic-event bubbling up the React tree;
- *   it does NOT reach native `window.addEventListener` handlers (e.g. SessionView's
- *   detach listener), which sit outside React's event system entirely.
- * - Isolation from SessionView's window-level Esc/ArrowLeft/Shift+Tab detach handler
- *   is provided by SessionView's own `if (hasOpenAction) return` guard, which fires
+ *   it does NOT reach native `window.addEventListener` handlers (e.g.
+ *   `useInSessionKeys`' detach listener), which sit outside React's event system
+ *   entirely.
+ * - Isolation from `useInSessionKeys`' window-level Esc/←/Ctrl+Z detach handler
+ *   is provided by that hook's own `if (hasOpenAction) return` guard, which fires
  *   whenever a permission or question block is pending — not by stopPropagation here.
  */
 export function useCardKeyboard({

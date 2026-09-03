@@ -7,10 +7,26 @@
  * `SessionView.tsx` (phone, full screen) and `DesktopShell.tsx` (desktop,
  * master-detail). They had already drifted — the desktop copy had no
  * pending-card guard, so Escape over an unanswered permission card detached
- * instead of letting the card handle it, and it had no Shift+Tab at all. Task 17
- * deleted `DesktopShell` and Task 18 deletes `SessionView` (the shell renders
- * `MainPaneSession` in every mode now), so the surviving copy is here, and it is
- * the STRICTER of the two: the guard that was the phone's is now everyone's.
+ * instead of letting the card handle it. Task 17 deleted `DesktopShell` and
+ * Task 18 deletes `SessionView` (the shell renders `MainPaneSession` in every
+ * mode now), so the surviving copy is here, and it is the STRICTER of the two:
+ * the guard that was the phone's is now everyone's.
+ *
+ * ## Why `Shift+Tab` is NOT here
+ *
+ * `SessionView`'s copy also cycled the permission mode on `Shift+Tab`, ahead of
+ * the guard and with an unconditional `preventDefault()`. That was survivable
+ * while `SessionView` was a chrome-free full-screen route whose only focusables
+ * were its own. It is not survivable here: this hook now mounts inside
+ * `AppShell`, beside a focusable rail, bar, dock and drawer, so the branch
+ * killed reverse-tab navigation for the whole document and walked a LIVE
+ * session's permission mode toward `bypassPermissions` — including
+ * `full-auto` — whenever the user pressed the platform gesture for "move focus
+ * backwards". Sub-spec B **D8** removes the binding anyway (PR 4's shortcuts
+ * registry has no row for it, and `lib/shortcuts.ts` already dropped the help
+ * text on that basis), so the cutover brings the removal forward rather than
+ * broadening the binding into every layout mode. Permission mode changes go
+ * through the mode selector in `SessionMeta`, which is confirmed and visible.
  *
  * ## Why it is still a window listener
  *
@@ -22,23 +38,10 @@
  * shortcuts registry; until then this is the one owner (`lib/shortcuts.ts` says
  * so beside the rows it documents).
  */
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect } from 'react'
 import { detachKeyYieldsToTextEntry } from '@/lib/detachKeyGuard'
-import { PERMISSION_MODES } from '@/session/permissionModes'
-
-/**
- * Cycle to the next permission mode in PERMISSION_MODES order.
- * Wraps around: full-auto → interactive.
- */
-export function nextPermissionMode(current: string): string {
-  const values: string[] = PERMISSION_MODES.map((m) => m.value)
-  const i = values.indexOf(current)
-  return values[(i + 1) % values.length]
-}
 
 export interface InSessionKeysOptions {
-  /** The live permission mode, read fresh on each keystroke. */
-  mode: string
   /**
    * A permission or question card is waiting for an answer. Esc and ← yield to
    * it — answer the card first. Ctrl+Z deliberately does NOT: it is the
@@ -47,27 +50,13 @@ export interface InSessionKeysOptions {
   hasOpenAction: boolean
   /** Detach and leave the session (the click equivalent is the Back control). */
   onDetach: () => void
-  /** Apply a new permission mode (Shift+Tab). */
-  onSetMode: (mode: string) => void
 }
 
-export function useInSessionKeys({ mode, hasOpenAction, onDetach, onSetMode }: InSessionKeysOptions): void {
-  // Keep the mode in a ref so the handler reads the latest value without
-  // re-registering the listener on every mode change.
-  const modeRef = useRef(mode)
-  useEffect(() => {
-    modeRef.current = mode
-  }, [mode])
-
+export function useInSessionKeys({ hasOpenAction, onDetach }: InSessionKeysOptions): void {
   const detach = useCallback(() => onDetach(), [onDetach])
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key === 'Tab' && e.shiftKey) {
-        e.preventDefault()
-        onSetMode(nextPermissionMode(modeRef.current))
-        return
-      }
       const active = document.activeElement
       // Ctrl+Z → force-detach escape hatch (bypasses the pending-card guard).
       if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) {
@@ -94,5 +83,5 @@ export function useInSessionKeys({ mode, hasOpenAction, onDetach, onSetMode }: I
 
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [detach, hasOpenAction, onSetMode])
+  }, [detach, hasOpenAction])
 }

@@ -173,7 +173,7 @@ describe('DrawerHost', () => {
     expect(region()).toBeNull()
   })
 
-  it('does not document Shift+Tab (D8 removes the binding in PR 4)', () => {
+  it('does not document Shift+Tab (D8 removed the binding and its handler)', () => {
     renderAt(['/sessions?drawer=help'])
     const dlg = screen.getByRole('dialog', { name: /help/i })
     expect(dlg.textContent ?? '').not.toMatch(/shift\s*\+\s*tab/i)

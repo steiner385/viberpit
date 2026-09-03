@@ -1,7 +1,7 @@
 /**
  * Task 7 — In-session keyboard shortcuts:
  *   Esc / ← / Ctrl+Z → detach back to the session list
- *   Shift+Tab        → cycle permission mode via setPermissionMode
+ *   Shift+Tab        → nothing; D8 removed the binding (see the block below)
  *
  * ## Where these moved, and why they are all in ONE file now
  *
@@ -151,30 +151,45 @@ describe('MainPaneSession keyboard shortcuts (Task 7)', () => {
     expect(onBack).not.toHaveBeenCalled()
   })
 
-  it('Shift+Tab cycles the permission mode: interactive → auto', async () => {
-    const user = userEvent.setup()
+  // ── Shift+Tab: removed, not ported (D8) ───────────────────────────────────
+  //
+  // R9 successor map for the two cases that used to live here:
+  //
+  //   'Shift+Tab cycles the permission mode: interactive → auto'
+  //   'Shift+Tab cycles through all modes in order'
+  //
+  // Both asserted a binding that sub-spec B **D8** removes, and that this
+  // branch's cutover made actively harmful: the handler is a bare `window`
+  // listener, so once `MainPaneSession` mounts inside `AppShell` — beside a
+  // focusable rail, bar, dock and drawer — it swallowed `Shift+Tab` for the
+  // whole document and walked a LIVE session's permission mode toward
+  // `bypassPermissions` while the user was only trying to move focus backwards.
+  // Neither case can have a "still cycles, but only when…" successor, because
+  // the behaviour they pinned is gone.
+  //
+  // Their successor is the pair below, which pins the OPPOSITE contract at the
+  // same seam (same harness, same window listener, same open session): the mode
+  // does not move, and the event is left un-`preventDefault`ed so the browser's
+  // own reverse-tab still happens. The mode selector in `SessionMeta` is the
+  // supported path and keeps its own coverage
+  // (`components/session/__tests__/SessionMeta.test.tsx:134-146`).
+
+  it('Shift+Tab does not change the permission mode and does not swallow reverse-tab (D8)', () => {
     renderPane(vi.fn())
-    await user.keyboard('{Shift>}{Tab}{/Shift}')
-    // Initial mode is 'interactive'; cycling once should call setPermissionMode with 'auto'
-    expect(mockSetPermissionMode).toHaveBeenCalledWith('s1', 'auto')
+    // `fireEvent` returns false when a listener called preventDefault().
+    const notPrevented = fireEvent.keyDown(document.body, { key: 'Tab', shiftKey: true })
+    expect(notPrevented).toBe(true)
+    expect(mockSetPermissionMode).not.toHaveBeenCalled()
   })
 
-  it('Shift+Tab cycles through all modes in order', async () => {
+  it('Shift+Tab out of the composer is left to the browser (no mode change, no preventDefault)', async () => {
     const user = userEvent.setup()
     renderPane(vi.fn())
-    // interactive → auto → allowlist → acceptEdits → full-auto → bypassPermissions → interactive
-    await user.keyboard('{Shift>}{Tab}{/Shift}')
-    expect(mockSetPermissionMode).toHaveBeenLastCalledWith('s1', 'auto')
-    await user.keyboard('{Shift>}{Tab}{/Shift}')
-    expect(mockSetPermissionMode).toHaveBeenLastCalledWith('s1', 'allowlist')
-    await user.keyboard('{Shift>}{Tab}{/Shift}')
-    expect(mockSetPermissionMode).toHaveBeenLastCalledWith('s1', 'acceptEdits')
-    await user.keyboard('{Shift>}{Tab}{/Shift}')
-    expect(mockSetPermissionMode).toHaveBeenLastCalledWith('s1', 'full-auto')
-    await user.keyboard('{Shift>}{Tab}{/Shift}')
-    expect(mockSetPermissionMode).toHaveBeenLastCalledWith('s1', 'bypassPermissions')
-    await user.keyboard('{Shift>}{Tab}{/Shift}')
-    expect(mockSetPermissionMode).toHaveBeenLastCalledWith('s1', 'interactive')
+    const box = screen.getByRole('textbox', { name: /message/i })
+    await user.click(box)
+    const notPrevented = fireEvent.keyDown(box, { key: 'Tab', shiftKey: true })
+    expect(notPrevented).toBe(true)
+    expect(mockSetPermissionMode).not.toHaveBeenCalled()
   })
 
   it('Escape does NOT call onBack when a permission card is pending (Fix 6)', async () => {

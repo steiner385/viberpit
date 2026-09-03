@@ -75,10 +75,8 @@ export function MainPaneSession({ sessionId, onClosed, onDetach, onOpenSession }
   }
 
   useInSessionKeys({
-    mode: rt.mode,
     hasOpenAction: rt.hasOpenAction,
     onDetach: () => leave(onDetach),
-    onSetMode: rt.onSetMode,
   })
 
   return (

@@ -17,8 +17,8 @@ import { NAV_DEFS } from '@/shell/navDefs'
  * next section: the Navigation list below maps `NAV_DEFS`, and `NavDef.help` is
  * a REQUIRED field, so a new section that ships without help text does not
  * compile. Shortcut rows come from `SHORTCUTS` the same way, which is why
- * `Shift+Tab` is absent from this file — it was removed from the registry (D8),
- * not filtered out here.
+ * `Shift+Tab` is absent from this file — it was removed from the registry (D8)
+ * along with its handler, not filtered out here.
  *
  * ## It is a body, not a sheet
  *
