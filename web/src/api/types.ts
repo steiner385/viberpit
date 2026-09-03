@@ -197,6 +197,9 @@ export interface Session {
   lastConfirmedAliveAt?: string | null
   /** Server-computed: this session was interrupted mid-work by a restart and can be resumed. */
   resumable?: boolean
+  /** Pre-restart status when a daemon restart interrupted this session; drives the
+   *  orphaned-ask notice. Sent by server/sessions/types.py:to_dict. */
+  interruptedFromStatus?: string | null
   /** The automation_id that spawned this session (e.g. 'pr-doctor'); null/absent = human-created. */
   origin?: string | null
   /** The automation's reference key (e.g. 'owner/repo#123'); null/absent when origin is absent. */
