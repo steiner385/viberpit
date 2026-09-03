@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { shortcutsByGroup, type Shortcut } from '@/lib/shortcuts'
+import { Kbd } from '@/ui/Kbd'
 
 const NAV_MAP = [
   { name: 'Sessions', detail: 'Live sessions list — the default view' },
@@ -160,15 +161,7 @@ function ShortcutSection({ title, bindings }: { title: string; bindings: Shortcu
         {bindings.map((b) => (
           <div key={b.id} className="flex items-baseline gap-3">
             <dt className="shrink-0 min-w-[120px]">
-              <kbd
-                className={cn(
-                  'inline-block rounded px-1.5 py-0.5 text-xs font-mono',
-                  'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300',
-                  'border border-gray-300 dark:border-gray-600',
-                )}
-              >
-                {b.keys}
-              </kbd>
+              <Kbd keys={b.keys} />
             </dt>
             <dd className="text-sm text-gray-700 dark:text-gray-300">{b.description}</dd>
           </div>

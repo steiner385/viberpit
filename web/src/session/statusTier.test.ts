@@ -6,7 +6,7 @@ describe('retrying presentation', () => {
     const p = statusPresentation('retrying')
     expect(p.label).toBe('Overloaded — retrying')
     expect(p.tier).toBe('busy')
-    expect(p.textClass).toContain('amber')
+    expect(p.textClass).toContain('warning')
   })
   it('unknown status still falls back to Ready', () => {
     expect(statusTier('nonsense')).toBe('your-turn')
