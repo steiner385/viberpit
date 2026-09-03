@@ -143,8 +143,13 @@ user at the moment of failure is re-presented rather than lost.
 - **FR-102**: Per-session liveness MUST be derived, never stored, by a pure function of
   (owning host's heartbeat, now) with states `fresh` (≤ 2× interval), `stale` (past fresh, under
   dead threshold), `unreachable` (past dead threshold, default 300 s,
-  `CCSWITCH_HOST_DEAD_AFTER_S`), and `dead` (fenced/declared). Thresholds MUST be evaluated
-  against DB time.
+  `CCSWITCH_HOST_DEAD_AFTER_S`), and `dead` (fenced/declared). A sixth state `unknown` is
+  reported when the heartbeat snapshot itself could not be read (DB unreachable at the edge):
+  distinct from a missing row (which is `fresh` — absence of evidence is not evidence of death,
+  NFR-3), because a failed snapshot is no evidence *either way* and MUST NOT be reported as
+  `fresh` (NFR-5). Thresholds MUST be evaluated against DB time — both `beat_at` (written with the
+  DB clock) and `now` (read from the DB clock) come from the database, so a host whose local clock
+  differs from the reader is never falsely demoted.
 - **FR-103**: Session API payloads MUST carry `liveness` and `lastConfirmedAliveAt`, computed at
   the edge from the heartbeat table.
 - **FR-104**: The frontend MUST demote the presentation of any non-terminal session to a

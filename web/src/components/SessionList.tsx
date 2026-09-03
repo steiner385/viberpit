@@ -6,11 +6,8 @@ import { SessionCard } from './SessionCard'
 import { GroupedList } from './GroupedList'
 import { EmptyState } from './EmptyState'
 import { Button } from '@/ui/Button'
-import type { Session, Account } from '@/api/types'
+import { ARCHIVABLE_STATUSES, type Session, type Account } from '@/api/types'
 import type { SessionGroup } from '@/session/ordering'
-
-// Sessions in these statuses are safe to bulk-archive via the quick action.
-const ARCHIVABLE_STATUSES = new Set(['done', 'complete', 'ended'])
 
 const CHECKBOX_CLS = cn(
   'h-4 w-4 flex-shrink-0 rounded border-gray-300 text-blue-600',

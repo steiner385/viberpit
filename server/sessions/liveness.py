@@ -11,9 +11,15 @@ States:
 - ``stale``       — beat between 2x interval and dead_after_s.
 - ``unreachable`` — beat older than dead_after_s, not yet declared dead.
 - ``dead``        — explicitly declared via declare_dead (fence bump observed).
+- ``unknown``     — the heartbeat snapshot could not be read at all (e.g. the DB
+                    was unreachable at the edge). Distinct from a missing ROW, which
+                    is ``fresh``: here we have NO evidence either way, so NFR-5
+                    ("degradation is visible, never false-fresh") forbids claiming
+                    ``fresh``. Surfaced as a visible, non-actionable degraded pill.
 
-Clock skew: if beat_at is in the future (writer clock ahead of reader) the age
-is negative — treated as fresh so skew never triggers a false demotion.
+Clock skew: ``beat_at`` and ``now`` are both the DB clock (host_heartbeat writes and
+reads ``CURRENT_TIMESTAMP``), so cross-host skew cannot arise. A negative age (should
+now only happen under sub-second read/write ordering) is still treated as fresh.
 """
 from __future__ import annotations
 
@@ -23,7 +29,7 @@ from typing import Literal
 
 from server.config import env_float
 
-LivenessState = Literal["fresh", "stale", "unreachable", "dead"]
+LivenessState = Literal["fresh", "stale", "unreachable", "dead", "unknown"]
 
 # The two liveness tuning knobs (spec 002 FR-101/FR-102) live HERE, once: the daemon
 # loop that writes heartbeats and the edge that reads them must agree on the names,
@@ -66,16 +72,24 @@ def derive_liveness(
     interval_s: float = HEARTBEAT_INTERVAL_DEFAULT_S,
     dead_after_s: float = DEAD_AFTER_DEFAULT_S,
     declared_dead: bool = False,
+    snapshot_failed: bool = False,
 ) -> Liveness:
     """Derive liveness state from a heartbeat timestamp.
 
     Args:
-        beat_at:       Last beat_at from HostHeartbeat, or None when no row exists.
-        now:           Caller-supplied clock (enables deterministic tests).
-        interval_s:    Expected beat interval; fresh threshold is 2x this value.
-        dead_after_s:  Seconds without a beat before unreachable → dead transition.
-        declared_dead: True when the primary has bumped the fence (FR-202).
+        beat_at:         Last beat_at from HostHeartbeat, or None when no row exists.
+        now:             Caller-supplied DB clock (enables deterministic tests).
+        interval_s:      Expected beat interval; fresh threshold is 2x this value.
+        dead_after_s:    Seconds without a beat before unreachable → dead transition.
+        declared_dead:   True when the primary has bumped the fence (FR-202).
+        snapshot_failed: True when the heartbeat snapshot itself could not be read
+                         (DB down at the edge). Yields ``unknown`` — NFR-5 forbids
+                         reporting ``fresh`` when we have no evidence at all.
     """
+    if snapshot_failed:
+        # No snapshot ⇒ no evidence either way. Do NOT claim fresh (NFR-5).
+        return Liveness(state="unknown", last_confirmed_alive_at=None)
+
     if declared_dead:
         return Liveness(state="dead", last_confirmed_alive_at=beat_at)
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { statusPresentation, statusTier, TIER_ACCENT } from './statusTier'
+import { statusPresentation, statusTier, sortSessionsByTier, TIER_ACCENT } from './statusTier'
 import type { StatusTier } from './statusTier'
 
 describe('retrying presentation', () => {
@@ -82,6 +82,29 @@ describe('liveness demotion (spec 002 FR-104)', () => {
     expect(statusPresentation('in_progress', { liveness: 'stale' }).tier).toBe('unreachable')
     expect(statusPresentation('in_progress', { liveness: 'dead' }).tier).toBe('unreachable')
   })
+
+  // #961 item 3: liveness demotion outranks the interrupted-by-restart relabel — a
+  // dead daemon cannot honor a "re-send to resume" affordance any more than a "Ready" one.
+  it('a non-fresh host outranks interruptedByRestart (no false re-send affordance)', () => {
+    const p = statusPresentation('idle', { interruptedByRestart: true, liveness: 'unreachable' })
+    expect(p.tier).toBe('unreachable')
+    expect(p.label).not.toMatch(/re-send/i)
+  })
+  it('still shows the re-send prompt when the host is fresh', () => {
+    const p = statusPresentation('idle', { interruptedByRestart: true, liveness: 'fresh' })
+    expect(p.label).toMatch(/re-send/i)
+  })
+
+  // #961 item 4: a failed snapshot ('unknown') is visibly degraded but distinct from a
+  // confirmed-unreachable host — its own gentler pill, never a silent "fresh" (NFR-5).
+  it.each(['in_progress', 'idle', 'done'])('renders unknown liveness as its own pill for %s', (status) => {
+    const p = statusPresentation(status, { liveness: 'unknown' })
+    expect(p.tier).toBe('unreachable')       // reuses the muted tier for color/sort
+    expect(p.label).toBe('Status unknown')   // …but is labelled distinctly, not "Unreachable"
+  })
+  it.each(['complete', 'ended'])('never demotes terminal %s even when liveness is unknown', (status) => {
+    expect(statusPresentation(status, { liveness: 'unknown' }).label).not.toBe('Status unknown')
+  })
 })
 
 describe('unknown status (spec 002 FR-402)', () => {
@@ -89,5 +112,102 @@ describe('unknown status (spec 002 FR-402)', () => {
     const p = statusPresentation('some_future_status')
     expect(p.label).toBe('Unknown')
     expect(p.tier).toBe('waiting')
+  })
+})
+
+// Merged from the former web/src/session/__tests__/statusTier.test.ts (#961 item 6):
+// these exhaustive status→tier and status→label tables plus the sort coverage lived
+// ONLY in that duplicate copy, while the liveness/accent suites above lived only here.
+// Consolidated into this single colocated file so the two can no longer drift apart.
+describe('statusTier mapping table', () => {
+  it.each([
+    ['in_progress', 'busy'],
+    ['waiting_input', 'needs-you'],
+    ['waiting_question', 'needs-you'],
+    ['ready_review', 'needs-you'],
+    ['done', 'your-turn'],
+    ['complete', 'your-turn'],
+    ['idle', 'your-turn'],
+    ['needs_attention', 'error'],
+    ['limited', 'error'],
+    ['ended', 'your-turn'],
+    ['waiting_external', 'waiting'],   // parked on an external event
+    ['queued', 'waiting'],          // enqueued behind the active-session cap
+    ['pending_approval', 'needs-you'],  // parked on a human model decision
+    ['working', 'busy'],            // legacy alias tolerated
+  ])('maps %s -> %s', (state, tier) => {
+    expect(statusTier(state)).toBe(tier)
+  })
+
+  it('falls back to neutral "Unknown" (waiting tier) for an unknown state', () => {
+    expect(statusTier('totally-unknown')).toBe('waiting')
+    expect(statusPresentation('totally-unknown').label).toBe('Unknown')
+  })
+})
+
+describe('statusPresentation label table', () => {
+  it.each([
+    ['in_progress', 'Working…'],
+    ['ready_review', 'Approve plan'],
+    ['waiting_input', 'Permission needed'],
+    ['waiting_question', 'Answer needed'],
+    ['done', 'Your turn'],
+    ['complete', 'Complete'],
+    ['idle', 'Ready'],
+    ['needs_attention', 'Turn failed'],
+    ['limited', 'Usage limit'],
+    ['ended', 'Ended'],
+    ['waiting_external', 'Waiting…'],
+    ['queued', 'Queued'],
+    ['pending_approval', 'Awaiting approval'],
+  ])('labels %s as "%s"', (state, label) => {
+    expect(statusPresentation(state).label).toBe(label)
+  })
+
+  // Regression: a session that has not started yet used to hit the FALLBACK and
+  // render as a calm "Ready" — indistinguishable from a live idle session, over an
+  // empty conversation. That is what made a restart-stranded session read as a
+  // healthy-but-dead orphan. 'queued'/'pending_approval' were in the SessionStatus
+  // union but missing from the presentation table; PRESENTATION is now typed
+  // Record<SessionStatus | 'working', …> so tsc fails the build if that drifts again.
+  it.each(['queued', 'pending_approval'])(
+    'never renders %s as the "Ready" fallback', (state) => {
+      const p = statusPresentation(state)
+      expect(p.label).not.toBe('Ready')
+      expect(p.tier).not.toBe('your-turn')
+    })
+})
+
+describe('sortSessionsByTier', () => {
+  it('sorts needs-you first, then error, your-turn, busy; stable within tier', () => {
+    const input = [
+      { id: 'a', name: 'A', status: 'in_progress' },
+      { id: 'b', name: 'B', status: 'done' },
+      { id: 'c', name: 'C', status: 'waiting_input' },
+      { id: 'd', name: 'D', status: 'in_progress' },
+      { id: 'e', name: 'E', status: 'needs_attention' },
+    ]
+    const result = sortSessionsByTier(input)
+    expect(result.map((s) => s.id)).toEqual(['c', 'e', 'b', 'a', 'd'])
+  })
+
+  it('ranks waiting (parked) below your-turn and above busy', () => {
+    const input = [
+      { id: 'busy', status: 'in_progress' },
+      { id: 'wait', status: 'waiting_external' },
+      { id: 'turn', status: 'done' },
+    ]
+    const result = sortSessionsByTier(input)
+    expect(result.map((s) => s.id)).toEqual(['turn', 'wait', 'busy'])
+  })
+
+  it('does not mutate the original array', () => {
+    const input = [
+      { id: 'x', status: 'in_progress' },
+      { id: 'y', status: 'waiting_input' },
+    ]
+    const original = [...input]
+    sortSessionsByTier(input)
+    expect(input).toEqual(original)
   })
 })
