@@ -56,7 +56,11 @@ export function SubSessionView({ sessionId, agentId, onBack }: Props) {
         <span className="ml-auto text-xs text-gray-400 italic">Read-only sub-agent</span>
       </header>
       {/* paddingBottom keeps last item above the home indicator; env() is 0 on desktop. */}
-      <main className="flex-1 overflow-hidden flex flex-col" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
+      {/* A `div`, not a `<main>`: since Task 17 the shell's `app.main` region
+          (`shell/regions/PageHost`) IS the page's single `main` landmark, and a
+          second one nested inside it is a landmark violation rather than a
+          second landmark. */}
+      <div className="flex-1 overflow-hidden flex flex-col" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
         {turns.length === 0 ? (
           <div className="flex-1 flex items-center justify-center">
             <p className="text-sm text-gray-500 dark:text-gray-400">
@@ -73,7 +77,7 @@ export function SubSessionView({ sessionId, agentId, onBack }: Props) {
             onAnswer={() => {/* read-only */}}
           />
         )}
-      </main>
+      </div>
     </div>
   )
 }

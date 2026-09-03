@@ -119,9 +119,6 @@ const EXEMPT = new Set<string>([
   // Takes `query` as a parameter, not a literal, so this never matches the
   // regex above — kept here defensively as the generic subscription primitive.
   'src/lib/useMediaQuery.ts',
-  // App.tsx's shell fork reads the same 1024px breakpoint useViewport now owns.
-  // This exemption is deleted at Task 17, when AppShell replaces the fork.
-  'src/App.tsx',
   // SessionCard's swipe-overflow clipping reads 1024px directly. Not part of
   // this PR's scope; outlives it until a later PR migrates it to useViewport.
   'src/components/SessionCard.tsx',

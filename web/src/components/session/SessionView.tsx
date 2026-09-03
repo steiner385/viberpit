@@ -2,9 +2,11 @@
  * SessionView — rich session UI: transcript + composer + status (mobile / full-screen).
  *
  * The live session runtime (socket wiring, transcript reducer, derived status,
- * action handlers) lives in useSessionRuntime so it can be shared with the desktop
- * master-detail layout. SessionView owns only the full-screen chrome: the top bar
- * (Back, title, status), the Esc/Shift+Tab keyboard shortcuts, and the composer.
+ * action handlers) lives in useSessionRuntime, mounted once by
+ * `shell/regions/PageHost` as `SessionRuntimeProvider` and READ here through
+ * `useSessionRuntimeContext()`. SessionView owns only the full-screen chrome:
+ * the top bar (Back, title, status), the Esc/Shift+Tab keyboard shortcuts, and
+ * the composer.
  *
  * Accessibility note:
  *   - An `aria-live="polite"` sr-only region (rendered by SessionBody) mirrors the
@@ -16,7 +18,7 @@ import { useEffect, useCallback, useRef } from 'react'
 import { cn } from '@/lib/utils'
 import { detachKeyYieldsToTextEntry } from '@/lib/detachKeyGuard'
 import { useSessionSocket } from '@/ws/client'
-import { useSessionRuntime } from '@/session/useSessionRuntime'
+import { useSessionRuntimeContext } from './SessionRuntimeProvider'
 import { useSessionNeighbors } from '@/session/useSessionNeighbors'
 import { PERMISSION_MODES } from '@/session/permissionModes'
 import { SessionComposer } from './SessionComposer'
@@ -41,12 +43,15 @@ interface Props {
   /** Called after archive/delete — host advances to the neighbor (distinct from onBack). */
   onDone: () => void
   onNavigateSession?: (id: string) => void
-  initialPrompt?: string
 }
 
-export function SessionView({ sessionId, onBack, onDone, onNavigateSession, initialPrompt }: Props) {
+export function SessionView({ sessionId, onBack, onDone, onNavigateSession }: Props) {
   const { detach } = useSessionSocket()
-  const rt = useSessionRuntime(sessionId, initialPrompt)
+  // The runtime is READ from context, never created here (audit F2.3, ruling R1).
+  // `PageHost` owns the single `SessionRuntimeProvider` and seeds `initialPrompt`
+  // into it from the router state, so the transcript, the composer and the
+  // prompt dock are all the same runtime instance rather than one per host.
+  const rt = useSessionRuntimeContext()
   const { prevId, nextId } = useSessionNeighbors(sessionId)
   // Both chevrons render as a pair: useSessionNeighbors returns prevId/nextId
   // both-null (single/unknown session) or both-set (wraparound), never one null.

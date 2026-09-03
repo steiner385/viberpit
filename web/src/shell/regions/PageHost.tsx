@@ -74,10 +74,16 @@ export interface PageHostProps {
  *
  * ## Landmark
  *
- * This is a `<div>`, not a `<main>`. The pages still render their own `<main>`
- * (`ReviewView.tsx:108`, `SubSessionView.tsx:58`, and `App.tsx:55` until Task 17),
- * so making the region a landmark today would nest two `main`s. Ownership of the
- * single `main` landmark moves here when the pages stop declaring their own.
+ * This region IS the page's `<main>`. It could not be until Task 17: `App.tsx`,
+ * `ReviewView` and `SubSessionView` each declared their own, so promoting the
+ * region would have nested two. Task 17 deleted `App.tsx`'s shell fork and
+ * demoted the other two to `<div>`s, which puts the single `main` landmark
+ * here — one owner, present in every layout mode, wrapping exactly the routed
+ * page and the dock. `AppShell.test.tsx`'s axe passes run with the `region`
+ * rule ON as a result: "all page content is inside a landmark" is now true.
+ *
+ * It stays a landmark even while `pageHidden` is set — the dock inside it is
+ * still on screen, and that is precisely the content the rule is about.
  *
  * ## `useNeedsYouTitle`
  *
@@ -97,7 +103,7 @@ export function PageHost({ dock, pageHidden = false }: PageHostProps) {
   const openSessionId = useOpenSessionId()
 
   const body = (
-    <div
+    <main
       data-region="app.main"
       className={cn('min-h-0 flex flex-col', pageHidden ? 'shrink-0' : 'flex-1')}
     >
@@ -112,7 +118,7 @@ export function PageHost({ dock, pageHidden = false }: PageHostProps) {
         <Outlet />
       </div>
       {dock}
-    </div>
+    </main>
   )
 
   return openSessionId ? (

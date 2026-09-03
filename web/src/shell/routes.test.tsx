@@ -21,6 +21,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { act, render, screen } from '@testing-library/react'
 import { createMemoryRouter, Outlet, RouterProvider, useLocation } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 // ── page stubs ───────────────────────────────────────────────────────────────
 //
@@ -32,8 +33,8 @@ function stub(name: string) {
   return () => <div data-testid={`page-${name}`}>{name}</div>
 }
 
-vi.mock('@/components/DesktopShell', () => ({
-  WelcomePane: stub('sessions'),
+vi.mock('@/features/sessions/WelcomePane', () => ({ WelcomePane: stub('sessions') }))
+vi.mock('@/features/sessions/MainPaneSession', () => ({
   MainPaneSession: ({ sessionId }: { sessionId: string }) => (
     <div data-testid="page-session-detail">{sessionId}</div>
   ),
@@ -85,9 +86,26 @@ function routerAt(entries: string[], index = entries.length - 1) {
   })
 }
 
+/**
+ * A `QueryClientProvider` around the table.
+ *
+ * `SessionsPage` calls `useArchiveAdvance` (Task 17, ported from `App.tsx`'s
+ * deleted `SessionRoute`), which reads `useSessions` / `useArchivedSessions` to
+ * work out which session the detail view advances to. `main.tsx` has always
+ * mounted this provider above `App`, so the routed pages are never without one
+ * in the app; without it here every route rendered react-router's error page
+ * instead of the table under test. The client is per-render with retries off:
+ * the queries resolve to their `[]` defaults and no page depends on their
+ * contents, so the pages stay stubs and this stays a test of the TABLE.
+ */
 function renderAt(path: string) {
   const router = routerAt([path])
-  render(<RouterProvider router={router} />)
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(
+    <QueryClientProvider client={qc}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
+  )
   return router
 }
 
@@ -159,7 +177,12 @@ describe('route table — redirects', () => {
 
   it('redirects replace rather than push, so Back is not bounced forward', async () => {
     const router = routerAt(['/pipeline', '/session/abc'])
-    render(<RouterProvider router={router} />)
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    )
     expect(url()).toBe('/sessions/abc')
 
     await act(() => router.navigate(-1))

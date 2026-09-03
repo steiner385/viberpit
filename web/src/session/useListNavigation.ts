@@ -15,9 +15,11 @@ export interface ListNavigation {
 
 /**
  * Owns the keyboard cursor over a list of NavItems (group headers + sessions).
- * Shared by both layouts (DesktopShell, Dashboard) so the header-aware logic
- * lives in one place. The index clamps to the list during render when the list
- * shrinks (mirrors the prior per-layout clamp).
+ * It was extracted so `DesktopShell` and `Dashboard` could not keep two copies
+ * of the header-aware logic; since Task 17 there is one shell, and the single
+ * call site is `features/sessions/useSessionListState`, whose handle both
+ * `ContextList` and `PromptDock` drive. The index clamps to the list during
+ * render when the list shrinks (mirrors the prior per-layout clamp).
  */
 export function useListNavigation(navItems: readonly NavItem[]): ListNavigation {
   const [highlightedIndex, setHighlightedIndex] = useState(-1)

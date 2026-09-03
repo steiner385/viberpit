@@ -52,7 +52,9 @@ import {
   SESSION_ROUTE, SUBAGENT_ROUTE, ARCHIVED_SESSION_ROUTE,
   sessionPath, subAgentPath, archivedSessionPath,
 } from '@/session/sessionNavState'
-import { MainPaneSession, WelcomePane } from '@/components/DesktopShell'
+import { MainPaneSession } from '@/features/sessions/MainPaneSession'
+import { WelcomePane } from '@/features/sessions/WelcomePane'
+import { useArchiveAdvance } from '@/features/sessions/useArchiveAdvance'
 import { SubSessionView } from '@/components/session/SubSessionView'
 import { ReviewView } from '@/components/ReviewView'
 import { ArchivedManager } from '@/components/ArchivedManager'
@@ -77,12 +79,19 @@ const INSIGHTS_PATH = NAV_BY_ID.insights.path
  * this route (`useOpenSessionId` is non-null precisely when `:id` is present and
  * the section is `sessions`), so `SessionView` here would attach a second
  * runtime — two sockets, two transcripts — for every open session.
+ *
+ * `useArchiveAdvance` is `App.tsx`'s `SessionRoute` behaviour, ported here with
+ * the routed shell it used to live in (Task 17): archiving the open session
+ * advances to its neighbour rather than dead-ending on the welcome pane, a
+ * session that leaves the live list without `onDone` firing (the 503/409 path)
+ * advances anyway, and one that was never live at all — a bookmark of an
+ * already-archived session — lands on its read-only transcript.
  */
 function SessionsPage() {
   const { id } = useParams()
-  const navigate = useNavigate()
+  const onDone = useArchiveAdvance(id)
   return id
-    ? <MainPaneSession sessionId={id} onClosed={() => navigate(SESSIONS_PATH)} />
+    ? <MainPaneSession sessionId={id} onClosed={onDone} />
     : <WelcomePane />
 }
 

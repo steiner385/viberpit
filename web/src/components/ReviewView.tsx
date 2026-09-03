@@ -105,7 +105,11 @@ export function ReviewView({ sessionId, onBack }: Props) {
 
       {/* Transcript area */}
       {/* paddingBottom keeps last item above the home indicator; env() is 0 on desktop. */}
-      <main className="flex-1 overflow-hidden flex flex-col" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
+      {/* A `div`, not a `<main>`: since Task 17 the shell's `app.main` region
+          (`shell/regions/PageHost`) IS the page's single `main` landmark, and a
+          second one nested inside it is a landmark violation rather than a
+          second landmark. */}
+      <div className="flex-1 overflow-hidden flex flex-col" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
         {isLoading ? (
           <div className="flex-1 flex items-center justify-center">
             <p className="text-sm text-gray-500 dark:text-gray-400">Loading transcript…</p>
@@ -125,7 +129,7 @@ export function ReviewView({ sessionId, onBack }: Props) {
             onLoadOlder={onLoadOlder}
           />
         )}
-      </main>
+      </div>
     </div>
   )
 }

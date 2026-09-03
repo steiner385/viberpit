@@ -340,18 +340,18 @@ describe('AppShell — an open drawer survives a section change (§4.2)', () => 
 
 describe('AppShell — accessibility', () => {
   /**
-   * `region` ("all page content is inside a landmark") is off, and only it.
+   * NO rule is disabled — `region` ("all page content is inside a landmark")
+   * included.
    *
-   * `app.main` is deliberately a `<div>` rather than the `<main>` landmark:
-   * three pages still declare their own `<main>` (`ReviewView`,
-   * `SubSessionView`, and `App.tsx` until Task 17), so promoting the region
-   * today would nest two. Until that ownership moves — see `PageHost`'s header
-   * — the routed page and the dock genuinely sit outside a landmark, in the
-   * shell and in what ships. Leaving the rule on would mean asserting a
-   * violation the shell cannot fix from here; turning it off keeps every other
-   * rule (names, roles, duplicate/unique landmarks, ARIA wiring) live.
+   * Task 16 had to turn `region` off: `app.main` was a `<div>`, because
+   * `ReviewView`, `SubSessionView` and `App.tsx` each declared their own
+   * `<main>` and promoting the region would have nested two. Task 17 deleted
+   * `App.tsx`'s shell fork and demoted the other two, so `PageHost` is now the
+   * single `main` landmark and the rule holds. It is asserted rather than
+   * suppressed precisely so that re-introducing a page-level `<main>`, or
+   * dropping the landmark from the region, reddens this file.
    */
-  const AXE_OPTIONS = { rules: { region: { enabled: false } } }
+  const AXE_OPTIONS = {}
 
   /**
    * Wait for the list to have ROWS, not just to be mounted.

@@ -60,7 +60,9 @@ export interface ContextListProps {
  * `useSidebarWidth` (persisted under `ccswitch.listWidth`, DEC-11). Below that
  * the column fills whatever the shell gives it: a fixed px width on a phone is
  * either an overflow or a wasted band, and there is no room for a drag handle.
- * The resizer is also the divider, so no border is drawn where it is absent.
+ * The resizer is also the divider, so no border is drawn where it is absent. It
+ * sits INSIDE the landmark (see the comment at its call site) and `listWidth` is
+ * therefore the width of the column INCLUDING its handle.
  */
 export function ContextList({ sessions }: ContextListProps) {
   const { pathname } = useLocation()
@@ -74,22 +76,27 @@ export function ContextList({ sessions }: ContextListProps) {
   const resizable = tier === 'desktop' || tier === 'wide'
 
   return (
-    <>
-      <aside
-        data-region="app.list"
-        aria-labelledby={headingId}
-        style={resizable ? { width: listWidth } : undefined}
-        className={cn(
-          'flex h-full min-h-0 flex-col bg-surface',
-          resizable ? 'shrink-0' : 'w-full flex-1',
-        )}
-      >
+    <aside
+      data-region="app.list"
+      aria-labelledby={headingId}
+      style={resizable ? { width: listWidth } : undefined}
+      className={cn(
+        'flex h-full min-h-0 flex-row bg-surface',
+        resizable ? 'shrink-0' : 'w-full flex-1',
+      )}
+    >
+      <div className="flex min-w-0 min-h-0 flex-1 flex-col">
         <h2 id={headingId} className="sr-only">
           {def.label}
         </h2>
         <SessionListColumn {...sessions} />
-      </aside>
+      </div>
+      {/* The drag handle is INSIDE the landmark, not a sibling of it. It is a
+          focusable `role="separator"`, so as a sibling it was page content
+          outside every landmark — the last axe `region` violation once Task 17
+          gave `app.main` the `<main>` role. It belongs to this column
+          semantically too: it resizes it, and replaces its right border. */}
       {resizable && <SidebarResizer width={listWidth} onResize={setListWidth} />}
-    </>
+    </aside>
   )
 }
