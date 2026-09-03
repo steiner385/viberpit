@@ -105,7 +105,7 @@ export function ManualDispatchDialog({
         <Button type="button" variant="ghost" onClick={onClose}>
           Close
         </Button>
-        <Button type="button" variant="primary" onClick={run} disabled={selected.size === 0} loading={dispatch.isPending}>
+        <Button type="button" variant="primary" size="lg" onClick={run} disabled={selected.size === 0} loading={dispatch.isPending}>
           {dispatch.isPending
             ? 'Dispatching…'
             : `Dispatch ${selected.size} issue${selected.size !== 1 ? 's' : ''}`}

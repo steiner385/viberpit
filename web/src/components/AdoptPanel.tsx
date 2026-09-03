@@ -55,7 +55,7 @@ function ConfirmDialog({ candidate, onCancel, onConfirm }: ConfirmProps) {
         <Button ref={cancelRef} type="button" variant="secondary" onClick={onCancel}>
           Cancel
         </Button>
-        <Button type="button" variant="danger" disabled={active && !ack} onClick={onConfirm}>
+        <Button type="button" variant="danger" size="lg" disabled={active && !ack} onClick={onConfirm}>
           Stop &amp; take over
         </Button>
       </div>

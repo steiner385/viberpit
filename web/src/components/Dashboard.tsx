@@ -133,7 +133,7 @@ function NewSessionDialog({ accounts, onClose, onSubmit, isPending, externalErro
   }
 
   return (
-    <Dialog open onClose={onClose} title="New Session" size="md" initialFocus={firstInputRef} bodyClassName="max-h-[90vh] overflow-y-auto">
+    <Dialog open onClose={onClose} title="New Session" size="md" initialFocus={firstInputRef}>
       <form onSubmit={handleSubmit} className="space-y-4">
         {/* Name */}
         <div className="space-y-1">
