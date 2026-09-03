@@ -33,7 +33,7 @@
 | File | Responsibility |
 |---|---|
 | `server/db/models.py` (+`DeployStateRow`, `Host.checkout_sha`) | schema |
-| `server/db/migrations/versions/0016_deploy_state.py` | reviewable schema record |
+| `server/db/migrations/versions/0017_deploy_state.py` | reviewable schema record |
 | `server/deploy/state.py` (new) | read/record the deployed version (`deploy_state`) |
 | `server/version.py` (+`checkout_git_sha`, `repo_root`) | process sha vs fresh checkout sha |
 | `server/ipc/daemon.py` (`/info`) | report `checkoutSha` |
@@ -56,7 +56,7 @@
 
 **Files:**
 - Modify: `server/db/models.py` (after `class Host`, ~line 902)
-- Create: `server/db/migrations/versions/0016_deploy_state.py`
+- Create: `server/db/migrations/versions/0017_deploy_state.py`
 - Create: `server/deploy/state.py`
 - Modify: `server/tests/test_postgres_compat.py:137-158` (`_REQUIRED_EXTRAS`)
 - Test: `server/tests/test_deploy_state.py`
@@ -175,11 +175,11 @@ class DeployStateRow(Base):
 - [ ] **Step 4: Add the migration**
 
 ```python
-# server/db/migrations/versions/0016_deploy_state.py
+# server/db/migrations/versions/0017_deploy_state.py
 """fleet deploy fan-out — deploy_state table + hosts.checkout_sha
 
-Revision ID: 0016_deploy_state
-Revises: 0015_pending_model_reason
+Revision ID: 0017_deploy_state
+Revises: 0016_host_heartbeats
 Create Date: 2026-09-03
 
 Reviewable record only: nothing runs `alembic upgrade` at deploy time — init_db's
@@ -189,8 +189,8 @@ on both SQLite and Postgres at next boot.
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0016_deploy_state"
-down_revision = "0015_pending_model_reason"
+revision = "0017_deploy_state"
+down_revision = "0016_host_heartbeats"
 branch_labels = None
 depends_on = None
 
@@ -293,7 +293,7 @@ Expected: PASS. If `test_schema_reconcile_coverage` names `deploy_state.id`, add
 - [ ] **Step 8: Commit**
 
 ```bash
-git add server/db/models.py server/db/migrations/versions/0016_deploy_state.py server/deploy/state.py server/tests/test_deploy_state.py server/tests/test_postgres_compat.py server/tests/test_schema_reconcile_coverage.py
+git add server/db/models.py server/db/migrations/versions/0017_deploy_state.py server/deploy/state.py server/tests/test_deploy_state.py server/tests/test_postgres_compat.py server/tests/test_schema_reconcile_coverage.py
 git commit -m "feat(deploy): deploy_state table + hosts.checkout_sha — the fleet's durable deployed version"
 ```
 

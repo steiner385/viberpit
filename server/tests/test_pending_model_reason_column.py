@@ -142,7 +142,7 @@ def test_migration_chain_is_linear_with_exactly_one_head():
     """Parse all migration files and verify the revision graph is ONE unbroken line.
 
     Asserts three things, none of which name today's newest revision — pinning the head's
-    NAME made this test fail on every new migration (it did, on 0016_deploy_state) without
+    NAME made this test fail on every new migration (it did, on 0017_deploy_state) without
     catching a single real defect:
 
       * exactly one head (no fork: two revisions sharing a down_revision);

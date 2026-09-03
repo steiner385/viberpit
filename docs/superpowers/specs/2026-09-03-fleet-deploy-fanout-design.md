@@ -53,7 +53,7 @@ and endpoint probes, before `resume`). `daemon_sha` advances only when that depl
 daemon-changing. Read by the probe's skew gate (§4) and by runner startup (§3). Absent row
 (fresh install) ⇒ no gate, no reconcile: fully backward compatible.
 
-Migration `0016_deploy_state`; add the model to `_REQUIRED_EXTRAS` in
+Migration `0017_deploy_state`; add the model to `_REQUIRED_EXTRAS` in
 `test_postgres_compat.py` (NOT NULL `id`) per CLAUDE.md. `hosts` gains one nullable column,
 `checkout_sha` (reconcile picks it up).
 
