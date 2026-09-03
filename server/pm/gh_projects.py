@@ -112,6 +112,20 @@ def parse_project_fields(payload: dict) -> dict:
     return cache
 
 
+def parse_created_field(payload: dict) -> tuple[str, str, dict[str, str]] | None:
+    """Parse a field-bootstrap mutation response (spec 003 Phase B, Task 9): either
+    ``createProjectV2Field`` (new Score/Stage field) or ``updateProjectV2Field`` (built-in
+    Status's options replaced in place). Both mutations select the identical
+    ``projectV2Field { id name options { id name } }`` shape, so one parser serves either
+    root. Returns ``None`` when the field id is missing (mutation failed)."""
+    data = payload.get("data") or {}
+    node = ((data.get("createProjectV2Field") or data.get("updateProjectV2Field") or {})
+            .get("projectV2Field") or {})
+    if not node.get("id"):
+        return None
+    return node["id"], node.get("name") or "", {o["name"]: o["id"] for o in node.get("options") or []}
+
+
 def build_project_items_query(project_node_id: str, cursor: str | None) -> str:
     return (
         'query { node(id: "%s") { ... on ProjectV2 { items(first: 100%s) {'

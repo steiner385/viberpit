@@ -37,6 +37,14 @@ def test_duplicate_id_rejected():
         r.register(_Fake())
 
 
+def test_gh_reconcile_registered():
+    """The reconciler must be in the shared registry (003 §6) with its three modes,
+    or ensure_rows() never creates its row and the automations UI cannot enable it."""
+    from server.automations.registry import registry
+    a = registry.get("gh-reconcile")
+    assert a.modes == ("off", "dry_run", "apply")
+
+
 def test_ensure_rows_upserts_then_preserves_state(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'x.db'}"
 

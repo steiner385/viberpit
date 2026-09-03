@@ -1,13 +1,16 @@
 """Session-level persistence for the 003 read-only mirror. Callers own the transaction."""
 from __future__ import annotations
 
+import json
+from collections.abc import Sequence, Set as AbstractSet
 from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy.orm import Session
 
 from server.db.models import (
-    GhProject, GhProjectItem, Project, ProjectRepo, WorkItem, WorkItemDep)
+    INITIATIVE_STAGES, GhProject, GhProjectItem, Initiative, Project, ProjectRepo,
+    WorkItem, WorkItemDep)
 
 from .dep_plan import DepRowView, observed_deps, plan_dep_rows
 from .gh_projects import GhProjectItemView, GhProjectView, IssueRelView
@@ -68,8 +71,29 @@ def _work_item_id(db: Session, repo: str | None, number: int | None,
     return item.id if item else None
 
 
+@dataclass(frozen=True)
+class HumanEdit:
+    """A mirror-row field change attributable to a human (i.e. not something the
+    reconciler itself just wrote) — the write-side echo-suppression counterpart
+    to ``journal.recent_own_writes`` (spec 003 Phase B, issue #973 follow-on)."""
+    ref: str
+    field: str
+    old: object
+    new: object
+
+
 def upsert_project_items(db: Session, gh_project_db_id: str,
-                         items: list[GhProjectItemView], now: datetime) -> None:
+                         items: list[GhProjectItemView], now: datetime, *,
+                         own_writes: AbstractSet[tuple[str, str, str]] = frozenset()
+                         ) -> list[HumanEdit]:
+    """Upsert the project's items (prune stale rows) and classify every changed
+    Status/Score/Stage field as a human edit UNLESS it matches an entry in
+    ``own_writes`` — the reconciler's own recent applied writes, keyed exactly
+    like ``journal.recent_own_writes`` — in which case it's an echo of our own
+    write landing back through the GitHub read path, not a human edit.
+
+    A brand-new row (the item wasn't in the preloaded map) produces NO edits:
+    there is no prior value to have changed, human or otherwise."""
     # Preload every existing mirror row once (keyed by node id) instead of a
     # per-item SELECT, and reuse the same dict to prune stale rows (issue #973).
     existing: dict[str, GhProjectItem] = {
@@ -77,13 +101,25 @@ def upsert_project_items(db: Session, gh_project_db_id: str,
         .filter_by(gh_project_id=gh_project_db_id).all()
         if r.gh_item_node_id is not None}
     seen: set[str] = set()
+    edits: list[HumanEdit] = []
     for view in items:
         seen.add(view.item_node_id)
         row = existing.get(view.item_node_id)
+        is_new_row = row is None
         if row is None:
             row = GhProjectItem(gh_project_id=gh_project_db_id,
                                 gh_item_node_id=view.item_node_id)
             db.add(row)
+        if not is_new_row:
+            for field, new in (("Status", view.status), ("Score", view.score),
+                               ("Stage", view.stage)):
+                old = getattr(row, field.lower())
+                if old == new:
+                    continue
+                key = (view.item_node_id, field,
+                       json.dumps(new, sort_keys=True, default=str))
+                if key not in own_writes:
+                    edits.append(HumanEdit(f"{view.repo}#{view.number}", field, old, new))
         row.work_item_id = _work_item_id(db, view.repo, view.number, view.kind)
         row.status = view.status
         row.score = view.score
@@ -97,6 +133,29 @@ def upsert_project_items(db: Session, gh_project_db_id: str,
     if gh is not None:
         gh.last_synced_at = now
         gh.watermark = now
+    return edits
+
+
+def back_sync_stage(db: Session, edits: Sequence[HumanEdit]) -> int:
+    """Apply human "Stage" edits back onto the linked Initiative (the mirror is
+    read-only toward GitHub for issue fields, but Stage is the one field GitHub
+    is allowed to drive — a human moving the board's Stage column back-syncs the
+    initiative's lifecycle position). Only edits whose new value is a valid
+    INITIATIVE_STAGES entry and whose ref resolves to an epic-linked Initiative
+    are applied; returns the count of initiatives actually updated."""
+    n = 0
+    for e in edits:
+        if e.field != "Stage" or e.new not in INITIATIVE_STAGES:
+            continue
+        repo, _, number = e.ref.rpartition("#")
+        if not number.isdigit():
+            continue
+        ini = db.query(Initiative).filter_by(
+            epic_repo=repo, epic_number=int(number)).first()
+        if ini is not None and ini.stage != e.new:
+            ini.stage = e.new
+            n += 1
+    return n
 
 
 def upsert_relations(db: Session, repo: str, rels: list[IssueRelView]) -> None:
