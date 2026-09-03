@@ -3053,19 +3053,23 @@ class SessionOrchestrator:
                 DbSession.id == session_id))).scalar_one_or_none()
         return status in INACTIVE_SESSION_STATUSES
 
-    async def _backlog_count_candidates(self) -> int:
-        """Count of eligible, unclaimed OPEN issues in configured repos.
+    async def _backlog_count_candidates(self) -> "tuple[int, int]":
+        """(eligible, blocked) counts of unclaimed OPEN issues in configured repos.
 
         The honest backlog gauge for the Automation card — independent of how many
-        runner slots are free (a saturated runner still reports the real depth)."""
+        runner slots are free (a saturated runner still reports the real depth).
+        ``blocked`` is how many otherwise-eligible issues were skipped because a
+        dependency is still open — the "why isn't the backlog draining" note."""
         from server.automations.backlog_github import query_candidates
         _mode, config = await self._backlog_read_config()
+        blocked_out: list[dict] = []
         try:
-            cands = await asyncio.to_thread(query_candidates, config, gh_run=self._gh_run)
+            cands = await asyncio.to_thread(query_candidates, config,
+                                            gh_run=self._gh_run, blocked_out=blocked_out)
         except Exception:  # pragma: no cover — a gh failure must not break the tick
             log.warning("orchestrator._backlog_count_candidates_failed", exc_info=True)
-            return 0
-        return len(cands)
+            return 0, 0
+        return len(cands), len(blocked_out)
 
     async def _backlog_spawn(self, batch, account: str):
         """Spawn a de-duped runner session for *batch*, seeded with the implement

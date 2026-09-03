@@ -458,6 +458,116 @@ def test_query_candidates_one_owner_gh_failure_does_not_blank_others():
 
 
 # --------------------------------------------------------------------------- #
+# query_candidates — dependency gating (issue readiness)                       #
+# --------------------------------------------------------------------------- #
+
+def _issue(number: int, repo: str = "o/r", **extra) -> dict:
+    return {"number": number, "title": f"t{number}",
+            "url": f"https://github.com/{repo}/issues/{number}",
+            "repository": {"nameWithOwner": repo}, **extra}
+
+
+class DepGh:
+    """Routes the candidate search vs. the dependency-state lookup by query
+    content (the state lookup is the only one using ``issueOrPullRequest``),
+    recording every call so tests can assert whether a lookup happened."""
+
+    def __init__(self, candidates: list[dict],
+                 states: "dict[str, dict] | None" = None, *, states_rc: int = 0):
+        self.calls: list[list[str]] = []
+        self._candidates = candidates
+        self._states = states or {}
+        self._states_rc = states_rc
+
+    def __call__(self, args, token=None):
+        self.calls.append(list(args))
+        query = next(a for a in args if a.startswith("query="))
+        if "issueOrPullRequest" in query:
+            return _proc(stdout=json.dumps({"data": self._states}),
+                         returncode=self._states_rc)
+        return _proc(stdout=_graphql_stdout(self._candidates))
+
+    @property
+    def state_lookups(self) -> int:
+        return sum(1 for c in self.calls
+                   if "issueOrPullRequest" in next(a for a in c if a.startswith("query=")))
+
+
+_DEP_CFG = {"enabled_repos": ["o/r"], "eligible_label": "ready"}
+
+
+def test_query_candidates_query_fetches_dependency_fields():
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout([]))})
+    query_candidates(_DEP_CFG, gh_run=fake)
+    query = next(a for a in fake.calls[0] if a.startswith("query="))
+    assert "blockedBy" in query
+    assert "parent" in query
+    assert "trackedInIssues" in query
+
+
+def test_query_candidates_drops_natively_blocked_issue_without_lookup():
+    blocked = _issue(7, blockedBy={"nodes": [
+        {"number": 3, "state": "OPEN", "repository": {"nameWithOwner": "o/r"}}]})
+    gh = DepGh([blocked, _issue(12)])
+    out = query_candidates(_DEP_CFG, gh_run=gh)
+    assert [c["ref"] for c in out] == ["o/r#12"]
+    assert gh.state_lookups == 0  # native states arrive inline — no extra call
+
+
+def test_query_candidates_body_dep_closed_is_kept():
+    gh = DepGh([_issue(7, body="Depends on #12")],
+               states={"r0": {"nameWithOwner": "o/r",
+                              "i12": {"number": 12, "state": "CLOSED"}}})
+    out = query_candidates(_DEP_CFG, gh_run=gh)
+    assert [c["ref"] for c in out] == ["o/r#7"]
+    assert gh.state_lookups == 1
+
+
+def test_query_candidates_body_dep_open_is_dropped():
+    gh = DepGh([_issue(7, body="Depends on #12"), _issue(9)],
+               states={"r0": {"nameWithOwner": "o/r",
+                              "i12": {"number": 12, "state": "OPEN"}}})
+    out = query_candidates(_DEP_CFG, gh_run=gh)
+    assert [c["ref"] for c in out] == ["o/r#9"]
+
+
+def test_query_candidates_dep_lookup_failure_fails_closed():
+    """An unresolvable dependency state blocks (order is the point; the sweep
+    retries every tick) — but must never drop unrelated candidates."""
+    gh = DepGh([_issue(7, body="Depends on #12"), _issue(9)], states_rc=1)
+    out = query_candidates(_DEP_CFG, gh_run=gh)
+    assert [c["ref"] for c in out] == ["o/r#9"]
+
+
+def test_query_candidates_dep_in_candidate_pool_blocks_without_lookup():
+    """A body dep that is itself a fetched candidate is open by definition —
+    no state lookup call is spent on it."""
+    gh = DepGh([_issue(7, body="Depends on #12"), _issue(12)])
+    out = query_candidates(_DEP_CFG, gh_run=gh)
+    assert [c["ref"] for c in out] == ["o/r#12"]
+    assert gh.state_lookups == 0
+
+
+def test_query_candidates_respect_dependencies_off_disables_gating():
+    blocked = _issue(7, body="Depends on #12", blockedBy={"nodes": [
+        {"number": 3, "state": "OPEN", "repository": {"nameWithOwner": "o/r"}}]})
+    gh = DepGh([blocked])
+    out = query_candidates({**_DEP_CFG, "respect_dependencies": False}, gh_run=gh)
+    assert [c["ref"] for c in out] == ["o/r#7"]
+    assert gh.state_lookups == 0
+
+
+def test_query_candidates_blocked_out_collects_skips():
+    blocked = _issue(7, blockedBy={"nodes": [
+        {"number": 3, "state": "OPEN", "repository": {"nameWithOwner": "o/r"}}]})
+    gh = DepGh([blocked, _issue(12)])
+    blocked_out: list[dict] = []
+    out = query_candidates(_DEP_CFG, gh_run=gh, blocked_out=blocked_out)
+    assert [c["ref"] for c in out] == ["o/r#12"]
+    assert blocked_out == [{"ref": "o/r#7", "blockers": ["o/r#3"]}]
+
+
+# --------------------------------------------------------------------------- #
 # claim_batch                                                                  #
 # --------------------------------------------------------------------------- #
 
