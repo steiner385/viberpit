@@ -34,6 +34,10 @@ class WorkItemView:
     gh_updated_at: datetime | None
     gh_closed_at: datetime | None
     linked_issue_numbers: tuple[int, ...]
+    # GitHub GraphQL node id, captured for the reconciler (addProjectV2ItemById
+    # content ids, addBlockedBy targets — spec 003 Phase B). Defaulted so every
+    # existing positional/keyword construction keeps working.
+    node_id: str | None = None
 
 
 def _owner_name(repo: str) -> tuple[str, str]:
@@ -50,7 +54,7 @@ def build_issues_query(repo: str, cursor: str | None, since_iso: str | None) -> 
     issues(first: {_PAGE_ISSUES}{after}, states: [OPEN, CLOSED],
            orderBy: {{field: UPDATED_AT, direction: ASC}}{filter_by}) {{
       pageInfo {{ endCursor hasNextPage }}
-      nodes {{{_ITEM_FIELDS}
+      nodes {{ id {_ITEM_FIELDS}
       }}
     }}
   }}
@@ -125,5 +129,6 @@ def parse_page(payload: dict, repo: str, kind: str) -> tuple[list[WorkItemView],
             gh_updated_at=_parse_dt(node.get("updatedAt")),
             gh_closed_at=_parse_dt(node.get("closedAt")),
             linked_issue_numbers=refs,
+            node_id=node.get("id") if isinstance(node.get("id"), str) else None,
         ))
     return items, info.get("endCursor"), bool(info.get("hasNextPage"))

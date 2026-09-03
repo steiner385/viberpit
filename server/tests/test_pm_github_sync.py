@@ -147,6 +147,14 @@ def test_parse_malformed_linked_issue_ref_is_int():
     assert items[0].linked_issue_numbers == ()
 
 
+def test_issue_page_captures_node_id():
+    payload = _issue_payload()
+    payload["data"]["repository"]["issues"]["nodes"][0]["id"] = "I_abc"
+    items, _, _ = parse_page(payload, "o/r", "issue")
+    assert items[0].node_id == "I_abc"
+    assert "nodes { id " in build_issues_query("o/r", None, None)
+
+
 def test_parse_malformed_label_is_string():
     """A label is a string (truthy) instead of dict — must skip gracefully."""
     payload = {"data": {"repository": {"issues": {

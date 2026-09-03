@@ -164,6 +164,9 @@ class IssueRelView:
     blocked_by: list[str]
     parent_ref: str | None
     sub_issue_refs: list[str]
+    # GitHub GraphQL node id, captured for the reconciler (addBlockedBy targets —
+    # spec 003 Phase B). Defaulted so every existing construction keeps working.
+    node_id: str | None = None
 
 
 def _ref(node: dict | None) -> str | None:
@@ -182,7 +185,7 @@ def build_issue_relations_query(repo: str, cursor: str | None) -> str:
         'query { repository(owner: "%s", name: "%s") {'
         " issues(first: 100, states: OPEN%s) {"
         " pageInfo { endCursor hasNextPage }"
-        " nodes { number"
+        " nodes { id number"
         " blockedBy(first: 50) { nodes { number repository { nameWithOwner } } }"
         " parent { number repository { nameWithOwner } }"
         " subIssues(first: 100) { nodes { number repository { nameWithOwner } } }"
@@ -201,6 +204,7 @@ def parse_issue_relations(payload: dict, repo: str) -> tuple[list[IssueRelView],
                 _ref(b) for b in (node.get("blockedBy") or {}).get("nodes") or []) if r],
             parent_ref=_ref(node.get("parent")),
             sub_issue_refs=[r for r in (
-                _ref(s) for s in (node.get("subIssues") or {}).get("nodes") or []) if r]))
+                _ref(s) for s in (node.get("subIssues") or {}).get("nodes") or []) if r],
+            node_id=node.get("id") if isinstance(node.get("id"), str) else None))
     page = conn.get("pageInfo") or {}
     return rels, page.get("endCursor"), bool(page.get("hasNextPage"))

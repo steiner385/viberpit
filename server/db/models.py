@@ -1248,6 +1248,9 @@ class WorkItem(Base):
     labels: Mapped[list | None] = mapped_column(JSON, nullable=True)
     author: Mapped[str | None] = mapped_column(String, nullable=True)
     url: Mapped[str | None] = mapped_column(String, nullable=True)
+    # GitHub GraphQL node id (e.g. "I_kwDO..."), used by the reconciler for
+    # addProjectV2ItemById content ids and addBlockedBy mutations (spec 003 Phase B).
+    gh_node_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     # PR→issue closing references (list of ints), from closingIssuesReferences.
     linked_issue_numbers: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # --- spec 003 overlay (epic hierarchy + projects v2 mirror) ---
@@ -1369,6 +1372,9 @@ class GhWriteJournal(Base):
     new_value: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     mutation_id: Mapped[str | None] = mapped_column(String, nullable=True)
     initiated_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Groups journal rows written by the same reconciler pass (spec 003 Phase B),
+    # so a batch's mutations can be queried/retried/audited together.
+    batch_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     applied: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
     error: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
