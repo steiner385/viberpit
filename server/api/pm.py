@@ -383,6 +383,58 @@ async def project_deps(
     }
 
 
+@router.get("/reconcile/journal")
+async def reconcile_journal(
+    state: str | None = None,
+    limit: int = 200,
+    _identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Reconciler write-ahead journal, filterable by state (spec 003 Phase B).
+    One unfiltered ``list_rows(state=None, limit=100_000)`` load backs both the
+    counts (across all five states) and the filtered/limited ``rows`` — not a
+    second, state-scoped query — since the two share the same source rows at
+    Phase B scale. State validation mirrors ``journal.list_rows``'s own check
+    so an unknown state still 400s identically."""
+    from server.pm import journal
+
+    clamped_limit = min(limit, 1000)
+
+    def _load(s) -> tuple[list, dict[str, int]]:
+        if state is not None and state not in journal.STATES:
+            raise ValueError(f"unknown journal state {state!r}")
+        all_rows = journal.list_rows(s, state=None, limit=100_000)
+        counts = {k: 0 for k in journal.STATES}
+        for r in all_rows:
+            counts[journal.state_of(r)] += 1
+        filtered = all_rows if state is None else [
+            r for r in all_rows if journal.state_of(r) == state]
+        return filtered[:clamped_limit], counts
+
+    try:
+        rows, counts = await db.run_sync(_load)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "rows": [{
+            "id": r.id,
+            "targetNodeId": r.target_node_id,
+            "field": r.field,
+            "oldValue": (r.old_value or {}).get("value"),
+            "newValue": (r.new_value or {}).get("value"),
+            "mutationId": r.mutation_id,
+            "initiatedBy": r.initiated_by,
+            "batchId": r.batch_id,
+            "state": journal.state_of(r),
+            "error": r.error,
+            "createdAt": r.created_at.isoformat() if r.created_at else None,
+            "updatedAt": r.updated_at.isoformat() if r.updated_at else None,
+        } for r in rows],
+        "counts": counts,
+    }
+
+
 @router.delete("/projects/{slug}/edges/{edge_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_edge(
     slug: str,
