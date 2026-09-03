@@ -61,9 +61,14 @@ def build_controller_app(*, repo: str, health_url: str, venv_python: str, daemon
         # must exist — and it must be created HERE, on the loop uvicorn runs, never in a
         # separate asyncio.run: an asyncpg pool is loop-bound and fails on first use if it
         # was built on another loop. Tests pass no init_db_url and touch no DB.
+        # None → this caller wants no DB at all (the tests). An empty string → init, and
+        # let init_db fall back to settings.db_url, matching `python -m server.deploy
+        # --once`. Production passes os.environ.get("CCSWITCH_DB_URL", ""), so an unset
+        # env var still initialises rather than silently leaving the runners phase and
+        # record_deploy without an engine.
         if init_db_url is not None:
             from server.db import init_db
-            await init_db(db_url=init_db_url)
+            await init_db(db_url=init_db_url or None)
         task = asyncio.create_task(loop.run(), name="deploy-detect-loop")
         try:
             yield

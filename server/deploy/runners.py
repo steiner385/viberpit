@@ -186,17 +186,33 @@ class RunnerDeploy:
             detail = (r.stderr or r.stdout or "").strip()[:500]
             raise RuntimeError(f"{step} failed (rc={r.returncode}): {detail}")
 
+    async def _close_quietly(self, client: Any) -> None:
+        """Release a per-call daemon client — one helper, every call site.
+
+        Each client owns two ``httpx.AsyncClient``s, their transports and (on the TLS
+        branch) certifi-loaded SSL contexts; left unclosed they hold their sockets until
+        GC, the leak ``DaemonClient.aclose`` exists to prevent.
+
+        Tolerant by design, and load-bearingly so: this runs inside ``deploy``'s try, so a
+        raising ``aclose`` would mark the runner FAILED — and since the fan-out gates the
+        deploy, fail the whole deploy over teardown. The factory is also an injection
+        point whose test doubles are plain objects with only ``call``, so a missing
+        ``aclose`` must be a no-op. Best-effort, logged at debug.
+        """
+        closer = getattr(client, "aclose", None)
+        if closer is None:
+            return
+        try:
+            await closer()
+        except Exception:  # noqa: BLE001 — teardown must never fail a deploy
+            log.debug("runner %s: client teardown failed", self.target.name, exc_info=True)
+
     async def _rpc(self, method: str) -> dict:
         client = self._client_factory(self.target.endpoint)
         try:
             return await client.call(method)
         finally:
-            closer = getattr(client, "aclose", None)
-            if closer is not None:
-                try:
-                    await closer()
-                except Exception:
-                    log.debug("runner %s: client teardown failed", self.target.name, exc_info=True)
+            await self._close_quietly(client)
 
     async def _drain_then(self) -> None:
         """Drain in-flight turns (bounded by the deploy caps) and drop the edge's /events
@@ -206,9 +222,7 @@ class RunnerDeploy:
         try:
             result = await self._drain.drain_and_wait(client)
         finally:
-            closer = getattr(client, "aclose", None)
-            if closer is not None:
-                await closer()
+            await self._close_quietly(client)
         if result != "ready":
             log.warning("runner %s: drain %s — restarting anyway", self.target.name, result)
         try:

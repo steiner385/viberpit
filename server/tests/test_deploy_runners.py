@@ -276,3 +276,97 @@ def test_raising_progress_callback_does_not_stop_other_runners():
         client_factory=lambda e: FakeClient([]), fetch_info=_info("abc1234"),
         verify_interval_s=0, on_progress=blow_up))
     assert res["h0"].state == "done" and res["h1"].state == "done"
+
+
+# --- daemon-client lifecycle (moved here from test_deploy_controller.py) --------------
+# The controller used to build these clients itself and owned these guarantees; the RPCs
+# now live in RunnerDeploy, so the guarantees have to live here too.
+
+
+def test_every_runner_client_is_closed():
+    """The factory builds a NEW client per call site (snapshot, drain, close_events,
+    restore), each owning two httpx clients, their transports and — on TLS — an SSL
+    context. Left unclosed they hold their sockets until GC: exactly the short-lived-caller
+    leak DaemonClient.aclose exists to prevent, once per call site per deploy."""
+    built: list = []
+    closed: list = []
+
+    class CountingClient(FakeClient):
+        def __init__(self, calls):
+            super().__init__(calls)
+            built.append(self)
+        async def aclose(self):
+            closed.append(self)
+
+    rd = R.RunnerDeploy(ROCKY, local_name="dobby", run=_recorder([]),
+                        client_factory=lambda e: CountingClient([]),
+                        fetch_info=_info("abc1234"), verify_interval_s=0)
+    st = asyncio.run(rd.deploy(target_sha="abc1234", daemon_changed=True, deps_changed=False,
+                               local_daemon_enabled=True))
+    assert st.state == "done"
+    assert len(built) == 4, "snapshot, drain, close_events and restore each build one"
+    assert closed == built, (
+        f"{len(built) - len(closed)} of {len(built)} runner daemon clients leaked")
+
+
+def test_a_raising_aclose_does_not_fail_the_runner():
+    """Teardown is bookkeeping. It runs inside deploy()'s try, so a raising aclose would
+    mark the runner FAILED — and since the fan-out gates the deploy, fail the WHOLE deploy
+    over a closed transport. The drain's teardown used to be unguarded, unlike _rpc's."""
+    class RudeClient(FakeClient):
+        async def aclose(self):
+            raise RuntimeError("transport already gone")
+
+    rd = R.RunnerDeploy(ROCKY, local_name="dobby", run=_recorder([]),
+                        client_factory=lambda e: RudeClient([]),
+                        fetch_info=_info("abc1234"), verify_interval_s=0)
+    st = asyncio.run(rd.deploy(target_sha="abc1234", daemon_changed=True, deps_changed=False,
+                               local_daemon_enabled=True))
+    assert st.state == "done" and st.error is None
+
+
+def test_a_client_without_aclose_is_tolerated():
+    """client_factory is an injection point and test doubles are plain objects with only
+    ``call``; a missing aclose must be a no-op, never an AttributeError."""
+    class BareClient:
+        async def call(self, method, **kw):
+            if method == "drain_status":
+                return {"state": "ready"}
+            if method == "restore_deploy":
+                return {"restored": [], "failed": []}
+            return {}
+
+    rd = R.RunnerDeploy(ROCKY, local_name="dobby", run=_recorder([]),
+                        client_factory=lambda e: BareClient(),
+                        fetch_info=_info("abc1234"), verify_interval_s=0)
+    st = asyncio.run(rd.deploy(target_sha="abc1234", daemon_changed=True, deps_changed=False,
+                               local_daemon_enabled=True))
+    assert st.state == "done" and st.error is None
+
+
+def test_close_events_precedes_the_restart():
+    """#740: dropping the edge's /events WebSocket BEFORE the daemon gets SIGTERM lets
+    uvicorn exit promptly instead of holding graceful shutdown open ~45s waiting for the
+    edge to reconnect. The RPC list and the ssh argv are asserted in separate tests, so
+    only a SHARED timeline can prove the ordering BETWEEN them."""
+    timeline: list = []
+
+    def run(argv, **kw):
+        timeline.append(("run", argv[-1]))
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    class TimelineClient(FakeClient):
+        async def call(self, method, **kw):
+            timeline.append(("rpc", method))
+            return await super().call(method, **kw)
+
+    rd = R.RunnerDeploy(ROCKY, local_name="dobby", run=run,
+                        client_factory=lambda e: TimelineClient([]),
+                        fetch_info=_info("abc1234"), verify_interval_s=0)
+    st = asyncio.run(rd.deploy(target_sha="abc1234", daemon_changed=True, deps_changed=False,
+                               local_daemon_enabled=True))
+    assert st.state == "done"
+    assert ("rpc", "close_events_connections") in timeline
+    assert ("run", "ccswitch-daemon.service") in timeline
+    assert timeline.index(("rpc", "close_events_connections")) < \
+        timeline.index(("run", "ccswitch-daemon.service"))

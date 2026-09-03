@@ -102,7 +102,13 @@ def test_build_controller_app_wires_the_real_runner_and_state_modules():
 
 def test_lifespan_initialises_the_db_only_when_a_url_is_given(monkeypatch):
     """The controller reads the fleet registry, so the engine must be built on the loop
-    uvicorn runs — an asyncpg pool is loop-bound. Tests pass no url and touch no DB."""
+    uvicorn runs — an asyncpg pool is loop-bound.
+
+    Three cases, because the difference is load-bearing: an explicit url is used as-is; the
+    EMPTY string (what serve.py passes when CCSWITCH_DB_URL is unset) still initialises and
+    lets init_db fall back to settings.db_url, exactly as `python -m server.deploy --once`
+    does; None means "no DB at all" and is for tests only.
+    """
     import server.db as db_mod
     calls: list[str | None] = []
 
@@ -110,19 +116,22 @@ def test_lifespan_initialises_the_db_only_when_a_url_is_given(monkeypatch):
         calls.append(db_url)
     monkeypatch.setattr(db_mod, "init_db", fake_init_db)
 
-    app, _, _ = deploy_app.build_controller_app(
-        repo="/r", health_url="http://h", venv_python="/v", daemon_enabled=False,
-        controller=FakeController(), init_db_url="sqlite+aiosqlite:///:memory:")
-    with TestClient(app):
-        pass
+    def _run(**kw):
+        app, _, _ = deploy_app.build_controller_app(
+            repo="/r", health_url="http://h", venv_python="/v", daemon_enabled=False,
+            controller=FakeController(), **kw)
+        with TestClient(app):
+            pass
+
+    _run(init_db_url="sqlite+aiosqlite:///:memory:")
     assert calls == ["sqlite+aiosqlite:///:memory:"]
 
-    app2, _, _ = deploy_app.build_controller_app(
-        repo="/r", health_url="http://h", venv_python="/v", daemon_enabled=False,
-        controller=FakeController())
-    with TestClient(app2):
-        pass
-    assert calls == ["sqlite+aiosqlite:///:memory:"], "no url → no DB touched"
+    # serve.py's unset-env case: initialise, with the settings fallback.
+    _run(init_db_url="")
+    assert calls == ["sqlite+aiosqlite:///:memory:", None]
+
+    _run()
+    assert calls == ["sqlite+aiosqlite:///:memory:", None], "no url → no DB touched"
 
 
 def test_default_detect_loop_probes_edge_healthz_for_live_sha():
