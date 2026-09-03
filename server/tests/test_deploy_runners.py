@@ -72,6 +72,13 @@ def test_unsafe_values_are_refused_before_any_command():
     with pytest.raises(ValueError):
         R.remote_rewind_commands("/srv/cc", "not a sha")
 
+    rewind_calls: list = []
+    rd2 = R.RunnerDeploy(bad, local_name="dobby", run=_recorder(rewind_calls),
+                         client_factory=lambda e: FakeClient([]), fetch_info=_info("01d0000"))
+    asyncio.run(rd2.rewind("01d0000"))
+    assert rd2.progress.state == "failed" and "ssh_host" in (rd2.progress.error or "")
+    assert rewind_calls == []
+
 
 def test_remote_daemon_changing_deploy_full_sequence():
     calls: list = []
@@ -118,6 +125,7 @@ def test_edge_only_verify_accepts_old_process_sha_with_new_checkout():
     st = asyncio.run(rd.deploy(target_sha="abc1234", daemon_changed=False, deps_changed=False,
                                local_daemon_enabled=True))
     assert st.state == "done"
+    assert st.sha == "abc1234"
 
 
 def test_daemon_changing_verify_requires_process_sha():
@@ -235,3 +243,20 @@ def test_progress_callback_sees_each_step():
     for expected in ("snapshot", "fetch", "merge", "sync", "drain", "restart", "verify", "restore"):
         assert expected in steps
     assert seen[-1][1] == "done"
+
+
+def test_raising_progress_callback_does_not_stop_other_runners():
+    h0 = R.RunnerTarget(name="h0", endpoint="https://h0", enabled=True, healthy=True,
+                        ssh_host="h0", repo_path="/srv/cc")
+    h1 = R.RunnerTarget(name="h1", endpoint="https://h1", enabled=True, healthy=True,
+                        ssh_host="h1", repo_path="/srv/cc")
+
+    def blow_up(name, p):
+        raise RuntimeError("boom")
+
+    res = asyncio.run(R.deploy_runners(
+        [h0, h1], target_sha="abc1234", daemon_changed=True, deps_changed=False,
+        local_name="dobby", local_daemon_enabled=True, run=_recorder([]),
+        client_factory=lambda e: FakeClient([]), fetch_info=_info("abc1234"),
+        verify_interval_s=0, on_progress=blow_up))
+    assert res["h0"].state == "done" and res["h1"].state == "done"

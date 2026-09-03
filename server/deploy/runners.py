@@ -160,11 +160,17 @@ class RunnerDeploy:
         for k, v in kw.items():
             setattr(self.progress, k, v)
         if self._on_progress is not None:
-            self._on_progress(self.target.name, self.progress)
+            try:
+                self._on_progress(self.target.name, self.progress)
+            except Exception:
+                log.debug("runner %s: on_progress callback failed", self.target.name, exc_info=True)
 
     # ---- transport ---------------------------------------------------------------
     async def _ssh(self, step: str, remote: list[str]) -> None:
-        argv = ["ssh", *SSH_OPTS, self.target.ssh_host, *remote]
+        ssh_host = self.target.ssh_host
+        if not ssh_host or not SSH_HOST_RE.match(ssh_host):
+            raise RuntimeError(f"ssh_host {ssh_host!r} is not a valid [user@]host")
+        argv = ["ssh", *SSH_OPTS, ssh_host, *remote]
         r = await asyncio.to_thread(self._run, argv, capture_output=True, text=True)
         if r.returncode != 0:
             detail = (r.stderr or r.stdout or "").strip()[:500]
@@ -221,7 +227,7 @@ class RunnerDeploy:
                 if ok and require_process:
                     ok = bool(process) and short_sha_match(str(process), target_sha)
                 if ok:
-                    return str(process or checkout)
+                    return str(process) if require_process else str(checkout)
             except Exception:
                 pass  # daemon still restarting — keep polling until the deadline
             if loop.time() >= deadline:
@@ -328,7 +334,7 @@ async def deploy_runners(targets: list[RunnerTarget], *, target_sha: str, daemon
             await rd.deploy(target_sha=target_sha, daemon_changed=daemon_changed,
                             deps_changed=deps_changed, local_daemon_enabled=local_daemon_enabled)
 
-    await asyncio.gather(*(one(rd) for rd in deploys.values()))
+    await asyncio.gather(*(one(rd) for rd in deploys.values()), return_exceptions=True)
     return {name: rd.progress for name, rd in deploys.items()}
 
 
@@ -337,7 +343,7 @@ async def rewind_runners(targets: list[RunnerTarget], results: dict[str, HostPro
     """Rollback helper: rewind every runner whose checkout this deploy moved."""
     moved = [t for t in targets if results.get(t.name) is not None and results[t.name].moved]
     await asyncio.gather(*(RunnerDeploy(t, local_name=local_name, **runner_kwargs).rewind(sha)
-                           for t in moved))
+                           for t in moved), return_exceptions=True)
 
 
 async def load_runner_targets() -> list[RunnerTarget]:
