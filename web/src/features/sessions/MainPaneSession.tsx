@@ -27,8 +27,11 @@
  *   on screen beside an open session, so the overflow menu is rename's only home
  *   there. Desktop gains a second route to a dialog it already had.
  *
- * The keyboard half is `useInSessionKeys`, which is also the surviving copy of
- * `DesktopShell`'s own detach handler.
+ * The keyboard half is NOT here. PR 4 replaced `useInSessionKeys` — the surviving
+ * copy of `DesktopShell`'s and `SessionView`'s detach handlers — with the shell's
+ * one keydown listener, driven by `shell/shortcuts.ts`. This component publishes
+ * `hasOpenAction` and a socket-detaching `onDetach` through
+ * `shell/sessionGestures` and owns no listener of its own.
  */
 import { cn } from '@/lib/utils'
 import { useSessionSocket } from '@/ws/client'
@@ -37,7 +40,7 @@ import { SessionGoalText } from '@/components/session/SessionGoalText'
 import { SessionActions } from '@/components/session/SessionActions'
 import { SessionBody } from '@/components/session/SessionBody'
 import { CommandResultOverlay } from '@/components/session/CommandResultOverlay'
-import { useInSessionKeys } from '@/components/session/useInSessionKeys'
+import { useSessionGestures } from '@/shell/sessionGestures'
 import { useSessionRuntimeContext } from '@/components/session/SessionRuntimeProvider'
 
 export interface MainPaneSessionProps {
@@ -74,7 +77,12 @@ export function MainPaneSession({ sessionId, onClosed, onDetach, onOpenSession }
     after()
   }
 
-  useInSessionKeys({
+  // The keyboard half is the shell's single listener (`shell/useShortcuts`); this
+  // publishes the two things it cannot see from up there — whether a card is
+  // unanswered, and a detach that drops the socket first. Registering rather than
+  // listening is what makes ← / Esc / Ctrl+Z one implementation with the rest of
+  // the app's keys instead of a sixth window listener.
+  useSessionGestures({
     hasOpenAction: rt.hasOpenAction,
     onDetach: () => leave(onDetach),
   })

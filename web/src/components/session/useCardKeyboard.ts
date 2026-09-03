@@ -29,13 +29,17 @@ export interface CardKeyboardApi {
  * Propagation/default notes:
  * - `preventDefault()` stops native browser defaults (Enter submitting a form,
  *   Space scrolling the page).
- * - `stopPropagation()` stops React synthetic-event bubbling up the React tree;
- *   it does NOT reach native `window.addEventListener` handlers (e.g.
- *   `useInSessionKeys`' detach listener), which sit outside React's event system
- *   entirely.
- * - Isolation from `useInSessionKeys`' window-level Esc/←/Ctrl+Z detach handler
- *   is provided by that hook's own `if (hasOpenAction) return` guard, which fires
- *   whenever a permission or question block is pending — not by stopPropagation here.
+ * - `stopPropagation()` stops React synthetic-event bubbling up the React tree.
+ *   A React handler's `preventDefault()` DOES reach the shell's window listener
+ *   (it marks the native event), and that listener bails on `defaultPrevented` —
+ *   which is how the keys this hook handles win over the app's shortcuts.
+ * - Isolation from the Esc / ← / Ctrl+Z detach gesture is not stopPropagation's
+ *   doing, and never was: it comes from `hasOpenAction`, which fires whenever a
+ *   permission or question block is pending. It used to be a guard inside
+ *   `useInSessionKeys`; since PR 4 it is the `when` on the `insession.detach`
+ *   row of `shell/shortcuts.ts`, fed by `MainPaneSession` through
+ *   `shell/sessionGestures`. Ctrl+Z is the deliberate exception — the
+ *   force-detach escape hatch — so a card must never rely on holding it.
  */
 export function useCardKeyboard({
   count, multiSelect = false, autoFocus = true, onActivate, onToggle, onSubmit,

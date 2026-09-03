@@ -6,6 +6,7 @@
 import { render, screen, fireEvent, within } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
 import { SessionCard } from '../SessionCard'
+import { overlayIsOpen, resetOverlayState } from '@/shell/useOverlayState'
 import type { Session } from '@/api/types'
 
 const noop = () => {}
@@ -115,12 +116,55 @@ describe('SessionCard mobile overflow menu', () => {
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
   })
 
-  it('closes the overflow menu on Escape key', () => {
+  /**
+   * R9 successor to "closes the overflow menu on Escape key", which fired the
+   * key at `document`.
+   *
+   * PR 4 left the app ONE keydown listener (`shell/useShortcuts`), so this menu's
+   * own `document` listener is gone; Escape is handled on the container that
+   * holds the trigger and the menu, and stopped there so the shell's listener
+   * never sees it. The key is therefore dispatched where a user's Escape
+   * actually lands — on the ⋯ button, which is what has focus while the menu is
+   * open — rather than on `document`, which no user can focus.
+   *
+   * The other half of the old case, "and it does not ALSO detach from the open
+   * session", was never assertable here (this file mounts a card, not a shell);
+   * it is pinned in `shell/useShortcuts.test.tsx` — "a session row's ⋯ menu".
+   */
+  it('closes the overflow menu on Escape from the trigger', () => {
+    renderCard()
+    const trigger = screen.getByRole('button', { name: /more actions for session/i })
+    fireEvent.click(trigger)
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+    fireEvent.keyDown(trigger, { key: 'Escape' })
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
+  it('closes the overflow menu on Escape from inside the menu', () => {
     renderCard()
     fireEvent.click(screen.getByRole('button', { name: /more actions for session/i }))
-    expect(screen.getByRole('menu')).toBeInTheDocument()
-    fireEvent.keyDown(document, { key: 'Escape' })
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
+  /**
+   * An open menu covers the rows under it, so the shell's global keys (↑/↓ over
+   * the list, ← / Esc out of a session) must not fire through it. The card
+   * registers with the same owner `Dialog`, `Sheet` and `ui/Menu` use, which is
+   * what makes that true without the card knowing any shortcut exists. The
+   * behaviour side is `shell/useShortcuts.test.tsx` — "a session row's ⋯ menu".
+   */
+  it('an open overflow menu registers as an overlay, and releases it on close', () => {
+    resetOverlayState()
+    renderCard()
+    expect(overlayIsOpen()).toBe(false)
+
+    const trigger = screen.getByRole('button', { name: /more actions for session/i })
+    fireEvent.click(trigger)
+    expect(overlayIsOpen()).toBe(true)
+
+    fireEvent.keyDown(trigger, { key: 'Escape' })
+    expect(overlayIsOpen()).toBe(false)
   })
 
   it('closes the overflow menu on outside click', () => {

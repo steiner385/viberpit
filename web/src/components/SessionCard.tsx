@@ -2,7 +2,8 @@ import { useRef, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Pencil, Archive, Trash2, FolderGit2, ChevronRight, ChevronDown, Sparkles, Loader2, Target, Wrench, Bot, MoreVertical } from 'lucide-react'
 import { toast } from 'sonner'
-import { matchListShortcut } from '@/shell/shortcuts'
+import { inGroup, matchShortcut } from '@/shell/shortcuts'
+import { popOverlay, pushOverlay } from '@/shell/useOverlayState'
 import { QUICK_REPLIES } from '@/lib/quickReplies'
 import { cn } from '@/lib/utils'
 import { formatRepoLabel } from '@/lib/repoLabel'
@@ -168,19 +169,27 @@ export function SessionCard({ session, account, selected = false, listMode = fal
     if (listMode && selected) buttonRef.current?.focus()
   }, [listMode, selected])
 
-  // Close the ⋯ menu on outside-click or Escape (mirrors SessionActions).
+  // Close the ⋯ menu on outside-click (mirrors SessionActions). Escape is the
+  // `onKeyDown` on the menu's own container below — a component handling its own
+  // key, not a second app-wide listener; PR 4 removed the `document` keydown that
+  // used to live here.
   useEffect(() => {
     if (!menuOpen) return
     function onDocClick(e: MouseEvent) {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false)
     }
-    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') { e.stopPropagation(); setMenuOpen(false) } }
     document.addEventListener('mousedown', onDocClick)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onDocClick)
-      document.removeEventListener('keydown', onKey)
-    }
+    return () => document.removeEventListener('mousedown', onDocClick)
+  }, [menuOpen])
+
+  // An open menu is an OVERLAY: it covers the rows under it, so the shell's
+  // shortcuts (↑/↓ over the list, ← / Esc out of a session) must not fire
+  // through it. One owner for that fact — `shell/useOverlayState` — the same one
+  // `Dialog`, `Sheet` and `ui/Menu` register with.
+  useEffect(() => {
+    if (!menuOpen) return
+    pushOverlay()
+    return () => popOverlay()
   }, [menuOpen])
 
   const repoLabel = formatRepoLabel(session.repo)
@@ -214,7 +223,13 @@ export function SessionCard({ session, account, selected = false, listMode = fal
       }
       return
     }
-    const action = matchListShortcut(e)
+    // The registry's key→action table for a focused ROW, through the one
+    // selection rule the shell's listener uses (`matchShortcut`). No context is
+    // passed: a focused row cannot honestly answer `hasOpenAction` or
+    // `sessionOpen`, so a `list-mode` row that ever grows a `when` stops firing
+    // here — loudly, in this component's tests — instead of being judged against
+    // a fabricated context.
+    const action = matchShortcut(e, inGroup('list-mode'))?.action
     if (!action) return
     e.preventDefault()
     switch (action.type) {
@@ -587,7 +602,20 @@ export function SessionCard({ session, account, selected = false, listMode = fal
                 : <Sparkles size={16} aria-hidden="true" />}
             </button>
           )}
-          <div className="relative flex-shrink-0" ref={menuRef}>
+          {/* Escape closes the menu here, on the container that holds both the
+              trigger and the menu, so it works while focus is on either. It
+              `stopPropagation`s so the shell's one keydown listener never sees
+              the key — dismissing a menu must not also detach from a session. */}
+          <div
+            className="relative flex-shrink-0"
+            ref={menuRef}
+            onKeyDown={(e) => {
+              if (menuOpen && e.key === 'Escape') {
+                e.stopPropagation()
+                setMenuOpen(false)
+              }
+            }}
+          >
             <button
               type="button"
               className={cn(actionBtn, 'text-gray-500 dark:text-gray-400',

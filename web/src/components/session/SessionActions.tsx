@@ -21,6 +21,7 @@ import { Archive, MoreVertical, Pencil, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useCloseSession, usePermanentDeleteSession, useRenameSession } from '@/api/hooks'
 import { PermanentDeleteDialog } from '@/components/PermanentDeleteDialog'
+import { popOverlay, pushOverlay } from '@/shell/useOverlayState'
 import { RenameDialog } from '@/features/sessions/RenameDialog'
 
 interface Props {
@@ -43,19 +44,24 @@ export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark
   const [renameOpen, setRenameOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
 
-  // Close the overflow menu on outside-click / Escape (mirrors ExportMenu).
+  // Close the overflow menu on outside-click. Escape is the container's own
+  // `onKeyDown` below (PR 4 removed the `document` keydown that used to be here:
+  // the app has one keydown listener now, in `shell/useShortcuts`).
   useEffect(() => {
     if (!menuOpen) return
     function onDocClick(e: MouseEvent) {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false)
     }
-    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') { e.stopPropagation(); setMenuOpen(false) } }
     document.addEventListener('mousedown', onDocClick)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onDocClick)
-      document.removeEventListener('keydown', onKey)
-    }
+    return () => document.removeEventListener('mousedown', onDocClick)
+  }, [menuOpen])
+
+  // An open menu is an overlay — the shell's shortcuts (← / Esc detach) do not
+  // fire through one. Same registration `Dialog`, `Sheet` and `ui/Menu` make.
+  useEffect(() => {
+    if (!menuOpen) return
+    pushOverlay()
+    return () => popOverlay()
   }, [menuOpen])
 
   const isDark = variant === 'dark'
@@ -86,7 +92,19 @@ export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark
   const deletePending = closeSession.isPending || permanentDelete.isPending
 
   return (
-    <div className="flex items-center gap-1" ref={menuRef}>
+    // Escape closes the menu from the container that holds the trigger and the
+    // menu both, and stops the key there: dismissing a menu must not also detach
+    // from the session the header belongs to.
+    <div
+      className="flex items-center gap-1"
+      ref={menuRef}
+      onKeyDown={(e) => {
+        if (menuOpen && e.key === 'Escape') {
+          e.stopPropagation()
+          setMenuOpen(false)
+        }
+      }}
+    >
       <button
         type="button"
         onClick={handleArchive}

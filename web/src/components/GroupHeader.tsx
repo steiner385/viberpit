@@ -1,7 +1,7 @@
 // web/src/components/GroupHeader.tsx
 import { useEffect, useRef } from 'react'
 import { ChevronRight, ChevronDown } from 'lucide-react'
-import { matchHeaderShortcut } from '@/shell/shortcuts'
+import { inGroup, matchShortcut } from '@/shell/shortcuts'
 import { cn } from '@/lib/utils'
 
 interface GroupHeaderProps {
@@ -34,7 +34,10 @@ export function GroupHeader({
   }, [listMode, selected])
 
   function handleKeyDown(e: React.KeyboardEvent) {
-    const action = matchHeaderShortcut(e)
+    // The header rows only — ← collapses a group here, where it would exit the
+    // list on a session row — through the same selection rule the shell's one
+    // keydown listener uses. See `matchShortcut` for why no context is passed.
+    const action = matchShortcut(e, inGroup('list-mode-header'))?.action
     if (!action) return
     e.preventDefault()
     switch (action.type) {

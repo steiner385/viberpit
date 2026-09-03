@@ -14,11 +14,10 @@ import {
 import { NewSessionDialogHost } from '@/features/sessions/NewSessionDialogHost'
 import { RenameDialog } from '@/features/sessions/RenameDialog'
 import { PermanentDeleteDialog } from '@/components/PermanentDeleteDialog'
-import { useGlobalHelpKey } from '@/components/useGlobalHelpKey'
-import { useGlobalListNav } from '@/components/useGlobalListNav'
 import { useSessionListState } from '@/features/sessions/useSessionListState'
 import type { SessionListColumnProps } from '@/features/sessions/SessionListColumn'
 import { isPendingSessionId } from '@/lib/pendingSessions'
+import { textEntryClaimsKey } from '@/lib/detachKeyGuard'
 import { nextSessionAfterClose } from '@/session/nextAfterArchive'
 import { SESSIONS_PATH, sessionPath } from '@/session/sessionNavState'
 import { useDialogName } from './dialogParam'
@@ -27,6 +26,9 @@ import { InteractionProvider } from './InteractionContext'
 import { readKioskConfig } from './kiosk'
 import { NAV_BY_ID, navDefForPath } from './navDefs'
 import { useOpenSessionId } from './openSessionId'
+import { SessionGestureProvider, useSessionGestureHandle } from './sessionGestures'
+import { overlayIsOpen } from './useOverlayState'
+import { useShortcuts } from './useShortcuts'
 import { useAppBanners } from './useAppBanners'
 import { ViewportProvider, useViewport, type LayoutMode } from './useViewport'
 import { ContextList } from './regions/ContextList'
@@ -161,9 +163,14 @@ export function AppShell() {
             and `DeployPanel` — mounted from the Settings page — must share the
             same controller instance, so it wraps the whole shell. */}
         <DeployControllerProvider>
-          <KioskPageGuard>
-            <AppShellInner />
-          </KioskPageGuard>
+          {/* The bridge the open session publishes its keyboard gestures through
+              — see `shell/sessionGestures`. It wraps the guard so the handle
+              survives the kiosk redirect rather than being recreated by it. */}
+          <SessionGestureProvider>
+            <KioskPageGuard>
+              <AppShellInner />
+            </KioskPageGuard>
+          </SessionGestureProvider>
         </DeployControllerProvider>
       </InteractionProvider>
     </ViewportProvider>
@@ -238,22 +245,49 @@ function AppShellInner() {
     }
   }, [mode])
 
-  // `?` opens the help drawer. Both old shells gated this on their Sessions tab
-  // because neither could render a drawer anywhere else; `DrawerHost` is a
-  // region now, so the key works app-wide — except in kiosk, which has no
-  // drawer region to open into.
-  useGlobalHelpKey({ enabled: mode !== 'kiosk', onShowHelp: () => openDrawer('help') })
-
-  // ↑/↓ move the list highlight even when focus is parked somewhere in the
-  // chrome rather than in the prompt (the rail, a heading). `Dashboard` mounted
-  // this — `useGlobalListNav` was orphaned by the cutover, its own hook test
-  // still green, and the behaviour simply gone (found re-hosting
-  // `KeyboardSessions.test.tsx`). Gated on the Sessions section, which is what
-  // `activeTab === 'sessions'` meant, and off in kiosk, which has no list.
-  useGlobalListNav({
-    enabled: mode !== 'kiosk' && region.inSessions,
-    onNavigate: workspace.navigateList,
-  })
+  // ── the app's one keydown listener ──────────────────────────────────────
+  //
+  // Five listeners used to do this (`useGlobalHelpKey`, `useGlobalListNav`,
+  // `useInSessionKeys`, and an overflow-menu Escape in each of `SessionCard` and
+  // `SessionActions`), each answering "may this key fire here?" its own way.
+  // `shell/shortcuts.ts` answers it once, per row, and this is the only place
+  // that asks. What stays OUT of it is component behaviour: `ui/Menu`'s roving
+  // focus, `ui/Tabs`' arrows, `Composer`'s history recall, `DispatchBar`'s
+  // arrows, a focused row's single-key actions. Each of those `preventDefault`s
+  // the key it handles, which is precisely how it wins over this listener.
+  //
+  // The gesture ref, not shell state: `hasOpenAction` and the socket-detaching
+  // `onDetach` belong to the session runtime, which `PageHost` mounts BELOW the
+  // shell. `MainPaneSession` publishes them through `sessionGestures`; nothing
+  // here re-renders when they change, because the listener reads them at
+  // keydown time.
+  const gestures = useSessionGestureHandle()
+  useShortcuts(
+    (e) => {
+      const active = document.activeElement
+      return {
+        // `overlayIsOpen()`, not `useOverlayState()`: this runs in an event
+        // handler, outside render.
+        overlayOpen: overlayIsOpen(),
+        hasOpenAction: gestures.current?.hasOpenAction ?? false,
+        // "A session is open" means a session's gestures are registered — not
+        // that the URL has an `:id`. A route can match before the pane mounts,
+        // and a detach row that fires with nothing to detach would swallow
+        // Escape app-wide.
+        sessionOpen: gestures.current !== null,
+        inSessions: region.inSessions,
+        interactive: mode !== 'kiosk',
+        active,
+        yieldsToTextEntry: textEntryClaimsKey(e, active),
+      }
+    },
+    {
+      'compose.help': () => openDrawer('help'),
+      'compose.nav': (e) => workspace.navigateList(e.key === 'ArrowUp' ? 'up' : 'down'),
+      'insession.detach': () => gestures.current?.onDetach(),
+      'insession.forceDetach': () => gestures.current?.onDetach(),
+    },
+  )
 
   const phone = mode === 'phone'
   const listVisible = shows('app.list')

@@ -1,3 +1,5 @@
+import { isFormControl } from '@/lib/detachKeyGuard'
+
 /** An action performed against the focused session row in list mode. */
 export type ListRowAction =
   | { type: 'open' }
@@ -44,6 +46,16 @@ export interface ShortcutContext {
   interactive: boolean
   /** What currently has focus, for text-entry yielding. */
   active: Element | null
+  /**
+   * The focused text entry claims THIS keydown (`lib/detachKeyGuard`) — the
+   * composer's left-edge ← rule included.
+   *
+   * Key-specific, so it is computed per event rather than being a standing
+   * "something is focused" fact: the composer holds ← mid-prompt and releases it
+   * at the left edge, with the same caret and the same draft. A `when` predicate
+   * only sees the context, so the context is what carries the answer.
+   */
+  yieldsToTextEntry: boolean
 }
 
 export interface Shortcut {
@@ -139,19 +151,43 @@ export const SHORTCUTS: Shortcut[] = [
     match: plain((e) => e.key === 'Escape' || e.key === 'Tab') },
   // ── Compose mode — DISPLAY-ONLY (handled in DispatchBar) ──────────────
   { id: 'compose.enterList', keys: 'Tab', description: 'Enter list mode (empty prompt)', group: 'compose' },
-  { id: 'compose.nav', keys: '↑ / ↓', description: 'Move the highlight', group: 'compose' },
+  // ↑/↓ move the list highlight when focus is parked in the chrome rather than in
+  // the prompt (`DispatchBar` owns the arrows while the prompt has focus, and a
+  // focused row owns them through `list.up`/`list.down` above — both call
+  // `preventDefault`, which the dispatcher yields to).
+  { id: 'compose.nav', keys: '↑ / ↓', description: 'Move the highlight', group: 'compose',
+    match: plain((e) => e.key === 'ArrowUp' || e.key === 'ArrowDown'),
+    when: (c) => c.interactive && c.inSessions && !c.overlayOpen && !isFormControl(c.active) },
   { id: 'compose.create', keys: 'Enter', description: 'Create a session from the prompt', group: 'compose' },
   { id: 'compose.open', keys: '→ / Enter', description: 'Open highlighted session (empty prompt)', group: 'compose' },
   { id: 'compose.newline', keys: 'Shift+Enter', description: 'Insert a newline', group: 'compose' },
   { id: 'compose.jump', keys: 'Alt+1–9', description: 'Open session by number', group: 'compose' },
   { id: 'compose.deselect', keys: 'Esc', description: 'Clear the prompt and deselect', group: 'compose' },
-  { id: 'compose.help', keys: '?', description: 'Open this help panel', group: 'compose' },
-  // ── In-session — DISPLAY-ONLY ────────────────────────────────────────
-  { id: 'insession.detach', keys: '← / Esc', description: 'Detach back to the session list', group: 'in-session' },
-  { id: 'insession.forceDetach', keys: 'Ctrl+Z', description: 'Force-detach to the list', group: 'in-session' },
+  // `?` works from anywhere in the chrome, not just the prompt (`DispatchBar`
+  // keeps its own empty-prompt branch, so `?` still types a character mid-draft).
+  // `Shift+/` as well as `?`: a browser reports one or the other depending on the
+  // layout, and only matching `?` makes the key dead on the layouts that report
+  // `/`. Blocked in kiosk, which has no drawer region to open into.
+  { id: 'compose.help', keys: '?', description: 'Open this help panel', group: 'compose',
+    match: plain((e) => e.key === '?' || (e.key === '/' && e.shiftKey)),
+    when: (c) => c.interactive && !c.overlayOpen && !isFormControl(c.active) },
+  // ── In-session ───────────────────────────────────────────────────────
+  //
+  // `hasOpenAction` holds ← and Esc — an unanswered permission or question card
+  // is answered first — but deliberately NOT Ctrl+Z, which is the force-detach
+  // escape hatch that keeps the user from being trapped by a card.
+  { id: 'insession.detach', keys: '← / Esc', description: 'Detach back to the session list',
+    group: 'in-session',
+    match: plain((e) => e.key === 'Escape' || e.key === 'ArrowLeft'),
+    when: (c) => c.sessionOpen && !c.overlayOpen && !c.hasOpenAction && !c.yieldsToTextEntry },
+  { id: 'insession.forceDetach', keys: 'Ctrl+Z', description: 'Force-detach to the list',
+    group: 'in-session',
+    match: (e) => e.ctrlKey && !e.altKey && !e.metaKey && (e.key === 'z' || e.key === 'Z'),
+    when: (c) => c.sessionOpen && !c.overlayOpen && !c.yieldsToTextEntry },
   // `Shift+Tab` (cycle permission mode) is deliberately NOT listed: sub-spec B D8
-  // removes the binding, and the handler in `session/useInSessionKeys.ts` is gone
-  // too — the AppShell cutover made a window-level `preventDefault()` on Shift+Tab
+  // removes the binding, and the handler that carried it (`useInSessionKeys`, now
+  // deleted) is gone — the AppShell cutover made a window-level
+  // `preventDefault()` on Shift+Tab
   // untenable (it killed reverse-tab app-wide and escalated a live session's
   // permission mode), so D8's removal was brought forward into this PR. The
   // registry is the only thing the help sheets render from, so dropping the row
@@ -159,12 +195,51 @@ export const SHORTCUTS: Shortcut[] = [
   // a second, invisible owner of "which shortcuts are documented".
 ]
 
-export function matchListShortcut(e: KeyboardLike): ListRowAction | undefined {
-  return SHORTCUTS.find((s) => s.group !== 'list-mode-header' && s.match?.(e))?.action
+/**
+ * THE selection rule, and the only one: the FIRST row in registry order whose
+ * `match` accepts the event, which the caller can act on (`canAct`), and whose
+ * `when` allows the context.
+ *
+ * ## Why one function and not three
+ *
+ * There used to be `matchListShortcut` (rows `!== 'list-mode-header'`) and
+ * `matchHeaderShortcut` (rows `=== 'list-mode-header'`), each with its own
+ * `find` and neither aware of `when`. The shell's dispatcher would have been a
+ * third rule — "first matching row, subject to `when`" — over the same array, so
+ * the registry would have had three different answers to "which row wins".
+ * `canAct` is the only difference that was ever real: a focused group header must
+ * not run a session-row action, and the shell must not fire a row it has no
+ * handler for. Everything else — the ordering, and now `when` — is shared.
+ *
+ * That collapse also fixed a latent bug: `!== 'list-mode-header'` made every
+ * compose and in-session row a candidate for a focused list row, which was
+ * harmless only while none of them had a `match`. Four of them do now.
+ *
+ * ## Why `c` is optional
+ *
+ * A focused row's own `onKeyDown` is the one caller with no honest context: it
+ * cannot answer `hasOpenAction` or `sessionOpen`, and fabricating them is how a
+ * `when` comes to be evaluated against a lie. Omitting `c` means "no context to
+ * test", and a row carrying a `when` is then simply not selectable — so the
+ * failure mode of adding a `when` to a list-mode row is that the row stops
+ * firing there and its test fails, not that it fires under a guess.
+ */
+export function matchShortcut(
+  e: KeyboardLike,
+  canAct: (s: Shortcut) => boolean,
+  c?: ShortcutContext,
+): Shortcut | undefined {
+  return SHORTCUTS.find(
+    (s) =>
+      canAct(s) &&
+      s.match?.(e) === true &&
+      (c !== undefined ? shortcutAllowed(s, c) : s.when === undefined),
+  )
 }
 
-export function matchHeaderShortcut(e: KeyboardLike): ListRowAction | undefined {
-  return SHORTCUTS.find((s) => s.group === 'list-mode-header' && s.match?.(e))?.action
+/** `canAct` for a focused list row / group header (`SessionCard`, `GroupHeader`). */
+export function inGroup(group: ShortcutGroup): (s: Shortcut) => boolean {
+  return (s) => s.group === group
 }
 
 export function shortcutsByGroup(group: ShortcutGroup): Shortcut[] {

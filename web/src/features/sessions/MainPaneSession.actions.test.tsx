@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MainPaneSession } from './MainPaneSession'
 import { SessionRuntimeProvider } from '@/components/session/SessionRuntimeProvider'
+import { overlayIsOpen, resetOverlayState } from '@/shell/useOverlayState'
 import * as hooks from '@/api/hooks'
 
 /**
@@ -72,6 +73,9 @@ function renameMutation() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // Module state that outlives a test: a menu left open by a previous case would
+  // otherwise make the next one start "overlay open".
+  resetOverlayState()
   vi.mocked(hooks.useCloseSession).mockReturnValue(successMutation() as unknown as ReturnType<typeof hooks.useCloseSession>)
   vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(successMutation() as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
   vi.mocked(hooks.useRenameSession).mockReturnValue(renameMutation() as unknown as ReturnType<typeof hooks.useRenameSession>)
@@ -125,6 +129,27 @@ describe('MainPaneSession header — archive/delete', () => {
     expect(screen.queryByRole('menuitem', { name: /delete permanently/i })).not.toBeInTheDocument()
     expect(onBack).not.toHaveBeenCalled()
     expect(detach).not.toHaveBeenCalled()
+  })
+
+  /**
+   * The second half of "without exiting the session".
+   *
+   * The two assertions above are about this pane; the reason Escape cannot ALSO
+   * detach is that an open menu registers as an overlay, and every shell
+   * shortcut refuses to fire under one. That is asserted here as WIRING (the
+   * pane has no shell around it) and as BEHAVIOUR in
+   * `shell/useShortcuts.test.tsx` — "the session header's ⋯ menu".
+   */
+  it('an open overflow menu registers as an overlay, and releases it on close', async () => {
+    const user = userEvent.setup()
+    renderPane({ onDetach: vi.fn(), onClosed: vi.fn() })
+    expect(overlayIsOpen()).toBe(false)
+
+    await user.click(screen.getByRole('button', { name: /more session actions/i }))
+    expect(overlayIsOpen()).toBe(true)
+
+    await user.keyboard('{Escape}')
+    expect(overlayIsOpen()).toBe(false)
   })
 
   it('exposes Rename in the overflow menu (its only home on mobile)', async () => {
