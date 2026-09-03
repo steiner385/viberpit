@@ -1,4 +1,7 @@
-// Ported from plotroom@5166b52 frontend/src/hooks/useFocusTrap.ts; edits: render-phase ref write → useLayoutEffect (react-hooks/refs rule)
+// Ported from plotroom@5166b52 frontend/src/hooks/useFocusTrap.ts; edits: render-phase ref write → useLayoutEffect (react-hooks/refs rule).
+// Promoted to web/src/ui/ with an `inertRoot` option: while a trap is active it sets `inert` on
+// an element (default `#root`) so background content is unfocusable/unclickable; a module-level
+// depth counter allows nested traps to stack without the inner trap's close lifting `inert` early.
 import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react';
 
 /**
@@ -7,6 +10,20 @@ import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react';
  */
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+// Module-level depth counter: a dialog can open a second (nested) dialog, so
+// the `inert` attribute must only be removed once the outermost trap closes.
+let inertDepth = 0;
+function setRootInert(id: string, on: boolean) {
+  // Count first, unconditionally: increments and decrements must pair up even if
+  // the element is missing at one end, or a decrement could be stolen from an
+  // outer trap and lift `inert` while its dialog is still open.
+  inertDepth = Math.max(0, inertDepth + (on ? 1 : -1));
+  const root = document.getElementById(id);
+  if (!root) return;
+  if (inertDepth > 0) root.setAttribute('inert', '');
+  else root.removeAttribute('inert');
+}
 
 /**
  * Shared focus-trap hook — extracted from ProtectionMap's inline drawer trap.
@@ -28,6 +45,8 @@ export function useFocusTrap(
   opts: {
     onClose: () => void;
     returnFocusRef?: RefObject<HTMLElement | null>;
+    /** Element id that becomes `inert` while the trap is active (default 'root'). Pass null to skip. */
+    inertRoot?: string | null;
   },
 ): void {
   // Capture opts in a ref so the effect cleanup always sees the current values
@@ -43,8 +62,16 @@ export function useFocusTrap(
     // Save element that had focus before the trap activated.
     const previousFocus = document.activeElement as HTMLElement | null;
 
+    const inertId = optsRef.current.inertRoot === undefined ? 'root' : optsRef.current.inertRoot;
+    if (inertId) setRootInert(inertId, true);
+
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        // Swallow Escape here so it never reaches a background `window`-level
+        // shortcut handler (e.g. SessionView's Esc-to-back) while a trap is
+        // active — every hand-rolled dialog this hook replaces did the same
+        // via its own per-dialog `e.stopPropagation()`.
+        e.stopPropagation();
         optsRef.current.onClose();
         return;
       }
@@ -83,6 +110,7 @@ export function useFocusTrap(
 
     return () => {
       document.removeEventListener('keydown', onKey);
+      if (inertId) setRootInert(inertId, false);
       // Return focus: explicit ref takes priority, then previous element.
       const returnTarget =
         optsRef.current.returnFocusRef?.current ?? previousFocus;

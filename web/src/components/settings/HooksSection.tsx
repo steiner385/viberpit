@@ -211,7 +211,7 @@ export function HooksSection() {
                       <div className="flex shrink-0 items-center gap-2">
                         <Button
                           type="button"
-                          variant="outline"
+                          variant="secondary"
                           size="sm"
                           onClick={() => handleDryRun(index, row.command)}
                           disabled={dryRun.isPending && dryRunFor === index}
@@ -220,7 +220,7 @@ export function HooksSection() {
                         </Button>
                         <Button
                           type="button"
-                          variant="destructive"
+                          variant="danger"
                           size="sm"
                           onClick={() => handleDelete(index)}
                           disabled={saveMutation.isPending}

@@ -73,18 +73,18 @@ describe('StatusPill — session status tiers', () => {
   it('renders complete as "Complete" with neutral text', () => {
     const { container } = render(<StatusPill status="complete" />)
     expect(screen.getByText('Complete')).toBeInTheDocument()
-    expect(container.querySelector('.text-emerald-700')).toBeFalsy()
+    expect(container.querySelector('.text-success')).toBeFalsy()
   })
 
-  it('renders needs_attention as "Turn failed" with red text', () => {
+  it('renders needs_attention as "Turn failed" with danger text', () => {
     const { container } = render(<StatusPill status="needs_attention" />)
     expect(screen.getByText('Turn failed')).toBeInTheDocument()
-    expect(container.querySelector('.text-red-700')).toBeTruthy()
+    expect(container.querySelector('.text-danger')).toBeTruthy()
   })
 
-  it('renders done as "Your turn" with neutral (non-emerald) text', () => {
+  it('renders done as "Your turn" with neutral (non-success) text', () => {
     const { container } = render(<StatusPill status="done" />)
     expect(screen.getByText('Your turn')).toBeInTheDocument()
-    expect(container.querySelector('.text-emerald-700')).toBeFalsy()
+    expect(container.querySelector('.text-success')).toBeFalsy()
   })
 })

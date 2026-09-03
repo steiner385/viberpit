@@ -1,5 +1,5 @@
 import { Loader2 } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { Banner } from '@/ui/Banner'
 import { useDaemonHealth } from '@/hooks/useDaemonHealth'
 import { useEpochRestart } from '@/hooks/useEpochRestart'
 
@@ -18,21 +18,16 @@ export function DaemonRestartBanner() {
   const daemonOk = useDaemonHealth()
   if (daemonOk && !epochRestart) return null
   return (
-    <div
-      role="status"
-      aria-live="polite"
-      className={cn(
+    <Banner
+      tone="warning"
+      title="Back in a moment…"
+      icon={<Loader2 size={16} className="animate-spin" aria-hidden="true" />}
+      className={
         // pointer-events-none: non-interactive status notice. Without it the fixed
         // top-0 bar overlays the session top bar and captures clicks meant for the
         // controls beneath it (e.g. "Back to session list" — #620 broke dashboard e2e T044).
-        'pointer-events-none fixed inset-x-0 top-0 z-50 flex items-center justify-center gap-3',
-        'border-b border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/90 px-4 py-2',
-      )}
-    >
-      <Loader2 size={16} className="text-amber-700 dark:text-amber-300 flex-shrink-0 animate-spin" aria-hidden="true" />
-      <span className="text-sm font-medium text-amber-900 dark:text-amber-100">
-        Back in a moment…
-      </span>
-    </div>
+        'pointer-events-none fixed inset-x-0 top-0 z-50 items-center justify-center rounded-none border-x-0 border-t-0 px-4 py-2'
+      }
+    />
   )
 }

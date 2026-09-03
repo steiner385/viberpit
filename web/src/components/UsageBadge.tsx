@@ -7,7 +7,9 @@ import {
 import { cn } from '@/lib/utils'
 import { formatResetTime } from '@/lib/formatReset'
 import type { AccountStatus, SessionStatus } from '@/api/types'
-import { statusPresentation } from '@/session/statusTier'
+import { statusPresentation, TIER_TONE } from '@/session/statusTier'
+import { StatusPill as Pill } from '@/ui/StatusPill'
+import type { Tone } from '@/ui/Badge'
 
 // ── UsageBadge ──────────────────────────────────────────────────────────────
 
@@ -100,55 +102,50 @@ export function UsageBadge({ pct, label, resetsAt, markerPct, compact, className
 }
 
 // ── StatusPill ───────────────────────────────────────────────────────────────
-
-/** Subtle pill background derived from the status's text-colour family, so the
- *  badge reads as a real chip without maintaining a parallel colour table. */
-function pillTone(textClass: string): string {
-  if (textClass.includes('emerald')) return 'bg-emerald-50 dark:bg-emerald-950/40'
-  if (textClass.includes('amber')) return 'bg-amber-50 dark:bg-amber-950/40'
-  if (textClass.includes('red')) return 'bg-red-50 dark:bg-red-950/40'
-  if (textClass.includes('blue')) return 'bg-blue-50 dark:bg-blue-950/40'
-  return 'bg-gray-100 dark:bg-gray-800'
-}
+// Thin adapter over the shared ui/StatusPill primitive: this module keeps its
+// own status vocabulary (account statuses, session statuses) but hands the
+// chrome — pill shape, tone colors, pulse — to the single primitive.
 
 type AnyStatus = AccountStatus | SessionStatus
 
 interface StatusConfig {
   label: string
   Icon: React.ComponentType<{ className?: string; size?: number }>
-  textClass: string
+  tone: Tone
 }
 
+// Account statuses have their own vocabulary (ok/limited/needs-reauth/…),
+// mapped onto the shared Tone set rather than a parallel colour table.
 const ACCOUNT_STATUS_MAP: Record<AccountStatus, StatusConfig> = {
   ok: {
     label: 'OK',
     Icon: CheckCircle2,
-    textClass: 'text-emerald-700 dark:text-emerald-400',
+    tone: 'success',
   },
   limited: {
     label: 'Limited',
     Icon: AlertTriangle,
-    textClass: 'text-amber-700 dark:text-amber-400',
+    tone: 'warning',
   },
   'needs-relogin': {
     label: 'Needs login',
     Icon: WifiOff,
-    textClass: 'text-red-700 dark:text-red-400',
+    tone: 'danger',
   },
   'needs-reauth': {
     label: 'Needs re-auth',
     Icon: WifiOff,
-    textClass: 'text-red-700 dark:text-red-400',
+    tone: 'danger',
   },
   'not-max': {
     label: 'Not Max',
     Icon: CircleAlert,
-    textClass: 'text-gray-600 dark:text-gray-400',
+    tone: 'neutral',
   },
   unknown: {
     label: 'Unknown',
     Icon: CircleAlert,
-    textClass: 'text-gray-600 dark:text-gray-400',
+    tone: 'neutral',
   },
 }
 
@@ -162,26 +159,17 @@ interface StatusPillProps {
 export function StatusPill({ status, className, interruptedByRestart }: StatusPillProps) {
   // Account statuses have their own vocabulary; session statuses use the shared map.
   const account = (ACCOUNT_STATUS_MAP as Record<string, StatusConfig>)[status]
-  const { label, Icon, textClass, pulse } = account
-    ? { ...account, pulse: false }
-    : (() => {
-        const p = statusPresentation(status, { interruptedByRestart })
-        return { label: p.label, Icon: p.Icon, textClass: p.textClass, pulse: p.tier === 'needs-you' || p.tier === 'error' }
-      })()
-
+  if (account) {
+    return <Pill label={account.label} Icon={account.Icon} tone={account.tone} className={className} />
+  }
+  const p = statusPresentation(status, { interruptedByRestart })
   return (
-    <span
-      className={cn(
-        'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium',
-        textClass,
-        pillTone(textClass),
-        pulse && 'motion-safe:animate-pulse',
-        className,
-      )}
-      aria-label={`Status: ${label}`}
-    >
-      <Icon size={12} aria-hidden="true" />
-      <span>{label}</span>
-    </span>
+    <Pill
+      label={p.label}
+      Icon={p.Icon}
+      tone={TIER_TONE[p.tier]}
+      pulse={p.tier === 'needs-you' || p.tier === 'error'}
+      className={className}
+    />
   )
 }

@@ -29,6 +29,7 @@ import { SessionListControls } from './SessionListControls'
 import { DispatchBar } from './DispatchBar'
 import { AllLimitedBanner } from './AllLimitedBanner'
 import { DeployPanel } from './DeployPanel'
+import { BannerStack } from '@/ui/BannerStack'
 import { HelpDrawer } from './HelpDrawer'
 import { useGlobalHelpKey } from './useGlobalHelpKey'
 import { SettingsView } from './settings/SettingsView'
@@ -627,18 +628,15 @@ export function DesktopShell() {
         </div>
       </header>
 
-      {allLimitedReset !== undefined && (
-        <div className="px-4 pt-2 flex-shrink-0">
-          <AllLimitedBanner earliestReset={allLimitedReset} onDismiss={() => setAllLimitedReset(undefined)} />
-        </div>
-      )}
-
-      {/* Pending-deploy banner. DeployPanel self-returns null when up to date, so the
-          wrapper collapses (`:empty` → hidden) and adds no gap on the common idle path.
-          Mounted here as well as in the mobile Dashboard so wide screens see it too. */}
-      <div className="px-4 pt-2 flex-shrink-0 [&:empty]:hidden">
-        <DeployPanel />
-      </div>
+      {/* Banner region — one BannerStack per shell (see Dashboard's equivalent for mobile),
+          priority-ordered, so a banner added here can't be forgotten there. BannerStack
+          renders null when every item is absent, so no [&:empty]:hidden wrapper is needed. */}
+      <BannerStack className="px-4 pt-2 flex-shrink-0" items={[
+        { id: 'all-limited', priority: 70, node: allLimitedReset !== undefined
+          ? <AllLimitedBanner earliestReset={allLimitedReset} onDismiss={() => setAllLimitedReset(undefined)} />
+          : null },
+        { id: 'deploy', priority: 50, node: <DeployPanel /> },
+      ]} />
 
       <div className="flex-1 flex min-h-0">
         {sidebar}

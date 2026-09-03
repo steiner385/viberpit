@@ -8,10 +8,10 @@
  * Includes grouping / sorting / search via SessionListControls + GroupedList.
  */
 
-import * as React from 'react'
 import { useState, useRef, useEffect } from 'react'
 import { Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { Dialog } from '@/ui/Dialog'
 import { Button } from '@/ui/Button'
 import {
   useArchivedSessions,
@@ -60,121 +60,63 @@ interface PermanentDeleteDialogProps {
 }
 
 function PermanentDeleteDialog({ names, onClose, onConfirm, isPending, progress, onCancel }: PermanentDeleteDialogProps) {
-  const dialogRef = useRef<HTMLDivElement>(null)
   const cancelRef = useRef<HTMLButtonElement>(null)
   const count = names.length
-
-  React.useEffect(() => {
-    cancelRef.current?.focus()
-  }, [])
-
-  React.useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') { if (!isPending) onClose(); return }
-      if (e.key === 'Tab') {
-        const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
-          'button, input, select, textarea, [tabindex]:not([tabindex="-1"])',
-        )
-        if (!focusable || focusable.length === 0) return
-        const first = focusable[0]
-        const last = focusable[focusable.length - 1]
-        if (e.shiftKey) {
-          if (document.activeElement === first) { e.preventDefault(); last.focus() }
-        } else {
-          if (document.activeElement === last) { e.preventDefault(); first.focus() }
-        }
-      }
-    }
-    document.addEventListener('keydown', handleKeyDown)
-    return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [onClose, isPending])
+  const title = count === 1 ? 'Permanently delete session' : `Permanently delete ${count} sessions`
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/50"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="perm-delete-dialog-title"
-      onClick={(e) => { if (e.target === e.currentTarget && !isPending) onClose() }}
-    >
-      <div
-        ref={dialogRef}
-        className={cn(
-          'w-full max-w-sm rounded-xl',
-          'bg-white dark:bg-gray-800',
-          'border border-gray-200 dark:border-gray-600',
-          'shadow-xl p-6 space-y-4',
-        )}
-      >
-        <h2
-          id="perm-delete-dialog-title"
-          className="text-lg font-semibold text-gray-900 dark:text-gray-100"
-        >
-          {count === 1 ? 'Permanently delete session' : `Permanently delete ${count} sessions`}
-        </h2>
-
-        {isPending && progress ? (
-          <div className="space-y-2">
-            <div className="flex items-center justify-between text-sm text-gray-700 dark:text-gray-300">
-              <span>Deleting…</span>
-              <span className="tabular-nums">{progress.done} of {progress.total}</span>
-            </div>
-            <div
-              role="progressbar"
-              aria-valuemin={0}
-              aria-valuemax={progress.total}
-              aria-valuenow={progress.done}
-              aria-valuetext={`Deleting ${progress.done} of ${progress.total}`}
-              className="h-2 w-full overflow-hidden rounded bg-gray-200 dark:bg-gray-700"
-            >
-              <div
-                className={cn('h-full rounded bg-red-600', !prefersReducedMotion() && 'transition-[width] duration-200 ease-linear')}
-                style={{ width: `${progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0}%` }}
-              />
-            </div>
+    <Dialog open onClose={onClose} title={title} size="sm" initialFocus={cancelRef} dismissable={!isPending}>
+      {isPending && progress ? (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between text-sm text-ink-muted">
+            <span>Deleting…</span>
+            <span className="tabular-nums">{progress.done} of {progress.total}</span>
           </div>
-        ) : (
-          <p className="text-sm text-gray-700 dark:text-gray-300">
-            {count === 1 ? (
-              <>
-                Permanently delete <span className="font-medium">&lsquo;{names[0]}&rsquo;</span>? This removes the
-                session folder and all its data. This can&rsquo;t be undone.
-              </>
-            ) : (
-              <>
-                Permanently delete <span className="font-medium">{count} sessions</span>? This removes their
-                session folders and all their data. This can&rsquo;t be undone.
-              </>
-            )}
-          </p>
-        )}
-
-        <div className="flex gap-3 justify-end pt-2">
-          <Button
-            ref={cancelRef}
-            type="button"
-            variant="outline"
-            onClick={isPending ? onCancel : onClose}
-            disabled={isPending && !onCancel}
+          <div
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={progress.total}
+            aria-valuenow={progress.done}
+            aria-valuetext={`Deleting ${progress.done} of ${progress.total}`}
+            className="h-2 w-full overflow-hidden rounded bg-surface-raised"
           >
-            Cancel
-          </Button>
-          <Button
-            type="button"
-            onClick={onConfirm}
-            disabled={isPending}
-            className={cn(
-              'min-h-[44px]',
-              'bg-red-600 hover:bg-red-700 text-white',
-              'dark:bg-red-700 dark:hover:bg-red-600',
-              'focus-visible:ring-red-500',
-            )}
-          >
-            {isPending ? 'Deleting…' : 'Delete permanently'}
-          </Button>
+            <div
+              className={cn('h-full rounded bg-danger-strong', !prefersReducedMotion() && 'transition-[width] duration-200 ease-linear')}
+              style={{ width: `${progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0}%` }}
+            />
+          </div>
         </div>
+      ) : (
+        <p className="text-sm text-ink-muted">
+          {count === 1 ? (
+            <>
+              Permanently delete <span className="font-medium text-ink">&lsquo;{names[0]}&rsquo;</span>? This removes the
+              session folder and all its data. This can&rsquo;t be undone.
+            </>
+          ) : (
+            <>
+              Permanently delete <span className="font-medium text-ink">{count} sessions</span>? This removes their
+              session folders and all their data. This can&rsquo;t be undone.
+            </>
+          )}
+        </p>
+      )}
+
+      <div className="flex gap-3 justify-end pt-2">
+        <Button
+          ref={cancelRef}
+          type="button"
+          variant="secondary"
+          onClick={isPending ? onCancel : onClose}
+          disabled={isPending && !onCancel}
+        >
+          Cancel
+        </Button>
+        <Button type="button" variant="danger" size="lg" onClick={onConfirm} loading={isPending}>
+          {isPending ? 'Deleting…' : 'Delete permanently'}
+        </Button>
       </div>
-    </div>
+    </Dialog>
   )
 }
 
@@ -205,7 +147,7 @@ function QuickPurgeBar({ total, onPurge, disabled }: QuickPurgeBarProps) {
           <Button
             key={n}
             type="button"
-            variant="outline"
+            variant="secondary"
             onClick={() => onPurge(n)}
             disabled={disabled || total < n}
             title={
@@ -267,7 +209,7 @@ function BulkActionBar({ count, onUnarchive, onDelete, onClear, unarchivePending
         >
           Delete ({count})
         </Button>
-        <Button type="button" variant="outline" onClick={onClear}>Clear</Button>
+        <Button type="button" variant="secondary" onClick={onClear}>Clear</Button>
       </div>
     </div>
   )
