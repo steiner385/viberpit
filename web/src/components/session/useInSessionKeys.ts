@@ -23,7 +23,7 @@
  * session's permission mode toward `bypassPermissions` — including
  * `full-auto` — whenever the user pressed the platform gesture for "move focus
  * backwards". Sub-spec B **D8** removes the binding anyway (PR 4's shortcuts
- * registry has no row for it, and `lib/shortcuts.ts` already dropped the help
+ * registry has no row for it, and `shell/shortcuts.ts` already dropped the help
  * text on that basis), so the cutover brings the removal forward rather than
  * broadening the binding into every layout mode. Permission mode changes go
  * through the mode selector in `SessionMeta`, which is confirmed and visible.
@@ -35,7 +35,7 @@
  * portal out of the pane. `detachKeyYieldsToTextEntry` is what keeps that from
  * hijacking typing: the composer keeps its left-edge ← contract, and every other
  * text entry holds all three keys while it has text. PR 4 replaces this with the
- * shortcuts registry; until then this is the one owner (`lib/shortcuts.ts` says
+ * shortcuts registry; until then this is the one owner (`shell/shortcuts.ts` says
  * so beside the rows it documents).
  */
 import { useCallback, useEffect } from 'react'

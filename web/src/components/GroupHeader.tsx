@@ -1,7 +1,7 @@
 // web/src/components/GroupHeader.tsx
 import { useEffect, useRef } from 'react'
 import { ChevronRight, ChevronDown } from 'lucide-react'
-import { matchHeaderShortcut } from '@/lib/shortcuts'
+import { matchHeaderShortcut } from '@/shell/shortcuts'
 import { cn } from '@/lib/utils'
 
 interface GroupHeaderProps {

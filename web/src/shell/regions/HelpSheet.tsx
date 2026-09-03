@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { shortcutsByGroup, type Shortcut, type ShortcutGroup } from '@/lib/shortcuts'
+import { shortcutsByGroup, type Shortcut, type ShortcutGroup } from '@/shell/shortcuts'
 import { Kbd } from '@/ui/Kbd'
 import { NAV_DEFS } from '@/shell/navDefs'
 
@@ -37,7 +37,7 @@ const GROUPS: { group: ShortcutGroup; title: string }[] = [
 ]
 
 /**
- * Concepts, not keys. Anything key-shaped belongs in `lib/shortcuts.ts` so it is
+ * Concepts, not keys. Anything key-shaped belongs in `shell/shortcuts.ts` so it is
  * documented once, in the registry that also implements it.
  */
 const TIPS = [
