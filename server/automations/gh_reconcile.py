@@ -17,9 +17,12 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from typing import Any
 
-from server.pm.desired_state import derive
-from server.pm.gh_mutations import (UnknownOption, build_batch, build_rate_limit_query, chunk,
+from server.db.models import INITIATIVE_STAGES
+from server.pm.desired_state import STATUS_OPTIONS, derive
+from server.pm.gh_mutations import (UnknownOption, build_batch, build_create_field,
+                                    build_rate_limit_query, build_update_field_options, chunk,
                                     parse_batch, parse_rate_limit)
+from server.pm.gh_projects import parse_created_field
 from server.pm.mirror_store import ProductSyncView
 from server.pm.reconcile_diff import Mutation, compile_edges, diff_fields, membership
 from server.pm.reconcile_inputs import ProductFacts
@@ -190,6 +193,58 @@ class GhReconcileLoop:
                                      kind="gh_reconcile_error", target=product.project_id)
         self._stash(**counts)
 
+    async def _ensure_fields(self, facts: ProductFacts, now: datetime, dry_run: bool,
+                             counts: dict[str, int]) -> dict:
+        """Board field bootstrap (spec 003 §4, Task 9): create the custom ``Score``/``Stage``
+        fields when missing, and replace the built-in ``Status`` field's options with the spec
+        vocabulary when its cached options don't already cover it. Single mutations (not part of
+        ``build_batch``'s aliasing), journaled the same write-ahead way as every other mutation.
+        A dry run records what it would do and returns the cache unchanged — it neither mutates
+        the board nor updates the cache, since predicting drift is the diff engine's job, not
+        this bootstrap's."""
+        cache = dict(facts.field_cache)
+        wanted: list[tuple[Mutation, str]] = []
+        if "Score" not in cache:
+            wanted.append((Mutation("create_field", facts.project_node_id or "", "Score", None,
+                                    {"dataType": "NUMBER"}, f"fields:{facts.slug}"),
+                           build_create_field(facts.project_node_id or "", "Score", "NUMBER", None)))
+        if "Stage" not in cache:
+            wanted.append((Mutation("create_field", facts.project_node_id or "", "Stage", None,
+                                    {"dataType": "SINGLE_SELECT", "options": list(INITIATIVE_STAGES)},
+                                    f"fields:{facts.slug}"),
+                           build_create_field(facts.project_node_id or "", "Stage", "SINGLE_SELECT",
+                                              list(INITIATIVE_STAGES))))
+        status = cache.get("Status") or {}
+        have = set((status.get("options") or {}))
+        if status.get("field_id") and not set(STATUS_OPTIONS) <= have:
+            wanted.append((Mutation("set_field_options", status["field_id"], "Status",
+                                    sorted(have), list(STATUS_OPTIONS), f"fields:{facts.slug}"),
+                           build_update_field_options(status["field_id"], list(STATUS_OPTIONS))))
+        if not wanted:
+            return cache
+        batch_id = f"fields-{now.strftime('%Y%m%dT%H%M%S')}"
+        for m, doc in wanted:
+            (rid,) = await self._j_record([m], batch_id, now, dry_run)
+            counts["planned"] += 1
+            if dry_run:
+                continue
+            payload = await self._mutate(facts.owner, doc)
+            parsed = parse_created_field(payload)
+            if parsed is None:
+                err = str((payload.get("errors") or [{}])[0].get("message") or "no field returned")
+                await self._j_failed(rid, err, now)
+                counts["failed"] += 1
+                await self._ctx.emit("error", f"field bootstrap failed for {facts.slug}: {err}",
+                                     kind="gh_reconcile_error", target=facts.project_id)
+                continue
+            field_id, name, options = parsed
+            cache[name or (m.field or "")] = {"field_id": field_id, "options": options}
+            await self._j_applied([rid], now)
+            counts["applied"] += 1
+        if not dry_run and facts.gh_project_db_id:
+            await self._save_field_cache(facts.gh_project_db_id, cache)
+        return cache
+
     async def _converge(self, product: ProductSyncView, now: datetime, dry_run: bool, cap: int,
                         applied_keys: set[str], counts: dict[str, int]) -> None:
         facts = await self._load_facts(product, now)
@@ -204,6 +259,11 @@ class GhReconcileLoop:
             counts["skipped_stale"] += 1
             await self._request_sync(product.project_id)
             return
+        # Task 9 bootstraps missing fields/options into this cache once per product, before
+        # anything else — a board can need its Score/Stage fields created (or its built-in
+        # Status options fixed to the spec vocabulary) even on a cycle with zero item-level
+        # mutations, so this runs unconditionally rather than gated behind `planned`.
+        cache = await self._ensure_fields(facts, now, dry_run, counts)
         # 2. desired state + 3. diff
         planned: list[Mutation] = []
         for item in facts.items:
@@ -228,8 +288,6 @@ class GhReconcileLoop:
                                  kind="gh_reconcile_cap", target=product.project_id,
                                  detail={"planned": len(planned), "cap": cap})
             return
-        # Task 9 bootstraps missing fields/options into this cache before the batch is built.
-        cache = facts.field_cache
         # 4. apply, write-ahead journaled per batch
         batch_id = f"{'dry' if dry_run else 'run'}-{now.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
         for batch in chunk(planned):

@@ -12,7 +12,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 
 from server.automations.gh_reconcile import GhReconcile, GhReconcileLoop
-from server.pm.desired_state import ItemFacts
+from server.pm.desired_state import STATUS_OPTIONS, ItemFacts
 from server.pm.mirror_store import ProductSyncView
 from server.pm.reconcile_diff import MirrorItem, Mutation
 from server.pm.reconcile_inputs import ProductFacts
@@ -20,7 +20,10 @@ from server.pm.reconcile_inputs import ProductFacts
 T = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
 REPO = "steiner385/cc-account-switcher"
 PRODUCT = ProductSyncView("p1", "ccswitch", "ccswitch", "ghdb1", "PVT_1", [REPO])
-CACHE = {"Status": {"field_id": "F_s", "options": {"Backlog": "O_b", "Ready": "O_r", "Done": "O_d"}},
+# Status covers the full spec vocabulary so the default fixture never triggers Task 9's
+# ensure_fields bootstrap (test_ensure_fields_* below exercise that path directly with their
+# own sparse caches).
+CACHE = {"Status": {"field_id": "F_s", "options": {n: f"O_{n}" for n in STATUS_OPTIONS}},
          "Score": {"field_id": "F_sc", "options": {}},
          "Stage": {"field_id": "F_st", "options": {"build": "O_build"}}}
 RATE_OK = {"data": {"rateLimit": {"cost": 1, "remaining": 5000, "resetAt": None}}}
@@ -206,11 +209,16 @@ def test_unknown_option_parks_the_batch_and_later_batches_still_apply():
     """A drifted vocabulary poisons only its own batch: rows are parked, an error is
     emitted, and the remaining batches of the cycle are still sent."""
     refs = [f"{REPO}#{n}" for n in range(1, 22)]
-    # #1 is blocked -> desired Status "Blocked", which has no option id in CACHE.
-    items = ([_item(1, open_blocker_refs=(f"{REPO}#99",), blockers_at=T)]
+    # #1's Stage decision ("deploy") has no option id in CACHE (which only has "build") ->
+    # unknown-option drift, isolated to its own batch. Status now covers the full spec
+    # vocabulary (Task 9), so #1's mirror row already carries its matching Status ("Ready")
+    # and contributes only the drifted Stage mutation, not a second Status one.
+    items = ([_item(1, initiative_stage="deploy", initiative_stage_at=T)]
              + [_item(n) for n in range(2, 22)])
-    # score already matches, so each item contributes exactly one Status mutation
-    mirror = {r: MirrorItem(r, f"PVTI_{i + 1}", "Backlog", 480.0, None, T - timedelta(days=1))
+    # score already matches, so items #2-21 each contribute exactly one Status mutation;
+    # #1 contributes its Stage mutation instead.
+    mirror = {r: MirrorItem(r, f"PVTI_{i + 1}", "Ready" if i == 0 else "Backlog", 480.0, None,
+                            T - timedelta(days=1))
               for i, r in enumerate(refs)}
     drifted = _facts(items=items, mirror=mirror, open_issue_nodes={}, node_ids={})
     ctx = Ctx(); loop, calls = _loop(ctx, facts=drifted)
@@ -224,6 +232,38 @@ def test_unknown_option_parks_the_batch_and_later_batches_still_apply():
     assert calls["applied"] == ["r0"]
     assert ctx.gh_reconcile_counts["parked"] == 20
     assert ctx.gh_reconcile_counts["applied"] == 1
+
+
+def test_ensure_fields_creates_missing_and_fixes_status_options():
+    sparse = _facts(field_cache={"Status": {"field_id": "F_s", "options": {"Todo": "O_t", "Done": "O_d"}}},
+                    items=[], mirror={}, open_issue_nodes={})
+
+    def mutate(doc):
+        if doc.startswith("query { rateLimit"):
+            return RATE_OK
+        if "createProjectV2Field" in doc and '"Score"' in doc:
+            return {"data": {"createProjectV2Field": {"projectV2Field": {"id": "F_sc", "name": "Score"}}}}
+        if "createProjectV2Field" in doc:
+            return {"data": {"createProjectV2Field": {"projectV2Field": {"id": "F_st", "name": "Stage",
+                    "options": [{"id": "O_i", "name": "intake"}]}}}}
+        return {"data": {"updateProjectV2Field": {"projectV2Field": {"id": "F_s", "name": "Status",
+                "options": [{"id": f"O_{n}", "name": n} for n in STATUS_OPTIONS]}}}}
+
+    ctx = Ctx(); loop, calls = _loop(ctx, facts=sparse, mutate=mutate)
+    asyncio.run(loop.tick())
+    kinds = [m.kind for m in sum((r[0] for r in calls["record"]), [])]
+    assert kinds == ["create_field", "create_field", "set_field_options"]
+    assert calls["cache"] and calls["cache"][-1][1]["Status"]["options"]["Needs human"] == "O_Needs human"
+    assert calls["cache"][-1][1]["Score"]["field_id"] == "F_sc"
+
+
+def test_ensure_fields_is_noop_when_board_matches_spec():
+    full = _facts(field_cache={**CACHE, "Status": {"field_id": "F_s",
+                                                    "options": {n: f"O_{n}" for n in STATUS_OPTIONS}}},
+                  items=[], mirror={}, open_issue_nodes={})
+    ctx = Ctx(); loop, calls = _loop(ctx, facts=full)
+    asyncio.run(loop.tick())
+    assert calls["record"] == [] and calls["cache"] == []
 
 
 def test_dry_run_surfaces_vocabulary_drift_without_touching_journal_rows():

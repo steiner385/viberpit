@@ -1,6 +1,6 @@
 from server.pm.gh_projects import (
     build_owner_projects_query, build_project_items_query,
-    parse_project_fields, parse_project_items,
+    parse_created_field, parse_project_fields, parse_project_items,
     parse_viewer_projects, build_issue_relations_query, parse_issue_relations)
 
 
@@ -172,6 +172,26 @@ def test_relations_capture_node_id():
     assert rels[0].node_id == "I_945"
     assert "nodes { id number" in build_issue_relations_query(
         "steiner385/cc-account-switcher", None)
+
+
+def test_parse_created_field_reads_create_root():
+    payload = {"data": {"createProjectV2Field": {"projectV2Field": {
+        "id": "F_sc", "name": "Score"}}}}
+    assert parse_created_field(payload) == ("F_sc", "Score", {})
+
+
+def test_parse_created_field_reads_update_root_with_options():
+    payload = {"data": {"updateProjectV2Field": {"projectV2Field": {
+        "id": "F_s", "name": "Status",
+        "options": [{"id": "O_r", "name": "Ready"}, {"id": "O_d", "name": "Done"}]}}}}
+    assert parse_created_field(payload) == (
+        "F_s", "Status", {"Ready": "O_r", "Done": "O_d"})
+
+
+def test_parse_created_field_none_on_missing_id():
+    assert parse_created_field({"data": {"createProjectV2Field": {"projectV2Field": None}}}) is None
+    assert parse_created_field({"data": {}}) is None
+    assert parse_created_field({}) is None
 
 
 def test_project_node_missing_distinguishes_deleted_from_empty():
