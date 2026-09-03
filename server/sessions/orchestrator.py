@@ -3500,14 +3500,24 @@ class SessionOrchestrator:
             await db.run_sync(
                 lambda s: mirror_store.save_field_cache(s, gh_db_id, cache))
 
-    async def _pm_sync_save_project_items(self, gh_db_id: str, items: list) -> None:
-        """Reconcile the project's items (upsert live, delete stale)."""
-        from datetime import datetime, timezone
-        from server.pm import mirror_store
+    async def _pm_sync_save_project_items(self, gh_db_id: str, items: list) -> list:
+        """Reconcile the project's items (upsert live, delete stale), classifying
+        changed fields as human edits (own recent journal writes are suppressed
+        as echoes), then back-syncing any human "Stage" edit onto the linked
+        Initiative. Returns the human edits for the loop to surface."""
+        from datetime import datetime, timedelta, timezone
+        from server.pm import journal, mirror_store
         now = datetime.now(timezone.utc)
+
+        def _sync(s):
+            own = journal.recent_own_writes(s, now - timedelta(hours=24))
+            edits = mirror_store.upsert_project_items(
+                s, gh_db_id, items, now, own_writes=own)
+            mirror_store.back_sync_stage(s, edits)
+            return edits
+
         async with db_session() as db:
-            await db.run_sync(
-                lambda s: mirror_store.upsert_project_items(s, gh_db_id, items, now))
+            return await db.run_sync(_sync)
 
     async def _pm_sync_save_relations(self, repo: str, rels: list) -> None:
         """Reconcile epic/parent links + observed dependency edges for a repo."""

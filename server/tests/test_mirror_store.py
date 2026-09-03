@@ -4,7 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from server.db.models import (
-    Base, GhProject, GhProjectItem, Project, ProjectRepo, WorkItem, WorkItemDep)
+    Base, GhProject, GhProjectItem, Initiative, Project, ProjectRepo, WorkItem, WorkItemDep)
 from server.pm.gh_projects import GhProjectItemView, GhProjectView, IssueRelView
 from server.pm import mirror_store
 
@@ -158,3 +158,40 @@ def test_upsert_project_items_keys_multiple_items_by_node_id():
     mirror_store.upsert_project_items(db, gid, items, now)
     assert db.query(GhProjectItem).count() == 2
     assert db.query(GhProjectItem).filter_by(gh_item_node_id="PVTI_1").one().status == "Done"
+
+
+def test_echo_suppression_distinguishes_own_writes_from_human_edits():
+    """A field change matching a recent own-write (journal shape) is our own
+    write echoing back through the GitHub read path — not a human edit. A
+    brand-new row also produces no edits (nothing to have "changed" yet)."""
+    db = _db()
+    project = _seed(db)
+    gid = mirror_store.upsert_gh_project(db, project.id, GhProjectView(
+        node_id="PVT_1", number=7, title="x", updated_at=None))
+    now = datetime.now(timezone.utc)
+    first = [GhProjectItemView(item_node_id="PVTI_1", repo=REPO, number=950,
+                               kind="issue", status="Backlog", score=None,
+                               stage=None, updated_at=None)]
+    no_edits = mirror_store.upsert_project_items(db, gid, first, now)
+    assert no_edits == []  # brand-new row: nothing classified
+    changed = [GhProjectItemView(item_node_id="PVTI_1", repo=REPO, number=950,
+                                 kind="issue", status="Ready", score=480.0,
+                                 stage=None, updated_at=None)]
+    edits = mirror_store.upsert_project_items(
+        db, gid, changed, now, own_writes={("PVTI_1", "Status", '"Ready"')})
+    assert [(e.field, e.old, e.new) for e in edits] == [("Score", None, 480.0)]
+
+
+def test_back_sync_stage_updates_linked_initiative():
+    """A human "Stage" edit on a linked epic back-syncs Initiative.stage; an
+    unrecognized new value (not in INITIATIVE_STAGES) is rejected — count 0,
+    no write."""
+    db = _db()
+    _seed(db)
+    db.add(Initiative(slug="i", stage="plan", epic_repo=REPO, epic_number=945))
+    db.commit()
+    n = mirror_store.back_sync_stage(
+        db, [mirror_store.HumanEdit(f"{REPO}#945", "Stage", "plan", "build")])
+    assert n == 1 and db.query(Initiative).one().stage == "build"
+    assert mirror_store.back_sync_stage(
+        db, [mirror_store.HumanEdit(f"{REPO}#945", "Stage", "build", "bogus")]) == 0

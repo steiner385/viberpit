@@ -113,7 +113,7 @@ ListProducts = Callable[[], Awaitable[list[ProductSyncView]]]
 FetchGhProjects = Callable[[str, str], Awaitable[dict]]
 SaveGhProject = Callable[[str, GhProjectView], Awaitable[str]]  # -> gh_project db id
 SaveProjectFields = Callable[[str, dict], Awaitable[None]]
-SaveProjectItems = Callable[[str, list[GhProjectItemView]], Awaitable[None]]
+SaveProjectItems = Callable[[str, list[GhProjectItemView]], Awaitable[list | None]]
 SaveRelations = Callable[[str, list[IssueRelView]], Awaitable[None]]
 
 
@@ -338,7 +338,15 @@ class PmSyncLoop:
                     await self._emit_board_deleted(product, node_id)
                     linked = 0
                 else:
-                    await self._save_project_items(gh_db_id, items)
+                    # Tolerate a None return: every pre-existing canned test seam
+                    # returns None, and only the real mirror_store.upsert_project_items
+                    # returns a HumanEdit list (echo suppression, issue #973 follow-on).
+                    edits = await self._save_project_items(gh_db_id, items) or []
+                    for e in edits:
+                        await self._ctx.emit(
+                            "info",
+                            f"GitHub edit on {e.ref}: {e.field} {e.old!r} -> {e.new!r}",
+                            kind="gh_human_edit", target=e.ref)
         # Relations are repo-scoped (ambient credential): always run per repo,
         # independent of whether the project itself linked.
         for repo in product.repos:

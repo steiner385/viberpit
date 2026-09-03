@@ -348,3 +348,69 @@ async def test_deleted_board_halts_loudly_without_pruning():
     # Repo relations are board-independent and still ran.
     assert [repo for repo, _ in calls["save_relations"]] == \
         ["steiner385/cc-account-switcher"]
+
+
+# ---- Task 10: echo suppression + Stage back-sync — loop-level emit -----------
+
+
+@pytest.mark.asyncio
+async def test_none_return_from_save_project_items_is_tolerated():
+    """Every pre-existing canned seam in this file's ``_loop`` returns None from
+    ``save_project_items`` (no ``return`` statement) — the loop must treat that
+    as "no edits" rather than crashing on ``None`` iteration, and must not
+    emit any gh_human_edit events."""
+    ctx = Ctx()
+
+    def owner_fetch(owner, query):
+        if "projectsV2" in query:
+            return _owner_projects_payload()
+        if "fields" in query:
+            return _fields_payload()
+        return _items_payload()
+
+    def repo_fetch(query):
+        return _relations_payload()
+
+    loop, calls = _loop(ctx, products=[_product()],
+                        owner_fetch=owner_fetch, repo_fetch=repo_fetch)
+    await loop.tick()  # must not raise despite save_project_items returning None
+
+    assert len(calls["save_project_items"]) == 1
+    assert [e for e in ctx.events if e[2].get("kind") == "gh_human_edit"] == []
+
+
+@pytest.mark.asyncio
+async def test_human_edit_returned_by_save_project_items_emits_gh_human_edit():
+    """When the (real) mirror seam returns HumanEdit rows, the loop surfaces
+    each one as an info-level ``gh_human_edit`` event targeting its ref."""
+    from server.pm.mirror_store import HumanEdit
+
+    ctx = Ctx()
+
+    def owner_fetch(owner, query):
+        if "projectsV2" in query:
+            return _owner_projects_payload()
+        if "fields" in query:
+            return _fields_payload()
+        return _items_payload()
+
+    def repo_fetch(query):
+        return _relations_payload()
+
+    loop, calls = _loop(ctx, products=[_product()],
+                        owner_fetch=owner_fetch, repo_fetch=repo_fetch)
+
+    async def save_project_items(gh_db_id, items):
+        calls["save_project_items"].append((gh_db_id, list(items)))
+        return [HumanEdit("steiner385/cc-account-switcher#950", "Status",
+                          "Backlog", "Ready")]
+
+    loop._save_project_items = save_project_items
+    await loop.tick()
+
+    human_edits = [e for e in ctx.events if e[2].get("kind") == "gh_human_edit"]
+    assert len(human_edits) == 1
+    level, text, kw = human_edits[0]
+    assert level == "info"
+    assert kw["target"] == "steiner385/cc-account-switcher#950"
+    assert "Status" in text and "Backlog" in text and "Ready" in text
