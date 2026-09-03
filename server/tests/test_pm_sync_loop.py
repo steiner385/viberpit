@@ -112,7 +112,7 @@ async def test_watermark_not_advanced_when_pass_fails():
     loop._fetch = fetch  # replace seam with a failing one
     await loop.tick()
     assert all("watermark" not in u for _, u in saved)
-    assert any(level == "warning" for level, _, _ in ctx.events)
+    assert any(level == "warn" for level, _, _ in ctx.events)
 
 
 @pytest.mark.asyncio
@@ -136,7 +136,7 @@ async def test_watermark_not_advanced_when_incremental_fails():
     # Watermark must NOT appear in any saved update
     assert all("watermark" not in u for _, u in saved)
     # A warning event must have been emitted for the failed repo
-    assert any(level == "warning" for level, _, _ in ctx.events)
+    assert any(level == "warn" for level, _, _ in ctx.events)
 
 
 @pytest.mark.asyncio
@@ -198,7 +198,7 @@ async def test_feature_read_failure_skips_reindex_without_orphaning():
     # Work-item sync is decoupled and still completed: watermark advanced.
     assert any("watermark" in u for _, u in saved)
     # The skipped reindex is surfaced as a warning.
-    assert any(level == "warning" for level, _, _ in ctx.events)
+    assert any(level == "warn" for level, _, _ in ctx.events)
 
 
 @pytest.mark.asyncio

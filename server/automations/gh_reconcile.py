@@ -160,7 +160,7 @@ class GhReconcileLoop:
             self._stash(fenced=1)
             if not self._fence_warned:
                 self._fence_warned = True
-                await self._ctx.emit("warning", "reconcile refused: daemon SHA is not origin/master",
+                await self._ctx.emit("warn", "reconcile refused: daemon SHA is not origin/master",
                                      kind="gh_reconcile_fenced")
             return
         self._fence_warned = False
@@ -186,7 +186,7 @@ class GhReconcileLoop:
                 await self._converge(product, now, dry_run, cap, applied_keys, counts)
             except Exception:
                 log.warning("gh_reconcile.product_failed", exc_info=True)
-                await self._ctx.emit("warning", f"reconcile failed for {product.slug}",
+                await self._ctx.emit("warn", f"reconcile failed for {product.slug}",
                                      kind="gh_reconcile_error", target=product.project_id)
         self._stash(**counts)
 
@@ -195,9 +195,12 @@ class GhReconcileLoop:
         facts = await self._load_facts(product, now)
         if facts.project_node_id is None:
             return
-        # 1. freshness gate (spec §6 step 1)
-        if facts.newest_decision_at is not None and (
-                facts.mirror_synced_at is None or facts.mirror_synced_at < facts.newest_decision_at):
+        # 1. freshness gate (spec §6 step 1). A never-synced product is ALWAYS stale: its
+        # empty mirror is absence of evidence, not evidence of absence, and planning against
+        # it would "add" every open issue to a board that may already hold them.
+        if facts.mirror_synced_at is None or (
+                facts.newest_decision_at is not None
+                and facts.mirror_synced_at < facts.newest_decision_at):
             counts["skipped_stale"] += 1
             await self._request_sync(product.project_id)
             return
@@ -231,22 +234,29 @@ class GhReconcileLoop:
         batch_id = f"{'dry' if dry_run else 'run'}-{now.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
         for batch in chunk(planned):
             row_ids = await self._j_record(batch, batch_id, now, dry_run)
-            if dry_run:
-                continue
             try:
+                # build_batch is pure, so a dry run runs it too: predicting vocabulary
+                # drift is exactly the job of a dry run. Only the parking of journal
+                # rows is skipped — dry-run rows keep their dry_run state.
                 doc, alias_map = build_batch(batch, project_node_id=facts.project_node_id,
                                              field_cache=cache)
             except UnknownOption as exc:
-                for rid in row_ids:
-                    await self._j_park(rid, f"field vocabulary drift: {exc}", now)
+                if not dry_run:
+                    for rid in row_ids:
+                        await self._j_park(rid, f"field vocabulary drift: {exc}", now)
                 counts["parked"] += len(row_ids)
-                await self._ctx.emit("error", f"reconcile parked batch for {product.slug}: {exc}",
-                                     kind="gh_reconcile_parked", target=product.project_id)
+                verb = "would park" if dry_run else "parked"
+                await self._ctx.emit(
+                    "error", f"reconcile {verb} batch for {product.slug}: {exc}",
+                    kind="gh_reconcile_parked", target=product.project_id,
+                    detail={"dry_run": dry_run, "error": str(exc)})
+                continue
+            if dry_run:
                 continue
             payload = await self._mutate(facts.owner, doc)
             results = parse_batch(payload, alias_map)
             ok_ids: list[str] = []
-            for (alias, m), rid in zip(alias_map.items(), row_ids):
+            for (alias, m), rid in zip(alias_map.items(), row_ids, strict=True):
                 err = results.get(alias)
                 if err is None:
                     ok_ids.append(rid)

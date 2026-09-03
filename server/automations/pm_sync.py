@@ -207,7 +207,7 @@ class PmSyncLoop:
             except Exception:
                 errors += 1
                 await self._ctx.emit(
-                    "warning", f"sync failed for {view.repo}",
+                    "warn", f"sync failed for {view.repo}",
                     kind="sync_error", target=view.repo)
                 log.warning("pm_sync.repo_error repo=%s", view.repo, exc_info=True)
         gh_projects = await self._sync_projects_v2(now, config, force_projects)
@@ -271,7 +271,7 @@ class PmSyncLoop:
                 if owner not in self._owner_failing:  # warn on onset only (dedup)
                     self._owner_failing.add(owner)
                     await self._ctx.emit(
-                        "warning", f"project discovery failed for {owner}",
+                        "warn", f"project discovery failed for {owner}",
                         kind="gh_projects_error", target=owner)
                 log.warning("pm_sync.project_discovery_error owner=%s",
                             owner, exc_info=True)
@@ -283,7 +283,7 @@ class PmSyncLoop:
                 linked += await self._sync_one_product(product, by_title)
             except Exception:
                 await self._ctx.emit(
-                    "warning", f"project sync failed for {product.project_id}",
+                    "warn", f"project sync failed for {product.project_id}",
                     kind="gh_projects_error", target=product.project_id)
                 log.warning("pm_sync.project_error project=%s",
                             product.project_id, exc_info=True)
@@ -459,7 +459,7 @@ class PmSyncLoop:
             log.warning("pm_sync.feature_read_failed repo=%s — skipping reindex",
                         view.repo, exc_info=True)
             await self._ctx.emit(
-                "warning", f"feature-doc read failed for {view.repo}; reindex skipped",
+                "warn", f"feature-doc read failed for {view.repo}; reindex skipped",
                 kind="feature_read_error", target=view.repo)
             return
         docs: list[tuple[str, FeatureDoc]] = []

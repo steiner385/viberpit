@@ -254,7 +254,7 @@ async def test_project_fetch_failure_does_not_break_repo_sync():
     # The project pass failed so nothing was linked/saved, but the tick survived
     # and a warning was surfaced.
     assert calls["save_gh_project"] == []
-    assert any(level == "warning" for level, _, _ in ctx.events)
+    assert any(level == "warn" for level, _, _ in ctx.events)
 
 
 # ---- issue #973: interval short-circuit, per-owner backoff, board-delete halt --
@@ -315,7 +315,7 @@ async def test_persistent_owner_error_warns_once_then_backs_off():
     await loop.tick()                                   # onset: one warning
     clock["t"] += timedelta(seconds=301)               # past interval, in backoff
     await loop.tick()                                   # deduped: no new warning
-    warns = [e for e in ctx.events if e[0] == "warning"
+    warns = [e for e in ctx.events if e[0] == "warn"
              and e[2].get("kind") == "gh_projects_error"]
     assert len(warns) == 1
     assert calls["save_gh_project"] == []
