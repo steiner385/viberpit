@@ -113,3 +113,52 @@ def parse_project_items(payload: dict) -> tuple[list[GhProjectItemView], str | N
             updated_at=node.get("updatedAt")))
     page = conn.get("pageInfo") or {}
     return items, page.get("endCursor"), bool(page.get("hasNextPage"))
+
+
+@dataclass(frozen=True)
+class IssueRelView:
+    repo: str
+    number: int
+    blocked_by: list[str]
+    parent_ref: str | None
+    sub_issue_refs: list[str]
+
+
+def _ref(node: dict | None) -> str | None:
+    if not node:
+        return None
+    repo = (node.get("repository") or {}).get("nameWithOwner")
+    number = node.get("number")
+    if not repo or number is None:
+        return None
+    return f"{repo}#{number}"
+
+
+def build_issue_relations_query(repo: str, cursor: str | None) -> str:
+    owner, name = repo.split("/", 1)
+    return (
+        'query { repository(owner: "%s", name: "%s") {'
+        " issues(first: 100, states: OPEN%s) {"
+        " pageInfo { endCursor hasNextPage }"
+        " nodes { number"
+        " blockedBy(first: 50) { nodes { number repository { nameWithOwner } } }"
+        " parent { number repository { nameWithOwner } }"
+        " subIssues(first: 100) { nodes { number repository { nameWithOwner } } }"
+        " } } } }" % (owner, name, _after(cursor)))
+
+
+def parse_issue_relations(payload: dict, repo: str) -> tuple[list[IssueRelView], str | None, bool]:
+    conn = (((payload.get("data") or {}).get("repository") or {}).get("issues") or {})
+    rels = []
+    for node in conn.get("nodes") or []:
+        if not node:
+            continue
+        rels.append(IssueRelView(
+            repo=repo, number=node["number"],
+            blocked_by=[r for r in (
+                _ref(b) for b in (node.get("blockedBy") or {}).get("nodes") or []) if r],
+            parent_ref=_ref(node.get("parent")),
+            sub_issue_refs=[r for r in (
+                _ref(s) for s in (node.get("subIssues") or {}).get("nodes") or []) if r]))
+    page = conn.get("pageInfo") or {}
+    return rels, page.get("endCursor"), bool(page.get("hasNextPage"))

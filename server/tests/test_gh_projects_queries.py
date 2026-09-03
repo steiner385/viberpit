@@ -1,6 +1,6 @@
 from server.pm.gh_projects import (
     build_project_items_query, build_viewer_projects_query, parse_project_fields,
-    parse_project_items, parse_viewer_projects)
+    parse_project_items, parse_viewer_projects, build_issue_relations_query, parse_issue_relations)
 
 
 def _projects_payload():
@@ -65,3 +65,41 @@ def test_queries_embed_pagination_cursor():
     assert 'after: "C1"' in build_viewer_projects_query("C1")
     assert "after:" not in build_viewer_projects_query(None)
     assert 'node(id: "PVT_1")' in build_project_items_query("PVT_1", None)
+
+
+def _relations_payload():
+    return {"data": {"repository": {"issues": {
+        "pageInfo": {"endCursor": "R1", "hasNextPage": False},
+        "nodes": [
+            {"number": 945,
+             "blockedBy": {"nodes": []},
+             "parent": None,
+             "subIssues": {"nodes": [
+                 {"number": 950, "repository": {"nameWithOwner": "steiner385/cc-account-switcher"}},
+                 {"number": 951, "repository": {"nameWithOwner": "steiner385/cc-account-switcher"}},
+             ]}},
+            {"number": 950,
+             "blockedBy": {"nodes": [
+                 {"number": 12, "repository": {"nameWithOwner": "steiner385/KinDash"}}]},
+             "parent": {"number": 945,
+                        "repository": {"nameWithOwner": "steiner385/cc-account-switcher"}},
+             "subIssues": {"nodes": []}},
+        ]}}}}
+
+
+def test_parse_issue_relations_builds_canonical_refs():
+    rels, cursor, more = parse_issue_relations(
+        _relations_payload(), "steiner385/cc-account-switcher")
+    assert cursor == "R1" and more is False
+    epic, child = rels
+    assert epic.sub_issue_refs == [
+        "steiner385/cc-account-switcher#950", "steiner385/cc-account-switcher#951"]
+    assert epic.parent_ref is None
+    assert child.blocked_by == ["steiner385/KinDash#12"]
+    assert child.parent_ref == "steiner385/cc-account-switcher#945"
+
+
+def test_relations_query_targets_open_issues():
+    q = build_issue_relations_query("steiner385/cc-account-switcher", None)
+    assert 'owner: "steiner385"' in q and 'name: "cc-account-switcher"' in q
+    assert "states: OPEN" in q
