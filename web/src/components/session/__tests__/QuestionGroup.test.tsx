@@ -76,6 +76,28 @@ describe('QuestionGroup', () => {
     expect(screen.getByText(/question 1 of 3/i)).toBeInTheDocument()
   })
 
+  it('navigating moves focus to the newly active card without scrolling the track', async () => {
+    // Regression: clicking Next starts a smooth scrollIntoView; early scroll
+    // events still round to the old index, its card's autoFocus flips back on,
+    // and a plain focus() scrolls the track back to it — navigation never
+    // escapes question 1. jsdom has no scroll engine, so the enforceable
+    // contract is: focus follows navigation, and every auto-focus call passes
+    // preventScroll so it can never move the track.
+    const user = userEvent.setup()
+    const focusSpy = vi.spyOn(HTMLElement.prototype, 'focus')
+    render(<QuestionGroup questions={[mk('a'), mk('b'), mk('c')]} onAnswer={vi.fn()} />)
+    focusSpy.mockClear()
+    await user.click(screen.getByRole('button', { name: /next question/i }))
+    expect(screen.getByText(/question 2 of 3/i)).toBeInTheDocument()
+    // the second card's first option now holds focus…
+    expect(document.activeElement).toBe(screen.getAllByRole('radio', { name: 'Yes' })[1])
+    // …and the auto-focus that moved it was barred from scrolling the track.
+    // (userEvent's click() also calls focus() with no args; only the hook's
+    // auto-focus passes options, and it must always pass preventScroll.)
+    expect(focusSpy).toHaveBeenCalledWith({ preventScroll: true })
+    focusSpy.mockRestore()
+  })
+
   it('disables submit until all questions are answered', async () => {
     const user = userEvent.setup()
     render(<QuestionGroup questions={[mk('a'), mk('b')]} onAnswer={vi.fn()} />)

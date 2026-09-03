@@ -45,8 +45,14 @@ export function useCardKeyboard({
   // Depend on `autoFocus` (not `[]`): a carousel card that later becomes the
   // active one flips false→true and focuses its first option then, so keyboard
   // focus follows the visible card instead of firing once for every card at mount.
+  //
+  // preventScroll is load-bearing: without it, focusing scrolls the carousel's
+  // shared snap track to reveal the option. Mid-navigation the track's onScroll
+  // still rounds to the *old* card for the first few frames, flipping its
+  // autoFocus back on; a scrolling refocus then drags the track back where it
+  // came from — a feedback loop that pins the carousel to question 1.
   useEffect(() => {
-    if (autoFocus) itemRefs.current[0]?.focus()
+    if (autoFocus) itemRefs.current[0]?.focus({ preventScroll: true })
   }, [autoFocus])
 
   const onKeyDown = useCallback((e: React.KeyboardEvent) => {
