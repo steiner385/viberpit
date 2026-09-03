@@ -4,6 +4,7 @@
    shell/InteractionContext.tsx. */
 import * as React from 'react'
 import { useMediaQuery } from '@/lib/useMediaQuery'
+import type { NavId } from './navDefs'
 
 /**
  * Every layout mode, as a value — `AppShell`'s region-visibility matrix has to
@@ -19,11 +20,19 @@ export type LayoutMode = (typeof LAYOUT_MODES)[number]
 export const WIDTH_TIERS = ['phone', 'tablet', 'desktop', 'wide'] as const
 export type WidthTier = (typeof WIDTH_TIERS)[number]
 
-/** The kiosk half of the viewport, supplied by AppShell (see shell/kiosk.ts). */
+/**
+ * The kiosk half of the viewport, supplied by AppShell (see shell/kiosk.ts).
+ *
+ * `pages` is `NavId[]`, not `string[]`: `parsePages` already guarantees every
+ * entry is a kiosk-safe section id, and `AppShell`'s `KioskPageGuard` indexes
+ * `NAV_BY_ID` with `pages[0]` to find where to send a kiosk URL that landed on a
+ * section kiosk is not allowed on. Widening it here would put a second, looser
+ * answer to "what is in `pages`" one module away from the one that builds it.
+ */
 export interface ViewportKiosk {
   enabled: boolean
   cycleSeconds: number
-  pages: readonly string[]
+  pages: readonly NavId[]
 }
 
 export interface Viewport {

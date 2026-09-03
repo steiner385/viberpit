@@ -158,17 +158,33 @@ function ProbePage() {
   )
 }
 
+/**
+ * Both probed paths, because kiosk REDIRECTS off a section that is not
+ * kiosk-safe (`KioskPageGuard`): the harness enters at `/sessions`, which is the
+ * most-populated context for the desktop control (a section with a list, in
+ * Sessions so the dock applies), and kiosk lands on `/pipeline`, the first
+ * configured kiosk page. The same probe page is mounted at both so every kiosk
+ * assertion below still has a page to make its absences against — and the
+ * redirect itself is asserted on the router's location, not inferred from what
+ * rendered.
+ */
+const PROBED_PATHS = ['/sessions', '/pipeline']
+
 function probeRoutes(): RouteObject[] {
   const [root] = buildRoutes(<AppShell />)
   const layout = root.children![0]
   const pages = layout.children!.map((route): RouteObject =>
-    route.path === '/sessions' ? { path: route.path, element: <ProbePage /> } : route,
+    route.path !== undefined && PROBED_PATHS.includes(route.path)
+      ? { path: route.path, element: <ProbePage /> }
+      : route,
   )
-  // The probed path must still exist in the real table — a rename in routes.tsx
-  // must redden this file, not silently drop the probe and leave every kiosk
-  // absence passing against a catch-all redirect.
-  if (!layout.children!.some((r) => r.path === '/sessions')) {
-    throw new Error('kiosk.integration: /sessions is no longer a route in routes.tsx')
+  // Every probed path must still exist in the real table — a rename in
+  // routes.tsx must redden this file, not silently drop the probe and leave
+  // every kiosk absence passing against a catch-all redirect.
+  for (const path of PROBED_PATHS) {
+    if (!layout.children!.some((r) => r.path === path)) {
+      throw new Error(`kiosk.integration: ${path} is no longer a route in routes.tsx`)
+    }
   }
   return [{ ...root, children: [{ ...layout, children: pages }] }]
 }
@@ -179,7 +195,8 @@ function probeRoutes(): RouteObject[] {
  * Render the whole app at `/sessions?drawer=help` — the most-populated context
  * there is (a section WITH a list, in Sessions so the dock applies, with a
  * drawer open). Every region kiosk removes is present in the desktop control
- * because of it.
+ * because of it. In kiosk the guard redirects that entry to `/pipeline`, which
+ * carries the same probe page (see `PROBED_PATHS`).
  */
 function renderApp(kiosk: boolean) {
   stubMatchMedia([
@@ -194,13 +211,16 @@ function renderApp(kiosk: boolean) {
 
   const router = createMemoryRouter(probeRoutes(), { initialEntries: ['/sessions?drawer=help'] })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(
-    <QueryClientProvider client={qc}>
-      <ThemeProvider>
-        <RouterProvider router={router} />
-      </ThemeProvider>
-    </QueryClientProvider>,
-  )
+  return {
+    ...render(
+      <QueryClientProvider client={qc}>
+        <ThemeProvider>
+          <RouterProvider router={router} />
+        </ThemeProvider>
+      </QueryClientProvider>,
+    ),
+    router,
+  }
 }
 
 const scale = () => document.documentElement.style.getPropertyValue('--scale')
@@ -306,6 +326,36 @@ describe('kiosk end to end', () => {
     await screen.findByTestId('probe-page')
     expect(screen.getByText(DANGER_BANNER)).toBeVisible()
     expect(screen.getByText(INFO_BANNER)).toBeVisible()
+  })
+
+  /**
+   * The exposure S2 named: a wall display LAUNCHED at `/sessions/abc?kiosk=1` or
+   * `/archived?kiosk=1`. `showInKiosk` gates the `?pages=` attract cycle, which
+   * says nothing about the URL somebody types into the display — and in kiosk
+   * those pages are strictly worse than in desktop, because the rail is gone (no
+   * way to navigate off) and `Dialog` is refused (so `ArchivedManager`'s
+   * Permanent Delete goes silently inert) while Archive
+   * (`closeSession.mutate`), Unarchive (`unarchiveSession.mutate`) and a pending
+   * permission card stay live for any passer-by.
+   */
+  it('redirects off a section that is not kiosk-safe, keeping the kiosk params', async () => {
+    const app = renderApp(true)
+    await screen.findByTestId('probe-page')
+
+    // `/sessions` is not kiosk-safe; `/pipeline` is the first configured page.
+    expect(app.router.state.location.pathname).toBe('/pipeline')
+    // The search survives, so a reload of the redirected URL is still kiosk.
+    expect(app.router.state.location.search).toBe('?drawer=help')
+    // Lower bound: the redirect landed on a real, rendered page — not a blank
+    // document or the catch-all.
+    expect(screen.getByTestId('probe-page')).toBeVisible()
+    app.unmount()
+
+    // The control: with no `?kiosk=1` the same entry stays on `/sessions`, so
+    // the assertion above is about the guard and not about the route table.
+    const desktop = renderApp(false)
+    await screen.findByTestId('probe-page')
+    expect(desktop.router.state.location.pathname).toBe('/sessions')
   })
 
   it('refuses a Dialog opened from the page', async () => {

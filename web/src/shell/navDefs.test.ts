@@ -40,9 +40,20 @@ describe('navDefs', () => {
     expect(NAV_DEFS.filter((d) => d.hasList).map((d) => d.id)).toEqual(['sessions'])
   })
 
-  it('excludes Settings from kiosk and includes every other section', () => {
-    const notInKiosk = NAV_DEFS.filter((d) => !d.showInKiosk).map((d) => d.id)
-    expect(notInKiosk).toEqual(['settings'])
+  /**
+   * R9 successor for 'excludes Settings from kiosk and includes every other
+   * section', which asserted the inverse rule — everything is kiosk-safe unless
+   * excluded. That rule is what put `/sessions/:id` and `/archived` on an
+   * unattended wall display, where Archive (`closeSession.mutate`), Unarchive
+   * (`unarchiveSession.mutate`) and a pending permission card are all one tap
+   * from a passer-by. `showInKiosk` now means "verified read-only" (the field's
+   * docstring carries the criterion and each row its evidence), so the set is
+   * pinned by EQUALITY rather than by exclusion: widening it has to edit this
+   * line, which is the point at which the evidence gets asked for.
+   */
+  it('marks exactly the verified read-only sections kiosk-safe', () => {
+    const inKiosk = NAV_DEFS.filter((d) => d.showInKiosk).map((d) => d.id)
+    expect(inKiosk).toEqual(['pipeline', 'insights'])
   })
 
   it('NAV_BY_ID indexes every entry', () => {

@@ -116,7 +116,8 @@ import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { LAYOUT_MODE_QUERIES, stubMatchMedia } from '@/test/matchMedia'
 import { ThemeProvider } from '@/shell/theme'
 import { AppShell } from './AppShell'
-import { NAV_DEFS, navDefForPath } from './navDefs'
+import { NAV_BY_ID, NAV_DEFS, navDefForPath } from './navDefs'
+import { readKioskConfig } from './kiosk'
 import { buildRoutes } from './routes'
 import { LAYOUT_MODES, type LayoutMode } from './useViewport'
 
@@ -468,15 +469,59 @@ describe('every route renders in every layout mode', () => {
     expect(MATRIX_PATHS).toHaveLength(11)
   })
 
+  /**
+   * Where a cell must LAND, which in kiosk is not always where it was asked to
+   * go (R9 successor, below the CELLS build).
+   */
+  const KIOSK_HOME = NAV_BY_ID[readKioskConfig('?kiosk=1').pages[0]].path
+  const KIOSK_HOME_TESTID = `page-${NAV_BY_ID[readKioskConfig('?kiosk=1').pages[0]].id}`
+
+  /**
+   * R9 successor map for the nine kiosk cells that asserted
+   * `kiosk · <path> renders <that path's page>` for a section kiosk is not
+   * allowed on (`/sessions`, `/sessions/:id`, `/sessions/:id/agents/:agentId`,
+   * `/automations`, `/initiatives`, `/projects`, `/archived`, `/archived/:id`,
+   * `/settings/general`).
+   *
+   * That claim is now false BY DESIGN: `AppShell`'s `KioskPageGuard` redirects a
+   * kiosk URL off any section not marked `showInKiosk` (verified read-only), so
+   * a wall display cannot be parked on Archive/Unarchive/permission-card
+   * surfaces with no rail to leave by. Those nine cells are not dropped and are
+   * not weakened — each keeps all five assertions and merely names a different
+   * expected landing: `page-pipeline` at `/pipeline`. The other 35 cells
+   * (including `kiosk · /pipeline` and `kiosk · /insights`, the two kiosk-safe
+   * sections) are unchanged, so the "renders where it was asked" property still
+   * has kiosk coverage and the redirect cannot pass by rendering nothing.
+   */
   const CELLS = LAYOUT_MODES.flatMap((mode) =>
-    MATRIX_PATHS.map(([path, testid]) => [mode, path, testid] as const),
+    MATRIX_PATHS.map(([path, testid]) => {
+      const kioskRefused = mode === 'kiosk' && !navDefForPath(path)?.showInKiosk
+      return [
+        mode,
+        path,
+        kioskRefused ? KIOSK_HOME_TESTID : testid,
+        kioskRefused ? KIOSK_HOME : path,
+      ] as const
+    }),
   )
 
   it('the matrix is 44 cells', () => {
     expect(CELLS).toHaveLength(44)
   })
 
-  it.each(CELLS)('%s · %s renders %s', async (mode, path, testid) => {
+  // The nine refused cells are exactly the kiosk rows for a section that is not
+  // kiosk-safe — pinned so a `showInKiosk` flip has to come here and say so.
+  it('kiosk refuses exactly the sections that are not kiosk-safe', () => {
+    const refused = CELLS.filter(([mode, path, , url]) => mode === 'kiosk' && url !== path)
+    expect(refused.map(([, path]) => path)).toEqual([
+      '/sessions', '/sessions/abc', '/sessions/abc/agents/x',
+      '/automations', '/initiatives', '/projects',
+      '/archived', '/archived/abc', '/settings/general',
+    ])
+    expect(refused.every(([, , testid, url]) => testid === 'page-pipeline' && url === '/pipeline')).toBe(true)
+  })
+
+  it.each(CELLS)('%s · %s renders %s at %s', async (mode, path, testid, expectedUrl) => {
     const router = renderShellAt(path, mode)
 
     // 1 and 2, in one `waitFor` and in THIS order on purpose.
@@ -500,9 +545,11 @@ describe('every route renders in every layout mode', () => {
       expect(screen.queryByTestId(testid), `${mode} ${path} — page`).not.toBeNull()
     })
 
-    // 3. no redirect swallowed the path.
+    // 3. the URL is where this cell must land — the path itself for 35 cells,
+    //    and the kiosk home for the nine a kiosk URL is refused on. Either way
+    //    no OTHER redirect (the catch-all especially) swallowed it.
     const { pathname, search } = router.state.location
-    expect(pathname + search, `${mode} ${path}`).toBe(path)
+    expect(pathname + search, `${mode} ${path}`).toBe(expectedUrl)
 
     // 4. the shell laid the page out, once.
     expect(count('[data-region="app.main"]'), `${mode} ${path}`).toBe(1)

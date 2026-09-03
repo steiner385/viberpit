@@ -3,7 +3,7 @@
    them would put the layout and the rule that decides what the layout contains
    in two files, which is the drift this module exists to prevent. */
 import * as React from 'react'
-import { useLocation, useNavigate, useParams } from 'react-router-dom'
+import { Navigate, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { DeployControllerProvider } from '@/lib/deployController'
 import { BannerStack, type BannerStackItem } from '@/ui/BannerStack'
@@ -25,7 +25,7 @@ import { useDialogName } from './dialogParam'
 import { useDrawerName, useOpenDrawer, type DrawerName } from './drawerParam'
 import { InteractionProvider } from './InteractionContext'
 import { readKioskConfig } from './kiosk'
-import { navDefForPath } from './navDefs'
+import { NAV_BY_ID, navDefForPath } from './navDefs'
 import { useOpenSessionId } from './openSessionId'
 import { useAppBanners } from './useAppBanners'
 import { ViewportProvider, useViewport, type LayoutMode } from './useViewport'
@@ -161,11 +161,41 @@ export function AppShell() {
             and `DeployPanel` — mounted from the Settings page — must share the
             same controller instance, so it wraps the whole shell. */}
         <DeployControllerProvider>
-          <AppShellInner />
+          <KioskPageGuard>
+            <AppShellInner />
+          </KioskPageGuard>
         </DeployControllerProvider>
       </InteractionProvider>
     </ViewportProvider>
   )
+}
+
+/**
+ * Kiosk may only ever be ON a kiosk-safe section.
+ *
+ * `NavDef.showInKiosk` is the "verified read-only" claim (its docstring carries
+ * the criterion), and `shell/kiosk.ts` filters `?pages=` through it — but a wall
+ * display is LAUNCHED at a URL, and nothing stopped that URL being
+ * `/sessions/abc?kiosk=1` or `/archived?kiosk=1`. Kiosk mode there is the worst
+ * of both worlds: the rail is gone so nobody can navigate away, `Dialog` refuses
+ * to open so a destructive button goes silently inert, and the ungated action
+ * buttons — Archive, Unarchive, a pending permission card — stay live for any
+ * passer-by. So the flag gates the ROUTE too, not just the attract cycle.
+ *
+ * The redirect target is the first configured kiosk page; `parsePages`
+ * guarantees `pages` is non-empty and every id in it is kiosk-safe, so this
+ * cannot loop. The search string is carried over so `?kiosk=1` (and `?cycle=`,
+ * `?theme=`) survive a reload of the redirected URL.
+ *
+ * This is also the first production reader of the `kiosk` payload
+ * `ViewportProvider` has been carrying.
+ */
+function KioskPageGuard({ children }: { children: React.ReactNode }) {
+  const { kiosk } = useViewport()
+  const { pathname, search } = useLocation()
+  if (!kiosk?.enabled) return <>{children}</>
+  if (navDefForPath(pathname)?.showInKiosk) return <>{children}</>
+  return <Navigate to={{ pathname: NAV_BY_ID[kiosk.pages[0]].path, search }} replace />
 }
 
 function AppShellInner() {

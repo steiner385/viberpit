@@ -173,6 +173,29 @@ const SESSIONS_CTX: Omit<RegionContext, 'mode'> = {
   drawer: 'help',
 }
 
+/**
+ * …except kiosk, which never gets to BE on `/sessions`.
+ *
+ * `AppShell`'s `KioskPageGuard` redirects a kiosk URL off any section that is
+ * not `showInKiosk` (verified read-only), so `/sessions?drawer=help` in kiosk
+ * lands on the kiosk home, `/pipeline` — a section with no list and not
+ * Sessions. The expectation follows the route that actually rendered rather
+ * than pretending kiosk is still on Sessions: kiosk zeroes `app.list` and
+ * `app.dock` anyway, so using `SESSIONS_CTX` here would pass for the wrong
+ * reason and would keep passing if the guard were deleted.
+ */
+const KIOSK_CTX: Omit<RegionContext, 'mode'> = {
+  hasList: false,
+  itemOpen: false,
+  inSessions: false,
+  drawer: 'help',
+}
+
+const ctxFor = (mode: LayoutMode) => (mode === 'kiosk' ? KIOSK_CTX : SESSIONS_CTX)
+
+/** The probe page each mode lands on from `/sessions?drawer=help`. */
+const landingFor = (mode: LayoutMode) => (mode === 'kiosk' ? 'page-pipeline' : 'page-sessions')
+
 beforeEach(() => {
   vi.unstubAllGlobals()
   localStorage.clear()
@@ -187,15 +210,15 @@ afterEach(() => {
 describe('AppShell — the regions on screen match the matrix', () => {
   it.each(LAYOUT_MODES)('renders exactly the regions %s calls for', async (mode) => {
     renderShell({ path: '/sessions?drawer=help', mode })
-    await screen.findByTestId('page-sessions')
+    await screen.findByTestId(landingFor(mode))
 
     const present = [...regionCounts().keys()].sort()
-    expect(present).toEqual(expectedRegions(mode, SESSIONS_CTX).slice().sort())
+    expect(present).toEqual(expectedRegions(mode, ctxFor(mode)).slice().sort())
   })
 
   it.each(LAYOUT_MODES)('renders no data-region outside RegionId in %s', async (mode) => {
     renderShell({ path: '/sessions?drawer=help', mode })
-    await screen.findByTestId('page-sessions')
+    await screen.findByTestId(landingFor(mode))
 
     const known: readonly string[] = REGION_IDS
     const unknown = [...regionCounts().keys()].filter((id) => !known.includes(id))
@@ -204,12 +227,12 @@ describe('AppShell — the regions on screen match the matrix', () => {
 
   it.each(LAYOUT_MODES)('in %s mode every region mounts at most once', async (mode) => {
     renderShell({ path: '/sessions?drawer=help', mode })
-    await screen.findByTestId('page-sessions')
+    await screen.findByTestId(landingFor(mode))
 
     const counts = regionCounts()
     // The lower bound. Without it "at most once" is satisfied by a shell that
     // rendered nothing at all.
-    expect([...counts.keys()].sort()).toEqual(expectedRegions(mode, SESSIONS_CTX).slice().sort())
+    expect([...counts.keys()].sort()).toEqual(expectedRegions(mode, ctxFor(mode)).slice().sort())
 
     // `app.rail` is legitimately TWO nodes on phone — `TopBar` (data-rail="top")
     // and `NavBar` (data-rail="bottom") — see Task 8. Everything else is one.
@@ -349,7 +372,7 @@ describe('AppShell — accessibility', () => {
 
   it.each(LAYOUT_MODES)('has no axe violations in %s', async (mode) => {
     renderShell({ path: '/sessions?drawer=help', mode })
-    await screen.findByTestId('page-sessions')
+    await screen.findByTestId(landingFor(mode))
     await withSessionRows(mode)
     // The overlay root sits outside the render container; assert on the whole
     // body so an open drawer's panel is included in the pass.
