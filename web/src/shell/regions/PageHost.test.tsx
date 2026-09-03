@@ -171,7 +171,10 @@ function renderAt(pathname: string, opts: RenderOpts = {}) {
           { path: '/sessions', ...page('list') },
           { path: '/sessions/:id', ...page('session') },
           { path: '/sessions/:id/agents/:agentId', ...page('agent') },
-          { path: '/review/:id', ...page('review') },
+          // The canonical read-only review route (umbrella §6, DEC-6). It reuses
+          // the `:id` param name that /sessions/:id uses — which is exactly what
+          // makes the section gate load-bearing rather than defensive.
+          { path: '/archived/:id', ...page('review') },
           { path: '/pipeline', ...page('pipeline') },
         ],
       },
@@ -269,10 +272,13 @@ describe('PageHost — session runtime scope (F2.3)', () => {
     expect(screen.getByTestId('probe-page')).toHaveTextContent('a|')
   })
 
-  it('mounts no provider for an :id route in another section (/review/:id)', () => {
-    // An archived transcript must not attach a live runtime. `:id` alone would.
+  it('mounts no provider for an :id route in another section (/archived/:id)', () => {
+    // An archived transcript must not attach a live runtime — no socket, no
+    // transcript reducer, no detach-on-unmount. `/archived/:id` is a DIFFERENT
+    // SECTION REUSING THE SAME PARAM NAME under the same layout route, so a
+    // gate on `:id` alone would silently attach one here and nothing would fail.
     const spy = silenceExpectedErrorLog()
-    renderAt('/review/a', { page: <RuntimeProbe at="page" /> })
+    renderAt('/archived/a', { page: <RuntimeProbe at="page" /> })
     spy.mockRestore()
     expect(screen.getByTestId('route-error')).toHaveTextContent(NO_PROVIDER)
   })
