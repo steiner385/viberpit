@@ -16,7 +16,12 @@ lockstep with the picker's probe.
 
 Resolution mirrors ``ccswitch.launcher.claude_argv``: honor ``CCSWITCH_CLAUDE_BIN``
 (a full command whose first token is the executable), else the bare name
-``"claude"`` resolved on ``PATH``.
+``"claude"`` resolved on ``PATH`` — and then, unlike the launcher, the native
+installer's well-known locations (``~/.local/bin/claude``, the newest
+``~/.local/share/claude/versions/*``). The daemon runs under systemd with a minimal
+PATH that lacks ``~/.local/bin``; without the fallback, every host needs a hand-added
+``PATH``/``CCSWITCH_CLAUDE_BIN`` line in its unit env file, and the one host that
+lacks it silently runs the stale bundled CLI (dobby, 2026-09-03).
 
 **Failure modes made loud, not silent.** Two ways the pin silently degraded to the
 stale bundled CLI — and 400d sessions "from time to time" — are guarded here:
@@ -112,9 +117,48 @@ def _min_version() -> Version | None:
     return _bundled_version()
 
 
+def _is_exe(path: str) -> bool:
+    # isfile() follows symlinks, so a dangling ~/.local/bin/claude is skipped.
+    return os.path.isfile(path) and os.access(path, os.X_OK)
+
+
+def _well_known_candidates() -> list[str]:
+    """Where the native ``claude`` installer puts the binary, best first.
+
+    A systemd unit runs with a minimal PATH that lacks ``~/.local/bin``, so a bare
+    ``which("claude")`` misses a perfectly good, auto-updating install and the SDK
+    silently falls back to its stale bundled CLI. Scanning these fixed locations
+    makes resolution independent of per-host ``PATH`` lines in the unit's env file.
+
+    1. ``~/.local/bin/claude`` — the symlink ``claude update`` maintains.
+    2. Newest entry under ``~/.local/share/claude/versions/`` — the installer's
+       version store, in case the symlink is missing or dangling. Sorted by parsed
+       version, not lexically (``2.1.9`` must lose to ``2.1.259``).
+    3. ``~/.claude/local/claude`` — the older ``claude migrate-installer`` layout.
+    """
+    home = os.path.expanduser("~")
+    candidates = [os.path.join(home, ".local", "bin", "claude")]
+
+    versions_dir = os.path.join(home, ".local", "share", "claude", "versions")
+    try:
+        entries = os.listdir(versions_dir)
+    except OSError:
+        entries = []
+    versioned = [(v, name) for name in entries if (v := _parse_version(name)) is not None]
+    for _, name in sorted(versioned, reverse=True):
+        candidates.append(os.path.join(versions_dir, name))
+
+    candidates.append(os.path.join(home, ".claude", "local", "claude"))
+    return candidates
+
+
 def resolve_claude_bin() -> str | None:
     """Absolute path to the system ``claude`` executable, or ``None`` if none is
     usable.
+
+    Resolution order: ``CCSWITCH_CLAUDE_BIN`` (first token) → ``claude`` on PATH →
+    the native installer's well-known locations (``_well_known_candidates``). The
+    explicit/PATH forms stay authoritative so an operator override is never shadowed.
 
     Returns ``None`` (rather than a bare name, bogus path, or a binary older than the
     SDK's bundled CLI) when nothing usable resolves, so callers fall back to the SDK's
@@ -128,16 +172,24 @@ def resolve_claude_bin() -> str | None:
     candidate = shutil.which(exe)
     # An absolute/relative path that exists and is executable but which() misses
     # (e.g. not on PATH). Accept it directly.
-    if not candidate and os.path.isfile(exe) and os.access(exe, os.X_OK):
+    if not candidate and _is_exe(exe):
         candidate = exe
+
+    if not candidate:
+        for path in _well_known_candidates():
+            if _is_exe(path):
+                log.debug("claude_bin: `%s` not on PATH; using well-known %s", exe, path)
+                candidate = path
+                break
 
     if not candidate:
         _warn_once(
             "not-found",
             logging.WARNING,
-            "claude_bin: no system `claude` resolved (CCSWITCH_CLAUDE_BIN unset/invalid "
-            "and `claude` not on PATH); the SDK will fall back to its stale bundled CLI, "
-            "which may 400 on newer models. Install claude or set CCSWITCH_CLAUDE_BIN.",
+            "claude_bin: no system `claude` resolved (CCSWITCH_CLAUDE_BIN unset/invalid, "
+            "`claude` not on PATH, and none of the native installer's well-known "
+            "locations exist); the SDK will fall back to its stale bundled CLI, which "
+            "may 400 on newer models. Install claude or set CCSWITCH_CLAUDE_BIN.",
         )
         return None
 

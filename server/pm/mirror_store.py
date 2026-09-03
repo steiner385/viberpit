@@ -70,11 +70,16 @@ def _work_item_id(db: Session, repo: str | None, number: int | None,
 
 def upsert_project_items(db: Session, gh_project_db_id: str,
                          items: list[GhProjectItemView], now: datetime) -> None:
+    # Preload every existing mirror row once (keyed by node id) instead of a
+    # per-item SELECT, and reuse the same dict to prune stale rows (issue #973).
+    existing: dict[str, GhProjectItem] = {
+        r.gh_item_node_id: r for r in db.query(GhProjectItem)
+        .filter_by(gh_project_id=gh_project_db_id).all()
+        if r.gh_item_node_id is not None}
     seen: set[str] = set()
     for view in items:
         seen.add(view.item_node_id)
-        row = db.query(GhProjectItem).filter_by(
-            gh_project_id=gh_project_db_id, gh_item_node_id=view.item_node_id).first()
+        row = existing.get(view.item_node_id)
         if row is None:
             row = GhProjectItem(gh_project_id=gh_project_db_id,
                                 gh_item_node_id=view.item_node_id)
@@ -85,9 +90,8 @@ def upsert_project_items(db: Session, gh_project_db_id: str,
         row.stage = view.stage
         row.gh_updated_at = _parse_iso(view.updated_at)
         row.last_synced_at = now
-    stale = db.query(GhProjectItem).filter_by(gh_project_id=gh_project_db_id).all()
-    for row in stale:
-        if row.gh_item_node_id not in seen:
+    for node_id, row in existing.items():
+        if node_id not in seen:
             db.delete(row)
     gh = db.get(GhProject, gh_project_db_id)
     if gh is not None:
@@ -110,8 +114,12 @@ def upsert_relations(db: Session, repo: str, rels: list[IssueRelView]) -> None:
               if (item.state or "open") == "open"}
     observed = observed_deps(repo, rels, bodies)
     src_prefix = f"{repo}#"
-    existing = [d for d in db.query(WorkItemDep).all()
-                if (d.src_ref or "").startswith(src_prefix)]
+    # Push the src_ref prefix filter into SQL instead of scanning the whole
+    # WorkItemDep table in Python (issue #973). ``startswith`` auto-escapes the
+    # repo string, so a repo name containing a LIKE wildcard (``_``) can't widen
+    # the match.
+    existing = list(db.query(WorkItemDep).filter(
+        WorkItemDep.src_ref.startswith(src_prefix, autoescape=True)).all())
     plan = plan_dep_rows(observed, [
         DepRowView(id=d.id, src_ref=d.src_ref or "", dst_ref=d.dst_ref or "",
                    source=d.source or "", active=bool(d.active)) for d in existing])
@@ -126,6 +134,18 @@ def upsert_relations(db: Session, repo: str, rels: list[IssueRelView]) -> None:
         rows_by_id[row_id].active = True
     for row_id in plan.deactivate:
         rows_by_id[row_id].active = False
+    # Backfill FKs left NULL at creation (the target wasn't mirrored yet). Runs
+    # every pass over the repo's surviving rows, so a dep self-heals as soon as
+    # repo-sync lands its endpoint — Phase C queue queries want these populated.
+    for row in existing:
+        if row.src_work_item_id is None:
+            resolved = _resolve_ref(db, row.src_ref or "")
+            if resolved is not None:
+                row.src_work_item_id = resolved
+        if row.dst_work_item_id is None:
+            resolved = _resolve_ref(db, row.dst_ref or "")
+            if resolved is not None:
+                row.dst_work_item_id = resolved
 
 
 def _resolve_ref(db: Session, ref: str) -> str | None:

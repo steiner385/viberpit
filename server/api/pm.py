@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from pydantic import BaseModel
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import func, or_, select, tuple_
 
 from server.audit import record_audit
 from server.auth.middleware import current_identity
@@ -71,6 +71,21 @@ def _edge_to_dict(e: ProjectEdge, slug_by_id: dict[str, str | None]) -> dict:
     }
 
 
+# ``owner/name`` with GitHub's own charset: each segment is alphanumerics plus
+# ``._-``. Deliberately strict — the Projects v2 / relations GraphQL builders
+# %-interpolate these strings, so a quote/space/brace must never reach them
+# (issue #973). Anchored + single slash, so "a/b/c" and "no-slash" also fail.
+_REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _validate_repo(repo: str) -> None:
+    if not _REPO_RE.match(repo or ""):
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "invalid_repo",
+                    "message": f"'{repo}' is not a valid owner/name repository"})
+
+
 class RepoInput(BaseModel):
     repo: str
     isPrimary: bool = False
@@ -110,6 +125,8 @@ async def create_project(
         raise HTTPException(
             status_code=422,
             detail={"error": "no_repos", "message": "at least one repo is required"})
+    for repo_in in body.repos:
+        _validate_repo(repo_in.repo)
     slug = body.slug or _slugify(body.name)
     existing = (await db.execute(
         select(Project).where(Project.slug == slug))).scalar_one_or_none()
@@ -294,10 +311,18 @@ async def project_deps(
         # work_item_id=None (draft/unresolved items) never matches a by_id key
         project_refs = {by_id[i.work_item_id] for i in linked if i.work_item_id in by_id}
 
-    all_dep_rows = (await db.execute(select(WorkItemDep))).scalars().all()
-    # Filter in Python: keep only deps whose src belongs to a project repo.
-    dep_rows = [d for d in all_dep_rows
-                if d.src_ref and "#" in d.src_ref and d.src_ref.rsplit("#", 1)[0] in repos]
+    # Push the src_ref repo-prefix filter into SQL (issue #973) — keep only deps
+    # whose src belongs to a project repo, instead of scanning the whole
+    # WorkItemDep table in Python. ``startswith`` auto-escapes each repo string so
+    # a LIKE wildcard (``_``) in a repo name can't widen the match.
+    if repos:
+        dep_rows = list((await db.execute(
+            select(WorkItemDep).where(or_(*[
+                WorkItemDep.src_ref.startswith(f"{r}#", autoescape=True)
+                for r in repos]))
+        )).scalars().all())
+    else:
+        dep_rows = []
 
     # Cross-product visibility (spec goal): a dep may target another onboarded
     # product's mirrored issue. Resolve dst refs that are NOT in the project-scoped

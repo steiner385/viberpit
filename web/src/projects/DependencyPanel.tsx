@@ -1,7 +1,12 @@
 import { useProjectDeps } from '@/api/pm'
 
 export function DependencyPanel({ slug }: { slug: string }) {
-  const { data, isLoading } = useProjectDeps(slug)
+  const { data, isLoading, isError } = useProjectDeps(slug)
+  // On query error, render a visible state instead of null-ing forever — the
+  // 15s poll keeps retrying, so a transient blip self-heals (issue #973).
+  if (isError) {
+    return <p className="text-sm pm-error">Failed to load dependencies.</p>
+  }
   if (isLoading || !data) return null
   const active = data.edges.filter((e) => e.active)
   const bySrc = new Map<string, typeof active>()

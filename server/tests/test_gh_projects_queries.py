@@ -137,3 +137,19 @@ def test_relations_query_targets_open_issues():
     q = build_issue_relations_query("steiner385/cc-account-switcher", None)
     assert 'owner: "steiner385"' in q and 'name: "cc-account-switcher"' in q
     assert "states: OPEN" in q
+
+
+def test_project_node_missing_distinguishes_deleted_from_empty():
+    from server.pm.gh_projects import project_node_missing
+    # board deleted on GitHub: node(id:) resolves null (issue #973).
+    assert project_node_missing({"data": {"node": None}}) is True
+    assert project_node_missing(
+        {"data": {"node": None}, "errors": [{"message": "Could not resolve"}]}) is True
+    # board exists but is empty: node is a dict with an empty items connection.
+    assert project_node_missing(
+        {"data": {"node": {"items": {"nodes": []}}}}) is False
+    # transport/other failure: no data or no node key -> NOT a deletion signal,
+    # so the caller's error handling (not the prune-halt) takes over.
+    assert project_node_missing({}) is False
+    assert project_node_missing({"data": {}}) is False
+    assert project_node_missing({"data": None}) is False

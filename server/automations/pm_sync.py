@@ -21,7 +21,7 @@ from server.pm.gh_projects import (
     build_issue_relations_query, build_owner_projects_query,
     build_project_fields_query, build_project_items_query,
     parse_issue_relations, parse_project_fields, parse_project_items,
-    parse_viewer_projects)
+    parse_viewer_projects, project_node_missing)
 from server.pm.github_sync import (
     WorkItemView, build_issues_query, build_prs_query, parse_page)
 from server.pm.mirror_store import ProductSyncView
@@ -35,6 +35,13 @@ NowUtc = Callable[[], datetime]
 # Bound one tick's backfill work so a huge history spreads across ticks
 # (the saved cursor makes each continuation cheap).
 _MAX_PAGES_PER_TICK = 20
+
+# The Projects v2 + relations pass is far pricier than the work-item mirror
+# (~high-hundreds of GraphQL points/hr if run every tick), so it is gated behind
+# its own interval (issue #973). A persistently failing owner is backed off this
+# long before it is retried, so a missing-credential owner is probed ~4×/hr, not
+# every tick — and its warning is emitted once per failure onset, not repeated.
+_OWNER_ERROR_BACKOFF = timedelta(minutes=15)
 
 
 @dataclass(frozen=True)
@@ -63,6 +70,11 @@ class PmSync:
         ConfigField("min_sync_interval_s", "Min sync interval (s)", "int", 300,
                     help="A repo is re-synced no more often than this unless "
                          "sync-now is requested."),
+        ConfigField("projects_sync_interval_s", "Projects v2 sync interval (s)",
+                    "int", 300,
+                    help="The Projects v2 + issue-relations mirror pass runs no "
+                         "more often than this (it is far pricier than the "
+                         "work-item mirror); a sync-now request bypasses it."),
     ]
 
     def status(self, ctx: Any) -> AutomationStatus:
@@ -146,6 +158,15 @@ class PmSyncLoop:
         self._save_project_fields = save_project_fields
         self._save_project_items = save_project_items
         self._save_relations = save_relations
+        # Projects v2 pass gating (issue #973). In-memory on the long-lived loop:
+        # ``_projects_next_run`` is the earliest UTC time the pass may run again;
+        # ``_last_gh_projects`` keeps the status count steady across skipped ticks;
+        # ``_owner_next_retry`` / ``_owner_failing`` back off + dedup per-owner
+        # discovery failures so a missing-credential owner doesn't warn every tick.
+        self._projects_next_run: datetime | None = None
+        self._last_gh_projects: int = 0
+        self._owner_next_retry: dict[str, datetime] = {}
+        self._owner_failing: set[str] = set()
 
     async def tick(self) -> None:
         """One control-loop iteration. Best-effort: swallows exceptions so a
@@ -163,7 +184,10 @@ class PmSyncLoop:
         interval = timedelta(seconds=int(config.get("min_sync_interval_s", 300)))
         now = self._now_utc()
         synced = backfilling = errors = 0
+        force_projects = False
         for view in await self._list_repos():
+            if view.sync_requested_at is not None:
+                force_projects = True  # a sync-now request bypasses the gate below
             due = (view.sync_requested_at is not None
                    or view.last_synced_at is None
                    or now - view.last_synced_at >= interval
@@ -186,10 +210,11 @@ class PmSyncLoop:
                     "warning", f"sync failed for {view.repo}",
                     kind="sync_error", target=view.repo)
                 log.warning("pm_sync.repo_error repo=%s", view.repo, exc_info=True)
-        gh_projects = await self._sync_projects_v2()
+        gh_projects = await self._sync_projects_v2(now, config, force_projects)
         self._stash(synced, backfilling, errors, gh_projects)
 
-    async def _sync_projects_v2(self) -> int:
+    async def _sync_projects_v2(self, now: datetime, config: dict,
+                                force: bool) -> int:
         """Best-effort Projects v2 + issue-relations mirror pass.
 
         Discovery is owner-aware: under the GitHub App installation token
@@ -208,11 +233,25 @@ class PmSyncLoop:
                 and self._save_gh_project and self._save_project_fields
                 and self._save_project_items and self._save_relations):
             return 0
+        # Interval short-circuit (issue #973): skip the whole pass — discovery,
+        # project mirror AND relations — until the interval elapses, unless a
+        # sync-now request forces it. Return the last count so status holds steady.
+        if not force and self._projects_next_run is not None \
+                and now < self._projects_next_run:
+            return self._last_gh_projects
+        interval = timedelta(
+            seconds=int(config.get("projects_sync_interval_s", 300)))
+        self._projects_next_run = now + interval
         products = await self._list_products()
         owners = {r.split("/", 1)[0] for p in products for r in p.repos
                   if "/" in r}
         discovered: dict[str, GhProjectView] = {}  # node_id -> view (deduped)
         for owner in sorted(owners):
+            # Per-owner failure backoff: a persistently failing owner is skipped
+            # silently until its retry time, so it never re-warns every tick.
+            retry_at = self._owner_next_retry.get(owner)
+            if retry_at is not None and now < retry_at:
+                continue
             try:
                 cursor: str | None = None
                 for _ in range(_MAX_PAGES_PER_TICK):
@@ -223,10 +262,15 @@ class PmSyncLoop:
                         discovered.setdefault(view.node_id, view)
                     if not more:
                         break
+                self._owner_next_retry.pop(owner, None)  # recovered
+                self._owner_failing.discard(owner)
             except Exception:
-                await self._ctx.emit(
-                    "warning", f"project discovery failed for {owner}",
-                    kind="gh_projects_error", target=owner)
+                self._owner_next_retry[owner] = now + _OWNER_ERROR_BACKOFF
+                if owner not in self._owner_failing:  # warn on onset only (dedup)
+                    self._owner_failing.add(owner)
+                    await self._ctx.emit(
+                        "warning", f"project discovery failed for {owner}",
+                        kind="gh_projects_error", target=owner)
                 log.warning("pm_sync.project_discovery_error owner=%s",
                             owner, exc_info=True)
         by_title: dict[str, GhProjectView] = {
@@ -241,6 +285,7 @@ class PmSyncLoop:
                     kind="gh_projects_error", target=product.project_id)
                 log.warning("pm_sync.project_error project=%s",
                             product.project_id, exc_info=True)
+        self._last_gh_projects = linked
         return linked
 
     async def _sync_one_product(
@@ -264,17 +309,34 @@ class PmSyncLoop:
             owner = _owner_of(product)
             fields = await self._fetch_gh_projects(
                 owner, build_project_fields_query(node_id))
-            await self._save_project_fields(gh_db_id, parse_project_fields(fields))
-            items: list[GhProjectItemView] = []
-            cursor: str | None = None
-            for _ in range(_MAX_PAGES_PER_TICK):
-                payload = await self._fetch_gh_projects(
-                    owner, build_project_items_query(node_id, cursor))
-                page, cursor, more = parse_project_items(payload)
-                items.extend(page)
-                if not more:
-                    break
-            await self._save_project_items(gh_db_id, items)
+            # Board DELETED on GitHub (node(id:) → null) vs. merely empty: a
+            # deletion must NOT prune the mirror silently (spec §10, issue #973).
+            # Halt the board mirror loudly (needs human) and leave the rows intact
+            # so a human can decide; relations below are board-independent.
+            if project_node_missing(fields):
+                await self._emit_board_deleted(product, node_id)
+                linked = 0
+            else:
+                await self._save_project_fields(
+                    gh_db_id, parse_project_fields(fields))
+                items: list[GhProjectItemView] = []
+                cursor: str | None = None
+                deleted = False
+                for _ in range(_MAX_PAGES_PER_TICK):
+                    payload = await self._fetch_gh_projects(
+                        owner, build_project_items_query(node_id, cursor))
+                    if project_node_missing(payload):  # deleted mid-tick
+                        deleted = True
+                        break
+                    page, cursor, more = parse_project_items(payload)
+                    items.extend(page)
+                    if not more:
+                        break
+                if deleted:
+                    await self._emit_board_deleted(product, node_id)
+                    linked = 0
+                else:
+                    await self._save_project_items(gh_db_id, items)
         # Relations are repo-scoped (ambient credential): always run per repo,
         # independent of whether the project itself linked.
         for repo in product.repos:
@@ -289,6 +351,19 @@ class PmSyncLoop:
                     break
             await self._save_relations(repo, rels)
         return linked
+
+    async def _emit_board_deleted(self, product: ProductSyncView,
+                                  node_id: str) -> None:
+        """Loud needs-human halt for a board deleted on GitHub (spec §10). Emitted
+        at ``error`` level so the automation status flips to ``error`` rather than
+        silently pruning every mirrored item."""
+        await self._ctx.emit(
+            "error",
+            f"Projects v2 board deleted on GitHub for {product.project_id} "
+            f"(node {node_id}); mirror halted, items preserved — needs human.",
+            kind="gh_project_deleted", target=product.project_id)
+        log.error("pm_sync.project_board_deleted project=%s node=%s",
+                  product.project_id, node_id)
 
     async def _backfill(self, view: RepoSyncView, now: datetime) -> bool:
         """Resumable full-history import: issues first, then PRs. Saves the

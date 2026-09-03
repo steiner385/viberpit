@@ -177,6 +177,11 @@
   font-size: 12px;
 }
 
+.pm-error {
+  color: var(--fail);
+  font-size: 13px;
+}
+
 /* ── Triage review list (phase 2 — plain; phase 3 replaces with inbox) ─── */
 
 .pm-triage {
