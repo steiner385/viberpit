@@ -15,9 +15,10 @@
 //     (desktop's form): the open session wins, the keyboard highlight is the
 //     fallback, so ↑/↓ still moves visibly on the new-session view.
 //
-// Layout is deliberately region-neutral — no width, no border, no landmark. The
-// shell decides where `app.list` sits and how wide it is; this component fills
-// what it is given, and only its middle band scrolls.
+// Layout is deliberately region-neutral — no width, no border, no landmark, and
+// (since Task 10) not the `data-region` marker either: `shell/regions/ContextList`
+// is the region, decides where `app.list` sits, how wide it is and what names it.
+// This component fills what it is given, and only its middle band scrolls.
 //
 // There is no `listScrollTop`/`restoreListScroll` callback ref here. Desktop
 // needed one because the whole shell sat inside a `SessionRuntimeProvider` keyed
@@ -78,7 +79,7 @@ export function SessionListColumn({
   const { sessions, queued, pendingApproval, search, ordering, nav } = state
 
   return (
-    <div data-region="app.list" className="flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0 flex-col">
       {/* Fixed head: New Session and the list controls stay above the scroll band. */}
       <div className="shrink-0 space-y-2 p-2">
         <button

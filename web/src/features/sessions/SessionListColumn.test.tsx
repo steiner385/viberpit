@@ -279,9 +279,14 @@ describe('SessionListColumn — gates and structure', () => {
     expect(onNew).toHaveBeenCalledTimes(1)
   })
 
-  it('carries data-region="app.list"', () => {
+  // Successor to "carries data-region=app.list" (Task 10 moved the marker to the
+  // region that owns it): ContextList.test.tsx — "renders the session list on
+  // /sessions, in a region marked app.list" asserts the marker is present there.
+  // This half asserts the column does NOT also declare it, because two nested
+  // [data-region="app.list"] nodes would make every region query ambiguous.
+  it('leaves the app.list region marker to the shell (ContextList owns it)', () => {
     const { container } = renderColumn({ sessions: [session()] })
-    expect(container.querySelector('[data-region="app.list"]')).toBeTruthy()
+    expect(container.querySelector('[data-region]')).toBeNull()
   })
 })
 
