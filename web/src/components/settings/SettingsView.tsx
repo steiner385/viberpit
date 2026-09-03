@@ -5,7 +5,8 @@
  * Library section ids (plugins|skills|commands|mcp) are preserved so old
  * /library?section=X links redirect losslessly.
  */
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { settingsSectionPath } from '@/shell/navDefs'
 import { Tabs } from '@/ui/Tabs'
 import { GeneralSection } from './GeneralSection'
 import { AccountsManager } from '../AccountsManager'
@@ -45,9 +46,22 @@ const SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: 'fleet', label: 'Fleet' },
 ]
 
-export function SettingsView() {
+export interface SettingsViewProps {
+  /**
+   * The section from `/settings/:section` (DEC-14). Takes precedence over the
+   * `?section=` search param, which stays supported for links already in the
+   * wild — the path is the canonical form, the query is the legacy one.
+   *
+   * Optional, and `undefined` (not the empty string) means "not routed by path":
+   * `useParams()` hands `undefined` when the route declares no `:section`.
+   */
+  section?: string
+}
+
+export function SettingsView({ section: sectionProp }: SettingsViewProps = {}) {
   const [params, setParams] = useSearchParams()
-  const raw = params.get('section')
+  const navigate = useNavigate()
+  const raw = sectionProp ?? params.get('section')
   const section: SettingsSection = SECTIONS.some((s) => s.id === raw) ? (raw as SettingsSection) : 'general'
 
   return (
@@ -55,7 +69,13 @@ export function SettingsView() {
       <Tabs
         items={SECTIONS}
         value={section}
-        onChange={(id) => setParams((p) => { p.set('section', id); return p }, { replace: true })}
+        // The strip writes back through whichever channel the section arrived
+        // on. Routed by path, writing `?section=` would be ignored (the prop
+        // wins) and the tabs would be inert — the strip has to move the URL that
+        // is actually being read.
+        onChange={(id) => sectionProp === undefined
+          ? setParams((p) => { p.set('section', id); return p }, { replace: true })
+          : navigate(settingsSectionPath(id), { replace: true })}
         label="Settings sections"
         className="mb-4 border-b border-edge"
       />

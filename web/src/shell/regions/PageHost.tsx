@@ -48,7 +48,7 @@ export interface PageHostProps {
  *
  * ## Why the runtime is gated on the section, not just on `:id`
  *
- * `:id` alone is the wrong question. `/review/:id` is an ARCHIVED transcript and
+ * `:id` alone is the wrong question. `/archived/:id` is an ARCHIVED transcript and
  * must not attach a live runtime, and any future detail route (an initiative, a
  * product) would silently do the same. The section comes from `navDefForPath`,
  * the same map the route table is built from, so there is no second list of

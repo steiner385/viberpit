@@ -34,7 +34,9 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { axe, toHaveNoViolations } from 'jest-axe'
-import { createMemoryRouter, RouterProvider, useNavigate, useRouteError } from 'react-router-dom'
+import {
+  createMemoryRouter, RouterProvider, useNavigate, useRouteError, type RouteObject,
+} from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { Session } from '@/api/types'
 
@@ -72,6 +74,7 @@ vi.mock('@/ws/client', async (importOriginal) => {
 
 import { useSessionRuntimeContext } from '@/components/session/SessionRuntimeProvider'
 import { resetDocumentTitle, setBaseTitle } from '@/shell/documentTitle'
+import { buildRoutes } from '@/shell/routes'
 import { PageHost } from './PageHost'
 
 // ── typed fixtures (R10: real values, never `as unknown as T`) ────────────────
@@ -157,28 +160,74 @@ interface RenderOpts {
   state?: unknown
 }
 
-function renderAt(pathname: string, opts: RenderOpts = {}) {
-  const page = (name: string) => ({
-    element: <Page name={name} extra={opts.page} />,
-    errorElement: <RouteError />,
+/**
+ * The routes this file exercises, and the probe each one renders instead of its
+ * real page.
+ *
+ * Note `/archived/:id`: the canonical read-only review route (umbrella §6,
+ * DEC-6) REUSES the `:id` param name that `/sessions/:id` uses, which is exactly
+ * what makes the section gate load-bearing rather than defensive.
+ */
+const PROBE_PAGES: Record<string, string> = {
+  '/sessions': 'list',
+  '/sessions/:id': 'session',
+  '/sessions/:id/agents/:agentId': 'agent',
+  '/archived/:id': 'review',
+  '/pipeline': 'pipeline',
+}
+
+/**
+ * Swaps the real page elements for probes, leaving the paths — and the rest of
+ * the table, redirects and catch-all included — exactly as `routes.tsx`
+ * declares them.
+ *
+ * This file used to hand-write its own five-route table. That made the section
+ * gate agree with an approximation of the app's routing rather than with the
+ * app's routing: rename `/archived/:id` in `routes.tsx` and the gate would have
+ * gone on passing here while archived transcripts opened live runtimes in the
+ * app. The throw below turns that drift into a failure instead.
+ */
+function probeRoutes(children: RouteObject[], extra: React.ReactNode): RouteObject[] {
+  const found = new Set<string>()
+  const out = children.map((route): RouteObject => {
+    const name = route.path ? PROBE_PAGES[route.path] : undefined
+    if (!route.path || !name) return route
+    found.add(route.path)
+    return {
+      path: route.path,
+      element: <Page name={name} extra={extra} />,
+      errorElement: <RouteError />,
+    }
   })
+  const missing = Object.keys(PROBE_PAGES).filter((p) => !found.has(p))
+  if (missing.length) throw new Error(`routes.tsx no longer declares: ${missing.join(', ')}`)
+  return out
+}
+
+/**
+ * Mounts `PageHost` as the layout route of the REAL route table, the way
+ * `AppShell` will.
+ */
+function harness(opts: RenderOpts): RouteObject[] {
+  const [gate] = buildRoutes(<Layout dock={opts.dock} sibling={opts.sibling} />)
+  const layout = gate.children?.[0]
+  if (!layout?.children) throw new Error('buildRoutes no longer nests a layout route with children')
+  return [{
+    element: gate.element,
+    errorElement: <RouteError />,
+    children: [{
+      element: layout.element,
+      // Declared on the layout route as well as its children, so a throw from a
+      // sibling region and a throw from the routed page are both visible.
+      errorElement: <RouteError />,
+      children: probeRoutes(layout.children, opts.page),
+    }],
+  }]
+}
+
+function renderAt(pathname: string, opts: RenderOpts = {}) {
   const router = createMemoryRouter(
-    [
-      {
-        element: <Layout dock={opts.dock} sibling={opts.sibling} />,
-        errorElement: <RouteError />,
-        children: [
-          { path: '/sessions', ...page('list') },
-          { path: '/sessions/:id', ...page('session') },
-          { path: '/sessions/:id/agents/:agentId', ...page('agent') },
-          // The canonical read-only review route (umbrella §6, DEC-6). It reuses
-          // the `:id` param name that /sessions/:id uses — which is exactly what
-          // makes the section gate load-bearing rather than defensive.
-          { path: '/archived/:id', ...page('review') },
-          { path: '/pipeline', ...page('pipeline') },
-        ],
-      },
-    ],
+    harness(opts),
     { initialEntries: [opts.state === undefined ? pathname : { pathname, state: opts.state }] },
   )
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })

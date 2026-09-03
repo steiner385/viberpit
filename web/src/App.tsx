@@ -16,7 +16,11 @@ import { DeployOverlay } from './components/DeployOverlay'
 import { useSessions, useArchivedSessions } from './api/hooks'
 import { useSessionOrdering } from './session/useSessionOrdering'
 import { nextSessionAfterClose } from './session/nextAfterArchive'
-import { readInitialPrompt, sessionOpenState } from './session/sessionNavState'
+import {
+  ARCHIVED_SESSION_ROUTE, SESSION_ROUTE, SESSIONS_PATH, SUBAGENT_ROUTE,
+  archivedSessionPath, readInitialPrompt, sessionOpenState, sessionPath,
+} from './session/sessionNavState'
+import { LibraryRedirect } from './shell/routes'
 
 // Routing is the source of truth for which view is shown:
 //   /sessions | /pipeline | /automations | /archived | /insights | /settings
@@ -25,16 +29,22 @@ import { readInitialPrompt, sessionOpenState } from './session/sessionNavState'
 //                                      → the Settings tab's active section
 //   /accounts | /automation | /library → legacy top-level tabs; redirect to the
 //                                        matching Settings section
-//   /session/:sessionId                → full-screen terminal for a session
-//   /review/:sessionId                 → read-only transcript for an archived session
+//   /sessions/:id                      → full-screen terminal for a session
+//   /archived/:id                      → read-only transcript for an archived session
+//   /session/:id | /review/:id         → the pre-plural spellings of those two,
+//                                        still served for bookmarks. Nothing in
+//                                        the app links to them: every session
+//                                        path is built by session/sessionNavState,
+//                                        which spells them the canonical way.
 // Dialogs are layered on the dashboard via a `?dialog=` search param (see Dashboard).
 
-// Legacy /library?section=X deep links → /settings?section=X (section ids were
-// preserved when the Library tab became Settings sections).
-function LibraryRedirect() {
-  const [params] = useSearchParams()
-  const section = params.get('section') ?? 'plugins'
-  return <Navigate to={`/settings?section=${section}`} replace />
+// Interim: `shell/routes.tsx` redirects the legacy Settings links to the
+// canonical `/settings/<section>` path, but THIS table still drives Settings
+// from `?section=`. Translating back keeps both spellings working until Task 17
+// replaces this table with `buildRoutes()`, at which point this goes with it.
+function SettingsSectionRoute() {
+  const { section } = useParams()
+  return <Navigate to={`/settings?section=${section ?? 'general'}`} replace />
 }
 
 function DashboardRoute({ tab }: { tab: TabId }) {
@@ -58,9 +68,9 @@ function DashboardRoute({ tab }: { tab: TabId }) {
           activeTab={tab}
           onTabChange={(next) => navigate(next === 'sessions' ? '/sessions' : `/${next}`)}
           onOpenSession={(id, prompt) =>
-            navigate(`/session/${id}`, sessionOpenState(prompt))
+            navigate(sessionPath(id), sessionOpenState(prompt))
           }
-          onReviewSession={(id) => navigate(`/review/${id}`)}
+          onReviewSession={(id) => navigate(archivedSessionPath(id))}
           dialog={dialog}
           onDialogChange={(next) => {
             setSearchParams((prev) => {
@@ -77,7 +87,7 @@ function DashboardRoute({ tab }: { tab: TabId }) {
 }
 
 function SessionRoute() {
-  const { sessionId } = useParams()
+  const { id: sessionId } = useParams()
   const navigate = useNavigate()
   const location = useLocation()
   const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
@@ -119,7 +129,7 @@ function SessionRoute() {
       lastOrderRef.current.visible.includes(sessionId) ||
       lastOrderRef.current.all.includes(sessionId)
     if (!wasLive) {
-      navigate(`/review/${sessionId}`, { replace: true })
+      navigate(archivedSessionPath(sessionId), { replace: true })
       return
     }
     const next = nextSessionAfterClose(
@@ -127,7 +137,7 @@ function SessionRoute() {
       lastOrderRef.current.all,
       sessionId,
     )
-    navigate(next ? `/session/${next}` : '/sessions', { replace: true })
+    navigate(next ? sessionPath(next) : SESSIONS_PATH, { replace: true })
   }, [archived, sessionId, navigate])
 
   // Carried via navigation state when a session is opened straight from create,
@@ -135,7 +145,7 @@ function SessionRoute() {
   // on a normal open / refresh / deep-link, in which case nothing is seeded.
   // Both halves of that contract live in session/sessionNavState.
   const initialPrompt = readInitialPrompt(location.state)
-  if (!sessionId) return <Navigate to="/sessions" replace />
+  if (!sessionId) return <Navigate to={SESSIONS_PATH} replace />
   const handleDone = () => {
     // Fall back to the full ordering: the open session may be hidden from the
     // visible list (its group collapsed) and must still advance to a neighbor.
@@ -144,16 +154,16 @@ function SessionRoute() {
       allOrderedSessions.map((s) => s.id),
       sessionId,
     )
-    navigate(next ? `/session/${next}` : '/sessions')
+    navigate(next ? sessionPath(next) : SESSIONS_PATH)
   }
   return (
     <div className="flex-1 min-h-0 flex flex-col bg-canvas text-ink">
       <SessionView
         key={sessionId}
         sessionId={sessionId}
-        onBack={() => navigate('/sessions')}
+        onBack={() => navigate(SESSIONS_PATH)}
         onDone={handleDone}
-        onNavigateSession={(id) => navigate(`/session/${id}`)}
+        onNavigateSession={(id) => navigate(sessionPath(id))}
         initialPrompt={initialPrompt}
       />
     </div>
@@ -161,23 +171,23 @@ function SessionRoute() {
 }
 
 function ReviewRoute() {
-  const { sessionId } = useParams()
+  const { id: sessionId } = useParams()
   const navigate = useNavigate()
-  if (!sessionId) return <Navigate to="/sessions" replace />
+  if (!sessionId) return <Navigate to={SESSIONS_PATH} replace />
   return (
     <div className="flex-1 min-h-0 flex flex-col bg-canvas text-ink">
-      <ReviewView sessionId={sessionId} onBack={() => navigate('/sessions')} />
+      <ReviewView sessionId={sessionId} onBack={() => navigate(SESSIONS_PATH)} />
     </div>
   )
 }
 
 function SubSessionRoute() {
-  const { sessionId, agentId } = useParams()
+  const { id: sessionId, agentId } = useParams()
   const navigate = useNavigate()
-  if (!sessionId || !agentId) return <Navigate to="/sessions" replace />
+  if (!sessionId || !agentId) return <Navigate to={SESSIONS_PATH} replace />
   return (
     <div className="flex-1 min-h-0 flex flex-col bg-canvas text-ink">
-      <SubSessionView sessionId={sessionId} agentId={agentId} onBack={() => navigate(`/session/${sessionId}`)} />
+      <SubSessionView sessionId={sessionId} agentId={agentId} onBack={() => navigate(sessionPath(sessionId))} />
     </div>
   )
 }
@@ -211,9 +221,16 @@ function App() {
           <Route path="/accounts" element={<Navigate to="/settings?section=accounts" replace />} />
           <Route path="/automation" element={<Navigate to="/settings?section=automation" replace />} />
           <Route path="/library" element={<LibraryRedirect />} />
-          <Route path="/session/:sessionId" element={<SessionRoute />} />
-          <Route path="/session/:sessionId/subagent/:agentId" element={<SubSessionRoute />} />
-          <Route path="/review/:sessionId" element={<ReviewRoute />} />
+          <Route path="/settings/:section" element={<SettingsSectionRoute />} />
+          <Route path={SESSION_ROUTE} element={<SessionRoute />} />
+          <Route path={SUBAGENT_ROUTE} element={<SubSessionRoute />} />
+          <Route path={ARCHIVED_SESSION_ROUTE} element={<ReviewRoute />} />
+          {/* The pre-plural spellings, for bookmarks. Same components, same
+              param name — a redirect would be the better shape, and that is
+              exactly what buildRoutes() does; this table is deleted in Task 17. */}
+          <Route path="/session/:id" element={<SessionRoute />} />
+          <Route path="/session/:id/subagent/:agentId" element={<SubSessionRoute />} />
+          <Route path="/review/:id" element={<ReviewRoute />} />
           <Route path="*" element={<Navigate to="/sessions" replace />} />
         </Routes>
       )}

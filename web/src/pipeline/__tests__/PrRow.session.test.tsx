@@ -22,7 +22,7 @@ describe('PrRow ccswitch extras', () => {
   it('shows the session label linking to the session', () => {
     wrap(<PrRow pr={pr()} hasDeploy={false} queueCulprit={null} />)
     const link = screen.getByRole('link', { name: /fix-auth/ })
-    expect(link).toHaveAttribute('href', '/session/s1')
+    expect(link).toHaveAttribute('href', '/sessions/s1')
   })
   it('shows Fix only when fixable, and calls onFixPr', () => {
     const onFix = vi.fn()

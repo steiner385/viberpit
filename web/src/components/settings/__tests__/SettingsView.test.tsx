@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 // ── Library section mocks (mirrors LibraryView.test.tsx) ────────────────────
@@ -77,12 +77,19 @@ vi.mock('@/api/sessionsViewing', () => ({
 
 import { SettingsView } from '../SettingsView'
 
-function renderView(path = '/settings') {
+/** Surfaces the URL so the path-routed section strip can be asserted. */
+function UrlProbe() {
+  const { pathname, search } = useLocation()
+  return <div data-testid="url">{pathname + search}</div>
+}
+
+function renderView(path = '/settings', section?: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
       <MemoryRouter initialEntries={[path]}>
-        <SettingsView />
+        <SettingsView section={section} />
+        <UrlProbe />
       </MemoryRouter>
     </QueryClientProvider>,
   )
@@ -103,6 +110,36 @@ describe('SettingsView', () => {
     renderView()
     await userEvent.click(screen.getByRole('tab', { name: /skills/i }))
     expect(await screen.findByText('my-skill')).toBeInTheDocument()
+  })
+
+  // ── DEC-14: the section can arrive as a path segment ──────────────────────
+
+  it('honors a section handed in as a prop (/settings/:section)', async () => {
+    renderView('/settings/skills', 'skills')
+    expect(await screen.findByText('my-skill')).toBeInTheDocument()
+  })
+
+  it('lets the path section win over a stale ?section=', async () => {
+    // Both channels present and disagreeing. The path is the canonical one, so
+    // the query must not decide — otherwise /settings/skills?section=plugins
+    // renders Plugins and the URL lies about what is on screen.
+    renderView('/settings/skills?section=plugins', 'skills')
+    expect(await screen.findByText('my-skill')).toBeInTheDocument()
+    expect(screen.queryByText('alpha')).not.toBeInTheDocument()
+  })
+
+  it('moves the PATH when the strip is used on a path-routed Settings', async () => {
+    // Writing ?section= here would be ignored by the component that just read
+    // the path, leaving the tabs inert.
+    renderView('/settings/general', 'general')
+    await userEvent.click(screen.getByRole('tab', { name: /skills/i }))
+    expect(screen.getByTestId('url')).toHaveTextContent('/settings/skills')
+  })
+
+  it('still moves ?section= when Settings is not routed by path', async () => {
+    renderView('/settings')
+    await userEvent.click(screen.getByRole('tab', { name: /skills/i }))
+    expect(screen.getByTestId('url')).toHaveTextContent('/settings?section=skills')
   })
 
   it('renders all seven section tabs', () => {

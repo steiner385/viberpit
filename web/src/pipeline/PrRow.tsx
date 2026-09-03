@@ -1,7 +1,8 @@
 // Ported from plotroom@5166b52 frontend/src/PrRow.tsx; edits: ApiBaseContext import ./embed/ApiBaseContext → ./ApiBaseContext; eslint-disable react-refresh/only-export-components (mixed export file — subLine/readyMergeGate/areEqual + PrRow, intentional port); ccswitch blend (spec §6) — react-router-dom Link import; onFixPr? prop on PrRowProps + areEqual; session label/Fix span in pr-head after the ETA chip
 /* eslint-disable react-refresh/only-export-components */
 import { useState, useMemo, memo, type MouseEvent, type KeyboardEvent } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router-dom'
+import { sessionPath } from '@/session/sessionNavState';
 import { useInteractive } from '@/shell/InteractionContext';
 import { useApiBase } from './ApiBaseContext';
 import type { PrView } from './types';
@@ -248,7 +249,7 @@ function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr }: PrRowProps)
               a11y rule); stopPropagation guards the expand handler like .pr-title. */}
           {session && (
             <span className="pr-session-wrap" onClick={(e) => e.stopPropagation()}>
-              <Link className="pr-session" to={`/session/${session.id}`}
+              <Link className="pr-session" to={sessionPath(session.id)}
                     title={`Open session ${session.name}`}>⌗ {session.name}</Link>
               {session.fixable && onFixPr && (
                 <button type="button" className="pr-fix"

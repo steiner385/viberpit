@@ -8,6 +8,7 @@
 import { useNavigate } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { useSessionRuntime } from '@/session/useSessionRuntime'
+import { sessionPath } from '@/session/sessionNavState'
 import { TranscriptView } from './TranscriptView'
 
 interface Props {
@@ -41,7 +42,7 @@ export function SubSessionView({ sessionId, agentId, onBack }: Props) {
         <nav aria-label="Breadcrumb" className="text-sm text-gray-600 dark:text-gray-300 truncate">
           <button
             type="button"
-            onClick={() => navigate(`/session/${sessionId}`)}
+            onClick={() => navigate(sessionPath(sessionId))}
             className="opacity-80 hover:underline focus-visible:outline-none focus-visible:underline"
           >
             {rt.title || sessionId.slice(0, 8)}

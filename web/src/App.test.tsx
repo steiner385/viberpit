@@ -135,7 +135,7 @@ describe('App routing', () => {
     expect(screen.getByRole('button', { name: /back to dashboard/i })).toBeInTheDocument()
   })
 
-  it('redirects /session/:id to /review/:id for an archived session', async () => {
+  it('redirects /sessions/:id to /archived/:id for an archived session', async () => {
     // An archived session has no live driver, so the live-attach route 404s. The
     // route must redirect it to the read-only review view instead (safety net for
     // links — e.g. automation activity-log entries — that carry no status).
@@ -149,10 +149,14 @@ describe('App routing', () => {
       if (path === '/accounts') return Promise.resolve(MOCK_ACCOUNTS)
       return Promise.resolve([])
     })
-    renderAt('/session/arch-1')
+    renderAt('/sessions/arch-1')
     await waitFor(() => {
-      expect(screen.getByTestId('pathname')).toHaveTextContent('/review/arch-1')
+      expect(screen.getByTestId('pathname')).toHaveTextContent('/archived/arch-1')
     })
+    // …and lands on the read-only view, not on the Archived list: /archived/:id
+    // has to out-rank the /archived tab route, or the redirect silently drops
+    // the user on a list with no transcript.
+    expect(screen.getByRole('button', { name: /back to dashboard/i })).toBeInTheDocument()
   })
 
   it('opens a session from the list and updates the URL', async () => {
@@ -162,7 +166,7 @@ describe('App routing', () => {
       expect(screen.getByLabelText(/open session work/i)).toBeInTheDocument()
     })
     await user.click(screen.getByLabelText(/open session work/i))
-    expect(screen.getByTestId('pathname')).toHaveTextContent('/session/sess-1')
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/sessions/sess-1')
     expect(screen.getByRole('button', { name: /back to session list/i })).toBeInTheDocument()
   })
 
@@ -229,7 +233,7 @@ describe('App routing', () => {
     // Wait for useSessions to populate so the chevrons appear.
     const next = await screen.findByRole('button', { name: /next session/i })
     await user.click(next)
-    expect(screen.getByTestId('pathname')).toHaveTextContent('/session/sess-2')
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/sessions/sess-2')
   })
 
   it('renders the DesktopShell side-by-side layout at lg and up', async () => {
@@ -295,7 +299,7 @@ describe('App mobile session advance', () => {
     )
     await waitFor(() => expect(screen.getByRole('button', { name: /archive session/i })).toBeInTheDocument())
     await user.click(screen.getByRole('button', { name: /archive session/i }))
-    await waitFor(() => expect(seen).toContain('/session/sess-2'))
+    await waitFor(() => expect(seen).toContain('/sessions/sess-2'))
   })
 
   it("mobile: archiving advances even when the open session's group is collapsed", async () => {
@@ -321,7 +325,7 @@ describe('App mobile session advance', () => {
     )
     await waitFor(() => expect(screen.getByRole('button', { name: /archive session/i })).toBeInTheDocument())
     await user.click(screen.getByRole('button', { name: /archive session/i }))
-    await waitFor(() => expect(seen).toContain('/session/sess-2'))
+    await waitFor(() => expect(seen).toContain('/sessions/sess-2'))
   })
 
   it('mobile: the Back button still returns to the list (no advance)', async () => {

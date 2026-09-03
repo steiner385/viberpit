@@ -82,6 +82,23 @@ export const NAV_BY_ID: Record<NavId, NavDef> = (() => {
   return out
 })()
 
+/**
+ * `/settings/<section>` — the path form of a Settings section (DEC-14).
+ *
+ * Lives here, beside the `/settings` it is built from, because three callers
+ * need it: the route table's legacy redirects (`/accounts`, `/automation`,
+ * `/library`), the `/settings` → `/settings/general` redirect, and
+ * `SettingsView`'s own section strip once it is routed by path.
+ *
+ * A blank section falls back rather than being passed through. `/settings?section=`
+ * is a URL a stale link really can carry, and `/settings/ ` is a page that
+ * exists, renders General, and shows a nonsense URL for the rest of the session.
+ */
+export function settingsSectionPath(section: string | null | undefined, fallback = 'general'): string {
+  const trimmed = section?.trim()
+  return `${NAV_BY_ID.settings.path}/${trimmed ? trimmed : fallback}`
+}
+
 /** The nav entry whose path prefixes `pathname`, or null. Longest match wins. */
 export function navDefForPath(pathname: string): NavDef | null {
   let best: NavDef | null = null

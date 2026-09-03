@@ -13,7 +13,7 @@
 // `useSessionRuntimeContext()` would throw, taking the whole route down. Making
 // it one function is a guarantee; a test that both happen to agree today is not.
 //
-// `:id` alone is the wrong question — `/review/:id` is an archived transcript
+// `:id` alone is the wrong question — `/archived/:id` is an archived transcript
 // and must not attach a live runtime — so the section comes from `navDefForPath`,
 // the same map the route table is built from.
 import { useLocation, useParams } from 'react-router-dom'

@@ -122,7 +122,9 @@ function BottomComposer() {
 
 // ── Welcome / empty main-pane state (when New Session is the target) ───────────
 
-function WelcomePane() {
+// Exported for the routed `/sessions` page in `shell/routes.tsx` — the same
+// empty state, hosted unchanged, rather than a second copy of it.
+export function WelcomePane() {
   return (
     <div className="flex flex-col items-center justify-center h-full gap-2 text-center px-6">
       <p className="text-gray-600 dark:text-gray-400 text-sm">

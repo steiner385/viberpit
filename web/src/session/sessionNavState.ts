@@ -1,5 +1,23 @@
 /**
- * The router-`state` contract for opening a session with a seeded prompt.
+ * The navigation contract for opening a session: WHERE it lives (the paths
+ * below) and WHAT is carried with it (the router `state` below).
+ *
+ * ## The paths
+ *
+ * The app spelled the same destination two ways: `App.tsx` navigated to
+ * `/session/:id` (singular) while the shell's route table, `navDefs` and
+ * `useOpenSessionId` all speak `/sessions/:id` (plural). Two spellings of one
+ * destination is how a link silently starts landing on the catch-all, so both
+ * the route PATTERN and the builder that produces a concrete path live here,
+ * derived from the section path in `navDefs` — a detail route that drifted out
+ * from under its own section would break `navDefForPath`, and with it the
+ * session-runtime gate in `PageHost`. Deriving it makes that impossible rather
+ * than merely unlikely.
+ *
+ * The singular `/session/:id` and `/review/:id` spellings survive only as
+ * redirects in `shell/routes.tsx`, for bookmarks already in the wild.
+ *
+ * ## The state
  *
  * When a session is created from the composer the user's text is carried to the
  * session route in `navigate(..., { state })` so the transcript can show it
@@ -17,6 +35,37 @@
  * back/forward entry can carry state written by an older build), so it is
  * validated rather than asserted.
  */
+import { NAV_BY_ID } from '@/shell/navDefs'
+
+/** `/sessions` — the session list. */
+export const SESSIONS_PATH = NAV_BY_ID.sessions.path
+/** `/archived` — the archived list. */
+export const ARCHIVED_PATH = NAV_BY_ID.archived.path
+
+/**
+ * Route patterns for the session detail routes. The param is `id` (not
+ * `sessionId`) because `useOpenSessionId` reads `useParams().id`; `/archived/:id`
+ * reuses the same name deliberately, which is what makes `PageHost`'s
+ * section-based gate load-bearing instead of defensive.
+ */
+export const SESSION_ROUTE = `${SESSIONS_PATH}/:id`
+export const SUBAGENT_ROUTE = `${SESSIONS_PATH}/:id/agents/:agentId`
+export const ARCHIVED_SESSION_ROUTE = `${ARCHIVED_PATH}/:id`
+
+/** The route of an open session. */
+export function sessionPath(id: string): string {
+  return `${SESSIONS_PATH}/${id}`
+}
+
+/** The route of one sub-agent inside an open session. */
+export function subAgentPath(id: string, agentId: string): string {
+  return `${SESSIONS_PATH}/${id}/agents/${agentId}`
+}
+
+/** The route of an archived session's read-only transcript (DEC-6). */
+export function archivedSessionPath(id: string): string {
+  return `${ARCHIVED_PATH}/${id}`
+}
 
 /** Router state understood by the session route. */
 export interface SessionOpenState {
