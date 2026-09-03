@@ -112,6 +112,15 @@ def test_upsert_relations_backfills_fks_when_target_later_mirrored():
     assert dep.dst_work_item_id == db.query(WorkItem).filter_by(number=949).one().id
 
 
+def test_upsert_relations_stores_node_ids():
+    db = _db()
+    _seed(db)
+    mirror_store.upsert_relations(db, REPO, [IssueRelView(
+        repo=REPO, number=945, blocked_by=[], parent_ref=None, sub_issue_refs=[],
+        node_id="I_945")])
+    assert db.query(WorkItem).filter_by(number=945).one().gh_node_id == "I_945"
+
+
 def test_upsert_relations_only_touches_the_given_repo():
     """The src_ref prefix filter must scope reconciliation to *this* repo — a dep
     row owned by another repo is never deactivated by an unrelated repo's pass."""

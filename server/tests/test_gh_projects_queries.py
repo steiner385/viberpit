@@ -165,6 +165,15 @@ def test_relations_query_targets_open_issues():
     assert "states: OPEN" in q
 
 
+def test_relations_capture_node_id():
+    payload = _relations_payload()
+    payload["data"]["repository"]["issues"]["nodes"][0]["id"] = "I_945"
+    rels, _, _ = parse_issue_relations(payload, "steiner385/cc-account-switcher")
+    assert rels[0].node_id == "I_945"
+    assert "nodes { id number" in build_issue_relations_query(
+        "steiner385/cc-account-switcher", None)
+
+
 def test_project_node_missing_distinguishes_deleted_from_empty():
     from server.pm.gh_projects import project_node_missing
     # board deleted on GitHub: node(id:) resolves null (issue #973).

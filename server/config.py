@@ -137,6 +137,11 @@ try:
         # are parked for a human instead. Bounds a session driving itself in circles.
         self_model_switch_cap: int = Field(
             default=3, alias="CCSWITCH_SELF_MODEL_SWITCH_CAP")
+        # Reconciler kill switch (spec 003 Phase B): whether the reconciler is
+        # allowed to write back to GitHub (project moves, addBlockedBy, etc.).
+        # Defaults off — Phase B lands the schema/read-side before any write path.
+        gh_reconcile_enabled: bool = Field(
+            default=False, alias="CCSWITCH_GH_RECONCILE_ENABLED")
 
         model_config = {"populate_by_name": True, "env_file": ".env", "extra": "ignore"}
 
@@ -295,6 +300,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         self_model_switch_cap: int = dataclasses.field(
             default_factory=lambda: int(v) if (v := os.environ.get("CCSWITCH_SELF_MODEL_SWITCH_CAP", "")) and v.isdigit() else 3
+        )
+        gh_reconcile_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_GH_RECONCILE_ENABLED", "false").lower() in ("1", "true", "yes", "on")
         )
 
         @property

@@ -108,6 +108,8 @@ def upsert_relations(db: Session, repo: str, rels: list[IssueRelView]) -> None:
         if src is None:
             continue
         src.is_epic = bool(rel.sub_issue_refs)
+        if rel.node_id:
+            src.gh_node_id = rel.node_id
         parent = by_ref.get(rel.parent_ref) if rel.parent_ref else None
         src.parent_work_item_id = parent.id if parent else None
     bodies = {ref: item.body for ref, item in by_ref.items()
