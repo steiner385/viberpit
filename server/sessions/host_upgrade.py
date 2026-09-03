@@ -49,11 +49,19 @@ def _origin_master_short(run=subprocess.run) -> str:
 
 async def default_target_sha(resolve_origin: Callable[[], str] = _origin_master_short) -> str:
     """The fleet's deployed sha (deploy_state), else origin/master's tip for a fleet that
-    has never recorded a deploy. Never a commit AHEAD of what the edge runs."""
+    has never recorded a deploy. Never a commit AHEAD of what the edge runs.
+
+    Returns the FULL sha, not ``deployed_short``: a short sha is only minimal-unique on
+    the edge that abbreviated it, and lands in ``git merge --ff-only <target>`` on a
+    DIFFERENT host — one that may need more hex digits to disambiguate the same commit
+    (steps.short_sha_match's own docstring: dobby abbreviated to 8 chars, rocky to 7).
+    RunnerDeploy._verify is prefix-based, so a full target still verifies fine against a
+    short ``/info`` sha.
+    """
     from server.deploy.state import read_deploy_state
     state = await read_deploy_state()
     if state is not None:
-        return state.deployed_short
+        return state.deployed_sha
     return await asyncio.to_thread(resolve_origin)
 
 

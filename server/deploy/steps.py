@@ -288,6 +288,10 @@ SSH_REPO_RE = re.compile(r"^/[A-Za-z0-9._/-]+$")
 # A git rev passed to `git merge --ff-only`. Hex only, never a ref expression.
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
+# One source of truth for the local daemon-unit restart argv: server.deploy.runners
+# imports this as its own LOCAL_RESTART rather than re-literalling the same list.
+LOCAL_DAEMON_RESTART: list[str] = ["sudo", "systemctl", "restart", "ccswitch-daemon.service"]
+
 
 def restart_edge(*, run: Run = subprocess.run) -> list[str]:
     """Restart the edge unit. Runner (daemon) restarts — local AND remote — are owned by
@@ -298,7 +302,7 @@ def restart_edge(*, run: Run = subprocess.run) -> list[str]:
 
 
 def restart_local_daemon(*, run: Run = subprocess.run) -> None:
-    run(["sudo", "systemctl", "restart", "ccswitch-daemon.service"], check=True, capture_output=True)
+    run(LOCAL_DAEMON_RESTART, check=True, capture_output=True)
 
 
 def _default_fetch(url: str) -> str:

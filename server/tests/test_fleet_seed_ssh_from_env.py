@@ -27,6 +27,29 @@ def test_seed_fills_null_ssh_columns_only(tmp_path, monkeypatch):
     assert out["other"] == ("keep", "/keep")
 
 
+def test_seed_never_overwrites_a_partially_configured_host(tmp_path, monkeypatch):
+    """An operator who already set repo_path (by hand, or a prior partial seed) owns it —
+    the seed must not clobber it even though ssh_host is still NULL and the name matches."""
+    from server.db import db_session, init_db
+    from server.db.models import Host
+    from server.app import seed_host_ssh_from_env
+
+    monkeypatch.setenv("CCSWITCH_DAEMON_SSH_HOST", "tony@rocky")
+    monkeypatch.setenv("CCSWITCH_DAEMON_SSH_REPO", "/home/tony/GitHub/ccswitch")
+
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'p.db'}")
+        async with db_session() as db:
+            db.add(Host(name="rocky", endpoint="https://rocky:9443", ssh_host=None,
+                        repo_path="/mine"))
+        await seed_host_ssh_from_env()
+        async with db_session() as db:
+            row = (await db.execute(sa_select(Host).where(Host.name == "rocky"))).scalar_one()
+        return (row.ssh_host, row.repo_path)
+
+    assert asyncio.run(run()) == (None, "/mine")
+
+
 def test_seed_is_noop_without_env_or_matching_host(tmp_path, monkeypatch):
     from server.db import db_session, init_db
     from server.db.models import Host

@@ -277,7 +277,9 @@ def test_default_target_prefers_deploy_state(tmp_path):
         await record_deploy(sha="c" * 40, short="ccccccc", daemon_changed=True)
         return await host_upgrade.default_target_sha(resolve_origin=lambda: "zzzzzzz")
 
-    assert asyncio.run(run()) == "ccccccc"
+    # The FULL sha, not deployed_short: a short sha is only minimal-unique on the edge
+    # that abbreviated it and can be ambiguous on the runner it's merged into.
+    assert asyncio.run(run()) == "c" * 40
 
 
 def test_default_target_falls_back_to_origin_master_without_deploy_state(tmp_path):

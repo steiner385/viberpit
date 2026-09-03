@@ -146,7 +146,8 @@ async def seed_host_ssh_from_env() -> None:
     from server.db import db_session as _dbs
     from server.db.models import Host as _Host
     async with _dbs() as _db:
-        await _db.execute(_upd(_Host).where(_Host.name == name, _Host.ssh_host.is_(None))
+        await _db.execute(_upd(_Host).where(_Host.name == name, _Host.ssh_host.is_(None),
+                                            _Host.repo_path.is_(None))
                           .values(ssh_host=ssh_host, repo_path=repo))
 
 

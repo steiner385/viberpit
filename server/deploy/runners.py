@@ -25,7 +25,9 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from server.deploy import drain as _drain
-from server.deploy.steps import SSH_HOST_RE, SSH_REPO_RE, _SHA_RE, short_sha_match
+from server.deploy.steps import (
+    LOCAL_DAEMON_RESTART, SSH_HOST_RE, SSH_REPO_RE, _SHA_RE, short_sha_match,
+)
 
 log = logging.getLogger("server.deploy.runners")
 
@@ -114,7 +116,9 @@ def remote_rewind_commands(repo_path: str, sha: str) -> list[tuple[str, list[str
 
 
 REMOTE_RESTART = ["sudo", "-n", "systemctl", "restart", RUNNER_UNIT]
-LOCAL_RESTART = ["sudo", "systemctl", "restart", RUNNER_UNIT]
+# One concept, one literal: steps.py defines the local daemon-restart argv (steps.py's own
+# restart_local_daemon uses it too), so the two callers can never drift apart.
+LOCAL_RESTART = LOCAL_DAEMON_RESTART
 
 
 def is_local(target: RunnerTarget, local_name: str) -> bool:

@@ -48,12 +48,28 @@ def test_remote_update_commands_ff_only_and_conditional_pip():
     assert [s for s, _ in R.remote_update_commands("/srv/cc", "abc1234", deps_changed=False)] == \
         ["fetch", "merge", "sync"]
     assert not any("reset" in a for _, argv in with_pip for a in argv)
+    # host_upgrade.default_target_sha now hands RunnerDeploy the FULL 40-char sha (a
+    # short one is only minimal-unique on the edge that abbreviated it) — the controller
+    # passes the same shape via git.current_sha. Pin that it reaches the merge argv whole.
+    full = "0d15f1280d8b1b9f296e60939c21ccd63935da63"
+    assert R.remote_update_commands("/srv/cc", full, deps_changed=False)[1][1] == \
+        ["git", "-C", "/srv/cc", "merge", "--ff-only", full]
 
 
 def test_remote_rewind_uses_reset_hard():
     cmds = R.remote_rewind_commands("/srv/cc", "01d0000")
     assert cmds[1][1] == ["git", "-C", "/srv/cc", "reset", "--hard", "01d0000"]
     assert [s for s, _ in cmds] == ["fetch", "reset", "sync"]
+
+
+def test_remote_rewind_accepts_the_full_sha_the_controller_actually_passes():
+    """Coupling guard (restored from the deleted test_deploy_steps_rollback.py test): the
+    controller rolls back to `git.current_sha` (`rev-parse @`, a full 40-char sha), and
+    the rewind path VALIDATES that value — so a non-hex sha would turn a rollback into a
+    raise, losing the rollback entirely. Pin the shape the caller really supplies."""
+    full = "0d15f1280d8b1b9f296e60939c21ccd63935da63"
+    cmds = R.remote_rewind_commands("/srv/cc", full)
+    assert cmds[1][1] == ["git", "-C", "/srv/cc", "reset", "--hard", full]
 
 
 def test_unsafe_values_are_refused_before_any_command():
