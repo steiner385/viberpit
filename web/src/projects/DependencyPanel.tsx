@@ -34,7 +34,7 @@ export function DependencyPanel({ slug }: { slug: string }) {
           <span className="font-medium">{src}</span>
           <span className="pm-muted"> blocked by </span>
           {edges.map((e, i) => (
-            <span key={e.dst + e.source}>
+            <span key={`${e.dst}:${e.source}`}>
               {i > 0 && ', '}
               <span className={e.dstState === 'closed' ? 'line-through opacity-60' : ''}>
                 {e.dst}

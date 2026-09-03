@@ -38,6 +38,8 @@ it('renders blocked-by edges grouped by source item and drift counts', async () 
   renderPanel()
   await waitFor(() => expect(screen.getByText('o/r#950')).toBeInTheDocument())
   expect(screen.getByText('o/r#12')).toBeInTheDocument()
+  const closedDst = screen.getByText('o/r#949')
+  expect(closedDst).toHaveClass('line-through')
   // inactive edges are not rendered
   expect(screen.queryByText('o/r#951')).not.toBeInTheDocument()
   expect(screen.getByText(/1 prose-only/i)).toBeInTheDocument()
