@@ -158,6 +158,8 @@ _REQUIRED_EXTRAS: dict[str, dict[str, object]] = {
     # host_heartbeats joins the sweep via beat_at (DateTime); host is the PK.
     # fence/beat_at carry Python-side defaults — only the PK is required here.
     "host_heartbeats": {"host": "dtcheck-host"},
+    # deploy_state joins the sweep via deployed_at; id is the PK (Python-side default).
+    "deploy_state": {"id": "dtcheck-deploy-state"},
 }
 
 # FK columns that must be filled from a parent row inserted earlier in this

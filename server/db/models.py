@@ -899,6 +899,30 @@ class Host(Base):
     load_avg: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
     mem_available_mb: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     active_sessions: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    # Fresh `git rev-parse --short HEAD` of the daemon's checkout (reported as
+    # /info.checkoutSha). Differs from `sha` (the PROCESS's start-time HEAD) after an
+    # edge-only deploy updated the checkout without a restart. Nullable: reconcile adds it.
+    checkout_sha: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+
+
+class DeployStateRow(Base):
+    """Single-row (id='singleton') record of the fleet's deployed version (spec §1).
+
+    Written by the deploy controller once the edge is healthy on a target; read by the
+    fleet probe's version-skew gate and by ``server.deploy.runner_sync`` at runner boot.
+    Every column but the PK is nullable so init_db reconciles it without a migration.
+    """
+
+    __tablename__ = "deploy_state"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default="singleton")
+    deployed_sha: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    deployed_short: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # Full sha of the last deploy whose diff was daemon-changing: a runner PROCESS older
+    # than this is stale even if its checkout is current.
+    daemon_sha: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    deployed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    deployed_by: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
 
 class DaemonLease(Base):
