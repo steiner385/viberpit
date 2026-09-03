@@ -931,6 +931,21 @@ class DaemonLease(Base):
         DateTime, nullable=False, default=datetime.utcnow)
 
 
+class HostHeartbeat(Base):
+    """Fenced per-host daemon heartbeat (spec 002 FR-101).
+
+    Written only by the named host (fenced renew in host_heartbeat.beat) or by the
+    primary bumping the fence to declare the host dead (host_heartbeat.declare_dead).
+    Liveness is DERIVED from beat_at — never stored (FR-102)."""
+
+    __tablename__ = "host_heartbeats"
+
+    host: Mapped[str] = mapped_column(String, primary_key=True)
+    beat_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    fence: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    epoch: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
 # ---------------------------------------------------------------------------
 # AI-native SDLC artifact-chain spine (#795 Phase 1 / #796)
 #

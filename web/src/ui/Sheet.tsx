@@ -55,7 +55,9 @@ export function Sheet({
       style={side === 'right' ? { width } : undefined}
       className={cn(
         'flex flex-col bg-surface text-ink border-edge shadow-xl overflow-hidden',
-        side === 'right' ? 'h-full max-w-full border-l' : 'w-full max-h-[85vh] rounded-t-lg border-t',
+        side === 'right'
+          ? 'h-full max-w-full border-l animate-sheet-right motion-reduce:animate-none'
+          : 'w-full max-h-[85vh] rounded-t-lg border-t animate-sheet-bottom motion-reduce:animate-none',
         mode === 'overlay' && 'relative',
         className,
       )}

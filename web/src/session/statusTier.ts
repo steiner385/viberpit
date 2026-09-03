@@ -1,12 +1,12 @@
 import {
   Loader2, CircleAlert, HelpCircle, Eye, Check, CheckCircle2,
   AlertTriangle, X, Clock, Minimize2, Hourglass, RotateCcw,
-  ListOrdered, UserCheck,
+  ListOrdered, UserCheck, WifiOff,
 } from 'lucide-react'
 import type { ComponentType } from 'react'
 import type { SessionStatus } from '@/api/types'
 
-export type StatusTier = 'busy' | 'needs-you' | 'your-turn' | 'waiting' | 'error'
+export type StatusTier = 'busy' | 'needs-you' | 'your-turn' | 'waiting' | 'error' | 'unreachable'
 
 export interface StatusPresentation {
   tier: StatusTier
@@ -20,6 +20,17 @@ const NEEDS_YOU = 'text-warning'
 const ERROR = 'text-danger'
 const BUSY = 'text-success'
 const CALM = 'text-ink-muted'
+const SLATE = 'text-slate-500 dark:text-slate-400'
+
+// A daemon not confirmed alive within the truth bound (spec 002 FR-104): a
+// "Working…" pulse and a "Ready"/"Your turn" affordance are equally promises it
+// cannot keep. Non-terminal sessions demote to this; terminal ones never do.
+export const UNREACHABLE: StatusPresentation = {
+  tier: 'unreachable', label: 'Unreachable', Icon: WifiOff, textClass: SLATE,
+}
+
+// Terminal states are truthfully finished without a live daemon — never demoted.
+const TERMINAL = new Set(['complete', 'ended', 'archived'])
 
 // One table, keyed by the rich status string. 'working' is a tolerated legacy alias.
 //
@@ -57,7 +68,7 @@ const PRESENTATION: Record<SessionStatus | 'working', StatusPresentation> = {
 }
 
 const FALLBACK: StatusPresentation = {
-  tier: 'your-turn', label: 'Ready', Icon: Clock, textClass: CALM,
+  tier: 'waiting', label: 'Unknown', Icon: HelpCircle, textClass: CALM,
 }
 
 // Issue #434: a session whose in-flight turn was dropped by a daemon wedge/restart comes
@@ -82,14 +93,15 @@ export const PR_CHECKS_FAILING: StatusPresentation = {
 export interface StatusPresentationOpts {
   /** The session's turn was dropped by a daemon restart (Session.interruptedByRestart). */
   interruptedByRestart?: boolean
+  /** Owning host's derived liveness (spec 002 FR-104). Non-'fresh' demotes a
+   *  non-terminal session to the UNREACHABLE pill. */
+  liveness?: string
 }
 
-// DIAGNOSTIC (temporary): any status string not in PRESENTATION renders as the
-// calm "Ready" fallback — visually indistinguishable from a genuine idle session.
-// Record each *novel* unknown string once so we can tell a transport/vocabulary
-// gap (unrecognized state arrived) from a real backend idle/done. Deduped because
-// statusPresentation() runs inside render/sort hot paths. Remove once the
-// false-"Ready" question is settled.
+// Permanent instrumentation: any status string not in PRESENTATION renders as the
+// neutral "Unknown" fallback. Record each *novel* unknown string once so we can
+// detect transport/vocabulary gaps (an unrecognized state arrived from the wire).
+// Deduped because statusPresentation() runs inside render/sort hot paths.
 const seenUnknownStatuses = new Set<string>()
 
 export function statusPresentation(
@@ -98,13 +110,16 @@ export function statusPresentation(
   if (opts?.interruptedByRestart && RESTART_STRANDABLE.has(state)) {
     return INTERRUPTED_BY_RESTART
   }
+  if (opts?.liveness && opts.liveness !== 'fresh' && !TERMINAL.has(state)) {
+    return UNREACHABLE
+  }
   // Cast to widen the key type for lookup only: `state` arrives as a plain string off
   // the wire, so an unknown value must still be *handled* (FALLBACK + the warn below)
   // even though the table itself is exhaustively typed over SessionStatus.
   const hit = (PRESENTATION as Record<string, StatusPresentation | undefined>)[state]
   if (!hit && !seenUnknownStatuses.has(state)) {
     seenUnknownStatuses.add(state)
-    console.warn(`[status] unrecognized status %o rendered as fallback "Ready"`, state)
+    console.warn(`[status] unrecognized status %o rendered as neutral "Unknown" fallback`, state)
   }
   return hit ?? FALLBACK
 }
@@ -119,12 +134,13 @@ export function statusTier(state: string): StatusTier {
  * `pulse` marks the action-required tiers whose dot animates (motion-safe).
  */
 export const TIER_TONE: Record<StatusTier, 'success' | 'warning' | 'danger' | 'neutral' | 'info'> = {
-  busy: 'success', 'needs-you': 'warning', error: 'danger', 'your-turn': 'neutral', waiting: 'info',
+  busy: 'success', 'needs-you': 'warning', unreachable: 'warning', error: 'danger', 'your-turn': 'neutral', waiting: 'info',
 }
 
 export const TIER_ACCENT: Record<StatusTier, { rail: string; dot: string; pulse: boolean }> = {
   busy: { rail: 'bg-success', dot: 'bg-success', pulse: false },
   'needs-you': { rail: 'bg-warning', dot: 'bg-warning', pulse: true },
+  unreachable: { rail: 'bg-neutral/40', dot: 'bg-warning', pulse: false },
   error: { rail: 'bg-danger', dot: 'bg-danger', pulse: true },
   // Deliberately muted relative to the dot (see module docstring above).
   'your-turn': { rail: 'bg-neutral/40', dot: 'bg-neutral', pulse: false },
@@ -132,7 +148,7 @@ export const TIER_ACCENT: Record<StatusTier, { rail: string; dot: string; pulse:
 }
 
 export const TIER_RANK: Record<StatusTier, number> = {
-  'needs-you': 0, error: 1, 'your-turn': 2, waiting: 3, busy: 4,
+  'needs-you': 0, unreachable: 1, error: 2, 'your-turn': 3, waiting: 4, busy: 5,
 }
 
 /**
@@ -144,6 +160,7 @@ export const TIER_RANK: Record<StatusTier, number> = {
  */
 export const TIER_LABEL: Record<StatusTier, string> = {
   'needs-you': 'Needs you',
+  unreachable: 'Unreachable',
   error: 'Needs attention',
   'your-turn': 'Done',
   waiting: 'Waiting',

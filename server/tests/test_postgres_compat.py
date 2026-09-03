@@ -155,6 +155,9 @@ _REQUIRED_EXTRAS: dict[str, dict[str, object]] = {
     # daemon_leases joins the sweep via acquired_at/renewed_at; name is the PK
     # (holder/fence carry Python-side defaults the insert applies itself).
     "daemon_leases": {"name": "dtcheck-lease"},
+    # host_heartbeats joins the sweep via beat_at (DateTime); host is the PK.
+    # fence/beat_at carry Python-side defaults — only the PK is required here.
+    "host_heartbeats": {"host": "dtcheck-host"},
 }
 
 # FK columns that must be filled from a parent row inserted earlier in this

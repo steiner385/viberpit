@@ -27,6 +27,7 @@ const AT_REST = new Set<StatusTier>(['your-turn'])
 export function sessionTriage(session: Session): StatusPresentation {
   const base = statusPresentation(session.status, {
     interruptedByRestart: session.interruptedByRestart,
+    liveness: session.liveness,
   })
   if (
     AT_REST.has(base.tier)

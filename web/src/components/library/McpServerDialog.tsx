@@ -245,13 +245,15 @@ export function McpServerDialog({ server, onClose }: McpServerDialogProps) {
 
           {/* JSON toggle */}
           <div className="flex justify-end">
-            <button
+            <Button
               type="button"
+              variant="ghost"
+              size="sm"
               onClick={jsonMode ? exitJsonMode : enterJsonMode}
-              className="text-xs text-accent hover:underline"
+              className="text-xs text-accent"
             >
               {jsonMode ? 'Form mode' : 'Edit as JSON'}
-            </button>
+            </Button>
           </div>
 
           {jsonMode ? (

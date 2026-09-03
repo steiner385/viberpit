@@ -150,6 +150,12 @@ export interface Session {
   /** Issue #434: the session's in-flight turn was dropped by a daemon wedge/restart (it
    *  came back idle via rehydrate). The dashboard labels it "re-send to resume". Transient. */
   interruptedByRestart?: boolean
+  /** Derived at the edge from the owning host's heartbeat (spec 002 FR-103).
+   *  Absent/`fresh` ⇒ no demotion. */
+  liveness?: 'fresh' | 'stale' | 'unreachable' | 'dead'
+  /** ISO8601 of the owning host's last confirmed heartbeat, or null (in-process
+   *  sessions and hosts with no heartbeat row). */
+  lastConfirmedAliveAt?: string | null
   /** Server-computed: this session was interrupted mid-work by a restart and can be resumed. */
   resumable?: boolean
   /** The automation_id that spawned this session (e.g. 'pr-doctor'); null/absent = human-created. */

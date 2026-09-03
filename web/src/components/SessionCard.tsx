@@ -730,6 +730,11 @@ export function SessionCard({ session, account, selected = false, listMode = fal
           >
             {presentation.label}
           </span>
+          {presentation.tier === 'unreachable' && isValidTimestamp(session.lastConfirmedAliveAt) && (
+            <span className="flex-shrink-0 text-slate-500 dark:text-slate-400">
+              {' '}— last seen {relTime(session.lastConfirmedAliveAt, now || undefined)}
+            </span>
+          )}
           {session.summary && (
             <span
               data-testid="card-summary"
