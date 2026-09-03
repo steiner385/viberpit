@@ -39,6 +39,8 @@ def upgrade() -> None:
         sa.UniqueConstraint("gh_project_id", "gh_item_node_id", name="uq_gh_project_item"),
     )
     op.create_index("ix_gh_project_items_status", "gh_project_items", ["status"])
+    op.create_index("ix_gh_project_items_gh_project_id", "gh_project_items", ["gh_project_id"])
+    op.create_index("ix_gh_project_items_work_item_id", "gh_project_items", ["work_item_id"])
     op.create_table(
         "work_item_deps",
         sa.Column("id", sa.String(), primary_key=True),
@@ -53,6 +55,8 @@ def upgrade() -> None:
         sa.UniqueConstraint("src_ref", "dst_ref", "source", name="uq_work_item_dep"),
     )
     op.create_index("ix_work_item_deps_src_ref", "work_item_deps", ["src_ref"])
+    op.create_index("ix_work_item_deps_src_work_item_id", "work_item_deps", ["src_work_item_id"])
+    op.create_index("ix_work_item_deps_dst_work_item_id", "work_item_deps", ["dst_work_item_id"])
     op.create_table(
         "gh_write_journal",
         sa.Column("id", sa.String(), primary_key=True),
@@ -80,6 +84,10 @@ def downgrade() -> None:
     op.drop_column("work_items", "is_epic")
     op.drop_column("work_items", "parent_work_item_id")
     op.drop_table("gh_write_journal")
+    op.drop_index("ix_work_item_deps_dst_work_item_id", "work_item_deps")
+    op.drop_index("ix_work_item_deps_src_work_item_id", "work_item_deps")
     op.drop_table("work_item_deps")
+    op.drop_index("ix_gh_project_items_work_item_id", "gh_project_items")
+    op.drop_index("ix_gh_project_items_gh_project_id", "gh_project_items")
     op.drop_table("gh_project_items")
     op.drop_table("gh_projects")
