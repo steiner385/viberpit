@@ -1,6 +1,7 @@
 import * as React from 'react'
 import { cn } from '@/lib/utils'
 import { Badge } from './Badge'
+import { badgedName } from './badgedName'
 
 export interface TabItem { id: string; label: string; count?: number; attention?: boolean }
 
@@ -14,11 +15,6 @@ export interface TabsProps {
   panelId?: (id: string) => string
   orientation?: 'horizontal' | 'vertical'
   className?: string
-}
-
-function tabName({ label, count, attention }: TabItem): string {
-  if (attention) return count ? `${label} (${count}, needs attention)` : `${label} (needs attention)`
-  return count ? `${label} (${count})` : label
 }
 
 export function Tabs({ items, value, onChange, label, panelId, orientation = 'horizontal', className }: TabsProps) {
@@ -54,7 +50,7 @@ export function Tabs({ items, value, onChange, label, panelId, orientation = 'ho
             id={panelId ? `tab-${t.id}` : undefined}
             aria-selected={active}
             aria-controls={panelId ? panelId(t.id) : undefined}
-            aria-label={tabName(t)}
+            aria-label={badgedName(t)}
             tabIndex={active ? 0 : -1}
             onKeyDown={(e) => onKeyDown(e, i)}
             onClick={() => onChange(t.id)}
