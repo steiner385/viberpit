@@ -48,6 +48,7 @@ from server.ipc import protocol as proto
 from server.ipc.client import DaemonTimeout, DaemonUnavailable
 from server.obs.context import bind_session, log_event
 from server.obs.tasks import supervise
+from server.sessions.commands.catalog import parse_command_line
 from server.sessions.events import ErrorEvent, PermissionRequest, tool_kind
 from server.sessions.facade import call_with_deadline
 from server.sessions.replay import replay_window
@@ -504,6 +505,29 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             except Exception:
                 log.warning("ws.attach: command_catalog failed for %s", session_id, exc_info=True)
 
+        async def _run_command_and_reply(session_id: str, name: str, args: str) -> bool:
+            """Dispatch a slash command and emit its commandResult frame, exactly
+            as the interactive `command` frame does. Returns True if the command
+            was known (handled — whether it succeeded or errored), False if
+            unknown so the caller can decide the fallback (the command frame
+            reports "unknown command"; the initial-prompt path re-sends the text
+            as a normal prompt). Single source for command dispatch-and-reply so
+            the two entry points can't drift."""
+            try:
+                result = await orchestrator.run_command(session_id, name, args,
+                                                        identity=identity)
+            except KeyError:
+                return False
+            except Exception:
+                log.warning("ws.command failed session=%s name=%s", session_id, name, exc_info=True)
+                await _send(redact_event({"type": "commandResult", "sessionId": session_id,
+                             "name": name, "ok": False, "error": "command failed"}))
+                return True
+            if result is not None:
+                await _send(redact_event({"type": "commandResult", "sessionId": session_id,
+                             "ok": True, **result}))
+            return True
+
         async def _emit_live_extras(session_id: str, driver, events: list) -> None:
             """Post-attach live wiring: suggestion seeding, command catalog, pending
             permission/question re-emit, live status, and the deferred initial prompt.
@@ -610,7 +634,19 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             try:
                 pending_prompt = await orchestrator.pop_pending_initial_prompt(session_id)
                 pending_attachment_ids = await orchestrator.pop_pending_initial_attachment_ids(session_id)
-                if pending_prompt is not None or pending_attachment_ids:
+                # A bare slash command typed as the initial prompt runs through the
+                # SAME dispatch as one typed mid-session (/model, /account, /clear,
+                # /context, /help, custom commands) — so it executes as a command
+                # instead of being sent to the model as literal text. Only when it
+                # has no attachments (a command carrying images isn't a thing) and
+                # parses as a single-line command; an unknown command falls back to
+                # a normal prompt, mirroring the composer's runCommandFromText.
+                handled = False
+                if pending_prompt and not pending_attachment_ids:
+                    parsed = parse_command_line(pending_prompt)
+                    if parsed is not None:
+                        handled = await _run_command_and_reply(session_id, parsed[0], parsed[1])
+                if not handled and (pending_prompt is not None or pending_attachment_ids):
                     log.info("ws.attach: sending deferred initial prompt for %s", session_id)
                     await orchestrator.send_prompt(
                         session_id, pending_prompt or "", pending_attachment_ids)
@@ -1126,20 +1162,9 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 elif msg_type == "command":
                     name = msg.get("name", "")
                     args = msg.get("args", "")
-                    try:
-                        result = await orchestrator.run_command(session_id, name, args,
-                                                                identity=identity)
-                    except KeyError:
+                    if not await _run_command_and_reply(session_id, name, args):
                         await _send(redact_event({"type": "commandResult", "sessionId": session_id,
                                      "name": name, "ok": False, "error": "unknown command"}))
-                    except Exception:
-                        log.warning("ws.command failed session=%s name=%s", session_id, name, exc_info=True)
-                        await _send(redact_event({"type": "commandResult", "sessionId": session_id,
-                                     "name": name, "ok": False, "error": "command failed"}))
-                    else:
-                        if result is not None:
-                            await _send(redact_event({"type": "commandResult", "sessionId": session_id,
-                                         "ok": True, **result}))
                 else:
                     await _send({"type": "error", "code": "UNKNOWN_TYPE",
                                  "message": f"Unknown message type: {msg_type!r}"})
