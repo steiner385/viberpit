@@ -30,11 +30,35 @@ const GAP = 4
 export function Menu({ open, onClose, anchorRef, items, onSelect, label, align = 'start', className }: MenuProps) {
   const listRef = React.useRef<HTMLDivElement>(null)
   const [active, setActive] = React.useState(0)
+  // Callers pass `items` as an inline array literal — the normal shape — so it
+  // arrives with a fresh identity on every parent render. Memoizing off that
+  // identity re-ran the position effect below, which resets `active` to the
+  // first enabled item and drags DOM focus after it: arrow-key to "Plan", let a
+  // background poll re-render the composer, and the highlight snaps back to
+  // "Manual". Ruling R21 calls that fatal for the pickers this primitive exists
+  // for; the same defect was fixed for `onClose` one effect away and missed
+  // here. So stabilise on a *value* signature — each item's id plus its
+  // disabled state, which is all enabledIdx reads — and a structurally
+  // identical inline array counts as unchanged. A real change (an item
+  // disabled, reordered, added, removed) still moves the key and recomputes.
+  //
+  // The signature is shaped so enabledIdx derives from it alone — one flag per
+  // item ('1' = disabled), then the ids, which are present only so a reorder or
+  // a same-length replacement still moves the key. Deriving from the string
+  // keeps the memo dependent on exactly what it is keyed by, with no second,
+  // unlisted read of `items`.
+  const itemsKey =
+    items.map((it) => (it.disabled ? '1' : '0')).join('') + '|' + items.map((it) => it.id).join(' ')
   // Single source of truth for "which items are selectable, in order": both
   // the digit shortcuts (enabledIdx[N-1]) and the rendered badge numbers
   // (enabledIdx.indexOf(i) + 1, below) index off this same array, so they
   // cannot disagree about which item is "Nth".
-  const enabledIdx = React.useMemo(() => items.map((it, i) => (it.disabled ? -1 : i)).filter((i) => i >= 0), [items])
+  const enabledIdx = React.useMemo(() => {
+    const flags = itemsKey.slice(0, itemsKey.indexOf('|'))
+    const out: number[] = []
+    for (let i = 0; i < flags.length; i++) if (flags[i] === '0') out.push(i)
+    return out
+  }, [itemsKey])
 
   // Position under the anchor (fixed, so it escapes overflow:hidden ancestors).
   // Measured (not just anchor-relative) so we can clamp fully on-screen and

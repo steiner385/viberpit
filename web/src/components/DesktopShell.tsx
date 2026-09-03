@@ -630,7 +630,9 @@ export function DesktopShell() {
 
       {/* Banner region — one BannerStack per shell (see Dashboard's equivalent for mobile),
           priority-ordered, so a banner added here can't be forgotten there. BannerStack
-          renders null when every item is absent, so no [&:empty]:hidden wrapper is needed. */}
+          returns null only when every `node` is itself null; the 'deploy' item below never
+          is (DeployPanel returns null *internally*), so `visible.length` is always >= 1 and
+          the wrapper always renders. Its [&:empty]:hidden is what collapses the idle strip. */}
       <BannerStack className="px-4 pt-2 flex-shrink-0" items={[
         { id: 'all-limited', priority: 70, node: allLimitedReset !== undefined
           ? <AllLimitedBanner earliestReset={allLimitedReset} onDismiss={() => setAllLimitedReset(undefined)} />
