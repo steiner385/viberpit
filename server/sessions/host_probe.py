@@ -16,6 +16,8 @@ from sqlalchemy import select as sa_select, update as sa_update
 
 from server.db import db_session
 from server.db.models import Host
+from server.deploy.state import DeployState, read_deploy_state
+from server.sessions.version_skew import IsAncestor, detect_skew, edge_is_ancestor
 
 log = logging.getLogger(__name__)
 
@@ -38,40 +40,33 @@ async def default_fetch(endpoint: str) -> dict:
             await aclose()
 
 
-async def probe_host(name: str, endpoint: str, *, fetch: Fetch) -> dict:
-    """Probe one host and write the outcome. Never raises."""
+async def probe_host(name: str, endpoint: str, *, fetch: Fetch,
+                     state: DeployState | None = None,
+                     is_ancestor: IsAncestor = edge_is_ancestor) -> dict:
+    """Probe one host and write the outcome. Never raises.
+
+    ``state`` is the deploy_state row read ONCE per tick by probe_all; None disables the
+    version-skew gate (no deploy recorded yet, or a caller that wants raw health only).
+    """
     from server.ipc.protocol import PROTOCOL_VERSION
     values: dict = {"last_probe_at": datetime.utcnow()}
     try:
         info = await fetch(endpoint)
         daemon_proto = info.get("protocol")
-        # Gate on protocol version: if the daemon reports a version and it differs
-        # from ours, mark unhealthy so the ranker never dispatches to it. A missing
-        # protocol field (older daemons) is treated as unknown, not mismatched.
+        metrics = dict(sha=info.get("sha"), checkout_sha=info.get("checkoutSha"),
+                       protocol=daemon_proto, load_avg=info.get("loadAvg"),
+                       mem_available_mb=info.get("memAvailableMb"),
+                       active_sessions=info.get("activeSessions"))
+        # Gate 1 — protocol: a daemon speaking another RPC protocol is never dispatchable.
         if daemon_proto is not None and daemon_proto != PROTOCOL_VERSION:
-            values.update(
-                healthy=False,
-                last_error=(
-                    f"protocol mismatch: daemon={daemon_proto} edge={PROTOCOL_VERSION}"
-                ),
-                sha=info.get("sha"),
-                checkout_sha=info.get("checkoutSha"),
-                protocol=daemon_proto,
-                load_avg=info.get("loadAvg"),
-                mem_available_mb=info.get("memAvailableMb"),
-                active_sessions=info.get("activeSessions"),
-            )
+            values.update(healthy=False, last_error=(
+                f"protocol mismatch: daemon={daemon_proto} edge={PROTOCOL_VERSION}"), **metrics)
         else:
-            values.update(
-                healthy=True,
-                last_error=None,
-                sha=info.get("sha"),
-                checkout_sha=info.get("checkoutSha"),
-                protocol=daemon_proto,
-                load_avg=info.get("loadAvg"),
-                mem_available_mb=info.get("memAvailableMb"),
-                active_sessions=info.get("activeSessions"),
-            )
+            # Gate 2 — version skew (spec §4): not on the deployed commit ⇒ fenced from
+            # dispatch until a deploy fan-out, runner_sync, or an operator fixes it.
+            skew = detect_skew(checkout_sha=info.get("checkoutSha"), process_sha=info.get("sha"),
+                               state=state, is_ancestor=is_ancestor)
+            values.update(healthy=skew is None, last_error=skew, **metrics)
     except Exception as exc:
         # Record the failure; do NOT leave a previous healthy=True in place.
         values.update(healthy=False, last_error=f"{type(exc).__name__}: {exc}"[:500])
@@ -82,18 +77,26 @@ async def probe_host(name: str, endpoint: str, *, fetch: Fetch) -> dict:
     return values
 
 
-async def probe_all(*, fetch: Fetch | None = None) -> int:
+async def probe_all(*, fetch: Fetch | None = None,
+                    is_ancestor: IsAncestor = edge_is_ancestor) -> int:
     """Probe every enabled host. Returns how many were probed.
 
     Each host is probed independently: one dead host must not hide a live one's
-    metrics, so probe_host swallows per-host failures rather than aborting.
+    metrics, so probe_host swallows per-host failures rather than aborting. The
+    deploy_state row is read once per tick and passed to every probe_host call so
+    all hosts are judged against the same "deployed" snapshot.
     """
     use = fetch or default_fetch
+    try:
+        state = await read_deploy_state()
+    except Exception:
+        log.warning("fleet.probe: deploy_state unreadable — skew gate off this tick", exc_info=True)
+        state = None
     async with db_session() as db:
         rows = (await db.execute(
             sa_select(Host.name, Host.endpoint).where(Host.enabled.is_(True)))).all()
     for name, endpoint in rows:
-        await probe_host(name, endpoint, fetch=use)
+        await probe_host(name, endpoint, fetch=use, state=state, is_ancestor=is_ancestor)
     return len(rows)
 
 
