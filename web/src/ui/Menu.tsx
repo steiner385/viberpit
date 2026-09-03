@@ -2,6 +2,7 @@ import * as React from 'react'
 import { createPortal } from 'react-dom'
 import { cn } from '@/lib/utils'
 import { getOverlayRoot } from './portal'
+import { pushOverlay, popOverlay } from '@/shell/useOverlayState'
 import { Kbd } from './Kbd'
 
 export interface MenuItem {
@@ -59,6 +60,21 @@ export function Menu({ open, onClose, anchorRef, items, onSelect, label, align =
     for (let i = 0; i < flags.length; i++) if (flags[i] === '0') out.push(i)
     return out
   }, [itemsKey])
+
+  // Register as an open overlay while the menu is up. A Menu is not a focus
+  // trap and renders no `role="dialog"`, so before this nothing outside this
+  // file could tell it was open — and a global ArrowUp went straight past an
+  // open menu to the session list underneath it.
+  //
+  // The push and the pop are the setup and cleanup of ONE effect, which is what
+  // makes them balance: closing (`open` -> false) and unmounting while still
+  // open both run the same cleanup exactly once. A leaked push here would leave
+  // the app permanently "overlay open" and silently disable every shortcut.
+  React.useEffect(() => {
+    if (!open) return
+    pushOverlay()
+    return () => popOverlay()
+  }, [open])
 
   // Position under the anchor (fixed, so it escapes overflow:hidden ancestors).
   // Measured (not just anchor-relative) so we can clamp fully on-screen and
