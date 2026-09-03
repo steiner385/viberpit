@@ -25,7 +25,7 @@ log = logging.getLogger("ccswitch.runner_sync")
 
 Run = Callable[..., subprocess.CompletedProcess]
 Outcome = Literal["no-state", "in-sync", "ahead", "updated", "dirty", "not-fast-forward",
-                  "fetch-failed", "pip-failed", "unknown-sha"]
+                  "fetch-failed", "checkout-failed", "pip-failed", "unknown-sha"]
 
 FETCH_TIMEOUT_S = 60
 DEPS_FILES = ("pyproject.toml", "uv.lock")
@@ -90,12 +90,19 @@ def sync(repo: str, *, deployed_sha: str | None, run: Run = subprocess.run) -> O
         log.error("runner_sync: HEAD %s is not an ancestor of deployed %s — diverged checkout; "
                   "see docs/runbooks/rocky-session-host.md §5 (reset recipe)", head[:7], deployed_sha[:7])
         return "not-fast-forward"
-    _git(run, repo, "checkout", "-q", "master")
+    co = _git(run, repo, "checkout", "-q", "master")
+    if co.returncode != 0:
+        log.error("runner_sync: git checkout master failed: %s", (co.stderr or "").strip()[:500])
+        return "checkout-failed"
     if _git(run, repo, "merge", "--ff-only", deployed_sha).returncode != 0:
         log.error("runner_sync: ff-only merge to %s failed (local commits on master?)", deployed_sha[:7])
         return "not-fast-forward"
-    changed = (_git(run, repo, "diff", "--name-only", head, deployed_sha, "--", *DEPS_FILES).stdout or "")
-    if changed.strip():
+    diff = _git(run, repo, "diff", "--name-only", head, deployed_sha, "--", *DEPS_FILES)
+    if diff.returncode != 0:
+        log.warning("runner_sync: git diff for %s failed (rc=%s) — assuming deps changed, running pip",
+                    DEPS_FILES, diff.returncode)
+    changed = diff.returncode != 0 or (diff.stdout or "").strip()
+    if changed:
         venv_python = os.path.join(repo, ".venv", "bin", "python")
         r = run([venv_python, "-m", "pip", "install", "-e", f"{repo}[server]", "--quiet"],
                 capture_output=True, text=True, timeout=600)

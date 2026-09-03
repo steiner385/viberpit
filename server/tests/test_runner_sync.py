@@ -16,9 +16,11 @@ class Git:
     question ("target is an ancestor of HEAD" = the runner is ahead) is false unless
     a subclass says otherwise.
     """
-    def __init__(self, head, *, clean=True, ff=True, fetch_ok=True, pip_ok=True, deps_changed=False):
+    def __init__(self, head, *, clean=True, ff=True, fetch_ok=True, pip_ok=True, deps_changed=False,
+                 checkout_ok=True):
         self.head, self.clean, self.ff, self.fetch_ok, self.pip_ok = head, clean, ff, fetch_ok, pip_ok
         self.deps_changed = deps_changed
+        self.checkout_ok = checkout_ok
         self.calls: list[list[str]] = []
 
     def is_ancestor(self, anc: str, desc: str) -> bool:
@@ -40,7 +42,7 @@ class Git:
         if a[:3] == ["git", "merge-base", "--is-ancestor"]:
             return done(0 if self.is_ancestor(a[-2], a[-1]) else 1)
         if a[:2] == ["git", "checkout"]:
-            return done(0)
+            return done(0 if self.checkout_ok else 1)
         if a[:2] == ["git", "merge"]:
             return done(0 if self.ff else 1)
         if a[:2] == ["git", "diff"]:
@@ -111,6 +113,26 @@ def test_fetch_failure_is_reported():
     assert RS.sync("/repo", deployed_sha=TARGET, run=g) == "fetch-failed"
 
 
+def test_checkout_failure_is_reported():
+    g = Git("a" * 40, checkout_ok=False)
+    assert RS.sync("/repo", deployed_sha=TARGET, run=g) == "checkout-failed"
+    assert not any(c[:2] == ["git", "merge"] for c in g.calls)
+
+
+def test_unknown_sha_when_head_unreadable():
+    class NoHead(Git):
+        def __call__(self, argv, **kw):
+            self.calls.append(list(argv))
+            a = list(argv)
+            if a[:2] == ["git", "-C"]:
+                a = ["git"] + a[3:]
+            if a[:3] == ["git", "rev-parse", "HEAD"]:
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            raise AssertionError(f"unexpected argv {argv}")
+    g = NoHead("a" * 40)
+    assert RS.sync("/repo", deployed_sha=TARGET, run=g) == "unknown-sha"
+
+
 def test_pip_failure_is_reported_after_the_checkout_moved():
     g = Git("a" * 40, deps_changed=True, pip_ok=False)
     assert RS.sync("/repo", deployed_sha=TARGET, run=g) == "pip-failed"
@@ -133,4 +155,6 @@ def test_main_always_exits_zero(monkeypatch, tmp_path):
     monkeypatch.setenv("CCSWITCH_DB_URL", "sqlite+aiosqlite:///" + str(tmp_path / "none.db"))
     assert RS.main(["--repo", str(tmp_path)]) == 0
     monkeypatch.setenv("CCSWITCH_DB_URL", "postgresql+asyncpg://nobody@127.0.0.1:1/none")
+    assert RS.main(["--repo", str(tmp_path)]) == 0
+    monkeypatch.delenv("CCSWITCH_DB_URL", raising=False)
     assert RS.main(["--repo", str(tmp_path)]) == 0
