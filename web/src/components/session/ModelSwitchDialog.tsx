@@ -32,10 +32,13 @@ export function ModelSwitchDialog({ modelLabel, onClose, onConfirm }: ModelSwitc
       </p>
 
       <div className="flex flex-col sm:flex-row gap-3 sm:justify-end pt-2">
-        <Button ref={cancelRef} type="button" variant="secondary" onClick={onClose}>
+        {/* size="lg" on all three: it is the only Button size carrying
+            min-h-target (44px), which docs/ACCESSIBILITY.md requires, and a row
+            of three buttons at mismatched heights is worse than either state. */}
+        <Button ref={cancelRef} type="button" variant="secondary" size="lg" onClick={onClose}>
           Cancel
         </Button>
-        <Button type="button" variant="secondary" onClick={() => onConfirm('after_turn')}>
+        <Button type="button" variant="secondary" size="lg" onClick={() => onConfirm('after_turn')}>
           Switch after this turn
         </Button>
         <Button type="button" variant="primary" size="lg" onClick={() => onConfirm('now')}>
