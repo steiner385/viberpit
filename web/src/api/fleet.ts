@@ -72,17 +72,17 @@ export function useFleetHosts(refetchInterval = 30_000) {
   })
 }
 
-/** Hosts an operator has enabled — the only ones a session may be pinned to. */
-export function enabledHosts(data: { hosts: FleetHost[] } | undefined): FleetHost[] {
-  return (data?.hosts ?? []).filter((h) => h.enabled)
-}
-
 /**
- * The hosts a session may actually be dispatched to.
+ * The hosts a session may actually be dispatched to — the ones an operator has
+ * enabled.
  *
- * The hook form for callers that only want the filtered list; `enabledHosts`
- * stays exported for callers that already hold the query result.
+ * This is the hook form of what `enabledHosts(data)` used to be. That helper
+ * existed so `Dashboard` and `DesktopShell` could each filter the query result
+ * they separately held; with one shell there is one dock (`shell/regions/
+ * PromptDock`), one caller, and no reason to hand out an unfiltered list and a
+ * filter to pair with it.
  */
 export function useEnabledFleetHosts(): FleetHost[] {
-  return enabledHosts(useFleetHosts().data)
+  const { data } = useFleetHosts()
+  return (data?.hosts ?? []).filter((h) => h.enabled)
 }
