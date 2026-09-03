@@ -164,3 +164,31 @@ has `repo` scope and can see both repos) is required for item-level sync.
 Boards created: `users/steiner385/projects/26` ("ccswitch") and `#27` ("KinDash"), titles
 matched to product slugs. Remaining ops item: delete the archived spike repo
 `steiner385/gh-projects-spike-003` (see cleanup note above).
+
+---
+
+## Phase B probe — 2026-09-03
+
+Ran `python scripts/spike_gh_projects_v2.py phaseb` under `CCSWITCH_GH_PROJECT_TOKEN` (PAT).
+Raw log: `.superpowers/sdd/plan-phase-b/spike-logs/spike-003-phaseb.log` (gitignored). Scratch
+board `spike-003-phaseb (safe to delete)` was created under `steiner385`, populated, and deleted
+at the end; a post-run listing of `user(login:"steiner385").projectsV2` confirms no board with
+"phaseb" in its title remains.
+
+| Probe | Result | Input shape confirmed |
+|---|---|---|
+| createProjectV2Field SINGLE_SELECT + options | y | `singleSelectOptions: [{name,color,description}]` — created field "Stage" with 7 options (intake, design, plan, build, deploy, maintain, done), each returned an `id`/`name`. (log § "single-select field with options (Stage)", lines 1–30) |
+| updateProjectV2Field replaces built-in Status options | **y** | `fieldId` (the built-in Status field's id, read via `fields(first:20)` on the project node) + `singleSelectOptions: [{name,color,description}]`. The built-in Status field started with GitHub's default `{Todo, In Progress, Done}` and was successfully replaced with the spec vocabulary `{Backlog, Ready, In progress, Blocked, Needs human, Done}` — full option list with fresh ids came back in the response, no errors. (log § "fields incl. built-in Status" / "updateProjectV2Field", lines 31–84) |
+| 10-alias add + 10-alias set batches | y | `rateLimit` is a **Query-root field only** — GitHub's schema rejects it inside a mutation operation (`Field 'rateLimit' doesn't exist on type 'Mutation'`, `undefinedField`, confirmed live on the first attempt). Fixed by bracketing each batch with a separate `query { rateLimit { cost remaining resetAt } }` call and diffing `remaining`. Add batch (10× `addProjectV2ItemById`) cost 2 points (remaining 4605→4603); set batch (10× `updateProjectV2ItemFieldValue` with `value: {singleSelectOptionId}}`) cost 2 points (remaining 4602→4600 — the 1-point gap between the add batch's "after" and the set batch's "before" is the intervening `field(name:"Status")` lookup used to resolve the "Ready" option id). No errors in either batch. (log § "20-alias batch", lines 85–87) |
+| clearProjectV2ItemFieldValue | y | `projectId, itemId, fieldId` (no `value`) — cleared item a0's Status; response `errors: null`. (log § "clearProjectV2ItemFieldValue", line 89) |
+
+**Implication for Task 9:** edit built-in Status. `updateProjectV2Field` successfully replaces the
+built-in Status field's options in place — Task 9's `ensure_fields` should overwrite the default
+`{Todo, In Progress, Done}` options with the spec vocabulary rather than creating a parallel
+custom field.
+
+**Correction vs. brief:** the brief's probe code appends `rateLimit { cost remaining resetAt }`
+directly inside the batch `mutation { ... }` block. That shape is rejected by GitHub's live schema
+(`rateLimit` only exists on `Query`). The committed script queries `rateLimit` separately
+before/after each batch and reports the `remaining` delta as the batch's cost — this is the shape
+Task 6's builders must copy, not the brief's literal mutation-embedded form.

@@ -6,6 +6,7 @@ Usage:
     python scripts/spike_gh_projects_v2.py auth
     python scripts/spike_gh_projects_v2.py introspect
     python scripts/spike_gh_projects_v2.py mutations   # Task 2
+    python scripts/spike_gh_projects_v2.py phaseb      # Phase B Task 1
 """
 from __future__ import annotations
 
@@ -261,10 +262,84 @@ def probe_mutations() -> None:  # noqa: C901 - spike probe, deliberate length
             print("NOTE: manual deletion required — repo archived and renamed DELETE-ME-gh-projects-spike-003")
 
 
+def pat_token() -> str:
+    for line in open("/etc/ccswitch/daemon.env"):
+        if line.strip().startswith("CCSWITCH_GH_PROJECT_TOKEN="):
+            return line.strip().split("=", 1)[1]
+    raise SystemExit("CCSWITCH_GH_PROJECT_TOKEN not in daemon.env")
+
+
+def probe_phaseb() -> None:  # noqa: C901 - spike probe, deliberate length
+    tok = pat_token()
+    g = lambda q: gh_graphql(q, token=tok)  # noqa: E731
+    uid = g('query { user(login: "%s") { id } }' % OWNER)["data"]["user"]["id"]
+    proj = g('mutation { createProjectV2(input: {ownerId: "%s", title: "spike-003-phaseb (safe to delete)"}) '
+             '{ projectV2 { id } } }' % uid)
+    pid = proj["data"]["createProjectV2"]["projectV2"]["id"]
+    print("=== single-select field with options (Stage) ===")
+    opts = ", ".join('{name: "%s", color: GRAY, description: ""}' % s
+                     for s in ("intake", "design", "plan", "build", "deploy", "maintain", "done"))
+    print(json.dumps(g('mutation { createProjectV2Field(input: {projectId: "%s", dataType: SINGLE_SELECT, '
+                       'name: "Stage", singleSelectOptions: [%s]}) { projectV2Field { '
+                       '... on ProjectV2SingleSelectField { id options { id name } } } } }' % (pid, opts)),
+                     indent=2)[:600])
+    print("=== fields incl. built-in Status + its options ===")
+    fields = g('query { node(id: "%s") { ... on ProjectV2 { fields(first: 20) { nodes { '
+               '... on ProjectV2SingleSelectField { id name options { id name } } '
+               '... on ProjectV2FieldCommon { id name } } } } } }' % pid)
+    nodes = fields["data"]["node"]["fields"]["nodes"]
+    status = next(n for n in nodes if n.get("name") == "Status")
+    print(json.dumps(status, indent=2))
+    print("=== updateProjectV2Field: replace Status options with the spec vocabulary ===")
+    new_opts = ", ".join('{name: "%s", color: GRAY, description: ""}' % s
+                         for s in ("Backlog", "Ready", "In progress", "Blocked", "Needs human", "Done"))
+    print(json.dumps(g('mutation { updateProjectV2Field(input: {fieldId: "%s", singleSelectOptions: [%s]}) '
+                       '{ projectV2Field { ... on ProjectV2SingleSelectField { options { id name } } } } }'
+                       % (status["id"], new_opts)), indent=2)[:800])
+    print("=== 20-alias batch: add 10 issues, then set Status on each (rateLimit reported) ===")
+    # `rateLimit` is a Query-root field only — GitHub's schema rejects it inside a
+    # mutation operation (undefinedField on type Mutation, confirmed live). Bracket
+    # each batch with separate `query { rateLimit { ... } }` calls and diff `remaining`
+    # to get the batch's cost instead.
+    rl_query = 'query { rateLimit { cost remaining resetAt } }'
+    issues = g('query { repository(owner: "%s", name: "cc-account-switcher") { issues(first: 10, states: OPEN) '
+               '{ nodes { id number } } } }' % OWNER)["data"]["repository"]["issues"]["nodes"]
+    adds = " ".join('a%d: addProjectV2ItemById(input: {projectId: "%s", contentId: "%s"}) { item { id } }'
+                    % (i, pid, n["id"]) for i, n in enumerate(issues))
+    rl_before_add = g(rl_query)["data"]["rateLimit"]
+    added = g("mutation { %s }" % adds)
+    rl_after_add = g(rl_query)["data"]["rateLimit"]
+    add_cost = rl_before_add["remaining"] - rl_after_add["remaining"]
+    print("add batch cost (remaining delta):", add_cost,
+          "remaining before:", rl_before_add["remaining"], "after:", rl_after_add["remaining"],
+          "errors:", added.get("errors"))
+    status_after = g('query { node(id: "%s") { ... on ProjectV2 { field(name: "Status") { '
+                     '... on ProjectV2SingleSelectField { id options { id name } } } } } }' % pid)
+    sf = status_after["data"]["node"]["field"]
+    ready = next(o["id"] for o in sf["options"] if o["name"] == "Ready")
+    sets = " ".join('s%d: updateProjectV2ItemFieldValue(input: {projectId: "%s", itemId: "%s", fieldId: "%s", '
+                    'value: {singleSelectOptionId: "%s"}}) { projectV2Item { id } }'
+                    % (i, pid, added["data"]["a%d" % i]["item"]["id"], sf["id"], ready)
+                    for i in range(len(issues)))
+    rl_before_set = g(rl_query)["data"]["rateLimit"]
+    setr = g("mutation { %s }" % sets)
+    rl_after_set = g(rl_query)["data"]["rateLimit"]
+    set_cost = rl_before_set["remaining"] - rl_after_set["remaining"]
+    print("set batch cost (remaining delta):", set_cost,
+          "remaining before:", rl_before_set["remaining"], "after:", rl_after_set["remaining"],
+          "errors:", setr.get("errors"))
+    print("=== clearProjectV2ItemFieldValue ===")
+    print(json.dumps(g('mutation { clearProjectV2ItemFieldValue(input: {projectId: "%s", itemId: "%s", fieldId: "%s"}) '
+                       '{ projectV2Item { id } } }' % (pid, added["data"]["a0"]["item"]["id"], sf["id"]))
+                     .get("errors"), indent=2))
+    print("=== cleanup ===")
+    print(g('mutation { deleteProjectV2(input: {projectId: "%s"}) { clientMutationId } }' % pid).get("errors"))
+
+
 def main() -> int:
     cmd = sys.argv[1] if len(sys.argv) > 1 else "auth"
     {"auth": probe_auth, "introspect": probe_introspect,
-     "mutations": probe_mutations}[cmd]()
+     "mutations": probe_mutations, "phaseb": probe_phaseb}[cmd]()
     return 0
 
 
