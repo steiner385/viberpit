@@ -1,36 +1,9 @@
 import { useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { api } from '@/api/client'
 import { usePendingDeploy } from '@/api/hooks'
-
-export interface HostUpgrade {
-  state: 'idle' | 'running' | 'failed' | 'done'
-  step: string | null
-  error: string | null
-  startedAt: string | null
-  target: string | null
-}
-
-export interface FleetHost {
-  name: string
-  endpoint: string
-  enabled: boolean
-  weight: number
-  maxSessions: number | null
-  healthy: boolean | null
-  activeSessions: number | null
-  loadAvg: number | null
-  memAvailableMb: number | null
-  sha: string | null
-  checkoutSha: string | null
-  protocol: number | null
-  lastProbeAt: string | null
-  lastError: string | null
-  sshHost: string | null
-  repoPath: string | null
-  upgrade: HostUpgrade | null
-}
+import { FLEET_HOSTS_KEY, useFleetHosts, type FleetHost } from '@/api/fleet'
 
 /** Prefix match, not ===: hosts abbreviate the same commit to different
  *  lengths (mirrors server.deploy.steps.short_sha_match, #788). */
@@ -61,11 +34,7 @@ function capacityLabel(h: FleetHost): string {
  */
 export function FleetSection() {
   const queryClient = useQueryClient()
-  const { data, isLoading, isError } = useQuery<{ hosts: FleetHost[] }>({
-    queryKey: ['fleet', 'hosts'],
-    queryFn: () => api.get<{ hosts: FleetHost[] }>('/fleet/hosts'),
-    refetchInterval: 15_000,
-  })
+  const { data, isLoading, isError } = useFleetHosts(15_000)
   // Newest known sha: the deploy's pending target when it reports one, else the
   // edge's own live sha. A host whose sha trails it (and that has ssh config)
   // can be updated in place.
@@ -78,7 +47,7 @@ export function FleetSection() {
   const patch = useMutation({
     mutationFn: ({ name, body }: { name: string; body: Partial<FleetHost> }) =>
       api.put<FleetHost>(`/fleet/hosts/${encodeURIComponent(name)}`, body),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['fleet', 'hosts'] }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: FLEET_HOSTS_KEY }),
   })
 
   const add = useMutation({
@@ -87,7 +56,7 @@ export function FleetSection() {
     onSuccess: () => {
       setDraft({ name: '', endpoint: '' })
       setAddError(null)
-      void queryClient.invalidateQueries({ queryKey: ['fleet', 'hosts'] })
+      void queryClient.invalidateQueries({ queryKey: FLEET_HOSTS_KEY })
     },
     onError: (err: unknown) => {
       const body = (err as { body?: { detail?: { message?: string } } })?.body
@@ -97,13 +66,13 @@ export function FleetSection() {
 
   const remove = useMutation({
     mutationFn: (name: string) => api.del(`/fleet/hosts/${encodeURIComponent(name)}`),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['fleet', 'hosts'] }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: FLEET_HOSTS_KEY }),
   })
 
   const upgrade = useMutation({
     mutationFn: (name: string) =>
       api.post<{ started: boolean }>(`/fleet/hosts/${encodeURIComponent(name)}/upgrade`, {}),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['fleet', 'hosts'] }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: FLEET_HOSTS_KEY }),
   })
 
   /** Outdated AND upgradable in-app (ssh config set).

@@ -1,6 +1,5 @@
 import * as React from 'react'
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
 import { Plus, Settings, HelpCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Dialog } from '@/ui/Dialog'
@@ -54,8 +53,7 @@ import {
 } from '@/api/hooks'
 import { usePageVisible } from '@/hooks/usePageVisible'
 import type { Account } from '@/api/types'
-import { api } from '@/api/client'
-import type { FleetHost } from './settings/FleetSection'
+import { useFleetHosts, enabledHosts } from '@/api/fleet'
 import { PERMISSION_MODES } from '@/session/permissionModes'
 import { isGatedTier, modelName as modelDisplayName } from '@/session/modelName'
 import { toast } from 'sonner'
@@ -431,12 +429,8 @@ export function Dashboard({ onOpenSession, focusDispatchSignal, onReviewSession,
   const { data: config } = useConfig()
   const reposQuery = useGithubRepos()
   const { data: models = [] } = useModels()
-  const { data: fleetData } = useQuery<{ hosts: FleetHost[] }>({
-    queryKey: ['fleet', 'hosts'],
-    queryFn: () => api.get<{ hosts: FleetHost[] }>('/fleet/hosts'),
-    refetchInterval: 30_000,
-  })
-  const enabledFleetHosts = (fleetData?.hosts ?? []).filter((h) => h.enabled)
+  const { data: fleetData } = useFleetHosts()
+  const enabledFleetHosts = enabledHosts(fleetData)
 
   const createSession = useCreateSession()
   const renameSession = useRenameSession()

@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { DesktopShell } from '../DesktopShell'
 import * as hooks from '@/api/hooks'
+import * as fleet from '@/api/fleet'
 import { toast } from 'sonner'
 import type { Account, Session, AdoptionCandidate } from '@/api/types'
 
@@ -59,6 +60,13 @@ vi.mock('@/api/hooks', () => ({
   useAssessDispatch: vi.fn(() => ({ assess: vi.fn() })),
   useResumeInterrupted: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }))
+
+// Fleet hosts drive the Runner dropdown. Default to no hosts (dropdown hidden);
+// the runner tests override this per-case.
+vi.mock('@/api/fleet', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/fleet')>()
+  return { ...actual, useFleetHosts: vi.fn(() => ({ data: undefined })) }
+})
 
 vi.mock('@/session/useSessionSearch', () => ({
   useSessionSearch: () => ({ query: '', setQuery: vi.fn(), matchedIds: null, isFiltered: false }),
@@ -355,6 +363,45 @@ describe('DesktopShell', () => {
     expect(vi.mocked(toast)).toHaveBeenCalledWith(
       expect.stringContaining('started anyway'),
     )
+  })
+
+  // Regression: #807 wired fleet hosts into the mobile Dashboard only, so at
+  // ≥1024px (this shell) the Runner dropdown silently vanished and every
+  // desktop dispatch dropped `host`.
+  it('shows the Runner dropdown for enabled fleet hosts and sends the pick as host', async () => {
+    const user = userEvent.setup()
+    vi.mocked(fleet.useFleetHosts).mockReturnValue({
+      data: { hosts: [
+        { name: 'dobby', enabled: true },
+        { name: 'rocky', enabled: true },
+        { name: 'retired', enabled: false },
+      ] },
+    } as ReturnType<typeof fleet.useFleetHosts>)
+    const mutate = vi.fn()
+    vi.mocked(hooks.useCreateSession).mockReturnValue({ mutate, isPending: false, isSuccess: false } as never)
+    render(<DesktopShell />, { wrapper })
+
+    const runner = screen.getByRole('combobox', { name: /runner/i })
+    expect(within(runner).getByRole('option', { name: 'rocky' })).toBeInTheDocument()
+    expect(within(runner).queryByRole('option', { name: 'retired' })).not.toBeInTheDocument()
+
+    await user.selectOptions(runner, 'rocky')
+    const prompt = screen.getByRole('textbox', { name: /new session prompt/i })
+    await user.click(prompt)
+    await user.type(prompt, 'hello')
+    await user.keyboard('{Enter}')
+    expect(mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ initialPrompt: 'hello', host: 'rocky' }),
+      expect.anything(),
+    )
+  })
+
+  it('hides the Runner dropdown when no fleet host is enabled', () => {
+    vi.mocked(fleet.useFleetHosts).mockReturnValue({
+      data: { hosts: [{ name: 'retired', enabled: false }] },
+    } as ReturnType<typeof fleet.useFleetHosts>)
+    render(<DesktopShell />, { wrapper })
+    expect(screen.queryByRole('combobox', { name: /runner/i })).not.toBeInTheDocument()
   })
 
   it('routes accounts_need_reauth 409 to a toast, not the limit banner', async () => {
