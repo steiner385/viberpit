@@ -76,6 +76,20 @@ def build_project_fields_query(project_node_id: str) -> str:
         " } } } } }" % project_node_id)
 
 
+def project_node_missing(payload: dict) -> bool:
+    """True when a ``node(id:)`` query resolved the board to ``null`` — i.e. the
+    Projects v2 board was DELETED on GitHub (spec 003 §10, issue #973).
+
+    This is deliberately narrow: only ``data.node is None`` with the ``node`` key
+    present counts as deletion. A missing ``data``/``node`` key (transport error,
+    scope error, empty ``{}``) is NOT a deletion signal — the caller's normal
+    error handling owns those. This lets the mirror distinguish "board deleted"
+    (loud needs_human halt, no pruning) from "board empty" (``node`` is a dict
+    with zero items — a legitimate reconcile that prunes stale rows)."""
+    data = payload.get("data")
+    return isinstance(data, dict) and "node" in data and data["node"] is None
+
+
 def parse_project_fields(payload: dict) -> dict:
     nodes = (((payload.get("data") or {}).get("node") or {}).get("fields") or {}).get("nodes") or []
     cache: dict = {}

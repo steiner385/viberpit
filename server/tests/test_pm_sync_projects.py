@@ -8,7 +8,7 @@ owners of the products' repos and roots the query at ``user(login: owner)``,
 riding a dedicated ``fetch_gh_projects(owner, query)`` seam. Relations queries
 are repo-scoped and keep using the plain repo-scoped ``fetch`` seam.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -74,14 +74,14 @@ def _relations_payload():
 # ---- loop wiring (mirrors test_pm_sync_loop._loop, plus the new seams) --------
 
 
-def _loop(ctx, *, products, owner_fetch, repo_fetch):
+def _loop(ctx, *, products, owner_fetch, repo_fetch, now_fn=None, config=None):
     """Wire a loop with no repos to sync (so tick() goes straight to the mirror
     pass) and canned mirror seams. Every seam call is recorded in ``calls``."""
     calls = {"save_gh_project": [], "save_project_fields": [],
              "save_project_items": [], "save_relations": []}
 
     async def read_config():
-        return "on", {}
+        return "on", (config or {})
 
     async def list_repos():
         return []
@@ -128,7 +128,7 @@ def _loop(ctx, *, products, owner_fetch, repo_fetch):
         ctx, read_config=read_config, list_repos=list_repos, fetch=fetch,
         upsert_items=upsert, save_sync_state=save, read_feature_docs=read_docs,
         list_feature_rows=list_rows, apply_feature_plan=apply_plan,
-        now_utc=lambda: datetime(2026, 2, 1, tzinfo=timezone.utc),
+        now_utc=now_fn or (lambda: datetime(2026, 2, 1, tzinfo=timezone.utc)),
         list_products=list_products, fetch_gh_projects=fetch_gh_projects,
         save_gh_project=save_gh_project, save_project_fields=save_project_fields,
         save_project_items=save_project_items, save_relations=save_relations)
@@ -254,3 +254,96 @@ async def test_project_fetch_failure_does_not_break_repo_sync():
     # and a warning was surfaced.
     assert calls["save_gh_project"] == []
     assert any(level == "warning" for level, _, _ in ctx.events)
+
+
+# ---- issue #973: interval short-circuit, per-owner backoff, board-delete halt --
+
+
+def _deleted_node_payload():
+    """node(id:) resolves null — the board was DELETED on GitHub (spec §10)."""
+    return {"data": {"node": None},
+            "errors": [{"message": "Could not resolve to a node."}]}
+
+
+@pytest.mark.asyncio
+async def test_projects_pass_short_circuits_within_interval():
+    """The Projects v2 + relations pass must not re-run every tick: inside the
+    min interval the whole pass is skipped (issue #973 — was unconditional)."""
+    ctx = Ctx()
+    fetch_count = {"n": 0}
+
+    def owner_fetch(owner, query):
+        fetch_count["n"] += 1
+        if "projectsV2" in query:
+            return _owner_projects_payload()
+        if "fields" in query:
+            return _fields_payload()
+        return _items_payload()
+
+    def repo_fetch(query):
+        return _relations_payload()
+
+    loop, calls = _loop(ctx, products=[_product()], owner_fetch=owner_fetch,
+                        repo_fetch=repo_fetch, config={"projects_sync_interval_s": 300})
+    await loop.tick()
+    await loop.tick()  # same clock -> still inside the 300s window
+    assert len(calls["save_gh_project"]) == 1
+    assert len(calls["save_relations"]) == 1
+    first_round = fetch_count["n"]
+    assert first_round > 0
+    # no further owner fetches happened on the second tick
+    assert fetch_count["n"] == first_round
+
+
+@pytest.mark.asyncio
+async def test_persistent_owner_error_warns_once_then_backs_off():
+    """A persistent per-owner failure (e.g. missing read:project) must warn on
+    onset only — not every pass — and back the owner off (issue #973)."""
+    ctx = Ctx()
+    clock = {"t": datetime(2026, 2, 1, tzinfo=timezone.utc)}
+
+    def owner_fetch(owner, query):
+        raise RuntimeError("read:project scope missing")
+
+    def repo_fetch(query):
+        return _relations_payload()
+
+    loop, calls = _loop(ctx, products=[_product()], owner_fetch=owner_fetch,
+                        repo_fetch=repo_fetch, now_fn=lambda: clock["t"],
+                        config={"projects_sync_interval_s": 300})
+    await loop.tick()                                   # onset: one warning
+    clock["t"] += timedelta(seconds=301)               # past interval, in backoff
+    await loop.tick()                                   # deduped: no new warning
+    warns = [e for e in ctx.events if e[0] == "warning"
+             and e[2].get("kind") == "gh_projects_error"]
+    assert len(warns) == 1
+    assert calls["save_gh_project"] == []
+
+
+@pytest.mark.asyncio
+async def test_deleted_board_halts_loudly_without_pruning():
+    """node(id:) null = board deleted: emit a loud needs-human halt and DO NOT
+    save/prune the mirror items. Relations (repo-scoped) still run (issue #973)."""
+    ctx = Ctx()
+
+    def owner_fetch(owner, query):
+        if "projectsV2" in query:
+            return _owner_projects_payload()
+        # fields (first node query) comes back null -> board deleted.
+        return _deleted_node_payload()
+
+    def repo_fetch(query):
+        return _relations_payload()
+
+    loop, calls = _loop(ctx, products=[_product()], owner_fetch=owner_fetch,
+                        repo_fetch=repo_fetch)
+    await loop.tick()
+    # No silent prune: neither fields nor items were saved.
+    assert calls["save_project_fields"] == []
+    assert calls["save_project_items"] == []
+    # A loud, human-actionable error was surfaced.
+    assert any(level == "error" and kw.get("kind") == "gh_project_deleted"
+               for level, _, kw in ctx.events)
+    # Repo relations are board-independent and still ran.
+    assert [repo for repo, _ in calls["save_relations"]] == \
+        ["steiner385/cc-account-switcher"]
