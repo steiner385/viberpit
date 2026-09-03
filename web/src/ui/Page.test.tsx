@@ -1,11 +1,14 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { PageHeader } from './PageHeader'
 import { PageContent } from './PageContent'
 import { EmptyState } from './EmptyState'
 import { Skeleton } from './Skeleton'
+import { resetDocumentTitle } from '@/shell/documentTitle'
 
 describe('page primitives', () => {
+  beforeEach(resetDocumentTitle)
+
   it('PageHeader renders the h1 and sets document.title', () => {
     render(<PageHeader title="Automations" actions={<button>New</button>} />)
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Automations')
@@ -41,6 +44,19 @@ describe('page primitives', () => {
     expect(document.title).toBe('New Page — ccswitch')
     a.unmount()
     expect(document.title).toBe('New Page — ccswitch')
+  })
+
+  it('an inner header unmounting restores the still-mounted outer header\'s title', () => {
+    // The reverse of the race above: B (newer) mounts on top of A (older,
+    // still mounted and visible), then B unmounts first while A is still on
+    // screen. The title should return to A's, not fall back to the bare app
+    // name.
+    render(<PageHeader title="Alpha" />)
+    expect(document.title).toBe('Alpha — ccswitch')
+    const b = render(<PageHeader title="Beta" />)
+    expect(document.title).toBe('Beta — ccswitch')
+    b.unmount()
+    expect(document.title).toBe('Alpha — ccswitch')
   })
 
   it('PageContent exposes busy state and Skeleton is decorative', () => {
