@@ -36,10 +36,10 @@ No code change is needed for Phase A: `pm_sync`'s existing gh-CLI seam already c
 | Native dep add | `addBlockedBy` | **Yes** | Input: `issueId` (NON_NULL ID) + `blockingIssueId` (NON_NULL ID). `issueId` = the blocked issue; `blockingIssueId` = the blocker. Response: `{clientMutationId: null}` (no value passed). Read-back confirmed: `blockedBy.totalCount:1, nodes:[{number:3}]`. (`spike-003-mutations.log` lines 173–197) |
 | Native dep remove | `removeBlockedBy` | **Yes** | Same input shape as `addBlockedBy`. Response: `{clientMutationId: null}`. **No read-back captured after remove** — implementation should verify removal via a follow-up `blockedBy` query. (`spike-003-mutations.log` lines 198–205) |
 | Sub-issue add | `addSubIssue` | **Yes** | `issueId` (NON_NULL), `subIssueId` (optional scalar), `subIssueUrl` (optional), `replaceParent` (optional). Two adds succeeded: i1←i2 and i1←i3, both returning `{"issue":{"number":1}}`. Ambient credential. (`spike-003-mutations.log` lines 135–153) |
-| Sub-issue reorder | `reprioritizeSubIssue` | **Yes** | **Requires `afterId` or `beforeId`** — passing neither returns VALIDATION error (first run). Input: `issueId` (NON_NULL), `subIssueId` (NON_NULL), `afterId`/`beforeId` (optional but platform-enforced: at least one required). Read-back confirmed order: `[{number:2},{number:3}]`. Ambient credential. (`spike-003-mutations.log` lines 154–172) |
+| Sub-issue reorder | `reprioritizeSubIssue` | **Yes** | **Requires `afterId` or `beforeId`** — passing neither returns VALIDATION error (inferred from first run; only the successful second run is preserved in the saved log). Input: `issueId` (NON_NULL), `subIssueId` (NON_NULL), `afterId`/`beforeId` (optional but platform-enforced: at least one required). Read-back confirmed order: `[{number:2},{number:3}]`. Ambient credential. (`spike-003-mutations.log` lines 154–172) |
 | Aliased batched field updates | `updateProjectV2ItemFieldValue` ×N | **Unverified** | SKIP — `createProjectV2` failed under both credentials, so no project existed. Must re-probe at Phase B start. |
 | Field creation via API | `createProjectV2Field` | **Unverified** | SKIP — same reason. Must re-probe at Phase B start. |
-| Project creation | `createProjectV2` | **No** (both creds) | App token: FORBIDDEN — "pr-dashy[bot] does not have permission to create projects on ownerId …". Ambient: INSUFFICIENT_SCOPES — needs `project` scope. Phase B precondition. (`spike-003-mutations.log` lines 99–133) |
+| Project creation | `createProjectV2` | **No** (both creds) | App token: FORBIDDEN — "pr-dashy[bot] does not have permission to create projects on ownerId …" (`spike-003-mutations.log` lines 99–133). Ambient: INSUFFICIENT_SCOPES — needs `project` scope (separate manual probe, recorded in Task 2 report; consistent with the read-scope failure in `spike-003-auth.log` — not re-run in the committed spike script). Phase B precondition. |
 
 Mutation names confirmed by schema introspection (`spike-003-introspect.log` lines 1–41): all of
 `addBlockedBy`, `removeBlockedBy`, `addSubIssue`, `removeSubIssue`, `reprioritizeSubIssue`,
@@ -69,9 +69,9 @@ expose a timestamp predicate; it is text-search only.
 
 | Limit | Documented | Binds at our scale? |
 |---|---|---|
-| Sub-issues per parent | 100 (GitHub documented limit) | No — largest epic today ≈ 10 sub-issues |
-| Blocked-by relations per issue | 50 (GitHub documented limit) | No — no issue approaches this; <100 open issues total across all repos |
-| Items per Project | 1,200 (GitHub documented limit for the fields we query) | No — largest product has <100 open issues |
+| Sub-issues per parent | 100 (per controller ruling; GitHub docs unreachable during spike — verify against docs at Phase B start) | No — largest epic today ≈ 10 sub-issues |
+| Blocked-by relations per issue | 50 (per controller ruling; GitHub docs unreachable during spike — verify against docs at Phase B start) | No — no issue approaches this; <100 open issues total across all repos |
+| Items per Project | 1,200 (per controller ruling; GitHub docs unreachable during spike — verify against docs at Phase B start) | No — largest product has <100 open issues |
 
 GraphQL node limit: 500,000 nodes per call (introspected from `docs.github.com/en/graphql/overview/resource-limitations`). A single-product sync page (first:100, 5–10 fields each) is far below this. Rate budget: 5,000 points/hour for App installations; pm_sync shares this budget and already tracks it.
 
@@ -99,8 +99,11 @@ include "re-probe `createProjectV2` to confirm credential works."
 
 Scratch repo `steiner385/gh-projects-spike-003` is archived (private, no cost) but could not be
 deleted during the spike — ambient credential lacked `delete_repo` scope; App token returned 403
-"not accessible by integration." The rename fallback was also blocked by GitHub's archived-repo
-read-only restriction. **Manual deletion required:**
+"not accessible by integration." The mutations log's final NOTE claimed the repo was renamed to
+`DELETE-ME-gh-projects-spike-003`, but a post-spike read-only check (`gh repo view
+steiner385/gh-projects-spike-003 --json name,isArchived` → `{"isArchived":true,"name":"gh-projects-spike-003"}`)
+confirms the rename PATCH did not apply — the repo retains its original name. **Manual deletion
+required using the verified name:**
 
 ```bash
 gh auth refresh -s delete_repo
