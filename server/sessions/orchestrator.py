@@ -4665,13 +4665,16 @@ class SessionOrchestrator:
         How far back to look, whether to scope by repo, and how the count/goals are phrased
         all shape how cautious autopilot becomes. Adjust freely — the loop and decider don't
         depend on the exact wording, only that a non-None string means "be more careful"."""
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, timezone
         from sqlalchemy import select as sa_select
         from server.db.models import AutomationEvent
         LOOKBACK_DAYS = 30
         MAX_EXAMPLES = 3
         try:
-            since = datetime.utcnow() - timedelta(days=LOOKBACK_DAYS)
+            # AWARE, to match the timestamptz column: asyncpg reads a naive value bound to
+            # a timestamptz parameter as LOCAL time, which silently shifts this boundary by
+            # the host's UTC offset (no error). See server/db/clock.py.
+            since = datetime.now(timezone.utc) - timedelta(days=LOOKBACK_DAYS)
             stmt = (sa_select(AutomationEvent)
                     .where(AutomationEvent.automation_id == "autopilot",
                            AutomationEvent.kind == "archive_reversed",
