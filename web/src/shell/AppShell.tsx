@@ -11,7 +11,7 @@ import {
   useAccounts, useCloseSession, useConfig, usePermanentDeleteSession,
   useRenameSession, useSendPrompt, useSessions,
 } from '@/api/hooks'
-import { RenameDialog } from '@/components/Dashboard'
+import { RenameDialog } from '@/features/sessions/RenameDialog'
 import { PermanentDeleteDialog } from '@/components/PermanentDeleteDialog'
 import { useGlobalHelpKey } from '@/components/useGlobalHelpKey'
 import { useSessionListState } from '@/features/sessions/useSessionListState'

@@ -21,7 +21,7 @@ import { Archive, MoreVertical, Pencil, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useCloseSession, usePermanentDeleteSession, useRenameSession } from '@/api/hooks'
 import { PermanentDeleteDialog } from '@/components/PermanentDeleteDialog'
-import { RenameDialog } from '@/components/Dashboard'
+import { RenameDialog } from '@/features/sessions/RenameDialog'
 
 interface Props {
   sessionId: string
