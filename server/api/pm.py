@@ -19,11 +19,14 @@ from server.db import get_db
 from server.db.models import (
     PROJECT_EDGE_KINDS,
     Feature,
+    GhProject,
+    GhProjectItem,
     Project,
     ProjectEdge,
     ProjectRepo,
     TriageProposal,
     WorkItem,
+    WorkItemDep,
 )
 
 router = APIRouter(prefix="/api/pm", tags=["pm"])
@@ -258,6 +261,71 @@ async def create_edge(
     await record_audit(db=db, type="pm.edge.create", identity=identity,
                        detail={"src": slug, "dst": body.dstSlug, "kind": body.kind})
     return _edge_to_dict(edge, {src.id: src.slug, dst.id: dst.slug})
+
+
+@router.get("/projects/{slug}/deps")
+async def project_deps(
+    slug: str,
+    _identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Return dep edges + drift audit for a project (spec 003 Phase A)."""
+    from server.pm.drift import DepEdgeView, compute_drift
+
+    p = await _load_project(db, slug)
+    repos = {r.repo for r in (await db.execute(
+        select(ProjectRepo).where(ProjectRepo.project_id == p.id)
+    )).scalars().all() if r.repo}
+    work_items_raw = (await db.execute(
+        select(WorkItem).where(WorkItem.repo.in_(repos), WorkItem.kind == "issue")
+    )).scalars().all()
+    items: dict[str, WorkItem] = {f"{w.repo}#{w.number}": w for w in work_items_raw}
+    open_refs = {ref for ref, w in items.items() if (w.state or "open") == "open"}
+
+    gh = (await db.execute(
+        select(GhProject).where(GhProject.project_id == p.id)
+    )).scalar_one_or_none()
+    project_refs: set[str] = set()
+    if gh is not None:
+        linked = (await db.execute(
+            select(GhProjectItem).where(GhProjectItem.gh_project_id == gh.id)
+        )).scalars().all()
+        by_id = {w.id: ref for ref, w in items.items()}
+        project_refs = {by_id[i.work_item_id] for i in linked if i.work_item_id in by_id}
+
+    all_dep_rows = (await db.execute(select(WorkItemDep))).scalars().all()
+    # Filter in Python: keep only deps whose src belongs to a project repo.
+    dep_rows = [d for d in all_dep_rows
+                if d.src_ref and "#" in d.src_ref and d.src_ref.rsplit("#", 1)[0] in repos]
+
+    edges = [DepEdgeView(
+        src_ref=d.src_ref or "",
+        dst_ref=d.dst_ref or "",
+        source=d.source or "",
+        active=bool(d.active),
+        dst_state=items[d.dst_ref].state if d.dst_ref in items else None,
+    ) for d in dep_rows]
+
+    drift = compute_drift(edges, open_refs, project_refs,
+                          {ref: items[ref].body for ref in open_refs})
+    if gh is None:
+        drift.missing_from_project = []
+
+    return {
+        "project": None if gh is None else {
+            "number": gh.gh_project_number,
+            "title": gh.title,
+            "lastSyncedAt": gh.last_synced_at.isoformat() if gh.last_synced_at else None,
+        },
+        "edges": [{"src": e.src_ref, "dst": e.dst_ref, "source": e.source,
+                   "active": e.active, "dstState": e.dst_state} for e in edges],
+        "drift": {
+            "proseOnly": drift.prose_only,
+            "unresolvedTargets": drift.unresolved_targets,
+            "missingFromProject": drift.missing_from_project,
+            "checklistEpics": drift.checklist_epics,
+        },
+    }
 
 
 @router.delete("/projects/{slug}/edges/{edge_id}", status_code=status.HTTP_204_NO_CONTENT)
