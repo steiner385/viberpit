@@ -55,6 +55,7 @@ async def probe_host(name: str, endpoint: str, *, fetch: Fetch) -> dict:
                     f"protocol mismatch: daemon={daemon_proto} edge={PROTOCOL_VERSION}"
                 ),
                 sha=info.get("sha"),
+                checkout_sha=info.get("checkoutSha"),
                 protocol=daemon_proto,
                 load_avg=info.get("loadAvg"),
                 mem_available_mb=info.get("memAvailableMb"),
@@ -65,6 +66,7 @@ async def probe_host(name: str, endpoint: str, *, fetch: Fetch) -> dict:
                 healthy=True,
                 last_error=None,
                 sha=info.get("sha"),
+                checkout_sha=info.get("checkoutSha"),
                 protocol=daemon_proto,
                 load_avg=info.get("loadAvg"),
                 mem_available_mb=info.get("memAvailableMb"),

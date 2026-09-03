@@ -23,6 +23,7 @@ export interface FleetHost {
   loadAvg: number | null
   memAvailableMb: number | null
   sha: string | null
+  checkoutSha: string | null
   protocol: number | null
   lastProbeAt: string | null
   lastError: string | null
