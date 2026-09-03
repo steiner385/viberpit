@@ -51,8 +51,8 @@ def test_remote_update_commands_ff_only_and_conditional_pip():
 
 
 def test_remote_rewind_uses_reset_hard():
-    cmds = R.remote_rewind_commands("/srv/cc", "old0000")
-    assert cmds[1][1] == ["git", "-C", "/srv/cc", "reset", "--hard", "old0000"]
+    cmds = R.remote_rewind_commands("/srv/cc", "01d0000")
+    assert cmds[1][1] == ["git", "-C", "/srv/cc", "reset", "--hard", "01d0000"]
     assert [s for s, _ in cmds] == ["fetch", "reset", "sync"]
 
 
@@ -69,6 +69,8 @@ def test_unsafe_values_are_refused_before_any_command():
     assert calls == []
     with pytest.raises(ValueError):
         R.remote_update_commands("/srv/cc", "not a sha", deps_changed=False)
+    with pytest.raises(ValueError):
+        R.remote_rewind_commands("/srv/cc", "not a sha")
 
 
 def test_remote_daemon_changing_deploy_full_sequence():
@@ -213,11 +215,11 @@ def test_rewind_only_moved_hosts_and_uses_reset_hard():
            "other": R.HostProgress(state="failed", moved=False)}
     other = R.RunnerTarget(name="other", endpoint="https://o", enabled=True, healthy=True,
                            ssh_host="other", repo_path="/srv/cc")
-    asyncio.run(R.rewind_runners([ROCKY, other], res, sha="old0000", local_name="dobby",
+    asyncio.run(R.rewind_runners([ROCKY, other], res, sha="01d0000", local_name="dobby",
                                  run=_recorder(calls), client_factory=lambda e: FakeClient([]),
-                                 fetch_info=_info("old0000"), verify_interval_s=0))
+                                 fetch_info=_info("01d0000"), verify_interval_s=0))
     joined = [" ".join(c) for c in calls]
-    assert any("reset --hard old0000" in j and "rocky" in j for j in joined)
+    assert any("reset --hard 01d0000" in j and "rocky" in j for j in joined)
     assert not any("other" in j for j in joined)
     assert joined[-1].endswith("sudo -n systemctl restart ccswitch-daemon.service")
 

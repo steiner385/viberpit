@@ -102,12 +102,10 @@ def remote_update_commands(repo_path: str, target_sha: str, *,
 def remote_rewind_commands(repo_path: str, sha: str) -> list[tuple[str, list[str]]]:
     """Rollback only: move a runner BACK to *sha* (ff-only cannot go backwards).
 
-    *sha* here is not attacker-controlled input to validate against ``_SHA_RE`` — it is
-    the pre-deploy HEAD the controller already recorded (and, when it came from a prior
-    ``target_sha``, it already passed that check on the forward path). Only *repo_path*
-    is externally-configured and needs re-validation before it lands in the ssh argv.
+    A rollback sha lands in ssh argv exactly like a forward one, so it gets the same
+    repo-path + hex-sha validation before any command runs.
     """
-    _validate_repo(repo_path)
+    _validate(repo_path, sha)
     return [
         ("fetch", ["git", "-C", repo_path, "fetch", "--quiet", "origin"]),
         ("reset", ["git", "-C", repo_path, "reset", "--hard", sha]),
