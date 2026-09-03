@@ -29,6 +29,14 @@ Holds the secrets/config the server needs — `CCSWITCH_DB_URL`, `CCSWITCH_MASTE
 `CCSWITCH_SESSION_SECRET`, `CCSWITCH_TAILNET_ALLOWLIST`, `CCSWITCH_HOST`, `CCSWITCH_PORT`
 — plus `PATH`/`HOME` so the service can find `git`/`node`/`claude`. `chmod 600`, `root:root`.
 
+A host may point the **daemon** at a different env file via a local
+`ccswitch-daemon.service.d/` drop-in (`EnvironmentFile=` then `EnvironmentFile=/etc/ccswitch/daemon.env`,
+as on dobby). Whatever file the daemon actually loads is the one that matters for its `PATH`; check it
+with `systemctl cat ccswitch-daemon.service`. The daemon does not strictly need `~/.local/bin` on that
+`PATH` any more: `server/sessions/claude_bin.py` falls back to the native installer's well-known
+locations (`~/.local/bin/claude`, newest `~/.local/share/claude/versions/*`) when `claude` is not on
+`PATH`, and logs a WARNING if none exist. `CCSWITCH_CLAUDE_BIN` still overrides everything.
+
 ## Install
 
 ```bash
