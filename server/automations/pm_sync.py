@@ -218,8 +218,10 @@ class PmSyncLoop:
         """Best-effort Projects v2 + issue-relations mirror pass.
 
         Discovery is owner-aware: under the GitHub App installation token
-        ``viewer`` resolves to the App bot, so we root the query at
-        ``user(login: owner)`` and iterate the DISTINCT owners of the products'
+        ``viewer`` resolves to the App bot, and ``user(login: owner)`` 404s on
+        an Organization owner, so we root the query at
+        ``repositoryOwner(login: owner)`` (resolves both Users and
+        Organizations) and iterate the DISTINCT owners of the products'
         repos, deduping discovered projects by node_id across owners. All
         project-scoped fetches ride the owner-aware ``fetch_gh_projects`` seam
         (App token, has ``read:project``); relations are repo-scoped and keep
