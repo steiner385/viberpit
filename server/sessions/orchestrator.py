@@ -748,6 +748,15 @@ class SessionOrchestrator:
             list_feature_rows=self._pm_sync_list_feature_rows,
             apply_feature_plan=self._pm_sync_apply_feature_plan,
             now_utc=self._pm_sync_now_utc,
+            # Projects v2 + relations mirror seams (003 Phase A). Discovery rides
+            # the owner-aware fetch (App token, has read:project); relations reuse
+            # the ambient-credential fetch seam above.
+            list_products=self._pm_sync_list_products,
+            fetch_gh_projects=self._pm_sync_fetch_projects,
+            save_gh_project=self._pm_sync_save_gh_project,
+            save_project_fields=self._pm_sync_save_project_fields,
+            save_project_items=self._pm_sync_save_project_items,
+            save_relations=self._pm_sync_save_relations,
         )
         self._pm_sync_task: asyncio.Task | None = None
         # PM archaeology onboarding (design 2026-08-31 §5): the map-synthesis and
@@ -3440,6 +3449,68 @@ class SessionOrchestrator:
             raise RuntimeError(
                 f"gh graphql failed: {(getattr(proc, 'stderr', '') or '').strip()[:500]}")
         return json.loads(getattr(proc, "stdout", "") or "{}")
+
+    async def _pm_sync_fetch_projects(self, owner: str, query: str) -> dict:
+        """Owner-aware GraphQL fetch for the Projects v2 mirror.
+
+        The ambient ``gh`` credential lacks ``read:project`` (Phase 0 finding),
+        so project-scoped queries run under ``owner``'s GitHub App installation
+        token: ``_gh_run`` re-sets ``GH_TOKEN`` from the token argument and strips
+        the ambient one, so the token is injected via the child env only — never
+        logged. If no App token is available for the owner (no provider / no
+        installation / mint failed), fall back to the plain ambient fetch and let
+        any scope error surface through the caller's per-product handling."""
+        import json
+        from server.github import app_auth
+        token = await asyncio.to_thread(app_auth.token_for_owner, owner)
+        if token is None:
+            return await self._pm_sync_fetch(query)
+        proc = await asyncio.to_thread(
+            self._gh_run, ["api", "graphql", "-f", f"query={query}"], token)
+        if getattr(proc, "returncode", 1) != 0:
+            raise RuntimeError(
+                f"gh graphql failed: {(getattr(proc, 'stderr', '') or '').strip()[:500]}")
+        return json.loads(getattr(proc, "stdout", "") or "{}")
+
+    async def _pm_sync_list_products(self) -> list:
+        """ProductSyncView for every onboarded project (mirror discovery input).
+
+        The ``mirror_store`` helpers are synchronous (legacy ``Session.query``
+        API), so they run over the async session's sync facade via ``run_sync``.
+        ``db_session()`` commits on clean exit — no explicit commit needed."""
+        from server.pm import mirror_store
+        async with db_session() as db:
+            return await db.run_sync(mirror_store.list_product_views)
+
+    async def _pm_sync_save_gh_project(self, project_id: str, view) -> str:
+        """Upsert the discovered GhProject and return its db id."""
+        from server.pm import mirror_store
+        async with db_session() as db:
+            return await db.run_sync(
+                lambda s: mirror_store.upsert_gh_project(s, project_id, view))
+
+    async def _pm_sync_save_project_fields(self, gh_db_id: str, cache: dict) -> None:
+        """Persist the parsed field cache onto the GhProject row."""
+        from server.pm import mirror_store
+        async with db_session() as db:
+            await db.run_sync(
+                lambda s: mirror_store.save_field_cache(s, gh_db_id, cache))
+
+    async def _pm_sync_save_project_items(self, gh_db_id: str, items: list) -> None:
+        """Reconcile the project's items (upsert live, delete stale)."""
+        from datetime import datetime, timezone
+        from server.pm import mirror_store
+        now = datetime.now(timezone.utc)
+        async with db_session() as db:
+            await db.run_sync(
+                lambda s: mirror_store.upsert_project_items(s, gh_db_id, items, now))
+
+    async def _pm_sync_save_relations(self, repo: str, rels: list) -> None:
+        """Reconcile epic/parent links + observed dependency edges for a repo."""
+        from server.pm import mirror_store
+        async with db_session() as db:
+            await db.run_sync(
+                lambda s: mirror_store.upsert_relations(s, repo, rels))
 
     async def _pm_sync_upsert_items(self, items: list) -> None:
         """Idempotent upsert into work_items keyed by (repo, number, kind)."""

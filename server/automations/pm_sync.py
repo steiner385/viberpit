@@ -16,8 +16,15 @@ from typing import Any, Awaitable, Callable
 from server.pm.feature_index import (
     FeatureIndexPlan, FeatureRowView, plan_feature_index)
 from server.pm.featuredoc import FeatureDoc, FeatureDocError, parse_feature_doc
+from server.pm.gh_projects import (
+    GhProjectItemView, GhProjectView, IssueRelView,
+    build_issue_relations_query, build_owner_projects_query,
+    build_project_fields_query, build_project_items_query,
+    parse_issue_relations, parse_project_fields, parse_project_items,
+    parse_viewer_projects)
 from server.pm.github_sync import (
     WorkItemView, build_issues_query, build_prs_query, parse_page)
+from server.pm.mirror_store import ProductSyncView
 
 from .base import AutomationStatus, ConfigField
 
@@ -64,6 +71,7 @@ class PmSync:
             return AutomationStatus(text="idle", level="idle")
         text = (f"{counts.get('synced', 0)} synced · "
                 f"{counts.get('backfilling', 0)} backfilling · "
+                f"{counts.get('gh_projects', 0)} projects · "
                 f"{counts.get('errors', 0)} errors")
         level = "error" if counts.get("errors") else (
             "active" if counts.get("backfilling") else "idle")
@@ -83,6 +91,19 @@ ReadFeatureDocs = Callable[[str], Awaitable[list[tuple[str, str]]]]
 ListFeatureRows = Callable[[str], Awaitable[list[FeatureRowView]]]
 ApplyFeaturePlan = Callable[[str, FeatureIndexPlan, dict[str, FeatureDoc]], Awaitable[None]]
 
+# --- Projects v2 + relations mirror seams (003 Phase A) ---------------------
+# All default to None so the mirror pass is a no-op unless the orchestrator
+# wires them — keeping every pre-existing PmSyncLoop test green unchanged.
+ListProducts = Callable[[], Awaitable[list[ProductSyncView]]]
+# Owner-aware project fetch (args: owner, query). Rooted at ``user(login:)`` and
+# authenticated with the owner's GitHub App installation token so it can read
+# Projects v2, which the ambient ``gh`` credential lacks scope for (Phase 0).
+FetchGhProjects = Callable[[str, str], Awaitable[dict]]
+SaveGhProject = Callable[[str, GhProjectView], Awaitable[str]]  # -> gh_project db id
+SaveProjectFields = Callable[[str, dict], Awaitable[None]]
+SaveProjectItems = Callable[[str, list[GhProjectItemView]], Awaitable[None]]
+SaveRelations = Callable[[str, list[IssueRelView]], Awaitable[None]]
+
 
 class PmSyncLoop:
     """One ``tick()`` syncs every due repo: backfill pages (resumable) or an
@@ -101,6 +122,12 @@ class PmSyncLoop:
         list_feature_rows: ListFeatureRows,
         apply_feature_plan: ApplyFeaturePlan,
         now_utc: NowUtc,
+        list_products: ListProducts | None = None,
+        fetch_gh_projects: FetchGhProjects | None = None,
+        save_gh_project: SaveGhProject | None = None,
+        save_project_fields: SaveProjectFields | None = None,
+        save_project_items: SaveProjectItems | None = None,
+        save_relations: SaveRelations | None = None,
     ) -> None:
         self._ctx = ctx
         self._read_config = read_config
@@ -112,6 +139,13 @@ class PmSyncLoop:
         self._list_feature_rows = list_feature_rows
         self._apply_feature_plan = apply_feature_plan
         self._now_utc = now_utc
+        # Projects v2 + relations mirror seams (003 Phase A); None ⇒ skip pass.
+        self._list_products = list_products
+        self._fetch_gh_projects = fetch_gh_projects
+        self._save_gh_project = save_gh_project
+        self._save_project_fields = save_project_fields
+        self._save_project_items = save_project_items
+        self._save_relations = save_relations
 
     async def tick(self) -> None:
         """One control-loop iteration. Best-effort: swallows exceptions so a
@@ -124,7 +158,7 @@ class PmSyncLoop:
     async def _run(self) -> None:
         mode, config = await self._read_config()
         if mode == "off":
-            self._stash(0, 0, 0)
+            self._stash(0, 0, 0, 0)
             return
         interval = timedelta(seconds=int(config.get("min_sync_interval_s", 300)))
         now = self._now_utc()
@@ -152,7 +186,109 @@ class PmSyncLoop:
                     "warning", f"sync failed for {view.repo}",
                     kind="sync_error", target=view.repo)
                 log.warning("pm_sync.repo_error repo=%s", view.repo, exc_info=True)
-        self._stash(synced, backfilling, errors)
+        gh_projects = await self._sync_projects_v2()
+        self._stash(synced, backfilling, errors, gh_projects)
+
+    async def _sync_projects_v2(self) -> int:
+        """Best-effort Projects v2 + issue-relations mirror pass.
+
+        Discovery is owner-aware: under the GitHub App installation token
+        ``viewer`` resolves to the App bot, so we root the query at
+        ``user(login: owner)`` and iterate the DISTINCT owners of the products'
+        repos, deduping discovered projects by node_id across owners. All
+        project-scoped fetches ride the owner-aware ``fetch_gh_projects`` seam
+        (App token, has ``read:project``); relations are repo-scoped and keep
+        using the plain ``fetch`` seam (ambient credential has repo scope).
+
+        Returns the count of products linked to a GhProject this tick. A missing
+        ``list_products`` seam (or any other mirror seam) makes this a no-op — the
+        seams default to None so pre-existing loops skip the pass entirely.
+        Per-product failures are isolated and emitted like per-repo errors."""
+        if not (self._list_products and self._fetch_gh_projects
+                and self._save_gh_project and self._save_project_fields
+                and self._save_project_items and self._save_relations):
+            return 0
+        products = await self._list_products()
+        owners = {r.split("/", 1)[0] for p in products for r in p.repos
+                  if "/" in r}
+        discovered: dict[str, GhProjectView] = {}  # node_id -> view (deduped)
+        for owner in sorted(owners):
+            try:
+                cursor: str | None = None
+                for _ in range(_MAX_PAGES_PER_TICK):
+                    payload = await self._fetch_gh_projects(
+                        owner, build_owner_projects_query(owner, cursor))
+                    views, cursor, more = parse_viewer_projects(payload)
+                    for view in views:
+                        discovered.setdefault(view.node_id, view)
+                    if not more:
+                        break
+            except Exception:
+                await self._ctx.emit(
+                    "warning", f"project discovery failed for {owner}",
+                    kind="gh_projects_error", target=owner)
+                log.warning("pm_sync.project_discovery_error owner=%s",
+                            owner, exc_info=True)
+        by_title: dict[str, GhProjectView] = {
+            v.title.lower(): v for v in discovered.values()}
+        linked = 0
+        for product in products:
+            try:
+                linked += await self._sync_one_product(product, by_title)
+            except Exception:
+                await self._ctx.emit(
+                    "warning", f"project sync failed for {product.project_id}",
+                    kind="gh_projects_error", target=product.project_id)
+                log.warning("pm_sync.project_error project=%s",
+                            product.project_id, exc_info=True)
+        return linked
+
+    async def _sync_one_product(
+        self, product: ProductSyncView,
+        by_title: dict[str, GhProjectView],
+    ) -> int:
+        """Sync one product's project (fields + items) and its repos' relations.
+        Returns 1 if the product is linked to a GhProject, else 0."""
+        assert self._fetch_gh_projects and self._save_gh_project
+        assert self._save_project_fields and self._save_project_items
+        assert self._save_relations
+        view = (by_title.get((product.slug or "").lower())
+                or by_title.get((product.name or "").lower()))
+        gh_db_id = product.gh_project_db_id
+        node_id = product.gh_node_id
+        if view is not None:
+            gh_db_id = await self._save_gh_project(product.project_id, view)
+            node_id = view.node_id
+        linked = 1 if (gh_db_id and node_id) else 0
+        if gh_db_id and node_id:
+            owner = _owner_of(product)
+            fields = await self._fetch_gh_projects(
+                owner, build_project_fields_query(node_id))
+            await self._save_project_fields(gh_db_id, parse_project_fields(fields))
+            items: list[GhProjectItemView] = []
+            cursor: str | None = None
+            for _ in range(_MAX_PAGES_PER_TICK):
+                payload = await self._fetch_gh_projects(
+                    owner, build_project_items_query(node_id, cursor))
+                page, cursor, more = parse_project_items(payload)
+                items.extend(page)
+                if not more:
+                    break
+            await self._save_project_items(gh_db_id, items)
+        # Relations are repo-scoped (ambient credential): always run per repo,
+        # independent of whether the project itself linked.
+        for repo in product.repos:
+            rels: list[IssueRelView] = []
+            cursor = None
+            for _ in range(_MAX_PAGES_PER_TICK):
+                payload = await self._fetch(
+                    build_issue_relations_query(repo, cursor))
+                page_r, cursor, more = parse_issue_relations(payload, repo)
+                rels.extend(page_r)
+                if not more:
+                    break
+            await self._save_relations(repo, rels)
+        return linked
 
     async def _backfill(self, view: RepoSyncView, now: datetime) -> bool:
         """Resumable full-history import: issues first, then PRs. Saves the
@@ -264,6 +400,18 @@ class PmSyncLoop:
         plan = plan_feature_index(rows, docs)
         await self._apply_feature_plan(view.project_id, plan, by_slug)
 
-    def _stash(self, synced: int, backfilling: int, errors: int) -> None:
+    def _stash(self, synced: int, backfilling: int, errors: int,
+               gh_projects: int = 0) -> None:
         self._ctx.pm_sync_counts = {
-            "synced": synced, "backfilling": backfilling, "errors": errors}
+            "synced": synced, "backfilling": backfilling, "errors": errors,
+            "gh_projects": gh_projects}
+
+
+def _owner_of(product: ProductSyncView) -> str:
+    """The owner login for a product's project fetches — the owner of its first
+    ``owner/name`` repo. Products in this codebase are single-owner, so any repo
+    yields the same owner; the first repo is the stable choice."""
+    for repo in product.repos:
+        if "/" in repo:
+            return repo.split("/", 1)[0]
+    return ""
