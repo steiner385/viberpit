@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { shortcutsByGroup, type Shortcut, type ShortcutGroup } from '@/shell/shortcuts'
+import { shortcutsByGroup, displayKeys, type Shortcut, type ShortcutGroup } from '@/shell/shortcuts'
 import { Kbd } from '@/ui/Kbd'
 import { NAV_DEFS } from '@/shell/navDefs'
 
@@ -102,8 +102,11 @@ function ShortcutSection({ title, bindings }: { title: string; bindings: Shortcu
       <dl className="space-y-1">
         {bindings.map((b) => (
           <div key={b.id} className="flex items-baseline gap-3">
+            {/* `displayKeys`, not `b.keys`: a row whose binding differs by
+                platform carries a `keysMac`, and the registry — not this
+                component — decides which of the two a Mac sees. */}
             <dt className="shrink-0 min-w-32">
-              <Kbd keys={b.keys} />
+              <Kbd keys={displayKeys(b)} />
             </dt>
             <dd className="text-sm text-ink">{b.description}</dd>
           </div>

@@ -18,19 +18,86 @@ export type KeyboardLike = Pick<
 
 export type ShortcutGroup = 'compose' | 'list-mode' | 'list-mode-header' | 'in-session'
 
+/**
+ * Where a shortcut is allowed to fire. Evaluated against live context on each
+ * keydown; the FIRST matching row in `SHORTCUTS` order wins.
+ *
+ * This is the app's state as a *value*, so the "may this key fire here?" rule
+ * lives beside the row that declares the key instead of being re-derived by each
+ * listener. The five window/document listeners this registry replaces each
+ * answered it their own way — `useGlobalHelpKey` queried
+ * `[role="dialog"][aria-modal="true"]`, `useGlobalListNav` queried the looser
+ * `[role="dialog"]`, and the two disagreed about whether a docked push-mode
+ * `Sheet` blocked a key. One shape, filled once per keydown, is how that stops
+ * being possible.
+ */
+export interface ShortcutContext {
+  /** A modal Dialog/Sheet or an open Menu is up. */
+  overlayOpen: boolean
+  /** A permission or question card is waiting for an answer. */
+  hasOpenAction: boolean
+  /** A session is open (`/sessions/:id`). */
+  sessionOpen: boolean
+  /** The Sessions section is current. */
+  inSessions: boolean
+  /** Kiosk is read-only: nothing that mutates may fire. */
+  interactive: boolean
+  /** What currently has focus, for text-entry yielding. */
+  active: Element | null
+}
+
 export interface Shortcut {
   id: string
-  keys: string // display string for the help panel
+  /** Display string for the help panel. Use `keysMac` when the platform binding
+   *  differs; `displayKeys()` picks between them. */
+  keys: string
+  keysMac?: string
   description: string
   group: ShortcutGroup
   /** Present ⇒ wired into the SessionCard list-mode handler. */
   action?: ListRowAction
   match?: (e: KeyboardLike) => boolean
+  /** Omitted ⇒ always allowed. Read through `shortcutAllowed()`. */
+  when?: (c: ShortcutContext) => boolean
 }
 
 /** Unmodified key predicate — bails if Ctrl/Alt/Meta is held (Shift allowed). */
-function plain(pred: (e: KeyboardLike) => boolean) {
+export function plain(pred: (e: KeyboardLike) => boolean) {
   return (e: KeyboardLike): boolean => !e.ctrlKey && !e.altKey && !e.metaKey && pred(e)
+}
+
+/**
+ * Cmd/Win-chord predicate — REQUIRES Meta, bails on Ctrl/Alt (Shift allowed).
+ *
+ * Deliberately a sibling of `plain()` rather than a loosening of it. `plain()`
+ * bails on Meta, which is the only reason `Cmd+A` still selects text in the
+ * prompt instead of archiving the focused session, and `Cmd+C` copies instead of
+ * continuing it. A row that wants a Cmd chord opts in here; the list-mode rows
+ * keep bailing.
+ */
+export function meta(pred: (e: KeyboardLike) => boolean) {
+  return (e: KeyboardLike): boolean => e.metaKey && !e.ctrlKey && !e.altKey && pred(e)
+}
+
+/** True on Apple platforms, where the help sheet shows `keysMac`. */
+export function isApplePlatform(): boolean {
+  if (typeof navigator === 'undefined') return false
+  return /Mac|iPhone|iPad|iPod/.test(navigator.platform ?? '')
+}
+
+/** The display string for `s` on the platform this browser is running on. */
+export function displayKeys(s: Shortcut): string {
+  return isApplePlatform() && s.keysMac ? s.keysMac : s.keys
+}
+
+/**
+ * Whether `s` may fire in `c`. A row with no `when` is always allowed.
+ *
+ * The default lives here rather than at each call site so a dispatcher cannot
+ * spell it `!s.when(c)` and silently make every unconditional row unreachable.
+ */
+export function shortcutAllowed(s: Shortcut, c: ShortcutContext): boolean {
+  return s.when?.(c) ?? true
 }
 
 export const SHORTCUTS: Shortcut[] = [
