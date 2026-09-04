@@ -505,6 +505,17 @@ class SessionOrchestrator:
         # message). Cleared on completion, success or failure, so a stuck release can
         # never make a session permanently unopenable.
         self._releasing: dict[str, asyncio.Task] = {}
+        # In-flight driver SWAP for this session_id — generalises `_spawning`
+        # (#1036) to every path that builds+starts a replacement SessionDriver for
+        # an EXISTING session: ensure_driver's resume-build and _reassign (manual
+        # switch, rate-limit rotation, 401 recompose, crash recovery). Each used to
+        # race independently — two recoverable-failure callbacks firing back to
+        # back, or a manual switch landing mid-resume, each built and started its
+        # own `claude` process against the same claude_session_id; only one was
+        # ever registered in `_drivers`, so the loser ran on as an invisible twin
+        # burning quota in the same worktree (#1040). A caller that finds an entry
+        # here awaits it and takes its driver instead of building a second one.
+        self._swapping: dict[str, asyncio.Future] = {}
         # Sessions that failed to re-launch after a daemon-affecting deploy:
         # session_id -> attempts so far. Seeded by restore_deploy, drained by the
         # daemon's recovery pass (_recover_resume_failures_once). Deploy-scoped and
@@ -7606,6 +7617,27 @@ class SessionOrchestrator:
             # The spawn failed: it popped its pre-seeded record, so the lookup
             # below yields None (unknown session) — never a replacement driver.
 
+        # A driver SWAP for this session is in flight — a manual account switch,
+        # rate-limit rotation, 401 recompose, or crash recovery (_reassign), or
+        # another ensure_driver call's own resume-build. Wait for it and hand back
+        # ITS driver instead of racing a second build (#1040). Outside
+        # `_ensure_lock` for the same reason as the `_spawning` wait above: a slow
+        # swap on one session must not block attaches to every other session.
+        swapping = self._swapping.get(session_id)
+        if swapping is not None:
+            try:
+                await asyncio.wait_for(asyncio.shield(swapping), timeout=SPAWN_WAIT_S)
+            except asyncio.TimeoutError:
+                log.warning("ensure_driver: swap of %s still in flight after %.0fs",
+                            session_id, SPAWN_WAIT_S)
+                raise
+            existing = self._drivers.get(session_id)
+            if existing is not None:
+                _rethread_identity(existing, identity)
+                return existing
+            # The swap left the session driverless (e.g. _reassign failed and
+            # paused it) — fall through to the normal detached-record handling.
+
         # Look up the in-memory record (populated by rehydrate())
         rec = self._records.get(session_id)
         if rec is None:
@@ -7628,6 +7660,23 @@ class SessionOrchestrator:
             if existing is not None:
                 _rethread_identity(existing, identity)
                 return existing
+
+            # Re-check the swap tracker too: `_reassign` does not take
+            # `_ensure_lock` (its critical section is far longer than a resume
+            # build, and it must not stall attaches to unrelated sessions), so it
+            # can start after our pre-lock check above but before we got here.
+            swapping = self._swapping.get(session_id)
+            if swapping is not None:
+                try:
+                    await asyncio.wait_for(asyncio.shield(swapping), timeout=SPAWN_WAIT_S)
+                except asyncio.TimeoutError:
+                    log.warning("ensure_driver: swap of %s still in flight after %.0fs",
+                                session_id, SPAWN_WAIT_S)
+                    raise
+                existing = self._drivers.get(session_id)
+                if existing is not None:
+                    _rethread_identity(existing, identity)
+                    return existing
 
             # A completion-driver-release may still be in flight for this session
             # (see _persist_status): its driver is already out of `_drivers`, but
@@ -7720,29 +7769,42 @@ class SessionOrchestrator:
                     suggester=self._suggester,
                 )
 
-            driver = _build(resume)
+            # Publish this build as an in-flight swap (#1040) so a concurrent
+            # _reassign for this session — triggered from outside `_ensure_lock` —
+            # waits for it instead of starting its own SessionDriver in parallel.
+            # Cleared in `finally` no matter how the build ends, so a failed
+            # resume can never wedge every later attach/reassign for this session.
+            swap_done: asyncio.Future = asyncio.get_running_loop().create_future()
+            self._swapping[session_id] = swap_done
             try:
-                await driver.start()
-            except Exception:
-                if resume is None:
-                    # No resume to blame — the SDK genuinely can't start (e.g. a
-                    # truly dead account token / system problem). Surface it.
-                    raise
-                # Resume failed — almost always because the stored claude_session_id
-                # can't be resumed from rec.cwd (the original session lived under a
-                # different project dir, or the claude session was pruned). Fall back
-                # to a FRESH session so the record stays usable: the prior transcript
-                # still shows via replay, and new turns get (and persist) a new
-                # claude_session_id. Only if the fresh start ALSO fails do we error.
-                log.warning("session.resume id=%s could not resume claude_sid=%s; starting fresh",
-                            session_id, resume, exc_info=True)
+                driver = _build(resume)
                 try:
-                    await driver.aclose()
+                    await driver.start()
                 except Exception:
-                    pass
-                driver = _build(None)
-                await driver.start()
-            self._drivers[session_id] = driver
+                    if resume is None:
+                        # No resume to blame — the SDK genuinely can't start (e.g. a
+                        # truly dead account token / system problem). Surface it.
+                        raise
+                    # Resume failed — almost always because the stored claude_session_id
+                    # can't be resumed from rec.cwd (the original session lived under a
+                    # different project dir, or the claude session was pruned). Fall back
+                    # to a FRESH session so the record stays usable: the prior transcript
+                    # still shows via replay, and new turns get (and persist) a new
+                    # claude_session_id. Only if the fresh start ALSO fails do we error.
+                    log.warning("session.resume id=%s could not resume claude_sid=%s; starting fresh",
+                                session_id, resume, exc_info=True)
+                    try:
+                        await driver.aclose()
+                    except Exception:
+                        pass
+                    driver = _build(None)
+                    await driver.start()
+                self._drivers[session_id] = driver
+            finally:
+                if self._swapping.get(session_id) is swap_done:
+                    del self._swapping[session_id]
+                if not swap_done.done():
+                    swap_done.set_result(None)
             # Re-apply the persisted model, mirroring _reassign. ensure_driver
             # previously dropped rec.model on resume (rotation kept it, a plain
             # detach → attach lost it to the account default). Placed after the
@@ -9630,6 +9692,36 @@ class SessionOrchestrator:
                       "keeping the current driver", record.id, new_account, reason)
             await self._pause_session(record, reason="invalid_rotation_target")
             return
+
+        # Serialise with any other in-flight driver swap for this session (#1040):
+        # two recoverable-failure callbacks firing back to back (e.g. two
+        # `turn_dropped` events escalating to rotation), or a manual account
+        # switch landing while ensure_driver is mid-resume-build. Each used to
+        # build+start its own SessionDriver against the same claude_session_id —
+        # both processes came up live, only one was ever registered in
+        # `_drivers`, and the loser ran on as an invisible twin CLI. A caller that
+        # finds an entry here waits for it, then re-derives its own driver/record
+        # references so it acts on the post-swap state instead of a stale one.
+        prior_swap = self._swapping.get(record.id)
+        if prior_swap is not None:
+            with contextlib.suppress(Exception):
+                await prior_swap
+            record = self._records.get(record.id, record)
+
+        swap_done: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._swapping[record.id] = swap_done
+        try:
+            await self._reassign_locked(record, new_account, reason=reason)
+        finally:
+            if self._swapping.get(record.id) is swap_done:
+                del self._swapping[record.id]
+            if not swap_done.done():
+                swap_done.set_result(None)
+
+    async def _reassign_locked(self, record: SessionRecord, new_account: str, *,
+                               reason: str) -> None:
+        """The actual reassign body, run with an entry in `self._swapping` held for
+        `record.id` by the caller (`_reassign`) — see there for why."""
         # Same defer contract as a model swap: the dance below flips the session
         # through actionable statuses autopilot would otherwise act on mid-restart.
         self._turn_restart_at[record.id] = self._clock()

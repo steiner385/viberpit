@@ -28,6 +28,7 @@ def _bare_orch(now=_NOW):
     orch._records = {}
     orch._drivers = {}
     orch._turn_restart_at = {}
+    orch._swapping = {}
     orch._clock = lambda: now
     return orch
 
