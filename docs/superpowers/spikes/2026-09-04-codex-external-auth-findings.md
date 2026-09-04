@@ -2,9 +2,9 @@
 
 **Date:** 2026-09-04
 
-**Status:** release gate pending — the safe harness is implemented and unit-tested, but the real
-dobby/rocky run was not attempted because its explicit test configuration is absent and rocky does
-not currently have the Codex CLI available.
+**Status:** release gate pending — the safe harness is implemented and unit-tested, and rocky now
+has the pinned CLI. A credential-free topology preflight exposed and corrected an SSH command
+transport defect, but the credential-bearing dobby/rocky gate has not been rerun.
 
 ## Boundary inspected
 
@@ -77,6 +77,39 @@ Child stderr is captured only for the exact-value leak check and is never replay
 is one allow-listed JSON evidence object containing only version/schema hash, method names,
 topology proof, booleans, counts, generation, and gate state.
 
+## SSH preflight defect and correction
+
+The first credential-free dobby/rocky topology preflight failed before credentials were loaded.
+The harness passed `python3`, `-c`, and a multiline program as separate local arguments after the
+SSH destination. OpenSSH reconstructs those arguments into one remote-shell command string without
+preserving the original argument boundaries. Rocky therefore received only `import` as the
+`python3 -c` program and the remaining line as a second shell command, producing Python and shell
+syntax errors.
+
+The correction adds one `build_ssh_command` source of truth. It validates the destination with the
+repository's canonical `SSH_HOST_RE`, rejects empty/NUL-bearing remote command vectors, serializes
+the complete remote argv once with `shlex.join`, and gives OpenSSH that single command string.
+Machine identity, version inspection, home provisioning and cleanup, app-server launch, and remote
+home scanning all use the helper. Secret scan needles remain JSON on stdin and no credential was
+added to an argument, environment variable, file, or shell history. A second credential-free
+machine-identity probe against rocky succeeded after the correction; this is not a live auth-gate
+pass.
+
+Durable fix pattern:
+
+- **Symptom:** a remote command works for simple tokens but loses quoting, splits multiline
+  programs, or interprets argument metacharacters when invoked through SSH.
+- **Anti-pattern:** append a local argv (`[ssh, host, *remote_argv]`) and assume OpenSSH transports
+  the post-host elements as an exec-style argv.
+- **Fix shape:** validate the SSH destination and remote inputs, shell-quote the entire remote argv
+  once, and pass exactly one remote command string; keep secrets on stdin.
+- **Where to look:** subprocess wrappers that append multiple arguments after an SSH destination,
+  especially `python -c`, `sh -c`, paths containing whitespace, and environment-derived values.
+  The repository audit found two out-of-scope candidates: `server/deploy/runners.py::_ssh` and the
+  remote health probe in `scripts/ccswitch-health-check.sh`. Their current arguments are mostly
+  constrained/simple, but both rely on remote-shell reconstruction and need a separately reviewed
+  transport hardening change before accepting complex or less-constrained inputs.
+
 The script refuses to start unless both of these are explicitly set:
 
 ```bash
@@ -92,14 +125,19 @@ are paths/aliases, never native account identifiers or credentials.
 
 ## Verification completed
 
-- Focused redaction/security suite: 53 tests passed.
+- Focused redaction/security suite: 58 tests passed.
 - Ruff: passed for the harness and focused suite.
 - Mypy: passed for the harness.
 - Opt-in refusal: passed; without both required values the script exits nonzero with sanitized JSON
   and starts no app-server.
 - Local schema generation: passed for 0.153.2 with the subset hash above; its disposable directory
   was removed.
-- Rocky preflight: SSH was reachable, but `codex --version` returned command-not-found.
+- Original Rocky preflight: SSH was reachable, but `codex --version` returned command-not-found.
+- Post-install Rocky CLI/version preflight: `codex-cli 0.153.2` is now reachable
+  non-interactively.
+- Post-install credential-free topology preflight: failed because SSH split the multiline identity
+  program; the corrected remote identity probe then passed without loading credentials or mutating
+  remote state. The credential-bearing live gate was not retried.
 
 The focused tests cover exact-value removal for access tokens, refresh tokens, native account ids,
 invalid test tokens, and native thread ids; recursive diagnostic sanitization; secret-free process
@@ -112,6 +150,10 @@ cleanup; body-versus-cleanup exception precedence with sanitized diagnostics; cl
 propagation; allow-listed combined-failure JSON without arbitrary-note or cleanup-detail leakage;
 ordinary failure JSON; and strict opt-in behavior.
 
+The five new SSH construction cases cover multiline Python preservation; exact `sh -c` and
+app-server positional arguments; spaces and shell metacharacters as inert data; unsafe destination
+rejection; and empty/NUL-bearing command-vector rejection.
+
 ## Live release gate still pending
 
 No managed authority app-server or runner app-server was started during this verification. No
@@ -119,7 +161,8 @@ credential was read, refreshed, copied, printed, or written. No thread or model 
 
 The live gate needs all of the following before it can be run safely:
 
-1. The supported Codex CLI installed and discoverable for rocky's non-interactive SSH user.
+1. The supported Codex CLI installed and discoverable for rocky's non-interactive SSH user
+   (**satisfied: 0.153.2**).
 2. An owner-selected ChatGPT test-account alias and authority-only managed Codex home.
 3. The explicit `CCSWITCH_TEST_CODEX_EXTERNAL_AUTH=1` opt-in.
 4. A maintenance/test window in which a supported managed token refresh is acceptable.

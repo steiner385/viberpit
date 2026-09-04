@@ -19,6 +19,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import subprocess
@@ -33,6 +34,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from server.audit import redact_text  # noqa: E402 -- repo root is added for direct script execution
+from server.deploy.steps import SSH_HOST_RE  # noqa: E402
 
 
 OPT_IN_FLAG = "CCSWITCH_TEST_CODEX_EXTERNAL_AUTH"
@@ -65,7 +67,6 @@ _SECRET_KEYS = frozenset(
         "turn_id",
     }
 )
-_HOST_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _REMOTE_HOME_RE = re.compile(r"^/tmp/ccswitch-codex-spike\.[A-Za-z0-9]+$")
 _RELEVANT_SCHEMA_FILES = (
     "v1/InitializeParams.json",
@@ -342,7 +343,7 @@ class RunnerTarget:
 
     def __post_init__(self) -> None:
         for candidate in (self.name, self.ssh_host):
-            if candidate is not None and not _HOST_RE.fullmatch(candidate):
+            if candidate is not None and not SSH_HOST_RE.fullmatch(candidate):
                 raise SpikeConfigurationError("runner names must contain only safe host characters")
 
 
@@ -405,6 +406,23 @@ def _minimal_environment(*, codex_home: Path | None = None) -> dict[str, str]:
     return environment
 
 
+def build_ssh_command(ssh_host: str, remote_argv: Sequence[str]) -> list[str]:
+    """Quote one remote argv for OpenSSH's remote-shell command transport."""
+    if not SSH_HOST_RE.fullmatch(ssh_host):
+        raise SpikeConfigurationError("runner names must contain only safe host characters")
+    if not remote_argv or any("\0" in argument for argument in remote_argv):
+        raise SpikeConfigurationError("remote command arguments are invalid")
+    return [
+        "ssh",
+        "-T",
+        "-o",
+        "BatchMode=yes",
+        ssh_host,
+        "--",
+        shlex.join(remote_argv),
+    ]
+
+
 def build_runner_process(
     target: RunnerTarget,
     home: Path,
@@ -416,23 +434,20 @@ def build_runner_process(
         return [codex_bin, "app-server", "--stdio"], _minimal_environment(codex_home=home)
     if not _REMOTE_HOME_RE.fullmatch(str(home)):
         raise SpikeConfigurationError("remote runner home is outside the dedicated /tmp prefix")
-    command = [
-        "ssh",
-        "-T",
-        "-o",
-        "BatchMode=yes",
+    command = build_ssh_command(
         target.ssh_host,
-        "--",
-        "sh",
-        "-c",
-        (
-            'exec env -i HOME="$HOME" PATH="$PATH" LANG="${LANG:-C.UTF-8}" '
-            'CODEX_HOME="$1" "$2" app-server --stdio'
-        ),
-        "ccswitch-codex-spike",
-        str(home),
-        codex_bin,
-    ]
+        [
+            "sh",
+            "-c",
+            (
+                'exec env -i HOME="$HOME" PATH="$PATH" LANG="${LANG:-C.UTF-8}" '
+                'CODEX_HOME="$1" "$2" app-server --stdio'
+            ),
+            "ccswitch-codex-spike",
+            str(home),
+            codex_bin,
+        ],
+    )
     return command, _minimal_environment()
 
 
@@ -868,19 +883,16 @@ async def provision_runner_home(target: RunnerTarget, home: Path) -> None:
         home.mkdir(mode=0o700, parents=False, exist_ok=False)
         return
     code, _, _ = await _run_command(
-        [
-            "ssh",
-            "-T",
-            "-o",
-            "BatchMode=yes",
+        build_ssh_command(
             target.ssh_host,
-            "--",
-            "mkdir",
-            "-m",
-            "700",
-            "--",
-            str(home),
-        ]
+            [
+                "mkdir",
+                "-m",
+                "700",
+                "--",
+                str(home),
+            ],
+        )
     )
     if code != 0:
         raise SpikeConfigurationError("remote runner home could not be created")
@@ -918,17 +930,10 @@ async def runner_machine_identity(target: RunnerTarget) -> str:
     if target.ssh_host is None:
         return local_machine_identity()
     code, stdout, _ = await _run_command(
-        [
-            "ssh",
-            "-T",
-            "-o",
-            "BatchMode=yes",
+        build_ssh_command(
             target.ssh_host,
-            "--",
-            "python3",
-            "-c",
-            _REMOTE_IDENTITY_PROGRAM,
-        ]
+            ["python3", "-c", _REMOTE_IDENTITY_PROGRAM],
+        )
     )
     observed = stdout.decode("ascii", errors="replace").strip()
     if code != 0 or not re.fullmatch(r"[0-9a-f]{64}", observed):
@@ -959,19 +964,16 @@ async def verify_runner_version(
     if target.ssh_host is None:
         return
     code, stdout, _ = await _run_command(
-        [
-            "ssh",
-            "-T",
-            "-o",
-            "BatchMode=yes",
+        build_ssh_command(
             target.ssh_host,
-            "--",
-            "sh",
-            "-c",
-            'exec env -i HOME="$HOME" PATH="$PATH" "$1" --version',
-            "ccswitch-codex-spike",
-            codex_bin,
-        ]
+            [
+                "sh",
+                "-c",
+                'exec env -i HOME="$HOME" PATH="$PATH" "$1" --version',
+                "ccswitch-codex-spike",
+                codex_bin,
+            ],
+        )
     )
     observed = stdout.decode("utf-8", errors="replace").strip()
     if code != 0 or observed != expected:
@@ -1010,18 +1012,10 @@ async def scan_remote_home(target: RunnerTarget, home: Path, secrets: SecretValu
     # Refresh tokens are intentionally excluded: they were never transmitted to the runner.
     payload = json.dumps(secrets.runner_values, separators=(",", ":")).encode("utf-8")
     code, stdout, _ = await _run_command(
-        [
-            "ssh",
-            "-T",
-            "-o",
-            "BatchMode=yes",
+        build_ssh_command(
             target.ssh_host,
-            "--",
-            "python3",
-            "-c",
-            _REMOTE_SCAN_PROGRAM,
-            str(home),
-        ],
+            ["python3", "-c", _REMOTE_SCAN_PROGRAM, str(home)],
+        ),
         stdin=payload,
     )
     if code != 0:
@@ -1039,19 +1033,16 @@ async def cleanup_runner(runtime: RunnerRuntime) -> bool:
     if runtime.is_remote:
         assert runtime.target.ssh_host is not None
         code, _, _ = await _run_command(
-            [
-                "ssh",
-                "-T",
-                "-o",
-                "BatchMode=yes",
+            build_ssh_command(
                 runtime.target.ssh_host,
-                "--",
-                "sh",
-                "-c",
-                'if test ! -e "$1"; then exit 0; fi; find "$1" -depth -delete',
-                "ccswitch-codex-spike",
-                str(runtime.home),
-            ]
+                [
+                    "sh",
+                    "-c",
+                    'if test ! -e "$1"; then exit 0; fi; find "$1" -depth -delete',
+                    "ccswitch-codex-spike",
+                    str(runtime.home),
+                ],
+            )
         )
         runtime.cleaned = code == 0
         return runtime.cleaned
