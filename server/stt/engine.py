@@ -34,7 +34,7 @@ def is_available() -> bool:
 
 def _pcm_to_float(pcm: bytes) -> Any:
     import numpy as np
-    return np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+    return np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
 
 
 class WhisperEngine:

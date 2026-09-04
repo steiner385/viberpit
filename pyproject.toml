@@ -34,6 +34,7 @@ server = [
     "pytest-timeout",
     "hypothesis",
     "pyyaml",
+    "numpy",
     # Pin below 0.16 for reproducible CI: ruff 0.16.0 enables new lint rules
     # (RUF100/BLE001/UP041/…) that flag pre-existing server/ code, so an unpinned
     # ruff turns every PR's lint-and-test red the moment a new minor ships. Adopting
