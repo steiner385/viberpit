@@ -30,6 +30,28 @@ class FakeEngine:
         return f"words:{len(pcm)}"
 
 
+class RecordingSession:
+    """Duck-types DictationSession, recording calls so a test can assert flush()
+    was never reached (e.g. on a mid-session client disconnect)."""
+
+    def __init__(self, engine):
+        self.engine = engine
+        self.fed: list[bytes] = []
+        self.tick_calls = 0
+        self.flush_calls = 0
+
+    def feed(self, pcm: bytes) -> None:
+        self.fed.append(pcm)
+
+    def tick(self):
+        self.tick_calls += 1
+        return []
+
+    def flush(self):
+        self.flush_calls += 1
+        return []
+
+
 @pytest.fixture(autouse=True)
 def _identity_env(monkeypatch):
     monkeypatch.setenv("CCSWITCH_TAILNET_ALLOWLIST", "alice@example.com")
@@ -138,6 +160,63 @@ def test_session_deadline_flushes_and_closes():
 
 def test_unauthenticated_upgrade_is_rejected():
     client = _app(FakeEngine())
-    with pytest.raises(Exception):
+    with pytest.raises(WebSocketDisconnect) as ei:
         with client.websocket_connect("/ws/stt") as ws:
             ws.receive_text()
+    assert ei.value.code == 1008  # require_ws_identity's own close code
+
+
+def test_mid_session_disconnect_skips_flush():
+    eng = FakeEngine()
+    sessions: list[RecordingSession] = []
+
+    def factory(engine):
+        s = RecordingSession(engine)
+        sessions.append(s)
+        return s
+
+    client = _app(eng, session_factory=factory)
+    with client.websocket_connect("/ws/stt", headers=H) as ws:
+        ws.send_json({"type": "start", "sampleRate": 16000})
+        assert ws.receive_json() == {"type": "ready"}
+        ws.send_bytes(b"\x00\x00" * 8000)
+        # Exit the block without sending `stop` — an abrupt client disconnect.
+    assert sessions and sessions[0].flush_calls == 0
+
+
+def test_ticker_failure_reports_error_and_closes_1011():
+    class BoomSegments(FakeEngine):
+        def speech_segments(self, pcm: bytes):
+            raise RuntimeError("vad exploded")
+
+    client = _app(BoomSegments())
+    with client.websocket_connect("/ws/stt", headers=H) as ws:
+        ws.send_json({"type": "start", "sampleRate": 16000})
+        assert ws.receive_json() == {"type": "ready"}
+        ws.send_bytes(b"\x00\x00" * 8000)
+        m = ws.receive_json()
+        assert m["type"] == "error" and "vad exploded" in m["message"]
+        with pytest.raises(WebSocketDisconnect) as ei:
+            ws.receive_text()
+    assert ei.value.code == 1011
+
+
+def test_handshake_timeout_closes_1003_and_releases_slot(monkeypatch):
+    import server.stt.ws as sttws
+    monkeypatch.setattr(sttws, "HANDSHAKE_TIMEOUT_S", 0.1)
+
+    client = _app(FakeEngine(), max_concurrent=1)
+    with client.websocket_connect("/ws/stt", headers=H) as ws:
+        # Never send `start`.
+        m = ws.receive_json()
+        assert m["type"] == "error"
+        with pytest.raises(WebSocketDisconnect) as ei:
+            ws.receive_text()
+    assert ei.value.code == 1003
+
+    # The slot must have been released — a fresh connection is NOT CLOSE_BUSY.
+    with client.websocket_connect("/ws/stt", headers=H) as second:
+        second.send_json({"type": "start", "sampleRate": 16000})
+        assert second.receive_json() == {"type": "ready"}
+        second.send_json({"type": "stop"})
+        _collect_until(second, "done")
