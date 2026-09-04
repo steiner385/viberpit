@@ -54,4 +54,35 @@ describe('InitiativeTrack', () => {
     expect(link).not.toBeNull()
     expect(link).toHaveAttribute('href', 'https://github.com/o/r/issues/997')
   })
+
+  it('exposes the epic deep link to keyboard and screen-reader users', () => {
+    // Regression coverage for review round 1 IMPORTANT 2: the link must not be
+    // both aria-hidden *and* pulled out of tab order (that combination made it
+    // reachable by neither), and it needs its own accessible name since
+    // "Build 3/10" alone doesn't say what activating it does.
+    const epic: InitiativeEpic = {
+      ref: 'o/r#997', url: 'https://github.com/o/r/issues/997',
+      total: 10, done: 3, blocked: 1, needsHuman: 0, children: [],
+    }
+    const { container, getByRole } = render(
+      <InitiativeTrack stage="build" status="active" epic={epic} />)
+
+    // Findable via getByRole, which testing-library excludes for anything
+    // under an aria-hidden ancestor by default — this fails if the wrapping
+    // node span is aria-hidden again.
+    const link = getByRole('link', { name: /view epic on GitHub/i })
+    expect(link).toHaveAttribute('href', 'https://github.com/o/r/issues/997')
+    // Not pulled out of the tab order.
+    expect(link).not.toHaveAttribute('tabindex', '-1')
+    // The Build node's own wrapper is no longer aria-hidden (every other node
+    // still is — only the interactive one changes).
+    const buildNode = container.querySelector('.node.active')
+    expect(buildNode).not.toHaveAttribute('aria-hidden')
+    const otherNodes = [...container.querySelectorAll('.node')].filter((n) => n !== buildNode)
+    expect(otherNodes.every((n) => n.getAttribute('aria-hidden') === 'true')).toBe(true)
+
+    // The container's aria-label also mentions the epic progress and the link.
+    expect(container.querySelector('.track')?.getAttribute('aria-label')).toContain(
+      'epic progress 3 of 10 done, view epic on GitHub')
+  })
 })

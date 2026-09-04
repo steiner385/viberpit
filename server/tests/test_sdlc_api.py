@@ -311,12 +311,83 @@ def test_get_detail_includes_epic_progress():
                 assert child_refs["o/r#2"]["status"] == "Blocked"
                 assert child_refs["o/r#3"]["status"] == "Ready"
 
-                # list endpoint carries the epic pointer too, but not the expanded epic dict
+                # The list endpoint is what the web board actually renders from
+                # (InitiativesTab → fetchInitiatives → GET /initiatives, never the
+                # per-slug detail route) — it must carry the *expanded* epic dict
+                # too, computed via one grouped query, not just the epicRepo/
+                # epicNumber pointer (#991 review round 1, CRITICAL 1).
                 listed = c.get("/api/sdlc/initiatives", headers=IDENTITY_HEADERS)
                 assert listed.status_code == 200
                 item = next(i for i in listed.json() if i["slug"] == "the-epic")
                 assert item["epicRepo"] == "o/r"
                 assert item["epicNumber"] == 997
+                assert item["epic"] == epic
+
+
+def test_list_epic_progress_dedupes_child_mirrored_onto_two_boards():
+    """A child WorkItem with GhProjectItem rows on two different boards (nothing
+    in the schema constrains a work item to one project — GhProjectItem's only
+    unique constraint is (gh_project_id, gh_item_node_id)) must still count
+    once, not twice: total stays 3, and the most-recently-updated status wins
+    (#991 review round 1, IMPORTANT 3)."""
+    from datetime import datetime, timedelta, timezone
+
+    from server.db import db_session
+    from server.db.models import GhProjectItem, Initiative, WorkItem
+
+    async def _seed(db_url: str):
+        from server.db import init_db
+        await init_db(db_url)
+        async with db_session() as db:
+            ini = Initiative(
+                slug="the-epic", repo="o/r", title="The Epic", stage="build", status="active",
+                origin="epic-adoption", origin_ref="o/r#997", epic_repo="o/r", epic_number=997,
+            )
+            db.add(ini)
+            epic_wi = WorkItem(repo="o/r", number=997, kind="issue", state="open", is_epic=True)
+            db.add(epic_wi)
+            await db.flush()
+
+            done_child = WorkItem(repo="o/r", number=1, kind="issue", state="closed",
+                                  parent_work_item_id=epic_wi.id)
+            dup_child = WorkItem(repo="o/r", number=2, kind="issue", state="open",
+                                 parent_work_item_id=epic_wi.id)
+            ready_child = WorkItem(repo="o/r", number=3, kind="issue", state="open",
+                                   parent_work_item_id=epic_wi.id)
+            db.add_all([done_child, dup_child, ready_child])
+            await db.flush()
+
+            now = datetime.now(timezone.utc)
+            # dup_child mirrored onto two boards with two different statuses;
+            # the later-updated row ("Blocked") must be the one that wins.
+            db.add(GhProjectItem(work_item_id=dup_child.id, gh_project_id="board-a",
+                                 status="Ready", updated_at=now - timedelta(minutes=5)))
+            db.add(GhProjectItem(work_item_id=dup_child.id, gh_project_id="board-b",
+                                 status="Blocked", updated_at=now))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        asyncio.run(_seed(db_url))
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url,
+                                     "CCSWITCH_DEV": "1",
+                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.tests.fakes.fake_factory import fake_sdk_factory
+            from server.app import create_app
+            from fastapi.testclient import TestClient
+
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            app = create_app(orchestrator=orch)
+            with TestClient(app, raise_server_exceptions=False) as c:
+                r = c.get("/api/sdlc/initiatives", headers=IDENTITY_HEADERS)
+                assert r.status_code == 200, r.text
+                epic = next(i for i in r.json() if i["slug"] == "the-epic")["epic"]
+                assert epic["total"] == 3, "duplicate board row must not inflate total"
+                assert epic["blocked"] == 1
+                assert epic["done"] == 1
+                child_refs = {c["ref"]: c for c in epic["children"]}
+                assert len(child_refs) == 3
+                assert child_refs["o/r#2"]["status"] == "Blocked"
 
 
 def test_get_detail_no_epic_is_null():
