@@ -55,6 +55,17 @@ describe('settings chassis', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Saved')
   })
 
+  it('row keeps the status live region mounted when there is no status (R7)', () => {
+    render(
+      <SettingRow label="Theme" htmlFor="theme">
+        <Input id="theme" />
+      </SettingRow>,
+    )
+    const live = screen.getByRole('status')
+    expect(live).toBeEmptyDOMElement()
+    expect(live).toHaveAttribute('aria-live', 'polite')
+  })
+
   it('ScopeBadge renders nothing for none', () => {
     const { container } = render(<ScopeBadge scope="none" />)
     expect(container).toBeEmptyDOMElement()

@@ -32,9 +32,12 @@ export function SettingRow({ label, htmlFor, description, error, status, wide = 
         {error && <p id={errId} role="alert" className="mt-0.5 text-xs text-danger"><span className="sr-only">Error: </span>{error}</p>}
       </div>
       <div className={cn('flex items-center gap-2', !wide && 'sm:justify-end')}>
-        {status !== undefined && status !== null && (
-          <span role="status" aria-live="polite" className="text-xs text-success whitespace-nowrap">{status}</span>
-        )}
+        {/* Always mounted, even empty (R7): a live region added to the DOM at the
+            same moment it gains text is not announced by most screen readers —
+            they only report changes to regions they were already observing.
+            `empty:sr-only` takes the empty span out of flow so it costs no flex
+            gap next to the control. */}
+        <span role="status" aria-live="polite" className="empty:sr-only text-xs text-success whitespace-nowrap">{status}</span>
         {control}
       </div>
     </div>
