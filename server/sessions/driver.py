@@ -180,7 +180,8 @@ class SessionDriver:
                  identity, denylist=PermissionRegistry.DANGEROUS, resume=None,
                  on_session_id=None, on_sync_back: Callable[[], None] | None = None,
                  on_status=None, on_record_condense_ms=None, get_condense_estimate=None,
-                 on_recoverable_failure=None, on_context_usage=None, clock=None, suggester=None):
+                 on_recoverable_failure=None, on_context_usage=None, clock=None, suggester=None,
+                 assistant_api=None):
         self.session_id = session_id
         self.account = account
         self.cwd = cwd
@@ -220,6 +221,11 @@ class SessionDriver:
         self._last_progress_at: float = self._clock()
         self._last_rate_reset: int | None = None  # resets_at (epoch s) from a RateLimitEvent
         self._factory = sdk_factory
+        # The loopback HTTP client an assistant-kind session's MCP tools call
+        # ccswitch's own API through (server/assistant/client.py). None for every
+        # coding session. Owned here (not the orchestrator) so it is closed exactly
+        # once, alongside the SDK client, in aclose() below.
+        self._assistant_api = assistant_api
         self._reg = registry
         self._qreg = QuestionRegistry()
         self._tr = Translator()
@@ -1401,5 +1407,7 @@ class SessionDriver:
         # session (e.g. a long-running session where the SDK refreshed but the
         # drain's finally sync_back already ran before the close was requested).
         await self._call_sync_back()
+        if self._assistant_api is not None:
+            await self._assistant_api.aclose()
         for q in self._subscribers:
             q.put_nowait(_STREAM_DONE)
