@@ -803,6 +803,7 @@ class SessionOrchestrator:
             save_project_fields=self._pm_sync_save_project_fields,
             save_project_items=self._pm_sync_save_project_items,
             save_relations=self._pm_sync_save_relations,
+            rename_repo=self._pm_sync_rename_repo,
         )
         self._pm_sync_task: asyncio.Task | None = None
         # GitHub Reconcile control loop (spec 003 §6): the WRITE half of the mirror —
@@ -3594,6 +3595,13 @@ class SessionOrchestrator:
         async with db_session() as db:
             await db.run_sync(
                 lambda s: mirror_store.upsert_relations(s, repo, rels))
+
+    async def _pm_sync_rename_repo(self, old: str, new: str) -> dict:
+        """Re-key every mirror row from a stored alias to GitHub's canonical
+        ``nameWithOwner`` (issue #999). One transaction; returns per-table counts."""
+        from server.pm import mirror_store
+        async with db_session() as db:
+            return await db.run_sync(lambda s: mirror_store.rename_repo(s, old, new))
 
     async def _pm_sync_upsert_items(self, items: list) -> None:
         """Idempotent upsert into work_items keyed by (repo, number, kind)."""

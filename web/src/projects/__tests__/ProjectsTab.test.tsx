@@ -3,6 +3,8 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
+import { ApiRequestError } from '@/api/client'
+
 import { ProjectsTab } from '../ProjectsTab'
 
 vi.mock('@/api/pm', async (importOriginal) => ({
@@ -23,6 +25,7 @@ vi.mock('@/api/pm', async (importOriginal) => ({
               backfillDone: false, lastSyncedAt: null }],
     edges: [], featureCount: 0, workItemCount: 0,
   }),
+  requestProjectSync: vi.fn().mockResolvedValue({ requested: true }),
   fetchProjectDeps: vi.fn().mockResolvedValue({
     project: null, edges: [],
     drift: { proseOnly: [], unresolvedTargets: [], missingFromProject: [], checklistEpics: [] },
@@ -80,5 +83,37 @@ describe('ProjectsTab', () => {
         repos: [{ repo: 'org/my-app', isPrimary: true }],
       }),
     )
+  })
+
+  it('renders the server error inline in the form when createProject fails', async () => {
+    const user = userEvent.setup()
+    const pm = await import('@/api/pm')
+    vi.mocked(pm.createProject).mockRejectedValueOnce(
+      new ApiRequestError(409, { detail: { message: 'nope' } }))
+    renderTab()
+
+    await user.click(screen.getByRole('button', { name: /new project/i }))
+    await user.type(screen.getByPlaceholderText('KinDash'), 'MyApp')
+    await user.type(screen.getByPlaceholderText('owner/repo'), 'org/my-app')
+    await user.click(screen.getByRole('button', { name: /add project/i }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('nope')
+    expect(alert).toHaveClass('pm-error')
+    // Form stays open for a retry.
+    expect(screen.getByPlaceholderText('KinDash')).toBeInTheDocument()
+  })
+
+  it('renders the server error inline next to Sync now when the sync request fails', async () => {
+    const user = userEvent.setup()
+    const pm = await import('@/api/pm')
+    vi.mocked(pm.requestProjectSync).mockRejectedValueOnce(
+      new ApiRequestError(409, { detail: { message: 'nope' } }))
+    renderTab()
+
+    await user.click(await screen.findByRole('button', { name: /sync now/i }))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('nope')
+    expect(alert).toHaveClass('pm-error')
   })
 })

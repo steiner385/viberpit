@@ -192,6 +192,22 @@ class PermissionRegistry:
         return [{"permId": pid, "tool": r["tool"], "input": r["input"], "turn_id": r["turn_id"]}
                 for pid, r in self._pending.items() if r["session_id"] == session_id]
 
+    def rethread_identity(self, session_id, old, new) -> int:
+        """Hand *session_id*'s pending prompts registered under *old* to *new*.
+
+        Same contract as QuestionRegistry.rethread_identity (see its docstring for
+        the failure it closes): ``request`` snapshots the driver's identity and
+        ``resolve`` gates on it, so a prompt raised while the driver still carried
+        the "system" sentinel must follow the driver when a real user attaches.
+        Returns the number moved.
+        """
+        moved = 0
+        for rec in self._pending.values():
+            if rec["session_id"] == session_id and rec["identity"] == old:
+                rec["identity"] = new
+                moved += 1
+        return moved
+
     def deny_all(self, session_id):
         for pid in [p for p, r in self._pending.items() if r["session_id"] == session_id]:
             rec = self._pending.pop(pid)

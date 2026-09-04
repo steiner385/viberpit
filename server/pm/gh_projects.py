@@ -197,6 +197,7 @@ def build_issue_relations_query(repo: str, cursor: str | None) -> str:
     owner, name = repo.split("/", 1)
     return (
         'query { repository(owner: "%s", name: "%s") {'
+        " nameWithOwner"
         " issues(first: 100, states: OPEN%s) {"
         " pageInfo { endCursor hasNextPage }"
         " nodes { id number"

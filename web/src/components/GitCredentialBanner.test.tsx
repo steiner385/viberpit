@@ -47,6 +47,17 @@ describe('GitCredentialBanner', () => {
     expect(link).toHaveAttribute('href', 'https://github.com/settings/tokens')
   })
 
+  it('renders in normal flow, never as a fixed overlay', () => {
+    // It lives in the shell's BannerStack. A `fixed top-0` copy sat on the same
+    // band as the toaster and the page header; in flow it pushes content down.
+    mockAlerts([ALERT])
+    render(<GitCredentialBanner />)
+    const wrapper = screen.getByTestId('git-credential-banners')
+    expect(wrapper.className).not.toMatch(/\bfixed\b/)
+    expect(wrapper.className).not.toMatch(/\bz-\S+/)
+    expect(screen.getByRole('alert').className).not.toMatch(/\bfixed\b/)
+  })
+
   it('points an App-backed failure at the installation, not the token page', () => {
     // Sending the user to Personal Access Tokens for an App-auth failure is a
     // dead end — there is no PAT in play to refresh.

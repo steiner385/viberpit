@@ -92,6 +92,97 @@ def test_upsert_relations_sets_parents_and_plans_deps():
     assert native.active is False
 
 
+# --- rename_repo: alias → GitHub's canonical nameWithOwner (issue #999) --------
+
+CANON = "steiner385/ccswitch"
+
+
+def test_rename_repo_rewrites_every_alias_key_and_resolves_fks():
+    """The live shape behind #999: ``ProjectRepo.repo`` and every mirrored key
+    hold the pre-rename alias, while GitHub-sourced dst refs are canonical, so
+    native edges never resolve. One rename rewrites ProjectRepo, WorkItem,
+    WorkItemDep src/dst refs and the Initiative pointers, then re-resolves the
+    FKs that were NULL only because the two halves disagreed."""
+    db = _db()
+    _seed(db)
+    src = db.query(WorkItem).filter_by(number=950).one()
+    db.add(WorkItemDep(src_ref=f"{REPO}#950", dst_ref=f"{CANON}#945", source="native",
+                       active=True, src_work_item_id=src.id, dst_work_item_id=None))
+    db.add(WorkItemDep(src_ref=f"{REPO}#951", dst_ref=f"{REPO}#950", source="order",
+                       active=True))
+    db.add(Initiative(slug="rollout", repo=REPO, epic_repo=REPO, epic_number=945))
+    db.commit()
+
+    counts = mirror_store.rename_repo(db, REPO, CANON)
+    db.commit()
+
+    assert db.query(ProjectRepo).one().repo == CANON
+    assert {w.repo for w in db.query(WorkItem).all()} == {CANON}
+    assert {(d.src_ref, d.dst_ref) for d in db.query(WorkItemDep).all()} == {
+        (f"{CANON}#950", f"{CANON}#945"), (f"{CANON}#951", f"{CANON}#950")}
+    epic = db.query(WorkItem).filter_by(number=945).one()
+    native = db.query(WorkItemDep).filter_by(source="native").one()
+    assert native.dst_work_item_id == epic.id
+    order = db.query(WorkItemDep).filter_by(source="order").one()
+    assert order.src_work_item_id is not None and order.dst_work_item_id == src.id
+    ini = db.query(Initiative).one()
+    assert ini.repo == CANON and ini.epic_repo == CANON
+    assert counts["work_items"] == 3 and counts["deps"] == 2
+    # Idempotent: a second pass finds nothing under the alias.
+    assert sum(mirror_store.rename_repo(db, REPO, CANON).values()) == 0
+    assert mirror_store.rename_repo(db, CANON, CANON) == {}
+
+
+def test_rename_repo_merges_into_an_existing_canonical_twin():
+    """If the canonical row already exists (a repo onboarded under both names),
+    the alias row is dropped rather than tripping the (repo, number, kind)
+    unique key, and rows that pointed at it are re-pointed at the twin."""
+    db = _db()
+    _seed(db)
+    twin = WorkItem(repo=CANON, number=950, kind="issue", state="open")
+    db.add(twin)
+    db.flush()
+    alias_950 = db.query(WorkItem).filter_by(repo=REPO, number=950).one()
+    child = db.query(WorkItem).filter_by(number=951).one()
+    child.parent_work_item_id = alias_950.id
+    db.add(WorkItemDep(src_ref=f"{REPO}#951", dst_ref=f"{REPO}#950", source="order",
+                       active=True, src_work_item_id=child.id, dst_work_item_id=alias_950.id))
+    db.add(WorkItemDep(src_ref=f"{CANON}#951", dst_ref=f"{CANON}#950", source="order",
+                       active=True))
+    db.commit()
+
+    mirror_store.rename_repo(db, REPO, CANON)
+    db.commit()
+
+    assert db.query(WorkItem).filter_by(number=950).one().id == twin.id
+    assert db.query(WorkItem).filter_by(number=951).one().parent_work_item_id == twin.id
+    dep = db.query(WorkItemDep).one()  # the duplicate edge collapsed to one row
+    assert (dep.src_ref, dep.dst_ref) == (f"{CANON}#951", f"{CANON}#950")
+    assert dep.dst_work_item_id == twin.id and dep.src_work_item_id == child.id
+
+
+def test_relations_under_the_canonical_name_link_after_rename():
+    """Issue #999 acceptance: once the mirror is canonical, a relations pass
+    keyed by GitHub's nameWithOwner links parents and resolves native edges."""
+    db = _db()
+    _seed(db)
+    mirror_store.rename_repo(db, REPO, CANON)
+    db.commit()
+    rels = [
+        IssueRelView(repo=CANON, number=945, blocked_by=[], parent_ref=None,
+                     sub_issue_refs=[f"{CANON}#950", f"{CANON}#951"]),
+        IssueRelView(repo=CANON, number=950, blocked_by=[f"{CANON}#945"],
+                     parent_ref=f"{CANON}#945", sub_issue_refs=[]),
+    ]
+    mirror_store.upsert_relations(db, CANON, rels)
+    epic = db.query(WorkItem).filter_by(number=945).one()
+    child = db.query(WorkItem).filter_by(number=950).one()
+    assert epic.is_epic is True and child.parent_work_item_id == epic.id
+    native = db.query(WorkItemDep).filter_by(source="native").one()
+    assert native.dst_work_item_id == epic.id
+    assert db.query(WorkItemDep).filter_by(source="order").one().src_ref == f"{CANON}#951"
+
+
 def test_upsert_relations_backfills_fks_when_target_later_mirrored():
     """FKs resolve to NULL at creation when the target isn't mirrored yet; a
     later pass — once repo-sync catches up — must backfill them (issue #973)."""

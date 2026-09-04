@@ -4,14 +4,20 @@ import { useDaemonReachable } from '@/hooks/useDaemonReachable'
 import { useEpochRestart } from '@/hooks/useEpochRestart'
 
 /**
- * Non-modal sticky banner shown while the session daemon is restarting or unreachable.
+ * Non-modal banner shown while the session daemon is restarting or unreachable.
  *
  * Two triggers:
  *  - WS close code 1012 (epoch change / planned restart) → immediate via useEpochRestart.
  *  - /healthz polling → catches unplanned outages via useDaemonReachable.
  *
  * Auto-clears once /healthz reports daemon healthy — no manual dismiss needed.
- * pointer-events-none so the fixed top-0 bar never intercepts clicks beneath it (#620).
+ *
+ * Renders IN FLOW inside the shell's `BannerStack`, never `fixed`. It used to
+ * be `fixed top-0 z-50`, which put it on the same screen band as the toaster
+ * and the session top bar; the `pointer-events-none` hack that stopped it
+ * eating the "Back to session list" click (#620) only existed because of that.
+ * In flow it pushes content down instead of covering it, and there is nothing
+ * beneath it to intercept.
  */
 export function DaemonRestartBanner() {
   const epochRestart = useEpochRestart()
@@ -22,12 +28,7 @@ export function DaemonRestartBanner() {
       tone="warning"
       title="Back in a moment…"
       icon={<Loader2 size={16} className="animate-spin" aria-hidden="true" />}
-      className={
-        // pointer-events-none: non-interactive status notice. Without it the fixed
-        // top-0 bar overlays the session top bar and captures clicks meant for the
-        // controls beneath it (e.g. "Back to session list" — #620 broke dashboard e2e T044).
-        'pointer-events-none fixed inset-x-0 top-0 z-50 items-center justify-center rounded-none border-x-0 border-t-0 px-4 py-2'
-      }
+      className="items-center"
     />
   )
 }

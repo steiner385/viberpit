@@ -251,6 +251,10 @@ export function useCreateSession() {
   const qc = useQueryClient()
   return useMutation<Session, ApiRequestError, CreateSessionInput, { tempId: string }>({
     mutationFn: (input) => api.post<Session>('/sessions', input),
+    // Both callers (NewSessionDialogHost, PromptDock → DispatchBar) render the
+    // failure inline next to the form that raised it; the global toast would be
+    // a second, vaguer copy of the same message.
+    meta: { suppressErrorToast: true },
     onMutate: (input) => {
       // Placeholder lives outside the query cache so the 5s poll can't wipe it
       // while the backend spins up the claude PTY.
@@ -626,9 +630,8 @@ export function usePermanentDeleteSession() {
       if (ctx?.prevSessions) qc.setQueryData(QK.sessions, ctx.prevSessions)
       toast.error(`Couldn't delete ${ctx?.name ?? 'session'}`)
     },
-    onSuccess: (_d, _id, ctx) => {
-      toast.success(`Deleted ${ctx?.name ?? 'session'}`)
-    },
+    // No success toast: the card leaves the list optimistically in onMutate,
+    // which is the acknowledgement. Only the failure needs a voice.
     onSettled: () => {
       qc.invalidateQueries({ queryKey: QK.archived })
       qc.invalidateQueries({ queryKey: QK.sessions })
@@ -948,6 +951,8 @@ export function useDispatchBacklogGroup() {
   const qc = useQueryClient()
   return useMutation<DispatchGroupResponse, ApiRequestError, string[]>({
     mutationFn: (refs) => postDispatchGroup(refs),
+    // ManualDispatchDialog / BacklogGroupsPanel show the failure inline.
+    meta: { suppressErrorToast: true },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: QK.backlogGroups })
       qc.invalidateQueries({ queryKey: QK.automationSessions('backlog-runner') })
@@ -960,6 +965,8 @@ export function useConsolidate() {
   const qc = useQueryClient()
   return useMutation<TriggerResult, ApiRequestError, { repo: string; numbers: number[] }>({
     mutationFn: (body) => postConsolidate(body),
+    // ConsolidatePanel shows the outcome inline.
+    meta: { suppressErrorToast: true },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: QK.consolidation })
       qc.invalidateQueries({ queryKey: QK.automationActionable('pr-doctor') })
@@ -1200,15 +1207,12 @@ export function useDeletePermissionProfile() {
 
 // ── SDLC initiatives (issues #802/#803) ──────────────────────────────────────
 
-/** The /api/sdlc endpoints return `detail` as an object (`{error, message}`) on
- *  4xx, not a bare string, so pull the human-readable `message` when present and
- *  fall back to a static line otherwise (covers 404 `{error}` and 422 lists). */
-function initiativeErrorMessage(e: ApiRequestError, fallback: string): string {
-  const detail = e.body?.detail
-  if (typeof detail === 'string') return detail
-  const msg = (detail as { message?: unknown } | null | undefined)?.message
-  return typeof msg === 'string' ? msg : fallback
-}
+/** The PM / SDLC mutations below all opt out of the global error toast: each
+ *  consumer renders `mutation.error` inline beside the control that fired it
+ *  (via `extractMutationErrorMessage` from queryClient, which already unwraps
+ *  the `{detail: {error, message}}` body shape these endpoints return). Before
+ *  this every failure produced two toasts — the hook's own and the global one. */
+const PM_MUTATION_META = { suppressErrorToast: true } as const
 
 /** The Initiative board's list. Each row already carries its artifact chain, so
  *  the board renders N tracks from one call. Polled for baseline liveness; the
@@ -1231,7 +1235,7 @@ export function useAdvanceInitiative() {
       void qc.invalidateQueries({ queryKey: QK.initiatives })
       void qc.invalidateQueries({ queryKey: QK.initiative(updated.slug) })
     },
-    onError: (e) => toast.error(initiativeErrorMessage(e, 'Could not advance initiative')),
+    meta: PM_MUTATION_META,
   })
 }
 
@@ -1240,7 +1244,7 @@ export function useCreateInitiative() {
   return useMutation<Initiative, ApiRequestError, CreateInitiativeInput>({
     mutationFn: (input) => createInitiative(input),
     onSuccess: () => void qc.invalidateQueries({ queryKey: QK.initiatives }),
-    onError: (e) => toast.error(initiativeErrorMessage(e, 'Could not create initiative')),
+    meta: PM_MUTATION_META,
   })
 }
 
@@ -1261,7 +1265,7 @@ export function useCreateProject() {
   return useMutation<Project, ApiRequestError, CreateProjectInput>({
     mutationFn: (input) => createProject(input),
     onSuccess: () => void qc.invalidateQueries({ queryKey: QK.projects }),
-    onError: (e) => toast.error(initiativeErrorMessage(e, 'Could not create project')),
+    meta: PM_MUTATION_META,
   })
 }
 
@@ -1270,7 +1274,7 @@ export function useSyncProject() {
   return useMutation<{ requested: boolean }, ApiRequestError, string>({
     mutationFn: (slug) => requestProjectSync(slug),
     onSuccess: () => void qc.invalidateQueries({ queryKey: QK.projects }),
-    onError: (e) => toast.error(initiativeErrorMessage(e, 'Could not request sync')),
+    meta: PM_MUTATION_META,
   })
 }
 
@@ -1295,7 +1299,7 @@ export function useProposeMap() {
       void qc.invalidateQueries({ queryKey: QK.onboarding(slug) })
       void qc.invalidateQueries({ queryKey: QK.projects })
     },
-    onError: (e) => toast.error(initiativeErrorMessage(e, 'Could not propose the map')),
+    meta: PM_MUTATION_META,
   })
 }
 
@@ -1307,7 +1311,7 @@ export function useClassify() {
       void qc.invalidateQueries({ queryKey: QK.onboarding(slug) })
       void qc.invalidateQueries({ queryKey: QK.triage })
     },
-    onError: (e) => toast.error(initiativeErrorMessage(e, 'Could not start classification')),
+    meta: PM_MUTATION_META,
   })
 }
 
@@ -1332,7 +1336,7 @@ export function useAcceptProposal(projectSlug?: string) {
       void qc.invalidateQueries({ queryKey: [...QK.triage, projectSlug ?? null] })
       void qc.invalidateQueries({ queryKey: QK.projects })
     },
-    onError: (e) => toast.error(initiativeErrorMessage(e, 'Could not accept proposal')),
+    meta: PM_MUTATION_META,
   })
 }
 
@@ -1346,7 +1350,7 @@ export function useRejectProposal(projectSlug?: string) {
     mutationFn: ({ id }) => rejectProposal(id),
     onSuccess: () =>
       void qc.invalidateQueries({ queryKey: [...QK.triage, projectSlug ?? null] }),
-    onError: (e) => toast.error(initiativeErrorMessage(e, 'Could not reject proposal')),
+    meta: PM_MUTATION_META,
   })
 }
 

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { DispatchBar } from '../DispatchBar'
+import { DispatchError } from '../dispatchError'
 import { caretLineEdges } from '@/lib/caretLineEdges'
 import type { GithubRepo } from '@/api/hooks'
 import type { Account, ModelOption } from '@/api/types'
@@ -81,6 +82,33 @@ describe('DispatchBar', () => {
     await user.keyboard('{Enter}')
     expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, account: null, model: null, host: null, attachmentIds: [] })
     await waitFor(() => expect(box).toHaveValue(''))
+  })
+
+  it('shows a DispatchError inline, keeps the draft, and clears it on the next edit', async () => {
+    const user = userEvent.setup()
+    const onDispatch = vi.fn().mockRejectedValue(new DispatchError('No usable accounts'))
+    render(<DispatchBar {...makeProps({ onDispatch })} />)
+    const box = screen.getByRole('textbox', { name: /new session prompt/i })
+    await user.click(box)
+    await user.type(box, 'retry me')
+    await user.keyboard('{Enter}')
+    expect(await screen.findByRole('alert')).toHaveTextContent('No usable accounts')
+    expect(box).toHaveValue('retry me')
+    await user.type(box, '!')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('says nothing for a rejection that is not a DispatchError (another surface owns it)', async () => {
+    const user = userEvent.setup()
+    const onDispatch = vi.fn().mockRejectedValue(new Error('API error 409'))
+    render(<DispatchBar {...makeProps({ onDispatch })} />)
+    const box = screen.getByRole('textbox', { name: /new session prompt/i })
+    await user.click(box)
+    await user.type(box, 'retry me')
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(onDispatch).toHaveBeenCalled())
+    expect(box).toHaveValue('retry me')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('Shift+Enter inserts a newline (does not dispatch)', async () => {

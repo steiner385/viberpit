@@ -161,6 +161,9 @@ def test_parse_issue_relations_builds_canonical_refs():
 
 def test_relations_query_targets_open_issues():
     q = build_issue_relations_query("steiner385/cc-account-switcher", None)
+    # The repository root carries its canonical name so a stored alias can be
+    # detected and renamed by the relations pass too (issue #999).
+    assert q.index("nameWithOwner") < q.index("issues(")
     assert 'owner: "steiner385"' in q and 'name: "cc-account-switcher"' in q
     assert "states: OPEN" in q
 

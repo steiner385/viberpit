@@ -24,7 +24,12 @@ vi.mock('@/api/hooks', () => ({
   useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAssessDispatch: vi.fn(() => ({ assess: vi.fn() })),
 }))
-vi.mock('sonner', () => ({ toast: { success: vi.fn(), warning: vi.fn(), error: vi.fn() } }))
+
+function selectBothAndRun() {
+  fireEvent.click(screen.getByLabelText('select PR 1'))
+  fireEvent.click(screen.getByLabelText('select PR 2'))
+  fireEvent.click(screen.getByRole('button', { name: /consolidate/i }))
+}
 
 describe('ConsolidatePanel', () => {
   beforeEach(() => {
@@ -70,5 +75,39 @@ describe('ConsolidatePanel', () => {
     expect(badges).toHaveLength(2)
     fireEvent.click(badges[0])
     expect(onOpenSession).toHaveBeenCalledWith('s1')
+  })
+
+  it('renders an ok outcome inline as a status and clears the selection', async () => {
+    mutate.mockResolvedValue({ status: 'spawned', level: 'ok', message: 'Consolidation started' })
+    render(<ConsolidatePanel enabled />)
+    selectBothAndRun()
+    await waitFor(() =>
+      expect(screen.getByRole('status')).toHaveTextContent('Consolidation started'),
+    )
+    expect(screen.getByLabelText('select PR 1')).not.toBeChecked()
+    expect(screen.getByLabelText('select PR 2')).not.toBeChecked()
+  })
+
+  it('renders a warn outcome inline as a status and keeps the selection', async () => {
+    mutate.mockResolvedValue({ status: 'skipped', level: 'warn', message: 'Already underway' })
+    render(<ConsolidatePanel enabled />)
+    selectBothAndRun()
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Already underway'))
+    expect(screen.getByLabelText('select PR 1')).toBeChecked()
+  })
+
+  it('renders an error outcome inline as an alert', async () => {
+    mutate.mockResolvedValue({ status: 'error', level: 'error', message: 'No capacity' })
+    render(<ConsolidatePanel enabled />)
+    selectBothAndRun()
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('No capacity'))
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
+  it('renders a thrown mutation as an inline error', async () => {
+    mutate.mockRejectedValue(new Error('network error'))
+    render(<ConsolidatePanel enabled />)
+    selectBothAndRun()
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Failed to consolidate'))
   })
 })

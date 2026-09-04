@@ -30,9 +30,11 @@ import { MemoryRouter, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import * as hooks from '@/api/hooks'
+import { ApiRequestError } from '@/api/client'
 import type { Account, Session } from '@/api/types'
 import { session as makeSession } from '@/test/factories'
 import { NewSessionDialogHost } from './NewSessionDialogHost'
+import { CREATE_SESSION_FALLBACK } from './createSessionFailure'
 
 vi.mock('sonner', () => ({
   toast: Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn() }),
@@ -59,10 +61,12 @@ const ACCOUNTS: Account[] = [
   },
 ]
 
-/** The `mutate` the host calls, with the callbacks it was handed. */
+/** The `mutate` the host calls, with the callbacks it was handed. `onError`
+ *  takes the REAL error class: the triage narrows on `instanceof`, and a
+ *  plain `{status, body}` object would let a broken narrowing pass. */
 type CreateCallbacks = {
   onSuccess?: (s: Session) => void
-  onError?: (e: { status: number; body: unknown }) => void
+  onError?: (e: ApiRequestError) => void
 }
 let lastCallbacks: CreateCallbacks = {}
 let createMutate: ReturnType<typeof vi.fn>
@@ -164,19 +168,31 @@ describe('NewSessionDialogHost — success', () => {
 })
 
 describe('NewSessionDialogHost — the 409 triage', () => {
-  async function submitThen409(body: unknown, onAllLimited = vi.fn()) {
+  async function submitThenFail(status: number, body: Record<string, unknown>, onAllLimited = vi.fn()) {
     const user = userEvent.setup()
     renderHost({ onAllLimited })
     await user.click(screen.getByRole('button', { name: /^create$/i }))
-    act(() => lastCallbacks.onError?.({ status: 409, body }))
+    act(() => lastCallbacks.onError?.(new ApiRequestError(status, body)))
     return { onAllLimited }
   }
+  const submitThen409 = (body: Record<string, unknown>, onAllLimited?: Parameters<typeof submitThenFail>[2]) =>
+    submitThenFail(409, body, onAllLimited)
 
-  it('routes accounts_need_reauth to a toast, not the limit banner', async () => {
+  it('keeps the dialog OPEN for accounts_need_reauth and says so inline — no toast, no limit banner', async () => {
     const { onAllLimited } = await submitThen409({ error: { code: 'accounts_need_reauth' } })
-    expect(vi.mocked(toast.error)).toHaveBeenCalledWith(expect.stringContaining('re-authenticate'))
+    expect(screen.getByRole('alert')).toHaveTextContent(/re-authenticate/)
+    expect(vi.mocked(toast.error)).not.toHaveBeenCalled()
     expect(onAllLimited).not.toHaveBeenCalled()
-    expect(dialogOpen()).toBe(false)
+    expect(dialogOpen()).toBe(true)
+  })
+
+  it('keeps the dialog OPEN for a non-409 failure and shows the message inline', async () => {
+    // `useCreateSession` opts out of the global mutation toast, so this line is
+    // the ONLY thing the user would see — it must be there.
+    await submitThenFail(500, {})
+    expect(screen.getByRole('alert')).toHaveTextContent(CREATE_SESSION_FALLBACK)
+    expect(vi.mocked(toast.error)).not.toHaveBeenCalled()
+    expect(dialogOpen()).toBe(true)
   })
 
   it('hands an all-accounts-limited reset time to the shell banner', async () => {
@@ -204,10 +220,8 @@ describe('NewSessionDialogHost — the 409 triage', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Could not switch to feat/x')
   })
 
-  it('leaves a non-409 error to the mutation, changing nothing here', async () => {
-    const { onAllLimited } = await submitThen409({ error: { code: 'boom' } })
-    // (`submitThen409` sends status 409; this one re-sends as 500.)
-    act(() => lastCallbacks.onError?.({ status: 500, body: { error: { code: 'boom' } } }))
-    expect(onAllLimited).toHaveBeenCalledTimes(1) // only the 409 above
+  it('never raises the limit banner for a non-409 error', async () => {
+    const { onAllLimited } = await submitThenFail(500, { error: { code: 'boom' } })
+    expect(onAllLimited).not.toHaveBeenCalled()
   })
 })

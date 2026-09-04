@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { DispatchBar } from '@/components/DispatchBar'
+import { DispatchError } from '@/components/dispatchError'
 import { SessionComposer } from '@/components/session/SessionComposer'
 import { useSessionRuntimeContext } from '@/components/session/SessionRuntimeProvider'
 import { useCreateSession, useGithubRepos, useModels } from '@/api/hooks'
@@ -12,6 +13,7 @@ import { NAV_BY_ID } from '@/shell/navDefs'
 import { useOpenSessionId } from '@/shell/openSessionId'
 import { sessionOpenState } from '@/session/sessionNavState'
 import type { SessionListState } from '@/features/sessions/useSessionListState'
+import { describeCreateSessionFailure } from '@/features/sessions/createSessionFailure'
 
 export interface PromptDockProps {
   /**
@@ -180,18 +182,20 @@ function NewSessionBar({
           // The 409 triage is DesktopShell's; `Dashboard` merely rejected, so the
           // phone layout silently swallowed "every account is limited". The union
           // keeps the richer branch — the same call the list column made in Task 9.
+          //
+          // The reading is `describeCreateSessionFailure`, shared with the New
+          // Session dialog. "All accounts limited" is the shell banner's to show,
+          // so the bar is told nothing; everything else is said inline in the bar
+          // (`useCreateSession` opts out of the global toast, so this IS the
+          // user's only copy of the message).
           onError: (err) => {
-            if (err.status === 409) {
-              const body = err.body as { error?: { code?: string }; earliestReset?: string | null }
-              if (body?.error?.code === 'branch_switch_failed') {
-                // branch errors are surfaced by the branch picker, not here
-              } else if (body?.error?.code === 'accounts_need_reauth') {
-                toast.error('No usable accounts — check Settings → Accounts to re-authenticate.')
-              } else {
-                onAllLimited(body.earliestReset ?? null)
-              }
+            const failure = describeCreateSessionFailure(err)
+            if (failure.kind === 'all-limited') {
+              onAllLimited(failure.earliestReset)
+              reject(err)
+              return
             }
-            reject(err)
+            reject(new DispatchError(failure.message))
           },
         },
       )

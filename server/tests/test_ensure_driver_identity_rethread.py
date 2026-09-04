@@ -20,6 +20,7 @@ from unittest.mock import patch
 from server.db import init_db, db_session
 from server.db.models import Session as DbSession
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.permissions import PermissionRegistry
 from server.sessions.types import SYSTEM_IDENTITY
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
@@ -88,3 +89,43 @@ def test_ensure_driver_does_not_downgrade_real_identity_to_system(tmp_path):
     assert identity == "user@example.test", (
         "an internal 'system' call must not clobber a real user's identity"
     )
+
+
+def test_rethread_makes_question_asked_under_system_answerable(tmp_path):
+    """Regression (2026-09-04, session dee29111 on dobby): after a deploy restart the
+    daemon rebuilt the driver under "system" and the CLI re-asked its AskUserQuestion
+    in that turn BEFORE anyone attached. ensure_driver then upgraded driver.identity
+    on attach, but the question was already registered under "system", so
+    QuestionRegistry.resolve() rejected the user's answer as an identity mismatch
+    ("That question is no longer pending") even though pending_questions() listed it.
+
+    Re-threading must carry the pending asks along with the driver's identity."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'ccswitch.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed([dict(id="s3", name="S3", account_name="acct1",
+                          claude_session_id="cs3", status="idle", cwd=str(tmp_path))])
+        orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+        await orch.rehydrate()
+        d_sys = await _ensure(orch, tmp_path, "s3")  # built by an internal path
+        # The CLI asks a question while the driver still carries "system" — exactly
+        # what SessionDriver's AskUserQuestion handler registers.
+        qid, fut = d_sys._qreg.request("s3", "t1", "H", "Q?", [{"label": "A"}], False,
+                                       d_sys.identity)
+        pid, pfut = await d_sys._reg.request(
+            "s3", "t1", "Bash", {"command": "make"}, mode="interactive",
+            denylist=PermissionRegistry.DANGEROUS, allowlist=True, identity=d_sys.identity)
+        # Now the real user attaches (WS attach → ensure_driver with their identity).
+        await _ensure(orch, tmp_path, "s3", "user@example.test")
+        listed = [q["question_id"] for q in orch.pending_questions("s3")]
+        answered = await orch.answer_question("s3", qid, ["A"], "user@example.test")
+        approved = orch.resolve_permission("s3", pid, "allow", "user@example.test")
+        return qid, listed, answered, approved, await fut, await pfut
+
+    qid, listed, answered, approved, result, perm = asyncio.run(run())
+    assert listed == [qid], "the question is still pending — only the identity gate blocked it"
+    assert answered is True, "a question the CLI asked under 'system' must accept the attached user's answer"
+    assert approved is True, "same for a permission prompt registered under 'system'"
+    assert result == (["A"], "option")
+    assert perm is True

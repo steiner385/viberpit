@@ -31,6 +31,15 @@
  * component reports the reset time upward and holds no copy of it — a second
  * owner is how the banner came to have two auto-clear implementations in the
  * two old shells.
+ *
+ * ## Every other failure stays in the dialog
+ *
+ * The dialog is the one surface the user is looking at when the submit
+ * fails, so the message renders there (`externalError`) and the dialog stays
+ * open — including "no usable accounts", which used to close the dialog and
+ * toast over the page header, and plain 5xx/network failures, which used to
+ * reach the user only through the global mutation toast. The reading of the
+ * error body is `describeCreateSessionFailure`, shared with `PromptDock`.
  */
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -40,6 +49,7 @@ import type { Account } from '@/api/types'
 import { sessionOpenState, sessionPath } from '@/session/sessionNavState'
 import { useCloseDialog, useDialogName } from '@/shell/dialogParam'
 import { NewSessionDialog } from './NewSessionDialog'
+import { describeCreateSessionFailure } from './createSessionFailure'
 
 export interface NewSessionDialogHostProps {
   accounts: Account[]
@@ -50,39 +60,23 @@ export interface NewSessionDialogHostProps {
   onAllLimited: (earliestReset: string | null) => void
 }
 
-/** The 409 body shape the create endpoint returns. Narrowed, not asserted:
- *  an error body is genuinely arbitrary JSON (R10 — no `as unknown as T`). */
-function read409(body: unknown): { code?: string; message?: string; earliestReset: string | null } {
-  if (typeof body !== 'object' || body === null) return { earliestReset: null }
-  const record: Record<string, unknown> = { ...body }
-  const error = typeof record.error === 'object' && record.error !== null
-    ? (record.error as Record<string, unknown>)
-    : {}
-  return {
-    code: typeof error.code === 'string' ? error.code : undefined,
-    message: typeof error.message === 'string' ? error.message : undefined,
-    earliestReset: typeof record.earliestReset === 'string' ? record.earliestReset : null,
-  }
-}
-
 export function NewSessionDialogHost({ accounts, onAllLimited }: NewSessionDialogHostProps) {
   const navigate = useNavigate()
   const closeDialog = useCloseDialog()
   const dialog = useDialogName()
   const createSession = useCreateSession()
   const { data: settingsData } = useSettings()
-  // Server-reported branch failure. It keeps the dialog OPEN (the user picked a
-  // bad branch and can pick another), which is what separates it from every
-  // other 409 below.
-  const [branchError, setBranchError] = useState<string | null>(null)
+  // The failure the dialog shows inline. Set for every outcome except
+  // "all accounts limited", which is the shell banner's to show.
+  const [submitError, setSubmitError] = useState<string | null>(null)
 
   function close() {
-    setBranchError(null)
+    setSubmitError(null)
     closeDialog()
   }
 
   function handleSubmit(input: CreateSessionInput) {
-    setBranchError(null)
+    setSubmitError(null)
     createSession.mutate(input, {
       onSuccess: (session) => {
         closeDialog()
@@ -94,17 +88,13 @@ export function NewSessionDialogHost({ accounts, onAllLimited }: NewSessionDialo
         navigate(sessionPath(session.id), sessionOpenState(input.initialPrompt))
       },
       onError: (err) => {
-        if (err.status !== 409) return
-        const { code, message, earliestReset } = read409(err.body)
-        if (code === 'branch_switch_failed') {
-          setBranchError(message ?? 'Could not switch branch')
-        } else if (code === 'accounts_need_reauth') {
-          toast.error('No usable accounts — check Settings → Accounts to re-authenticate.')
+        const failure = describeCreateSessionFailure(err)
+        if (failure.kind === 'all-limited') {
+          onAllLimited(failure.earliestReset)
           closeDialog()
-        } else {
-          onAllLimited(earliestReset)
-          closeDialog()
+          return
         }
+        setSubmitError(failure.message)
       },
     })
   }
@@ -117,7 +107,7 @@ export function NewSessionDialogHost({ accounts, onAllLimited }: NewSessionDialo
       onClose={close}
       onSubmit={handleSubmit}
       isPending={createSession.isPending}
-      externalError={branchError}
+      externalError={submitError}
       defaultPermissionMode={settingsData?.defaultPermissionMode}
     />
   )

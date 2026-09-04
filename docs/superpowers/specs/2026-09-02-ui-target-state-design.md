@@ -16,7 +16,9 @@ contracts live in the sub-specs:
 | **C — Page migration** | page variants, per-page migration, palette sweep, docs | `2026-09-02-ui-page-migration-design.md` |
 
 The AI assistant's **backend** (tool surface, model/account routing, permission posture) is a
-separate future spec; sub-spec B defines only the drawer and the API shape it expects.
+separate spec — `2026-09-04-ai-assistant-design.md` (research basis:
+`2026-09-04-ai-assistant-research.md`; plan: `docs/superpowers/plans/2026-09-04-ai-assistant.md`);
+sub-spec B defines only the drawer and the API shape it expects.
 
 ---
 
