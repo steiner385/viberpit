@@ -37,8 +37,8 @@ async def test_unrouted_method_goes_to_primary():
 # void" report. The fleet list must ask every host and merge.
 
 class _LRec:
-    def __init__(self, id, host=None, status="idle"):
-        self.id, self.host, self.status = id, host, status
+    def __init__(self, id, host=None, status="idle", detached=False):
+        self.id, self.host, self.status, self.detached = id, host, status, detached
 
     def __repr__(self):
         return f"_LRec({self.id!r}, host={self.host!r}, status={self.status!r})"
@@ -76,6 +76,42 @@ async def test_list_sessions_prefers_owning_host_over_primary_mirror():
     got = {r.id: r for r in await fo.list_sessions()}
     assert set(got) == {"s-r1", "s-d1"}
     assert got["s-r1"].status == "in_progress"
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_drops_primary_mirror_the_owning_host_no_longer_lists():
+    # "Zombie session": rocky archived (or deleted / closed) s-r1 and popped its own
+    # _records, but the primary's rehydrate-time mirror copy lingers until the
+    # two-strike mirror reconcile (20–40 s, unbounded during a DB blip). During
+    # that window the fleet list re-surfaced the card — every action on it routed
+    # to rocky and 404'd "Session not found". The host that RUNS a session is
+    # authoritative: it answered and did not list s-r1, so the driverless mirror
+    # must not stand in for it.
+    dobby = _ListOrch("dobby", [_LRec("s-r1", host="rocky", detached=True), _LRec("s-d1")])
+    rocky = _ListOrch("rocky", [_LRec("s-r2", host="rocky")])
+    fo = FleetOrchestrator(_FakeRouter({"dobby": dobby, "rocky": rocky}), primary="dobby")
+    got = {r.id: r for r in await fo.list_sessions()}
+    assert set(got) == {"s-d1", "s-r2"}
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_keeps_primary_mirror_when_owning_host_is_unreachable():
+    # The mirror is the only view we have of a session on a dead worker — keep it
+    # (the existing "dead worker must not blank the dashboard" contract).
+    dobby = _ListOrch("dobby", [_LRec("s-r1", host="rocky", detached=True)])
+    rocky = _ListOrch("rocky", fail=ConnectionError("rocky down"))
+    fo = FleetOrchestrator(_FakeRouter({"dobby": dobby, "rocky": rocky}), primary="dobby")
+    assert [r.id for r in await fo.list_sessions()] == ["s-r1"]
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_keeps_primary_record_with_live_driver_despite_foreign_stamp():
+    # A foreign-stamped record the primary actually drives (ensure_driver adopted
+    # it) is live, not a mirror — never hide a session that has a driver.
+    dobby = _ListOrch("dobby", [_LRec("s-r1", host="rocky", detached=False)])
+    rocky = _ListOrch("rocky", [])
+    fo = FleetOrchestrator(_FakeRouter({"dobby": dobby, "rocky": rocky}), primary="dobby")
+    assert [r.id for r in await fo.list_sessions()] == ["s-r1"]
 
 
 @pytest.mark.asyncio
