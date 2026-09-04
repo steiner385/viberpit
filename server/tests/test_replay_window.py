@@ -186,3 +186,49 @@ async def test_replay_events_max_turns_none_returns_all(tmp_path):
     from server.sessions import events as ev
     starts = [e for e in events if isinstance(e, ev.TurnStart)]
     assert len(starts) == 30
+
+
+@pytest.mark.asyncio
+async def test_window_turnstarts_carry_turn_index_in_cursor_space(tmp_path):
+    """Each in-window TurnStart is stamped with its ordinal in the same space the
+    `?before=` cursor / `earliest_turn` index, so the client can verify that page
+    merges keep turn order (the page-boundary ordering bug, session 888ad2bf)."""
+    from server.sessions import events as ev
+    path = _write_transcript(tmp_path, 50)
+    w = await replay_window(path, before=30, limit=20)
+    idx = [e.turn_index for e in w.events if isinstance(e, ev.TurnStart)]
+    assert idx == list(range(10, 30))
+    assert idx[0] == w.earliest_turn
+
+
+@pytest.mark.asyncio
+async def test_window_turn_index_survives_owner_prefix_and_meta(tmp_path):
+    """The owning-prompt prepend and the SessionMeta prepend shift list positions
+    but must not shift ordinals."""
+    from server.sessions import events as ev
+    path = _write_megaturn_transcript(tmp_path, 3, 30)     # 33 assistant messages
+    w = await replay_window(path, before=23, limit=10)     # m10..m19, prefixed with "big"
+    starts = [e for e in w.events if isinstance(e, ev.TurnStart)]
+    # Cursor space counts ALL turns (the 3 pre-turns too), so m10 (the 14th assistant
+    # entry, 0-indexed 13) carries turn_index 13, matching w.earliest_turn below —
+    # not its bare "m" suffix.
+    assert [e.turn_index for e in starts] == list(range(13, 23))
+    assert starts[0].turn_index == w.earliest_turn
+    assert isinstance(w.events[0], ev.SessionMeta)
+    assert isinstance(w.events[1], ev.UserMessage)
+
+
+def test_live_turnstart_has_no_turn_index():
+    """Live-translated turns are not positioned in the disk turn space."""
+    from server.sessions import events as ev
+    assert ev.TurnStart("a").to_wire()["turnIndex"] is None
+
+
+@pytest.mark.asyncio
+async def test_replay_events_turn_index_shares_cursor_space(tmp_path):
+    """`_parse` is `_window(before=None, …)`, so replay_events consumers see the
+    same untrimmed ordinals a `?before=` page would — never a different numbering."""
+    from server.sessions import events as ev
+    path = _write_transcript(tmp_path, 5)
+    events = await replay_events(path, max_turns=2)
+    assert [e.turn_index for e in events if isinstance(e, ev.TurnStart)] == [3, 4]
