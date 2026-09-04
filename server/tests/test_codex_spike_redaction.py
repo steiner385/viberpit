@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shlex
 import sys
 from types import SimpleNamespace
 from pathlib import Path
@@ -84,6 +85,58 @@ def test_build_login_frame_keeps_secrets_only_in_stdin_payload():
     assert secrets.find_leaks(process_metadata) == ()
     assert frame["params"]["accessToken"] == secrets.access_token
     assert frame["params"]["chatgptAccountId"] == secrets.account_id
+
+
+def test_build_ssh_command_preserves_multiline_python_program_as_one_argument():
+    program = 'import sys\nprint("safe", sys.argv[1])'
+    remote_argv = ["python3", "-c", program, "argument with spaces"]
+
+    command = spike.build_ssh_command("runner.example", remote_argv)
+
+    assert command[:-1] == [
+        "ssh",
+        "-T",
+        "-o",
+        "BatchMode=yes",
+        "runner.example",
+        "--",
+    ]
+    assert shlex.split(command[-1]) == remote_argv
+
+
+@pytest.mark.parametrize("ssh_host", ["-oProxyCommand=touch", "runner;touch"])
+def test_build_ssh_command_rejects_unsafe_destination(ssh_host: str):
+    with pytest.raises(spike.SpikeConfigurationError):
+        spike.build_ssh_command(ssh_host, ["true"])
+
+
+def test_build_ssh_command_rejects_empty_or_nul_remote_argv():
+    with pytest.raises(spike.SpikeConfigurationError):
+        spike.build_ssh_command("runner.example", [])
+    with pytest.raises(spike.SpikeConfigurationError):
+        spike.build_ssh_command("runner.example", ["printf", "unsafe\0argument"])
+
+
+def test_remote_runner_process_quotes_shell_and_app_server_argv_without_injection():
+    target = spike.RunnerTarget(name="runner-one", ssh_host="runner.example")
+    home = Path("/tmp/ccswitch-codex-spike." + "a" * 32)
+    hostile_codex_path = "/opt/Codex CLI/codex; printf command-injected"
+
+    command, environment = spike.build_runner_process(
+        target,
+        home,
+        codex_bin=hostile_codex_path,
+    )
+
+    remote_argv = shlex.split(command[-1])
+    assert remote_argv[:2] == ["sh", "-c"]
+    assert remote_argv[3:] == [
+        "ccswitch-codex-spike",
+        str(home),
+        hostile_codex_path,
+    ]
+    assert 'CODEX_HOME="$1" "$2" app-server --stdio' in remote_argv[2]
+    assert environment == spike._minimal_environment()
 
 
 def test_scan_home_flags_auth_json_and_exact_secret_bytes(tmp_path: Path):
@@ -516,7 +569,7 @@ async def test_runner_home_is_registered_before_remote_creation_can_be_cancelled
 
     monkeypatch.setattr(spike, "_run_command", successful_cleanup)
     assert await spike.cleanup_runner(runtimes[0]) is True
-    assert str(runtimes[0].home) in cleanup_commands[0]
+    assert str(runtimes[0].home) in shlex.split(cleanup_commands[0][-1])
 
 
 @pytest.mark.asyncio
