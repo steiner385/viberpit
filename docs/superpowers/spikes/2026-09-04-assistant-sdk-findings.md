@@ -7,8 +7,12 @@ SDK: `claude-agent-sdk` 0.2.105 · account: `tony.claude_steinonline.net`
 
 The mandated script (`scripts/spike_assistant_sdk.py`, matching the brief's Step 1 code plus
 the two required fixes below) **hangs indefinitely** at `ClaudeSDKClient.__aenter__` and never
-emits a `SystemMessage`, because it passes `setting_sources=[]`. This is reproducible 100% of the
-time across 5+ isolated runs (see Q3 and "Extra finding: `setting_sources` hangs the CLI" below).
+emits a `SystemMessage`, because it passes `setting_sources=[]` to the **persistent
+`ClaudeSDKClient`**. This is reproducible 100% of the time across 5+ isolated runs (see Q3 and
+"Extra finding: `setting_sources` hangs `ClaudeSDKClient`" below) — this spike only exercised
+`ClaudeSDKClient`, never the one-shot `claude_agent_sdk.query()` function, and the two paths are
+not interchangeable here (see that section for the working `query()` counter-example already in
+production).
 To still answer Q1/Q2/Q4/Q5 with real evidence, I ran an option-for-option identical probe with
 only `setting_sources` omitted (`/tmp/bisect7_full_probe.py`, logged to
 `/tmp/spike-full-probe.log`) — every other option (`tools=[]`, `disallowed_tools`, `mcp_servers`,
@@ -32,7 +36,16 @@ Q1/Q2/Q4/Q5 are answered from the near-identical run, called out explicitly wher
    existing `claude_bin` resolution) must set `cli_path` explicitly — the SDK does not respect
    `PATH` on its own despite `claude` being importable from it.
 
-## Extra finding: `setting_sources` (any value) hangs the CLI at init
+## Extra finding: `setting_sources` (any value) hangs `ClaudeSDKClient` at init
+
+**Scope: this is a `ClaudeSDKClient`-only finding.** Everything below was tested exclusively
+through the persistent `ClaudeSDKClient` (the `can_use_tool`-driven, multi-turn client this spike
+exists to evaluate). It does **not** generalize to the one-shot `claude_agent_sdk.query()`
+function — three production helpers already pass `setting_sources=[]` to `query()` and run daily
+without hanging: `server/sessions/prompt_refiner.py:73`, `server/sessions/title_generator.py:115`,
+and `server/automations/model_pick.py:113` (all three also pass `env=helper_env(config_dir)` — a
+scratch, per-call `CLAUDE_CONFIG_DIR` — rather than reusing the caller's live account config
+directly, which may be why the `query()` path doesn't hit whatever `ClaudeSDKClient` hits).
 
 Isolated by bisection (all runs against the same account, `timeout`-bounded, `python -u`):
 
@@ -51,11 +64,17 @@ value, including empty) is on its argv. `/proc/<pid>/wchan` for the CLI child sh
 (idle, not busy) the whole time — it is not crashing or spinning, it simply never completes
 initialization. **This is present with the *system* CLI (2.1.259), not just the bundled one.**
 
-**Consequence:** Task 1.5 cannot use `setting_sources=[]` (or any explicit `setting_sources`) as
-currently planned with SDK 0.2.105 + CLI 2.1.259 — it hangs every session, not just misbehaves.
-Needs its own follow-up: file/reproduce upstream against `claude-agent-sdk`, or find another way to
-suppress `~/.claude/CLAUDE.md`/plugin loading (e.g. a scoped `CLAUDE_CONFIG_DIR` with no
-`CLAUDE.md`, or `--dangerously-skip-permissions`-adjacent flags), before Phase 1 depends on it.
+**Consequence:** Task 1.5 must not pass `setting_sources` on the persistent-`ClaudeSDKClient` path
+— it hangs every session with SDK 0.2.105 + CLI 2.1.259, not just misbehaves. Do not treat this as
+an SDK/CLI-version blocker for Phase 1: do not pass `setting_sources` on the persistent-client
+path; isolate via the scratch `CLAUDE_CONFIG_DIR` from `helper_env()` instead
+(`server/sessions/account_auth.py:50`) — the pattern all three `query()` call sites above already
+use in production. This spike did not verify that `helper_env()`'s scratch dir on its own
+suppresses `~/.claude/CLAUDE.md`/plugin loading the way `setting_sources=[]` was intended to (it is
+a host-local, torn-read-safe *mirror* of the account's own config dir per `server/sessions/
+scratch_config.py`, not an empty one) — Task 1.5 should confirm that detail when it designs the
+assistant's config-dir isolation, but should build on `helper_env()`'s established pattern rather
+than reaching for `setting_sources` on `ClaudeSDKClient`.
 
 ## Q1–Q5
 
@@ -63,7 +82,7 @@ suppress `~/.claude/CLAUDE.md`/plugin loading (e.g. a scoped `CLAUDE_CONFIG_DIR`
 |---|---|---|
 | Q1 — do built-ins survive `tools=[]`+`disallowed_tools`, and does the model call `Bash`? | **No built-ins exposed in `server_info` at all** (there is no `tools` key in this SDK/CLI's `get_server_info()` — see below); **model does NOT call Bash**, it explicitly refuses. | `[server_info.KEYS] ['commands', 'agents', 'output_style', 'available_output_styles', 'models', 'account', 'pid', 'current_permission_mode', 'analytics_disabled', 'remote_control_auto_enable', 'remote_control_available', 'remote_control_auto_on_by_default', 'ide_rc_auto_enable_gate', 'fast_mode_state', 'fast_mode_disabled_reason', 'session_state']` (no `tools` key) — and — `[assistant] I can't do that — my toolset here is restricted to ccswitch tools only (list_sessions and archive_session). I don't have Bash or filesystem access in this session, so I can't run ls -la.` — and `[seen tool calls] [('mcp__ccswitch__list_sessions', {}), ('mcp__ccswitch__archive_session', {'id': 'abc'})]` (no Bash entry ever) |
 | Q2 — does `can_use_tool` fire for `mcp__ccswitch__*`? | **Yes.** | `[can_use_tool] mcp__ccswitch__list_sessions {}` and `[can_use_tool] mcp__ccswitch__archive_session {"id": "abc"}` |
-| Q3 — does custom `system_prompt` + `setting_sources=[]` skip user `CLAUDE.md`/plugins? | **BLOCKED** — `setting_sources=[]` hangs the CLI indefinitely (see above); cannot be tested as specified. As a negative control, the *default* setting sources (no `setting_sources` kwarg at all — i.e. plugins/CLAUDE.md load normally) were confirmed to load the real `~/.claude/CLAUDE.md`: the model quoted its actual first line correctly. This proves the loading path is real and observable, but not that `setting_sources=[]` would suppress it — that combination never reaches a testable state. | `[assistant] Your global /home/tony/.claude/CLAUDE.md begins with this first line: > \`## Time and Timestamps\`` (from the run WITHOUT `setting_sources`) — vs. `[cli_path] /home/tony/.local/bin/claude` then silence to timeout (the actual committed script, WITH `setting_sources=[]`, `/tmp/spike-assistant-sdk.log`) |
+| Q3 — does custom `system_prompt` + `setting_sources=[]` skip user `CLAUDE.md`/plugins, on `ClaudeSDKClient`? | **BLOCKED for `ClaudeSDKClient`** — `setting_sources=[]` hangs that client indefinitely (see above); cannot be tested as specified. Scoped to `ClaudeSDKClient` only — this was never tested against `claude_agent_sdk.query()`, where `setting_sources=[]` already runs daily in production (`server/sessions/prompt_refiner.py:73`, `server/sessions/title_generator.py:115`, `server/automations/model_pick.py:113`). As a negative control on `ClaudeSDKClient`, the *default* setting sources (no `setting_sources` kwarg at all — i.e. plugins/CLAUDE.md load normally) were confirmed to load the real `~/.claude/CLAUDE.md`: the model quoted its actual first line correctly. This proves the loading path is real and observable, but not that `setting_sources=[]` would suppress it on this client — that combination never reaches a testable state. | `[assistant] Your global /home/tony/.claude/CLAUDE.md begins with this first line: > \`## Time and Timestamps\`` (from the run WITHOUT `setting_sources`) — vs. `[cli_path] /home/tony/.local/bin/claude` then silence to timeout (the actual committed script, WITH `setting_sources=[]`, `/tmp/spike-assistant-sdk.log`) |
 | Q4 — does `strict_mcp_config=True` hide the account's configured MCP servers? | **Yes, by strong behavioral evidence** — `server_info` has no `mcp_servers` key in this SDK/CLI version either (can't confirm via the field the brief expected), but the account has 10 configured plugin MCP servers (github, linear, sentry, chrome-devtools, stripe, railway, desktop-commander, twilio-docs, aws-mcp, notion — several `✔ Connected`), and across the whole 4-prompt run **zero** non-`ccswitch` tool calls or references occurred; the model self-reported its toolset as restricted to `list_sessions`/`archive_session` only. | `claude mcp list` (same account): `plugin:chrome-devtools-mcp:chrome-devtools: ... - ✔ Connected`, `plugin:desktop-commander:desktop-commander: ... - ✔ Connected`, `plugin:twilio-developer-kit:twilio-docs: ... - ✔ Connected`, `plugin:aws-core:aws-mcp: ... - ✔ Connected` (4 healthy, non-ccswitch servers configured) — none appeared in `[seen tool calls]` or `can_use_tool` output during the probe |
 | Q5 — cold start / first delta | cold start **1.90–2.18s** (`ClaudeSDKClient.__aenter__` → first `SystemMessage`); first `TextDelta` for a one-tool question **1.12–1.39s** into that turn (total turn 4.3–7.6s) | `[cold-start] 1.90s subtype=hook_started` — `[result] turns=2 first_delta=1.39s total=7.60s` (first prompt) |
 
@@ -122,10 +141,14 @@ beyond noting it recurred.
 - Any code that constructs `ClaudeAgentOptions`/`ClaudeSDKClient` directly (not through ccswitch's
   existing `claude_bin` resolution) **must** pass `cli_path` explicitly, or it silently runs the
   SDK's older vendored CLI instead of the account's real one.
-- **Blocking for Task 1.5:** `setting_sources=[]` (the plan's mechanism for isolating the assistant
-  from the user's `~/.claude/CLAUDE.md` and plugins) hangs the CLI outright with SDK 0.2.105 + CLI
-  2.1.259. Task 1.5 needs a design change or an SDK/CLI version bump before it can rely on this —
-  do not assume it "just skips loading" without re-verifying against a fixed combination.
+- **For Task 1.5:** `setting_sources` (any value) hangs `ClaudeSDKClient` outright with SDK 0.2.105
+  + CLI 2.1.259 — this was only tested on `ClaudeSDKClient`, not on `claude_agent_sdk.query()`,
+  where `setting_sources=[]` already runs in production without hanging
+  (`server/sessions/prompt_refiner.py:73`, `server/sessions/title_generator.py:115`,
+  `server/automations/model_pick.py:113`). Do not pass `setting_sources` on the persistent-client
+  path; isolate via the scratch `CLAUDE_CONFIG_DIR` from `helper_env()`
+  (`server/sessions/account_auth.py:50`) instead — not "needs a design change or an SDK/CLI version
+  bump."
 - `get_server_info()` in this SDK/CLI version has no `tools` or `mcp_servers` key — anything in
   Tasks 1.5/3.2 that meant to introspect available tools or configured MCP servers via
   `get_server_info()` needs a different signal (e.g. `can_use_tool` call observation, as used here)

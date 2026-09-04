@@ -4,6 +4,9 @@
 Throwaway verification harness (constitution III). Never imported by server/.
 Usage:
     CLAUDE_CONFIG_DIR=<an account cfg dir> python scripts/spike_assistant_sdk.py
+
+WARNING: as written this hangs at ClaudeSDKClient init until the timeout kills it, because of
+setting_sources=[] below — see docs/superpowers/spikes/2026-09-04-assistant-sdk-findings.md.
 """
 from __future__ import annotations
 
