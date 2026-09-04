@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import errno
 import functools
+import hashlib
 import logging
 import os
 import shutil
@@ -648,6 +649,12 @@ class SessionOrchestrator:
         # Sessions whose cwd has vanished — warned once so the titling sweep doesn't
         # spam "Working directory does not exist" every interval (see _generate_fallback_title).
         self._missing_cwd_warned: set[str] = set()
+        # session_id → sha1 of the user prompts last sent to the fallback title
+        # generator. Mirrors SessionDriver._last_suggest_sig: skips the Haiku
+        # round-trip (and the `claude -p` helper it spawns) when _titling_sweep's
+        # 15s interval re-checks a session whose transcript hasn't grown since the
+        # last attempt (see _generate_fallback_title).
+        self._last_title_sig: dict[str, str] = {}
         # Sessions whose background tasks have been re-armed this process (dedup the
         # auto pass against retry-on-attach). Cleared by a fresh process start.
         self._rearmed: set[str] = set()
@@ -5998,7 +6005,13 @@ class SessionOrchestrator:
 
         Used when Claude wrote no ``ai-title`` (the common case for SDK-driven
         sessions). Skips accounts at their usage ceiling and sessions with no
-        readable prompts. Best-effort: any miss leaves the name unchanged.
+        readable prompts. Skips the LLM round-trip entirely when the prompts are
+        byte-identical to the last attempt — an idle session's transcript doesn't
+        grow between _titling_sweep passes, so without this every 15s sweep re-ran
+        a full Haiku query (and its `claude -p` helper subprocess, which rewrites
+        the account's `.claude.json`) for no reason. Mirrors
+        ``SessionDriver._run_suggestions``'s ``_last_suggest_sig`` gate. Best-effort:
+        any miss leaves the name unchanged.
         """
         if self._account_limited(rec.account):
             return None
@@ -6016,7 +6029,14 @@ class SessionOrchestrator:
         prompts = await asyncio.to_thread(read_user_prompts_from_file, path)
         if not prompts:
             return None
-        return await self._title_fn(prompts, account=rec.account, cwd=rec.cwd)
+        sig = hashlib.sha1("\n".join(prompts).encode("utf-8", "surrogatepass")).hexdigest()
+        if sig == self._last_title_sig.get(rec.id):
+            return None
+        title = await self._title_fn(prompts, account=rec.account, cwd=rec.cwd)
+        # Recorded only once generation actually ran to completion, so a genuinely
+        # new prompt still gets a fresh attempt next time.
+        self._last_title_sig[rec.id] = sig
+        return title
 
     async def _maybe_apply_auto_name(self, session_id: str) -> None:
         """If the session name is still auto, adopt a title for it.
