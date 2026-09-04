@@ -9,7 +9,7 @@ import sqlite3
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from . import configdir, paths
 from .creds import read_json, split_credentials, write_credentials, write_json_secure
@@ -33,6 +33,34 @@ def _under_reauth_tmp(path: str) -> bool:
         return Path(path).resolve(strict=True).is_relative_to(paths.reauth_tmp_dir().resolve())
     except (OSError, ValueError):
         return False
+
+
+def session_bus_env(
+    environ: Mapping[str, str] | None = None,
+    *,
+    uid: int | None = None,
+    run_root: str = "/run/user",
+) -> dict[str, str]:
+    """Env vars a keyring-backed Chrome needs when launched from a bus-less service.
+
+    The reauth Chrome runs ``--password-store=gnome-libsecret`` so it can decrypt the
+    v11 cookies copied from the real profile. systemd services do not inherit the
+    user's session bus, so without these two variables Chrome cannot reach
+    gnome-keyring and silently drops every keyring-encrypted cookie — Google looks
+    logged out. Returns only the variables *environ* lacks; never overrides.
+    """
+    env = os.environ if environ is None else environ
+    uid = os.getuid() if uid is None else uid
+    runtime_dir = env.get("XDG_RUNTIME_DIR") or f"{run_root}/{uid}"
+    bus = Path(runtime_dir) / "bus"
+    if not bus.is_socket():
+        return {}
+    out: dict[str, str] = {}
+    if "DBUS_SESSION_BUS_ADDRESS" not in env:
+        out["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus}"
+    if "XDG_RUNTIME_DIR" not in env:
+        out["XDG_RUNTIME_DIR"] = runtime_dir
+    return out
 
 
 def prepare_reauth_profile(source_profile_dir: str) -> str:
