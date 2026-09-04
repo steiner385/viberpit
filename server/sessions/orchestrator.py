@@ -9260,8 +9260,7 @@ class SessionOrchestrator:
             return False
         self._last_recovery_sweep_at = now
         log.info("stuck-sweep.recovery_trigger")
-        with contextlib.suppress(RuntimeError):  # no running loop in some sync callers/tests
-            self._spawn(self._sweep_needs_attention(), name="recovery-sweep")
+        self._spawn(self._sweep_needs_attention(), name="recovery-sweep")
         return True
 
     # ------------------------------------------------------------------

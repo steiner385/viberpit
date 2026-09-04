@@ -207,7 +207,8 @@ async def test_sweep_leaves_limited_session_with_no_cached_usage():
 
 # --- recovery-triggered sweep ---------------------------------------------------
 
-def test_maybe_sweep_on_recovery_fires_once_per_debounce_window():
+@pytest.mark.asyncio
+async def test_maybe_sweep_on_recovery_fires_once_per_debounce_window():
     o = _make_orch()
     rec = _rec(o, status="needs_attention")
     rec.paused_reason = "all_accounts_busy"
@@ -223,8 +224,11 @@ def test_maybe_sweep_on_recovery_fires_once_per_debounce_window():
     o._clock = lambda: 1000.0 + 31.0
     assert o._maybe_sweep_on_recovery() is True
 
+    await asyncio.gather(*o._bg_tasks)
 
-def test_maybe_sweep_on_recovery_skips_when_nothing_is_stalled():
+
+@pytest.mark.asyncio
+async def test_maybe_sweep_on_recovery_skips_when_nothing_is_stalled():
     o = _make_orch()
     rec = _rec(o, status="needs_attention")
     rec.paused_reason = "crash_cap"                       # not a usage stall
