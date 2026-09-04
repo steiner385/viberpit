@@ -95,6 +95,8 @@ async def record_audit(
     type: str,
     identity: str,
     detail: dict[str, Any],
+    *,
+    via: str | None = None,
 ) -> AuditEvent:
     """Write an AuditEvent after redacting credential material from detail.
 
@@ -107,6 +109,7 @@ async def record_audit(
         type=type,
         identity=_redact(identity),
         detail=clean_detail,
+        via=via,
     )
     db.add(event)
     return event

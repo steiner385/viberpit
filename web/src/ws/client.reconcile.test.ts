@@ -72,3 +72,23 @@ describe('SessionSocket rev-guarded rotated patch (WS patch surviving stale poll
     expect(merged[0].revAt).toBe(T3)
   })
 })
+
+describe('SessionSocket stall fields', () => {
+  it('applies pausedReason/pausedUntil/usageStalled from a status frame', () => {
+    const { s, qc } = makeSocket(); seed(qc, { revAt: T1 })
+    s._handleInbound({ type: 'status', sessionId: 's1', status: 'needs_attention', revAt: T2,
+      pausedReason: 'all_accounts_busy', pausedUntil: '2026-09-04T16:10:00+00:00', usageStalled: true })
+    expect(row(qc).usageStalled).toBe(true)
+    expect(row(qc).pausedReason).toBe('all_accounts_busy')
+    expect(row(qc).pausedUntil).toBe('2026-09-04T16:10:00+00:00')
+  })
+  it('a rotated frame clears the stall', () => {
+    const { s, qc } = makeSocket()
+    seed(qc, { revAt: T1, status: 'needs_attention', usageStalled: true, pausedReason: 'rotation_cap', pausedUntil: T2 })
+    s._handleInbound({ type: 'rotated', sessionId: 's1', fromAccount: 'a', toAccount: 'b', revAt: T3 })
+    expect(row(qc).accountName).toBe('b')
+    expect(row(qc).usageStalled).toBe(false)
+    expect(row(qc).pausedReason).toBeNull()
+    expect(row(qc).pausedUntil).toBeNull()
+  })
+})

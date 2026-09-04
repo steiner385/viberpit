@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from server.sessions.usage_stall import is_usage_stalled
 from server.time_iso import iso_utc
 
 # Sentinel identity for internal/background callers (rehydrate, dispatch, eager
@@ -36,6 +37,8 @@ VALID_SESSION_MODES = frozenset({
     "interactive", "auto", "allowlist", "full-auto",
     "acceptEdits", "bypassPermissions",
 })
+
+ASSISTANT_KIND = "assistant"
 
 
 @dataclass
@@ -85,6 +88,12 @@ class SessionRecord:
     active_goal: str | None = None    # active /goal condition; None = no goal
     inferred_goal: str | None = None  # LLM-inferred goal (middle effective_goal tier)
     autopilot_paused: bool = False    # per-session autopilot opt-out (True = pinned to manual)
+    kind: str | None = None           # "assistant" for the AI-drawer session; None = coding session
+    owner_identity: str | None = None # identity owning an assistant thread (idempotency key)
+    # Monotonic time of the last prompt or `activity` WS frame. In-memory only — drives
+    # the assistant idle reap; never a DB column (a restart resets it, which is fine:
+    # the reap re-arms from the next interaction).
+    last_activity_at: float | None = None
     # Sticky auto-archive opt-out reason. None = eligible for auto-archive; "manual-unarchive"
     # = a human unarchived this session, so it is never auto-archived again (see orchestrator).
     auto_archive_opt_out_reason: str | None = None
@@ -115,6 +124,12 @@ class SessionRecord:
     # session is resumable iff it was flagged AND this is in RESUME_ELIGIBLE_STATUSES.
     # Never persisted; cleared with the flag on the next turn.
     interrupted_from_status: str | None = None
+    # Why the session is parked (a _pause_session reason token, or
+    # "pinned_account_limited" for the `limited` overlay) and the earliest known
+    # usage reset (naive UTC). Persisted so a poll/reload keeps the cause; cleared by
+    # _persist_status on any non-stalled status. See server/sessions/usage_stall.py.
+    paused_reason: str | None = None
+    paused_until: datetime | None = None
     authored_branches: list[str] = field(default_factory=list)  # feature branches → multi-PR badges
     # Last EXACT context-window occupancy from the SDK (the `/context` data), refreshed
     # each turn. Persisted + replayed on attach so a reloaded/idle session shows real
@@ -185,6 +200,9 @@ class SessionRecord:
             "interruptedFromStatus": self.interrupted_from_status,
             "resumable": (self.interrupted_by_restart
                           and self.interrupted_from_status in RESUME_ELIGIBLE_STATUSES),
+            "pausedReason": self.paused_reason,
+            "pausedUntil": iso_utc(self.paused_until),
+            "usageStalled": is_usage_stalled(self.status, self.paused_reason),
             "authoredBranches": list(self.authored_branches),
             "contextUsedTokens": self.context_used_tokens,
             "contextMaxTokens": self.context_max_tokens,
@@ -227,8 +245,19 @@ class SessionRecord:
             usage_unverified=d.get("usageUnverified", False),
             interrupted_by_restart=d.get("interruptedByRestart", False),
             interrupted_from_status=d.get("interruptedFromStatus"),
+            paused_reason=d.get("pausedReason"),
+            paused_until=(datetime.fromisoformat(d["pausedUntil"])
+                          if d.get("pausedUntil") else None),
             authored_branches=list(d.get("authoredBranches") or []),
             context_used_tokens=d.get("contextUsedTokens"),
             context_max_tokens=d.get("contextMaxTokens"),
             command_catalog=d.get("commandCatalog"),
         )
+
+
+def is_assistant(rec) -> bool:
+    """The ONE predicate for 'is this the AI-drawer session' — every loop that
+    iterates sessions (autopilot, titles, summaries, suggestions, goal inference,
+    auto-archive, capacity) routes through it. Duck-typed so fleet mirrors and DB rows
+    qualify too."""
+    return getattr(rec, "kind", None) == ASSISTANT_KIND

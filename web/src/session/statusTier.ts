@@ -5,6 +5,7 @@ import {
 } from 'lucide-react'
 import type { ComponentType } from 'react'
 import { TERMINAL_STATUSES, type SessionStatus } from '@/api/types'
+import { formatResetTime } from '@/lib/formatReset'
 
 export type StatusTier = 'busy' | 'needs-you' | 'your-turn' | 'waiting' | 'error' | 'unreachable'
 
@@ -92,6 +93,18 @@ const INTERRUPTED_BY_RESTART: StatusPresentation = {
 }
 const RESTART_STRANDABLE = new Set(['idle', 'needs_attention'])
 
+// Parked on usage (server usageStalled): auto-recoverable, so it reads as calm
+// waiting rather than a red failure — but keeps the amber text so it is findable.
+const USAGE_STALLED_STATUSES = new Set(['needs_attention', 'limited'])
+
+function usageStalledPresentation(state: string, pausedUntil?: string | null): StatusPresentation {
+  const when = formatResetTime(pausedUntil)
+  if (state === 'limited') {
+    return { tier: 'waiting', label: when ? `Usage limit (pinned) · resets ${when}` : 'Usage limit (pinned)', Icon: Hourglass, textClass: NEEDS_YOU }
+  }
+  return { tier: 'waiting', label: when ? `Waiting for capacity · retries ${when}` : 'Waiting for capacity', Icon: Hourglass, textClass: NEEDS_YOU }
+}
+
 // Presentation for a session lifted into the error tier by a failing PR (not by
 // its own status) — see sessionTriage() in triageTier.ts. Lives here, beside
 // PRESENTATION, so every "how does an error-tier session read?" decision has one
@@ -107,6 +120,10 @@ export interface StatusPresentationOpts {
   /** Owning host's derived liveness (spec 002 FR-104). Non-'fresh' demotes a
    *  non-terminal session to the UNREACHABLE pill. */
   liveness?: string
+  /** Server-derived Session.usageStalled — parked for lack of usage headroom. */
+  usageStalled?: boolean
+  /** Session.pausedUntil — earliest known reset, for the pill's time suffix. */
+  pausedUntil?: string | null
 }
 
 // Permanent instrumentation: any status string not in PRESENTATION renders as the
@@ -128,6 +145,9 @@ export function statusPresentation(
   }
   if (opts?.interruptedByRestart && RESTART_STRANDABLE.has(state)) {
     return INTERRUPTED_BY_RESTART
+  }
+  if (opts?.usageStalled && USAGE_STALLED_STATUSES.has(state)) {
+    return usageStalledPresentation(state, opts.pausedUntil)
   }
   // Cast to widen the key type for lookup only: `state` arrives as a plain string off
   // the wire, so an unknown value must still be *handled* (FALLBACK + the warn below)

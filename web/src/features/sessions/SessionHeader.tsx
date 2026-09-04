@@ -63,6 +63,8 @@ export interface SessionHeaderProps {
   onClosed: () => void
   /** "Reload session" menu item — the host rebuilds the driver and re-attaches. */
   onReload?: () => void
+  /** "Next best account" menu item — the host rotates the account and re-attaches. */
+  onRotate?: () => void
 }
 
 const NAV_BUTTON = cn(
@@ -72,7 +74,7 @@ const NAV_BUTTON = cn(
 )
 
 export function SessionHeader({
-  sessionId, title, goal, goalSource, status, onBack, onOpenSession, onClosed, onReload,
+  sessionId, title, goal, goalSource, status, onBack, onOpenSession, onClosed, onReload, onRotate,
 }: SessionHeaderProps) {
   const { prevId, nextId } = useSessionNeighbors(sessionId)
   const [renameOpen, setRenameOpen] = useState(false)
@@ -150,6 +152,7 @@ export function SessionHeader({
         variant="light"
         onRename={() => setRenameOpen(true)}
         onReload={onReload}
+        onRotate={onRotate}
       />
 
       {/* The one rename flow. Both triggers above open THIS dialog; unlike

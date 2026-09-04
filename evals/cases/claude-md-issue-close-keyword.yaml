@@ -4,4 +4,4 @@ description: >-
   so merged PRs actually close their issue instead of merely linking it.
 kind: static
 tags: [agent-config, github]
-check: 'grep -q "Fixes #" CLAUDE.md'
+check: 'grep -q "Fixes #" .agents/instructions/core.md'

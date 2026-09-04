@@ -201,6 +201,14 @@ export interface Session {
    *  orphaned-ask notice. Sent by server/api/sessions.py:_record_to_dict (the browser
    *  serializer — server/sessions/types.py:to_dict is the daemon→edge RPC one). */
   interruptedFromStatus?: string | null
+  /** Why a needs_attention/limited session is parked (server pause reason token,
+   *  e.g. "all_accounts_busy", "rotation_cap", "pinned_account_limited"). */
+  pausedReason?: string | null
+  /** ISO instant of the earliest known usage reset for a parked session, or null. */
+  pausedUntil?: string | null
+  /** Server-derived: parked because no account has usage headroom (or pinned at its
+   *  ceiling). Counts toward the "Rotate stalled (N)" button; relabels the pill. */
+  usageStalled?: boolean
   /** The automation_id that spawned this session (e.g. 'pr-doctor'); null/absent = human-created. */
   origin?: string | null
   /** The automation's reference key (e.g. 'owner/repo#123'); null/absent when origin is absent. */
