@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -300,12 +301,61 @@ def clones_base(repo_root: str) -> Path:
     return Path(repo_root).expanduser() / ".ccswitch" / "clones"
 
 
+# GitHub owner/repo names are [A-Za-z0-9._-]; anything else in a clone path
+# component is either a bug upstream (a literal ``<owner>`` placeholder leaking
+# into the path) or an attempt at traversal. Both must fail loudly rather than
+# create a stray directory under the clones base (#1003).
+_PATH_COMPONENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _existing_case_variant(parent: Path, name: str) -> Path | None:
+    """An existing child of ``parent`` equal to ``name`` case-insensitively.
+
+    GitHub repo (and owner) names are case-INsensitive, so ``cairnea/kindash``
+    and ``cairnea/KinDash`` are one repo — but on a case-sensitive filesystem
+    they are two directories. Two case-variant clones of one repo did coexist on
+    dobby before #1003, and only one of them was the clone every worktree
+    pointed at. Reusing whatever is already on disk keeps that from recurring
+    without renaming (and thus orphaning the worktrees of) any existing clone.
+    """
+    exact = parent / name
+    if exact.exists():
+        return exact
+    if not parent.is_dir():
+        return None
+    lowered = name.lower()
+    try:
+        matches = sorted(
+            (p for p in parent.iterdir() if p.is_dir() and p.name.lower() == lowered),
+            key=lambda p: p.name,
+        )
+    except OSError:
+        return None
+    return matches[0] if matches else None
+
+
 def clone_path(repo_root: str, name_with_owner: str) -> Path:
-    """Absolute clone path for ``<owner>/<name>`` under the clones base."""
+    """Absolute clone path for ``<owner>/<name>`` under the clones base.
+
+    Resolves to an existing case-variant directory when one is present, so a
+    lowercase ``name_with_owner`` maps onto the clone the host's worktrees
+    already reference instead of creating a second, unreferenced clone of the
+    same repo (#1003). With nothing on disk the given case is used verbatim.
+
+    Raises:
+        ValueError: if ``name_with_owner`` is not ``<owner>/<name>`` or either
+            component is not a legal GitHub name.
+    """
     owner, _, name = name_with_owner.partition("/")
     if not owner or not name:
         raise ValueError(f"expected '<owner>/<name>', got {name_with_owner!r}")
-    return clones_base(repo_root) / owner / name
+    for part in (owner, name):
+        if not _PATH_COMPONENT_RE.match(part) or part in (".", ".."):
+            raise ValueError(
+                f"illegal clone path component {part!r} in {name_with_owner!r}")
+    base = clones_base(repo_root)
+    owner_dir = _existing_case_variant(base, owner) or base / owner
+    return _existing_case_variant(owner_dir, name) or owner_dir / name
 
 
 # ---------------------------------------------------------------------------
@@ -622,7 +672,45 @@ def ensure_clone(repo_root: str, name_with_owner: str, clone_url: str) -> str:
     # alert left by an earlier failed fetch of this repo.
     record_fetch_result(name_with_owner, ok=True)
     log.info("clone.create repo=%s path=%s", name_with_owner, dest)
+    _relink_orphaned_worktrees(repo_root, str(dest))
     return str(dest)
+
+
+def _relink_orphaned_worktrees(repo_root: str, clone_dir: str) -> None:
+    """Re-link session worktrees left orphaned by a previously deleted clone.
+
+    A shared clone is load-bearing: when it disappears, every worktree under it
+    dies with ``fatal: not a git repository`` even though its files are intact
+    (#1003). Re-creating the clone at the same path is half the fix — this makes
+    the *next spawn on that repo* finish the job automatically, so the outage
+    self-heals instead of waiting for an operator to run
+    ``ccswitch clones repair``.
+
+    Best-effort and never fatal: a fresh clone with no orphans (the normal case)
+    costs one directory scan and does nothing.
+    """
+    # Deferred: clone_doctor imports this module, so importing it at module
+    # scope would be a cycle.
+    from ccswitch import clone_doctor
+
+    try:
+        orphans = [
+            link.path
+            for link in clone_doctor.scan_worktree_links(repo_root)
+            if os.path.normpath(link.clone_dir) == os.path.normpath(clone_dir)
+            and not link.record_present
+        ]
+        if not orphans:
+            return
+        log.warning(
+            "clone.relink_orphans repo_path=%s count=%d — worktrees orphaned by a "
+            "removed clone are being re-linked", clone_dir, len(orphans))
+        results = clone_doctor.repair_worktree_links(clone_dir, orphans)
+        failed = [p for p, outcome in results.items() if outcome.startswith("error")]
+        log.info("clone.relink_done repo_path=%s repaired=%d failed=%d",
+                 clone_dir, len(orphans) - len(failed), len(failed))
+    except Exception:
+        log.warning("clone.relink_failed repo_path=%s", clone_dir, exc_info=True)
 
 
 # ---------------------------------------------------------------------------

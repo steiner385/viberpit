@@ -113,3 +113,90 @@ class TestCliUse(unittest.TestCase):
                     rc = cli.main(["use"])
             self.assertEqual(rc, 0)
             self.assertIn("ccswitch: beta", buf.getvalue())
+
+
+class TestClonesCommands(unittest.TestCase):
+    """`ccswitch clones` — the #1003 recovery + guarded-removal surface."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name) / "GitHub"
+        self.root.mkdir()
+        self.clone = self.root / ".ccswitch" / "clones" / "cairnea" / "KinDash"
+        self.wt = self.root / ".ccswitch" / "worktrees" / "KinDash" / "2a158cb3"
+        self.wt.mkdir(parents=True)
+        (self.wt / ".git").write_text(
+            f"gitdir: {self.clone}/.git/worktrees/2a158cb3\n")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _run(self, argv):
+        import io
+        import os
+        from contextlib import redirect_stdout
+
+        from ccswitch import cli
+
+        old = os.environ.get("CCSWITCH_REPO_ROOT")
+        os.environ["CCSWITCH_REPO_ROOT"] = str(self.root)
+        buf = io.StringIO()
+        try:
+            with temp_env(), redirect_stdout(buf):
+                rc = cli.main(argv)
+        finally:
+            if old is None:
+                os.environ.pop("CCSWITCH_REPO_ROOT", None)
+            else:
+                os.environ["CCSWITCH_REPO_ROOT"] = old
+        return rc, buf.getvalue()
+
+    def test_doctor_reports_missing_clone_and_exits_nonzero(self):
+        rc, out = self._run(["clones", "doctor"])
+        self.assertEqual(rc, 1)
+        self.assertIn("cairnea/KinDash", out)
+        self.assertIn("MISSING", out)
+        self.assertIn("ccswitch clones repair", out)
+
+    def test_doctor_json_lists_broken_worktrees(self):
+        import json
+
+        rc, out = self._run(["clones", "doctor", "--json"])
+        self.assertEqual(rc, 0)
+        payload = json.loads(out)
+        self.assertEqual(payload[0]["repo"], "cairnea/KinDash")
+        self.assertFalse(payload[0]["cloneExists"])
+        self.assertEqual(payload[0]["broken"], [str(self.wt)])
+
+    def test_repair_dry_run_reports_without_cloning(self):
+        rc, out = self._run(["clones", "repair", "--dry-run"])
+        self.assertEqual(rc, 0)
+        self.assertIn("would-repair", out)
+        self.assertFalse(self.clone.exists())
+
+    def test_remove_refuses_a_clone_worktrees_still_reference(self):
+        self.clone.mkdir(parents=True)
+        rc, _ = self._run(["clones", "remove", "cairnea/KinDash"])
+        self.assertEqual(rc, 2)
+        self.assertTrue(self.clone.exists())
+
+    def test_remove_resolves_a_case_variant_repo_name(self):
+        # `kindash` must resolve onto the existing `KinDash` clone, so the guard
+        # sees its worktrees instead of shrugging at a non-existent path (#1003).
+        self.clone.mkdir(parents=True)
+        rc, _ = self._run(["clones", "remove", "cairnea/kindash"])
+        self.assertEqual(rc, 2)
+        self.assertTrue(self.clone.exists())
+
+    def test_remove_deletes_an_unreferenced_clone(self):
+        import shutil
+
+        shutil.rmtree(self.wt.parent)
+        self.clone.mkdir(parents=True)
+        rc, out = self._run(["clones", "remove", "cairnea/KinDash", "--reason", "cleanup"])
+        self.assertEqual(rc, 0)
+        self.assertIn("removed clone cairnea/KinDash", out)
+        self.assertFalse(self.clone.exists())

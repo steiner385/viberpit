@@ -52,6 +52,18 @@ def test_field_builders():
     assert "rateLimit" not in build_update_field_options("F_s", ["Backlog", "Done"])
 
 
+def test_update_field_options_echoes_existing_option_ids():
+    """Live scratch-board finding (#987): ``updateProjectV2Field`` regenerates the id of
+    every option whose input entry omits ``id`` — and an item assigned to a regenerated
+    option comes back with a null value. Echoing the id preserves both. Options the board
+    does not have yet (the appended spec names) carry no id and are created fresh."""
+    doc = build_update_field_options("F_s", ["Todo", "Backlog"], option_ids={"Todo": "f75ad846"})
+    assert '{id: "f75ad846", name: "Todo", color: GRAY, description: ""}' in doc
+    assert '{name: "Backlog", color: GRAY, description: ""}' in doc   # no id ⇒ created fresh
+    # no map (or a name the board doesn't have) degrades to the create-fresh form
+    assert '{id:' not in build_update_field_options("F_s", ["Todo"])
+
+
 def test_rate_limit_query_and_parser():
     assert build_rate_limit_query() == "query { rateLimit { cost remaining resetAt } }"
     payload = {"data": {"rateLimit": {"cost": 2, "remaining": 4990, "resetAt": "x"}}}
