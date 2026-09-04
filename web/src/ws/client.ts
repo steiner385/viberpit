@@ -240,6 +240,14 @@ export class SessionSocket {
     return this._sendControl({ type: 'interrupt', sessionId })
   }
 
+  /** "Interrupt and post": stop the in-flight turn and run this prompt next, instead
+   *  of queueing it behind the turn. A CONTROL frame (not a buffered prompt): replayed
+   *  late it would cut short whatever turn is running by then — the interrupt rule. */
+  interruptAndPrompt(sessionId: string, text: string, attachmentIds?: string[]): boolean {
+    return this._sendControl({ type: 'prompt', sessionId, text,
+      ...(attachmentIds && attachmentIds.length ? { attachmentIds } : {}), interrupt: true })
+  }
+
   permissionResponse(sessionId: string, permId: string, decision: 'allow' | 'deny' | 'always'): boolean {
     return this._sendControl({ type: 'permissionResponse', sessionId, permId, decision })
   }
@@ -619,6 +627,7 @@ export function useSessionSocket() {
   const interrupt           = useCallback((sessionId: string) => socket.interrupt(sessionId), [socket])
   const prompt              = useCallback((sessionId: string, text: string, attachmentIds?: string[]) => socket.prompt(sessionId, text, attachmentIds), [socket])
   const sendInterrupt       = useCallback((sessionId: string) => socket.sendInterrupt(sessionId), [socket])
+  const interruptAndPrompt  = useCallback((sessionId: string, text: string, attachmentIds?: string[]) => socket.interruptAndPrompt(sessionId, text, attachmentIds), [socket])
   const permissionResponse  = useCallback((sessionId: string, permId: string, decision: 'allow' | 'deny' | 'always') => socket.permissionResponse(sessionId, permId, decision), [socket])
   const answerQuestion      = useCallback((sessionId: string, questionId: string, selected: string[], mode: 'option' | 'freeform' | 'chat' = 'option') => socket.answerQuestion(sessionId, questionId, selected, mode), [socket])
   const setPermissionMode   = useCallback((sessionId: string, mode: string) => socket.setPermissionMode(sessionId, mode), [socket])
@@ -631,7 +640,7 @@ export function useSessionSocket() {
 
   return {
     attach, detach, interrupt,
-    prompt, sendInterrupt, permissionResponse, answerQuestion, setPermissionMode, cancelQueued,
+    prompt, sendInterrupt, interruptAndPrompt, permissionResponse, answerQuestion, setPermissionMode, cancelQueued,
     command, activity,
     on, off,
     connectionState,

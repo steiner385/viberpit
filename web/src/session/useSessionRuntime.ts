@@ -71,6 +71,9 @@ export interface SessionRuntime {
   /** Fire while the user is typing/steering (before send) — refreshes autopilot's human-deference window. */
   onActivity: () => void
   onInterrupt: () => void
+  /** Stop the live turn and run this prompt next ("interrupt and post"). Returns
+   *  whether the frame was written — false means keep the draft (socket closed). */
+  onInterruptAndPrompt: (text: string, attachmentIds: AttachmentIds) => boolean
   onSetMode: (mode: string) => void
   onCancelQueued: (index: number) => void
   commands: Command[]
@@ -93,6 +96,7 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     connectionState,
     prompt,
     sendInterrupt,
+    interruptAndPrompt,
     permissionResponse,
     answerQuestion,
     setPermissionMode,
@@ -281,6 +285,19 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     },
     [sessionId, sendInterrupt],
   )
+  // "Interrupt and post": stop the live turn and run this text next. The server's
+  // interrupt denies any parked question, so this is always a fresh prompt (never a
+  // chat reply) — disarm locally to match. Returns whether the frame left the browser
+  // so the composer can keep the draft on a closed socket (#505 rule for controls).
+  const onInterruptAndPrompt = useCallback(
+    (text: string, attachmentIds: AttachmentIds): boolean => {
+      setArmedQuestionId(null)
+      const sent = interruptAndPrompt(sessionId, text, attachmentIds)
+      if (sent) dispatch({ type: '_trackSentPrompt', text })
+      return sent
+    },
+    [sessionId, interruptAndPrompt],
+  )
   const onSetMode = useCallback(
     (m: string) => {
       // Only apply the mode locally when the frame actually left the browser. On a
@@ -456,6 +473,7 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     onPrompt,
     onActivity,
     onInterrupt,
+    onInterruptAndPrompt,
     onSetMode,
     onCancelQueued,
     commands,

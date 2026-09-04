@@ -23,6 +23,7 @@ vi.mock('@/api/transcript', () => ({
 const mockAnswerQuestion = vi.fn()
 const mockPermissionResponse = vi.fn()
 const mockSetPermissionMode = vi.fn()
+const mockInterruptAndPrompt = vi.fn()
 let capturedSessionEventHandler: ((e: unknown) => void) | undefined
 // Controllable so tests can simulate a reconnect (reconnecting → connected).
 let mockConnectionState: 'connecting' | 'connected' | 'disconnected' | 'reconnecting' = 'connected'
@@ -41,6 +42,7 @@ vi.mock('@/ws/client', async (importOriginal) => {
       answerQuestion: mockAnswerQuestion,
       setPermissionMode: mockSetPermissionMode,
       cancelQueued: vi.fn(),
+      interruptAndPrompt: mockInterruptAndPrompt,
       on: (event: string, handler: (e: unknown) => void) => {
         if (event === 'sessionEvent') capturedSessionEventHandler = handler
       },
@@ -317,5 +319,28 @@ describe('useSessionRuntime.onLoadOlder', () => {
     await act(async () => { result.current.onLoadOlder() })
 
     expect(fetchOlderTurns).toHaveBeenCalledWith('sid-older2', 10)
+  })
+})
+
+describe('useSessionRuntime.onInterruptAndPrompt', () => {
+  beforeEach(() => {
+    mockInterruptAndPrompt.mockReset()
+    mockInterruptAndPrompt.mockReturnValue(true)
+  })
+
+  it('sends the prompt as an interrupt-and-post control frame and reports the send result', () => {
+    const { result } = renderHook(() => useSessionRuntime('sess-ias'), { wrapper })
+    let sent: boolean | undefined
+    act(() => { sent = result.current.onInterruptAndPrompt('do this instead', ['att1']) })
+    expect(mockInterruptAndPrompt).toHaveBeenCalledWith('sess-ias', 'do this instead', ['att1'])
+    expect(sent).toBe(true)
+  })
+
+  it('returns false (draft kept by the composer) when the socket rejects the frame', () => {
+    mockInterruptAndPrompt.mockReturnValue(false)
+    const { result } = renderHook(() => useSessionRuntime('sess-ias2'), { wrapper })
+    let sent: boolean | undefined
+    act(() => { sent = result.current.onInterruptAndPrompt('now', []) })
+    expect(sent).toBe(false)
   })
 })
