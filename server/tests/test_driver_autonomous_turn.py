@@ -12,7 +12,7 @@ SIGTERMed the CLI while it was actually answering the real prompt → silence.
 """
 import asyncio
 
-from claude_agent_sdk import TextBlock
+from claude_agent_sdk import SystemMessage, TextBlock
 
 from server.sessions.driver import SessionDriver, _MessageSource, _EOF
 from server.sessions.events import TurnEnd, Status, QueueUpdate
@@ -221,3 +221,55 @@ def test_aclose_while_idle_listening_returns_promptly():
         await d.aclose()
         return asyncio.get_running_loop().time() - t0
     assert asyncio.run(run()) < 1.0
+
+
+def test_hook_frames_while_idle_do_not_open_a_turn():
+    """SessionStart hooks make the CLI emit hook lifecycle frames right after connect,
+    before any prompt (the fake delivers ``f.session_start_hook_frames()`` on connect,
+    as the real CLI does). They are bookkeeping, not a turn: no ResultMessage will ever
+    follow them. The listener must NOT open a phantom turn on them — if it does, the
+    deferred initial prompt queues behind a turn that never closes (incident 2026-09-04:
+    three fresh sessions on rocky stuck at "Working… · 1 queued", "No messages yet")."""
+    client = FakeSDKClient([f.assistant(TextBlock(text="hi back"), uuid="p1"), f.result(uuid="p9")])
+    statuses: list[str] = []
+
+    async def run():
+        d = _build(client, statuses)
+        await d.start()
+        seen, task = _collector(d)
+        await asyncio.sleep(0.02)
+        active_after_hooks = d.turn_active
+        await d.send_prompt("hello")
+        await asyncio.sleep(0.02)
+        queued_after_send = list(d.queued())
+        await _wait_until(lambda: any(isinstance(e, TurnEnd) for e in seen))
+        await _wait_until(lambda: not d.turn_active)
+        await d.aclose()
+        task.cancel()
+        return active_after_hooks, queued_after_send
+    active_after_hooks, queued_after_send = asyncio.run(run())
+    assert active_after_hooks is False
+    assert queued_after_send == []
+    assert client.sent == ["hello"]
+
+
+def test_system_bookkeeping_frames_while_idle_do_not_open_a_turn():
+    """The same holds for every SystemMessage the CLI emits between turns (task
+    lifecycle notices, hook progress): a CLI-initiated turn announces itself with the
+    user message the CLI injects, and THAT opens the turn — not the notice before it."""
+    client = FakeSDKClient([])
+
+    async def run():
+        d = _build(client)
+        await d.start()
+        seen, task = _collector(d)
+        client.inject([SystemMessage(subtype="task_notification", data={"task_id": "t1"})])
+        await asyncio.sleep(0.02)
+        idle_after_notice = not d.turn_active
+        client.inject(_autonomous_turn("n"))
+        await _wait_until(lambda: any(isinstance(e, TurnEnd) for e in seen))
+        await _wait_until(lambda: not d.turn_active)
+        await d.aclose()
+        task.cancel()
+        return idle_after_notice
+    assert asyncio.run(run()) is True
