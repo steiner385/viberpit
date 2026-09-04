@@ -80,4 +80,41 @@ describe('ManualDispatchDialog', () => {
     render(<ManualDispatchDialog open onClose={onClose} />)
     expect(screen.getByText(/no eligible issues/i)).toBeInTheDocument()
   })
+
+  it('shows the failure inline and keeps the dialog open', async () => {
+    const { toast } = await import('sonner')
+    mutate.mockRejectedValue(new Error('network error'))
+    render(<ManualDispatchDialog open onClose={onClose} />)
+    fireEvent.click(screen.getByLabelText('select o/r#7'))
+    fireEvent.click(screen.getByRole('button', { name: /dispatch 1/i }))
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Failed to dispatch'))
+    expect(onClose).not.toHaveBeenCalled()
+    expect(toast.error).not.toHaveBeenCalled()
+  })
+
+  it('shows a non-spawned status inline and keeps the dialog open', async () => {
+    const { toast } = await import('sonner')
+    mutate.mockResolvedValue({ status: 'no_capacity' })
+    render(<ManualDispatchDialog open onClose={onClose} />)
+    fireEvent.click(screen.getByLabelText('select o/r#7'))
+    fireEvent.click(screen.getByRole('button', { name: /dispatch 1/i }))
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent('Dispatch failed: no_capacity'),
+    )
+    expect(onClose).not.toHaveBeenCalled()
+    expect(toast.error).not.toHaveBeenCalled()
+  })
+
+  it('clears the inline error when the dialog is closed', async () => {
+    mutate.mockRejectedValue(new Error('network error'))
+    const { rerender } = render(<ManualDispatchDialog open onClose={onClose} />)
+    fireEvent.click(screen.getByLabelText('select o/r#7'))
+    fireEvent.click(screen.getByRole('button', { name: /dispatch 1/i }))
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: /^close$/i }))
+    expect(onClose).toHaveBeenCalled()
+    rerender(<ManualDispatchDialog open={false} onClose={onClose} />)
+    rerender(<ManualDispatchDialog open onClose={onClose} />)
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
 })

@@ -1,7 +1,14 @@
 import { useMemo, useState } from 'react'
-import { toast } from 'sonner'
 import { useConsolidation, useConsolidate } from '@/api/hooks'
 import type { ActiveConsolidation, ConsolidationCandidate, ConsolidationCluster } from '@/api/automations'
+
+type OutcomeLevel = 'ok' | 'warn' | 'error'
+
+const OUTCOME_TONE: Record<OutcomeLevel, string> = {
+  ok: 'text-neutral-300',
+  warn: 'text-amber-300',
+  error: 'text-red-300',
+}
 
 function ciDot(checks: string): string {
   if (checks === 'passing') return 'bg-green-500'
@@ -16,6 +23,7 @@ export function ConsolidatePanel({ enabled, onOpenSession }: {
   const { data } = useConsolidation(enabled)
   const consolidate = useConsolidate()
   const [selected, setSelected] = useState<Record<number, boolean>>({})
+  const [outcome, setOutcome] = useState<{ level: OutcomeLevel; message: string } | null>(null)
 
   // v1: one repo group at a time. Pick the first repo with candidates; a repo
   // selector is a later enhancement. Selection is scoped to this repo so a
@@ -54,10 +62,14 @@ export function ConsolidatePanel({ enabled, onOpenSession }: {
   }
 
   async function run() {
-    const r = await consolidate.mutateAsync({ repo, numbers: chosen })
-    if (r.level === 'ok') { toast.success(r.message); setSelected({}) }
-    else if (r.level === 'warn') toast.warning(r.message)
-    else toast.error(r.message)
+    setOutcome(null)
+    try {
+      const r = await consolidate.mutateAsync({ repo, numbers: chosen })
+      if (r.level === 'ok') setSelected({})
+      setOutcome({ level: r.level, message: r.message })
+    } catch {
+      setOutcome({ level: 'error', message: 'Failed to consolidate' })
+    }
   }
 
   if (!group.candidates.length) return null
@@ -125,6 +137,14 @@ export function ConsolidatePanel({ enabled, onOpenSession }: {
       >
         {consolidate.isPending ? 'Consolidating…' : `Consolidate ${chosen.length} PRs`}
       </button>
+      {outcome && (
+        <p
+          role={outcome.level === 'error' ? 'alert' : 'status'}
+          className={`mt-2 text-sm ${OUTCOME_TONE[outcome.level]}`}
+        >
+          {outcome.message}
+        </p>
+      )}
     </div>
   )
 }

@@ -2,6 +2,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
+import { ApiRequestError } from '@/api/client'
+
 import { OnboardingWizard } from '../OnboardingWizard'
 
 const classify = vi.fn().mockResolvedValue({ dispatched: 3 })
@@ -55,6 +57,34 @@ describe('OnboardingWizard', () => {
         .toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: /propose feature map/i }))
     await waitFor(() => expect(proposeMap).toHaveBeenCalledWith('ccswitch'))
+  })
+
+  it('renders the server error inline under Propose feature map when it fails', async () => {
+    fetchOnboarding.mockResolvedValueOnce({
+      state: 'registered', action: { type: 'propose_map' },
+      counts: BASE_COUNTS,
+    })
+    proposeMap.mockRejectedValueOnce(
+      new ApiRequestError(409, { detail: { message: 'nope' } }))
+    renderWizard()
+    fireEvent.click(await screen.findByRole('button', { name: /propose feature map/i }))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('nope')
+    expect(alert).toHaveClass('pm-error')
+  })
+
+  it('renders the server error inline under Classify backlog when it fails', async () => {
+    fetchOnboarding.mockResolvedValueOnce({
+      state: 'map_merged', action: { type: 'classify' },
+      counts: BASE_COUNTS,
+    })
+    classify.mockRejectedValueOnce(
+      new ApiRequestError(409, { detail: { message: 'nope' } }))
+    renderWizard()
+    fireEvent.click(await screen.findByRole('button', { name: /classify backlog/i }))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('nope')
+    expect(alert).toHaveClass('pm-error')
   })
 
   it('renders wait text and no action button for await_map_pr state', async () => {

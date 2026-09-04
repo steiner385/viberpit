@@ -11,6 +11,7 @@ import { useImageAttachments } from './session/useImageAttachments'
 import { AttachmentChips } from './session/AttachmentChips'
 import { MicButton } from './session/MicButton'
 import { useDictationField } from '@/lib/useDictationField'
+import { DispatchError } from './dispatchError'
 
 export interface DispatchBarProps {
   repos: GithubRepo[]
@@ -26,6 +27,7 @@ export interface DispatchBarProps {
    * Fired on Enter when the prompt has text or images are attached.
    * `account`/`model`/`host` are already normalized: null means "let the backend
    * decide" (Auto-select account / account-default model / auto-rank runner).
+   * Reject with a `DispatchError` to have the bar show its message inline.
    */
   onDispatch: (input: {
     initialPrompt: string
@@ -95,6 +97,7 @@ export function DispatchBar({
   const [showMore, setShowMore] = useState(false)
   const [assessing, setAssessing] = useState(false)
   const [refinedPrompt, setRefinedPrompt] = useState<string | null>(null)
+  const [dispatchError, setDispatchError] = useState<string | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const att = useImageAttachments()
@@ -109,6 +112,8 @@ export function DispatchBar({
   // Auto-grow textarea: reset height then set to scrollHeight (capped at ~192px / 8 rows)
   function handleChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
     setText(e.target.value)
+    // Editing the draft is the user moving on from the last failure.
+    if (dispatchError) setDispatchError(null)
     const el = e.target
     el.style.height = 'auto'
     el.style.height = `${Math.min(el.scrollHeight, 192)}px`
@@ -147,6 +152,7 @@ export function DispatchBar({
       onOpenHighlighted()
       return
     }
+    setDispatchError(null)
     try {
       await onDispatch({
         initialPrompt: trimmed,
@@ -164,8 +170,10 @@ export function DispatchBar({
       if (textareaRef.current) {
         textareaRef.current.style.height = 'auto'
       }
-    } catch {
-      // creation failed — leave the text so the user can retry or edit
+    } catch (e) {
+      // Creation failed — leave the text so the user can retry or edit. Say
+      // why only when the caller had something to say (see `DispatchError`).
+      if (e instanceof DispatchError) setDispatchError(e.message)
     }
   }
 
@@ -424,6 +432,12 @@ export function DispatchBar({
       </div>
 
       <AttachmentChips attachments={att.attachments} onRemove={att.remove} />
+
+      {/* The last failed dispatch, beside the draft it kept — not a toast over
+          the page header. Cleared on the next edit or attempt. */}
+      {dispatchError && (
+        <p role="alert" className="text-sm text-danger">{dispatchError}</p>
+      )}
 
       {/* Prompt textarea + attach button row */}
       <div className="flex items-end gap-2">

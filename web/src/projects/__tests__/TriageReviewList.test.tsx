@@ -2,6 +2,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
+import { ApiRequestError } from '@/api/client'
+
 import { TriageReviewList } from '../TriageReviewList'
 
 const accept = vi.fn().mockResolvedValue({ id: 'p1', status: 'accepted' })
@@ -57,6 +59,30 @@ describe('TriageReviewList', () => {
     await waitFor(() => expect(screen.getByText('Billing thing')).toBeInTheDocument())
     fireEvent.click(screen.getAllByRole('button', { name: /reject/i })[1])
     await waitFor(() => expect(reject).toHaveBeenCalledWith('p2'))
+  })
+
+  it('renders the server error inline in the row when accept fails', async () => {
+    accept.mockRejectedValueOnce(
+      new ApiRequestError(409, { detail: { message: 'nope' } }))
+    renderList()
+    await waitFor(() => expect(screen.getByText('Fix sessions')).toBeInTheDocument())
+    fireEvent.click(screen.getAllByRole('button', { name: /accept/i })[0])
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('nope')
+    expect(alert).toHaveClass('pm-error')
+    // Only the row whose action failed carries the alert.
+    expect(screen.getAllByRole('alert')).toHaveLength(1)
+  })
+
+  it('renders the server error inline in the row when reject fails', async () => {
+    reject.mockRejectedValueOnce(
+      new ApiRequestError(409, { detail: { message: 'nope' } }))
+    renderList()
+    await waitFor(() => expect(screen.getByText('Billing thing')).toBeInTheDocument())
+    fireEvent.click(screen.getAllByRole('button', { name: /reject/i })[1])
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('nope')
+    expect(alert).toHaveClass('pm-error')
   })
 
   it('shows the empty state', async () => {
