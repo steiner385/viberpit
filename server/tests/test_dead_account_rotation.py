@@ -309,3 +309,35 @@ def test_process_crash_cap_still_pauses_even_on_dead_account():
     asyncio.run(o._recover_session(rec, "process_crash", None))
     assert ("pause", "s1", "crash_cap") in o.calls
     assert not any(c[0] == "rotate" for c in o.calls)
+
+
+# ---------------------------------------------------------------------------
+# Weekly ceiling counts as dead (Task 4)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_rotation_monitor_rotates_at_weekly_ceiling():
+    """weekly_pct=100 with session headroom is just as dead — the next turn 429s."""
+    o = _make_orch()
+    _rec(o, account="copilot_acct")
+    o._poller = _poller_with_failures(0)
+    usage = Usage(session_pct=0.0, session_resets_at=None,
+                  weekly_pct=100.0, weekly_resets_at=None, extra_usage_enabled=False)
+
+    await _run_monitor_one_event(o, {"account": "copilot_acct", "usage": usage})
+
+    assert ("rotate", "s1", "weekly limit reached") in o.calls
+
+
+def test_account_is_dead_on_weekly_ceiling():
+    usage = Usage(session_pct=10.0, session_resets_at=None,
+                  weekly_pct=100.0, weekly_resets_at=None, extra_usage_enabled=False)
+    o = _orch_with_poller(cached_usage=usage)
+    assert o._account_is_dead("copilot_acct") is True
+
+
+def test_account_is_alive_below_both_ceilings():
+    usage = Usage(session_pct=99.0, session_resets_at=None,
+                  weekly_pct=99.0, weekly_resets_at=None, extra_usage_enabled=False)
+    o = _orch_with_poller(cached_usage=usage)
+    assert o._account_is_dead("copilot_acct") is False

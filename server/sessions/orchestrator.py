@@ -44,6 +44,7 @@ from ccswitch.account_names import (
 from ccswitch.config import load_config
 from ccswitch.configdir import compose
 from ccswitch.paths import account_cfg_dir, shared_base
+from ccswitch.selector import at_ceiling
 from server.aio import bounded_wait
 from server.audit import record_audit
 from server.db import db_session
@@ -9086,10 +9087,11 @@ class SessionOrchestrator:
                     reason = "account_unreachable"
                     session_pct = 0.0  # unknown; treat as ceiling for rotation logic
                 else:
-                    session_pct = getattr(usage, "session_pct", 0.0)
-                    if session_pct < _ROTATION_CEILING:
+                    if not at_ceiling(usage, _ROTATION_CEILING):
                         continue
-                    reason = "session limit reached"
+                    session_pct = getattr(usage, "session_pct", 0.0)
+                    reason = ("session limit reached" if session_pct >= _ROTATION_CEILING
+                              else "weekly limit reached")
 
                 # Find all live sessions on this account and rotate them.
                 enabled_hosts = await self._enabled_host_names()
@@ -9168,7 +9170,7 @@ class SessionOrchestrator:
         """
         usage = self._poller.cached(account)
         if usage is not None:
-            return getattr(usage, "session_pct", 0.0) >= _ROTATION_CEILING
+            return at_ceiling(usage, _ROTATION_CEILING)
         # usage=None: distinguish "not yet polled" from "persistently failing"
         return self._poller.consecutive_failures(account) >= _UNREACHABLE_ROTATION_THRESHOLD
 
