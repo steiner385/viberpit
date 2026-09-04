@@ -35,7 +35,7 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
   const { data: sessions = [] } = useSessions()
   const sessionRecord = sessions.find((s) => s.id === rt.sessionId)
   const pinned = sessionRecord?.accountPinned ?? false
-  const { mutate: modelApproval } = useModelApproval()
+  const { mutate: modelApproval, isPending: modelApprovalPending } = useModelApproval()
 
   // Whether the x11/browser feature is available on this server.
   // Starts as false (unknown); set to true only when /api/x11/metrics returns
@@ -246,6 +246,7 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
                 onDecision={(decision, model) =>
                   modelApproval({ id: rt.sessionId, decision, model })
                 }
+                pending={modelApprovalPending}
               />
             )}
 
