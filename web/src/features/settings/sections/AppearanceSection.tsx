@@ -2,8 +2,9 @@ import * as React from 'react'
 import { useTheme, type ThemeChoice } from '@/shell/theme'
 import { useRailExpanded } from '@/shell/railExpanded'
 import { useNotifyPref } from '@/pipeline/notifyPref'
-import { loadSidebarWidth, saveSidebarWidth, SIDEBAR_DEFAULT } from '@/lib/sidebarWidth'
-import { loadDrawerWidth, saveDrawerWidth, DRAWER_DEFAULT } from '@/shell/drawerWidth'
+import { SIDEBAR_DEFAULT } from '@/lib/sidebarWidth'
+import { useSidebarWidth } from '@/lib/useSidebarWidth'
+import { DRAWER_DEFAULT, useDrawerWidth } from '@/shell/drawerWidth'
 import { RadioGroup } from '@/ui/RadioGroup'
 import { Switch } from '@/ui/Switch'
 import { Button } from '@/ui/Button'
@@ -53,10 +54,10 @@ export function AppearanceSection() {
   const [railStatus, flashRail] = useFlash()
   const [notifyStatus, flashNotify] = useFlash()
   // The widths are set by dragging the shell's dividers, so this section only
-  // reports the stored value and resets it; the state is local because nothing
-  // else on this page can change it while it is open.
-  const [listWidth, setListWidth] = React.useState(loadSidebarWidth)
-  const [drawerWidth, setDrawerWidth] = React.useState(loadDrawerWidth)
+  // reports and resets them — through the SAME store the shell holds (R15), so a
+  // Reset moves the live column and a drag updates the number here.
+  const [listWidth, setListWidth] = useSidebarWidth()
+  const [drawerWidth, setDrawerWidth] = useDrawerWidth()
 
   return (
     <SettingsSection
@@ -65,7 +66,9 @@ export function AppearanceSection() {
       scope="browser"
       description="Stored in this browser only. Other devices keep their own."
     >
-      <SettingsGroup legend="Theme">
+      {/* The card's legend is not a second "Theme": the row's own label is the
+          radio group's legend, and one visible word per row is the rule (R14b). */}
+      <SettingsGroup legend="Colour scheme">
         <SettingRow
           htmlFor="appearance-theme"
           wide
@@ -126,7 +129,7 @@ export function AppearanceSection() {
               variant="ghost"
               aria-label="Reset session list width"
               disabled={listWidth === SIDEBAR_DEFAULT}
-              onClick={() => { saveSidebarWidth(SIDEBAR_DEFAULT); setListWidth(SIDEBAR_DEFAULT) }}
+              onClick={() => setListWidth(SIDEBAR_DEFAULT)}
             >
               Reset
             </Button>
@@ -145,7 +148,7 @@ export function AppearanceSection() {
               variant="ghost"
               aria-label="Reset assistant drawer width"
               disabled={drawerWidth === DRAWER_DEFAULT}
-              onClick={() => { saveDrawerWidth(DRAWER_DEFAULT); setDrawerWidth(DRAWER_DEFAULT) }}
+              onClick={() => setDrawerWidth(DRAWER_DEFAULT)}
             >
               Reset
             </Button>

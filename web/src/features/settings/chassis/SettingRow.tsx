@@ -1,36 +1,40 @@
 import * as React from 'react'
 import { cn } from '@/lib/utils'
 
-export interface SettingRowProps {
-  /**
-   * The row's visible label. Omit it only together with `selfLabelled` and a
-   * control whose own label is already visible — a `RadioGroup` with a visible
-   * `legend` (R14b). The legend IS the row's label there, so a row label as
-   * well would print the same words twice.
-   */
-  label?: string
+interface SettingRowBase {
   htmlFor: string
   description?: React.ReactNode
   error?: React.ReactNode
   status?: React.ReactNode
   wide?: boolean
-  /**
-   * The control already carries its own visible label — `ui/Checkbox`, which
-   * wraps its input in a `<label>`. The row then renders its text as plain
-   * text instead of a second `<label htmlFor>`: two labels pointing at one
-   * control do not compete, they CONCATENATE ("Auto-archive Auto-archive
-   * completed sessions"), which is axe's `form-field-multiple-labels` and is
-   * what a screen reader reads out. `htmlFor` is still required and still
-   * derives the description/error ids.
-   *
-   * R14b: also required for a control that is a GROUP rather than one field —
-   * a `RadioGroup` (named by its own `legend`) or a read-only value with a
-   * reset button. `htmlFor` cannot name a group, so a `<label htmlFor>` would
-   * dangle at an id no element carries and focus nothing when clicked.
-   */
-  selfLabelled?: boolean
   children: React.ReactElement<{ 'aria-describedby'?: string }>
 }
+
+/**
+ * How the row is labelled — a union, so a row can never compile with no label
+ * at all (an unlabelled setting is the one shape that has no correct rendering).
+ *
+ * `selfLabelled` means the control already carries its own visible label:
+ * `ui/Checkbox`, which wraps its input in a `<label>`. The row then renders its
+ * text as plain text instead of a second `<label htmlFor>` — two labels
+ * pointing at one control do not compete, they CONCATENATE ("Auto-archive
+ * Auto-archive completed sessions"), which is axe's
+ * `form-field-multiple-labels` and is what a screen reader reads out.
+ *
+ * R14b: `selfLabelled` is also required for a control that is a GROUP rather
+ * than one field — a `RadioGroup` named by its own `legend`, or a read-only
+ * value beside a reset button. `htmlFor` cannot name a group, so a `<label
+ * htmlFor>` would dangle at an id no element carries and focus nothing when
+ * clicked. With a VISIBLE legend the group's own legend is the row's label, so
+ * the row passes no `label` of its own and prints the words once.
+ *
+ * `htmlFor` is required either way: it still derives the description/error ids.
+ */
+type SettingRowLabelling =
+  | { label: string; selfLabelled?: boolean }
+  | { label?: never; selfLabelled: true }
+
+export type SettingRowProps = SettingRowBase & SettingRowLabelling
 
 /**
  * Label · description · one control (Microsoft SettingsCard shape, C4). The

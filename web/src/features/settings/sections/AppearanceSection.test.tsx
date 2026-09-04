@@ -5,6 +5,7 @@
  * mocked transport — every row writes its own browser-scoped store on change,
  * so the assertions are on `localStorage` and on `<html data-theme>` directly.
  */
+import type { ReactNode } from 'react'
 import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -12,12 +13,25 @@ import { ThemeProvider, THEME_STORAGE_KEY } from '@/shell/theme'
 import { RAIL_EXPANDED_KEY } from '@/shell/railExpanded'
 import { NOTIFY_PREF_KEY } from '@/pipeline/notifyPref'
 import { SIDEBAR_STORAGE_KEY, SIDEBAR_DEFAULT } from '@/lib/sidebarWidth'
+import { useSidebarWidth } from '@/lib/useSidebarWidth'
 import { stubMatchMedia } from '@/test/matchMedia'
 import { AppearanceSection } from './AppearanceSection'
 
-function mount() {
+/**
+ * Stands in for the live list column (`shell/regions/ContextList`), which holds
+ * the same width store: R15 is that a Reset here moves THAT subscriber, not just
+ * the stored key.
+ */
+function ListColumnProbe() {
+  const [width] = useSidebarWidth()
+  // A plain span, not an <output>: <output> carries an implicit role="status",
+  // which would join the rows' live regions and shift `getAllByRole('status')`.
+  return <span data-testid="live-list-width">{width}</span>
+}
+
+function mount(extra?: ReactNode) {
   stubMatchMedia([])
-  return render(<ThemeProvider><AppearanceSection /></ThemeProvider>)
+  return render(<ThemeProvider><AppearanceSection />{extra}</ThemeProvider>)
 }
 
 describe('AppearanceSection', () => {
@@ -42,12 +56,15 @@ describe('AppearanceSection', () => {
     expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
   })
 
-  it('layout widths show the stored value and Reset restores the default', async () => {
+  it('layout widths show the stored value and Reset restores the default for every subscriber (R15)', async () => {
     localStorage.setItem(SIDEBAR_STORAGE_KEY, '400')
-    mount()
+    mount(<ListColumnProbe />)
     expect(screen.getByText('400 px')).toBeInTheDocument()
+    expect(screen.getByTestId('live-list-width')).toHaveTextContent('400')
     await userEvent.click(screen.getByRole('button', { name: 'Reset session list width' }))
     expect(screen.getByText(`${SIDEBAR_DEFAULT} px`)).toBeInTheDocument()
+    // The live column moved too — not just the stored key.
+    expect(screen.getByTestId('live-list-width')).toHaveTextContent(String(SIDEBAR_DEFAULT))
     expect(localStorage.getItem(SIDEBAR_STORAGE_KEY)).toBe(String(SIDEBAR_DEFAULT))
   })
 })
