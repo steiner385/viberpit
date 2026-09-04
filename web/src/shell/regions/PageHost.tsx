@@ -105,7 +105,13 @@ export function PageHost({ dock, pageHidden = false }: PageHostProps) {
   const body = (
     <main
       data-region="app.main"
-      className={cn('min-h-0 flex flex-col', pageHidden ? 'shrink-0' : 'flex-1')}
+      // `min-w-0`: on desktop this is a flex-ROW item beside `ContextList`, and a
+      // flex item's automatic minimum width is its min-content width. Without
+      // the floor, one unbreakable token anywhere in the page widens the whole
+      // pane past the viewport and the header's trailing archive button is the
+      // first thing to leave the screen. `DesktopShell`'s main got the same
+      // effect from `overflow-hidden`; the column keeps its own scroll owners.
+      className={cn('min-w-0 min-h-0 flex flex-col', pageHidden ? 'shrink-0' : 'flex-1')}
     >
       {/* Always wrapped, so toggling `pageHidden` changes an attribute rather
           than the element tree — a conditional wrapper would remount the page.

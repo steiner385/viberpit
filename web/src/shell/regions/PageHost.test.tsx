@@ -280,6 +280,20 @@ describe('PageHost — the app.main region', () => {
     expect(screen.queryByTestId('dock')).not.toBeInTheDocument()
   })
 
+  it('lets the row-flex parent shrink it — min-w-0, so wide content cannot push the pane off-screen', () => {
+    // On desktop `AppShell` lays the list and this region out in a `flex-row`.
+    // A flex item's automatic minimum width is its min-content width, so
+    // without `min-w-0` any unbreakable descendant (a long token in the
+    // transcript, a nowrap meta cell) widens the WHOLE pane past the viewport
+    // and the session header's archive button — the last thing on its row —
+    // is the first casualty. The old `DesktopShell` main pane got this for free
+    // from `overflow-hidden`; PR 3 (#978) dropped both. jsdom does no layout,
+    // so the contract is pinned on the class, and `ContextList` carries the
+    // same class on its column for the same reason.
+    renderAt('/sessions/a')
+    expect(mainNode()).toHaveClass('min-w-0')
+  })
+
   it('has no axe violations (roles/names only — jsdom has no stylesheet)', async () => {
     const { container } = renderAt('/sessions/a', { dock: <div>dock</div> })
     expect(await axe(container)).toHaveNoViolations()
