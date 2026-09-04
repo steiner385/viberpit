@@ -98,6 +98,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   const [expanded, setExpanded] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
+  const menuTriggerRef = useRef<HTMLButtonElement>(null)
   const [generating, setGenerating] = useState(false)
 
   const suggestions = session.latestSuggestions ?? []
@@ -190,6 +191,22 @@ export function SessionCard({ session, account, selected = false, listMode = fal
     if (!menuOpen) return
     pushOverlay()
     return () => popOverlay()
+  }, [menuOpen])
+
+  // …and an open menu must OWN the keyboard, which means focus has to be inside
+  // it. On macOS Safari and Firefox, clicking a `<button>` does not move focus to
+  // it, and the browser delivers keydown to `document.activeElement` — so without
+  // this the container's Escape handler below never fires for a mouse-opened
+  // menu, while the overlay push above keeps every global shortcut suppressed.
+  // The keyboard would go silently inert until the user clicked elsewhere.
+  //
+  // The TRIGGER, not the first item: it is what the markup names as the menu's
+  // control (`aria-haspopup` / `aria-expanded`), the items carry no roving
+  // tabindex to hand focus back to, and it stays mounted when the menu closes —
+  // so nothing has to restore focus, and Tab walks straight into the menu, which
+  // is the next thing in the DOM.
+  useEffect(() => {
+    if (menuOpen) menuTriggerRef.current?.focus()
   }, [menuOpen])
 
   const repoLabel = formatRepoLabel(session.repo)
@@ -618,6 +635,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
           >
             <button
               type="button"
+              ref={menuTriggerRef}
               className={cn(actionBtn, 'text-gray-500 dark:text-gray-400',
                 'hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:ring-blue-500',
                 'active:bg-gray-200 dark:active:bg-gray-600')}

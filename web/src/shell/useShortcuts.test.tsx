@@ -23,7 +23,7 @@
  * shipping components.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { Session } from '@/api/types'
 
@@ -459,6 +459,56 @@ describe('Escape closes an open menu instead of detaching', () => {
     await user.keyboard('{Escape}')
     expect(screen.queryAllByRole('menu')).toHaveLength(0)
     expect(app.path()).toBe('/sessions/s1')
+  })
+
+  /**
+   * The two cases either side of this one open the menu with `userEvent.click`,
+   * which ALWAYS focuses its target — so they cannot fail on the defect below.
+   *
+   * A real browser delivers keydown to `document.activeElement`, and on macOS
+   * Safari and Firefox clicking a `<button>` does not move focus to it. The menu's
+   * Escape lives on a container `onKeyDown`, which only sees keys whose target is
+   * inside that container, so unless the component focuses something inside itself
+   * on open, Escape is delivered to `<body>` and nothing happens — while the open
+   * menu's overlay registration keeps suppressing every global shortcut. The
+   * keyboard is silently inert until the user clicks elsewhere.
+   *
+   * `fireEvent.click` reproduces that: it dispatches the click without focusing.
+   * The second Escape is the assertion that matters most — it proves the app's
+   * whole keyboard came back, not just that this one menu closed.
+   */
+  it('a ⋯ menu opened by a click that did NOT focus — Escape still closes it, and the keyboard is live again', async () => {
+    const user = userEvent.setup()
+    const app = await renderSession()
+    await waitFor(() => expect(row('Two')).toBeInTheDocument())
+    const trigger = screen.getAllByRole('button', { name: /more actions/i })[0]
+
+    fireEvent.click(trigger)
+    expect(screen.getAllByRole('menu').length).toBeGreaterThan(0)
+
+    // userEvent aims at document.activeElement — wherever the component left it.
+    await user.keyboard('{Escape}')
+    expect(screen.queryAllByRole('menu')).toHaveLength(0)
+    expect(app.path()).toBe('/sessions/s1')
+
+    // The overlay is released, so the next Escape reaches the shell and detaches.
+    await user.keyboard('{Escape}')
+    expect(app.path()).toBe('/sessions')
+  })
+
+  it('the session header’s ⋯ menu opened without focus — same, for the other menu', async () => {
+    const user = userEvent.setup()
+    const app = await renderSession()
+
+    fireEvent.click(screen.getByRole('button', { name: /more session actions/i }))
+    expect(screen.getByRole('menu', { name: /session actions/i })).toBeInTheDocument()
+
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('menu', { name: /session actions/i })).not.toBeInTheDocument()
+    expect(app.path()).toBe('/sessions/s1')
+
+    await user.keyboard('{Escape}')
+    expect(app.path()).toBe('/sessions')
   })
 
   it('the session header’s ⋯ menu', async () => {

@@ -140,6 +140,39 @@ describe('SessionCard mobile overflow menu', () => {
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
   })
 
+  /**
+   * The case the two above CANNOT fail on: they aim Escape at a node inside the
+   * menu's container, so they hold no matter where focus actually is.
+   *
+   * A real browser delivers keydown to `document.activeElement`, and on macOS
+   * Safari and Firefox clicking a `<button>` does NOT move focus to it. So the
+   * container's `onKeyDown` only ever sees the key if the component itself puts
+   * focus inside the container when the menu opens. It must, or Escape does
+   * nothing AND — because the open menu is still registered as an overlay — every
+   * global shortcut stays suppressed: the keyboard goes silently inert.
+   *
+   * `fireEvent.click` is deliberate here: unlike `userEvent.click` it does not
+   * focus the target, which is exactly the platform behaviour above. The Escape
+   * is then dispatched where the browser would put it — at `document.activeElement`
+   * — rather than at a node chosen to make the assertion pass.
+   */
+  it('focuses the trigger on open, so Escape from document.activeElement closes it', () => {
+    resetOverlayState()
+    renderCard()
+    const trigger = screen.getByRole('button', { name: /more actions for session/i })
+    expect(document.activeElement).toBe(document.body)
+
+    fireEvent.click(trigger)
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+    expect(document.activeElement).toBe(trigger)
+
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    // The overlay is released too — the half that makes the app's whole keyboard
+    // work again, not just this menu's.
+    expect(overlayIsOpen()).toBe(false)
+  })
+
   it('closes the overflow menu on Escape from inside the menu', () => {
     renderCard()
     fireEvent.click(screen.getByRole('button', { name: /more actions for session/i }))

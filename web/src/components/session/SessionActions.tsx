@@ -42,6 +42,7 @@ export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark
   const [menuOpen, setMenuOpen] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
+  const menuTriggerRef = useRef<HTMLButtonElement>(null)
 
   // Close the overflow menu on outside-click. Escape is the container's own
   // `onKeyDown` below (PR 4 removed the `document` keydown that used to be here:
@@ -61,6 +62,18 @@ export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark
     if (!menuOpen) return
     pushOverlay()
     return () => popOverlay()
+  }, [menuOpen])
+
+  // Focus the trigger when the menu opens (same fix, same reason, as
+  // `SessionCard`'s ⋯ menu): clicking a `<button>` does not focus it on macOS
+  // Safari or Firefox, and the browser delivers keydown to
+  // `document.activeElement` — so the container's Escape handler below would
+  // never see the key, while the overlay push above keeps every global shortcut
+  // suppressed. The trigger is the node the markup names as the menu's control
+  // (`aria-haspopup` / `aria-expanded`) and it outlives the menu, so closing
+  // needs no focus restoration.
+  useEffect(() => {
+    if (menuOpen) menuTriggerRef.current?.focus()
   }, [menuOpen])
 
   const isDark = variant === 'dark'
@@ -117,6 +130,7 @@ export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark
       <div className="relative">
         <button
           type="button"
+          ref={menuTriggerRef}
           onClick={() => setMenuOpen((v) => !v)}
           aria-label="More session actions"
           aria-haspopup="menu"
