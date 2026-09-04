@@ -33,8 +33,15 @@ import { NAV_DEFS } from '@/shell/navDefs'
  *  Every `ShortcutGroup` must appear here — a group missing from this list is a
  *  set of registry rows the help sheet silently omits, which is the drift
  *  `DrawerHost.test.tsx`'s "lists every registry shortcut description" guard
- *  exists to catch. */
-const GROUPS: { group: ShortcutGroup; title: string }[] = [
+ *  exists to catch. Exported so that guard can also compare this list's group
+ *  set directly against `SHORTCUTS`'s, rather than relying only on the
+ *  downstream symptom (a missing description).
+ *
+ *  GROUPS is a plain data export, not a component; DrawerHost.test.tsx needs it
+ *  to compare against `SHORTCUTS`'s group set directly. Same convention as the
+ *  `readStoredTheme`/`applyTheme` exports in theme.tsx. */
+// eslint-disable-next-line react-refresh/only-export-components
+export const GROUPS: { group: ShortcutGroup; title: string }[] = [
   { group: 'app', title: 'Anywhere' },
   { group: 'compose', title: 'Compose mode' },
   { group: 'list-mode', title: 'List-focus mode' },
