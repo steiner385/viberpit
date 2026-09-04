@@ -150,6 +150,8 @@ export interface GithubBranchInfo {
 export interface ConfigInfo {
   repoRoot: string
   adoptionEnabled: boolean
+  /** Edge runs the server-side dictation engine (`CCSWITCH_ENABLE_STT` + `stt` extra). */
+  sttEnabled?: boolean
 }
 
 export function useConfig() {

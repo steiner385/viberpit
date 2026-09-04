@@ -1,7 +1,11 @@
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi, afterEach, beforeEach, type Mock } from 'vitest'
 import { act, render } from '@testing-library/react'
 import { useRef, useState } from 'react'
 import { useDictationField } from '../useDictationField'
+import { setServerSttEnabled } from '../sttCapability'
+import { useServerDictation } from '../useServerDictation'
+
+vi.mock('../useServerDictation', () => ({ useServerDictation: vi.fn() }))
 
 class MockRecognition {
   lang = ''
@@ -18,7 +22,13 @@ class MockRecognition {
 }
 
 let instance: MockRecognition
-afterEach(() => { vi.unstubAllGlobals() })
+afterEach(() => { vi.unstubAllGlobals(); setServerSttEnabled(false) })
+beforeEach(() => {
+  instance = undefined as unknown as MockRecognition
+  ;(useServerDictation as unknown as Mock).mockReturnValue({
+    supported: false, listening: false, error: null, start: vi.fn(), stop: vi.fn(), toggle: vi.fn(),
+  })
+})
 
 // A harness exposing the field hook over a real textarea + controlled state.
 let api: ReturnType<typeof useDictationField>
@@ -80,5 +90,93 @@ describe('useDictationField', () => {
     act(() => { instance.emit('X', true) })
     // caret was between 'a' and 'b' → "a" + "X " + "b"
     expect(currentValue).toBe('aX b')
+  })
+})
+
+describe('engine selection', () => {
+  it('uses the server engine when the edge reports sttEnabled and capture is supported', () => {
+    installMock()
+    const server = { supported: true, listening: false, error: null, start: vi.fn(), stop: vi.fn(), toggle: vi.fn() }
+    ;(useServerDictation as unknown as Mock).mockReturnValue(server)
+    setServerSttEnabled(true)
+    render(<Harness initial="" />)
+    act(() => { api.start() })
+    expect(server.start).toHaveBeenCalled()
+    expect(instance).toBeUndefined()          // Web Speech never constructed
+  })
+
+  it('falls back to Web Speech when the server engine is unavailable in this browser', () => {
+    installMock()
+    ;(useServerDictation as unknown as Mock).mockReturnValue({ supported: false, listening: false, error: null, start: vi.fn(), stop: vi.fn(), toggle: vi.fn() })
+    setServerSttEnabled(true)
+    render(<Harness initial="" />)
+    act(() => { api.start() })
+    expect(instance.start).toHaveBeenCalled()
+  })
+
+  it('uses Web Speech when the edge has STT disabled', () => {
+    installMock()
+    ;(useServerDictation as unknown as Mock).mockReturnValue({ supported: true, listening: false, error: null, start: vi.fn(), stop: vi.fn(), toggle: vi.fn() })
+    render(<Harness initial="" />)
+    act(() => { api.start() })
+    expect(instance.start).toHaveBeenCalled()
+  })
+
+  it('inserts server results at the caret exactly like Web Speech results', () => {
+    installMock()
+    let captured: ((t: string, f: boolean) => void) | null = null
+    ;(useServerDictation as unknown as Mock).mockImplementation(({ onResult }: { onResult: (t: string, f: boolean) => void }) => {
+      captured = onResult
+      return { supported: true, listening: true, error: null, start: vi.fn(), stop: vi.fn(), toggle: vi.fn() }
+    })
+    setServerSttEnabled(true)
+    render(<Harness initial="" />)
+    act(() => { api.start() })
+    act(() => { captured!('hel', false) })
+    expect(currentValue).toBe('hel')
+    act(() => { captured!('hello', true) })
+    expect(currentValue).toBe('hello ')
+  })
+
+  it('stays pinned to the running server engine when the capability flag flips mid-dictation', () => {
+    installMock()
+    let listening = false
+    const serverStart = vi.fn(() => { listening = true })
+    const serverStop = vi.fn(() => { listening = false })
+    ;(useServerDictation as unknown as Mock).mockImplementation(() => ({
+      supported: true, listening, error: null, start: serverStart, stop: serverStop, toggle: vi.fn(),
+    }))
+    setServerSttEnabled(true)
+    render(<Harness initial="" />)
+    act(() => { api.start() })
+    expect(serverStart).toHaveBeenCalled()
+
+    // The edge clears sttEnabled mid-dictation (e.g. a logout wipes config) — preferredKind
+    // flips to 'browser', but the server engine is still live and must stay addressed.
+    act(() => { setServerSttEnabled(false) })
+    act(() => { api.toggle() })
+
+    expect(serverStop).toHaveBeenCalled()
+    expect(instance).toBeUndefined()   // Web Speech (browser engine) never constructed
+  })
+
+  it("api.stop() calls the pinned server engine's stop and never constructs the browser engine", () => {
+    installMock()
+    let listening = false
+    const serverStart = vi.fn(() => { listening = true })
+    const serverStop = vi.fn(() => { listening = false })
+    ;(useServerDictation as unknown as Mock).mockImplementation(() => ({
+      supported: true, listening, error: null, start: serverStart, stop: serverStop, toggle: vi.fn(),
+    }))
+    setServerSttEnabled(true)
+    render(<Harness initial="" />)
+    act(() => { api.start() })
+    expect(serverStart).toHaveBeenCalled()
+
+    // Directly call stop() to exercise the wrapped pin-release logic.
+    act(() => { api.stop() })
+
+    expect(serverStop).toHaveBeenCalled()
+    expect(instance).toBeUndefined()   // Web Speech (browser engine) never constructed
   })
 })
