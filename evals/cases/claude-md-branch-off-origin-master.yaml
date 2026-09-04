@@ -4,4 +4,4 @@ description: >-
   worktree carries.
 kind: static
 tags: [agent-config, git-safety]
-check: 'grep -q "origin/master" CLAUDE.md'
+check: 'grep -q "origin/master" .agents/instructions/core.md'

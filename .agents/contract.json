@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "standard_version": "1.0.0",
+  "instructions": {
+    "core": ".agents/instructions/core.md",
+    "claude": ".agents/instructions/claude.md",
+    "codex": ".agents/instructions/codex.md",
+    "max_rendered_bytes": 24576,
+    "max_rendered_lines": 320
+  },
+  "skills": {
+    "canonical": ".agents/skills",
+    "claude_projection": ".claude/skills"
+  },
+  "roles": {
+    "canonical": ".agents/roles",
+    "claude_projection": ".claude/agents",
+    "codex_projection": ".codex/agents"
+  }
+}
