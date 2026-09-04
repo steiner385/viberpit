@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import type { Session } from '@/api/types'
+import { mkSession } from '@/test/factories'
 import {
   NO_FILTERS, coerceFilters, deriveFilterOptions, filterSessions, isFiltered, sanitizeFilters,
   type ListFilters,
@@ -8,13 +9,10 @@ import { loadListFilters, loadOrderPref, saveListFilters, saveOrderPref } from '
 
 // Typed factory with defaults — real Session values, never `as unknown as`, so
 // a fixture that drifts from the real shape (a status string that does not
-// exist, a field belonging to another type) is a type error here.
-function mk(id: string, over: Partial<Session> = {}): Session {
-  return {
-    id, name: id, accountName: 'acct', status: 'idle',
-    createdAt: '2026-06-01T00:00:00Z', prs: [], ...over,
-  }
-}
+// exist, a field belonging to another type) is a type error here. The shape
+// itself lives in @/test/factories.
+const mk = (id: string, over: Partial<Session> = {}): Session =>
+  mkSession(id, { accountName: 'acct', createdAt: '2026-06-01T00:00:00Z', ...over })
 
 const filters = (over: Partial<ListFilters> = {}): ListFilters => ({ ...NO_FILTERS, ...over })
 

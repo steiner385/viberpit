@@ -11,6 +11,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AccountsManager } from '../AccountsManager'
 import * as hooks from '@/api/hooks'
 import type { Account, ReauthState } from '@/api/types'
+import { queryResult } from '@/test/reactQuery'
 
 vi.mock('@/api/hooks', () => ({
   useAccounts: vi.fn(),
@@ -65,22 +66,13 @@ function wrapper({ children }: { children: React.ReactNode }) {
 }
 
 function setupDefaultMocks() {
-  vi.mocked(hooks.useAccounts).mockReturnValue({
-    data: [],
-    isLoading: false,
-  } as ReturnType<typeof hooks.useAccounts>)
-  vi.mocked(hooks.useSessions).mockReturnValue({
-    data: [],
-    isLoading: false,
-  } as ReturnType<typeof hooks.useSessions>)
+  vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([]))
+  vi.mocked(hooks.useSessions).mockReturnValue(queryResult([]))
   vi.mocked(hooks.useRefreshAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useRefreshAccount>)
   vi.mocked(hooks.useUpdateAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUpdateAccount>)
   vi.mocked(hooks.useDeleteAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useDeleteAccount>)
   vi.mocked(hooks.useReauthAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useReauthAccount>)
-  vi.mocked(hooks.useReauthStatus).mockReturnValue({
-    data: makeReauthState(),
-    isLoading: false,
-  } as ReturnType<typeof hooks.useReauthStatus>)
+  vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult(makeReauthState()))
   vi.mocked(hooks.useCancelReauth).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCancelReauth>)
   vi.mocked(hooks.useSubmitReauthCode).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useSubmitReauthCode>)
 }
@@ -92,10 +84,7 @@ describe('AccountsManager — Copilot provider chip', () => {
   })
 
   it('does NOT show a "Copilot" chip for an Anthropic account', () => {
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'work', provider: 'anthropic' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', provider: 'anthropic' })]))
 
     render(<AccountsManager />, { wrapper })
 
@@ -103,10 +92,7 @@ describe('AccountsManager — Copilot provider chip', () => {
   })
 
   it('shows a "Copilot" chip for a copilot account', () => {
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'gh-copilot', provider: 'copilot' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'gh-copilot', provider: 'copilot' })]))
 
     render(<AccountsManager />, { wrapper })
 
@@ -114,10 +100,7 @@ describe('AccountsManager — Copilot provider chip', () => {
   })
 
   it('does NOT show a "Copilot" chip when provider is absent (legacy Anthropic account)', () => {
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'legacy', provider: undefined })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'legacy', provider: undefined })]))
 
     render(<AccountsManager />, { wrapper })
 
@@ -188,10 +171,7 @@ describe('AccountsManager — Copilot reauth button', () => {
   })
 
   it('shows a reauth button for a copilot account', () => {
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'gh-copilot', provider: 'copilot' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'gh-copilot', provider: 'copilot' })]))
 
     render(<AccountsManager />, { wrapper })
 
@@ -200,10 +180,7 @@ describe('AccountsManager — Copilot reauth button', () => {
 
   it('clicking the copilot reauth button opens AddAccountDialog pre-selected on Copilot provider', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'gh-copilot', provider: 'copilot' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'gh-copilot', provider: 'copilot' })]))
 
     render(<AccountsManager />, { wrapper })
 
@@ -224,10 +201,7 @@ describe('AccountsManager — Copilot reauth button', () => {
       mutate: reauthMutate,
     } as unknown as ReturnType<typeof hooks.useReauthAccount>)
 
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'gh-copilot', provider: 'copilot' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'gh-copilot', provider: 'copilot' })]))
 
     const user = userEvent.setup()
     render(<AccountsManager />, { wrapper })
@@ -238,10 +212,7 @@ describe('AccountsManager — Copilot reauth button', () => {
   })
 
   it('does NOT show "Generate long-lived token" button for a copilot account', () => {
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'gh-copilot', provider: 'copilot' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'gh-copilot', provider: 'copilot' })]))
 
     render(<AccountsManager />, { wrapper })
 
@@ -249,10 +220,7 @@ describe('AccountsManager — Copilot reauth button', () => {
   })
 
   it('shows "Generate long-lived token" button for an Anthropic account', () => {
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'work', provider: 'anthropic' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', provider: 'anthropic' })]))
 
     render(<AccountsManager />, { wrapper })
 
@@ -260,10 +228,7 @@ describe('AccountsManager — Copilot reauth button', () => {
   })
 
   it('the copilot reauth button uses "Re-authenticate" label when account needs-reauth', () => {
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'gh-copilot', provider: 'copilot', status: 'needs-reauth' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'gh-copilot', provider: 'copilot', status: 'needs-reauth' })]))
 
     render(<AccountsManager />, { wrapper })
 

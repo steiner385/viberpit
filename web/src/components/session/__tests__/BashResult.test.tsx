@@ -36,7 +36,7 @@ describe('BashResult', () => {
     // No <script> element created in the DOM
     expect(document.querySelectorAll('script').length).toBe(0)
     // The XSS flag was not set
-    expect((window as Record<string, unknown>).__XSS_TEST__).toBeUndefined()
+    expect(Reflect.get(window, '__XSS_TEST__')).toBeUndefined()
   })
 
   it('applies error styling when ok is false', () => {

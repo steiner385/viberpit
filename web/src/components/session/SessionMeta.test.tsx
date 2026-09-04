@@ -3,11 +3,16 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { SessionMeta } from './SessionMeta'
 
+// `mode` and `onSetMode` are required (the plan-mode toggle reads them); the
+// fixture omitted both, so the toggle rendered against `undefined`. 'default' is
+// the same case it was already exercising — `mode === 'plan'` stays false.
 const base = {
-  account: 'acct-a', model: 'opus', contextPct: null, quota: null, subAgents: [],
+  account: 'acct-a', model: 'opus', mode: 'default', contextPct: null, quota: null,
+  subAgents: [],
   models: [{ id: 'opus', label: 'Opus' }, { id: 'sonnet', label: 'Sonnet' }],
   accounts: [{ name: 'acct-a' }, { name: 'acct-b' }],
   accountPinned: false,
+  onSetMode: vi.fn(),
 }
 
 describe('SessionMeta switchers', () => {

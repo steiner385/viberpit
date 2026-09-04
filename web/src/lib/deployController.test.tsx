@@ -26,7 +26,7 @@ function Probe() {
     <div>
       <span data-testid="intent">{c.intent}</span>
       <span data-testid="visible">{String(c.visible)}</span>
-      <button onClick={c.start}>start</button>
+      <button onClick={() => c.start()}>start</button>
       <button onClick={c.dismiss}>dismiss</button>
     </div>
   )

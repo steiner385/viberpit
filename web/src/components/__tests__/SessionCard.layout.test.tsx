@@ -4,6 +4,7 @@ import { describe, it, expect, vi } from 'vitest'
 import type { ComponentProps } from 'react'
 import { SessionCard } from '../SessionCard'
 import type { Session } from '@/api/types'
+import { pullRequest, session } from '@/test/factories'
 
 // Dense two-line card contract. The card lives in a drag-resizable sidebar, so
 // its layout must be deterministic at every width and for every session shape:
@@ -14,7 +15,7 @@ import type { Session } from '@/api/types'
 // on content. These tests lock that skeleton so a future tweak can't regress to
 // the old grab-bag badge footer / floating status pill.
 
-const base: Session = {
+const base: Session = session({
   id: '1',
   name: 'Fix login bug',
   accountName: 'work',
@@ -23,7 +24,7 @@ const base: Session = {
   status: 'done',
   createdAt: '2026-06-22T11:00:00Z',
   updatedAt: '2026-06-22T11:58:00Z',
-}
+})
 
 const noop = () => {}
 
@@ -49,12 +50,14 @@ const rich: Session = {
   repo: 'cairnea/KinDash',
   host: 'dobby',
   activeGoal: 'ship the thing',
-  autoArchiveOptOut: true,
+  // `string | null` — the sticky opt-out reason, not a boolean flag. The card
+  // only tests it for truthiness (SessionCard.tsx:522), so this is the same case.
+  autoArchiveOptOut: 'manual-unarchive',
   assistedBy: 'autopilot',
   latestSuggestions: ['run the tests', 'open the PR'],
   prs: [
-    { number: 1, url: 'u1', state: 'open', checks: 'passing', title: 'A', deployed: true },
-    { number: 2, url: 'u2', state: 'open', checks: 'passing', title: 'B', deployed: false },
+    pullRequest({ number: 1, url: 'u1', checks: 'passing', title: 'A', deployed: true }),
+    pullRequest({ number: 2, url: 'u2', checks: 'passing', title: 'B', deployed: false }),
   ],
 }
 

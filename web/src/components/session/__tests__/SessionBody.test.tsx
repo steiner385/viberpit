@@ -4,6 +4,7 @@ import { SessionBody } from '../SessionBody'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 import type { Block } from '@/session/reducer'
 import * as hooks from '@/api/hooks'
+import { queryResult } from '@/test/reactQuery'
 
 // SessionBody now calls useModels/useAccounts/useSessions (account+model switchers).
 // Stub them so this layout test needs no QueryClientProvider or network.
@@ -82,9 +83,9 @@ describe('SessionBody', () => {
         matches: false, media: query, addEventListener: vi.fn(), removeEventListener: vi.fn(),
       })),
     })
-    vi.mocked(hooks.useModels).mockReturnValue({ data: [] } as ReturnType<typeof hooks.useModels>)
-    vi.mocked(hooks.useAccounts).mockReturnValue({ data: [] } as ReturnType<typeof hooks.useAccounts>)
-    vi.mocked(hooks.useSessions).mockReturnValue({ data: [] } as ReturnType<typeof hooks.useSessions>)
+    vi.mocked(hooks.useModels).mockReturnValue(queryResult([]))
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([]))
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult([]))
   })
 
   it('renders the pinned answer panel for a LIVE open question (desktop + mobile)', () => {

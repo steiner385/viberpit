@@ -96,7 +96,7 @@ export interface SrcSeqGap { sessionId: string; prev: number; got: number }
 
 // `seq` is the per-attach dedup/heal key; `srcSeq` is the daemon's additive
 // end-to-end source seq (loss telemetry only — see GapState).
-interface WireMeta { seq?: number; sessionId?: string; srcSeq?: number; epoch?: string }
+export interface WireMeta { seq?: number; sessionId?: string; srcSeq?: number; epoch?: string }
 
 /**
  * Filter a live batch to the active session and detect a sequence gap.

@@ -15,6 +15,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ArchivedManager } from '../ArchivedManager'
 import * as hooks from '@/api/hooks'
 import type { ArchivedSession } from '@/api/types'
+import { appSettings, archivedSession } from '@/test/factories'
+import { queryResult } from '@/test/reactQuery'
 
 vi.mock('@/api/hooks', () => ({
   useQueueMove: vi.fn(() => ({ mutate: vi.fn() })),
@@ -79,19 +81,17 @@ vi.mock('@/session/useSessionSearch', () => ({
 
 const NOOP_MUTATION = { mutate: vi.fn(), isPending: false, isSuccess: false }
 
-function makeArchived(overrides: Partial<ArchivedSession> = {}): ArchivedSession {
-  return {
+const makeArchived = (overrides: Partial<ArchivedSession> = {}): ArchivedSession =>
+  archivedSession({
     id: 'arc-1',
     name: 'My Archived Session',
     account: 'work',
     cwd: '/home/user/project',
     claudeSessionId: 'claude-abc',
-    permissionMode: 'interactive',
     createdAt: '2026-06-01T10:00:00Z',
     archivedAt: '2026-06-20T12:00:00Z',
     ...overrides,
-  }
-}
+  })
 
 function wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -99,22 +99,22 @@ function wrapper({ children }: { children: React.ReactNode }) {
 }
 
 function setupDefaultMocks() {
-  vi.mocked(hooks.useAccounts).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useAccounts>)
-  vi.mocked(hooks.useSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useSessions>)
+  vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([]))
+  vi.mocked(hooks.useSessions).mockReturnValue(queryResult([]))
   vi.mocked(hooks.useCreateSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCreateSession>)
   vi.mocked(hooks.useRenameSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useRenameSession>)
   vi.mocked(hooks.useCloseSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCloseSession>)
   vi.mocked(hooks.useRefreshAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useRefreshAccount>)
   vi.mocked(hooks.useUpdateAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUpdateAccount>)
   vi.mocked(hooks.useDeleteAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useDeleteAccount>)
-  vi.mocked(hooks.useGithubRepos).mockReturnValue({ data: [], isLoading: false, isError: false } as ReturnType<typeof hooks.useGithubRepos>)
-  vi.mocked(hooks.useGithubBranches).mockReturnValue({ data: { default: null, branches: [] }, isLoading: false } as ReturnType<typeof hooks.useGithubBranches>)
-  vi.mocked(hooks.useSettings).mockReturnValue({ data: { defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null }, isLoading: false } as ReturnType<typeof hooks.useSettings>)
+  vi.mocked(hooks.useGithubRepos).mockReturnValue(queryResult([]))
+  vi.mocked(hooks.useGithubBranches).mockReturnValue(queryResult({ default: null, branches: [] }))
+  vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings()))
   vi.mocked(hooks.useUpdateSettings).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUpdateSettings>)
   vi.mocked(hooks.useReauthAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useReauthAccount>)
-  vi.mocked(hooks.useReauthStatus).mockReturnValue({ data: { state: 'idle', message: null, startedAt: null }, isLoading: false } as ReturnType<typeof hooks.useReauthStatus>)
+  vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult({ state: 'idle', message: null, startedAt: null }))
   vi.mocked(hooks.useCancelReauth).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCancelReauth>)
-  vi.mocked(hooks.useArchivedSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useArchivedSessions>)
+  vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult([]))
   vi.mocked(hooks.useUnarchiveSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUnarchiveSession>)
   vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
   vi.mocked(hooks.useBulkUnarchiveSessions).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useBulkUnarchiveSessions>)
@@ -139,10 +139,7 @@ describe('ArchivedManager', () => {
   })
 
   it('shows the empty state when there are no archived sessions', () => {
-    vi.mocked(hooks.useArchivedSessions).mockReturnValue({
-      data: [],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useArchivedSessions>)
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult([]))
 
     render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
 
@@ -152,10 +149,7 @@ describe('ArchivedManager', () => {
   // ── Archived list rows ───────────────────────────────────────────────────────
 
   it('renders archived rows with name, account, and archived date', async () => {
-    vi.mocked(hooks.useArchivedSessions).mockReturnValue({
-      data: [makeArchived({ name: 'Alpha', account: 'myaccount', archivedAt: '2026-06-15T00:00:00Z' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useArchivedSessions>)
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult([makeArchived({ name: 'Alpha', account: 'myaccount', archivedAt: '2026-06-15T00:00:00Z' })]))
 
     render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
 
@@ -166,10 +160,7 @@ describe('ArchivedManager', () => {
   })
 
   it('falls back to short id when name is empty', async () => {
-    vi.mocked(hooks.useArchivedSessions).mockReturnValue({
-      data: [makeArchived({ id: 'abc12345def', name: '' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useArchivedSessions>)
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult([makeArchived({ id: 'abc12345def', name: '' })]))
 
     render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
 
@@ -188,10 +179,7 @@ describe('ArchivedManager', () => {
   it('clicking Review calls onReviewSession with the session id', async () => {
     const user = userEvent.setup()
     const onReview = vi.fn()
-    vi.mocked(hooks.useArchivedSessions).mockReturnValue({
-      data: [makeArchived({ id: 'arc-1', name: 'Alpha' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useArchivedSessions>)
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult([makeArchived({ id: 'arc-1', name: 'Alpha' })]))
 
     render(<ArchivedManager onReviewSession={onReview} />, { wrapper })
     await user.click(screen.getByRole('button', { name: /review alpha/i }))
@@ -208,10 +196,7 @@ describe('ArchivedManager', () => {
       mutate: unarchiveMutate,
       isPending: false,
     } as unknown as ReturnType<typeof hooks.useUnarchiveSession>)
-    vi.mocked(hooks.useArchivedSessions).mockReturnValue({
-      data: [makeArchived({ id: 'arc-1', name: 'Alpha' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useArchivedSessions>)
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult([makeArchived({ id: 'arc-1', name: 'Alpha' })]))
 
     render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
     await user.click(screen.getByRole('button', { name: /unarchive alpha/i }))
@@ -223,10 +208,7 @@ describe('ArchivedManager', () => {
 
   it('clicking Delete permanently opens a confirm dialog', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useArchivedSessions).mockReturnValue({
-      data: [makeArchived({ id: 'arc-1', name: 'Alpha' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useArchivedSessions>)
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult([makeArchived({ id: 'arc-1', name: 'Alpha' })]))
 
     render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
     await user.click(screen.getByRole('button', { name: /delete alpha permanently/i }))
@@ -242,10 +224,7 @@ describe('ArchivedManager', () => {
       mutate: permDeleteMutate,
       isPending: false,
     } as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
-    vi.mocked(hooks.useArchivedSessions).mockReturnValue({
-      data: [makeArchived({ id: 'arc-1', name: 'Alpha' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useArchivedSessions>)
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult([makeArchived({ id: 'arc-1', name: 'Alpha' })]))
 
     render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
     await user.click(screen.getByRole('button', { name: /delete alpha permanently/i }))
@@ -263,10 +242,7 @@ describe('ArchivedManager', () => {
       mutate: permDeleteMutate,
       isPending: false,
     } as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
-    vi.mocked(hooks.useArchivedSessions).mockReturnValue({
-      data: [makeArchived({ id: 'arc-1', name: 'Alpha' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useArchivedSessions>)
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult([makeArchived({ id: 'arc-1', name: 'Alpha' })]))
 
     render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
     await user.click(screen.getByRole('button', { name: /delete alpha permanently/i }))
@@ -286,10 +262,7 @@ describe('ArchivedManager', () => {
       mutate: permDeleteMutate,
       isPending: false,
     } as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
-    vi.mocked(hooks.useArchivedSessions).mockReturnValue({
-      data: [makeArchived({ id: 'arc-1', name: 'Alpha' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useArchivedSessions>)
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult([makeArchived({ id: 'arc-1', name: 'Alpha' })]))
 
     render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
     await user.click(screen.getByRole('button', { name: /delete alpha permanently/i }))

@@ -15,41 +15,42 @@ import { EmptyState } from '../EmptyState'
 import { SessionList } from '../SessionList'
 import { UsageBadge, StatusPill } from '../UsageBadge'
 import type { Session, Account } from '@/api/types'
+import { account, session } from '@/test/factories'
 
 expect.extend(toHaveNoViolations)
 
 // ── test data ──────────────────────────────────────────────────────────────
 
 const ACCOUNTS: Account[] = [
-  {
+  account({
     name: 'alice',
     status: 'ok',
     usage: { session: { pct: 30, resetsAt: null }, weekly: { pct: 50, resetsAt: null } },
-  },
-  {
+  }),
+  account({
     name: 'bob',
     status: 'limited',
     usage: { session: { pct: 95, resetsAt: null }, weekly: { pct: 80, resetsAt: null } },
-  },
+  }),
 ]
 
 const SESSIONS: Session[] = [
-  {
+  session({
     id: 'sess-1',
     name: 'Work session',
     accountName: 'alice',
     status: 'in_progress',
     createdAt: '2026-06-19T10:00:00Z',
     updatedAt: '2026-06-19T10:00:00Z',
-  },
-  {
+  }),
+  session({
     id: 'sess-2',
     name: 'Research',
     accountName: 'bob',
     status: 'idle',
     createdAt: '2026-06-19T11:00:00Z',
     updatedAt: '2026-06-19T11:00:00Z',
-  },
+  }),
 ]
 
 function qcWrapper({ children }: { children: React.ReactNode }) {
@@ -96,6 +97,7 @@ describe('a11y: SessionList', () => {
     onRename: vi.fn(),
     onClose: vi.fn(),
     onDelete: vi.fn(),
+    onQuickResume: vi.fn(),
   }
 
   it('has no axe violations (empty)', async () => {

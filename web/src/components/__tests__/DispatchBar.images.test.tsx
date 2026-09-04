@@ -1,6 +1,22 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { it, expect, vi, beforeEach } from 'vitest'
-import { DispatchBar } from '../DispatchBar'
+import { DispatchBar, type DispatchBarProps } from '../DispatchBar'
+
+/**
+ * The props `DispatchBar` requires but this suite does not exercise. They were
+ * simply omitted before, so every render here was missing `onNavigate`,
+ * `onEnterList`, `onJump`, `onShowHelp`, `onEscape` and `isPending` — the
+ * component would have thrown on any key that reaches one of them.
+ */
+const required: Omit<DispatchBarProps, 'repos' | 'reposLoading' | 'reposError' | 'onDispatch'> = {
+  onNavigate: vi.fn(),
+  onOpenHighlighted: vi.fn(),
+  onEnterList: vi.fn(),
+  onJump: vi.fn(),
+  onShowHelp: vi.fn(),
+  onEscape: vi.fn(),
+  isPending: false,
+}
 
 beforeEach(() => {
   URL.createObjectURL = vi.fn(() => 'blob:p')
@@ -11,7 +27,7 @@ beforeEach(() => {
 
 it('dispatch includes pasted image attachment ids', async () => {
   const onDispatch = vi.fn().mockResolvedValue(undefined)
-  render(<DispatchBar repos={[]} reposLoading={false} reposError={false} onDispatch={onDispatch} />)
+  render(<DispatchBar {...required} repos={[]} reposLoading={false} reposError={false} onDispatch={onDispatch} />)
   const ta = screen.getByRole('textbox')
   fireEvent.paste(ta, { clipboardData: {
     files: [new File([new Uint8Array(10)], 'x.png', { type: 'image/png' })] } })
@@ -28,16 +44,12 @@ it('dispatch with image-only (empty prompt) calls onDispatch not onOpenHighlight
   const onOpenHighlighted = vi.fn()
   render(
     <DispatchBar
+      {...required}
       repos={[]}
       reposLoading={false}
       reposError={false}
       onDispatch={onDispatch}
       onOpenHighlighted={onOpenHighlighted}
-      onNavigate={vi.fn()}
-      onRowAction={vi.fn()}
-      onShowHelp={vi.fn()}
-      onEscape={vi.fn()}
-      isPending={false}
     />,
   )
   const ta = screen.getByRole('textbox')
@@ -52,7 +64,7 @@ it('dispatch with image-only (empty prompt) calls onDispatch not onOpenHighlight
 })
 
 it('file input uses image/* and is not camera-only', () => {
-  const { container } = render(<DispatchBar repos={[]} reposLoading={false} reposError={false} onDispatch={vi.fn().mockResolvedValue(undefined)} />)
+  const { container } = render(<DispatchBar {...required} repos={[]} reposLoading={false} reposError={false} onDispatch={vi.fn().mockResolvedValue(undefined)} />)
   const input = container.querySelector('input[type=file]') as HTMLInputElement
   expect(input.getAttribute('accept')).toBe('image/*')
   expect(input.hasAttribute('capture')).toBe(false)

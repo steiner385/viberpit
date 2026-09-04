@@ -3,6 +3,8 @@ import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderApp } from '@/test/renderApp'
 import * as hooks from '@/api/hooks'
+import { appSettings } from '@/test/factories'
+import { queryResult } from '@/test/reactQuery'
 
 vi.mock('@/api/hooks', () => ({
   useQueueMove: vi.fn(() => ({ mutate: vi.fn() })),
@@ -72,10 +74,7 @@ const NOOP_MUTATION = {
 
 describe('session-card actions (via AppShell)', () => {
   beforeEach(() => {
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([]))
 
     vi.mocked(hooks.useSessions).mockReturnValue({
       data: [
@@ -121,21 +120,11 @@ describe('session-card actions (via AppShell)', () => {
       mutate: vi.fn(),
     } as unknown as ReturnType<typeof hooks.useDeleteAccount>)
 
-    vi.mocked(hooks.useGithubRepos).mockReturnValue({
-      data: [],
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof hooks.useGithubRepos>)
+    vi.mocked(hooks.useGithubRepos).mockReturnValue(queryResult([]))
 
-    vi.mocked(hooks.useGithubBranches).mockReturnValue({
-      data: { default: null, branches: [] },
-      isLoading: false,
-    } as ReturnType<typeof hooks.useGithubBranches>)
+    vi.mocked(hooks.useGithubBranches).mockReturnValue(queryResult({ default: null, branches: [] }))
 
-    vi.mocked(hooks.useSettings).mockReturnValue({
-      data: { defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null },
-      isLoading: false,
-    } as ReturnType<typeof hooks.useSettings>)
+    vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings()))
 
     vi.mocked(hooks.useUpdateSettings).mockReturnValue({
       mutate: vi.fn(),
@@ -144,9 +133,9 @@ describe('session-card actions (via AppShell)', () => {
     } as unknown as ReturnType<typeof hooks.useUpdateSettings>)
 
     vi.mocked(hooks.useReauthAccount).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useReauthAccount>)
-    vi.mocked(hooks.useReauthStatus).mockReturnValue({ data: { state: 'idle', message: null, startedAt: null }, isLoading: false } as ReturnType<typeof hooks.useReauthStatus>)
+    vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult({ state: 'idle', message: null, startedAt: null }))
     vi.mocked(hooks.useCancelReauth).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useCancelReauth>)
-    vi.mocked(hooks.useArchivedSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useArchivedSessions>)
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult([]))
     vi.mocked(hooks.useUnarchiveSession).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useUnarchiveSession>)
     vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
     vi.mocked(hooks.useBulkUnarchiveSessions).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useBulkUnarchiveSessions>)

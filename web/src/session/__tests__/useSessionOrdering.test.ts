@@ -2,13 +2,15 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { useSessionOrdering } from '../useSessionOrdering'
 import type { Session } from '@/api/types'
+import { mkSession } from '@/test/factories'
 
-function mk(id: string, over: Partial<Session> = {}): Session {
-  return {
-    id, name: id, accountName: 'a', status: 'idle',
-    createdAt: '2026-06-01T00:00:00Z', updatedAt: '2026-06-01T00:00:00Z', ...over,
-  }
-}
+const mk = (id: string, over: Partial<Session> = {}): Session =>
+  mkSession(id, {
+    accountName: 'a',
+    createdAt: '2026-06-01T00:00:00Z',
+    updatedAt: '2026-06-01T00:00:00Z',
+    ...over,
+  })
 
 describe('useSessionOrdering', () => {
   beforeEach(() => window.localStorage.clear())

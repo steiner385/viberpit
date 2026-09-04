@@ -27,36 +27,8 @@ import { MemoryRouter, Route, Routes, useLocation, useParams } from 'react-route
 
 import { QK } from '@/api/hooks'
 import type { ArchivedSession, Session } from '@/api/types'
+import { archivedSession, session } from '@/test/factories'
 import { useArchiveAdvance } from './useArchiveAdvance'
-
-// ── typed fixtures (R10: real values, never `as unknown as T`) ────────────────
-
-function session(over: Partial<Session> = {}): Session {
-  return {
-    id: 'sess-1',
-    name: 'First',
-    accountName: 'alice',
-    status: 'idle',
-    createdAt: '2026-06-19T10:00:00Z',
-    prs: [],
-    ...over,
-  }
-}
-
-function archivedSession(over: Partial<ArchivedSession> = {}): ArchivedSession {
-  return {
-    id: 'sess-1',
-    name: 'First',
-    account: 'alice',
-    cwd: '/tmp',
-    repo: null,
-    claudeSessionId: null,
-    permissionMode: 'interactive',
-    createdAt: '2026-06-19T10:00:00Z',
-    archivedAt: '2026-06-19T11:00:00Z',
-    ...over,
-  }
-}
 
 // ── harness ──────────────────────────────────────────────────────────────────
 

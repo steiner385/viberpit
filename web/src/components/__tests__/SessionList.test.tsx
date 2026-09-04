@@ -4,37 +4,38 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { SessionList } from '../SessionList'
 import type { Session, Account } from '@/api/types'
+import { account, session } from '@/test/factories'
 
 const SESSIONS: Session[] = [
-  {
+  session({
     id: 'sess-1',
     name: 'Work session',
     accountName: 'alice',
     status: 'in_progress',
     createdAt: '2026-06-19T10:00:00Z',
     updatedAt: '2026-06-19T10:00:00Z',
-  },
-  {
+  }),
+  session({
     id: 'sess-2',
     name: 'Research',
     accountName: 'bob',
     status: 'idle',
     createdAt: '2026-06-19T11:00:00Z',
     updatedAt: '2026-06-19T11:00:00Z',
-  },
+  }),
 ]
 
 const ACCOUNTS: Account[] = [
-  {
+  account({
     name: 'alice',
     status: 'ok',
     usage: { session: { pct: 30, resetsAt: null }, weekly: { pct: 50, resetsAt: null } },
-  },
-  {
+  }),
+  account({
     name: 'bob',
     status: 'limited',
     usage: { session: { pct: 95, resetsAt: null }, weekly: { pct: 80, resetsAt: null } },
-  },
+  }),
 ]
 
 function wrapper({ children }: { children: React.ReactNode }) {
@@ -59,6 +60,7 @@ describe('SessionList', () => {
   const onRename = vi.fn()
   const onClose = vi.fn()
   const onDelete = vi.fn()
+  const onQuickResume = vi.fn()
 
   beforeEach(() => {
     vi.clearAllMocks()
@@ -74,6 +76,7 @@ describe('SessionList', () => {
         onRename={onRename}
         onClose={onClose}
         onDelete={onDelete}
+        onQuickResume={onQuickResume}
       />,
       { wrapper },
     )
@@ -94,6 +97,7 @@ describe('SessionList', () => {
         onRename={onRename}
         onClose={onClose}
         onDelete={onDelete}
+        onQuickResume={onQuickResume}
       />,
       { wrapper },
     )
@@ -113,6 +117,7 @@ describe('SessionList', () => {
         onRename={onRename}
         onClose={onClose}
         onDelete={onDelete}
+        onQuickResume={onQuickResume}
       />,
       { wrapper },
     )
@@ -132,6 +137,7 @@ describe('SessionList', () => {
         onRename={onRename}
         onClose={onClose}
         onDelete={onDelete}
+        onQuickResume={onQuickResume}
       />,
       { wrapper },
     )
@@ -153,6 +159,7 @@ describe('SessionList', () => {
         onRename={onRename}
         onClose={onClose}
         onDelete={onDelete}
+        onQuickResume={onQuickResume}
       />,
       { wrapper },
     )
@@ -183,6 +190,7 @@ describe('SessionList', () => {
         onRename={onRename}
         onClose={onClose}
         onDelete={onDelete}
+        onQuickResume={onQuickResume}
       />,
       { wrapper },
     )
@@ -203,6 +211,7 @@ describe('SessionList', () => {
         onRename={onRename}
         onClose={onClose}
         onDelete={onDelete}
+        onQuickResume={onQuickResume}
       />,
       { wrapper },
     )
@@ -222,6 +231,7 @@ describe('SessionList', () => {
         onRename={onRename}
         onClose={onClose}
         onDelete={onDelete}
+        onQuickResume={onQuickResume}
       />,
       { wrapper },
     )
@@ -241,6 +251,7 @@ describe('SessionList', () => {
         onRename={onRename}
         onClose={onClose}
         onDelete={onDelete}
+        onQuickResume={onQuickResume}
       />,
       { wrapper },
     )
@@ -262,6 +273,7 @@ describe('SessionList', () => {
         onRename={onRename}
         onClose={onClose}
         onDelete={onDelete}
+        onQuickResume={onQuickResume}
       />,
       { wrapper },
     )
@@ -282,6 +294,7 @@ describe('SessionList', () => {
         onRename={onRename}
         onClose={onClose}
         onDelete={onDelete}
+        onQuickResume={onQuickResume}
       />,
       { wrapper },
     )
@@ -302,6 +315,7 @@ describe('SessionList', () => {
         onRename={onRename}
         onClose={onClose}
         onDelete={onDelete}
+        onQuickResume={onQuickResume}
       />,
       { wrapper },
     )
@@ -326,6 +340,7 @@ describe('SessionList', () => {
         onRename={() => {}}
         onClose={() => {}}
         onDelete={() => {}}
+        onQuickResume={() => {}}
       />,
       { wrapper },
     )
@@ -375,6 +390,7 @@ describe('SessionList', () => {
         onRename={() => {}}
         onClose={() => {}}
         onDelete={() => {}}
+        onQuickResume={() => {}}
       />,
       { wrapper },
     )
@@ -417,6 +433,7 @@ describe('SessionList — repo label', () => {
   const onRename = vi.fn()
   const onClose = vi.fn()
   const onDelete = vi.fn()
+  const onQuickResume = vi.fn()
 
   beforeEach(() => {
     vi.clearAllMocks()
@@ -436,6 +453,7 @@ describe('SessionList — repo label', () => {
         onRename={onRename}
         onClose={onClose}
         onDelete={onDelete}
+        onQuickResume={onQuickResume}
       />,
       { wrapper },
     )
@@ -451,6 +469,7 @@ describe('SessionList — pure renderer (no internal sort)', () => {
   const onRename = vi.fn()
   const onClose = vi.fn()
   const onDelete = vi.fn()
+  const onQuickResume = vi.fn()
 
   beforeEach(() => {
     vi.clearAllMocks()
@@ -460,30 +479,30 @@ describe('SessionList — pure renderer (no internal sort)', () => {
     // Pass sessions in a specific order: busy → your-turn → needs-you
     // SessionList should render them exactly as given, not re-sort.
     const sessions: Session[] = [
-      {
+      session({
         id: 'a',
         name: 'A busy',
         accountName: 'alice',
         status: 'in_progress',
         createdAt: '2026-06-19T10:00:00Z',
         updatedAt: '2026-06-19T10:00:00Z',
-      },
-      {
+      }),
+      session({
         id: 'b',
         name: 'B done',
         accountName: 'alice',
         status: 'done',
         createdAt: '2026-06-19T10:00:00Z',
         updatedAt: '2026-06-19T10:00:00Z',
-      },
-      {
+      }),
+      session({
         id: 'c',
         name: 'C blocked',
         accountName: 'alice',
         status: 'waiting_input',
         createdAt: '2026-06-19T10:00:00Z',
         updatedAt: '2026-06-19T10:00:00Z',
-      },
+      }),
     ]
     render(
       <SessionList
@@ -494,6 +513,7 @@ describe('SessionList — pure renderer (no internal sort)', () => {
         onRename={onRename}
         onClose={onClose}
         onDelete={onDelete}
+        onQuickResume={onQuickResume}
       />,
       { wrapper },
     )
@@ -510,16 +530,15 @@ describe('SessionList — pure renderer (no internal sort)', () => {
 })
 
 describe('SessionList — group header keyboard nav', () => {
-  function mkSession(id: string): Session {
-    return {
+  const mkSession = (id: string): Session =>
+    session({
       id,
       name: `Session ${id}`,
       accountName: 'alice',
       status: 'idle',
       createdAt: '2026-06-24T10:00:00Z',
       updatedAt: '2026-06-24T10:00:00Z',
-    }
-  }
+    })
 
   it('renders a highlighted group header and routes its keys', async () => {
     const u = userEvent.setup()
@@ -554,16 +573,15 @@ describe('SessionList — group header keyboard nav', () => {
 })
 
 describe('SessionList — group panel ARIA disclosure', () => {
-  function mkSession(id: string): Session {
-    return {
+  const mkSession = (id: string): Session =>
+    session({
       id,
       name: `Session ${id}`,
       accountName: 'alice',
       status: 'idle',
       createdAt: '2026-06-24T10:00:00Z',
       updatedAt: '2026-06-24T10:00:00Z',
-    }
-  }
+    })
 
   it('group panel has role=group and aria-labelledby pointing at the header when group.label is non-null', () => {
     const groups = [
@@ -622,6 +640,7 @@ describe('SessionList — no-matches state', () => {
         onRename={() => {}}
         onClose={() => {}}
         onDelete={() => {}}
+        onQuickResume={() => {}}
       />,
       { wrapper },
     )
@@ -645,6 +664,7 @@ describe('SessionList — no-matches state', () => {
         onRename={() => {}}
         onClose={() => {}}
         onDelete={() => {}}
+        onQuickResume={() => {}}
       />,
       { wrapper },
     )
@@ -661,37 +681,39 @@ describe('SessionCard — null usage guard (needs-reauth account)', () => {
   const onRename = vi.fn()
   const onClose = vi.fn()
   const onDelete = vi.fn()
+  const onQuickResume = vi.fn()
 
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
   it('renders without throwing when account.usage is null', () => {
-    const nullUsageAccount: Account = {
+    const nullUsageAccount: Account = account({
       name: 'kindash',
       status: 'needs-relogin',
       usage: null,
       nickname: null,
-    }
-    const session: Session = {
+    })
+    const nullUsageSession: Session = session({
       id: 'sess-nr',
       name: 'Needs Reauth Session',
       accountName: 'kindash',
       status: 'idle',
       createdAt: '2026-06-20T00:00:00Z',
       updatedAt: '2026-06-20T00:00:00Z',
-    }
+    })
 
     expect(() =>
       render(
         <SessionList
-          sessions={[session]}
+          sessions={[nullUsageSession]}
           accounts={[nullUsageAccount]}
           onNew={onNew}
           onOpen={onOpen}
           onRename={onRename}
           onClose={onClose}
           onDelete={onDelete}
+          onQuickResume={onQuickResume}
         />,
         { wrapper },
       ),
@@ -699,30 +721,31 @@ describe('SessionCard — null usage guard (needs-reauth account)', () => {
   })
 
   it('does not render UsageBadge text when account.usage is null', () => {
-    const nullUsageAccount: Account = {
+    const nullUsageAccount: Account = account({
       name: 'kindash',
       status: 'needs-relogin',
       usage: null,
       nickname: null,
-    }
-    const session: Session = {
+    })
+    const nullUsageSession: Session = session({
       id: 'sess-nr',
       name: 'Needs Reauth Session',
       accountName: 'kindash',
       status: 'idle',
       createdAt: '2026-06-20T00:00:00Z',
       updatedAt: '2026-06-20T00:00:00Z',
-    }
+    })
 
     render(
       <SessionList
-        sessions={[session]}
+        sessions={[nullUsageSession]}
         accounts={[nullUsageAccount]}
         onNew={onNew}
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
         onDelete={onDelete}
+        onQuickResume={onQuickResume}
       />,
       { wrapper },
     )
@@ -744,6 +767,7 @@ describe('SessionList — Resume interrupted button', () => {
     onRename: vi.fn(),
     onClose: vi.fn(),
     onDelete: vi.fn(),
+    onQuickResume: vi.fn(),
   }
 
   beforeEach(() => vi.clearAllMocks())
@@ -752,7 +776,7 @@ describe('SessionList — Resume interrupted button', () => {
     const sessions: Session[] = [
       { ...SESSIONS[0], resumable: true },
       { ...SESSIONS[1], resumable: true },
-      {
+      session({
         id: 'sess-3',
         name: 'Not resumable',
         accountName: 'alice',
@@ -760,7 +784,7 @@ describe('SessionList — Resume interrupted button', () => {
         createdAt: '2026-06-19T12:00:00Z',
         updatedAt: '2026-06-19T12:00:00Z',
         resumable: false,
-      },
+      }),
     ]
     render(<SessionList {...sharedProps} sessions={sessions} />, { wrapper })
     expect(screen.getByRole('button', { name: /resume interrupted \(2\)/i })).toBeInTheDocument()

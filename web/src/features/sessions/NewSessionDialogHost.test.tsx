@@ -31,6 +31,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import * as hooks from '@/api/hooks'
 import type { Account, Session } from '@/api/types'
+import { session as makeSession } from '@/test/factories'
 import { NewSessionDialogHost } from './NewSessionDialogHost'
 
 vi.mock('sonner', () => ({
@@ -45,18 +46,10 @@ vi.mock('@/api/hooks', () => ({
   useGithubBranches: vi.fn(() => ({ data: { default: null, branches: [] }, isLoading: false })),
 }))
 
-/** A real `Session`, not a cast (R10): every required field is filled in. */
-function session(over: Partial<Session> = {}): Session {
-  return {
-    id: 'new-1',
-    name: 'New',
-    accountName: 'alice',
-    status: 'in_progress',
-    createdAt: '2026-06-19T10:00:00Z',
-    prs: [],
-    ...over,
-  }
-}
+/** A real `Session`, not a cast (R10) — shape from @/test/factories, with the
+ *  just-created defaults this suite works with. */
+const session = (over: Partial<Session> = {}): Session =>
+  makeSession({ id: 'new-1', name: 'New', status: 'in_progress', ...over })
 
 const ACCOUNTS: Account[] = [
   {

@@ -3,13 +3,14 @@ import { describe, it, expect, vi } from 'vitest'
 import { SessionCard } from '../SessionCard'
 import { QUICK_REPLIES } from '@/lib/quickReplies'
 import type { Session } from '@/api/types'
+import { session } from '@/test/factories'
 
 const noop = () => {}
 // Default sparkle generator: resolves to one fresh suggestion.
 const genOne = () => Promise.resolve(['Run the tests'])
 
-function mkSession(overrides: Partial<Session> = {}): Session {
-  return {
+const mkSession = (overrides: Partial<Session> = {}): Session =>
+  session({
     id: 's1',
     name: 'Test Session',
     accountName: 'work',
@@ -17,8 +18,7 @@ function mkSession(overrides: Partial<Session> = {}): Session {
     createdAt: '2026-06-22T11:00:00Z',
     updatedAt: '2026-06-22T11:58:00Z',
     ...overrides,
-  }
-}
+  })
 
 function renderCard(props: {
   session: Session

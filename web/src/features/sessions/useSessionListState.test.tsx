@@ -17,42 +17,23 @@ import { renderHook, act, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import type { Session } from '@/api/types'
+import { fleetHost as makeFleetHost, mkSession } from '@/test/factories'
 import { FLEET_HOSTS_KEY, type FleetHost } from '@/api/fleet'
 import { NO_FILTERS, type ListFilters } from '@/session/listFilters'
 import { nextSessionAfterClose } from '@/session/nextAfterArchive'
 
 // ── typed factories (R10: real values, never `as unknown as T`) ───────────────
 
-function mk(id: string, over: Partial<Session> = {}): Session {
-  return {
-    id, name: id, accountName: 'acct', status: 'idle',
-    createdAt: '2026-06-01T00:00:00Z', updatedAt: '2026-06-01T00:00:00Z', prs: [],
+const mk = (id: string, over: Partial<Session> = {}): Session =>
+  mkSession(id, {
+    accountName: 'acct',
+    createdAt: '2026-06-01T00:00:00Z',
+    updatedAt: '2026-06-01T00:00:00Z',
     ...over,
-  }
-}
+  })
 
-function fleetHost(name: string, over: Partial<FleetHost> = {}): FleetHost {
-  return {
-    name,
-    endpoint: `http://${name}:8760`,
-    enabled: true,
-    weight: 1,
-    maxSessions: null,
-    healthy: true,
-    activeSessions: 0,
-    loadAvg: null,
-    memAvailableMb: null,
-    sha: null,
-    checkoutSha: null,
-    protocol: null,
-    lastProbeAt: null,
-    lastError: null,
-    sshHost: null,
-    repoPath: null,
-    upgrade: null,
-    ...over,
-  }
-}
+const fleetHost = (name: string, over: Partial<FleetHost> = {}): FleetHost =>
+  makeFleetHost({ name, ...over })
 
 // ── the fake daemon ──────────────────────────────────────────────────────────
 //

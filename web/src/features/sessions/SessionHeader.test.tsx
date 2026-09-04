@@ -21,23 +21,17 @@ import { axe, toHaveNoViolations } from 'jest-axe'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { QK } from '@/api/hooks'
 import type { Session, SessionStatus } from '@/api/types'
+import { session as makeSession } from '@/test/factories'
 import { SessionHeader, type SessionHeaderProps } from './SessionHeader'
 
 expect.extend(toHaveNoViolations)
 
 // ── typed factories (R10: real values, never `as unknown as T`) ───────────────
+// Shape lives in @/test/factories; this suite only adds `updatedAt` (the header
+// renders a last-activity time, so its fixtures need recorded activity).
 
-function session(over: Partial<Session> = {}): Session {
-  return {
-    id: 'sess-1',
-    name: 'First',
-    accountName: 'alice',
-    status: 'idle',
-    createdAt: '2026-06-19T10:00:00Z',
-    updatedAt: '2026-06-19T10:00:00Z',
-    ...over,
-  }
-}
+const session = (over: Partial<Session> = {}): Session =>
+  makeSession({ updatedAt: '2026-06-19T10:00:00Z', ...over })
 
 interface RenderOpts {
   props?: Partial<SessionHeaderProps>
