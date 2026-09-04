@@ -1851,11 +1851,19 @@ class SessionOrchestrator:
         # here so the drain proceeds rather than raising AttributeError in a task.
         if not hasattr(self, "_queue_drain_lock"):
             self._queue_drain_lock = asyncio.Lock()
+        from sqlalchemy import select as sa_select
+        # Entries owned by ANOTHER fleet daemon: skipped for the rest of this
+        # drain, never removed. The session_queue table is one shared queue, but
+        # _records is per-process — so "not in my memory" is NOT "stale" (incident
+        # 2026-09-04: a worker with a free slot deleted every entry the primary had
+        # enqueued, leaving 'queued' rows nothing could move, cancel or start).
+        foreign: set[str] = set()
+        enabled_hosts = await self._enabled_host_names()
         async with self._queue_drain_lock:
             while True:
                 if self._active_session_count() >= await self._max_active_sessions():
                     break
-                entry = await sq.next_entry()
+                entry = await sq.next_entry(exclude=foreign)
                 if entry is None:
                     break
                 sid, params = entry.session_id, dict(entry.params)
@@ -1868,20 +1876,37 @@ class SessionOrchestrator:
                 # the next boot's queue-drain-on-rehydrate. Every exit path below
                 # removes it exactly once.
                 #
-                # Re-verify the DB row is still 'queued' before spawning.  A
-                # concurrent close/archive (or a crash AFTER a spawn committed, which
-                # now leaves the entry behind) may have already changed the status
-                # while the entry sat in the queue.  Skipping here heals those stale
-                # entries without double-starting the session.
+                # Staleness is judged against the SHARED row, the only truth every
+                # daemon sees: a concurrent close/archive (or a crash AFTER a spawn
+                # committed, which leaves the entry behind) has already moved the
+                # row off 'queued'. Removing such an entry heals it without
+                # double-starting the session.
+                async with db_session() as db:
+                    row = (await db.execute(
+                        sa_select(DbSession).where(DbSession.id == sid)
+                    )).scalar_one_or_none()
                 in_mem = self._records.get(sid)
-                # A legitimately queued entry ALWAYS has an in-memory record
-                # (enqueue and rehydrate both seed one) — a missing record means
-                # a concurrent close/archive won the race; skip, never spawn.
-                if in_mem is None or in_mem.status != "queued":
+                if row is None or row.status != "queued" or (
+                        in_mem is not None and in_mem.status != "queued"):
                     await sq.remove(sid)
                     log.warning("session_queue.stale_entry id=%s status=%s — skipping",
-                                sid, in_mem.status if in_mem is not None else "<gone>")
+                                sid, row.status if row is not None else "<gone>")
                     continue
+                # Ownership (#852 rule, same as every other acting loop): a worker
+                # drains only its own stamp; the primary drains NULL/own stamps and
+                # orphans whose host left the registry. Anything else has a live
+                # daemon responsible for it — leave the entry for that daemon.
+                if in_mem is None:
+                    # Owned row not yet in memory (enqueued before a restart whose
+                    # rehydrate did not seed it): rebuild from the row, the single
+                    # source of truth, rather than discarding a replayable entry.
+                    in_mem = self._record_from_row(row)
+                if not self._owns_record(in_mem, enabled_hosts):
+                    foreign.add(sid)
+                    log.debug("session_queue.foreign_entry id=%s host=%s — left for owner",
+                              sid, row.host)
+                    continue
+                self._records.setdefault(sid, in_mem)
                 # The queued pre-record STAYS in place while _spawn_session runs:
                 # the spawn overwrites it with its pre-seeded active record (and
                 # keeps its queue-time created_at/host, as documented there). It

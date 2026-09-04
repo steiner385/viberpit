@@ -29,6 +29,19 @@ def test_enqueue_appends_and_next_is_fifo(tmp_path):
     _run(tmp_path, body)
 
 
+def test_next_entry_exclude_skips_to_next_owned(tmp_path):
+    """The drain passes the entries it must not touch (owned by another daemon) as
+    `exclude`, so the head query returns the first entry it CAN act on."""
+    async def body():
+        from server.sessions import session_queue as sq
+        await _seed(3)                                    # s1 s2 s3
+        assert (await sq.next_entry(exclude={"s1"})).session_id == "s2"
+        assert (await sq.next_entry(exclude={"s1", "s2"})).session_id == "s3"
+        assert await sq.next_entry(exclude={"s1", "s2", "s3"}) is None
+        assert (await sq.next_entry(exclude=set())).session_id == "s1"
+    _run(tmp_path, body)
+
+
 def test_move_up_down_top_and_positions(tmp_path):
     async def body():
         from server.sessions import session_queue as sq
