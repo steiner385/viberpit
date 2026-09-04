@@ -40,7 +40,23 @@ def test_parse_batch_maps_errors_per_alias():
     alias_map = {"m0": Mutation("set_field", "PVTI_1", "Status", None, "Ready", "s"),
                  "m1": Mutation("add_item", "PVT_1", None, None, "I_x", "m")}
     results = parse_batch(payload, alias_map)
-    assert results == {"m0": None, "m1": "Could not resolve to a node"}
+    assert results.errors == {"m0": None, "m1": "Could not resolve to a node"}
+    assert results.failed_transiently() is False   # a pathed error IS evidence
+
+
+def test_parse_batch_flags_a_document_level_error_as_transient():
+    """A 502/abuse-limit error carries no ``path``: it fails all 20 aliases at once and
+    says nothing about any of them, so the loop must record it without counting it
+    toward the park-on-second-failure rule."""
+    alias_map = {f"m{i}": Mutation("add_item", "PVT_1", None, None, f"I_{i}", "m")
+                 for i in range(3)}
+    results = parse_batch({"data": None, "errors": [{"message": "502 Bad Gateway"}]}, alias_map)
+    assert results.failed_transiently() is True
+    assert results.document_error == "502 Bad Gateway"
+    assert set(results.errors.values()) == {"502 Bad Gateway"}
+    # No errors at all and no data is still a per-mutation failure, not a transient one.
+    quiet = parse_batch({"data": {"m0": None, "m1": None, "m2": None}}, alias_map)
+    assert quiet.failed_transiently() is False and quiet.errors["m0"] == "no data returned"
 
 
 def test_field_builders():

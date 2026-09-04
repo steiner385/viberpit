@@ -54,3 +54,56 @@ def test_load_product_facts_assembles_signals():
     assert facts.open_issue_nodes == {f"{REPO}#5": "I_5", f"{REPO}#3": "I_3", f"{REPO}#9": "I_9"}
     assert [(d.src_ref, d.dst_ref, d.source) for d in facts.deps] == [(f"{REPO}#5", f"{REPO}#3", "prose")]
     assert facts.newest_decision_at == T and facts.mirror_synced_at == T
+
+
+def test_a_dep_edge_change_makes_the_mirror_stale():
+    """The freshness gate is only as good as ``newest_decision_at``. Adding or
+    deactivating a blocker flips an item to/from Blocked, so a dep edge written after
+    the last sync must make the mirror stale — otherwise the reconciler plans a
+    Blocked/Ready push against a board it has not re-read since."""
+    db = _db(); _seed(db)
+    product = list_product_views(db)[0]
+    assert load_product_facts(db, product, now=T).newest_decision_at == T
+
+    later = datetime(2026, 9, 3, 13, 0, tzinfo=timezone.utc)
+    dep = db.query(WorkItemDep).one()
+    dep.active = False                      # the blocker is lifted — a real decision
+    dep.updated_at = later
+    db.commit()
+    facts = load_product_facts(db, product, now=later)
+    assert facts.newest_decision_at == later      # ... and the mirror (synced at T) is stale
+    assert facts.mirror_synced_at < facts.newest_decision_at
+
+
+def test_session_row_writes_do_not_hold_the_gate_permanently_stale():
+    """``Session.updated_at`` is a generic row-write time, so folding it into
+    ``newest_decision_at`` would pin it at ~now for as long as any session is live and
+    the mirror could never catch up — every tick skipped_stale, nothing ever applied."""
+    db = _db(); _seed(db)
+    product = list_product_views(db)[0]
+    sess = db.query(DbSession).one()
+    sess.updated_at = datetime(2026, 9, 4, 9, 0, tzinfo=timezone.utc)   # a live session
+    db.commit()
+    facts = load_product_facts(db, product, now=T)
+    assert facts.newest_decision_at == T
+    assert not facts.mirror_synced_at < facts.newest_decision_at        # still convergeable
+
+
+def test_deps_are_scoped_to_the_products_repos_in_sql():
+    """The dep filter is a SQL predicate, not a Python scan of every dep ccswitch has
+    ever observed — and it must not match a repo whose name merely shares a prefix."""
+    db = _db(); p = _seed(db)
+    other = WorkItem(repo="steiner385/other", number=1, kind="issue", state="open",
+                     gh_node_id="I_o", labels=[])
+    db.add(other); db.flush()
+    db.add(WorkItemDep(src_work_item_id=other.id, dst_work_item_id=other.id,
+                       src_ref="steiner385/other#1", dst_ref="steiner385/other#2",
+                       source="prose", active=True, updated_at=T))
+    # A repo whose name is a prefix of another ("...-switcher-fork") must not leak in.
+    db.add(WorkItemDep(src_work_item_id=other.id, dst_work_item_id=other.id,
+                       src_ref=f"{REPO}-fork#1", dst_ref=f"{REPO}-fork#2",
+                       source="prose", active=True, updated_at=T))
+    db.commit()
+    facts = load_product_facts(db, list_product_views(db)[0], now=T)
+    assert [d.src_ref for d in facts.deps] == [f"{REPO}#5"]
+    assert p.slug == "ccswitch"

@@ -1,10 +1,11 @@
 """Session-level persistence for the 003 read-only mirror. Callers own the transaction."""
 from __future__ import annotations
 
-from collections.abc import Sequence, Set as AbstractSet
+from collections.abc import Collection, Sequence, Set as AbstractSet
 from dataclasses import dataclass
 from datetime import datetime
 
+from sqlalchemy import false, or_
 from sqlalchemy.orm import Session
 
 from server.db.models import (
@@ -24,6 +25,22 @@ class ProductSyncView:
     gh_project_db_id: str | None
     gh_node_id: str | None
     repos: list[str]
+
+
+def deps_in_repos(repos: Collection[str]):
+    """SQL filter for ``WorkItemDep`` rows whose SOURCE issue lives in *repos*.
+
+    THE one definition of "this product's dep edges" (issue #973): the deps API and
+    the reconciler's facts loader both scope by it, and a Python-side scan of the
+    whole table instead grows with every product ccswitch has ever onboarded, not
+    with the one being converged. ``startswith`` auto-escapes each repo string so a
+    LIKE wildcard in a repo name (``_`` is legal in a GitHub repo name) can't widen
+    the match. No repos ⇒ ``false()``, never an empty ``or_()`` (which is a no-op
+    clause and would select the whole table)."""
+    if not repos:
+        return false()
+    return or_(*[WorkItemDep.src_ref.startswith(f"{r}#", autoescape=True)
+                 for r in sorted(repos)])
 
 
 def _parse_iso(value: str | None) -> datetime | None:

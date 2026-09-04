@@ -65,21 +65,40 @@ def build_batch(mutations: Sequence[Mutation], *, project_node_id: str,
     return f"mutation {{ {body} }}", alias_map
 
 
-def parse_batch(payload: dict, alias_map: Mapping[str, Mutation]) -> dict[str, str | None]:
+@dataclass(frozen=True)
+class BatchResult:
+    """Per-alias outcome of one batch, plus whether the *document* failed as a whole.
+
+    The distinction is what keeps a blip from becoming permanent: GitHub reports a
+    per-mutation rejection with a ``path`` naming the alias, but a 502, an abuse
+    limit or a parse error arrives with no path and fails all 20 aliases at once.
+    Only the first is evidence against a mutation, so only the first may count
+    toward the reconciler's park-on-second-failure rule."""
+    errors: dict[str, str | None]
+    document_error: str | None = None
+
+    def failed_transiently(self) -> bool:
+        return self.document_error is not None
+
+
+def parse_batch(payload: dict, alias_map: Mapping[str, Mutation]) -> BatchResult:
     data = payload.get("data") or {}
     by_alias: dict[str, str | None] = {alias: None for alias in alias_map}
+    document_error: str | None = None
     for err in payload.get("errors") or []:
         path = err.get("path") or []
         alias = str(path[0]) if path else None
+        message = str(err.get("message") or "error")
         if alias in by_alias:
-            by_alias[alias] = str(err.get("message") or "error")
+            by_alias[alias] = message
         else:  # document-level error: fail every alias
+            document_error = document_error or message
             for a in by_alias:
-                by_alias[a] = by_alias[a] or str(err.get("message") or "error")
+                by_alias[a] = by_alias[a] or message
     for alias in alias_map:
         if by_alias[alias] is None and data.get(alias) is None:
             by_alias[alias] = "no data returned"
-    return by_alias
+    return BatchResult(by_alias, document_error)
 
 
 def build_rate_limit_query() -> str:

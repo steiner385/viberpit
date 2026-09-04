@@ -11,7 +11,7 @@ from server.db.models import (GhProject, GhProjectItem, GhWriteJournal, Initiati
                               Session as DbSession, WorkItem, WorkItemDep)
 
 from .desired_state import ItemFacts
-from .mirror_store import ProductSyncView
+from .mirror_store import ProductSyncView, deps_in_repos
 from .reconcile_diff import DepView, MirrorItem
 
 NEEDS_HUMAN_LABEL = "needs-human"
@@ -76,8 +76,7 @@ def load_product_facts(db: Session, product: ProductSyncView, *, now: datetime) 
         cur = sessions.get(s.origin_ref or "")
         if cur is None or (_aware(s.updated_at) or now) > (_aware(cur.updated_at) or now):
             sessions[s.origin_ref or ""] = s
-    deps = db.scalars(select(WorkItemDep)).all()
-    deps = [d for d in deps if (d.src_ref or "").rsplit("#", 1)[0] in repos]
+    deps = list(db.scalars(select(WorkItemDep).where(deps_in_repos(repos))).all())
     blockers: dict[str, list[str]] = {}
     blockers_at: dict[str, datetime | None] = {}
     for d in deps:
@@ -115,8 +114,24 @@ def load_product_facts(db: Session, product: ProductSyncView, *, now: datetime) 
             initiative_stage_at=_aware(ini.updated_at) if ini else None))
     last_applied = _aware(db.scalar(select(GhWriteJournal.updated_at).where(
         GhWriteJournal.applied.is_(True)).order_by(GhWriteJournal.updated_at.desc()).limit(1)))
+    # The freshness gate refuses to write against a mirror older than this. It must
+    # therefore cover every timestamp that can move a DECISION: triage (classified_at),
+    # initiative stage, our own last write — and dep edges, whose updated_at is what flips
+    # an item to/from Blocked and was previously ignored here. Every dep row counts, not
+    # just the ones currently blocking: DEACTIVATING the last blocker is equally a decision
+    # (it unblocks the item), and `plan_dep_rows` only writes a row when it really changed,
+    # so this timestamp does not churn.
+    #
+    # Session timestamps are deliberately NOT folded in, even though session status is a
+    # decision input. `Session.updated_at` is a generic row-write time (see the model:
+    # "bumped on EVERY update"), so a single live session would hold newest_decision_at
+    # at ~now forever, the mirror could never catch up, and the product would log
+    # skipped_stale on every tick without ever converging. Session-driven pushes stay
+    # safe by another route: they carry that same near-now timestamp as their decided_at,
+    # so the ownership rule lets them through against any older gh_updated_at.
     newest = _max(*(_aware(w.classified_at) for w in issues),
                   *(_aware(i.updated_at) for i in initiatives.values()),
+                  *(_aware(d.updated_at) for d in deps),
                   last_applied)
     return ProductFacts(
         project_id=product.project_id, slug=product.slug or product.project_id,
