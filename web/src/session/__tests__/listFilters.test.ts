@@ -176,6 +176,24 @@ describe('persistence — the same namespaced ordering pref, not a new key', () 
     window.localStorage.setItem('ccswitch.sessionOrder', '{not json')
     expect(loadListFilters('live', OPTIONS)).toEqual(NO_FILTERS)
   })
+
+  // Omitting `options` is the load-order escape hatch: the option domains come
+  // from two React Query results, and on the first render both are empty, so
+  // sanitizing there would discard every stored project/environment filter on
+  // every page load. The caller holds this raw value until its queries resolve.
+  it('without options it coerces but does NOT validate against a domain', () => {
+    window.localStorage.setItem(
+      'ccswitch.sessionOrder',
+      JSON.stringify({ filters: { status: 'busy', project: '  o/a  ', environment: 42 } }),
+    )
+    // Same store, empty domains: with options every value is dropped…
+    expect(loadListFilters('live', deriveFilterOptions([], []))).toEqual(
+      filters({ status: 'busy' }),
+    )
+    // …without them the open-domain values survive, and coercion still applies
+    // (trimmed string, non-string → null).
+    expect(loadListFilters('live')).toEqual(filters({ status: 'busy', project: 'o/a' }))
+  })
 })
 
 describe('a stored value that no longer exists falls back — it must not empty the list', () => {

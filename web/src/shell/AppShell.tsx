@@ -358,7 +358,10 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
   const { data: accounts = [] } = useAccounts()
   const { data: config } = useConfig()
 
-  const list = useSessionListState(sessions)
+  // `sessionsLoading` is passed, not inferred from `sessions.length`: an empty
+  // array means "none" and "not loaded yet" alike, and only the first may
+  // sanitize a stored project filter away.
+  const list = useSessionListState(sessions, { sessionsLoading })
   const openSessionId = useOpenSessionId()
 
   const closeSession = useCloseSession()

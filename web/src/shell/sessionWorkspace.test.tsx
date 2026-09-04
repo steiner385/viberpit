@@ -79,6 +79,15 @@ vi.mock('@/session/useSessionSearch', () => ({
   useSessionSearch: () => ({ query: '', setQuery: vi.fn(), matchedIds: null, isFiltered: false }),
 }))
 
+// Settled, so the list state's "both queries have resolved" gate turns on the
+// SESSIONS query alone — which is what the load-order tests at the bottom of
+// this file are about. `useEnabledFleetHosts` is left real (it reads the
+// module-local hook, not this override), exactly as before.
+vi.mock('@/api/fleet', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/fleet')>()
+  return { ...actual, useFleetHosts: () => ({ data: { hosts: [] }, isPending: false }) }
+})
+
 vi.mock('@/ws/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/ws/client')>()
   return {
@@ -269,5 +278,44 @@ describe('the all-limited banner', () => {
     await act(async () => { await app.router.navigate('/sessions?tick=1') })
 
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+  })
+})
+
+/**
+ * The shell must hand `useSessionListState` the sessions query's loading flag.
+ *
+ * Without it the hook treats the first render — empty sessions, so an empty
+ * project domain — as authoritative, sanitizes every stored project filter away
+ * and writes the emptied value back. The user's filter would vanish on every
+ * page load, silently, indistinguishably from "it was never saved".
+ */
+describe('the shell passes the sessions-loading flag to the list state', () => {
+  const STORED = { filters: { status: null, project: 'acme/api', environment: null } }
+  const readFilters = (): unknown =>
+    (JSON.parse(localStorage.getItem('ccswitch.sessionOrder') ?? '{}') as { filters?: unknown })
+      .filters
+
+  it('a stored project filter is NOT sanitized away while the sessions query is loading', async () => {
+    localStorage.setItem('ccswitch.sessionOrder', JSON.stringify(STORED))
+    vi.mocked(hooks.useSessions).mockReturnValue(
+      { data: [], isLoading: true } as ReturnType<typeof hooks.useSessions>,
+    )
+    renderApp({ path: '/sessions', mode: 'desktop' })
+    await act(async () => { await Promise.resolve() })
+
+    expect(readFilters()).toEqual(STORED.filters)
+  })
+
+  it('…and IS sanitized away once that query has resolved with no sessions', async () => {
+    // The discriminator: same empty list, same empty domain — only the flag
+    // differs. Drop the flag on the way to the hook and the case above lands
+    // here instead, which is exactly the regression.
+    localStorage.setItem('ccswitch.sessionOrder', JSON.stringify(STORED))
+    setSessions([])
+    renderApp({ path: '/sessions', mode: 'desktop' })
+
+    await waitFor(() =>
+      expect(readFilters()).toEqual({ status: null, project: null, environment: null }),
+    )
   })
 })

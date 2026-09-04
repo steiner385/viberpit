@@ -68,9 +68,18 @@ export function saveOrderPref<G extends string, S extends string>(
  * offers. A stored value that no longer exists (a retired fleet host, a repo no
  * session uses) falls back to "no filter" — see session/listFilters for why
  * emptying the list instead would be unrecoverable from the UI.
+ *
+ * **Omit `options` while the domains are still unknown.** The option lists are
+ * derived from two React Query results (the sessions and the fleet registry);
+ * on the first render both are empty, so sanitizing there would discard EVERY
+ * stored project/environment filter — silently, on every page load, in a way no
+ * user could distinguish from "the filter was never saved". Callers hold the
+ * raw value until their queries resolve and sanitize then
+ * (`features/sessions/useSessionListState`).
  */
-export function loadListFilters(ns: string, options: FilterOptions): ListFilters {
-  return sanitizeFilters(coerceFilters(readStored(ns).filters), options)
+export function loadListFilters(ns: string, options?: FilterOptions): ListFilters {
+  const raw = coerceFilters(readStored(ns).filters)
+  return options ? sanitizeFilters(raw, options) : raw
 }
 
 export function saveListFilters(ns: string, filters: ListFilters): void {

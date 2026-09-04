@@ -57,6 +57,30 @@ describe('useSessionOrdering', () => {
     expect(result.current.groups).toEqual([])
   })
 
+  // `allItems` exists for the DEC-8 list filters, which narrow `items` BEFORE
+  // this hook runs. `allOrderedSessions` is the close/archive fallback
+  // (nextSessionAfterClose's second argument), so it must keep the rows the
+  // filter removed — otherwise archiving the last match dead-ends.
+  it('allOrderedSessions is built from allItems, not from the narrowed items', () => {
+    const all = [mk('a'), mk('b'), mk('c')]
+    const { result } = renderHook(() => useSessionOrdering([all[1]], null, all))
+    expect(result.current.orderedSessions.map((s) => s.id)).toEqual(['b'])
+    expect(result.current.allOrderedSessions.map((s) => s.id).sort()).toEqual(['a', 'b', 'c'])
+  })
+
+  it('allItems defaults to items, so an unfiltered caller sees no change', () => {
+    const { result } = renderHook(() => useSessionOrdering([mk('a'), mk('b')]))
+    expect(result.current.allOrderedSessions.map((s) => s.id))
+      .toEqual(result.current.orderedSessions.map((s) => s.id))
+  })
+
+  it('search still hides from orderedSessions without touching allOrderedSessions', () => {
+    const sessions = [mk('a'), mk('b')]
+    const { result } = renderHook(() => useSessionOrdering(sessions, new Set(['a'])))
+    expect(result.current.orderedSessions.map((s) => s.id)).toEqual(['a'])
+    expect(result.current.allOrderedSessions.map((s) => s.id).sort()).toEqual(['a', 'b'])
+  })
+
   it('toggleCollapse adds then removes a key, returning new sets', () => {
     const { result } = renderHook(() => useSessionOrdering([mk('s1')]))
     expect(result.current.collapsedKeys.has('busy')).toBe(false)

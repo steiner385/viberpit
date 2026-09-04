@@ -22,7 +22,8 @@ export interface OrderingHandle<G extends string, S extends string, T> {
   setSortBy: (s: S) => void
   groups: SessionGroup<T>[]
   orderedSessions: T[]
-  /** Full display order ignoring collapse + search — see nextSessionAfterClose. */
+  /** Full display order ignoring collapse, search AND list filters — see
+   *  nextSessionAfterClose. */
   allOrderedSessions: T[]
   navItems: NavItem<T>[]
   collapsedKeys: Set<string>
@@ -34,11 +35,22 @@ export interface OrderingHandle<G extends string, S extends string, T> {
 /**
  * Generic group/sort/collapse state for a list, persisted under spec.namespace.
  * `matchedIds` (when non-null) filters to those item ids (search integration).
+ *
+ * `allItems` is the SUPERSET `allOrderedSessions` is built from, and defaults to
+ * `items`. Search hides rows without removing them from `items`, so it needs no
+ * such escape hatch; the Status/Project/Environment filters (DEC-8) do, because
+ * they are applied BEFORE this hook — when groups are provided, `SessionList`
+ * renders the groups and ignores its `sessions` prop, so filtering afterwards
+ * would leave the rows in the grouped list. Passing the pre-filter list here is
+ * what keeps the close/archive fallback (`nextSessionAfterClose`'s SECOND
+ * argument) whole: filters narrow the visible list, never the fallback, so
+ * archiving the last match advances somewhere instead of dead-ending.
  */
 export function useItemOrdering<G extends string, S extends string, T>(
   items: readonly T[],
   spec: OrderingSpec<G, S, T>,
   matchedIds: Set<string> | null = null,
+  allItems: readonly T[] = items,
 ): OrderingHandle<G, S, T> {
   const { namespace, config, groupByValues, sortByValues, defaultPref } = spec
   const [groupBy, setGroupBy] = useState<G>(
@@ -93,12 +105,13 @@ export function useItemOrdering<G extends string, S extends string, T>(
     () => groups.filter((g) => !collapsedKeys.has(g.key)).flatMap((g) => g.sessions),
     [groups, collapsedKeys],
   )
-  // Same order the user sees, but with collapse and search ignored — the advance
-  // target after archiving an open session must exist even when that session is
-  // hidden from the visible list (collapsed group / active search).
+  // Same order the user sees, but with collapse, search and list filters ignored
+  // — the advance target after archiving an open session must exist even when
+  // that session is hidden from the visible list (collapsed group / active
+  // search / a filter it does not match).
   const allOrderedSessions = useMemo(
-    () => orderItems(items, groupBy, sortBy, config).flatMap((g) => g.sessions),
-    [items, groupBy, sortBy, config],
+    () => orderItems(allItems, groupBy, sortBy, config).flatMap((g) => g.sessions),
+    [allItems, groupBy, sortBy, config],
   )
   const navItems = useMemo(() => buildNavItems(groups, collapsedKeys), [groups, collapsedKeys])
 
@@ -122,6 +135,7 @@ export const LIVE_SPEC: OrderingSpec<GroupBy, SortBy, Session> = {
 export function useSessionOrdering(
   sessions: readonly Session[],
   matchedIds: Set<string> | null = null,
+  allSessions: readonly Session[] = sessions,
 ): SessionOrdering {
-  return useItemOrdering(sessions, LIVE_SPEC, matchedIds)
+  return useItemOrdering(sessions, LIVE_SPEC, matchedIds, allSessions)
 }
