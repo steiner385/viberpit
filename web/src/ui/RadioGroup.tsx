@@ -13,7 +13,13 @@ export interface RadioOption<V extends string> {
 export interface RadioGroupProps<V extends string> {
   name: string
   legend: string
-  /** Visually hide the legend when a SettingRow label already names the group. */
+  /**
+   * Visually hide the legend when a visible heading elsewhere already names the
+   * group — a dialog title, say. NOT for a `SettingRow` label (R14b): a row
+   * label is a `<label htmlFor>` and `htmlFor` cannot name a group, so that
+   * pairing left a label dangling at an id no element carried. On a settings row
+   * the legend stays visible and the row passes `selfLabelled` with no label.
+   */
   hideLegend?: boolean
   value: V
   onChange: (next: V) => void
