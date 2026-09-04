@@ -12,6 +12,8 @@ posture) and the **frontend integration** (`AssistantSheet`, PR 12 of sub-spec B
 - Research summary (industry norms this design is measured against):
   `2026-09-04-ai-assistant-research.md`
 - Implementation plan: `docs/superpowers/plans/2026-09-04-ai-assistant.md`
+- Mockup (annotated, keyed to the sections below): `2026-09-04-ai-assistant-mockup.html`
+  (rendered: `2026-09-04-ai-assistant-mockup.png`)
 
 ---
 
