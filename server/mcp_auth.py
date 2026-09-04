@@ -325,7 +325,10 @@ class PtyLoginSession:
         key = resolve_login_key(self._server)
         argv = _claude_argv() + ["mcp", "login", key, "--no-browser"]
         from server.sessions.account_auth import helper_env
-        env = helper_env(str(self.cfg_dir))
+        # writes_back: `claude mcp login` stores the server's OAuth token in the config dir's
+        # .credentials.json. It must land in the real account dir — the host-local scratch copy
+        # one-shot LLM helpers get (#1005) would strand the token on this host.
+        env = helper_env(str(self.cfg_dir), writes_back=True)
         pid, fd = pty.fork()
         if pid == 0:  # child
             try:

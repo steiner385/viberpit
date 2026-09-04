@@ -464,4 +464,41 @@ REMOTE_SCRIPT
   fi
 fi
 
+# --- 6. Shared-config coherence (#1005) ------------------------------------------
+# A host reading the account store through a stale sshfs attribute cache sees dobby's
+# atomically-renamed .claude.json as truncated. Claude Code calls that corruption and
+# "repairs" it by writing a DEFAULT config back — through the mount, onto dobby's disk.
+# rocky did this ~1,100x/day from 2026-09-01 and nothing surfaced it: the only on-disk
+# evidence (backups/.claude.json.corrupted.*) was being rmtree'd by every compose().
+#
+# Two counters, deliberately different scopes:
+#   torn reads  — THIS host's own detections (scratch_config drops a local marker before
+#                 falling back to its last-known-good copy). Per-host by construction.
+#   corruptions — .claude.json.corrupted.* artifacts in the SHARED store, i.e. resets that
+#                 actually happened, from any host. Non-zero here with zero torn reads
+#                 means some other host still has the cached mount profile.
+# Any non-zero count in the last hour is worth an alert: the healthy steady state is 0.
+CONFIG_TORN_WARN="${CCSWITCH_CONFIG_TORN_WARN:-1}"
+config_counts=$(cd "$HEALTH_REPO_ROOT" 2>/dev/null && timeout 15 "$HEALTH_PYTHON" - <<'PY' 2>/dev/null
+from ccswitch import accounts, configdir
+from server.sessions.scratch_config import recent_torn_reads
+
+try:
+    names = [n for n, _ in accounts.all_accounts()]
+except Exception:
+    names = []
+print(recent_torn_reads(3600.0), sum(configdir.count_recent_corruptions(n, 3600.0) for n in names))
+PY
+)
+if [[ "$config_counts" =~ ^([0-9]+)\ ([0-9]+)$ ]]; then
+  torn="${BASH_REMATCH[1]}"; corrupted="${BASH_REMATCH[2]}"
+  if [ "$torn" -ge "$CONFIG_TORN_WARN" ] || [ "$corrupted" -ge "$CONFIG_TORN_WARN" ]; then
+    alert config-torn-read "shared config coherence: ${torn} torn read(s) detected on this host and ${corrupted} '.claude.json.corrupted.*' reset(s) in the account store in the last hour — the account store is being read through a stale attribute cache; check that it is mounted with attr_timeout=0 (deploy/bin-ccswitch-mounts.sh, #1005)"
+  else
+    clear_alert config-torn-read
+  fi
+else
+  log "config coherence counters unavailable (repo import failed) — skipping"
+fi
+
 exit 0
