@@ -169,17 +169,42 @@ describe('SettingsPage', () => {
     await waitFor(() => expect(c.path()).toBe('/settings/automation'))
   })
 
-  it('keeps legacy links: /settings?section=hooks, /accounts, /library?section=skills, ?dialog=settings', async () => {
+  it('keeps legacy links: /settings?section=…, /accounts, /library?section=skills, ?dialog=settings', async () => {
     for (const [from, to] of [
       ['/settings?section=hooks', '/settings/hooks'],
       ['/accounts', '/settings/accounts'],
       ['/library?section=skills', '/settings/skills'],
       ['/sessions?dialog=settings', '/settings/general'],
+      // A stale link can carry a BLANK section. These two assert the LANDING
+      // only. They cannot pin `settingsSectionPath`'s trim guard, and it would
+      // be a lie to say they do: with the trim removed, `'  '` produces
+      // `/settings/%20%20`, which `SettingsPage` then rejects as an unknown
+      // section and redirects to General anyway — same landing, one extra
+      // history entry, a nonsense URL in the bar in between. The guard itself is
+      // unit-tested in `shell/navDefs.test.ts` (`settingsSectionPath`), which is
+      // the only place the difference is visible.
+      ['/settings?section=%20%20', '/settings/general'],
+      ['/settings?section=', '/settings/general'],
     ] as const) {
+      // Per iteration, not per test: a preceding row lands on a section and
+      // `writeLastSection` remembers it, which is exactly what the two blank
+      // rows fall through to. Without this, `?section=` would assert the row
+      // above it rather than the default.
+      localStorage.clear()
       const r = renderApp({ path: from, mode: 'desktop' })
       await waitFor(() => expect(r.path()).toBe(to))
       r.unmount()
     }
+  })
+
+  it('phone: a blank legacy ?section= is the list, not a redirect', async () => {
+    // The blank rows above are desktop-only on purpose. On phone nothing named a
+    // section, so `/settings` is legitimately the grouped list — asserting a
+    // redirect to General here would encode "the phone skips its own list" as
+    // the requirement.
+    const r = renderApp({ path: '/settings?section=', mode: 'phone' })
+    expect(await screen.findByRole('list', { name: 'Settings sections' })).toBeInTheDocument()
+    expect(r.path()).toBe('/settings')
   })
 
   it('remembers the visited section and shows the accounts attention count', async () => {

@@ -189,8 +189,19 @@ describe('route table — redirects', () => {
     ['/accounts', '/settings/accounts'],
     ['/automation', '/settings/automation'],
     // `/settings` and `/settings?section=X` are NOT redirects any more: they are
-    // `SettingsIndexPage`, whose element depends on the layout mode. Their
-    // landings are asserted in `features/settings/SettingsPage.test.tsx`.
+    // `SettingsIndexPage`, whose element depends on the layout mode, so they
+    // cannot be asserted under `TestLayout` (no ViewportProvider). Every row
+    // that used to live here moved to `features/settings/SettingsPage.test.tsx`,
+    // which mounts the real shell: a named `?section=` and the two blank-section
+    // cases are rows in its legacy-links loop, and the bare path is its
+    // "redirects to the last visited section, else general" test.
+    //
+    // One assertion could NOT move as a route test and became a unit test
+    // instead: `settingsSectionPath`'s trim guard, now in `navDefs.test.ts`.
+    // `SettingsPage` rejects an unknown `:section` on its own, so at the route
+    // level a lost trim still lands on `/settings/general` — via
+    // `/settings/%20%20`. The landing looks identical; only the function's
+    // return value shows the bug.
     // `/library` has defaulted to Plugins since the Library tab became a
     // Settings section; the bookmark keeps landing there.
     ['/library', '/settings/plugins'],
