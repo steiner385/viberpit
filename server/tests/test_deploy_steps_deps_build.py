@@ -31,7 +31,7 @@ def test_pyproject_change_runs_pip_as_a_module_of_the_venv_interpreter():
     (the 2026-08-30 upgrade failure). `bin/python` is a relative symlink and survives."""
     run, calls = make_run({"pyproject.toml": True})
     assert steps.sync_deps_if_changed("/r", "a", "b", venv_python="/v/python", run=run) == ["pip"]
-    assert ["/v/python", "-m", "pip", "install", "-e", ".[server]", "--quiet"] in calls
+    assert ["/v/python", "-m", "pip", "install", "-e", ".[server,stt]", "--quiet"] in calls
     assert not any(c and c[0].endswith("/pip") for c in calls), "must not exec the pip launcher"
 
 

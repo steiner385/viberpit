@@ -252,7 +252,7 @@ def sync_deps_if_changed(repo: str, a: str, b: str, *, venv_python: str,
         # exec fails with ENOENT *for the launcher itself*, which looks like "pip is
         # missing" while `bin/pip` sits right there (2026-08-30 upgrade failure).
         # `bin/python` is a symlink and survives a move; `-m pip` needs nothing else.
-        r = run([venv_python, "-m", "pip", "install", "-e", ".[server]", "--quiet"],
+        r = run([venv_python, "-m", "pip", "install", "-e", ".[server,stt]", "--quiet"],
                 cwd=repo, capture_output=True, text=True)
         if r.returncode != 0:
             raise DeployError("update", f"pip install failed: {r.stderr.strip()}")
