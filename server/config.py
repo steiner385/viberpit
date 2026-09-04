@@ -153,6 +153,14 @@ try:
         # Defaults off — Phase B lands the schema/read-side before any write path.
         gh_reconcile_enabled: bool = Field(
             default=False, alias="CCSWITCH_GH_RECONCILE_ENABLED")
+        # AI assistant (docs/superpowers/specs/2026-09-04-ai-assistant-design.md §4.11).
+        # Off by default until the launch PR flips it; AppSettings.assistant_enabled overrides.
+        assistant_enabled: bool = Field(default=False, alias="CCSWITCH_ASSISTANT_ENABLED")
+        assistant_model: str = Field(default="sonnet", alias="CCSWITCH_ASSISTANT_MODEL")
+        assistant_idle_s: float = Field(default=900.0, alias="CCSWITCH_ASSISTANT_IDLE_S")
+        assistant_max_turns: int = Field(default=30, alias="CCSWITCH_ASSISTANT_MAX_TURNS")
+        assistant_max_prompts_per_hour: int = Field(
+            default=120, alias="CCSWITCH_ASSISTANT_MAX_PROMPTS_PER_HOUR")
 
         model_config = {"populate_by_name": True, "env_file": ".env", "extra": "ignore"}
 
@@ -342,6 +350,21 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         gh_reconcile_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_GH_RECONCILE_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+        )
+        assistant_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_ASSISTANT_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+        )
+        assistant_model: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_ASSISTANT_MODEL", "sonnet")
+        )
+        assistant_idle_s: float = dataclasses.field(
+            default_factory=lambda: float(os.environ.get("CCSWITCH_ASSISTANT_IDLE_S", "900.0"))
+        )
+        assistant_max_turns: int = dataclasses.field(
+            default_factory=lambda: int(os.environ.get("CCSWITCH_ASSISTANT_MAX_TURNS", "30"))
+        )
+        assistant_max_prompts_per_hour: int = dataclasses.field(
+            default_factory=lambda: int(os.environ.get("CCSWITCH_ASSISTANT_MAX_PROMPTS_PER_HOUR", "120"))
         )
 
         @property
