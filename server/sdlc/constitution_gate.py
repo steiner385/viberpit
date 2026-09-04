@@ -107,8 +107,26 @@ def check_amendment(base_text: str, head_text: str, pr_body: str) -> list[str]:
     return violations
 
 
+# An HTML comment is invisible in the rendered description, so text inside one is
+# not an acknowledgment — it is usually the template *asking* for one. Stripping
+# comments first is what stops a checklist from satisfying its own checklist item.
+_HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+# The marker must open a line (optionally wrapped in markdown emphasis or a quote),
+# so merely discussing the gate in prose does not clear it.
+_ACK_LINE = re.compile(
+    r"^[\s>*_#-]*" + re.escape(ACKNOWLEDGMENT_MARKER) + r"\s*\S",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
 def _acknowledged(pr_body: str) -> bool:
-    return ACKNOWLEDGMENT_MARKER in (pr_body or "").lower()
+    """True when *pr_body* carries a real acknowledgment line.
+
+    Requires a non-empty statement after the marker: a bare ``Owner
+    acknowledgment:`` with nothing following it acknowledges nothing.
+    """
+    visible = _HTML_COMMENT.sub("", pr_body or "")
+    return bool(_ACK_LINE.search(visible))
 
 
 def check_guardrail_change(changed_paths: list[str], pr_body: str) -> list[str]:

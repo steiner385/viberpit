@@ -39,6 +39,60 @@ def test_acknowledgment_is_case_insensitive():
     assert check_amendment(BASE, HEAD_OK, "OWNER ACKNOWLEDGMENT: approved") == []
 
 
+# --------------------------------------------------------------------------- #
+# What does NOT count as an acknowledgment                                     #
+# --------------------------------------------------------------------------- #
+
+def test_acknowledgment_inside_an_html_comment_does_not_count():
+    """A template that *asks* for the line must not satisfy itself.
+
+    Found the hard way: PR #1111's instruction comment quoted the marker verbatim
+    while telling the author to add the real line, and a naive substring match
+    passed the check on a body that had no acknowledgment at all.
+    """
+    body = (
+        "<!-- REQUIRED: replace the line below with your acknowledgment.\n"
+        '     It must begin with "Owner acknowledgment:" — the check greps for it.\n'
+        "     -->\n\n**[ TODO — acknowledgment goes here ]**\n\nSome description."
+    )
+    violations = check_amendment(BASE, HEAD_OK, body)
+    assert any(ACKNOWLEDGMENT_MARKER in v for v in violations)
+    assert check_guardrail_change(["server/sdlc/governance.py"], body) != []
+
+
+def test_marker_buried_mid_sentence_does_not_count():
+    body = "I was told the owner acknowledgment: prefix is what the gate looks for."
+    assert check_amendment(BASE, HEAD_OK, body) != []
+
+
+def test_bare_marker_with_no_statement_does_not_count():
+    assert check_amendment(BASE, HEAD_OK, "Owner acknowledgment:") != []
+    assert check_amendment(BASE, HEAD_OK, "Owner acknowledgment:   \n") != []
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Owner acknowledgment: I approve these changes.",
+        "**Owner acknowledgment:** I approve these changes.",
+        "> Owner acknowledgment: I approve these changes.",
+        "## Owner acknowledgment: I approve these changes.",
+        "  Owner acknowledgment: I approve these changes.",
+    ],
+)
+def test_acknowledgment_line_shapes_that_do_count(line):
+    body = f"Some preamble.\n\n{line}\n\nMore description."
+    assert check_amendment(BASE, HEAD_OK, body) == []
+
+
+def test_acknowledgment_after_a_comment_block_counts():
+    body = (
+        "<!-- instructions mentioning Owner acknowledgment: here -->\n\n"
+        "Owner acknowledgment: I approve the provider-neutral changes.\n"
+    )
+    assert check_amendment(BASE, HEAD_OK, body) == []
+
+
 def test_missing_acknowledgment_is_rejected():
     violations = check_amendment(BASE, HEAD_OK, "Looks good to me.")
     assert any(ACKNOWLEDGMENT_MARKER in v for v in violations)
