@@ -11,8 +11,10 @@ import pytest
 from server.sdlc.constitution_gate import (
     ACKNOWLEDGMENT_MARKER,
     check_amendment,
+    check_guardrail_change,
     parse_footer,
 )
+from server.sdlc.governance import GUARDRAIL_PATHS
 
 _ACK = "Owner acknowledgment: I approve the provider-neutral changes."
 
@@ -91,6 +93,51 @@ def test_parse_footer_roundtrip(version, amended):
 
 def test_parse_footer_returns_none_without_a_footer():
     assert parse_footer("# Constitution\n\nbody only") is None
+
+
+# --------------------------------------------------------------------------- #
+# Guardrail changes need the acknowledgment, but not a version bump             #
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("path", GUARDRAIL_PATHS)
+def test_guardrail_change_without_acknowledgment_is_rejected(path):
+    violations = check_guardrail_change([path], "just a small tweak")
+    assert violations, f"{path} changed without acknowledgment was allowed"
+    assert path in violations[0]
+
+
+@pytest.mark.parametrize("path", GUARDRAIL_PATHS)
+def test_guardrail_change_with_acknowledgment_passes(path):
+    assert check_guardrail_change([path], _ACK) == []
+
+
+def test_ordinary_change_needs_no_acknowledgment():
+    """The gate runs on every PR; it must stay silent on unrelated diffs."""
+    ordinary = ["server/app.py", "web/src/main.tsx", "README.md", "tests/test_ledger.py"]
+    assert check_guardrail_change(ordinary, "") == []
+
+
+def test_empty_diff_passes():
+    assert check_guardrail_change([], "") == []
+
+
+def test_multiple_guardrails_are_all_listed():
+    violations = check_guardrail_change(
+        ["server/sdlc/governance.py", ".github/CODEOWNERS", "server/app.py"], "",
+    )
+    assert len(violations) == 1
+    assert "server/sdlc/governance.py" in violations[0]
+    assert ".github/CODEOWNERS" in violations[0]
+    assert "server/app.py" not in violations[0]
+
+
+def test_guardrail_paths_all_exist_in_the_repo():
+    """A typo'd path would silently protect nothing."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    missing = [p for p in GUARDRAIL_PATHS if not (root / p).exists()]
+    assert not missing, f"GUARDRAIL_PATHS names files that do not exist: {missing}"
 
 
 def test_real_constitution_footer_parses():

@@ -26,6 +26,7 @@ import re
 __all__ = [
     "ACKNOWLEDGMENT_MARKER",
     "check_amendment",
+    "check_guardrail_change",
     "parse_footer",
 ]
 
@@ -97,10 +98,37 @@ def check_amendment(base_text: str, head_text: str, pr_body: str) -> list[str]:
         )
 
     # 4. A human must acknowledge the amendment in the PR description.
-    if ACKNOWLEDGMENT_MARKER not in (pr_body or "").lower():
+    if not _acknowledged(pr_body):
         violations.append(
             "the pull request description carries no owner acknowledgment — add a line "
             f"beginning {ACKNOWLEDGMENT_MARKER!r} stating what is approved"
         )
 
     return violations
+
+
+def _acknowledged(pr_body: str) -> bool:
+    return ACKNOWLEDGMENT_MARKER in (pr_body or "").lower()
+
+
+def check_guardrail_change(changed_paths: list[str], pr_body: str) -> list[str]:
+    """Violations for a diff that changes how governance is enforced.
+
+    A change to the hook, the deny rules, or this gate alters what every other
+    control can catch, so it needs the same deliberate acknowledgment an amendment
+    does — but not a version bump, since these files are not versioned documents.
+
+    *changed_paths* are repo-relative. Returns an empty list when the diff touches
+    no guardrail.
+    """
+    from server.sdlc.governance import GUARDRAIL_PATHS  # local: avoid a cycle
+
+    touched = sorted(set(changed_paths) & set(GUARDRAIL_PATHS))
+    if not touched or _acknowledged(pr_body):
+        return []
+    listed = ", ".join(touched)
+    return [
+        f"this pull request changes governance enforcement ({listed}) but carries no "
+        f"owner acknowledgment — add a line beginning {ACKNOWLEDGMENT_MARKER!r} saying "
+        "what you intend to change and why"
+    ]
