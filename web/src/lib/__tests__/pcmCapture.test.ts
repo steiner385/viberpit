@@ -86,6 +86,15 @@ describe('startPcmCapture', () => {
     expect(s.source.disconnect).toHaveBeenCalled()
   })
 
+  it('rejects when the browser ignores the requested 16 kHz rate', async () => {
+    const s = stubAudio()
+    s.ctx.sampleRate = 48000
+    await expect(startPcmCapture(vi.fn())).rejects.toThrow('audio-rate-unsupported')
+    expect(s.tracks[0].stop).toHaveBeenCalled()
+    expect(s.ctx.close).toHaveBeenCalled()
+    expect(s.ctx.audioWorklet.addModule).not.toHaveBeenCalled()
+  })
+
   it('releases the mic if the worklet fails to load', async () => {
     const s = stubAudio()
     s.ctx.audioWorklet.addModule.mockRejectedValueOnce(new Error('nope'))

@@ -53,6 +53,12 @@ export async function startPcmCapture(onChunk: (chunk: Int16Array) => void): Pro
     stream.getTracks().forEach((t) => t.stop())
     await ctx.close()
   }
+  // Some browsers ignore the requested rate. Streaming 44.1/48 kHz audio labelled as
+  // 16 kHz makes whisper return garbage silently, so fail loudly instead.
+  if (ctx.sampleRate !== PCM_SAMPLE_RATE) {
+    await release()
+    throw new Error('audio-rate-unsupported')
+  }
   try {
     const url = URL.createObjectURL(new Blob([WORKLET_SOURCE], { type: 'application/javascript' }))
     try { await ctx.audioWorklet.addModule(url) } finally { URL.revokeObjectURL(url) }
