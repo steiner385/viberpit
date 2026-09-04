@@ -70,7 +70,7 @@ Questions the spec leaves open or the code contradicts, settled here so no imple
 | **DEC-7** | Pipeline notifications opt-in is `prdash.notifications` in `pipeline/useDashboard.ts` | **Extract `web/src/pipeline/notifyPref.ts`** with key `ccswitch.pipelineNotifications` and a one-time read of the old key; `useDashboard` and Appearance both use it. | Spec S31 + umbrella §2.4 namespace rule; the sweep PR would otherwise do it later with two call sites. | A key rename. |
 | **DEC-8** | About needs version/host; no version endpoint exists | **`about: { gitSha, hostName }`** on `GET /api/settings`, from `CCSWITCH_GIT_SHA` (nullable) and `CCSWITCH_HOST_NAME` falling back to `socket.gethostname()`. | Cheapest honest source; the deploy controller already exports `CCSWITCH_GIT_SHA`. | Two fields to move if a `/api/about` appears. |
 | **DEC-9** | Bare `/settings` on desktop | **Redirects to the last visited section** (`ccswitch.settings.last`), else `general`. On phone/tablet-portrait it renders the list. | Spec §6.1, C1 "restore the most recently viewed pane". | A key to delete. |
-| **DEC-10** | Legacy `/automation` currently redirects to `/settings/automation` | **`/automation` → `/automations`; `/settings/automation` → `/automations`.** The `automation` Settings section is removed. | Spec D3. | Two redirect rows. |
+| **DEC-10** *(superseded during execution)* | Legacy `/automation` currently redirects to `/settings/automation` | **Keep** the section in 5a (group Sessions, label "Automations", last in group). Reversed during implementation: `/automations` has no configuration controls. PR 6 folds configuration into the Automations page and retires the section. So `/settings/automation` stays a real section and legacy `/automation` → `/settings/automation` is kept. *(Originally: `/automation` → `/automations`; `/settings/automation` → `/automations`; section removed.)* | Spec D3, reversed by R10 — removing the section would have removed the only automation-configuration UI. | One redirect row unchanged; the section retires with PR 6. |
 | **DEC-11** | Typed confirm for the archive path needs "how many archives move" | **`useArchivedSessions().length`** (already fetched for the nav badge). The dialog asks the user to type the **new path**. | No new endpoint; the count is already on the client. | Count could lag by one poll interval; stated as "about N". |
 | **DEC-12** | Unmigrated sections need a chassis heading now | **`HostedSection`** wraps each legacy component with `SettingsSection` (title/description/scope from `settingsDefs`) and renders the component as-is. | Every route gets the page contract today; the sections' internals change in their own PRs. | None; it is deleted per section as 5b–5e migrate. |
 
@@ -1842,6 +1842,11 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 ### Task 11: `settingsDefs` registry, `lastSection`, `useSettingsBadges`
 
+> **Superseded by R10:** the registry ships **17** sections in 5 groups, not 16 — `automation`
+> (group Sessions, label "Automations", last in group, component `AutomationView`) is a real
+> section, so `isSettingsSectionId('automation')` is **true** and the count assertion below reads
+> 17. See DEC-10 / spec D3. PR 6 retires the row.
+
 **Files:**
 - Create: `web/src/features/settings/settingsDefs.ts`, `web/src/features/settings/lastSection.ts`, `web/src/features/settings/useSettingsBadges.ts`
 - Test: `web/src/features/settings/settingsDefs.test.ts`
@@ -2121,6 +2126,15 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ---
 
 ### Task 12: `SettingsNav`, `HostedSection`, `SettingsPage`, `SettingsIndexPage`, routes; delete `SettingsView`
+
+> **Superseded by R10:** the `automation` Settings section is **kept**, so the route table, the
+> `SettingsPage` early return and the redirect tests below differ from what shipped. Final
+> behaviour: `/settings/automation` is a real section (hosted via `HostedSection` →
+> `AutomationView`), there is **no** `/settings/automation` → `/automations` redirect, and the
+> legacy `/automation` → `/settings/automation` redirect is kept. `SettingsPage` therefore has no
+> early return for `automation`, and the test that asserted the outward redirect is replaced by
+> `automationTab.test.tsx`, which names the enable/mode/config/schedule controls the section owns.
+> See DEC-10 / spec D3; PR 6 folds configuration into the Automations page and retires the section.
 
 **Files:**
 - Create: `web/src/features/settings/SettingsNav.tsx`, `HostedSection.tsx`, `SettingsPage.tsx`, `SettingsIndexPage.tsx`, `SettingsPage.test.tsx`, `pageContract.test.tsx`
@@ -3519,7 +3533,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 | General, Sessions › Defaults, Appearance, About | 13, 14, 16, 17 |
 | `effectiveDefaults` / `managed` / `about` API | 2, 4 |
 | `_VALID_MODES` fix + parity test; S21 default fix | 1, 14 |
-| Redirects incl. `/settings/automation` | 12 |
+| Redirects, with the `automation` section retained (R10) | 12 |
 | `pageContract` entry | 12 |
 | Every other section hosted unchanged | 12 (`HostedSection`) |
 | Deletes: `SettingsView` tablist, `GeneralSection` | 12, 18 |

@@ -77,7 +77,7 @@ names the checklist item it fails and where the evidence is.
 | S4 | M | Tab labels and content headings disagree: tab "Presets" → heading "Session Presets"; tab "Profiles" → "Permission profiles"; tab "Fleet" → "Fleet" but describes hosts. | `presets-desktop.png` |
 | S5 | M | No section registry. Sections are an array literal plus a 14-branch conditional; nav, routing fallback and tests each re-derive the list. Umbrella §4.5 names `settingsDefs`. | `SettingsView.tsx:32-47, 82-95` |
 | S6 | M | "General" is a dumping ground (C9 anti-pattern): permission policy, model gating, transcript display, two filesystem paths, archive policy, session cap and push notifications in one 44-px-input column with one Save at the bottom. | `GeneralSection.tsx` |
-| S7 | M | Automation appears twice: top-level `/automations` and `/settings/automation`, two components (`AutomationsTab`, `AutomationView`). Fails C3 and constitution VI. | `routes.tsx:243`; `SettingsView.tsx:84` |
+| S7 | M | Automation appears twice: top-level `/automations` and `/settings/automation`, two components (`AutomationsTab`, `AutomationView`). Fails C3 and constitution VI. Reassessed during implementation (R10): the two surfaces turned out to be status/actions (`AutomationsTab`: events, spawned sessions, manual dispatch) vs configuration (`AutomationView`: enable, mode, config form, schedule editor), not duplicates — so the section is kept until PR 6 folds configuration into the page. | `routes.tsx:243`; `SettingsView.tsx:84` |
 | S8 | M | Theme (system / light / dark) is only in the rail menu. Umbrella D5 puts it in Settings → General too. | `GlobalActions.tsx:23-65` |
 | S9 | L | Section order is accretion order, not frequency: Accounts (the most-visited, badge-bearing section) is second; Snapshots and Fleet, both operator tasks, are last and hidden. | `SECTIONS` |
 
@@ -137,13 +137,13 @@ names the checklist item it fails and where the evidence is.
 | # | Question | Decision | Alternatives considered |
 |---|---|---|---|
 | D1 | Nav shape | **Grouped vertical `SettingsNav`** (five group headers, sections beneath), left of a scrolling content panel on desktop and tablet-landscape; on phone and tablet-portrait, `/settings` is the grouped list and each section is a page with Back (umbrella D11, C18). | Keep tabs but wrap (fails at 14 items); two-level tabs (audit rejected stacked strips in July); accordion (hides state, poor deep links). |
-| D2 | Group set | **Workspace · Sessions · Accounts · Claude config · About** (§5). Five groups honours C1 while keeping 16 addressable sections. | Alphabetical flat list (no meaning); "Advanced" bucket (C9 anti-pattern). |
-| D3 | Automation in Settings | **Remove** the section; `/settings/automation` redirects to `/automations`. One surface (S7). | Keep both with shared component (still two doors to one room). |
+| D2 | Group set | **Workspace · Sessions · Accounts · Claude config · About** (§5). Five groups honours C1 while keeping 17 addressable sections (16 as first decided; the `automation` section was retained by R10). | Alphabetical flat list (no meaning); "Advanced" bucket (C9 anti-pattern). |
+| D3 | Automation in Settings | **Keep** the section in 5a (group Sessions, label "Automations", last in group). Reversed during implementation: `/automations` has no configuration controls. PR 6 folds configuration into the Automations page and retires the section. | Originally decided (superseded): **remove** the section and redirect `/settings/automation` → `/automations`, for one surface (S7) — rejected once implementation showed it would delete the only automation-configuration UI. Also considered: keep both with a shared component (still two doors to one room). |
 | D4 | Save contract | **Two models, never mixed in one section body**: `Switch` rows apply immediately with inline status; everything else is a form section with a sticky **Save / Discard** footer, dirty tracking, and a navigation guard (C6, C9). Rules in §7. | Auto-save everything (fails Primer's declarative-control rule and NN/g expectation); explicit save everywhere (toggles then need a Save, which no reference product does). |
 | D5 | Feedback | **Inline** `role="status"` "Saved · just now" in the footer / row; errors as `Banner tone="danger"` at the top of the section with input preserved. No toast for settings saves (C7, C8). | Keep toast (not announced reliably; Primer advises against). |
 | D6 | Confirmations | **`ConfirmDialog` primitive on the `Dialog` base**; every delete/remove/restore/import/clear uses it; irreversible cases (account delete, snapshot restore, archive-path move, import apply) require typing the item name (C15). The three `window.confirm` calls are replaced. | Undo-toast instead of confirm for deletes (needs server-side soft delete the API lacks). |
 | D7 | Scope | **A `ScopeBadge` on every section header**: `Server` (all browsers, all hosts) · `This browser` · `Managed by env` (read-only rows). Effective defaults come from a new `effectiveDefaults` block on `GET /api/settings` (§9). | Per-row badges (noise); prose only (missed). |
-| D8 | Search | **Not in v1.** With five groups and 16 sections every item is one scroll away in the nav; `settingsDefs` carries `keywords` so a filter box can be added later without a data change. | Ship a filter now (adds a third nav state to test on phone before the drill-down itself has shipped). |
+| D8 | Search | **Not in v1.** With five groups and 17 sections every item is one scroll away in the nav; `settingsDefs` carries `keywords` so a filter box can be added later without a data change. | Ship a filter now (adds a third nav state to test on phone before the drill-down itself has shipped). |
 | D9 | Theme | **Appearance section** under Workspace holds theme (System / Light / Dark radio, C2 wording), rail expanded, and the pipeline notifications opt-in; the rail menu stays as a shortcut and both write `ccswitch.theme` (umbrella D5, S8). | General only (buries a per-browser preference among server policy). |
 | D10 | Danger placement | Each section's destructive actions sit in a **`Danger zone` group at the bottom of that section**, `Card tone="danger"` (GitHub/Vercel pattern), rather than one global danger page. | One "Danger" section (splits an entity from its own delete). |
 | D11 | Primitives | Add **`Switch`, `Checkbox`, `RadioGroup`, `ConfirmDialog`, `SettingRow`, `SettingsSection`, `SaveBar`, `ScopeBadge`** to `web/src/ui` (sub-spec A owns the folder; PR 5a delivers them because Settings is their first consumer). | Build them inline in sections (repeats S23). |
@@ -151,7 +151,7 @@ names the checklist item it fails and where the evidence is.
 
 ## 5. Information architecture
 
-Five groups, sixteen sections. `id` is the URL segment and is stable; existing ids are kept so every
+Five groups, seventeen sections. `id` is the URL segment and is stable; existing ids are kept so every
 link in the wild still resolves. New ids are marked ★. Group order is frequency-first (C1
 synthesis): what a person changes weekly is above what an operator changes yearly.
 
@@ -164,6 +164,7 @@ synthesis): what a person changes weekly is above what an operator changes yearl
 | | Presets (`presets`) | Server | unchanged entity |
 | | Templates (`templates`) | Server | unchanged entity |
 | | Permission profiles (`profiles`) | Server | unchanged entity |
+| | Automations (`automation`) | Server | `AutomationView` — enable, mode, config form, schedule editor; retained by R10 as the only automation-configuration UI, retired by PR 6 |
 | **Accounts** | Accounts (`accounts`) | Server | `AccountsManager`, re-hosted on the chassis |
 | | Hosts (`fleet`) | Server | Fleet, renamed to what it lists; gains max-sessions |
 | **Claude config** | Plugins (`plugins`) · Skills (`skills`) · Commands (`commands`) · MCP servers (`mcp`) | Server (shared Claude config dir) | Library sections, re-hosted |
@@ -171,8 +172,9 @@ synthesis): what a person changes weekly is above what an operator changes yearl
 | | Snapshots (`snapshots`) | Server | unchanged |
 | **About** | About ★ (`about`) | — | Version / commit / host name, links (docs, changelog, help drawer), **Managed by env** table (S30): read-only rows for the flags in inventory §4 that shape behaviour, each showing the env var, the effective value, and "Set in `/etc/ccswitch/ccswitch.env`" |
 
-Redirects added: `/settings/automation` → `/automations`. Redirects kept: `/settings?section=`,
-`/library`, `/accounts`, `/automation`, `?dialog=settings`.
+Redirects: no new redirect out of Settings — `/settings/automation` is a real section (R10, D3).
+Redirects kept: `/settings?section=`, `/library`, `/accounts`, `?dialog=settings`, and legacy
+`/automation` → `/settings/automation`.
 
 Nav badges: the rail's Settings dot (needs-reauth) is unchanged; inside Settings, the **Accounts**
 nav item shows the count of accounts needing attention (C20, dot outside, count inside); a banner
@@ -321,7 +323,7 @@ behavioural change beyond the contract in §7.
 
 | PR | Delivers | Deletes |
 |---|---|---|
-| **5a** | `settingsDefs`, `SettingsNav`, `SettingsPage` (Split, phone drill-down, last-section memory), primitives `Switch` `Checkbox` `RadioGroup` `ConfirmDialog` `SettingRow` `SettingsSection` `SettingsGroup` `SaveBar` `ScopeBadge`; **General**, **Sessions › Defaults** (the two halves of today's General form), **Appearance**, **About**; `effectiveDefaults`/`managed` API; `_VALID_MODES` fix + parity test; S21 default fix; redirects incl. `/settings/automation`; `pageContract` entry. Every other section is hosted unchanged inside the new page until its own PR | `SettingsView.tsx` and its tablist; `GeneralSection.tsx`; the theme-only `Menu` code path is kept but reads the same store |
+| **5a** | `settingsDefs`, `SettingsNav`, `SettingsPage` (Split, phone drill-down, last-section memory), primitives `Switch` `Checkbox` `RadioGroup` `ConfirmDialog` `SettingRow` `SettingsSection` `SettingsGroup` `SaveBar` `ScopeBadge`; **General**, **Sessions › Defaults** (the two halves of today's General form), **Appearance**, **About**; `effectiveDefaults`/`managed` API; `_VALID_MODES` fix + parity test; S21 default fix; redirects, with the `automation` section retained (R10); `pageContract` entry. Every other section is hosted unchanged inside the new page until its own PR | `SettingsView.tsx` and its tablist; `GeneralSection.tsx`; the theme-only `Menu` code path is kept but reads the same store |
 | **5b** | **Presets**, **Templates**, **Permission profiles** on the chassis | local `MODES` in Profiles; free-text preset fields |
 | **5c** | **Accounts**, **Hosts** | icon-only action row; uncontrolled weight input; `window.confirm` in Fleet |
 | **5d** | **Plugins**, **Skills**, **Commands**, **MCP servers**, **Hooks**, **Snapshots** | `window.confirm` in Snapshots; bare export anchor |
@@ -350,7 +352,8 @@ These were decided in D1–D12 without a live answer; each is cheap to reverse b
    the right name for the shared Claude config surfaces (plugins, skills, commands, MCP, hooks,
    snapshots), or should it match the July name "Library" plus Hooks/Snapshots?
 2. **Automation leaves Settings** (D3). Confirm nothing links to `/settings/automation` from docs
-   or notifications that the redirect would not cover.
+   or notifications that the redirect would not cover. **Resolved during implementation: section
+   kept; see D3.**
 3. **Typed confirmation for archive-path change** (D6): is a count-plus-typed dialog too heavy for
    a path you set once, or exactly right given it moves every archive?
 4. **About › Managed by env** (S30): which env flags to show is an allowlist; the proposed set is
