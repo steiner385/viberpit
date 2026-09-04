@@ -25,14 +25,25 @@ async def assistant_enabled(db) -> bool:
 
 async def assistant_model(db) -> str:
     row = await _row(db)
-    if row is not None and row.assistant_model:
+    if row is not None and row.assistant_model is not None:
         return row.assistant_model
     return get_settings().assistant_model
 
 
 # (method, path regex). Anything not listed is 403 for the assistant token, BEFORE routing.
 # Keep in the same order as spec §4.2; a new tool must add its row here or its calls fail.
-_S = r"/api/sessions/[A-Za-z0-9-]+"
+#
+# Session ids are UUID4 strings (see `str(uuid.uuid4())` in
+# server/sessions/orchestrator.py), so the id segment is matched structurally rather than
+# with a loose `[A-Za-z0-9-]+` denylist-style pattern. A loose pattern would treat the
+# static segments of the real router's batch/collection routes (`batch`, `search`,
+# `archived`, `adopt`, `adoptable` — see server/api/sessions.py:816-819, which registers
+# those routes before `/{session_id}` for exactly this reason) as a session id and
+# wrongly admit routes spec §4.2 excludes, e.g. `POST /api/sessions/batch/unarchive`
+# matching `_S + r"/unarchive"`, or `GET /api/sessions/adoptable` matching the bare
+# `GET _S` row. A UUID4-anchored pattern can never match those static segments.
+_ID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+_S = r"/api/sessions/" + _ID
 ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
     (m, re.compile(p + r"$")) for m, p in [
         ("GET", r"/api/sessions"),

@@ -30,13 +30,18 @@ async def test_model_default_sonnet(isolated_db, monkeypatch):
         assert await assistant_model(db) == "sonnet"
 
 
+_UUID = "3f2a9c1e-7b4d-4e0a-9c7d-1a2b3c4d5e6f"
+
+
 @pytest.mark.parametrize("method,path,ok", [
     ("GET", "/api/sessions", True),
-    ("GET", "/api/sessions/abc/transcript", True),
+    ("GET", f"/api/sessions/{_UUID}/transcript", True),
     ("POST", "/api/sessions", True),
-    ("DELETE", "/api/sessions/abc", True),
-    ("DELETE", "/api/sessions/abc/permanent", True),
+    ("DELETE", f"/api/sessions/{_UUID}", True),
+    ("DELETE", f"/api/sessions/{_UUID}/permanent", True),
     ("GET", "/api/auth/me", True),
+    ("GET", "/api/sessions/search", True),
+    ("GET", "/api/sessions/archived", True),
     ("GET", "/api/assistant/session", False),
     ("POST", "/api/assistant/session", False),
     ("POST", "/api/deploy/start", False),
@@ -46,6 +51,15 @@ async def test_model_default_sonnet(isolated_db, monkeypatch):
     ("POST", "/api/auth/logout", False),
     ("POST", "/api/fleet/hosts/rocky/upgrade", False),
     ("POST", "/api/sessions/batch/permanent-delete", False),
+    # Regression: static route segments must never be matched as a session id (a real
+    # session id is a UUID4 — see server/api/sessions.py:816-819 for why the real router
+    # registers these batch/collection routes before the dynamic /{session_id} routes).
+    ("POST", "/api/sessions/batch/unarchive", False),
+    ("POST", "/api/sessions/batch/archive", False),
+    ("POST", "/api/sessions/batch/resume", False),
+    ("GET", "/api/sessions/adoptable", False),
+    ("POST", "/api/sessions/adopt", False),
+    ("DELETE", "/api/sessions/abc", False),
 ])
 def test_route_allowlist(method, path, ok):
     assert route_allowed(method, path) is ok
