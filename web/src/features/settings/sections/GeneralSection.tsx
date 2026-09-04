@@ -178,7 +178,11 @@ export function GeneralSection() {
           <PathControl
             id="general-archive-home"
             value={draft.archiveHome}
-            placeholder={`${eff.archiveHome ?? 'Server default'} · server default`}
+            // R13. When the server reports no configured archive home there is no
+            // path to show, so the placeholder is just "Server default" — the
+            // literal-plus-suffix form read "Server default · server default",
+            // and an unconfigured archive home is the common deployment.
+            placeholder={eff.archiveHome ? `${eff.archiveHome} · server default` : 'Server default'}
             resetLabel="Reset archive storage path to default"
             onChange={(v) => set('archiveHome', v)}
           />

@@ -46,9 +46,20 @@ describe('GeneralSection', () => {
     expect(screen.getByRole('heading', { level: 2, name: 'General' })).toBeInTheDocument()
     const repo = screen.getByLabelText('Repo clone root')
     expect(repo).toHaveAttribute('placeholder', '/home/tony/GitHub · server default')
+    expect(screen.getByLabelText('Archive storage path')).toHaveAttribute('placeholder', '/var/ccswitch/archives · server default')
     await userEvent.type(repo, '/srv/x')
     await userEvent.click(screen.getByRole('button', { name: 'Reset repo clone root to default' }))
     expect(repo).toHaveValue('')
+  })
+
+  it('with no configured archive home the placeholder is just "Server default" (R13)', () => {
+    // The common deployment: the server has no ARCHIVE_HOME, so there is no path
+    // to name and the suffix form would read "Server default · server default".
+    vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({
+      effectiveDefaults: { repoRoot: '/home/tony/GitHub', archiveHome: null, modelApprovalAction: 'require_approval', modelApprovalDenylist: 'fable', maxActiveSessions: 5 },
+    })))
+    mount()
+    expect(screen.getByLabelText('Archive storage path')).toHaveAttribute('placeholder', 'Server default')
   })
 
   it('saves the same payload shape as before (blank → 0 / null)', async () => {
