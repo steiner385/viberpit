@@ -439,3 +439,54 @@ def test_put_unknown_tool_detail_is_422():
         resp = client.put("/api/settings", json={"defaultToolDetail": "wat"}, headers=IDENTITY_HEADERS)
     assert resp.status_code == 422
     assert resp.json()["detail"] == "invalid defaultToolDetail"
+
+
+# ---------------------------------------------------------------------------
+# effectiveDefaults / acceptedPermissionModes / managed / about (S28, S30)
+# ---------------------------------------------------------------------------
+
+
+def test_get_settings_exposes_effective_defaults_and_accepted_modes():
+    with temp_env(), patch.dict(os.environ, {
+        "CCSWITCH_MODEL_APPROVAL_ACTION": "block",
+        "CCSWITCH_MODEL_APPROVAL_DENYLIST": "fable,opus",
+        "CCSWITCH_REPO_ROOT": "/srv/repos",
+    }):
+        with _client() as client:
+            data = client.get("/api/settings", headers=IDENTITY_HEADERS).json()
+    assert data["acceptedPermissionModes"][0] == "interactive"
+    assert len(data["acceptedPermissionModes"]) == 6
+    eff = data["effectiveDefaults"]
+    assert eff == {
+        "repoRoot": "/srv/repos",
+        "archiveHome": None,
+        "modelApprovalAction": "block",
+        "modelApprovalDenylist": "fable,opus",
+        "maxActiveSessions": 5,
+    }
+
+
+def test_get_settings_managed_is_an_allowlist_with_no_secrets():
+    with temp_env(), patch.dict(os.environ, {
+        "CCSWITCH_SELF_MODEL_SWITCH_CAP": "7",
+        "CCSWITCH_MASTER_KEY": "sekrit",
+        "CCSWITCH_GIT_SHA": "abc1234",
+        "CCSWITCH_HOST_NAME": "rocky",
+    }):
+        with _client() as client:
+            data = client.get("/api/settings", headers=IDENTITY_HEADERS).json()
+    keys = [m["key"] for m in data["managed"]]
+    assert "CCSWITCH_MASTER_KEY" not in keys
+    assert "CCSWITCH_TAILNET_ALLOWLIST" not in keys
+    by_key = {m["key"]: m for m in data["managed"]}
+    assert by_key["CCSWITCH_SELF_MODEL_SWITCH_CAP"]["value"] == 7
+    assert by_key["CCSWITCH_SELF_MODEL_SWITCH_CAP"]["description"]
+    assert data["about"] == {"gitSha": "abc1234", "hostName": "rocky"}
+
+
+def test_put_settings_returns_the_same_shape_as_get():
+    with _client() as client:
+        put = client.put("/api/settings", json={"thinkingCollapsed": False}, headers=IDENTITY_HEADERS).json()
+        get = client.get("/api/settings", headers=IDENTITY_HEADERS).json()
+    assert set(put) == set(get)
+    assert "effectiveDefaults" in put

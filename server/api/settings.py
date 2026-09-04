@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import socket
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 
 from server.auth.middleware import current_identity
+from server.config import get_settings
 from server.db import get_db
 from server.db.models import AppSettings, DEFAULT_MAX_ACTIVE_SESSIONS
 from server.sessions.types import VALID_SESSION_MODES
@@ -31,6 +34,43 @@ _VALID_MODES = VALID_SESSION_MODES
 _VALID_TOOL_DETAIL = frozenset({"auto", "all-closed", "all-open"})
 # Sanity ceiling for the archived-session cap — guards against fat-fingered values.
 _MAX_ARCHIVED_CEILING = 100_000
+
+# Read-only env flags shown on Settings › About (spec S30). An ALLOWLIST: a key
+# not named here is never sent, so secrets and allowlists cannot leak by accident.
+# (config attribute, env var name, one-sentence description)
+_MANAGED: tuple[tuple[str, str, str], ...] = (
+    ("allow_unauthenticated", "CCSWITCH_ALLOW_UNAUTHENTICATED", "Admit clients with no Tailscale identity as a guest"),
+    ("enable_adoption", "CCSWITCH_ENABLE_ADOPTION", "Allow adopting sessions started outside ccswitch"),
+    ("enable_copilot", "CCSWITCH_ENABLE_COPILOT", "Enable GitHub Copilot accounts"),
+    ("enable_xvfb", "CCSWITCH_ENABLE_XVFB", "Virtual displays for browser-using sessions"),
+    ("self_model_switch_enabled", "CCSWITCH_SELF_MODEL_SWITCH_ENABLED", "Sessions may request a model change"),
+    ("self_model_switch_cap", "CCSWITCH_SELF_MODEL_SWITCH_CAP", "Auto-applied model switches per session before parking for approval"),
+    ("gh_reconcile_enabled", "CCSWITCH_GH_RECONCILE_ENABLED", "GitHub Projects reconciler may write back"),
+    ("log_level", "CCSWITCH_LOG_LEVEL", "Server log level"),
+    ("client_log_level", "CCSWITCH_CLIENT_LOG_LEVEL", "Browser log level"),
+)
+
+
+def _server_blocks() -> dict[str, object]:
+    cfg = get_settings()
+    return {
+        "acceptedPermissionModes": list(ACCEPTED_PERMISSION_MODES),
+        "effectiveDefaults": {
+            "repoRoot": cfg.repo_root,
+            "archiveHome": cfg.archive_home,
+            "modelApprovalAction": cfg.model_approval_action,
+            "modelApprovalDenylist": cfg.model_approval_denylist,
+            "maxActiveSessions": DEFAULT_MAX_ACTIVE_SESSIONS,
+        },
+        "managed": [
+            {"key": env, "value": getattr(cfg, attr), "description": desc}
+            for attr, env, desc in _MANAGED
+        ],
+        "about": {
+            "gitSha": os.environ.get("CCSWITCH_GIT_SHA") or None,
+            "hostName": os.environ.get("CCSWITCH_HOST_NAME") or socket.gethostname(),
+        },
+    }
 
 
 class SettingsBody(BaseModel):
@@ -115,6 +155,7 @@ def _to_dict(s: AppSettings) -> dict:
         "autoArchiveEnabled": s.auto_archive_enabled is not False,
         "modelApprovalAction": s.model_approval_action,
         "modelApprovalDenylist": s.model_approval_denylist,
+        **_server_blocks(),
     }
 
 
