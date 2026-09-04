@@ -1,0 +1,4 @@
+interface:
+  display_name: "Subagent-Driven Development"
+  short_description: "Execute plans with isolated implementers and reviews"
+  default_prompt: "Use $subagent-driven-development to execute this implementation plan."

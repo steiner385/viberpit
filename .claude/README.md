@@ -1,9 +1,13 @@
-# `.claude/` — SDLC governance control plane
+# Agent SDLC governance control plane
 
 Version-controlled agent policy for ccswitch (AI-Native SDLC design §7, issue #805).
 This tree is the **enforcement** side of the governance core in
 `server/sdlc/governance.py` (the pure decisions); everything here wires those
 decisions into live Claude sessions and CI.
+
+Codex uses the same governance core through `AGENTS.md`, `.codex/config.toml`,
+`.codex/rules/`, and `.agents/skills/`. `CLAUDE.md` and `.claude/REVIEW.md` remain
+the canonical cross-agent context and review-policy documents to avoid parallel copies.
 
 ## Files
 

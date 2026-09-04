@@ -1,0 +1,15 @@
+[features]
+hooks = true
+multi_agent = true
+
+[agents]
+enabled = true
+
+[[hooks.PreToolUse]]
+matcher = "^(Bash|apply_patch)$"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = '/usr/bin/python3 "$(git rev-parse --show-toplevel)/.claude/hooks/prod-deploy-gate.py"'
+timeout = 30
+statusMessage = "Checking ccswitch governance policy"
