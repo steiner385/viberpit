@@ -29,8 +29,14 @@ def tool_kind(name: str) -> ToolKind:
 @dataclass
 class TurnStart:
     turn_id: str; src_uuid: str | None = None; parent_tool_use_id: str | None = None
+    # Ordinal of this assistant entry in the transcript's turn space — the SAME space
+    # `ReplayWindow.earliest_turn` and the `?before=` page cursor index. Stamped only by
+    # the disk reader (`replay._window`); live-translated and sub-agent turns carry None.
+    # The client uses it to verify page merges keep turn order (telemetry only).
+    turn_index: int | None = None
     def to_wire(self): return {"type": "turnStart", "turnId": self.turn_id,
-                               "srcUuid": self.src_uuid, "parentToolUseId": self.parent_tool_use_id}
+                               "srcUuid": self.src_uuid, "parentToolUseId": self.parent_tool_use_id,
+                               "turnIndex": self.turn_index}
 
 @dataclass
 class TurnModel:
