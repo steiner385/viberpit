@@ -1,0 +1,5 @@
+id: constitution-amendment-gate-wired
+description: A constitution amendment is gated in CI on version, report, date, and owner acknowledgment.
+kind: static
+tags: [agent-config, governance, constitution]
+check: 'test -f .github/workflows/constitution.yml && grep -q "check_constitution_amendment.py" .github/workflows/constitution.yml && grep -q "PR_BODY" .github/workflows/constitution.yml'

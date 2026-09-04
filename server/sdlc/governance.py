@@ -157,11 +157,53 @@ class ManagedRule:
     why: str
 
 
+# Repo-relative paths no agent may edit, by ANY route: a native edit tool, a
+# Codex ``apply_patch`` envelope, or a shell command. This tuple is the single
+# source of truth — ``MANAGED_DENY`` derives its ``Write``/``Edit`` patterns from
+# it, and ``.claude/hooks/prod-deploy-gate.py`` imports it to gate ``apply_patch``
+# and ``Bash``. Adding a path here extends every enforcement layer at once.
+PROTECTED_EDIT_PATHS: tuple[str, ...] = (
+    ".specify/memory/constitution.md",
+    ".claude/managed-settings.json",
+)
+
+# Why each protected path is protected, cited back to the constitution.
+_PROTECTED_PATH_RATIONALE: dict[str, tuple[str, str]] = {
+    ".specify/memory/constitution.md": (
+        "constitution IV/VI",
+        "the constitution is amended by deliberate human process, not an agent edit.",
+    ),
+    ".claude/managed-settings.json": (
+        "constitution IV",
+        "managed non-negotiables are non-overridable; an agent cannot rewrite its own guardrails.",
+    ),
+}
+
+
+def _protected_path_rules() -> tuple[ManagedRule, ...]:
+    """One ``Write``/``Edit`` deny rule per protected path, in declaration order."""
+    rules: list[ManagedRule] = []
+    for path in PROTECTED_EDIT_PATHS:
+        principle, why = _PROTECTED_PATH_RATIONALE[path]
+        rules.extend(
+            ManagedRule(pattern=f"{tool}({path})", principle=principle, why=why)
+            for tool in ("Write", "Edit")
+        )
+    return tuple(rules)
+
+
 # The non-negotiables a managed (non-overridable) settings file must always deny.
 # These encode constitution Principles I (never fork/patch a native agent binary),
 # IV (security-first) and the git-safety working norm. CI asserts every pattern
 # is present in ``.claude/managed-settings.json`` so a local settings.json can
 # never quietly relax them.
+#
+# NOTE: these patterns match Claude Code's *tool* invocations only. A shell write
+# to the same path (``sed -i``, ``cat >``, ``tee``) matches no pattern here and is
+# not expressible as one — the enumeration of shell idioms is unbounded. That
+# route is gated by ``.claude/hooks/prod-deploy-gate.py`` instead, which sees the
+# whole command, and ultimately by the constitution CI gate, which inspects the
+# resulting diff rather than guessing how it was produced.
 MANAGED_DENY: tuple[ManagedRule, ...] = (
     ManagedRule(
         pattern="Bash(git push --force:*)",
@@ -173,26 +215,7 @@ MANAGED_DENY: tuple[ManagedRule, ...] = (
         principle="working-norm: git safety",
         why="short form of --force; same clobber risk.",
     ),
-    ManagedRule(
-        pattern="Write(.specify/memory/constitution.md)",
-        principle="constitution IV/VI",
-        why="the constitution is amended by deliberate human process, not an agent edit.",
-    ),
-    ManagedRule(
-        pattern="Edit(.specify/memory/constitution.md)",
-        principle="constitution IV/VI",
-        why="the constitution is amended by deliberate human process, not an agent edit.",
-    ),
-    ManagedRule(
-        pattern="Write(.claude/managed-settings.json)",
-        principle="constitution IV",
-        why="managed non-negotiables are non-overridable; an agent cannot rewrite its own guardrails.",
-    ),
-    ManagedRule(
-        pattern="Edit(.claude/managed-settings.json)",
-        principle="constitution IV",
-        why="managed non-negotiables are non-overridable; an agent cannot rewrite its own guardrails.",
-    ),
+    *_protected_path_rules(),
 )
 
 
