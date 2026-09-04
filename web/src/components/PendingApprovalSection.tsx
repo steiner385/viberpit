@@ -16,7 +16,9 @@ interface PendingApprovalSectionProps {
 
 export function PendingApprovalSection({ sessions, onOpen }: PendingApprovalSectionProps) {
   const [collapsed, setCollapsed] = useState(false)
-  const { mutate: modelApproval } = useModelApproval()
+  // One mutation instance for the whole list: `variables` names the session whose
+  // request is in flight, so only THAT row's panel shows the pending state.
+  const { mutate: modelApproval, isPending, variables } = useModelApproval()
 
   if (sessions.length === 0) return null
 
@@ -76,6 +78,7 @@ export function PendingApprovalSection({ sessions, onOpen }: PendingApprovalSect
                 reason={session.pendingModelReason}
                 requestedBy={session.pendingModelRequestedBy}
                 onDecision={(decision, model) => modelApproval({ id: session.id, decision, model })}
+                pending={isPending && variables?.id === session.id}
               />
             </li>
           ))}

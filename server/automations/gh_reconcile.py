@@ -145,6 +145,15 @@ class GhReconcileLoop:
         # save_field_cache is the seam Task 9's field bootstrap (_ensure_fields) writes through.
         self._save_field_cache, self._now = save_field_cache, now_utc
         self._fence_warned = False
+        # Latch for the "board fields incomplete" park emit, keyed by project id. The loop ticks
+        # every two minutes and this condition needs ONE human action to clear, so an unlatched
+        # emit is an error push every cycle, forever. Value is the (migrate, gap) signature so a
+        # *changed* gap still speaks — that is new information.
+        self._incomplete_warned: dict[str, tuple[bool, tuple[str, ...]]] = {}
+        # Same latch, same reason, for dry-run vocabulary drift: an apply parks the offending
+        # journal rows so its emit is self-limiting, but a dry run parks nothing and re-plans
+        # the identical drift every tick. Keyed project id → the drift already reported.
+        self._dry_drift_warned: dict[str, set[str]] = {}
 
     async def tick(self) -> None:
         try:
@@ -238,10 +247,20 @@ class GhReconcileLoop:
         migration step, and ``updateProjectV2Field`` REPLACES a single-select's option set, so
         an unattended steady-state run of it is a board-editing hazard. The Status update is
         therefore sent as the UNION of the board's existing options (in their order) and any
-        missing spec names appended — a human's extra column is never dropped.
+        missing spec names appended, so a human's extra COLUMN is never dropped.
+
+        Its VALUES are another matter. Probed live on a scratch board (#987,
+        ``spike_gh_projects_v2.py optionids``): ``updateProjectV2Field`` regenerates every
+        option id even for names that were re-sent unchanged, and item values pointing at the
+        old ids are silently blanked. The union keeps the columns; it cannot keep what was in
+        them. That is survivable here only because the reconciler re-derives and re-pushes
+        Status for every mirrored item afterwards — see the runbook's option-id caveat, which
+        is where the one-time cost is written down for a human to accept before the apply.
 
         A bootstrap mutation that fails twice PARKS exactly like an item mutation: a board whose
-        field creation is broken must not be retried at every tick forever."""
+        field creation is broken must not be retried at every tick forever. The caller re-runs
+        ``_field_gap`` on the returned cache for exactly that reason — this method reports what
+        it achieved, not what it intended."""
         cache = dict(facts.field_cache)
         wanted: list[tuple[Mutation, str]] = []
         if "Score" not in cache:
@@ -309,6 +328,29 @@ class GhReconcileLoop:
             gap.append("Status options: " + ", ".join(missing))
         return gap
 
+    async def _park_incomplete(self, product: ProductSyncView, gap: list[str],
+                               counts: dict[str, int], *, migrate: bool) -> None:
+        """Park a product whose board fields are incomplete: count it, emit at most once.
+
+        The park is counted every cycle — the status card should keep showing it — but the emit
+        is latched per product (see ``_incomplete_warned``). ``_run`` never resets this latch;
+        only a cycle that finds the gap closed does, so the next regression is loud again."""
+        counts["parked"] += 1
+        signature = (migrate, tuple(gap))
+        if self._incomplete_warned.get(product.project_id) == signature:
+            return
+        self._incomplete_warned[product.project_id] = signature
+        detail = "; ".join(gap)
+        message = (
+            f"reconcile parked {product.slug}: board field bootstrap did not complete ({detail}); "
+            "item mutations skipped — fix the failed field mutation, then re-run"
+            if migrate else
+            f"reconcile parked {product.slug}: board fields incomplete ({detail}); "
+            "turn migrate on to bootstrap")
+        await self._ctx.emit("error", message, kind="gh_reconcile_parked",
+                             target=product.project_id,
+                             detail={"missing": list(gap), "migrate": migrate})
+
     async def _converge(self, product: ProductSyncView, now: datetime, dry_run: bool, cap: int,
                         applied_keys: set[str], counts: dict[str, int], *, migrate: bool = False,
                         own_values: dict[tuple[str, str], object] | None = None,
@@ -333,19 +375,26 @@ class GhReconcileLoop:
         # option update REPLACES the option set), so steady state never edits board schema.
         if migrate:
             cache = await self._ensure_fields(facts, now, dry_run, counts)
+            # Bootstrap is best-effort: a field mutation can fail, park, or be skipped because
+            # it is already parked, and it returns the cache it managed to build either way.
+            # Re-check the gap so a half-done bootstrap stops HERE instead of cascading — every
+            # set_field for the still-missing field would raise UnknownOption in build_batch and
+            # park a whole 20-row batch, burying the one real failure under twenty derived ones.
+            # A dry run is exempt: it writes nothing, so its cache is unchanged by construction
+            # (nothing to cascade into, and gating it would erase the preview entirely).
+            gap = self._field_gap(cache)
+            if gap and not dry_run:
+                await self._park_incomplete(product, gap, counts, migrate=True)
+                return
         else:
             cache = dict(facts.field_cache)
             gap = self._field_gap(cache)
             if gap:
                 # Outside migrate we do NOT repair the board — a set_field for a missing
                 # field/option cannot be written safely, so the product parks for a human.
-                counts["parked"] += 1
-                await self._ctx.emit(
-                    "error", f"reconcile parked {product.slug}: board fields incomplete "
-                    f"({'; '.join(gap)}); turn migrate on to bootstrap",
-                    kind="gh_reconcile_parked", target=product.project_id,
-                    detail={"missing": gap, "migrate": False})
+                await self._park_incomplete(product, gap, counts, migrate=False)
                 return
+        self._incomplete_warned.pop(product.project_id, None)
         # 2. desired state + 3. diff
         planned: list[Mutation] = []
         for item in facts.items:
@@ -372,6 +421,7 @@ class GhReconcileLoop:
             return
         # 4. apply, write-ahead journaled per batch
         batch_id = f"{'dry' if dry_run else 'run'}-{now.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
+        drift: set[str] = set()          # vocabulary drift seen this cycle; latches the dry-run emit
         for batch in chunk(planned):
             # A dry run re-plans the same set every tick; only journal the mutations that
             # don't already have a fresh dry-run row (counts["planned"] still counts all).
@@ -389,6 +439,14 @@ class GhReconcileLoop:
                     for rid in row_ids:
                         await self._j_park(rid, f"field vocabulary drift: {exc}", now)
                 counts["parked"] += len(batch)
+                # Sibling of the incomplete-board latch: an APPLY run parks the journal rows, so
+                # the same drift is never replanned and this emit is self-limiting. A DRY run
+                # parks nothing by design, so it re-plans and re-raises identical drift every
+                # two minutes — latch it per (product, error) the same way, or leaving dry run
+                # on (which the runbook's review step asks for) is an error push forever.
+                drift.add(str(exc))
+                if dry_run and str(exc) in self._dry_drift_warned.get(product.project_id, set()):
+                    continue
                 verb = "would park" if dry_run else "parked"
                 await self._ctx.emit(
                     "error", f"reconcile {verb} batch for {product.slug}: {exc}",
@@ -415,5 +473,8 @@ class GhReconcileLoop:
                     counts["failed"] += 1
             await self._j_applied(ok_ids, now)
             counts["applied"] += len(ok_ids)
+        # Replace, don't union: drift that has been fixed drops out of the latch, so if it ever
+        # comes back it is reported again.
+        self._dry_drift_warned[product.project_id] = drift
         if not dry_run:
             await self._request_sync(product.project_id)   # re-ingest our own writes (echo-suppressed)
