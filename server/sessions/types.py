@@ -197,6 +197,10 @@ class SessionRecord:
             "contextUsedTokens": self.context_used_tokens,
             "contextMaxTokens": self.context_max_tokens,
             "commandCatalog": self.command_catalog,
+            # Carried over RPC so a fleet mirror of an assistant session is still
+            # recognised by is_assistant() on the edge (list filtering, sweeps).
+            "kind": self.kind,
+            "ownerIdentity": self.owner_identity,
         }
 
     @classmethod
@@ -239,7 +243,16 @@ class SessionRecord:
             context_used_tokens=d.get("contextUsedTokens"),
             context_max_tokens=d.get("contextMaxTokens"),
             command_catalog=d.get("commandCatalog"),
+            kind=d.get("kind"),
+            owner_identity=d.get("ownerIdentity"),
         )
+
+
+def is_assistant_kind(kind: str | None) -> bool:
+    """The ONE comparison against ``ASSISTANT_KIND``, for the paths that hold a bare
+    kind STRING rather than a record (``create_session``'s parameter, the queue params).
+    Keeps the literal from being open-coded a second time (constitution VI)."""
+    return kind == ASSISTANT_KIND
 
 
 def is_assistant(rec) -> bool:
@@ -247,4 +260,4 @@ def is_assistant(rec) -> bool:
     iterates sessions (autopilot, titles, summaries, suggestions, goal inference,
     auto-archive, capacity) routes through it. Duck-typed so fleet mirrors and DB rows
     qualify too."""
-    return getattr(rec, "kind", None) == ASSISTANT_KIND
+    return is_assistant_kind(getattr(rec, "kind", None))

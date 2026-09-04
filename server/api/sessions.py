@@ -27,7 +27,7 @@ from ccswitch import accounts as _accounts
 from ccswitch import gitrepos
 from server.auth.middleware import current_identity
 from server.sessions.search import parse_terms, session_matches
-from server.sessions.types import RESUME_ELIGIBLE_STATUSES
+from server.sessions.types import ASSISTANT_KIND, RESUME_ELIGIBLE_STATUSES
 from server.audit import record_audit
 from server.config import get_settings
 from server.db import db_session, get_db
@@ -261,6 +261,10 @@ def _record_to_dict(
         "summary": summary or "",
         "queuePosition": queue_position,
         "queueStallReason": queue_stall_reason,
+        # "assistant" for the AI-drawer thread, null for a coding session. The drawer
+        # fetches its thread by id (this list excludes assistants by default), so this
+        # is what lets a client tell the two apart when it does get one.
+        "kind": getattr(record, "kind", None),
     }
     # Liveness derived at the edge from the owning host's heartbeat snapshot (spec 002
     # FR-103). Never stored — always computed from host_heartbeats. Emitted ONLY when a
@@ -479,9 +483,17 @@ async def list_sessions(
     request: Request,
     _identity: str = Depends(current_identity),
 ) -> list[dict]:
-    """Return all in-memory session records."""
+    """Return all in-memory session records.
+
+    Assistant threads are excluded unless `?kind=assistant` asks for them — they are a
+    UI surface, not dashboard cards. The kwarg is passed ONLY when asked for, so the
+    default call is byte-identical for every orchestrator flavour (in-process, remote,
+    fleet) and for test doubles.
+    """
     orch = _get_orchestrator(request)
-    records = await orch.list_sessions()
+    kw = ({"include_assistant": True}
+          if request.query_params.get("kind") == ASSISTANT_KIND else {})
+    records = await orch.list_sessions(**kw)
     viewing = request.query_params.get("viewing") in ("1", "true", "yes")
     # Enrich the whole page in three batched RPCs (one per field) rather than three per
     # session: 21 sessions cost 3 daemon round trips, not 63 (#742). Each is bounded by

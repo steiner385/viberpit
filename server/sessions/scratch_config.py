@@ -101,14 +101,16 @@ def _root_is_safe(root: Path) -> bool:
     return False
 
 
-def _scratch_dir_for(src: Path, root: Path) -> Path:
-    """Stable per-source scratch path: ``<root>/<account-name>-<hash8>``.
+def _scratch_dir_for(src: Path, root: Path, *, suffix: str = "") -> Path:
+    """Stable per-source scratch path: ``<root>/<account-name>-<hash8><suffix>``.
 
     The hash of the absolute source path keeps two accounts that happen to share a
     basename (e.g. a test store and the real one) from colliding on the same scratch dir.
+    *suffix* separates the two VARIANTS of one account's scratch dir (with and without
+    the share-allowlist links) so they cannot fight over the same directory.
     """
     digest = hashlib.sha256(str(src).encode("utf-8")).hexdigest()[:8]
-    return root / f"{_SAFE_NAME_RE.sub('_', src.name) or 'account'}-{digest}"
+    return root / f"{_SAFE_NAME_RE.sub('_', src.name) or 'account'}-{digest}{suffix}"
 
 
 def _stamp_path(dst: Path, name: str) -> Path:
@@ -153,16 +155,21 @@ def _sync_file(src_file: Path, dst: Path, name: str) -> bool:
     return False
 
 
-def _sync_links(src: Path, dst: Path) -> None:
+def _sync_links(src: Path, dst: Path, *, share_links: bool = True) -> None:
     """Point the share-allowlist names at the account dir's own entries.
 
     Symlinks, not copies: plugins/commands/settings are read-only shared assets and
     duplicating them per host is exactly the parallel-copy problem SHARE_ALLOWLIST exists
     to avoid. Stale links (source removed) are pruned.
+
+    ``share_links=False`` prunes them ALL instead: an assistant session (spec §4.1) must
+    not inherit the operator's plugins, custom commands, hooks or settings. Pruning
+    rather than merely not-creating keeps the directory correct when a dir built by an
+    earlier (or a differently-parameterised) call is reused.
     """
     for name in SHARE_ALLOWLIST:
         link, source = dst / name, src / name
-        if not source.exists():
+        if not share_links or not source.exists():
             if link.is_symlink():
                 link.unlink()
             continue
@@ -202,13 +209,23 @@ def recent_torn_reads(window_s: float = 3600.0, *, _now: float | None = None) ->
         return 0
 
 
-def helper_config_dir(config_dir: str) -> str:
+def helper_config_dir(config_dir: str, *, share_links: bool = True) -> str:
     """Return a host-local scratch mirror of *config_dir*, or *config_dir* unchanged.
 
     Unchanged when the kill switch is off, when *config_dir* is empty or missing, when
     the scratch root would land inside the account store, or on any error — including a
     torn source read with no last-known-good copy to fall back on, where reading the
     shared file directly is no worse than today.
+
+    ``share_links=False`` returns a variant that OMITS the ``SHARE_ALLOWLIST`` symlinks
+    (plugins, commands, settings.json, settings.local.json, projects) — the assistant
+    session's config dir (spec §4.1). It is a separate directory from the shared-link
+    mirror, so the two variants of one account never overwrite each other's links.
+
+    Note what a config dir CANNOT isolate: ``$HOME/.claude/CLAUDE.md`` is resolved from
+    HOME, not from ``CLAUDE_CONFIG_DIR``, so user memory still loads. The assistant's
+    system prompt states that its role overrides those instructions rather than HOME
+    being repointed (which would also move credentials, caches and git config).
     """
     if not config_dir or not _enabled():
         return config_dir
@@ -221,7 +238,7 @@ def helper_config_dir(config_dir: str) -> str:
             log.debug("scratch_config: root %s is inside the account store — not isolating", root)
             return config_dir
 
-        dst = _scratch_dir_for(src, root)
+        dst = _scratch_dir_for(src, root, suffix="" if share_links else "-nolinks")
         dst.mkdir(parents=True, exist_ok=True)
         os.chmod(root, 0o700)
         os.chmod(dst, 0o700)
@@ -237,7 +254,7 @@ def helper_config_dir(config_dir: str) -> str:
             # First-ever sync and the source did not parse: no last-known-good to serve.
             # Degrade to the shared dir rather than handing the helper an empty config.
             return config_dir
-        _sync_links(src, dst)
+        _sync_links(src, dst, share_links=share_links)
         return str(dst)
     except Exception as exc:  # noqa: BLE001 — best-effort isolation, never a helper's problem
         log.debug("scratch_config: falling back to %s: %s", config_dir, exc)

@@ -148,7 +148,10 @@ def register_orchestrator_rpc(app, orch) -> None:
         return app.state.ring_tail(params["session_id"], params.get("since"))
 
     async def list_sessions(params: dict) -> dict:
-        return {"sessions": [r.to_dict() for r in orch.list_sessions()]}
+        # The param is only sent when True, so an older edge talking to a newer daemon
+        # (and vice versa) keeps the default "assistants excluded" behaviour.
+        kw = {"include_assistant": True} if params.get("include_assistant") else {}
+        return {"sessions": [r.to_dict() for r in orch.list_sessions(**kw)]}
 
     async def get_session(params: dict) -> dict:
         rec = orch.get_session(params["session_id"])

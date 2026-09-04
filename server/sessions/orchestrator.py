@@ -50,6 +50,7 @@ from server.db import db_session
 from server.db.models import AUTO_ARCHIVE_PROVENANCE, CAPACITY_EXEMPT_STATUSES, INACTIVE_SESSION_STATUSES, Session as DbSession
 from server.sessions import adopt as _adopt
 from server.sessions.account_auth import oauth_env_for
+from server.sessions.scratch_config import helper_config_dir
 from server.sessions import deploy_snapshot as _deploy_snapshot
 from server.sessions.archive_move import mountpoint, restore_from_archive
 from server.sessions import attachments as _attachments
@@ -78,7 +79,10 @@ from server.sessions.background_tasks import scan_open_background_tasks, build_r
 from server.obs.context import log_event, PROC_EPOCH
 from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
-from server.sessions.types import SessionRecord, SYSTEM_IDENTITY, RESUME_ELIGIBLE_STATUSES
+from server.sessions.types import (
+    SessionRecord, SYSTEM_IDENTITY, RESUME_ELIGIBLE_STATUSES,
+    is_assistant, is_assistant_kind,
+)
 from server.config import env_float
 from server.time_iso import iso_utc
 from server.usage.poller import UsagePoller
@@ -602,6 +606,11 @@ class SessionOrchestrator:
         self._pending_initial_prompt: dict[str, str] = {}
         # Deferred attachment ids for the initial prompt, sent on first WS attach.
         self._pending_initial_attachment_ids: dict[str, list[str]] = {}
+        # session_id → ClaudeAgentOptions overlay for an assistant-kind session
+        # (see register_assistant_overlay). In-memory only: the overlay holds a live
+        # in-process MCP server bound to that session, so it is neither persisted nor
+        # sent over RPC — a restart rebuilds it with the session.
+        self._assistant_overlays: dict[str, dict] = {}
         # Cap-purge poison tracking (#825): consecutive permanent_delete failures per
         # session, and the set that has crossed _ARCHIVE_PURGE_MAX_STRIKES and is now
         # skipped during selection so one un-deletable archive can't wedge the whole
@@ -1010,20 +1019,41 @@ class SessionOrchestrator:
             return self._copilot.env_for(rec.account)
         return oauth_env_for(rec.account)
 
+    def register_assistant_overlay(self, session_id: str, overlay: dict) -> None:
+        """Register the ``ClaudeAgentOptions`` overlay an assistant session spawns with.
+
+        Kept out of the spawn signature because the overlay carries a live in-process
+        MCP server bound to THIS session (``server.assistant.server.build_server``), so
+        it can neither be persisted on the row nor round-tripped over RPC. The caller
+        registers it, then creates the session; ``_session_factory`` picks it up.
+        """
+        overlays = getattr(self, "_assistant_overlays", None)
+        if overlays is None:
+            overlays = self._assistant_overlays = {}
+        overlays[session_id] = overlay
+
     def _session_factory(self, session_id: str):
         """Return a factory closure injecting this session's DISPLAY and PreCompact hook.
 
         Forwards ``on_pre_compact`` to the base factory so the real SDK factory can
         register the hook; fake factories accept and ignore it.
+
+        An assistant session additionally carries an ``options_overlay`` (registered by
+        ``register_assistant_overlay``). It is passed ONLY when present, so every
+        existing factory — including the test fakes — keeps its current signature.
         """
         base = self._sdk_factory
         x11 = self._x11
         def _factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
             extra = {**(x11.env_for(session_id) if x11 else {}), **self._oat_env(session_id)}
+            kw: dict = {"on_pre_compact": on_pre_compact}
+            overlay = getattr(self, "_assistant_overlays", {}).get(session_id)
+            if overlay is not None:
+                kw["options_overlay"] = overlay
             if extra:
                 return base(cwd, config_dir, can_use_tool, mode, resume,
-                            extra_env=extra, on_pre_compact=on_pre_compact)
-            return base(cwd, config_dir, can_use_tool, mode, resume, on_pre_compact=on_pre_compact)
+                            extra_env=extra, **kw)
+            return base(cwd, config_dir, can_use_tool, mode, resume, **kw)
         return _factory
 
     # ------------------------------------------------------------------
@@ -1421,8 +1451,17 @@ class SessionOrchestrator:
         origin: str | None = None,
         origin_ref: str | None = None,
         model: str | None = None,
+        kind: str | None = None,
+        owner_identity: str | None = None,
     ) -> SessionRecord:
         """Pick an account, start a SessionDriver, persist a DB row, return a SessionRecord.
+
+        *kind* is ``ASSISTANT_KIND`` for the AI-drawer meta-assistant and None for every
+        coding session; *owner_identity* is the identity that owns an assistant thread
+        (its idempotency key). An assistant session is exempt from the runtime capacity
+        cap and its queue — it is a UI affordance, not fleet work, so it must open
+        immediately rather than sit behind a backlog of coding sessions, and it must not
+        push a coding session out of a slot.
 
         Raises:
             AllAccountsBusy: when no account has headroom.
@@ -1470,31 +1509,39 @@ class SessionOrchestrator:
                 cols=cols, rows=rows, cwd=cwd, branch=branch, repo=repo,
                 identity=identity, permission_mode=permission_mode,
                 attachment_ids=attachment_ids, name_is_auto=name_is_auto,
-                origin=origin, origin_ref=origin_ref, model=model)
+                origin=origin, origin_ref=origin_ref, model=model,
+                kind=kind, owner_identity=owner_identity)
 
         # Global active-session cap: at/over the cap the session is created as a
         # queued row (real session, no worktree/account/driver yet) and started
         # later by _maybe_start_queued in (priority, enqueued_at) order. Applies
         # to EVERY origin — automations included (their claims simply wait).
-        if self._active_session_count() >= await self._max_active_sessions():
+        # Exception: the assistant (see the docstring) neither counts nor queues.
+        if (not is_assistant_kind(kind)
+                and self._active_session_count() >= await self._max_active_sessions()):
             return await self._enqueue_session(
                 session_id, name=name, account=account,
                 initial_prompt=initial_prompt, cols=cols, rows=rows, cwd=cwd,
                 branch=branch, repo=repo, identity=identity,
                 permission_mode=permission_mode, attachment_ids=attachment_ids,
                 name_is_auto=name_is_auto, origin=origin, origin_ref=origin_ref,
-                model=model)
+                model=model, kind=kind, owner_identity=owner_identity)
         return await self._spawn_session(
             session_id, name=name, account=account, initial_prompt=initial_prompt,
             cols=cols, rows=rows, cwd=cwd, branch=branch, repo=repo,
             identity=identity, permission_mode=permission_mode,
             attachment_ids=attachment_ids, name_is_auto=name_is_auto,
-            origin=origin, origin_ref=origin_ref, model=model)
+            origin=origin, origin_ref=origin_ref, model=model,
+            kind=kind, owner_identity=owner_identity)
 
     def _active_session_count(self) -> int:
-        """Sessions consuming a runtime capacity slot (see CAPACITY_EXEMPT_STATUSES)."""
+        """Sessions consuming a runtime capacity slot (see CAPACITY_EXEMPT_STATUSES).
+
+        The assistant is excluded: it is a UI affordance, not fleet work, so counting it
+        would silently shrink the operator's coding-session cap by one.
+        """
         return sum(1 for r in self._records.values()
-                   if r.status not in CAPACITY_EXEMPT_STATUSES)
+                   if r.status not in CAPACITY_EXEMPT_STATUSES and not is_assistant(r))
 
     async def _max_active_sessions(self) -> int:
         from sqlalchemy import select as sa_select
@@ -1507,7 +1554,8 @@ class SessionOrchestrator:
     async def _enqueue_session(self, session_id: str, *, name, account,
                                initial_prompt, cols, rows, cwd, branch, repo,
                                identity, permission_mode, attachment_ids,
-                               name_is_auto, origin, origin_ref, model) -> SessionRecord:
+                               name_is_auto, origin, origin_ref, model,
+                               kind=None, owner_identity=None) -> SessionRecord:
         from datetime import datetime
         from server.sessions import session_queue as sq
         now = datetime.utcnow()
@@ -1519,7 +1567,8 @@ class SessionOrchestrator:
                 cwd=cwd or "", repo=repo, branch=None,
                 permission_mode=permission_mode, name_is_auto=name_is_auto,
                 origin=origin, origin_ref=origin_ref, model=model,
-                initial_prompt=initial_prompt, host=host))
+                initial_prompt=initial_prompt, host=host,
+                kind=kind, owner_identity=owner_identity))
         priority = await sq.enqueue(session_id, {
             "name": name, "account": account, "initial_prompt": initial_prompt,
             "cols": cols, "rows": rows, "cwd": cwd, "branch": branch,
@@ -1527,13 +1576,14 @@ class SessionOrchestrator:
             "permission_mode": permission_mode,
             "attachment_ids": attachment_ids, "name_is_auto": name_is_auto,
             "origin": origin, "origin_ref": origin_ref, "model": model,
+            "kind": kind, "owner_identity": owner_identity,
         })
         rec = SessionRecord(
             id=session_id, name=name, account=account or "", claude_session_id="",
             cols=cols, rows=rows, cwd=cwd or "", repo=repo, branch=None,
             status="queued", name_is_auto=name_is_auto,
             created_at=now, updated_at=now, origin=origin, origin_ref=origin_ref,
-            model=model, host=host)
+            model=model, host=host, kind=kind, owner_identity=owner_identity)
         self._records[session_id] = rec
         log.info("session.queued id=%s priority=%d origin=%s",
                  session_id, priority, origin)
@@ -1542,7 +1592,8 @@ class SessionOrchestrator:
     async def _hold_for_approval(self, session_id: str, *, name, account,
                                  initial_prompt, cols, rows, cwd, branch, repo,
                                  identity, permission_mode, attachment_ids,
-                                 name_is_auto, origin, origin_ref, model) -> SessionRecord:
+                                 name_is_auto, origin, origin_ref, model,
+                                 kind=None, owner_identity=None) -> SessionRecord:
         """Park a model-gated session at 'pending_approval': persist a driverless row
         with the requested model in `pending_model`, no queue entry, no capacity slot.
 
@@ -1564,7 +1615,8 @@ class SessionOrchestrator:
                 origin=origin, origin_ref=origin_ref,
                 model=None, pending_model=model,
                 pending_model_requested_by=identity, pending_model_requested_at=now,
-                initial_prompt=initial_prompt, host=host))
+                initial_prompt=initial_prompt, host=host,
+                kind=kind, owner_identity=owner_identity))
             await record_audit(db, type="model_approval.requested", identity=identity,
                                detail={"session_id": session_id, "model": model,
                                        "account": account})
@@ -1574,13 +1626,15 @@ class SessionOrchestrator:
             name=name, account=account, initial_prompt=initial_prompt, cols=cols,
             rows=rows, cwd=cwd, branch=branch, repo=repo, identity=identity,
             permission_mode=permission_mode, attachment_ids=attachment_ids,
-            name_is_auto=name_is_auto, origin=origin, origin_ref=origin_ref, model=model)
+            name_is_auto=name_is_auto, origin=origin, origin_ref=origin_ref, model=model,
+            kind=kind, owner_identity=owner_identity)
         rec = SessionRecord(
             id=session_id, name=name, account=account or "", claude_session_id="",
             cols=cols, rows=rows, cwd=cwd or "", repo=repo, branch=None,
             status="pending_approval", name_is_auto=name_is_auto,
             created_at=now, updated_at=now, origin=origin, origin_ref=origin_ref,
-            model=None, pending_model=model, host=host)
+            model=None, pending_model=model, host=host,
+            kind=kind, owner_identity=owner_identity)
         self._records[session_id] = rec
         log.info("session.pending_approval id=%s model=%s origin=%s",
                  session_id, model, origin)
@@ -1771,7 +1825,9 @@ class SessionOrchestrator:
                 identity=row.pending_model_requested_by or SYSTEM_IDENTITY,
                 permission_mode=row.permission_mode, attachment_ids=None,
                 name_is_auto=row.name_is_auto, origin=row.origin,
-                origin_ref=row.origin_ref)
+                origin_ref=row.origin_ref,
+                kind=getattr(row, "kind", None),
+                owner_identity=getattr(row, "owner_identity", None))
 
     async def _restore_hold_after_failed_approve(
             self, session_id: str, *, model, kwargs: dict,
@@ -1807,7 +1863,9 @@ class SessionOrchestrator:
                     model=None, pending_model=model,
                     pending_model_requested_by=requested_by,
                     pending_model_requested_at=requested_at,
-                    initial_prompt=kwargs.get("initial_prompt"), host=host))
+                    initial_prompt=kwargs.get("initial_prompt"), host=host,
+                    kind=kwargs.get("kind"),
+                    owner_identity=kwargs.get("owner_identity")))
             restored = dict(kwargs)
             restored["model"] = model
             self._pending_approvals[session_id] = restored
@@ -1820,7 +1878,9 @@ class SessionOrchestrator:
                 status="pending_approval", name_is_auto=kwargs.get("name_is_auto", True),
                 created_at=now, updated_at=now, origin=kwargs.get("origin"),
                 origin_ref=kwargs.get("origin_ref"),
-                model=None, pending_model=model, host=host)
+                model=None, pending_model=model, host=host,
+                kind=kwargs.get("kind"),
+                owner_identity=kwargs.get("owner_identity"))
         except Exception:
             # Never let the recovery path mask the real spawn error.
             log.exception("session.model_approval_hold_restore_failed id=%s",
@@ -2110,6 +2170,8 @@ class SessionOrchestrator:
         origin: str | None,
         origin_ref: str | None,
         model: str | None,
+        kind: str | None = None,
+        owner_identity: str | None = None,
         preexisting_row: bool = False,
     ) -> SessionRecord:
         """Start a SessionDriver, persist/update a DB row, return a SessionRecord.
@@ -2118,6 +2180,9 @@ class SessionOrchestrator:
         from _enqueue_session; this method UPDATEs that row (status→'idle',
         account_name, cwd, branch, model) instead of INSERT-ing a new one.
         Task 4 (_maybe_start_queued) calls this path.
+
+        *kind*/*owner_identity* default to None so a queue entry persisted before the
+        assistant existed still replays cleanly (its params dict has neither key).
         """
         repo_root = await self._effective_repo_root()
 
@@ -2174,6 +2239,14 @@ class SessionOrchestrator:
         # won't prompt for trust on startup.
         configdir.trust_project(account, cwd)
 
+        # The assistant runs against a LINK-LESS host-local scratch copy of the account
+        # config dir (spec §4.1): no plugins, custom commands, hooks or shared settings.
+        # Built AFTER trust_project so the trust decision is in the copied .claude.json.
+        # Fail-open (scratch_config returns the account dir unchanged on any error) —
+        # a degraded assistant beats no assistant.
+        if is_assistant_kind(kind):
+            cfg_dir = Path(helper_config_dir(str(cfg_dir), share_links=False))
+
         # Allocate a virtual X11 display for this session (if X11Manager wired in).
         if self._x11 is not None:
             try:
@@ -2201,6 +2274,7 @@ class SessionOrchestrator:
             created_at=getattr(_prior, "created_at", None) or _now,
             updated_at=_now, usage_unverified=usage_unverified,
             origin=origin, origin_ref=origin_ref, model=None, host=_host,
+            kind=kind, owner_identity=owner_identity,
         )
         self._records[session_id] = _pre_record
         # Track the spawn from the pre-seed until the driver is registered (or the
@@ -2222,7 +2296,10 @@ class SessionOrchestrator:
                 on_record_condense_ms=self._record_condense_ms,
                 get_condense_estimate=self._condense_estimate,
                 on_recoverable_failure=self._handle_recoverable_failure,
-                suggester=self._suggester,
+                # No next-prompt suggestions for the assistant: they are written FOR a
+                # coding session ("run the tests", "open a PR") and the drawer has no
+                # UI for them. Same reasoning as the Copilot skip in latest_suggestions.
+                suggester=None if is_assistant_kind(kind) else self._suggester,
             )
             try:
                 await driver.start()
@@ -2286,6 +2363,8 @@ class SessionOrchestrator:
                         model=model,
                         initial_prompt=initial_prompt,
                         host=_host,
+                        kind=kind,
+                        owner_identity=owner_identity,
                     )
                     db.add(row)
 
@@ -2608,6 +2687,10 @@ class SessionOrchestrator:
         if status != "complete":
             return
         if rec is None:
+            return
+        # The assistant has no worktree to reclaim and no dashboard card to clear; its
+        # lifetime is the idle reap (CCSWITCH_ASSISTANT_IDLE_S), not completion.
+        if is_assistant(rec):
             return
         # A human unarchived this session → honor the sticky opt-out and never re-archive it.
         if getattr(rec, "auto_archive_opt_out_reason", None):
@@ -4845,6 +4928,8 @@ class SessionOrchestrator:
         repos = set(config.get("enabled_repos") or [])
         out: list[str] = []
         for sid, rec in list(self._records.items()):
+            if is_assistant(rec):
+                continue   # the assistant is the operator's aide, not governed work
             if rec.status not in ACTIONABLE_STATUSES:
                 continue
             if self._turn_restart_in_flight(sid):
@@ -4982,7 +5067,7 @@ class SessionOrchestrator:
             return cached[1]
         active: list[FleetSession] = []
         for sid, rec in list(self._records.items()):
-            if rec.status in INACTIVE_SESSION_STATUSES:
+            if is_assistant(rec) or rec.status in INACTIVE_SESSION_STATUSES:
                 continue
             goal_text, _src = effective_goal(rec)
             active.append(FleetSession(
@@ -6184,6 +6269,8 @@ class SessionOrchestrator:
         """
         enabled_hosts = await self._enabled_host_names()
         for sid, rec in list(self._records.items()):
+            if is_assistant(rec):
+                continue   # the drawer names its own threads; no transcript titling
             if rec.status == "ended" or not rec.name_is_auto:
                 continue
             if not self._owns_record(rec, enabled_hosts):
@@ -6225,6 +6312,8 @@ class SessionOrchestrator:
         from sqlalchemy import update as sa_update
         enabled_hosts = await self._enabled_host_names()
         for sid, rec in list(self._records.items()):
+            if is_assistant(rec):
+                continue   # an assistant thread has no engineering goal to infer
             if rec.status in ("ended", "archived") or (rec.active_goal or "").strip():
                 continue
             if not self._owns_record(rec, enabled_hosts):
@@ -6319,6 +6408,8 @@ class SessionOrchestrator:
             pr_resolution=getattr(row, "pr_resolution", None),
             pr_resolution_source=getattr(row, "pr_resolution_source", None),
             host=getattr(row, "host", None),
+            kind=getattr(row, "kind", None),
+            owner_identity=getattr(row, "owner_identity", None),
         )
         fields.update(overrides)
         return SessionRecord(**fields)
@@ -6501,6 +6592,11 @@ class SessionOrchestrator:
             rec = self._records.get(row.id)
             if rec is None or rec.status not in self._PROMPT_RECOVERABLE_STATUSES:
                 continue
+            if is_assistant(rec):
+                # An assistant thread's "initial prompt" is the user's first drawer
+                # message. Re-sending it into a rehydrated, driverless thread would
+                # answer a question the user asked before the restart, unprompted.
+                continue
             if not self._owns_record(rec, enabled_hosts):
                 continue
             if getattr(rec, "interrupted_by_restart", False):
@@ -6660,9 +6756,16 @@ class SessionOrchestrator:
         rec.detached = rec.id not in self._drivers and rec.id not in self._spawning
         return rec
 
-    def list_sessions(self) -> list[SessionRecord]:
-        """Return all in-memory SessionRecords (``detached`` synced from ``_drivers``)."""
-        return [self._sync_detached(r) for r in self._records.values()]
+    def list_sessions(self, *, include_assistant: bool = False) -> list[SessionRecord]:
+        """Return all in-memory SessionRecords (``detached`` synced from ``_drivers``).
+
+        Assistant sessions are excluded unless asked for: the AI drawer is a UI surface,
+        not a card on the sessions dashboard, and every consumer of this list (the
+        dashboard, search, the fleet merge, the RPC breadth) would otherwise show it.
+        ``get_session`` is deliberately unchanged — the drawer fetches its own by id.
+        """
+        return [self._sync_detached(r) for r in self._records.values()
+                if include_assistant or not is_assistant(r)]
 
     def get_session(self, session_id: str) -> SessionRecord | None:
         """Return the in-memory SessionRecord for session_id, or None
@@ -8297,6 +8400,10 @@ class SessionOrchestrator:
         rec = self._records.get(session_id)
         if rec is None:
             return []
+        # The assistant is not a coding session: "run the tests" / "open a PR" prompts
+        # are nonsense for it, and the drawer has no UI to show them.
+        if is_assistant(rec):
+            return []
         # Copilot sessions use a third-party model — Haiku suggestions are meaningless.
         if _provider_of(rec.account) == _copilot_mod.PROVIDER:
             return []
@@ -8456,6 +8563,10 @@ class SessionOrchestrator:
         """
         rec = self._records.get(session_id)
         if rec is None:
+            return ""
+        # The assistant never appears on a dashboard card, so nothing renders its
+        # summary — generating one would burn a Haiku call per poll for no reader.
+        if is_assistant(rec):
             return ""
         # Copilot sessions use a third-party model — Haiku summaries are meaningless.
         if _provider_of(rec.account) == _copilot_mod.PROVIDER:
