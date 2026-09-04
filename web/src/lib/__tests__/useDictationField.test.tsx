@@ -137,4 +137,46 @@ describe('engine selection', () => {
     act(() => { captured!('hello', true) })
     expect(currentValue).toBe('hello ')
   })
+
+  it('stays pinned to the running server engine when the capability flag flips mid-dictation', () => {
+    installMock()
+    let listening = false
+    const serverStart = vi.fn(() => { listening = true })
+    const serverStop = vi.fn(() => { listening = false })
+    ;(useServerDictation as unknown as Mock).mockImplementation(() => ({
+      supported: true, listening, error: null, start: serverStart, stop: serverStop, toggle: vi.fn(),
+    }))
+    setServerSttEnabled(true)
+    render(<Harness initial="" />)
+    act(() => { api.start() })
+    expect(serverStart).toHaveBeenCalled()
+
+    // The edge clears sttEnabled mid-dictation (e.g. a logout wipes config) — preferredKind
+    // flips to 'browser', but the server engine is still live and must stay addressed.
+    act(() => { setServerSttEnabled(false) })
+    act(() => { api.toggle() })
+
+    expect(serverStop).toHaveBeenCalled()
+    expect(instance).toBeUndefined()   // Web Speech (browser engine) never constructed
+  })
+
+  it("api.stop() calls the pinned server engine's stop and never constructs the browser engine", () => {
+    installMock()
+    let listening = false
+    const serverStart = vi.fn(() => { listening = true })
+    const serverStop = vi.fn(() => { listening = false })
+    ;(useServerDictation as unknown as Mock).mockImplementation(() => ({
+      supported: true, listening, error: null, start: serverStart, stop: serverStop, toggle: vi.fn(),
+    }))
+    setServerSttEnabled(true)
+    render(<Harness initial="" />)
+    act(() => { api.start() })
+    expect(serverStart).toHaveBeenCalled()
+
+    // Directly call stop() to exercise the wrapped pin-release logic.
+    act(() => { api.stop() })
+
+    expect(serverStop).toHaveBeenCalled()
+    expect(instance).toBeUndefined()   // Web Speech (browser engine) never constructed
+  })
 })
