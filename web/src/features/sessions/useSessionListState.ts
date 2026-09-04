@@ -124,7 +124,14 @@ export function useSessionListState(
   // `listed` is empty and the fleet query has no data, so no stored value is
   // offered by anything, and the user could not tell the loss from "never saved".
   const [filters, setFilters] = useState<ListFilters>(() => loadListFilters(NS))
-  const ready = !sessionsLoading && !fleet.isPending
+  // `fleet.isSuccess`, NOT `!fleet.isPending`: in TanStack Query v5 `isPending`
+  // is `status === 'pending'`, so a FAILED `/fleet/hosts` (status 'error') makes
+  // it false and would declare the environment domain "known" while `fleet.data`
+  // is undefined. Sanitizing against that empty domain drops the stored host and
+  // the effect below writes the clearing back to storage, so it does not return
+  // when the endpoint recovers. An unanswered registry and a failed one are the
+  // same fact — the domain is UNKNOWN — and only success says otherwise.
+  const ready = !sessionsLoading && fleet.isSuccess
   // Adjust-state-during-render (React's documented pattern), NOT an effect: once
   // the domains are known, a value they no longer offer — a retired fleet host,
   // a repo no session uses — is dropped. React re-runs this body with the

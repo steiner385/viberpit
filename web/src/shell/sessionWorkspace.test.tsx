@@ -79,13 +79,20 @@ vi.mock('@/session/useSessionSearch', () => ({
   useSessionSearch: () => ({ query: '', setQuery: vi.fn(), matchedIds: null, isFiltered: false }),
 }))
 
-// Settled, so the list state's "both queries have resolved" gate turns on the
-// SESSIONS query alone — which is what the load-order tests at the bottom of
-// this file are about. `useEnabledFleetHosts` is left real (it reads the
-// module-local hook, not this override), exactly as before.
+// Settled SUCCESSFULLY, so the list state's "both queries have resolved" gate
+// turns on the SESSIONS query alone — which is what the load-order tests at the
+// bottom of this file are about. `isSuccess` is the flag that gate reads (not
+// `!isPending`, which an ERRORED fleet query also satisfies while carrying no
+// data), so a stub that only says `isPending: false` describes a query that has
+// given up, and the gate correctly refuses to sanitize against it.
+// `useEnabledFleetHosts` is left real (it reads the module-local hook, not this
+// override), exactly as before.
 vi.mock('@/api/fleet', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/fleet')>()
-  return { ...actual, useFleetHosts: () => ({ data: { hosts: [] }, isPending: false }) }
+  return {
+    ...actual,
+    useFleetHosts: () => ({ data: { hosts: [] }, isPending: false, isSuccess: true, isError: false }),
+  }
 })
 
 vi.mock('@/ws/client', async (importOriginal) => {

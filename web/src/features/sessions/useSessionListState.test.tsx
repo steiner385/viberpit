@@ -17,7 +17,7 @@ import { renderHook, act, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import type { Session } from '@/api/types'
-import type { FleetHost } from '@/api/fleet'
+import { FLEET_HOSTS_KEY, type FleetHost } from '@/api/fleet'
 import { NO_FILTERS, type ListFilters } from '@/session/listFilters'
 import { nextSessionAfterClose } from '@/session/nextAfterArchive'
 
@@ -61,6 +61,10 @@ function fleetHost(name: string, over: Partial<FleetHost> = {}): FleetHost {
 
 let HOSTS: FleetHost[] = []
 let hostsGate: Promise<void> | null = null
+// `hostsFails`, when set, makes `/fleet/hosts` REJECT. The query then settles
+// into status 'error', where `isPending` is false — the leg the gate below
+// exists to cover and which every other case here resolves past.
+let hostsFails = false
 
 vi.mock('@/api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/client')>()
@@ -71,6 +75,7 @@ vi.mock('@/api/client', async (importOriginal) => {
       get: async (path: string): Promise<unknown> => {
         if (path === '/fleet/hosts') {
           if (hostsGate) await hostsGate
+          if (hostsFails) throw new Error('fleet unavailable')
           return { hosts: HOSTS }
         }
         if (path.startsWith('/sessions/search')) {
@@ -117,18 +122,25 @@ interface Props {
   sessionsLoading?: boolean
 }
 
-function makeWrapper() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+function makeQueryClient() {
+  return new QueryClient({ defaultOptions: { queries: { retry: false } } })
+}
+
+function makeWrapper(qc: QueryClient) {
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
   }
 }
 
-function mount(initialProps: Props) {
+/** `qc` is accepted (not just created here) so a test can observe the fleet
+ *  query's own status — the only non-vacuous way to wait for it to REJECT,
+ *  since an errored fleet query and a still-pending one look identical from the
+ *  hook's outputs (both give an empty environment domain). */
+function mount(initialProps: Props, qc: QueryClient = makeQueryClient()) {
   return renderHook(
     ({ sessions, sessionsLoading }: Props) =>
       useSessionListState(sessions, { sessionsLoading } satisfies SessionListStateOptions),
-    { initialProps, wrapper: makeWrapper() },
+    { initialProps, wrapper: makeWrapper(qc) },
   )
 }
 
@@ -146,6 +158,7 @@ async function mountReady(sessions: readonly Session[] = ALL) {
 beforeEach(() => {
   window.localStorage.clear()
   hostsGate = null
+  hostsFails = false
   // 'rocky' is DISABLED and 'edge' runs nothing: both must still be selectable.
   HOSTS = [fleetHost('dobby'), fleetHost('rocky', { enabled: false }), fleetHost('edge')]
 })
@@ -438,6 +451,48 @@ describe('load order', () => {
       expect(h.result.current.filterOptions.environment).toHaveLength(HOSTS.length),
     )
     expect(h.result.current.filters.environment).toBe('rocky')
+  })
+
+  /**
+   * Sibling of the case above, for the leg it cannot reach: the fleet query does
+   * not stay outstanding, it FAILS.
+   *
+   * In TanStack Query v5 `isPending` means `status === 'pending'`; an errored
+   * query is `status === 'error'`, so `isPending` is false. Gating readiness on
+   * `!fleet.isPending` therefore declared the environment domain "known" the
+   * moment `/fleet/hosts` gave up — with `fleet.data` undefined and the domain
+   * empty. The stored value was then sanitized away AND written back emptied, so
+   * it did not return when the endpoint recovered: exactly the loss the
+   * load-order gate exists to prevent, through the one door it did not cover.
+   *
+   * The wait is on the query's own status, not on the hook's outputs: a pending
+   * fleet query and a failed one produce the identical empty domain, so waiting
+   * on `filterOptions.environment` would pass before the rejection ever landed.
+   */
+  it('a FAILED fleet query neither clears the stored value nor writes the clearing back', async () => {
+    window.localStorage.setItem(ORDER_KEY, JSON.stringify({ filters: { environment: 'rocky' } }))
+    hostsFails = true
+    const qc = makeQueryClient()
+
+    const h = mount({ sessions: ALL, sessionsLoading: false }, qc)
+    await waitFor(() => expect(qc.getQueryState(FLEET_HOSTS_KEY)?.status).toBe('error'))
+    // Flush the commit (and its effects) that the settled query scheduled, so a
+    // write-back would have happened by the assertions below.
+    await act(async () => { await Promise.resolve() })
+
+    // The registry is UNKNOWN, not "known to be empty" — nothing may be dropped.
+    expect(h.result.current.filterOptions.environment).toEqual([])
+    expect(h.result.current.filters.environment).toBe('rocky')
+    expect(storedFilters()).toEqual({ environment: 'rocky' })
+
+    // …and it comes back intact once the endpoint recovers.
+    hostsFails = false
+    await act(async () => { await qc.refetchQueries({ queryKey: FLEET_HOSTS_KEY }) })
+    await waitFor(() =>
+      expect(h.result.current.filterOptions.environment).toHaveLength(HOSTS.length),
+    )
+    expect(h.result.current.filters.environment).toBe('rocky')
+    expect(sorted(h.result.current.ordering.orderedSessions)).toEqual(['busyA', 'idleB'])
   })
 })
 
