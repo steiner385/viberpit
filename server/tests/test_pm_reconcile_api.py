@@ -119,6 +119,21 @@ def test_journal_endpoint_no_state_filter_returns_all():
             "pending": 0, "applied": 1, "failed": 0, "parked": 1, "dry_run": 1}
 
 
+def test_journal_endpoint_requires_identity():
+    """The journal is the full record of what ccswitch wrote to GitHub — node ids, field
+    values, batch ids — so it is behind the same identity gate as every other PM route.
+    Asserted explicitly because the endpoint takes no path parameter and reads a table
+    no other test route touches: a missing Depends here would fail silently."""
+    with _client() as c:
+        _seed_rows()
+        assert c.get("/api/pm/reconcile/journal").status_code == 401
+        assert c.get("/api/pm/reconcile/journal?state=applied").status_code == 401
+        # ... and the same request WITH an identity succeeds, so 401 is the gate
+        # answering, not a route that is simply broken.
+        assert c.get("/api/pm/reconcile/journal",
+                     headers=IDENTITY_HEADERS).status_code == 200
+
+
 def test_journal_endpoint_limit_clamped():
     with _client() as c:
         _seed_rows()

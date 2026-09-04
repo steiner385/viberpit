@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from pydantic import BaseModel
-from sqlalchemy import func, or_, select, tuple_
+from sqlalchemy import func, select, tuple_
 
 from server.audit import record_audit
 from server.auth.middleware import current_identity
@@ -28,6 +28,8 @@ from server.db.models import (
     WorkItem,
     WorkItemDep,
 )
+from server.pm.mirror_store import deps_in_repos
+from server.pm.sync_request import request_project_sync
 
 router = APIRouter(prefix="/api/pm", tags=["pm"])
 
@@ -240,11 +242,7 @@ async def request_sync(
     db=Depends(get_db),
 ) -> dict:
     p = await _load_project(db, slug)
-    now = datetime.now(timezone.utc)
-    repos = (await db.execute(
-        select(ProjectRepo).where(ProjectRepo.project_id == p.id))).scalars().all()
-    for r in repos:
-        r.sync_requested_at = now
+    await request_project_sync(db, p.id, datetime.now(timezone.utc))
     await db.flush()
     await record_audit(db=db, type="pm.project.sync_now", identity=identity,
                        detail={"slug": slug})
@@ -313,16 +311,9 @@ async def project_deps(
 
     # Push the src_ref repo-prefix filter into SQL (issue #973) — keep only deps
     # whose src belongs to a project repo, instead of scanning the whole
-    # WorkItemDep table in Python. ``startswith`` auto-escapes each repo string so
-    # a LIKE wildcard (``_``) in a repo name can't widen the match.
-    if repos:
-        dep_rows = list((await db.execute(
-            select(WorkItemDep).where(or_(*[
-                WorkItemDep.src_ref.startswith(f"{r}#", autoescape=True)
-                for r in repos]))
-        )).scalars().all())
-    else:
-        dep_rows = []
+    # WorkItemDep table in Python. Shared with the reconciler's facts loader.
+    dep_rows = list((await db.execute(
+        select(WorkItemDep).where(deps_in_repos(repos)))).scalars().all())
 
     # Cross-product visibility (spec goal): a dep may target another onboarded
     # product's mirrored issue. Resolve dst refs that are NOT in the project-scoped

@@ -65,7 +65,7 @@ def _loop(ctx, *, mode="apply", config=None, facts=None, mutate=None, fence=True
     # calls["order"] interleaves the journal and GraphQL seams so the write-ahead
     # ordering guarantee (record BEFORE mutate, every batch) is directly assertable.
     calls = {"record": [], "applied": [], "failed": [], "park": [], "sync": [], "mutate": [],
-             "cache": [], "order": [], "prune": [], "dry_keys": []}
+             "cache": [], "order": [], "prune": [], "dry_keys": [], "prune_applied": []}
 
     async def read_config(): return mode, (config or {})
     async def list_products(): return list(products) if products is not None else [PRODUCT]
@@ -102,6 +102,7 @@ def _loop(ctx, *, mode="apply", config=None, facts=None, mutate=None, fence=True
         return set(dry_run_keys or set())
 
     async def j_prune(older): calls["prune"].append(older); return 0
+    async def j_prune_applied(older): calls["prune_applied"].append(older); return 0
     async def j_recover(older): return 0
     async def request_sync(pid): calls["sync"].append(pid)
     async def sha_fence(): return fence
@@ -114,7 +115,7 @@ def _loop(ctx, *, mode="apply", config=None, facts=None, mutate=None, fence=True
         journal_applied_keys=j_keys, journal_recover=j_recover, request_sync=request_sync,
         sha_fence=sha_fence, kill_switch=lambda: enabled, save_field_cache=save_cache,
         now_utc=lambda: T, journal_own_values=j_own, journal_dry_run_keys=j_dry_keys,
-        journal_prune_dry_run=j_prune)
+        journal_prune_dry_run=j_prune, journal_prune_applied=j_prune_applied)
     return loop, calls
 
 
@@ -614,3 +615,75 @@ def test_status_card_reads_counts():
     s = GhReconcile().status(C())
     assert "3 applied" in s.text and "1 parked" in s.text and s.level == "warn"
     assert GhReconcile().status(None).level == "idle"
+
+
+def test_field_gap_needs_a_field_id_not_just_a_cache_key():
+    """``_render`` raises UnknownOption for a cached field with no ``field_id``, so a bare
+    key must not read as "present" — a half-written cache entry would otherwise sail past
+    the gate and park every item row in the batch."""
+    assert GhReconcileLoop._field_gap(CACHE) == []
+    half = {**CACHE, "Score": {"options": {}}}                    # key present, id missing
+    assert GhReconcileLoop._field_gap(half) == ["Score"]
+    assert GhReconcileLoop._field_gap({**CACHE, "Stage": {"field_id": ""}}) == ["Stage"]
+    # A Status field we cannot address at all is reported as the field, not as its options.
+    assert GhReconcileLoop._field_gap({**CACHE, "Status": {"options": {}}}) == ["Status"]
+
+
+def test_bootstrap_repairs_exactly_what_the_gap_reports():
+    """``_ensure_fields`` and ``_field_gap`` must agree on what "missing" means. If the gate
+    refuses on a field_id the bootstrap considers present (because the KEY is there), the
+    product parks on every tick with nothing that could ever fix it."""
+    half = _facts(field_cache={**CACHE, "Score": {"options": {}}},   # key, but no field_id
+                  items=[], mirror={}, open_issue_nodes={})
+
+    def mutate(doc):
+        if doc.startswith("query { rateLimit"):
+            return RATE_OK
+        return {"data": {"createProjectV2Field": {"projectV2Field": {"id": "F_sc",
+                                                                     "name": "Score"}}}}
+
+    ctx = Ctx(); loop, calls = _loop(ctx, facts=half, mutate=mutate, config={"migrate": True})
+    asyncio.run(loop.tick())
+    assert [(m.kind, m.field) for m in sum((r[0] for r in calls["record"]), [])] == \
+        [("create_field", "Score")]
+    assert calls["cache"][-1][1]["Score"]["field_id"] == "F_sc"
+    assert ctx.gh_reconcile_counts["parked"] == 0            # repaired, not parked
+
+
+def test_document_level_error_fails_the_batch_without_ever_parking_it():
+    """A 502/abuse-limit error has no ``path``: it fails all 20 aliases at once and judges
+    none of them. Recording it as an ordinary failure would park the whole batch on the
+    second blip, so it is marked transient — visible, retried, never counted."""
+    def mutate(doc):
+        if doc.startswith("query { rateLimit"):
+            return RATE_OK
+        return {"data": None, "errors": [{"message": "502 Bad Gateway"}]}
+
+    # failure_counts says both mutations have already failed once: an ordinary failure here
+    # WOULD park them (see test_per_alias_failure_marks_failed_and_second_failure_parks).
+    key = Mutation("set_field", "PVTI_5", "Status", "Backlog", "Ready", "status:x").key()
+    ctx = Ctx(); loop, calls = _loop(ctx, mutate=mutate, failure_counts={key: 1})
+    asyncio.run(loop.tick())
+    assert calls["park"] == [] and calls["applied"] == []
+    assert [rid for rid, _ in calls["failed"]] == ["r0", "r1"]
+    assert all(err.startswith("transient: ") and "502" in err for _, err in calls["failed"])
+    assert ctx.gh_reconcile_counts["failed"] == 2 and ctx.gh_reconcile_counts["parked"] == 0
+    assert any(lvl == "warn" and kind == "gh_reconcile_error" for lvl, _, kind in ctx.events)
+
+
+def test_mode_off_clears_the_status_card():
+    """An automation that is switched off is not "12 applied, 1 parked" — leaving the last
+    run's counts stashed makes a dormant loop read as a live one."""
+    ctx = Ctx(); loop, _ = _loop(ctx)
+    asyncio.run(loop.tick())
+    assert ctx.gh_reconcile_counts["applied"] == 2
+    off, _ = _loop(ctx, mode="off")
+    asyncio.run(off.tick())
+    assert ctx.gh_reconcile_counts is None
+    assert GhReconcile().status(ctx).text == "idle"
+
+
+def test_superseded_applied_rows_are_pruned_every_cycle():
+    ctx = Ctx(); loop, calls = _loop(ctx)
+    asyncio.run(loop.tick())
+    assert calls["prune_applied"] == [T - timedelta(days=30)]

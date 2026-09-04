@@ -89,6 +89,45 @@ def test_dry_run_keys_and_prune_bound_the_journal():
     assert states == ["applied", "dry_run"]                      # the applied row survives
 
 
+def test_superseded_applied_rows_prune_without_losing_the_current_value():
+    """The bound on ``own_applied_values`` is supersession, not age: whatever we last
+    put on the board stays replayable however old it is, and only the history behind
+    it is prunable. A 24 h window instead would let a month-idle item go sticky again."""
+    db = _db()
+    old = Mutation("set_field", "PVTI_1", "Status", None, "In progress", "status:x")
+    cur = Mutation("set_field", "PVTI_1", "Status", "In progress", "Blocked", "status:x")
+    ids = journal.record_pending(db, [old, cur], batch_id="b", now=T, dry_run=False)
+    journal.mark_applied(db, [ids[0]], T - timedelta(days=40))
+    journal.mark_applied(db, [ids[1]], T - timedelta(days=30))
+    edge = journal.record_pending(db, [M2], batch_id="b", now=T, dry_run=False)
+    journal.mark_applied(db, edge, T - timedelta(days=40))
+
+    assert journal.prune_superseded_applied(db, older_than=T - timedelta(days=35)) == 1
+    db.flush()
+    # The current write survives its own age, and the edge row is untouched: it is
+    # what stops compile_edges re-adding an edge a human deleted.
+    assert journal.own_applied_values(db) == {("PVTI_1", "Status"): "Blocked"}
+    assert journal.applied_keys(db) == {cur.key(), M2.key()}
+    # Nothing left to supersede -> the prune is a no-op on the next cycle.
+    assert journal.prune_superseded_applied(db, older_than=T) == 0
+
+
+def test_transient_failures_never_accumulate_toward_a_park():
+    """A document-level GraphQL error (502, abuse limit) fails every alias in the batch
+    at once and says nothing about any single mutation — two of them must not park a
+    mutation that has never actually been rejected."""
+    db = _db()
+    for _ in range(3):
+        (rid,) = journal.record_pending(db, [M1], batch_id="b", now=T, dry_run=False)
+        journal.mark_failed(db, rid, journal.TRANSIENT_PREFIX + "502 Bad Gateway", T)
+    assert journal.failure_count(db, M1.key()) == 0
+    assert [journal.state_of(r) for r in journal.list_rows(db, state="failed", limit=9)] == \
+        ["failed"] * 3                      # still visible in the journal, just not counted
+    (rid,) = journal.record_pending(db, [M1], batch_id="b", now=T, dry_run=False)
+    journal.mark_failed(db, rid, "Field 'Status' has no option 'Ready'", T)
+    assert journal.failure_count(db, M1.key()) == 1
+
+
 def test_park_and_interrupted_recovery():
     db = _db()
     ids = journal.record_pending(db, [M1, M2], batch_id="b2", now=T, dry_run=False)
