@@ -1,0 +1,4 @@
+interface:
+  display_name: "Capture Fix Patterns"
+  short_description: "Find sibling bugs after a verified fix"
+  default_prompt: "Use $capturing-fix-patterns to audit this verified bug pattern."

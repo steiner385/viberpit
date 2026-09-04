@@ -1,0 +1,4 @@
+interface:
+  display_name: "GitHub via GraphQL"
+  short_description: "Batch GitHub reads through GraphQL"
+  default_prompt: "Use $github-via-graphql to query this GitHub repository efficiently."

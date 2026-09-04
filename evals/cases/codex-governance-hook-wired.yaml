@@ -1,0 +1,5 @@
+id: codex-governance-hook-wired
+description: Codex enables the shared governance hook for shell and patch calls.
+kind: static
+tags: [agent-config, codex, governance]
+check: 'grep -q "prod-deploy-gate.py" .codex/config.toml && grep -q "apply_patch" .codex/config.toml'

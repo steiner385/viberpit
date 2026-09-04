@@ -1,0 +1,4 @@
+interface:
+  display_name: "Eliminate Parallel Implementations"
+  short_description: "Consolidate drifting copies into one source of truth"
+  default_prompt: "Use $eliminating-parallel-implementations to audit this duplicated concept."
