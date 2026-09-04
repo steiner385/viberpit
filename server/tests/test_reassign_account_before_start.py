@@ -54,6 +54,7 @@ async def test_reassign_sets_account_before_driver_start(monkeypatch):
     _orch._drivers = {"s1": _OldDriver()}
     _orch._last_prompt = {}
     _orch._turn_restart_at = {}
+    _orch._swapping = {}
     _orch._clock = time.time
     _orch._registry = None
     _orch._suggester = None
