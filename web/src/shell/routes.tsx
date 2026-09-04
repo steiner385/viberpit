@@ -33,12 +33,19 @@
  * history stack, so Back lands on it and is immediately bounced forward again —
  * the classic redirect loop, which the Back button can never escape.
  *
- * ## Pages are hosted unchanged
+ * ## Pages are hosted unchanged — except where a page has since migrated
  *
- * This PR moves navigation, not pages: each route renders exactly the component
- * `DesktopShell`'s `mainPane` renders today, in the same container. The real
- * Sessions workspace arrives in a later PR; `SessionsPage` here is the thin
- * stand-in described in the plan.
+ * The navigation PR moved navigation, not pages: each route rendered exactly
+ * the component `DesktopShell`'s `mainPane` rendered, in the same container.
+ * That is still true of every row below with one exception. Settings is now a
+ * real page pair (`SettingsPage` / `SettingsIndexPage`, sub-spec C): the
+ * fourteen-tab `SettingsView` strip is gone, `/settings/:section` is the whole
+ * of DEC-14 rather than a prop handed to a component that also read
+ * `?section=`, and bare `/settings` is a page whose element depends on the
+ * layout mode. Every legacy Settings URL still resolves — `?section=` and
+ * `?dialog=settings` are answered by `SettingsIndexPage` and
+ * `SettingsDialogRedirect` respectively, `/accounts` and `/library` by the rows
+ * below.
  */
 /* eslint-disable react-refresh/only-export-components -- `buildRoutes` is a
    factory over the redirect components declared beside it. Splitting them apart
@@ -64,7 +71,8 @@ import { AutomationsTab } from '@/automations/AutomationsTab'
 import { InitiativesTab } from '@/initiatives/InitiativesTab'
 import { ProjectsTab } from '@/projects/ProjectsTab'
 import { InsightsView } from '@/components/InsightsView'
-import { SettingsView } from '@/components/settings/SettingsView'
+import { SettingsPage } from '@/features/settings/SettingsPage'
+import { SettingsIndexPage } from '@/features/settings/SettingsIndexPage'
 
 const SETTINGS_PATH = NAV_BY_ID.settings.path
 const INSIGHTS_PATH = NAV_BY_ID.insights.path
@@ -163,16 +171,6 @@ function ReviewPage() {
   return <ReviewView sessionId={id} onBack={() => navigate(ARCHIVED_PATH)} />
 }
 
-/**
- * `/settings/:section` (DEC-14). The path segment is handed to `SettingsView` as
- * a prop; the component still honours its own `?section=` when no prop is given,
- * so in-flight `?section=` links keep working until the Settings migration.
- */
-function SettingsPage() {
-  const { section } = useParams()
-  return <div className="p-4 overflow-y-auto h-full"><SettingsView section={section} /></div>
-}
-
 // ── redirects ────────────────────────────────────────────────────────────────
 //
 // `<Navigate>` cannot interpolate params, so every parameterised redirect needs
@@ -211,12 +209,6 @@ export function LibraryRedirect() {
   return <Navigate to={settingsSectionPath(params.get('section'), 'plugins')} replace />
 }
 
-/** `/settings?section=X` → `/settings/X`; bare `/settings` → `/settings/general`. */
-function SettingsIndexRedirect() {
-  const [params] = useSearchParams()
-  return <Navigate to={settingsSectionPath(params.get('section'))} replace />
-}
-
 /**
  * `?dialog=settings` on ANY path → `/settings/general`, param dropped.
  *
@@ -247,14 +239,20 @@ const PAGES: RouteObject[] = [
   { path: ARCHIVED_PATH, element: <ArchivedPage /> },
   { path: ARCHIVED_SESSION_ROUTE, element: <ReviewPage /> },
   { path: `${SETTINGS_PATH}/:section`, element: <SettingsPage /> },
+  // Bare `/settings` is a PAGE, not a redirect: on phone and tablet-portrait it
+  // is the grouped section list (the list half of list-then-detail). It still
+  // redirects in the other modes, and it is where the legacy `?section=` deep
+  // link is resolved — see `SettingsIndexPage`.
+  { path: SETTINGS_PATH, element: <SettingsIndexPage /> },
 
   // Legacy paths — bookmarks only. Nothing in the app links here any more.
-  { path: SETTINGS_PATH, element: <SettingsIndexRedirect /> },
   { path: '/session/:sessionId', element: <RedirectSession /> },
   { path: '/session/:sessionId/subagent/:agentId', element: <RedirectSubAgent /> },
   { path: '/review/:sessionId', element: <RedirectReview /> },
   { path: '/accounts', element: <Navigate to={settingsSectionPath('accounts')} replace /> },
-  { path: '/automation', element: <Navigate to={settingsSectionPath('automation')} replace /> },
+  // DEC-10: Automation is a top-level section, not a Settings one — the old
+  // `/automation` bookmark predates both spellings and lands on the page itself.
+  { path: '/automation', element: <Navigate to={NAV_BY_ID.automations.path} replace /> },
   { path: '/library', element: <LibraryRedirect /> },
 
   { path: '*', element: <Navigate to={SESSIONS_PATH} replace /> },

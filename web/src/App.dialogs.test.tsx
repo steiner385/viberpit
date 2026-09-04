@@ -152,8 +152,8 @@ describe('?dialog=settings — the legacy Settings modal link', () => {
 
     await waitFor(() => expect(app.path()).toBe('/settings/general'))
     expect(app.search()).not.toContain('dialog=settings')
-    // The real Settings page, with its own section strip — not a modal.
-    expect(await screen.findByRole('tablist', { name: /settings sections/i })).toBeInTheDocument()
+    // The real Settings page, with its own section nav — not a modal.
+    expect(await screen.findByRole('navigation', { name: 'Settings sections' })).toBeInTheDocument()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 })

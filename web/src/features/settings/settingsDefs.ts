@@ -1,7 +1,7 @@
 import type * as React from 'react'
 import {
   SlidersHorizontal, Palette, Bell, Play, Bookmark, FileText, ShieldCheck,
-  Users, Server, Puzzle, Sparkles, TerminalSquare, Plug, Webhook, Camera, Info,
+  Users, Server, Puzzle, Sparkles, SquareTerminal, Plug, Webhook, Camera, Info,
   type LucideIcon,
 } from 'lucide-react'
 import type { SettingsScope } from './scope'
@@ -77,7 +77,7 @@ const DEFS = [
     description: 'Installed Claude Code plugins and what each one adds.' },
   { id: 'skills',        group: 'claude',    label: 'Skills',              icon: Sparkles,          scope: 'server',  component: SkillsSection,
     description: 'Skills available to every session, with an AI draft helper.' },
-  { id: 'commands',      group: 'claude',    label: 'Commands',            icon: TerminalSquare,    scope: 'server',  component: CommandsSection,
+  { id: 'commands',      group: 'claude',    label: 'Commands',            icon: SquareTerminal,    scope: 'server',  component: CommandsSection,
     description: 'Slash commands available to every session.' },
   { id: 'mcp',           group: 'claude',    label: 'MCP servers',         icon: Plug,              scope: 'server',  component: McpSection,
     description: 'Model Context Protocol servers sessions can call, with OAuth where needed.' },
