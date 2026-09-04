@@ -108,10 +108,7 @@ describe('AccountRow — weekly reserve', () => {
   beforeEach(() => {
     vi.clearAllMocks()
 
-    vi.mocked(hooks.useSessions).mockReturnValue({
-      data: [],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useSessions>)
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult([]))
     vi.mocked(hooks.useCreateSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCreateSession>)
     vi.mocked(hooks.useRenameSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useRenameSession>)
     vi.mocked(hooks.useCloseSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCloseSession>)
@@ -138,10 +135,7 @@ describe('AccountRow — weekly reserve', () => {
 
   it('edit mode shows a reserve input prefilled with the current value', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'work', weeklyReservePct: 90 })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', weeklyReservePct: 90 })]))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
@@ -153,10 +147,7 @@ describe('AccountRow — weekly reserve', () => {
 
   it('saving sends nickname and reserve together', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'work', nickname: null, weeklyReservePct: null })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', nickname: null, weeklyReservePct: null })]))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
@@ -173,10 +164,7 @@ describe('AccountRow — weekly reserve', () => {
 
   it('clearing the reserve input sends null', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'work', weeklyReservePct: 90 })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', weeklyReservePct: 90 })]))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
@@ -191,10 +179,7 @@ describe('AccountRow — weekly reserve', () => {
 
   it('typing 0 into the reserve input and saving sends null (not 1)', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'work', weeklyReservePct: 90 })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', weeklyReservePct: 90 })]))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
@@ -245,10 +230,7 @@ describe('AccountRow — weekly reserve', () => {
 
   it('weekly usage bar renders a marker at the reserve position', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'work', weeklyReservePct: 90 })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', weeklyReservePct: 90 })]))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)

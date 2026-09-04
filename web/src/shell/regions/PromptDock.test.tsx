@@ -46,57 +46,16 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 expect.extend(toHaveNoViolations)
 
-import type { Account, ModelOption, Session } from '@/api/types'
+import type { ModelOption, Session } from '@/api/types'
 import type { GithubRepo } from '@/api/hooks'
 import type { FleetHost } from '@/api/fleet'
+import { account, fleetHost, session as makeSession } from '@/test/factories'
 
 // ── typed factories (R10: real values, never `as unknown as T`) ───────────────
+// `session`, `account` and `fleetHost` come from @/test/factories; this suite's
+// only local default is the session id it navigates to.
 
-function session(over: Partial<Session> = {}): Session {
-  return {
-    id: 'a',
-    name: 'First',
-    accountName: 'alice',
-    status: 'idle',
-    createdAt: '2026-06-19T10:00:00Z',
-    prs: [],
-    ...over,
-  }
-}
-
-function account(over: Partial<Account> = {}): Account {
-  return {
-    name: 'alice',
-    status: 'ok',
-    usage: { session: { pct: 10, resetsAt: null }, weekly: { pct: 20, resetsAt: null } },
-    liveSessions: { active: 0, idle: 0 },
-    rank: 1,
-    rankReason: null,
-    ...over,
-  }
-}
-
-function fleetHost(over: Partial<FleetHost> = {}): FleetHost {
-  return {
-    name: 'edge',
-    endpoint: 'http://edge:8760',
-    enabled: true,
-    weight: 1,
-    maxSessions: null,
-    healthy: true,
-    activeSessions: 0,
-    loadAvg: null,
-    memAvailableMb: null,
-    sha: null,
-    protocol: null,
-    lastProbeAt: null,
-    lastError: null,
-    sshHost: null,
-    repoPath: null,
-    upgrade: null,
-    ...over,
-  }
-}
+const session = (over: Partial<Session> = {}): Session => makeSession({ id: 'a', ...over })
 
 function repo(over: Partial<GithubRepo> = {}): GithubRepo {
   return {

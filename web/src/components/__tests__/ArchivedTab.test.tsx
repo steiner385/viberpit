@@ -141,10 +141,7 @@ describe('ArchivedManager', () => {
   })
 
   it('shows the empty state when there are no archived sessions', () => {
-    vi.mocked(hooks.useArchivedSessions).mockReturnValue({
-      data: [],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useArchivedSessions>)
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult([]))
 
     render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
 
@@ -154,10 +151,7 @@ describe('ArchivedManager', () => {
   // ── Archived list rows ───────────────────────────────────────────────────────
 
   it('renders archived rows with name, account, and archived date', async () => {
-    vi.mocked(hooks.useArchivedSessions).mockReturnValue({
-      data: [makeArchived({ name: 'Alpha', account: 'myaccount', archivedAt: '2026-06-15T00:00:00Z' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useArchivedSessions>)
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult([makeArchived({ name: 'Alpha', account: 'myaccount', archivedAt: '2026-06-15T00:00:00Z' })]))
 
     render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
 
@@ -168,10 +162,7 @@ describe('ArchivedManager', () => {
   })
 
   it('falls back to short id when name is empty', async () => {
-    vi.mocked(hooks.useArchivedSessions).mockReturnValue({
-      data: [makeArchived({ id: 'abc12345def', name: '' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useArchivedSessions>)
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult([makeArchived({ id: 'abc12345def', name: '' })]))
 
     render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
 
@@ -190,10 +181,7 @@ describe('ArchivedManager', () => {
   it('clicking Review calls onReviewSession with the session id', async () => {
     const user = userEvent.setup()
     const onReview = vi.fn()
-    vi.mocked(hooks.useArchivedSessions).mockReturnValue({
-      data: [makeArchived({ id: 'arc-1', name: 'Alpha' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useArchivedSessions>)
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult([makeArchived({ id: 'arc-1', name: 'Alpha' })]))
 
     render(<ArchivedManager onReviewSession={onReview} />, { wrapper })
     await user.click(screen.getByRole('button', { name: /review alpha/i }))
@@ -210,10 +198,7 @@ describe('ArchivedManager', () => {
       mutate: unarchiveMutate,
       isPending: false,
     } as unknown as ReturnType<typeof hooks.useUnarchiveSession>)
-    vi.mocked(hooks.useArchivedSessions).mockReturnValue({
-      data: [makeArchived({ id: 'arc-1', name: 'Alpha' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useArchivedSessions>)
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult([makeArchived({ id: 'arc-1', name: 'Alpha' })]))
 
     render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
     await user.click(screen.getByRole('button', { name: /unarchive alpha/i }))
@@ -225,10 +210,7 @@ describe('ArchivedManager', () => {
 
   it('clicking Delete permanently opens a confirm dialog', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useArchivedSessions).mockReturnValue({
-      data: [makeArchived({ id: 'arc-1', name: 'Alpha' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useArchivedSessions>)
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult([makeArchived({ id: 'arc-1', name: 'Alpha' })]))
 
     render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
     await user.click(screen.getByRole('button', { name: /delete alpha permanently/i }))
@@ -244,10 +226,7 @@ describe('ArchivedManager', () => {
       mutate: permDeleteMutate,
       isPending: false,
     } as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
-    vi.mocked(hooks.useArchivedSessions).mockReturnValue({
-      data: [makeArchived({ id: 'arc-1', name: 'Alpha' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useArchivedSessions>)
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult([makeArchived({ id: 'arc-1', name: 'Alpha' })]))
 
     render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
     await user.click(screen.getByRole('button', { name: /delete alpha permanently/i }))
@@ -265,10 +244,7 @@ describe('ArchivedManager', () => {
       mutate: permDeleteMutate,
       isPending: false,
     } as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
-    vi.mocked(hooks.useArchivedSessions).mockReturnValue({
-      data: [makeArchived({ id: 'arc-1', name: 'Alpha' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useArchivedSessions>)
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult([makeArchived({ id: 'arc-1', name: 'Alpha' })]))
 
     render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
     await user.click(screen.getByRole('button', { name: /delete alpha permanently/i }))
@@ -288,10 +264,7 @@ describe('ArchivedManager', () => {
       mutate: permDeleteMutate,
       isPending: false,
     } as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
-    vi.mocked(hooks.useArchivedSessions).mockReturnValue({
-      data: [makeArchived({ id: 'arc-1', name: 'Alpha' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useArchivedSessions>)
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult([makeArchived({ id: 'arc-1', name: 'Alpha' })]))
 
     render(<ArchivedManager onReviewSession={vi.fn()} />, { wrapper })
     await user.click(screen.getByRole('button', { name: /delete alpha permanently/i }))

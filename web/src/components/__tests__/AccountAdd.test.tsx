@@ -176,10 +176,7 @@ describe('AccountsManager — Add account', () => {
     const user = userEvent.setup()
     // The status query is only enabled once the add has started; model that so
     // the running state appears after clicking Add, not before.
-    vi.mocked(hooks.useAddAccountStatus).mockImplementation((enabled: boolean) => ({
-      data: makeReauthState({ state: enabled ? 'running' : 'idle' }),
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAddAccountStatus>))
+    vi.mocked(hooks.useAddAccountStatus).mockImplementation((enabled: boolean) => (queryResult(makeReauthState({ state: enabled ? 'running' : 'idle' }))))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
@@ -192,10 +189,7 @@ describe('AccountsManager — Add account', () => {
 
   it('clicking Cancel during a running add calls the cancel mutation', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAddAccountStatus).mockImplementation((enabled: boolean) => ({
-      data: makeReauthState({ state: enabled ? 'running' : 'idle' }),
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAddAccountStatus>))
+    vi.mocked(hooks.useAddAccountStatus).mockImplementation((enabled: boolean) => (queryResult(makeReauthState({ state: enabled ? 'running' : 'idle' }))))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
@@ -209,10 +203,7 @@ describe('AccountsManager — Add account', () => {
 
   it('invalidates the accounts query when the add succeeds', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAddAccountStatus).mockImplementation((enabled: boolean) => ({
-      data: makeReauthState({ state: enabled ? 'success' : 'idle' }),
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAddAccountStatus>))
+    vi.mocked(hooks.useAddAccountStatus).mockImplementation((enabled: boolean) => (queryResult(makeReauthState({ state: enabled ? 'success' : 'idle' }))))
 
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const spy = vi.spyOn(queryClient, 'invalidateQueries')

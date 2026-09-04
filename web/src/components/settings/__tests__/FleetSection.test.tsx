@@ -2,27 +2,30 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
+import type { FleetHost, HostUpgrade } from '@/api/fleet'
+import { fleetHost } from '@/test/factories'
+
 import { FleetSection } from '../FleetSection'
 
-const idle = { state: 'idle', step: null, error: null, startedAt: null, target: null }
+const idle: HostUpgrade = { state: 'idle', step: null, error: null, startedAt: null, target: null }
 
-const hosts = [
-  { name: 'dobby', endpoint: 'unix:///run/ccswitch/sessiond.sock', enabled: true,
-    weight: 100, maxSessions: null, healthy: true, activeSessions: 1,
+// Typed `FleetHost[]`, not inferred: an untyped literal narrows `lastError` to
+// `null` and `sha` to `string`, so the per-test overrides below (a skewed sha, a
+// probe error) were assignment errors the compiler never got to report.
+const hosts: FleetHost[] = [
+  fleetHost({ name: 'dobby', endpoint: 'unix:///run/ccswitch/sessiond.sock',
+    weight: 100, healthy: true, activeSessions: 1,
     loadAvg: 0.4, memAvailableMb: 8192, sha: 'def5678', protocol: 1,
-    lastProbeAt: '2026-08-21T12:00:00', lastError: null,
-    sshHost: null, repoPath: null, upgrade: idle },
+    lastProbeAt: '2026-08-21T12:00:00', upgrade: idle }),
   // Stale sha + ssh config -> in-app update is offered.
-  { name: 'rocky', endpoint: 'https://rocky.tail0dd570.ts.net:9443', enabled: true,
+  fleetHost({ name: 'rocky', endpoint: 'https://rocky.tail0dd570.ts.net:9443',
     weight: 100, maxSessions: 4, healthy: false, activeSessions: 0,
-    loadAvg: null, memAvailableMb: null, sha: 'abc1234', protocol: null,
-    lastProbeAt: '2026-08-21T12:00:00', lastError: 'ConnectionError: refused',
-    sshHost: 'deploy@rocky', repoPath: '/srv/ccswitch', upgrade: idle },
+    sha: 'abc1234', lastProbeAt: '2026-08-21T12:00:00',
+    lastError: 'ConnectionError: refused',
+    sshHost: 'deploy@rocky', repoPath: '/srv/ccswitch', upgrade: idle }),
   // Stale sha but NO ssh config -> nothing the app can do; no button.
-  { name: 'fresh', endpoint: 'https://fresh:9443', enabled: true, weight: 100,
-    maxSessions: null, healthy: null, activeSessions: null, loadAvg: null,
-    memAvailableMb: null, sha: null, protocol: null, lastProbeAt: null,
-    lastError: null, sshHost: null, repoPath: null, upgrade: idle },
+  fleetHost({ name: 'fresh', endpoint: 'https://fresh:9443', weight: 100,
+    healthy: null, activeSessions: null, upgrade: idle }),
 ]
 
 // The newest known sha comes from the deploy status query (targetSha).

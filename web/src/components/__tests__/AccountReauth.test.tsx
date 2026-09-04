@@ -114,10 +114,7 @@ async function switchToAccountsTab(user: ReturnType<typeof userEvent.setup>) {
 }
 
 function setupDefaultMocks() {
-  vi.mocked(hooks.useSessions).mockReturnValue({
-    data: [],
-    isLoading: false,
-  } as ReturnType<typeof hooks.useSessions>)
+  vi.mocked(hooks.useSessions).mockReturnValue(queryResult([]))
   vi.mocked(hooks.useCreateSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCreateSession>)
   vi.mocked(hooks.useRenameSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useRenameSession>)
   vi.mocked(hooks.useCloseSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCloseSession>)
@@ -128,10 +125,7 @@ function setupDefaultMocks() {
   vi.mocked(hooks.useGithubBranches).mockReturnValue(queryResult({ default: null, branches: [] }))
   vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings()))
   vi.mocked(hooks.useUpdateSettings).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUpdateSettings>)
-  vi.mocked(hooks.useReauthStatus).mockReturnValue({
-    data: makeReauthState({ state: 'idle' }),
-    isLoading: false,
-  } as ReturnType<typeof hooks.useReauthStatus>)
+  vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult(makeReauthState({ state: 'idle' })))
   vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult([]))
   vi.mocked(hooks.useUnarchiveSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUnarchiveSession>)
   vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
@@ -161,10 +155,7 @@ describe('AccountRow — Re-authenticate button', () => {
 
   it('shows "Re-authenticate" button for needs-relogin account', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'kindash', status: 'needs-relogin' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'needs-relogin' })]))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
@@ -174,10 +165,7 @@ describe('AccountRow — Re-authenticate button', () => {
 
   it('shows "Re-authenticate" button for needs-reauth account', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'kindash', status: 'needs-reauth' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'needs-reauth' })]))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
@@ -187,10 +175,7 @@ describe('AccountRow — Re-authenticate button', () => {
 
   it('shows a subtle reauth icon button (not the amber label) for ok account', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'kindash', status: 'ok', usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 50, resetsAt: null } } })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'ok', usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 50, resetsAt: null } } })]))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
@@ -206,10 +191,7 @@ describe('AccountRow — Re-authenticate button', () => {
 
   it('clicking Re-authenticate calls the POST hook', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'kindash', status: 'needs-relogin' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'needs-relogin' })]))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
@@ -221,14 +203,8 @@ describe('AccountRow — Re-authenticate button', () => {
 
   it('shows "on the host screen" fallback when running without a vncSession', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'kindash', status: 'needs-relogin' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
-    vi.mocked(hooks.useReauthStatus).mockReturnValue({
-      data: makeReauthState({ state: 'running', vncSession: null }),
-      isLoading: false,
-    } as ReturnType<typeof hooks.useReauthStatus>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'needs-relogin' })]))
+    vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult(makeReauthState({ state: 'running', vncSession: null })))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
@@ -239,14 +215,8 @@ describe('AccountRow — Re-authenticate button', () => {
 
   it('shows the VNC panel and in-page copy when running with a vncSession', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'kindash', status: 'needs-relogin' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
-    vi.mocked(hooks.useReauthStatus).mockReturnValue({
-      data: makeReauthState({ state: 'running', vncSession: '__reauth__' }),
-      isLoading: false,
-    } as ReturnType<typeof hooks.useReauthStatus>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'needs-relogin' })]))
+    vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult(makeReauthState({ state: 'running', vncSession: '__reauth__' })))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
@@ -257,14 +227,8 @@ describe('AccountRow — Re-authenticate button', () => {
 
   it('shows Cancel button while running', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'kindash', status: 'needs-relogin' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
-    vi.mocked(hooks.useReauthStatus).mockReturnValue({
-      data: makeReauthState({ state: 'running' }),
-      isLoading: false,
-    } as ReturnType<typeof hooks.useReauthStatus>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'needs-relogin' })]))
+    vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult(makeReauthState({ state: 'running' })))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
@@ -274,14 +238,8 @@ describe('AccountRow — Re-authenticate button', () => {
 
   it('clicking Cancel calls cancel mutation and optimistically returns to idle', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'kindash', status: 'needs-relogin' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
-    vi.mocked(hooks.useReauthStatus).mockReturnValue({
-      data: makeReauthState({ state: 'running' }),
-      isLoading: false,
-    } as ReturnType<typeof hooks.useReauthStatus>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'needs-relogin' })]))
+    vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult(makeReauthState({ state: 'running' })))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
@@ -298,14 +256,8 @@ describe('AccountRow — Re-authenticate button', () => {
 
   it('shows success indicator (✓) when status is success and invalidates accounts', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'kindash', status: 'needs-relogin' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
-    vi.mocked(hooks.useReauthStatus).mockReturnValue({
-      data: makeReauthState({ state: 'success' }),
-      isLoading: false,
-    } as ReturnType<typeof hooks.useReauthStatus>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'needs-relogin' })]))
+    vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult(makeReauthState({ state: 'success' })))
 
     // Use a stable QueryClient so we can spy on invalidateQueries
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -330,14 +282,8 @@ describe('AccountRow — Re-authenticate button', () => {
 
   it('shows error message when status is error', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'kindash', status: 'needs-relogin' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
-    vi.mocked(hooks.useReauthStatus).mockReturnValue({
-      data: makeReauthState({ state: 'error', message: 'Login failed: timeout' }),
-      isLoading: false,
-    } as ReturnType<typeof hooks.useReauthStatus>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'needs-relogin' })]))
+    vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult(makeReauthState({ state: 'error', message: 'Login failed: timeout' })))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
@@ -347,14 +293,8 @@ describe('AccountRow — Re-authenticate button', () => {
 
   it('shows error message when status is timeout (existing)', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'kindash', status: 'needs-relogin' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
-    vi.mocked(hooks.useReauthStatus).mockReturnValue({
-      data: makeReauthState({ state: 'timeout', message: 'Re-authentication timed out after 5 minutes.' }),
-      isLoading: false,
-    } as ReturnType<typeof hooks.useReauthStatus>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'needs-relogin' })]))
+    vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult(makeReauthState({ state: 'timeout', message: 'Re-authentication timed out after 5 minutes.' })))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
@@ -389,10 +329,7 @@ describe('AccountRow — Generate long-lived token / awaiting_code flow', () => 
 
   it('"Generate long-lived token" button renders on an ok (healthy) account row', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'kindash', status: 'ok', usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 50, resetsAt: null } } })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'ok', usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 50, resetsAt: null } } })]))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
@@ -402,10 +339,7 @@ describe('AccountRow — Generate long-lived token / awaiting_code flow', () => 
 
   it('clicking "Generate long-lived token" calls reauth mutate with setup_token mode', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'kindash', status: 'ok', usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 50, resetsAt: null } } })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'ok', usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 50, resetsAt: null } } })]))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
@@ -421,14 +355,8 @@ describe('AccountRow — Generate long-lived token / awaiting_code flow', () => 
   it('awaiting_code state renders authUrl anchor, Copy button, and code input', async () => {
     const user = userEvent.setup()
     const authUrl = 'https://claude.com/cai/oauth/authorize?x=1'
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'kindash', status: 'ok', usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 50, resetsAt: null } } })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
-    vi.mocked(hooks.useReauthStatus).mockReturnValue({
-      data: makeReauthState({ state: 'awaiting_code', authUrl } as Partial<ReauthState>),
-      isLoading: false,
-    } as ReturnType<typeof hooks.useReauthStatus>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'ok', usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 50, resetsAt: null } } })]))
+    vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult(makeReauthState({ state: 'awaiting_code', authUrl } as Partial<ReauthState>)))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
@@ -448,14 +376,8 @@ describe('AccountRow — Generate long-lived token / awaiting_code flow', () => 
   it('typing a code and clicking Submit calls submitCode mutate with the entered code', async () => {
     const user = userEvent.setup()
     const authUrl = 'https://claude.com/cai/oauth/authorize?x=1'
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'kindash', status: 'ok', usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 50, resetsAt: null } } })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
-    vi.mocked(hooks.useReauthStatus).mockReturnValue({
-      data: makeReauthState({ state: 'awaiting_code', authUrl } as Partial<ReauthState>),
-      isLoading: false,
-    } as ReturnType<typeof hooks.useReauthStatus>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'ok', usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 50, resetsAt: null } } })]))
+    vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult(makeReauthState({ state: 'awaiting_code', authUrl } as Partial<ReauthState>)))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
@@ -473,14 +395,8 @@ describe('AccountRow — Generate long-lived token / awaiting_code flow', () => 
 
   it('"Generate long-lived token" button is disabled while awaiting_code', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'kindash', status: 'ok', usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 50, resetsAt: null } } })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
-    vi.mocked(hooks.useReauthStatus).mockReturnValue({
-      data: makeReauthState({ state: 'awaiting_code', authUrl: 'https://claude.com/cai/oauth/authorize?x=1' } as Partial<ReauthState>),
-      isLoading: false,
-    } as ReturnType<typeof hooks.useReauthStatus>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'ok', usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 50, resetsAt: null } } })]))
+    vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult(makeReauthState({ state: 'awaiting_code', authUrl: 'https://claude.com/cai/oauth/authorize?x=1' } as Partial<ReauthState>)))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)

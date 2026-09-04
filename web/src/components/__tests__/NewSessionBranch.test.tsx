@@ -84,20 +84,10 @@ function setupMocks() {
   vi.mocked(hooks.useUpdateAccount).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useUpdateAccount>)
   vi.mocked(hooks.useDeleteAccount).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useDeleteAccount>)
   // One repo whose default branch is "main".
-  vi.mocked(hooks.useGithubRepos).mockReturnValue({
-    data: [{ nameWithOwner: 'owner/repo', defaultBranch: 'main', isPrivate: false, cloned: true }],
-    isLoading: false,
-    isError: false,
-  } as ReturnType<typeof hooks.useGithubRepos>)
+  vi.mocked(hooks.useGithubRepos).mockReturnValue(queryResult([{ nameWithOwner: 'owner/repo', defaultBranch: 'main', isPrivate: false, cloned: true }]))
   // Branches resolve with "main" as the default.
-  vi.mocked(hooks.useGithubBranches).mockReturnValue({
-    data: { default: 'main', branches: ['main', 'dev'] },
-    isLoading: false,
-  } as ReturnType<typeof hooks.useGithubBranches>)
-  vi.mocked(hooks.useSettings).mockReturnValue({
-    data: { defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null },
-    isLoading: false,
-  } as ReturnType<typeof hooks.useSettings>)
+  vi.mocked(hooks.useGithubBranches).mockReturnValue(queryResult({ default: 'main', branches: ['main', 'dev'] }))
+  vi.mocked(hooks.useSettings).mockReturnValue(queryResult({ defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null }))
   vi.mocked(hooks.useUpdateSettings).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useUpdateSettings>)
   vi.mocked(hooks.useReauthAccount).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useReauthAccount>)
   vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult({ state: 'idle', message: null, startedAt: null }))

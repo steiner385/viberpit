@@ -112,10 +112,7 @@ describe('AccountsStrip — nickname display & edit', () => {
   beforeEach(() => {
     vi.clearAllMocks()
 
-    vi.mocked(hooks.useSessions).mockReturnValue({
-      data: [],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useSessions>)
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult([]))
     vi.mocked(hooks.useCreateSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCreateSession>)
     vi.mocked(hooks.useRenameSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useRenameSession>)
     vi.mocked(hooks.useCloseSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCloseSession>)
@@ -142,10 +139,7 @@ describe('AccountsStrip — nickname display & edit', () => {
 
   it('shows account name when no nickname is set', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'work', nickname: null })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', nickname: null })]))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
@@ -155,10 +149,7 @@ describe('AccountsStrip — nickname display & edit', () => {
 
   it('shows only the nickname when set — the internal slug is never displayed', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'work', nickname: 'My Work Account' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', nickname: 'My Work Account' })]))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
@@ -170,10 +161,7 @@ describe('AccountsStrip — nickname display & edit', () => {
 
   it('shows pencil edit button with aria-label "Rename {name}"', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'work' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work' })]))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
@@ -183,10 +171,7 @@ describe('AccountsStrip — nickname display & edit', () => {
 
   it('clicking the edit button shows an input prefilled with current nickname', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'work', nickname: 'Work' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', nickname: 'Work' })]))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
@@ -200,10 +185,7 @@ describe('AccountsStrip — nickname display & edit', () => {
 
   it('saving the nickname calls the mutation with name and trimmed value', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'work', nickname: null })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', nickname: null })]))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
@@ -219,10 +201,7 @@ describe('AccountsStrip — nickname display & edit', () => {
 
   it('pressing Enter in the input saves the nickname', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'work', nickname: null })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', nickname: null })]))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
@@ -237,10 +216,7 @@ describe('AccountsStrip — nickname display & edit', () => {
 
   it('pressing Escape cancels edit without calling mutation', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'work', nickname: null })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', nickname: null })]))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
@@ -258,10 +234,7 @@ describe('AccountsStrip — nickname display & edit', () => {
 
   it('saving with empty value passes null to mutation (clears nickname)', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'work', nickname: 'Old Name' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', nickname: 'Old Name' })]))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
@@ -282,10 +255,7 @@ describe('AccountRow — null usage guard (needs-reauth accounts)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
 
-    vi.mocked(hooks.useSessions).mockReturnValue({
-      data: [],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useSessions>)
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult([]))
     vi.mocked(hooks.useCreateSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCreateSession>)
     vi.mocked(hooks.useRenameSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useRenameSession>)
     vi.mocked(hooks.useCloseSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCloseSession>)
@@ -308,10 +278,7 @@ describe('AccountRow — null usage guard (needs-reauth accounts)', () => {
   })
 
   it('renders without throwing when account.usage is null (needs-reauth)', () => {
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'kindash', status: 'needs-relogin', usage: null, nickname: null })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'needs-relogin', usage: null, nickname: null })]))
 
     // Should not throw — previously crashed with "Cannot read properties of null"
     expect(() => render(<SettingsView />, { wrapper })).not.toThrow()
@@ -319,10 +286,7 @@ describe('AccountRow — null usage guard (needs-reauth accounts)', () => {
 
   it('does not render any UsageBadge when account.usage is null', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'kindash', status: 'needs-relogin', usage: null, nickname: null })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'needs-relogin', usage: null, nickname: null })]))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
@@ -335,10 +299,7 @@ describe('AccountRow — null usage guard (needs-reauth accounts)', () => {
 
   it('still renders the account name when usage is null', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'kindash', status: 'needs-relogin', usage: null, nickname: null })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'needs-relogin', usage: null, nickname: null })]))
 
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)

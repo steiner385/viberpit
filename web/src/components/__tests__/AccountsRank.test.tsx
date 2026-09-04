@@ -102,10 +102,7 @@ describe('AccountsStrip — session counts & next-pick rank', () => {
   beforeEach(() => {
     vi.clearAllMocks()
 
-    vi.mocked(hooks.useSessions).mockReturnValue({
-      data: [],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useSessions>)
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult([]))
     vi.mocked(hooks.useCreateSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCreateSession>)
     vi.mocked(hooks.useRenameSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useRenameSession>)
     vi.mocked(hooks.useCloseSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCloseSession>)
@@ -129,10 +126,7 @@ describe('AccountsStrip — session counts & next-pick rank', () => {
 
   async function renderWith(account: Partial<Account>) {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount(account)],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount(account)]))
     render(<SettingsView />, { wrapper })
     await switchToAccountsTab(user)
   }

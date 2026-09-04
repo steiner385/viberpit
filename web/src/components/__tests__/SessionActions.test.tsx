@@ -73,10 +73,7 @@ const NOOP_MUTATION = {
 
 describe('session-card actions (via AppShell)', () => {
   beforeEach(() => {
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([]))
 
     vi.mocked(hooks.useSessions).mockReturnValue({
       data: [
@@ -122,21 +119,11 @@ describe('session-card actions (via AppShell)', () => {
       mutate: vi.fn(),
     } as unknown as ReturnType<typeof hooks.useDeleteAccount>)
 
-    vi.mocked(hooks.useGithubRepos).mockReturnValue({
-      data: [],
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof hooks.useGithubRepos>)
+    vi.mocked(hooks.useGithubRepos).mockReturnValue(queryResult([]))
 
-    vi.mocked(hooks.useGithubBranches).mockReturnValue({
-      data: { default: null, branches: [] },
-      isLoading: false,
-    } as ReturnType<typeof hooks.useGithubBranches>)
+    vi.mocked(hooks.useGithubBranches).mockReturnValue(queryResult({ default: null, branches: [] }))
 
-    vi.mocked(hooks.useSettings).mockReturnValue({
-      data: { defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null },
-      isLoading: false,
-    } as ReturnType<typeof hooks.useSettings>)
+    vi.mocked(hooks.useSettings).mockReturnValue(queryResult({ defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null }))
 
     vi.mocked(hooks.useUpdateSettings).mockReturnValue({
       mutate: vi.fn(),

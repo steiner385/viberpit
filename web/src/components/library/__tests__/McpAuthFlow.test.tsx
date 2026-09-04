@@ -19,7 +19,7 @@ import {
   useSubmitMcpRedirect,
   useCancelMcpAuth,
 } from '@/api/hooks'
-import { queryResult } from '@/test/reactQuery'
+import { idleQueryResult, mutationResult, queryResult } from '@/test/reactQuery'
 
 function makeWrapper() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -31,10 +31,10 @@ const noop = vi.fn()
 const mutate = vi.fn()
 
 function mockIdleHooks() {
-  vi.mocked(useStartMcpAuth).mockReturnValue({ mutate, isPending: false } as ReturnType<typeof useStartMcpAuth>)
-  vi.mocked(useMcpAuthStatus).mockReturnValue(queryResult(undefined))
-  vi.mocked(useSubmitMcpRedirect).mockReturnValue({ mutate: noop, isPending: false } as ReturnType<typeof useSubmitMcpRedirect>)
-  vi.mocked(useCancelMcpAuth).mockReturnValue({ mutate: noop, isPending: false } as ReturnType<typeof useCancelMcpAuth>)
+  vi.mocked(useStartMcpAuth).mockReturnValue(mutationResult({ mutate }))
+  vi.mocked(useMcpAuthStatus).mockReturnValue(idleQueryResult())
+  vi.mocked(useSubmitMcpRedirect).mockReturnValue(mutationResult({ mutate: noop }))
+  vi.mocked(useCancelMcpAuth).mockReturnValue(mutationResult({ mutate: noop }))
 }
 
 beforeEach(() => {
@@ -45,17 +45,14 @@ beforeEach(() => {
 describe('McpAuthFlow', () => {
   // (a) awaiting_redirect state renders the auth URL + a paste input
   it('shows the auth URL and a paste box when awaiting redirect', () => {
-    vi.mocked(useMcpAuthStatus).mockReturnValue({
-      data: {
+    vi.mocked(useMcpAuthStatus).mockReturnValue(queryResult({
         state: 'awaiting_redirect',
         server: 'notion',
         message: null,
         authUrl: 'https://api.notion.com/v1/oauth/authorize?client_id=abc',
         accounts: [],
         startedAt: 123,
-      },
-      isLoading: false,
-    } as ReturnType<typeof useMcpAuthStatus>)
+      }))
 
     render(
       <McpAuthFlow server="notion" accounts={['acct1']} />,
@@ -74,17 +71,14 @@ describe('McpAuthFlow', () => {
 
   // (b) success state renders "cleared for N account(s)"
   it('shows "cleared for N account(s)" on success', () => {
-    vi.mocked(useMcpAuthStatus).mockReturnValue({
-      data: {
+    vi.mocked(useMcpAuthStatus).mockReturnValue(queryResult({
         state: 'success',
         server: 'notion',
         message: null,
         authUrl: null,
         accounts: ['acct1', 'acct2'],
         startedAt: 123,
-      },
-      isLoading: false,
-    } as ReturnType<typeof useMcpAuthStatus>)
+      }))
 
     render(
       <McpAuthFlow server="notion" accounts={['acct1', 'acct2']} />,
@@ -96,17 +90,14 @@ describe('McpAuthFlow', () => {
 
   // (c) error state renders the verbatim status.message
   it('shows the verbatim message on error', () => {
-    vi.mocked(useMcpAuthStatus).mockReturnValue({
-      data: {
+    vi.mocked(useMcpAuthStatus).mockReturnValue(queryResult({
         state: 'error',
         server: 'notion',
         message: 'OAuth provider returned 401 — check credentials.',
         authUrl: null,
         accounts: [],
         startedAt: 123,
-      },
-      isLoading: false,
-    } as ReturnType<typeof useMcpAuthStatus>)
+      }))
 
     render(
       <McpAuthFlow server="notion" accounts={['acct1']} />,
@@ -129,17 +120,14 @@ describe('McpAuthFlow', () => {
 
   // (f) awaiting_redirect with no authUrl shows the unavailable fallback
   it('shows unavailable fallback when awaiting_redirect and authUrl is null', () => {
-    vi.mocked(useMcpAuthStatus).mockReturnValue({
-      data: {
+    vi.mocked(useMcpAuthStatus).mockReturnValue(queryResult({
         state: 'awaiting_redirect',
         server: 'notion',
         message: null,
         authUrl: null,
         accounts: [],
         startedAt: 123,
-      },
-      isLoading: false,
-    } as ReturnType<typeof useMcpAuthStatus>)
+      }))
 
     render(
       <McpAuthFlow server="notion" accounts={['acct1']} />,
@@ -153,17 +141,14 @@ describe('McpAuthFlow', () => {
 
   // (g) error state with null message shows the fallback "Authentication failed."
   it('shows fallback text when error state has no message', () => {
-    vi.mocked(useMcpAuthStatus).mockReturnValue({
-      data: {
+    vi.mocked(useMcpAuthStatus).mockReturnValue(queryResult({
         state: 'error',
         server: 'notion',
         message: null,
         authUrl: null,
         accounts: [],
         startedAt: 123,
-      },
-      isLoading: false,
-    } as ReturnType<typeof useMcpAuthStatus>)
+      }))
 
     render(
       <McpAuthFlow server="notion" accounts={['acct1']} />,
@@ -178,7 +163,7 @@ describe('McpAuthFlow', () => {
   // (e) clicking Fix auth calls startMcpAuth.mutate
   it('clicking Fix auth calls mutate with the server name', async () => {
     const startMutate = vi.fn()
-    vi.mocked(useStartMcpAuth).mockReturnValue({ mutate: startMutate, isPending: false } as ReturnType<typeof useStartMcpAuth>)
+    vi.mocked(useStartMcpAuth).mockReturnValue(mutationResult({ mutate: startMutate }))
 
     render(
       <McpAuthFlow server="notion" accounts={['acct1']} />,

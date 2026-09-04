@@ -52,11 +52,50 @@ export function queryResult<T>(
   return Object.assign(result, over)
 }
 
-/** An idle `useMutation` result whose `mutate`/`mutateAsync` are the given spies. */
-export function mutationResult<TData, TVariables>(
-  over: Partial<UseMutationResult<TData, Error, TVariables, unknown>> = {},
-): UseMutationResult<TData, Error, TVariables, unknown> {
-  const result: UseMutationResult<TData, Error, TVariables, unknown> = {
+/**
+ * A query that has never fetched and is not fetching — `data: undefined` with
+ * `isLoading: false`. The real shape of a `useQuery` held behind `enabled:
+ * false`, which is what the suites stubbing `{ data: undefined, isLoading:
+ * false }` meant. `queryResult` cannot express it: a settled SUCCESS always
+ * carries data.
+ */
+export function idleQueryResult<T>(): UseQueryResult<T, Error> {
+  const result: UseQueryResult<T, Error> = {
+    data: undefined,
+    dataUpdatedAt: 0,
+    error: null,
+    errorUpdatedAt: 0,
+    failureCount: 0,
+    failureReason: null,
+    errorUpdateCount: 0,
+    isError: false,
+    isFetched: false,
+    isFetchedAfterMount: false,
+    isFetching: false,
+    isLoading: false,
+    isPending: true,
+    isLoadingError: false,
+    isInitialLoading: false,
+    isPaused: false,
+    isPlaceholderData: false,
+    isRefetchError: false,
+    isRefetching: false,
+    isStale: true,
+    isSuccess: false,
+    isEnabled: false,
+    refetch: () => Promise.resolve(result),
+    status: 'pending',
+    fetchStatus: 'idle',
+    promise: new Promise<T>(() => {}),
+  }
+  return result
+}
+
+/** An idle `useMutation` result; pass `{ mutate }` to supply the spy under test. */
+export function mutationResult<TData, TError, TVariables>(
+  over: Partial<UseMutationResult<TData, TError, TVariables, unknown>> = {},
+): UseMutationResult<TData, TError, TVariables, unknown> {
+  const result: UseMutationResult<TData, TError, TVariables, unknown> = {
     context: undefined,
     data: undefined,
     error: null,

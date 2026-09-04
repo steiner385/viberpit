@@ -106,10 +106,7 @@ describe('AccountRow — extra usage credits', () => {
   beforeEach(() => {
     vi.clearAllMocks()
 
-    vi.mocked(hooks.useSessions).mockReturnValue({
-      data: [],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useSessions>)
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult([]))
     vi.mocked(hooks.useCreateSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCreateSession>)
     vi.mocked(hooks.useRenameSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useRenameSession>)
     vi.mocked(hooks.useCloseSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCloseSession>)
@@ -135,10 +132,7 @@ describe('AccountRow — extra usage credits', () => {
   })
 
   function mockAccounts(...accounts: Account[]) {
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: accounts,
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult(accounts))
   }
 
   it('edit mode shows a checkbox reflecting the current opt-in', async () => {

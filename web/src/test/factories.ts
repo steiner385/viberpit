@@ -20,6 +20,7 @@
  * default here would change what those suites exercise. Suites that want a
  * session with recorded activity pass it explicitly.
  */
+import type { FleetHost } from '@/api/fleet'
 import type { AppSettings } from '@/api/hooks'
 import type { Account, ArchivedSession, PullRequestInfo, Session } from '@/api/types'
 
@@ -108,6 +109,31 @@ export function appSettings(over: Partial<AppSettings> = {}): AppSettings {
     autoArchiveEnabled: true,
     modelApprovalAction: null,
     modelApprovalDenylist: null,
+    ...over,
+  }
+}
+
+/** A `FleetHost` with every required field filled in (healthy, never probed). */
+export function fleetHost(over: Partial<FleetHost> = {}): FleetHost {
+  const name = over.name ?? 'edge'
+  return {
+    name,
+    endpoint: `http://${name}:8760`,
+    enabled: true,
+    weight: 1,
+    maxSessions: null,
+    healthy: true,
+    activeSessions: 0,
+    loadAvg: null,
+    memAvailableMb: null,
+    sha: null,
+    checkoutSha: null,
+    protocol: null,
+    lastProbeAt: null,
+    lastError: null,
+    sshHost: null,
+    repoPath: null,
+    upgrade: null,
     ...over,
   }
 }
