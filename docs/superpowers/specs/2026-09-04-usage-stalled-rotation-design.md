@@ -65,7 +65,7 @@ one at the weekly ceiling (`session_pct` 0, `weekly_pct` 100), one disabled.
 
 ### 1. Persisted pause reason
 
-**DB (`server/db/models.py`, migration `0021_session_pause_reason`):** two nullable
+**DB (`server/db/models.py`, migration `0023_session_pause_reason`):** two nullable
 columns on `sessions`, picked up by `_reconcile_columns` on both dialects:
 
 - `paused_reason: str | None` — the `_pause_session` reason token

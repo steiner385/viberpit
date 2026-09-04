@@ -7,8 +7,8 @@ this revision is the reviewable record.
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0021_session_pause_reason"
-down_revision = "0020_journal_mutation_id_index"
+revision = "0023_session_pause_reason"
+down_revision = "0022_assistant_sessions"
 branch_labels = None
 depends_on = None
 

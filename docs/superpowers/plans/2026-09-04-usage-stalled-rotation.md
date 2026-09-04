@@ -107,7 +107,7 @@ git commit -q -F /tmp/t1-msg.txt
 
 **Files:**
 - Create: `server/sessions/usage_stall.py`
-- Create: `server/db/migrations/versions/0021_session_pause_reason.py`
+- Create: `server/db/migrations/versions/0023_session_pause_reason.py`
 - Modify: `server/db/models.py:199` (after `account_pinned`)
 - Modify: `server/sessions/types.py` (fields, `to_dict`, `from_dict`)
 - Modify: `server/sessions/orchestrator.py:6274-6323` (`_record_from_row`)
@@ -257,7 +257,7 @@ In `server/db/models.py` after the `account_pinned` column (line 199):
     paused_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
 ```
 
-Create `server/db/migrations/versions/0021_session_pause_reason.py`:
+Create `server/db/migrations/versions/0023_session_pause_reason.py`:
 
 ```python
 """Persisted pause reason + earliest reset for usage-stalled sessions.
@@ -269,7 +269,7 @@ this revision is the reviewable record.
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0021_session_pause_reason"
+revision = "0023_session_pause_reason"
 down_revision = "0020_journal_mutation_id_index"
 branch_labels = None
 depends_on = None
@@ -316,7 +316,7 @@ Expected: all pass.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add server/sessions/usage_stall.py server/sessions/types.py server/db/models.py server/db/migrations/versions/0021_session_pause_reason.py server/sessions/orchestrator.py server/api/sessions.py server/tests/test_usage_stall_wire.py
+git add server/sessions/usage_stall.py server/sessions/types.py server/db/models.py server/db/migrations/versions/0023_session_pause_reason.py server/sessions/orchestrator.py server/api/sessions.py server/tests/test_usage_stall_wire.py
 printf 'feat(sessions): persist paused_reason/paused_until and emit usageStalled\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n' > /tmp/t2-msg.txt
 git commit -q -F /tmp/t2-msg.txt
 ```
