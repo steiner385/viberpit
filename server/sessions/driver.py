@@ -20,6 +20,7 @@ from .failure import classify, TurnFailure
 from .translator import Translator
 from .permissions import PermissionRegistry, to_sdk_permission_mode
 from .questions import QuestionRegistry
+from .sdk_contract import is_turn_message
 from .status import StatusSignals, derive_status
 from .transcript_repair import repair_resumed_transcript
 
@@ -942,7 +943,11 @@ class SessionDriver:
                     log.warning("driver.idle_listen: SDK stream ended while idle session=%s",
                                 self.session_id)
                     return
-                if not self._turn_active:
+                # Only a turn's own frames open a turn. Bookkeeping frames (SessionStart
+                # hook lifecycle right after connect, task notices) are fed through
+                # without one — a turn opened on those never gets its ResultMessage and
+                # every prompt queues behind it (see sdk_contract.TURN_MESSAGES).
+                if not self._turn_active and is_turn_message(msg):
                     await self._open_autonomous_turn()
                 await self._handle_msg(msg)
                 if isinstance(msg, ResultMessage):

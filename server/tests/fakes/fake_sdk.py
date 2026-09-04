@@ -3,9 +3,30 @@ Lets the translator/driver be tested without spawning `claude` or spending quota
 from __future__ import annotations
 import asyncio
 from claude_agent_sdk import (SystemMessage, StreamEvent, AssistantMessage, UserMessage,
-                              ResultMessage, ToolUseBlock, ToolResultBlock)
+                              ResultMessage, ToolUseBlock, ToolResultBlock, HookEventMessage)
+
+from server.sessions.sdk_contract import is_turn_message
 
 # ---- builders (construct real SDK objects) -------------------------------------
+def session_start_hook_frames() -> list:
+    """What the real CLI (2.1.260, claude-agent-sdk 0.2.105) emits ~1.5 s after connect
+    with NO prompt sent, for an account config that enables plugins with SessionStart
+    hooks: hook_started / hook_response per hook, then hook_progress for an async one.
+    Captured against the real binary on 2026-09-04. No ResultMessage follows them."""
+    return [
+        HookEventMessage(subtype="hook_started", data={
+            "type": "system", "subtype": "hook_started", "hook_id": "h1",
+            "hook_name": "SessionStart:startup", "hook_event": "SessionStart"}),
+        HookEventMessage(subtype="hook_response", data={
+            "type": "system", "subtype": "hook_response", "hook_id": "h1",
+            "hook_name": "SessionStart:startup", "hook_event": "SessionStart",
+            "output": '{"async": true}'}),
+        SystemMessage(subtype="hook_progress", data={
+            "type": "system", "subtype": "hook_progress", "hook_id": "h1",
+            "hook_name": "SessionStart:startup", "hook_event": "SessionStart",
+            "stdout": '{"async": true}'}),
+    ]
+
 def sys_init(session_id: str = "sess-1", model: str | None = None) -> SystemMessage:
     data: dict = {"session_id": session_id}
     if model is not None:
@@ -80,9 +101,18 @@ class FakeSDKClient:
     is exactly what the driver's idle listener exists to drain. ``interrupt()`` does
     what the CLI does: drops the rest of the in-flight turn and flushes a synthetic
     ResultMessage so the turn still closes.
+
+    Like the real CLI, the stream is NOT quiet before the first prompt: ``__aenter__``
+    delivers ``startup_frames`` — by default the SessionStart hook frames the CLI emits
+    right after connect (``session_start_hook_frames()``) — so every driver test runs
+    against the pre-prompt stream shape that made #1009's listener open a phantom turn.
+    Pass ``startup_frames=[]`` for a silent connect.
     """
-    def __init__(self, messages, on_can_use_tool=None, server_info=None, context_usage=None):
+    def __init__(self, messages, on_can_use_tool=None, server_info=None, context_usage=None,
+                 startup_frames: list | None = None):
         self._messages = list(messages)
+        self._startup_frames = (session_start_hook_frames() if startup_frames is None
+                                else list(startup_frames))
         self.on_can_use_tool = on_can_use_tool
         self.interrupted = False
         self.permission_mode = "default"
@@ -106,7 +136,9 @@ class FakeSDKClient:
         """Deliver an autonomous (CLI-initiated) turn: no ``query()`` behind it."""
         self._deliver(messages)
 
-    async def __aenter__(self): return self
+    async def __aenter__(self):
+        self._deliver(self._startup_frames)
+        return self
     async def __aexit__(self, *exc):
         self._q().put_nowait(_EOF)
         return False
@@ -123,8 +155,10 @@ class FakeSDKClient:
             if m is _EOF:
                 return
             # "Mid-turn" = the consumer has seen this turn's first message but not yet
-            # its result; what interrupt() closes with a synthetic result.
-            self._turn_open = not isinstance(m, ResultMessage)
+            # its result; what interrupt() closes with a synthetic result. Bookkeeping
+            # frames (hook lifecycle, task notices) neither open nor close a turn.
+            if is_turn_message(m):
+                self._turn_open = not isinstance(m, ResultMessage)
             yield m
     async def interrupt(self):
         self.interrupted = True
