@@ -28,6 +28,7 @@ from ccswitch import gitrepos
 from server.auth.middleware import current_identity
 from server.sessions.search import parse_terms, session_matches
 from server.sessions.types import RESUME_ELIGIBLE_STATUSES
+from server.sessions.usage_stall import is_usage_stalled
 from server.audit import record_audit
 from server.config import get_settings
 from server.db import db_session, get_db
@@ -223,6 +224,13 @@ def _record_to_dict(
         "updatedAt": record.updated_at_iso,
         "revAt": record.rev_at,
         "accountPinned": getattr(record, "account_pinned", False),
+        # Why a needs_attention/limited session is parked, when it may recover, and
+        # the derived "stalled on usage" flag the Rotate-stalled batch button counts.
+        # Same two-serializer rule as `resumable`: SessionRecord.to_dict is the
+        # daemon→edge RPC copy, this is the browser copy — both must emit them.
+        "pausedReason": getattr(record, "paused_reason", None),
+        "pausedUntil": iso_utc(getattr(record, "paused_until", None)),
+        "usageStalled": is_usage_stalled(record.status, getattr(record, "paused_reason", None)),
         "model": getattr(record, "model", None),
         # Approval-hold model: set when the model-approval gate parks a requested
         # model pending admin sign-off (status="pending_approval" or a mid-session

@@ -6319,6 +6319,8 @@ class SessionOrchestrator:
             pr_resolution=getattr(row, "pr_resolution", None),
             pr_resolution_source=getattr(row, "pr_resolution_source", None),
             host=getattr(row, "host", None),
+            paused_reason=getattr(row, "paused_reason", None),
+            paused_until=getattr(row, "paused_until", None),
         )
         fields.update(overrides)
         return SessionRecord(**fields)
