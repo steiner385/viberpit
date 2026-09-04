@@ -172,15 +172,20 @@ class ReauthManager:
                 auth_login.prepare_reauth_profile,
                 chrome_profile,
                 extension_ids=settings.reauth_extension_id_items,
+                cookie_hosts=settings.reauth_cookie_host_items,
+                copy_login_data=settings.reauth_copy_login_data,
             )
             # Record immediately so _kill_launcher can find <temp>/launcher.pid
             manager._state._temp_profile = temp
             x11 = manager._x11() if manager._x11 else None
             spec = None
-            if x11 is not None and getattr(settings, "reauth_virtual_display", True):
-                _progress("Starting the virtual display\u2026")
-                spec = await x11.start_display(REAUTH_DISPLAY_KEY)
+            # The virtual display has to be started INSIDE the try: it is the step
+            # that has actually been failing, and starting it before the profile's
+            # try/finally left the temp profile on disk on every such failure (#1106).
             try:
+                if x11 is not None and getattr(settings, "reauth_virtual_display", True):
+                    _progress("Starting the virtual display\u2026")
+                    spec = await x11.start_display(REAUTH_DISPLAY_KEY)
                 env_extra = {
                     "BROWSER": launcher_real,
                     "CCSWITCH_REAUTH_PROFILE": temp,
@@ -234,6 +239,15 @@ class ReauthManager:
         async with self._lock:
             if self._state.state in ("running", "cancelling"):
                 raise ReauthBusy(self._state.identity, self._state.started_at)
+
+            # Reclaim anything a previously killed run left behind before adding to
+            # the pile. Boot-time sweeping alone let copies accumulate for the whole
+            # uptime of a long-lived daemon (#1106); nothing is in flight here (the
+            # busy check above just passed), and the TTL spares a fresh sibling.
+            try:
+                self.sweep_stale()
+            except Exception:
+                log.warning("reauth: pre-start sweep failed", exc_info=True)
 
             if mode == "setup_token":
                 # In-process PKCE flow — no PTY/subprocess needed.
@@ -334,10 +348,19 @@ class ReauthManager:
         self._cleanup_temp_profile(temp)
         return self.status(name)
 
-    def sweep_stale(self) -> None:
-        """Remove reauth-tmp directories older than 600 seconds.
+    def sweep_stale(self, max_age_s: float = 600.0) -> None:
+        """Remove reauth-tmp entries older than *max_age_s*.
 
-        Called at startup to clean up leftover profiles from crashed runs.
+        Covers both shapes that land there — the ``reauth-*`` profile copies and the
+        ``capture-*`` CLAUDE_CONFIG_DIRs — since it simply ages out every child.
+
+        Called at startup AND at the top of each ``start()``: a run killed with its
+        process (SIGKILL, host reboot, a dying X display) never reaches any
+        ``finally``, and a boot-only sweep leaves those copies on disk for as long
+        as the daemon happens to stay up (#1106).
+
+        The profile of a run that is still in flight is skipped, so a login that
+        outlives the TTL cannot have the directory pulled out from under it.
         """
         from ccswitch.paths import reauth_tmp_dir
 
@@ -345,18 +368,34 @@ class ReauthManager:
         if not tmp.exists():
             return
 
+        active = self._state._temp_profile
+        active_resolved = None
+        if active:
+            try:
+                active_resolved = Path(active).resolve()
+            except OSError:
+                active_resolved = None
+
         now = time.time()
         for child in tmp.iterdir():
             # Symlinks are never legitimate reauth-tmp dirs — remove without
             # following, so we can't be tricked into stat-ing or rmtree-ing
             # arbitrary filesystem paths via a dangling or crafted symlink.
+            # Checked before the in-flight comparison so a symlink can never be
+            # spared by pointing at the active profile.
             if child.is_symlink():
                 child.unlink(missing_ok=True)
                 log.info("sweep_stale: removed symlink %s", child)
                 continue
+            if active_resolved is not None:
+                try:
+                    if child.resolve() == active_resolved:
+                        continue
+                except OSError:
+                    pass
             try:
                 age = now - os.stat(child).st_mtime
-                if age > 600:
+                if age > max_age_s:
                     import shutil
                     shutil.rmtree(child, ignore_errors=True)
                     log.info("sweep_stale: removed %s (age=%.0fs)", child, age)

@@ -30,6 +30,8 @@ def _make_source(tmp_path, *, with_extensions=False):
         [
             (".google.com", "SID"),
             ("accounts.google.com", "X"),
+            ("evilgoogle.com", "lookalike"),
+            ("example.com", "unrelated"),
             (".claude.ai", "sess"),
             (".claude.com", "sess2"),
             ("platform.claude.com", "p"),
@@ -64,30 +66,99 @@ def _make_source(tmp_path, *, with_extensions=False):
     return str(src)
 
 
-def test_prepare_strips_claude_keeps_google(tmp_path, monkeypatch):
-    """Verify prepare_reauth_profile copies cookies, strips Claude/Anthropic rows, keeps Google."""
+def test_prepare_carries_no_credentials_by_default(tmp_path, monkeypatch):
+    """#1105: nothing sensitive travels unless explicitly asked for.
+
+    No cookie jar, no Local State (the key that decrypts it) and no saved
+    passwords — a leaked temp profile must not be a copy of the source's
+    credentials.
+    """
     monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
-    src = _make_source(tmp_path)
+    src = _make_source(tmp_path, with_extensions=True)
     temp = auth_login.prepare_reauth_profile(src)
     assert auth_login._under_reauth_tmp(temp)
     # 0700 dir
     assert stat.S_IMODE(os.stat(temp).st_mode) == 0o700
-    ck = Path(temp) / "Default" / "Cookies"
-    rows = sqlite3.connect(ck).execute("SELECT host_key FROM cookies").fetchall()
-    hosts = {r[0] for r in rows}
-    assert ".google.com" in hosts and "accounts.google.com" in hosts
-    assert not any("claude" in h or "anthropic" in h for h in hosts)
-    assert (Path(temp) / "Local State").exists()
-    assert stat.S_IMODE(os.stat(ck).st_mode) == 0o600
+    d = Path(temp) / "Default"
+    assert not (d / "Cookies").exists()
+    assert not (d / "Login Data").exists()
+    assert not (Path(temp) / "Local State").exists()
     auth_login.cleanup_reauth_profile(temp)
     assert not os.path.exists(temp)
 
 
-def test_prepare_missing_source_raises(tmp_path, monkeypatch):
+def test_prepare_cookie_allowlist_keeps_only_listed_hosts(tmp_path, monkeypatch):
+    """#1105: cookie_hosts is an allowlist — unlisted hosts are dropped, and
+    Claude/Anthropic stay stripped so the login starts signed out."""
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    src = _make_source(tmp_path)
+    temp = auth_login.prepare_reauth_profile(
+        src, cookie_hosts=("google.com", "claude.com")
+    )
+    ck = Path(temp) / "Default" / "Cookies"
+    hosts = {r[0] for r in sqlite3.connect(ck).execute("SELECT host_key FROM cookies")}
+    assert hosts == {".google.com", "accounts.google.com"}
+    assert "example.com" not in hosts, "unlisted host must not be carried"
+    assert (Path(temp) / "Local State").exists(), "needed to decrypt the copied v11 rows"
+    assert stat.S_IMODE(os.stat(ck).st_mode) == 0o600
+    auth_login.cleanup_reauth_profile(temp)
+
+
+def test_prepare_cookie_allowlist_does_not_match_lookalike_domain(tmp_path, monkeypatch):
+    """A suffix match must be dot-anchored: "google.com" must not keep "evilgoogle.com"."""
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    src = _make_source(tmp_path)
+    temp = auth_login.prepare_reauth_profile(src, cookie_hosts=("google.com",))
+    ck = Path(temp) / "Default" / "Cookies"
+    hosts = {r[0] for r in sqlite3.connect(ck).execute("SELECT host_key FROM cookies")}
+    assert "evilgoogle.com" not in hosts
+    auth_login.cleanup_reauth_profile(temp)
+
+
+def test_prepare_filtered_cookies_are_not_recoverable_from_the_file(tmp_path, monkeypatch):
+    """A plain DELETE leaves the row bytes in SQLite freelist pages, so a "stripped"
+    copy would still hand over the cookies it dropped. _filter_cookies VACUUMs."""
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    src = _make_source(tmp_path)
+    temp = auth_login.prepare_reauth_profile(src, cookie_hosts=("google.com",))
+    blob = (Path(temp) / "Default" / "Cookies").read_bytes()
+    assert b"evilgoogle.com" not in blob
+    assert b"console.anthropic.com" not in blob
+    auth_login.cleanup_reauth_profile(temp)
+
+
+def test_prepare_missing_source_raises_when_cookies_requested(tmp_path, monkeypatch):
     """Verify prepare_reauth_profile raises FileNotFoundError if source Cookies DB is missing."""
     monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
     with pytest.raises(FileNotFoundError):
-        auth_login.prepare_reauth_profile(str(tmp_path / "nope"))
+        auth_login.prepare_reauth_profile(
+            str(tmp_path / "nope"), cookie_hosts=("google.com",)
+        )
+
+
+def test_prepare_missing_source_is_fine_when_no_cookies_requested(tmp_path, monkeypatch):
+    """The dedicated ccswitch profile does not exist until Chrome first writes it;
+    with nothing to copy out of it that is not an error, just an empty profile."""
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    temp = auth_login.prepare_reauth_profile(str(tmp_path / "nope"))
+    assert (Path(temp) / "Default").is_dir()
+    assert not (Path(temp) / "Default" / "Cookies").exists()
+    auth_login.cleanup_reauth_profile(temp)
+
+
+def test_prepare_removes_its_temp_dir_when_a_later_step_raises(tmp_path, monkeypatch):
+    """#1106: prepare_reauth_profile owns the directory it created — a failure after
+    mkdtemp must not leave a partial profile the caller has no path to."""
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    src = _make_source(tmp_path)
+
+    def boom(*a, **kw):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(auth_login, "_copy_extensions", boom)
+    with pytest.raises(OSError):
+        auth_login.prepare_reauth_profile(src)
+    assert list(paths.reauth_tmp_dir().iterdir()) == []
 
 
 def test_cleanup_refuses_outside_reauth_tmp(tmp_path, monkeypatch):
@@ -108,10 +179,15 @@ def test_cleanup_does_not_create_reauth_tmp(tmp_path, monkeypatch):
 
 def test_prepare_copies_registered_extension_and_login_data(tmp_path, monkeypatch):
     """Spec D2: copy Extensions/<id>, Local Extension Settings/<id>, Extension State,
-    Login Data, and write a Preferences that registers ONLY the copied extension."""
+    Login Data, and write a Preferences that registers ONLY the copied extension.
+
+    Login Data is opt-in since #1105 (an OAuth login never needs it), so this asks
+    for it explicitly; the default is covered by
+    test_prepare_carries_no_credentials_by_default.
+    """
     monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
     src = _make_source(tmp_path, with_extensions=True)
-    temp = auth_login.prepare_reauth_profile(src)
+    temp = auth_login.prepare_reauth_profile(src, copy_login_data=True)
     d = Path(temp) / "Default"
     assert (d / "Extensions" / ONEP / "8.12.34.34_0" / "manifest.json").exists()
     assert (d / "Local Extension Settings" / ONEP / "000003.ldb").exists()
@@ -134,7 +210,7 @@ def test_prepare_without_extension_footprint_is_unchanged(tmp_path, monkeypatch)
     writes no Preferences at all (Chrome then starts as it does today)."""
     monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
     src = _make_source(tmp_path)
-    temp = auth_login.prepare_reauth_profile(src)
+    temp = auth_login.prepare_reauth_profile(src, cookie_hosts=("google.com",))
     d = Path(temp) / "Default"
     assert (d / "Cookies").exists()
     assert not (d / "Preferences").exists()
@@ -145,10 +221,10 @@ def test_prepare_without_extension_footprint_is_unchanged(tmp_path, monkeypatch)
 
 def test_prepare_extension_ids_empty_disables_copy(tmp_path, monkeypatch):
     """CCSWITCH_REAUTH_EXTENSIONS="" → extension_ids=() → nothing extension-related is
-    copied, but Login Data still is (it is independent of the id list)."""
+    copied, while Login Data still follows its own opt-in flag."""
     monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
     src = _make_source(tmp_path, with_extensions=True)
-    temp = auth_login.prepare_reauth_profile(src, extension_ids=())
+    temp = auth_login.prepare_reauth_profile(src, extension_ids=(), copy_login_data=True)
     d = Path(temp) / "Default"
     assert not (d / "Extensions").exists()
     assert not (d / "Preferences").exists()
@@ -173,7 +249,7 @@ def test_prepare_unreadable_preferences_skips_extensions(tmp_path, monkeypatch):
     monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
     src = _make_source(tmp_path, with_extensions=True)
     (Path(src) / "Preferences").write_text("{not json")
-    temp = auth_login.prepare_reauth_profile(src)
+    temp = auth_login.prepare_reauth_profile(src, cookie_hosts=("google.com",))
     d = Path(temp) / "Default"
     assert (d / "Cookies").exists()
     assert not (d / "Preferences").exists()
@@ -186,7 +262,7 @@ def test_prepare_malformed_preferences_structure_skips_extensions(tmp_path, monk
     monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
     src = _make_source(tmp_path, with_extensions=True)
     (Path(src) / "Preferences").write_text(json.dumps({"extensions": None}))
-    temp = auth_login.prepare_reauth_profile(src)
+    temp = auth_login.prepare_reauth_profile(src, cookie_hosts=("google.com",))
     d = Path(temp) / "Default"
     assert (d / "Cookies").exists()
     assert not (d / "Preferences").exists()
@@ -210,7 +286,7 @@ def test_prepare_extensions_dir_copy_failure_excludes_id_from_preferences(tmp_pa
         return real_copytree(s, d, *a, **kw)
 
     monkeypatch.setattr(auth_login.shutil, "copytree", fake_copytree)
-    temp = auth_login.prepare_reauth_profile(src)
+    temp = auth_login.prepare_reauth_profile(src, cookie_hosts=("google.com",))
     d = Path(temp) / "Default"
     assert (d / "Cookies").exists()
     assert not (d / "Extensions" / ONEP).exists()

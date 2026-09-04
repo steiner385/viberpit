@@ -94,6 +94,18 @@ def reauth_tmp_dir() -> Path:
     return root() / "reauth-tmp"
 
 
+def reauth_chrome_profile_dir() -> Path:
+    """Dedicated, ccswitch-owned Chrome profile used as the reauth copy source.
+
+    Deliberately NOT the operator's everyday ``~/.config/google-chrome/Default``:
+    the reauth flow copies its source into a throwaway profile, so pointing it at
+    the everyday profile puts unrelated cookies and saved passwords a single
+    missed cleanup away from disk (#1105). Using the everyday profile is opt-in
+    via ``CCSWITCH_CHROME_PROFILE``.
+    """
+    return root() / "chrome-profile" / "Default"
+
+
 def archive_dir() -> Path:
     """Directory where archived session working directories are stored.
 
