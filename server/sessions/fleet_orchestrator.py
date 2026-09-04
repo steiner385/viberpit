@@ -250,7 +250,15 @@ class FleetOrchestrator:
         - an unreachable worker is skipped with a warning: a dead worker must not
           blank the whole dashboard;
         - the primary's failure still raises, so the API keeps surfacing "daemon
-          unavailable" rather than a silently partial list.
+          unavailable" rather than a silently partial list;
+        - a DRIVERLESS primary record stamped for another host that answered and
+          did NOT list it is a stale mirror, not a session: the worker archived /
+          deleted / closed it and popped its own ``_records``, but the primary's
+          rehydrate-time copy lingers until the two-strike mirror reconcile
+          (20–40 s; unbounded while the DB is unreachable). Listing it re-surfaced
+          an archived card whose every action routed to the worker and 404'd
+          "Session not found" — the zombie-session report. A record the primary
+          actually drives (``detached`` False) is kept whatever its stamp.
         """
         names = self._router.names()
 
@@ -285,6 +293,17 @@ class FleetOrchestrator:
                     self._host_cache[rec.id] = name
                 merged[rec.id] = rec
                 served_by[rec.id] = name
+        answered = {name for name, _recs, exc in results if exc is None}
+        for sid, name in list(served_by.items()):
+            if name != self._primary:
+                continue  # served by the host that runs it — authoritative
+            rec = merged[sid]
+            owner = getattr(rec, "host", None)
+            if (owner is not None and owner != self._primary and owner in answered
+                    and getattr(rec, "detached", False)):
+                log.info("fleet.list_sessions dropped stale primary mirror "
+                         "session_id=%s owner=%s (owner answered without it)", sid, owner)
+                del merged[sid]
         return list(merged.values())
 
     def subscribe(self, session_id: str):
