@@ -252,3 +252,60 @@ class TestDirtyAlerts:
         assert counts["kept_dirty"] == 51
         assert any("kept_dirty" in r.message and "critical threshold" in r.message
                    for r in caplog.records)
+
+
+class TestOrphanedWorktrees:
+    """A worktree whose shared clone was deleted (#1003) is named, not reaped."""
+
+    def _orphan(self, tmp_path, name="orphan1", *, live=False):
+        wt = _make_wt(tmp_path, name, OLD, NOW)
+        clone = tmp_path / ".ccswitch" / "clones" / "cairnea" / "KinDash"
+        (wt / ".git").write_text(f"gitdir: {clone}/.git/worktrees/{name}\n")
+        return wt
+
+    def test_orphan_is_counted_and_never_removed(self, tmp_path):
+        self._orphan(tmp_path)
+        with patch("ccswitch.worktrees_janitor.remove_worktree") as rm:
+            counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+        assert counts["orphaned"] == 1
+        # Not miscounted as dirty — that alert would blame the wrong thing.
+        assert counts["kept_dirty"] == 0
+        assert counts["removed"] == 0
+        rm.assert_not_called()
+
+    def test_orphan_is_reported_even_for_a_live_session(self, tmp_path):
+        wt = self._orphan(tmp_path)
+        counts = sweep_orphaned_worktrees(
+            str(tmp_path), frozenset([str(wt.resolve())]), now=NOW)
+        assert counts["orphaned"] == 1
+
+    def test_orphan_alert_names_the_missing_clone_once(self, tmp_path, caplog):
+        import logging
+        for i in range(3):
+            self._orphan(tmp_path, f"orphan{i}")
+        with caplog.at_level(logging.CRITICAL, logger="ccswitch.worktrees_janitor"):
+            counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+        assert counts["orphaned"] == 3
+        criticals = [r for r in caplog.records if r.levelno == logging.CRITICAL]
+        assert len(criticals) == 1
+        assert "clones/cairnea/KinDash" in criticals[0].getMessage()
+        assert "ccswitch clones repair" in criticals[0].getMessage()
+
+    def test_healthy_worktree_is_not_an_orphan(self, tmp_path):
+        wt = _make_wt(tmp_path, "healthy", OLD, NOW)
+        record = tmp_path / ".ccswitch" / "clones" / "o" / "r" / ".git" / "worktrees" / "healthy"
+        record.mkdir(parents=True)
+        (wt / ".git").write_text(f"gitdir: {record}\n")
+        import os
+        os.utime(wt, (NOW - OLD, NOW - OLD))  # writing .git bumped the dir mtime
+        clean = {
+            "status --porcelain": _cp(0, ""),
+            "branch -vv": _cp(0, "* main [origin/main]"),
+            "remote": _cp(0, "origin"),
+            "rev-list": _cp(0, ""),
+        }
+        with patch("ccswitch.worktrees_janitor._run", side_effect=_fake_run(clean)):
+            with patch("ccswitch.worktrees_janitor.remove_worktree", return_value=True):
+                counts = sweep_orphaned_worktrees(str(tmp_path), frozenset(), now=NOW)
+        assert counts["orphaned"] == 0
+        assert counts["removed"] == 1
