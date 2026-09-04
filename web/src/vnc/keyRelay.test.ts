@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect, vi } from 'vitest'
 import { charToKeysym, relayInput, relayKeydown, XK_RETURN, XK_BACKSPACE } from './keyRelay'
 

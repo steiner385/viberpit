@@ -1,3 +1,4 @@
+// @vitest-environment node
 // web/src/ws/client.freshness.test.ts
 import { describe, it, expect } from 'vitest'
 import { QueryClient } from '@tanstack/react-query'

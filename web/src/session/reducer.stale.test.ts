@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Double-buffer during replay: a gap-heal (replayReset → replay → replayComplete)
  * must not blank the visible transcript. On replayReset the currently rendered

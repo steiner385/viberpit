@@ -1,3 +1,4 @@
+// @vitest-environment node
 // web/src/ws/liveBatch.test.ts
 import { describe, it, expect } from 'vitest'
 import { createGapState, resetSeq, handleLiveBatch } from './liveBatch'

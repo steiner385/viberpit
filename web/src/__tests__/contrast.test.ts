@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest'
 // Raw source, not the compiled sheet: we need the three authored theme blocks
 // (`:root`, the prefers-color-scheme override, `:root[data-theme="dark"]`) with

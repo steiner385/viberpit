@@ -1,3 +1,4 @@
+// @vitest-environment node
 // web/src/ws/client.backoff.test.ts
 //
 // Reconnect backoff must survive a *flapping* socket. During a deploy restart the

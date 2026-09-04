@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest'
 import { transcriptReducer, initialTranscript, OPTIMISTIC_USER_ID } from './reducer'
 

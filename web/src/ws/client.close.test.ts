@@ -1,3 +1,4 @@
+// @vitest-environment node
 // web/src/ws/client.close.test.ts
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { clientLogger } from '@/obs/logger'
