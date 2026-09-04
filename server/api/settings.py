@@ -11,18 +11,23 @@ from sqlalchemy import select
 from server.auth.middleware import current_identity
 from server.db import get_db
 from server.db.models import AppSettings, DEFAULT_MAX_ACTIVE_SESSIONS
+from server.sessions.types import VALID_SESSION_MODES
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
-# The modes the client's PERMISSION_MODES offers, in the client's order. A pytest
-# parity test reads web/src/session/permissionModes.ts and asserts equality, so
-# adding a mode on either side without the other fails CI (S20).
+# Membership lives in server.sessions.types.VALID_SESSION_MODES (the single source
+# of truth for "what modes exist"); this tuple only fixes the client's display order,
+# since a frozenset cannot carry order. A pytest parity test reads
+# web/src/session/permissionModes.ts and asserts equality, so adding a mode on either
+# side without the other fails CI (S20).
 ACCEPTED_PERMISSION_MODES: tuple[str, ...] = (
     "interactive", "auto", "allowlist", "acceptEdits", "full-auto", "bypassPermissions",
 )
-_VALID_MODES = frozenset(ACCEPTED_PERMISSION_MODES)
+assert frozenset(ACCEPTED_PERMISSION_MODES) == VALID_SESSION_MODES, \
+    "settings: ACCEPTED_PERMISSION_MODES must list exactly VALID_SESSION_MODES"
+_VALID_MODES = VALID_SESSION_MODES
 _VALID_TOOL_DETAIL = frozenset({"auto", "all-closed", "all-open"})
 # Sanity ceiling for the archived-session cap — guards against fat-fingered values.
 _MAX_ARCHIVED_CEILING = 100_000
