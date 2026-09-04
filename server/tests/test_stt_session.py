@@ -14,12 +14,16 @@ class FakeEngine:
     """Scriptable engine: `segments` is returned by speech_segments; transcribe
     returns `text` and records the byte lengths it was asked to transcribe."""
 
-    def __init__(self, segments=None, text="hello"):
+    def __init__(self, segments=None, text="hello", track_buffer: bool = False):
         self.segments = segments or []
         self.text = text
         self.transcribed: list[int] = []
+        self.track_buffer = track_buffer
 
     def speech_segments(self, pcm: bytes):
+        if self.track_buffer:
+            # Speech spans entire buffer
+            return [(0.0, len(pcm) / (RATE * 2))]
         return self.segments
 
     def transcribe(self, pcm: bytes) -> str:
@@ -28,7 +32,7 @@ class FakeEngine:
 
 
 def test_tick_without_new_audio_is_a_noop():
-    eng = FakeEngine(segments=[(0.0, 1.0)])
+    eng = FakeEngine(segments=[(0.0, 1.0)], track_buffer=True)
     s = DictationSession(eng)
     assert s.tick() == []
     s.feed(pcm(1.0))
@@ -38,7 +42,7 @@ def test_tick_without_new_audio_is_a_noop():
 
 
 def test_duplicate_interim_is_suppressed_until_text_changes():
-    eng = FakeEngine(segments=[(0.0, 1.0)])
+    eng = FakeEngine(segments=[(0.0, 1.0)], track_buffer=True)
     s = DictationSession(eng)
     s.feed(pcm(1.0)); assert s.tick() == [Event("interim", "hello")]
     s.feed(pcm(0.5)); assert s.tick() == []
@@ -102,3 +106,12 @@ def test_final_resets_interim_dedupe():
     s.feed(pcm(1.0)); assert s.tick() == [Event("interim", "hello")]
     assert s.flush() == [Event("final", "hello")]
     s.feed(pcm(1.0)); assert s.tick() == [Event("interim", "hello")]
+
+
+def test_trailing_silence_commits_even_after_an_interim_was_shown():
+    eng = FakeEngine(segments=[(0.0, 1.0)], text="hello")
+    s = DictationSession(eng)
+    s.feed(pcm(1.0)); assert s.tick() == [Event("interim", "hello")]
+    s.feed(pcm(1.0))                       # 1 s of silence after the speech
+    assert s.tick() == [Event("final", "hello")]
+    assert s.buffered_s == 1.0

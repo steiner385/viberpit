@@ -77,7 +77,7 @@ class DictationSession:
             return []
 
         last_end_s = segments[-1][1]
-        if total_s - last_end_s >= self.endpoint_silence_s and not self._last_interim:
+        if total_s - last_end_s >= self.endpoint_silence_s:
             cut = self._nbytes(last_end_s)
             text = self.engine.transcribe(buf[:cut])
             self._drop_prefix(cut)
