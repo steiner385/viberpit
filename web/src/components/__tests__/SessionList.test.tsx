@@ -625,8 +625,13 @@ describe('SessionList — no-matches state', () => {
       />,
       { wrapper },
     )
-    expect(screen.getByText(/no sessions match/i)).toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: /clear search/i }))
+    // R9 successor to the `/clear search/i` assertion this replaces (Task 10).
+    // Both halves are matched EXACTLY rather than by the old loose regexes: "No
+    // sessions match your search." and "Clear search" are both prefixes of the
+    // new strings, so /no sessions match/i and /clear search/i would have stayed
+    // green whether or not the filter-aware copy ever landed.
+    expect(screen.getByText('No sessions match your search or filters.')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Clear search and filters' }))
     expect(onClearSearch).toHaveBeenCalled()
   })
 

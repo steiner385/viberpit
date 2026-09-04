@@ -22,7 +22,34 @@ export function regionCounts(): Map<string, number> {
   return counts
 }
 
-/** The region ids on screen, sorted — the shape assertions compare against. */
-export function presentRegions(): string[] {
-  return [...regionCounts().keys()].sort()
+/**
+ * The prefix the SHELL's own regions carry (DEC-1).
+ *
+ * `app.*` regions are placed by `AppShell` and answered for by
+ * `REGION_VISIBILITY` — the shell decides whether each one is on screen, so a
+ * set-equality assertion over them is a real contract. `session.*` (and any
+ * later page namespace) is PAGE-owned: `SessionHeader` carries
+ * `data-region="session.header"` whenever the session page renders, and the
+ * shell neither places nor hides it. Comparing the shell's matrix against a
+ * document that also contains page regions would make the matrix answer for
+ * regions it does not control, so the shape assertions scope to this prefix.
+ *
+ * `visibilityMatrix.test.tsx` pins the other half: every id in `REGION_IDS`
+ * starts with this prefix. Without that, scoping here could quietly stop
+ * covering a shell region that had been renamed out of the namespace.
+ */
+export const APP_REGION_PREFIX = 'app.'
+
+/** `regionCounts()`, restricted to the shell's own regions. */
+export function appRegionCounts(): Map<string, number> {
+  const counts = new Map<string, number>()
+  for (const [id, n] of regionCounts()) {
+    if (id.startsWith(APP_REGION_PREFIX)) counts.set(id, n)
+  }
+  return counts
+}
+
+/** The SHELL region ids on screen, sorted — what the shape assertions compare. */
+export function presentAppRegions(): string[] {
+  return [...appRegionCounts().keys()].sort()
 }

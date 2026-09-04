@@ -336,8 +336,10 @@ describe('SessionListColumn — the Status/Project/Environment filters (DEC-8)',
 
     expect(screen.queryByRole('button', { name: 'Open session First' })).toBeNull()
     // The no-matches state, NOT EmptyState's "No sessions yet" — which would
-    // claim the user has never made a session.
-    expect(screen.getByText(/no sessions match/i)).toBeTruthy()
+    // claim the user has never made a session. Matched exactly: nothing here is
+    // a search, so copy that blames one is wrong even though the panel is right
+    // (R9 successor to the loose /no sessions match/i this replaces, Task 10).
+    expect(screen.getByText('No sessions match your search or filters.')).toBeTruthy()
     expect(screen.queryByText('No sessions yet')).toBeNull()
     expect(screen.getByLabelText('Status')).toHaveValue('error')
 
@@ -350,7 +352,11 @@ describe('SessionListColumn — the Status/Project/Environment filters (DEC-8)',
     renderColumn({ sessions: [session({ id: 'sess-1', name: 'First', repo: 'o/a' })] })
     await userEvent.selectOptions(screen.getByLabelText('Status'), 'error')
     // Clearing only the search would leave this button inert and the list empty.
-    await userEvent.click(screen.getByRole('button', { name: /clear search/i }))
+    // R9 successor to the `/clear search/i` name this replaces (Task 10): the
+    // label now says it clears the filters too, matched exactly so a revert to
+    // the search-only wording reddens (the old regex is a prefix of the new
+    // label and would not have).
+    await userEvent.click(screen.getByRole('button', { name: 'Clear search and filters' }))
     expect(screen.getByRole('button', { name: 'Open session First' })).toBeTruthy()
     expect(screen.getByLabelText('Status')).toHaveValue('')
   })

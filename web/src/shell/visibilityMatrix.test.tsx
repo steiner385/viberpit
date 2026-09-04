@@ -12,6 +12,7 @@
 // obeys them; neither substitutes for the other.
 import { describe, it, expect } from 'vitest'
 import { LAYOUT_MODES, type LayoutMode } from './useViewport'
+import { APP_REGION_PREFIX } from '@/test/regions'
 import { REGION_IDS, REGION_VISIBILITY, type RegionContext, type RegionId } from './AppShell'
 
 /**
@@ -136,5 +137,17 @@ describe('REGION_VISIBILITY', () => {
     }
     expect(missing, `uncovered cells:\n${missing.join('\n')}`).toEqual([])
     expect(LAYOUT_MODES.length * REGION_IDS.length).toBe(28)
+  })
+
+  // DEC-1. `AppShell.test.tsx` and `kiosk.integration.test.tsx` compare the
+  // document's regions against this matrix scoped to the `app.` prefix, because
+  // pages own their own namespaces (`session.header`, Task 10) and the matrix
+  // cannot answer for a region the shell neither places nor hides. That scoping
+  // is only sound while every region the matrix DOES answer for is inside the
+  // prefix — a shell region renamed to `chrome.dock` would silently drop out of
+  // both comparisons instead of failing. This is the assertion that stops that.
+  it('REGION_IDS is app.* only — the namespace the shape assertions scope to', () => {
+    const outside = REGION_IDS.filter((id) => !id.startsWith(APP_REGION_PREFIX))
+    expect(outside, `shell regions outside "${APP_REGION_PREFIX}": ${outside.join(', ')}`).toEqual([])
   })
 })

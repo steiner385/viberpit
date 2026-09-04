@@ -241,14 +241,19 @@ export function SessionList({
           className="rounded-lg border border-dashed border-gray-200 dark:border-gray-700 p-6 text-center"
           role="status"
         >
-          <p className="text-sm text-gray-500 dark:text-gray-400">No sessions match your search.</p>
+          {/* Copy covers BOTH causes. Task 9 gave the list status/project/
+              environment filters, so "your search" became a lie for the filter
+              case — and the reset below already clears whichever caused it
+              (`SessionListColumn` clears the query AND the filters), so the
+              wording was the only thing that was search-only. */}
+          <p className="text-sm text-gray-500 dark:text-gray-400">No sessions match your search or filters.</p>
           {onClearSearch && (
             <button
               type="button"
               onClick={onClearSearch}
               className="mt-2 text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline"
             >
-              Clear search
+              Clear search and filters
             </button>
           )}
         </div>

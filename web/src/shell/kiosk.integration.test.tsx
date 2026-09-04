@@ -126,7 +126,7 @@ vi.mock('@/hooks/useInputHold', () => ({
 }))
 
 import { LAYOUT_MODE_QUERIES, MEDIA, stubMatchMedia } from '@/test/matchMedia'
-import { regionCounts, presentRegions } from '@/test/regions'
+import { regionCounts, presentAppRegions } from '@/test/regions'
 import { ThemeProvider } from '@/shell/theme'
 import { buildRoutes } from '@/shell/routes'
 import { PageHeader } from '@/ui/PageHeader'
@@ -276,7 +276,13 @@ describe('kiosk end to end', () => {
     }
     // … and the lower bound that makes them mean something: the shell rendered,
     // the routed page is on screen, and the regions kiosk KEEPS are all there.
-    expect(presentRegions()).toEqual(['app.banners', 'app.main', 'app.overlays'])
+    //
+    // Scoped to `app.*` (DEC-1): kiosk is a statement about the regions the SHELL
+    // places, and a page region (`session.header`, Task 10) is not one of them —
+    // the routed page here is a probe with none, but an unscoped equality would
+    // break the day a real page rendered under it, for a reason kiosk is not
+    // about. Every kiosk-relevant id is still compared by equality.
+    expect(presentAppRegions()).toEqual(['app.banners', 'app.main', 'app.overlays'])
     expect(screen.getByTestId('probe-page')).toBeVisible()
     expect(screen.getByRole('heading', { level: 1, name: 'Probe' })).toBeVisible()
     app.unmount()
@@ -285,7 +291,7 @@ describe('kiosk end to end', () => {
     // is present — so the assertions above had something to find.
     renderApp(false)
     await screen.findByTestId('probe-page')
-    expect(presentRegions()).toEqual(
+    expect(presentAppRegions()).toEqual(
       ['app.banners', 'app.dock', 'app.drawer', 'app.list', 'app.main', 'app.overlays', 'app.rail'],
     )
   })

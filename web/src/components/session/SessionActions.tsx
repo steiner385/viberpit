@@ -11,18 +11,19 @@
  * and DesktopShell's MainPaneSession (desktop, light bar). The dropdown mirrors ExportMenu's
  * lightweight role="menu" pattern.
  *
- * Rename is opt-in via `canRename` and shows only on mobile (SessionView): the mobile
- * session card drops its per-row rename button to declutter, so the detail view is rename's
- * only home there. Desktop keeps rename on its always-visible sidebar card, so MainPaneSession
- * leaves `canRename` unset and the menu is delete-only — desktop is unchanged.
+ * Rename is opt-in via an `onRename` CALLBACK, not a `canRename` flag: since Task 10 the
+ * rename flow (state + the shared `features/sessions/RenameDialog` + `useRenameSession`)
+ * lives once, in `SessionHeader`, which drives it from two triggers — the click-to-rename
+ * title and this menu item. Owning a second copy of that dialog here is the
+ * parallel-implementation anti-pattern, so the copy that used to live here is gone.
+ * Callers that pass no `onRename` get a delete-only menu, exactly as before.
  */
 import { useEffect, useRef, useState } from 'react'
 import { Archive, MoreVertical, Pencil, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useCloseSession, usePermanentDeleteSession, useRenameSession } from '@/api/hooks'
+import { useCloseSession, usePermanentDeleteSession } from '@/api/hooks'
 import { PermanentDeleteDialog } from '@/components/PermanentDeleteDialog'
 import { popOverlay, pushOverlay } from '@/shell/useOverlayState'
-import { RenameDialog } from '@/features/sessions/RenameDialog'
 
 interface Props {
   sessionId: string
@@ -31,17 +32,15 @@ interface Props {
   onDone: () => void
   /** Header colour scheme: 'dark' for the mobile bar (gray-900), 'light' for desktop. */
   variant?: 'dark' | 'light'
-  /** Surface a Rename menu item (mobile only — the mobile card has no rename button). */
-  canRename?: boolean
+  /** Surface a Rename menu item that calls this. Omitted → the menu is delete-only. */
+  onRename?: () => void
 }
 
-export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark', canRename = false }: Props) {
+export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark', onRename }: Props) {
   const closeSession = useCloseSession()
   const permanentDelete = usePermanentDeleteSession()
-  const renameSession = useRenameSession()
   const [menuOpen, setMenuOpen] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
-  const [renameOpen, setRenameOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
 
   // Close the overflow menu on outside-click. Escape is the container's own
@@ -137,11 +136,11 @@ export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark
               'bg-white dark:bg-gray-900 shadow-lg py-1',
             )}
           >
-            {canRename && (
+            {onRename && (
               <button
                 type="button"
                 role="menuitem"
-                onClick={() => { setMenuOpen(false); setRenameOpen(true) }}
+                onClick={() => { setMenuOpen(false); onRename() }}
                 className={cn(
                   'flex w-full items-center gap-2 px-3 py-2 text-sm text-left',
                   'text-gray-700 dark:text-gray-200',
@@ -180,19 +179,6 @@ export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark
         />
       )}
 
-      {/* Rename reuses the shared `features/sessions/RenameDialog` — the same
-          one `AppShell` opens from a list row, so there is no parallel rename
-          UI. Unlike archive/delete it stays in place (no onDone), so the header
-          just refreshes its title. */}
-      {renameOpen && (
-        <RenameDialog
-          sessionId={sessionId}
-          currentName={sessionName}
-          onClose={() => setRenameOpen(false)}
-          onSubmit={(id, name) => renameSession.mutate({ id, name }, { onSuccess: () => setRenameOpen(false) })}
-          isPending={renameSession.isPending}
-        />
-      )}
     </div>
   )
 }

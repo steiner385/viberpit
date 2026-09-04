@@ -413,22 +413,37 @@ describe('MainPaneSession', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Ready')
   })
 
-  it('single-sources live status in the meta-strip StatusBar — no duplicate pill in the top bar', async () => {
-    // Status is shown once, by the StatusBar folded into the meta strip. The top
-    // bar deliberately carries NO card-style StatusPill (it duplicated this exact
-    // state one line down), so the title gets the full width of the nav row.
+  // R9 successor to "single-sources live status in the meta-strip StatusBar — no
+  // duplicate pill in the top bar" (Task 10).
+  //
+  // That case asserted `queryByLabelText(/^Status: /)` was ABSENT: the header had
+  // no pill, and adding one back would have been a second, drifting copy of the
+  // state the StatusBar shows. Task 10 puts a pill in `session.header` by design,
+  // so the absence assertion cannot survive — but the invariant it protected can,
+  // and it is the stronger half: there is still exactly ONE pill, exactly one
+  // `role="status"` live region, and both read the same `session/statusTier`
+  // table, so they cannot disagree. This case asserts that pair, and asserts they
+  // move TOGETHER on a live status event — which the old case never did for the
+  // pill, because there was no pill to move.
+  it('header pill and meta-strip StatusBar are one status, from one table', async () => {
     renderPane()
-    // No card-style pill anywhere in the header.
-    expect(screen.queryByLabelText(/^Status: /)).not.toBeInTheDocument()
-    // Idle on open → the StatusBar reads "Ready".
+    // Exactly one card-style pill — the header's. Not one per surface.
+    expect(screen.getAllByLabelText(/^Status: /)).toHaveLength(1)
+    // Exactly one live region — the StatusBar's. The pill is a static label, so
+    // an idle→working flip is announced once, not twice.
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+
+    // Idle on open → both read the `idle` row of the shared table.
+    expect(screen.getByLabelText('Status: Ready')).toBeInTheDocument()
     expect(screen.getByRole('status')).toHaveTextContent('Ready')
 
-    // Live status flows from the runtime: a `status` event flips the StatusBar to
-    // its working state (the sr-only label reads "Working…").
+    // Live status flows from the runtime: a `status` event moves BOTH.
     emitSessionEvent({ type: 'status', state: 'in_progress', count: 1 })
     await waitFor(() => {
       expect(screen.getByRole('status')).toHaveTextContent(/Working/)
     })
+    expect(screen.getByLabelText('Status: Working…')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Status: Ready')).not.toBeInTheDocument()
   })
 
   it('Back detaches the socket and calls onDetach', async () => {
