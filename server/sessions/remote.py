@@ -279,8 +279,12 @@ class RemoteOrchestrator:
         self._global_subs: set[asyncio.Queue] = set()
         self._global_pump: asyncio.Task | None = None
 
-    async def list_sessions(self) -> list[SessionRecord]:
-        r = await self._client.call("list_sessions")
+    async def list_sessions(self, *, include_assistant: bool = False) -> list[SessionRecord]:
+        # Sent only when True so the wire shape is unchanged for every existing caller
+        # (an older daemon simply ignores an unknown param, but not sending it at all
+        # keeps the default path byte-identical).
+        kw = {"include_assistant": True} if include_assistant else {}
+        r = await self._client.call("list_sessions", **kw)
         return [SessionRecord.from_dict(d) for d in r["sessions"]]
 
     async def pr_for(self, repo, branch) -> "PullRequestInfo | None":

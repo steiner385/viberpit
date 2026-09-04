@@ -20,8 +20,12 @@ this module replaces.
 Because it is that single funnel, it is also where one-shot helpers are pointed at a HOST-LOCAL
 scratch config dir instead of the shared account dir (``scratch_config.helper_config_dir``, #1005):
 a helper that misreads a config file through a stale sshfs view must not be able to "repair" the
-fleet's shared ``.claude.json`` by writing a default one back. Live sessions keep the real account
-dir — see ``scratch_config`` for why that asymmetry is deliberate.
+fleet's shared ``.claude.json`` by writing a default one back.
+
+Live CODING sessions keep the real account dir — see ``scratch_config`` for why that asymmetry is
+deliberate. The one live session that does not is the ASSISTANT (spec §4.1), which the orchestrator
+points at ``helper_config_dir(..., isolated=True)`` directly (not through this function, since it
+has an account name and needs no reverse mapping) to drop the operator's plugins/commands/settings.
 """
 from __future__ import annotations
 

@@ -34,7 +34,37 @@ def _import_sdk():
     return ClaudeSDKClient, ClaudeAgentOptions
 
 
-def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *, on_pre_compact=None):
+# Options the CLI-resolution layer owns outright: an overlay may never replace them.
+# Losing `cli_path` means the SDK silently spawns its own vendored, older `claude`
+# (2.1.183 vs the system 2.1.259) — a failure mode this project has hit twice, and one
+# that shows up as "unsupported model" 400s rather than as anything pointing at the path.
+_FACTORY_OWNED_KWARGS = ("cli_path", "path_to_claude_code_executable")
+
+
+def merge_options_overlay(kwargs: dict, overlay: dict | None) -> dict:
+    """Merge *overlay* over the factory's *kwargs*, keeping the factory-owned keys.
+
+    Returns a new dict; *kwargs* is not mutated.
+    """
+    if not overlay:
+        return dict(kwargs)
+    merged = {**kwargs, **overlay}
+    for key in _FACTORY_OWNED_KWARGS:
+        if key in kwargs:
+            merged[key] = kwargs[key]
+    return merged
+
+
+def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *,
+                     on_pre_compact=None, options_overlay=None):
+    """Build the real ``ClaudeSDKClient`` for one session.
+
+    *options_overlay* (assistant sessions only — see ``server/assistant/options.py``)
+    replaces individual ``ClaudeAgentOptions`` kwargs wholesale, including
+    ``system_prompt``: the ccswitch marker instructions appended below are coding-session
+    contracts (completion marker, PR marker, self-directed model request) and mean
+    nothing to the assistant.
+    """
     ClaudeSDKClient, ClaudeAgentOptions = _import_sdk()
     env = dict(os.environ, CLAUDE_CONFIG_DIR=config_dir)
     if extra_env:
@@ -43,7 +73,7 @@ def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None
     if on_pre_compact is not None:
         from claude_agent_sdk import HookMatcher
         hooks = {"PreCompact": [HookMatcher(hooks=[on_pre_compact])]}
-    opts = ClaudeAgentOptions(
+    kwargs = dict(
         cwd=cwd, env=env, can_use_tool=can_use_tool,
         permission_mode=to_sdk_permission_mode(mode),
         include_partial_messages=True, resume=resume,
@@ -56,6 +86,7 @@ def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None
         },
         **_cli_path_kwargs(),
     )
+    opts = ClaudeAgentOptions(**merge_options_overlay(kwargs, options_overlay))
     return ClaudeSDKClient(options=opts)
 
 
