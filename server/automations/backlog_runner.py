@@ -252,6 +252,11 @@ NeedsHuman = Callable[[str], Awaitable[None]]
 # stubs) reads as "closed".
 CloseOut = Callable[[str, "PullRequestInfo"], Awaitable["str | None"]]
 SessionEnded = Callable[[str], Awaitable[bool]]
+# Did the session ever run a turn? True once it recorded a ``claude_session_id``
+# (the SDK assigns one when turn ONE starts), so False proves the batch was never
+# actually attempted. Gates the give-up path: a session that never ran must not
+# escalate its issue to ``needs-human`` (#1100).
+SessionRan = Callable[[str], Awaitable[bool]]
 # Reconciliation seam: given the durably-claimed refs and the live origin_refs
 # (non-terminal runner sessions), release any dangling claim to the pool.
 Reconcile = Callable[[list[str], "set[str]"], Awaitable[None]]
@@ -329,6 +334,7 @@ class BacklogRunnerLoop:
         release: Release | None = None,
         needs_human: NeedsHuman | None = None,
         session_ended: SessionEnded | None = None,
+        session_ran: SessionRan | None = None,
         reconcile: Reconcile | None = None,
         count_candidates: CountCandidates | None = None,
         close_out: CloseOut | None = None,
@@ -349,6 +355,7 @@ class BacklogRunnerLoop:
         self._release = release or _stub_release    # remove in-progress, back to pool
         self._needs_human = needs_human or _stub_needs_human  # add needs-human + remove
         self._session_ended = session_ended         # (session_id) -> bool | None
+        self._session_ran = session_ran             # (session_id) -> bool | None
         self._reconcile = reconcile                 # (claimed_refs, live_refs) -> None
         self._count_candidates = count_candidates    # -> int (true eligible backlog size)
         self._close_out = close_out                 # (target, info) -> close merged batch issues
@@ -856,6 +863,21 @@ class BacklogRunnerLoop:
         if info is None and not st.get("handed_off") and not await self._session_alive(st):
             attempts = st.get("attempts", 0) + 1
             if attempts >= config["max_attempts"]:
+                if not await self._session_ever_ran(st):
+                    # The session never ran a single turn (no claude_session_id) —
+                    # its queue entry was lost and the reaper ended it, or it died
+                    # before turn one (#1100). Escalating that to ``needs-human``
+                    # parks a perfectly good issue for ``needs_human_retry_days`` on
+                    # evidence of nothing: no diff was attempted, no failure was
+                    # observed. RELEASE the claim instead so the issue returns to the
+                    # fresh pool and gets a real attempt.
+                    await self._release(target)
+                    await self._ctx.emit(
+                        "info",
+                        f"released {target} (session never ran a turn — not escalating)",
+                        kind="unclaimed", target=target)
+                    await self._ctx.delete_target_state(target)
+                    return
                 await self._ctx.emit("warn", f"{target}: {attempts} attempts, no PR — giving up",
                                      kind="gave_up", target=target)
                 await self._needs_human(target)
@@ -868,6 +890,23 @@ class BacklogRunnerLoop:
                 new_st["attempts"] = attempts
                 new_st["_ended"] = True
                 await self._ctx.set_target_state(target, new_st)
+
+    async def _session_ever_ran(self, st: dict) -> bool:
+        """Whether this target's session ever started turn one.
+
+        FAILS SAFE to True — "we could not prove it never ran" must keep the normal
+        give-up path, so a missing probe, a vanished row or a probe error can never
+        silently disable escalation. Only a probe that positively answers False (a
+        live row with a NULL ``claude_session_id``) diverts to the release path."""
+        sid = st.get("session_id")
+        if sid is None or self._session_ran is None:
+            return True
+        try:
+            return bool(await self._session_ran(sid))
+        except Exception:  # pragma: no cover — a probe failure must not stall the sweep
+            log.warning("backlog_runner.session_ran_probe_failed sid=%s", sid,
+                        exc_info=True)
+            return True
 
     async def _session_alive(self, st: dict) -> bool:
         """Whether the spawned session for this target is still in flight.

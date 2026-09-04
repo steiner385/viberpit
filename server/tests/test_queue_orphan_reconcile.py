@@ -12,7 +12,8 @@ from server.db.models import Session as DbSession
 from server.db.models import SessionQueue
 
 
-async def _seed_session(db_url: str, *, session_id: str, status: str = "queued") -> None:
+async def _seed_session(db_url: str, *, session_id: str, status: str = "queued",
+                        initial_prompt: str | None = "do the thing") -> None:
     from server.db import db_session, init_db
     await init_db(db_url=db_url)
     async with db_session() as db:
@@ -22,7 +23,7 @@ async def _seed_session(db_url: str, *, session_id: str, status: str = "queued")
             cwd="/tmp/orphan", repo=None, branch=None,
             permission_mode="interactive", name_is_auto=True,
             origin="backlog-runner", origin_ref="acme/repo#1", model=None,
-            initial_prompt="do the thing"))
+            initial_prompt=initial_prompt))
 
 
 def test_orphan_queued_row_is_reconciled(tmp_path):
@@ -30,7 +31,10 @@ def test_orphan_queued_row_is_reconciled(tmp_path):
     async def run():
         from server.sessions.orchestrator import SessionOrchestrator
         db_url = f"sqlite+aiosqlite:///{tmp_path / 'a.db'}"
-        await _seed_session(db_url, session_id="orphan-1")
+        # No initial_prompt → nothing to replay, so the last-resort reap applies.
+        # (The replayable branch — an intact prompt on a never-run session — is
+        # covered by test_queue_orphan_prompt_replay.py, #1100.)
+        await _seed_session(db_url, session_id="orphan-1", initial_prompt=None)
 
         orch = SessionOrchestrator()
         n = await orch._reconcile_orphan_queued()
@@ -44,7 +48,7 @@ def test_orphan_queued_row_is_reconciled(tmp_path):
             # Decision: mark ended (see _reconcile_orphan_queued docstring) — the
             # sessions row structurally lacks cols/rows/identity/attachment_ids,
             # which only ever live in the (now-gone) session_queue.params blob,
-            # so re-enqueueing would mean guessing at those values.
+            # so a replay here would have nothing to replay.
             assert row.status == "ended"
 
     asyncio.run(run())
