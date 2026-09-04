@@ -175,7 +175,7 @@ describe('NewSessionDialogHost — the 409 triage', () => {
     act(() => lastCallbacks.onError?.(new ApiRequestError(status, body)))
     return { onAllLimited }
   }
-  const submitThen409 = (body: Record<string, unknown>, onAllLimited?: ReturnType<typeof vi.fn>) =>
+  const submitThen409 = (body: Record<string, unknown>, onAllLimited?: Parameters<typeof submitThenFail>[2]) =>
     submitThenFail(409, body, onAllLimited)
 
   it('keeps the dialog OPEN for accounts_need_reauth and says so inline — no toast, no limit banner', async () => {
