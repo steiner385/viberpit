@@ -316,9 +316,13 @@ def clear_stale_registration(repo_top: str, path: str | Path) -> None:
     _run(["git", "-C", repo_top, "worktree", "remove", "-f", "-f", str(p)])
 
 
-def _lock_worktree(repo_top: str, dest: Path) -> None:
-    """Lock a freshly-created session worktree so a sibling session's global
-    ``git worktree prune`` can never reap its admin record mid-session (#177).
+def lock_worktree(repo_top: str, dest: Path) -> None:
+    """Lock a session worktree so a sibling session's global ``git worktree
+    prune`` can never reap its admin record mid-session (#177).
+
+    Public because recovery re-locks too: :mod:`ccswitch.clone_doctor` re-creates
+    admin records for worktrees orphaned by a deleted clone (#1003), and a
+    recovered record must carry the same protection a freshly-created one does.
 
     Best-effort: a lock failure is logged, not raised — the worktree is fully
     usable unlocked, just less protected against a concurrent prune.
@@ -396,7 +400,7 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
             else:
                 rd = _run(["git", "-C", repo_top, "worktree", "add", "--detach", str(dest)])
             if rd.returncode == 0:
-                _lock_worktree(repo_top, dest)
+                lock_worktree(repo_top, dest)
                 log.info("worktree.create_detached repo=%s path=%s", repo_name, dest)
                 return WorktreeInfo(str(dest), None, is_child=False, repo=repo_top)
             raise WorktreeError(f"git worktree add --detach failed: {rd.stderr.strip()}")
@@ -409,7 +413,7 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
             r = _run(["git", "-C", repo_top, "worktree", "add", "-b", child,
                       str(dest), "--", f"origin/{branch}"])
             if r.returncode == 0:
-                _lock_worktree(repo_top, dest)
+                lock_worktree(repo_top, dest)
                 log.info("worktree.create_child repo=%s base=origin/%s child=%s path=%s",
                          repo_name, branch, child, dest)
                 return WorktreeInfo(str(dest), child, is_child=True, repo=repo_top)
@@ -421,7 +425,7 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
         # be parsed as a git option (belt-and-suspenders with the '-' prefix guard above).
         r = _run(["git", "-C", repo_top, "worktree", "add", str(dest), "--", branch])
         if r.returncode == 0:
-            _lock_worktree(repo_top, dest)
+            lock_worktree(repo_top, dest)
             log.info("worktree.create repo=%s branch=%s path=%s", repo_name, branch, dest)
             return WorktreeInfo(str(dest), branch, is_child=False, repo=repo_top)
 
@@ -429,7 +433,7 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
         child = f"ccswitch/{branch}-{_short(session_id)}"
         r2 = _run(["git", "-C", repo_top, "worktree", "add", "-b", child, str(dest), "--", branch])
         if r2.returncode == 0:
-            _lock_worktree(repo_top, dest)
+            lock_worktree(repo_top, dest)
             log.info("worktree.create_child repo=%s base=%s child=%s path=%s",
                      repo_name, branch, child, dest)
             return WorktreeInfo(str(dest), child, is_child=True, repo=repo_top)

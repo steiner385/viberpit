@@ -23,10 +23,12 @@ Safety invariants
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 from pathlib import Path
 from typing import Iterator
 
+from ccswitch.clone_doctor import clone_dir_from_gitdir, read_gitdir_pointer
 from ccswitch.worktrees import remove_worktree
 
 log = logging.getLogger(__name__)
@@ -55,6 +57,23 @@ def _candidate_worktree_dirs(repo_root: str) -> Iterator[Path]:
             for wt_dir in repo_dir.iterdir():
                 if wt_dir.is_dir():
                     yield wt_dir
+
+
+def _orphaned_clone(wt: str) -> str | None:
+    """The missing clone this worktree points at, or None if its link resolves.
+
+    A session worktree is a pointer file into ``<clone>/.git/worktrees/<id>``;
+    when the shared clone is deleted, every git command in the tree fails with
+    ``fatal: not a git repository`` while the files sit there intact (#1003).
+    Undetected, such a worktree reads as "dirty" (git errors → non-empty status
+    check fails) and inflates the dirty backlog alert instead of naming the real
+    cause. Dirs with no pointer file at all are NOT orphans — they were never
+    linked worktrees.
+    """
+    gitdir = read_gitdir_pointer(wt)
+    if not gitdir or os.path.isdir(gitdir):
+        return None
+    return clone_dir_from_gitdir(gitdir) or gitdir
 
 
 def _is_clean(wt: str) -> bool:
@@ -167,12 +186,24 @@ def sweep_orphaned_worktrees(
         "kept_unpushed": 0,
         "kept_error": 0,
         "evicted_dirty": 0,
+        "orphaned": 0,
     }
+    orphan_clones: set[str] = set()
 
     for wt_path in _candidate_worktree_dirs(repo_root):
         counts["scanned"] += 1
         wt = str(wt_path.resolve())
         try:
+            # Checked BEFORE the live-session skip: an orphaned worktree is
+            # broken whether or not a session is sitting in it, and a live one is
+            # exactly the outage we want named in the journal (#1003). Never
+            # removed — the files are intact and recoverable.
+            missing_clone = _orphaned_clone(wt)
+            if missing_clone:
+                counts["orphaned"] += 1
+                orphan_clones.add(missing_clone)
+                continue
+
             if wt in live_cwds:
                 counts["kept_live"] += 1
                 continue
@@ -210,6 +241,7 @@ def sweep_orphaned_worktrees(
             counts["kept_error"] += 1
 
     _emit_dirty_alerts(counts["kept_dirty"])
+    _emit_orphan_alert(counts["orphaned"], orphan_clones)
     return counts
 
 
@@ -236,6 +268,22 @@ def _evict_dirty(wt: str, age_s: float, counts: dict[str, int]) -> None:
         counts["removed"] += 1
     else:
         counts["kept_error"] += 1
+
+
+def _emit_orphan_alert(orphaned: int, clones: set[str]) -> None:
+    """Name a deleted shared clone loudly, with the command that recovers it.
+
+    One CRITICAL line per sweep rather than per worktree: the 2026-09-03
+    incident orphaned 61 worktrees on one host from a single deletion, and 61
+    identical lines would bury the one fact that matters — which clone is gone.
+    """
+    if not orphaned:
+        return
+    log.critical(
+        "worktree-janitor: orphaned=%d worktree(s) reference missing clone(s) %s — "
+        "working files are intact; recover with `ccswitch clones repair`",
+        orphaned, ", ".join(sorted(clones)),
+    )
 
 
 def _emit_dirty_alerts(kept_dirty: int) -> None:

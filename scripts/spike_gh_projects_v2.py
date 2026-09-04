@@ -7,6 +7,7 @@ Usage:
     python scripts/spike_gh_projects_v2.py introspect
     python scripts/spike_gh_projects_v2.py mutations   # Task 2
     python scripts/spike_gh_projects_v2.py phaseb      # Phase B Task 1
+    python scripts/spike_gh_projects_v2.py optionids   # Phase B pre-apply check (#987)
 """
 from __future__ import annotations
 
@@ -263,6 +264,9 @@ def probe_mutations() -> None:  # noqa: C901 - spike probe, deliberate length
 
 
 def pat_token() -> str:
+    import os
+    if os.environ.get("CCSWITCH_GH_PROJECT_TOKEN"):
+        return os.environ["CCSWITCH_GH_PROJECT_TOKEN"]
     for line in open("/etc/ccswitch/daemon.env"):
         if line.strip().startswith("CCSWITCH_GH_PROJECT_TOKEN="):
             return line.strip().split("=", 1)[1]
@@ -336,10 +340,91 @@ def probe_phaseb() -> None:  # noqa: C901 - spike probe, deliberate length
     print(g('mutation { deleteProjectV2(input: {projectId: "%s"}) { clientMutationId } }' % pid).get("errors"))
 
 
+_OPTION_SHAPE = ('{ ... on ProjectV2SingleSelectField { id name options { id name color description } } }')
+
+
+def _status_options(g, pid: str) -> tuple[str, list[dict]]:
+    """(field_id, [{id,name,color,description}]) for the board's built-in Status field."""
+    res = g('query { node(id: "%s") { ... on ProjectV2 { field(name: "Status") %s } } }'
+            % (pid, _OPTION_SHAPE))
+    field = res["data"]["node"]["field"]
+    return field["id"], field["options"]
+
+
+def probe_optionids() -> None:  # noqa: C901 - spike probe, deliberate length
+    """Phase B pre-apply check (#987): does ``updateProjectV2Field`` with a union option list
+    preserve existing option **ids** — and with them, the item assignments that reference those
+    ids? Runs the union update twice on two scratch boards: once sending names only (what
+    ``build_update_field_options`` did through PR #986) and once echoing each preserved option's
+    existing ``id`` (``ProjectV2SingleSelectFieldOptionInput.id`` is optional but accepted).
+    Each board is deleted before the next runs."""
+    tok = pat_token()
+    g = lambda q: gh_graphql(q, token=tok)  # noqa: E731
+    uid = g('query { user(login: "%s") { id } }' % OWNER)["data"]["user"]["id"]
+    # One issue to park on a preserved column, so we can see whether the assignment survives.
+    issue = g('query { repository(owner: "%s", name: "cc-account-switcher") '
+              "{ issues(first: 1, states: OPEN) { nodes { id number } } } }"
+              % OWNER)["data"]["repository"]["issues"]["nodes"][0]
+    spec_vocab = ("Backlog", "Ready", "In progress", "Blocked", "Needs human", "Done")
+
+    for send_ids in (False, True):
+        label = "WITH existing ids" if send_ids else "names only"
+        print(f"\n########## union update, {label} ##########")
+        pid = g('mutation { createProjectV2(input: {ownerId: "%s", title: '
+                '"spike-003-optionids (safe to delete)"}) { projectV2 { id } } }'
+                % uid)["data"]["createProjectV2"]["projectV2"]["id"]
+        try:
+            field_id, before = _status_options(g, pid)
+            print("=== Status options BEFORE ===")
+            print(json.dumps(before, indent=2))
+            # Park the issue on the first built-in option (a "human column" we must preserve).
+            item = g('mutation { addProjectV2ItemById(input: {projectId: "%s", contentId: "%s"}) '
+                     '{ item { id } } }' % (pid, issue["id"]))["data"]["addProjectV2ItemById"]["item"]["id"]
+            g('mutation { updateProjectV2ItemFieldValue(input: {projectId: "%s", itemId: "%s", '
+              'fieldId: "%s", value: {singleSelectOptionId: "%s"}}) { projectV2Item { id } } }'
+              % (pid, item, field_id, before[0]["id"]))
+            print(f"parked issue #{issue['number']} on option {before[0]['name']!r} "
+                  f"(id {before[0]['id']})")
+            # The union the reconciler builds: board order preserved, missing spec names appended.
+            have = [o["name"] for o in before]
+            union = list(before) + [{"id": None, "name": n, "color": "GRAY", "description": ""}
+                                    for n in spec_vocab if n not in have]
+            rendered = ", ".join(
+                "{%sname: %s, color: %s, description: %s}"
+                % ("id: %s, " % json.dumps(o["id"]) if (send_ids and o["id"]) else "",
+                   json.dumps(o["name"]), o["color"], json.dumps(o["description"]))
+                for o in union)
+            res = g('mutation { updateProjectV2Field(input: {fieldId: "%s", singleSelectOptions: [%s]}) '
+                    "%s }" % (field_id, rendered, "{ projectV2Field %s }" % _OPTION_SHAPE))
+            if res.get("errors"):
+                print("ERRORS:", json.dumps(res["errors"], indent=2))
+                continue
+            _, after = _status_options(g, pid)
+            print("=== Status options AFTER ===")
+            print(json.dumps(after, indent=2))
+            by_name = {o["name"]: o for o in after}
+            for o in before:
+                now = by_name.get(o["name"])
+                print(f"  {o['name']!r}: id {'PRESERVED' if now and now['id'] == o['id'] else 'REGENERATED'}"
+                      f" · color {'kept' if now and now['color'] == o['color'] else 'CHANGED'}"
+                      f" · description {'kept' if now and now['description'] == o['description'] else 'CHANGED'}")
+            value = g('query { node(id: "%s") { ... on ProjectV2Item { fieldValueByName(name: "Status") '
+                      "{ ... on ProjectV2ItemFieldSingleSelectValue { name optionId } } } } }"
+                      % item)["data"]["node"]["fieldValueByName"]
+            print("item Status AFTER:", json.dumps(value))
+            print("VERDICT: item assignment",
+                  "SURVIVED" if value and value.get("name") == before[0]["name"] else "LOST")
+        finally:
+            err = g('mutation { deleteProjectV2(input: {projectId: "%s"}) { clientMutationId } }'
+                    % pid).get("errors")
+            print("cleanup deleteProjectV2 errors:", err)
+
+
 def main() -> int:
     cmd = sys.argv[1] if len(sys.argv) > 1 else "auth"
     {"auth": probe_auth, "introspect": probe_introspect,
-     "mutations": probe_mutations, "phaseb": probe_phaseb}[cmd]()
+     "mutations": probe_mutations, "phaseb": probe_phaseb,
+     "optionids": probe_optionids}[cmd]()
     return 0
 
 

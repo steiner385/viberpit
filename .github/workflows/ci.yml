@@ -12,6 +12,59 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
+  # Which halves of the tree did this PR actually touch? The frontend job is a
+  # REQUIRED check, so it must always run and report — a required check that is
+  # skipped never reports at all and blocks the PR forever. It therefore stays in
+  # the job list and gates its own expensive steps on `needs.changes.outputs.web`.
+  # The advisory e2e/lighthouse jobs are not required, so they skip outright.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      web: ${{ steps.detect.outputs.web }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Three-dot diff needs the merge base, which a shallow clone lacks.
+          fetch-depth: 0
+      - name: Detect web changes
+        id: detect
+        env:
+          # Never interpolate ${{ }} straight into the shell: workflow expressions
+          # are substituted as TEXT before bash parses the script, so a value
+          # carrying quotes/`$(…)` would execute. Both are tame here (an event name
+          # is a fixed enum; a base ref is a branch in THIS repo, not the fork's
+          # attacker-controlled head_ref), but the env indirection costs nothing
+          # and keeps the safe habit uniform across the file.
+          BASE_REF: ${{ github.base_ref }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          # Anything other than a PR (i.e. a push to master) always builds: the
+          # e2e/lighthouse baselines and the deploy watchers expect master runs.
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "web=true" >> "$GITHUB_OUTPUT"
+            echo "not a pull_request -> web=true"
+            exit 0
+          fi
+          git fetch --no-tags origin "$BASE_REF"
+          changed="$(git diff --name-only "origin/$BASE_REF...HEAD")"
+          # ci.yml itself counts as a web change so edits to THIS logic are still
+          # proven against a real frontend run before they land. Fail loud rather
+          # than silently skipping: an empty diff means the detection is broken
+          # (wrong base, shallow clone), and defaulting to "no web changes" there
+          # would green-light a REQUIRED check without running it.
+          if [ -z "$changed" ]; then
+            echo "::error::no changed files detected vs origin/$BASE_REF — refusing to guess"
+            exit 1
+          fi
+          if grep -qE '^(web/|\.github/workflows/ci\.yml$)' <<<"$changed"; then
+            web=true
+          else
+            web=false
+          fi
+          echo "web=$web" >> "$GITHUB_OUTPUT"
+          echo "web=$web ($(wc -l <<<"$changed") changed files)"
+
   lint-and-test:
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -61,39 +114,56 @@ jobs:
           retention-days: 30
 
   frontend:
+    # REQUIRED check: always runs so it always reports. When no web/ file changed
+    # every step below is a no-op and the job green-lights in ~15s instead of ~12m
+    # (measured: install 1m16s + typecheck 12s + lint 29s + vitest 9m20s + build 14s).
+    needs: changes
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - if: needs.changes.outputs.web == 'true'
+        uses: actions/checkout@v4
+      - if: needs.changes.outputs.web == 'true'
+        uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: npm
           cache-dependency-path: web/package-lock.json
       - name: Install deps
+        if: needs.changes.outputs.web == 'true'
         run: npm ci
       - name: Typecheck
+        if: needs.changes.outputs.web == 'true'
         run: npm run typecheck
       - name: Lint
+        if: needs.changes.outputs.web == 'true'
         run: npm run lint
       - name: Unit tests
+        if: needs.changes.outputs.web == 'true'
         run: npm run test -- --reporter=default --reporter=junit --outputFile=test-results/vitest.xml
       - name: Upload test results
-        if: always()
+        if: always() && needs.changes.outputs.web == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: junit-vitest
           path: web/test-results/*.xml
           retention-days: 30
       - name: Build
+        if: needs.changes.outputs.web == 'true'
         run: npm run build
+      - name: No web changes
+        if: needs.changes.outputs.web != 'true'
+        run: echo "No web/ files changed — frontend checks skipped." 
 
   e2e:
     # ADVISORY: intentionally NOT in branch-protection required checks. All 3
     # specs mock the backend via page.route, so only the built frontend runs.
     # The CI/CD Doctor tracks this job's stability and proposes graduation.
+    # Not required ⇒ safe to skip the whole job when no web/ file changed.
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -126,6 +196,9 @@ jobs:
     # built dashboard served by `vite preview` (a real production bundle, not the
     # dev server). Like the e2e job, the CI/CD Doctor tracks this job's stability
     # and proposes graduation to a required check once it's proven stable (#453).
+    # Not required ⇒ safe to skip the whole job when no web/ file changed.
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:

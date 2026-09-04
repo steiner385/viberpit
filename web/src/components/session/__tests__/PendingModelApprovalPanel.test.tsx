@@ -120,6 +120,81 @@ describe('PendingModelApprovalPanel', () => {
     expect(onDecision).toHaveBeenCalledWith('approve', 'opus')
   })
 
+  // Approve/Deny POST to /model-approval, which for a launch-time hold SPAWNS the
+  // session inside the request (worktree checkout, driver start — seconds). The
+  // panel only unmounts once that returns and the sessions query refetches, so
+  // without an in-flight state the click looked like a dead button and then the
+  // bar vanished "on its own" a few seconds later. Both buttons must disable
+  // (a second click would 409 "no pending model approval") and the clicked one
+  // must announce progress.
+  describe('in-flight decision', () => {
+    it('renders idle labels and enabled buttons when not pending', () => {
+      render(<PendingModelApprovalPanel model="fable" onDecision={vi.fn()} />)
+      const approve = screen.getByRole('button', { name: /^approve$/i })
+      const deny = screen.getByRole('button', { name: /^deny$/i })
+      expect(approve).toBeEnabled()
+      expect(deny).toBeEnabled()
+      expect(approve).not.toHaveAttribute('aria-busy')
+    })
+
+    it('disables both buttons and marks Approve busy after Approve is clicked', () => {
+      const onDecision = vi.fn()
+      const { rerender } = render(
+        <PendingModelApprovalPanel model="fable" onDecision={onDecision} pending={false} />,
+      )
+      fireEvent.click(screen.getByRole('button', { name: /^approve$/i }))
+      expect(onDecision).toHaveBeenCalledTimes(1)
+
+      // The caller's mutation flips to pending on the next render.
+      rerender(<PendingModelApprovalPanel model="fable" onDecision={onDecision} pending />)
+
+      const approve = screen.getByRole('button', { name: /approving/i })
+      expect(approve).toBeDisabled()
+      expect(approve).toHaveAttribute('aria-busy', 'true')
+      const deny = screen.getByRole('button', { name: /^deny$/i })
+      expect(deny).toBeDisabled()
+      expect(deny).not.toHaveAttribute('aria-busy')
+
+      // Disabled buttons must not fire again.
+      fireEvent.click(approve)
+      fireEvent.click(deny)
+      expect(onDecision).toHaveBeenCalledTimes(1)
+    })
+
+    it('marks Deny busy after Deny is clicked', () => {
+      const onDecision = vi.fn()
+      const { rerender } = render(
+        <PendingModelApprovalPanel model="fable" onDecision={onDecision} pending={false} />,
+      )
+      fireEvent.click(screen.getByRole('button', { name: /^deny$/i }))
+      rerender(<PendingModelApprovalPanel model="fable" onDecision={onDecision} pending />)
+
+      expect(screen.getByRole('button', { name: /denying/i })).toHaveAttribute('aria-busy', 'true')
+      expect(screen.getByRole('button', { name: /^approve$/i })).toBeDisabled()
+    })
+
+    it('also disables the picker while pending so the counter-offer cannot drift mid-flight', () => {
+      render(<PendingModelApprovalPanel model="fable" onDecision={vi.fn()} pending />)
+      expect(screen.getByLabelText(/approve as/i)).toBeDisabled()
+    })
+
+    it('re-enables everything with idle labels once pending clears (request failed)', () => {
+      const onDecision = vi.fn()
+      const { rerender } = render(
+        <PendingModelApprovalPanel model="fable" onDecision={onDecision} pending={false} />,
+      )
+      fireEvent.click(screen.getByRole('button', { name: /^approve$/i }))
+      rerender(<PendingModelApprovalPanel model="fable" onDecision={onDecision} pending />)
+      rerender(<PendingModelApprovalPanel model="fable" onDecision={onDecision} pending={false} />)
+
+      const approve = screen.getByRole('button', { name: /^approve$/i })
+      expect(approve).toBeEnabled()
+      expect(approve).not.toHaveAttribute('aria-busy')
+      expect(screen.getByRole('button', { name: /^deny$/i })).toBeEnabled()
+      expect(screen.getByLabelText(/approve as/i)).toBeEnabled()
+    })
+  })
+
   it('still respects a manual counter-offer picked after a model-prop change', () => {
     const onDecision = vi.fn()
     const { rerender } = render(

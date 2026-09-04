@@ -28,7 +28,10 @@ export type Block =
 
 // ── Turn ─────────────────────────────────────────────────────────────────────
 
-export interface Turn { id: string; role: 'user' | 'assistant'; blocks: Block[]; model?: string | null }
+// `ordinal` is the server's turn index in the `?before=` cursor space (disk replay only;
+// live turns have none). It is NOT used to order rendering — arrival order is — only to
+// verify that page merges kept order (transcript.order.violation telemetry).
+export interface Turn { id: string; role: 'user' | 'assistant'; blocks: Block[]; model?: string | null; ordinal?: number }
 
 /** A self-contained conversation thread (the main transcript, or one sub-agent). */
 export interface SubThread { turns: Turn[]; openBlockId: string | null; model?: string | null }
@@ -210,6 +213,28 @@ function findTurnIdx(turns: Turn[], id: string): number {
 }
 
 /**
+ * Pairs [prevId, thisId] of ordinal-bearing turns whose server ordinals run backwards.
+ * Turns without an ordinal (live, user, tool-result-only) are skipped, so a violation
+ * can only come from a merge that placed a disk-replayed turn out of cursor order.
+ */
+export function findOrderViolations(turns: Turn[]): Array<[string, string]> {
+  const out: Array<[string, string]> = []
+  let prev: Turn | null = null
+  for (const t of turns) {
+    if (t.ordinal === undefined) continue
+    if (prev !== null && t.ordinal < (prev.ordinal as number)) out.push([prev.id, t.id])
+    prev = t
+  }
+  return out
+}
+
+function warnIfOutOfOrder(turns: Turn[], earliestTurn: number, phase: 'prepend' | 'replay'): void {
+  const bad = findOrderViolations(turns)
+  if (bad.length === 0) return
+  clientLogger.warn(`transcript.order.violation count=${bad.length} first=${bad[0][0]}>${bad[0][1]} earliestTurn=${earliestTurn} phase=${phase}`)
+}
+
+/**
  * Return a new turns array with the turn at `idx` replaced by the result of
  * `fn`. Turns before and after are referentially identical (important for
  * React.memo stability).
@@ -275,11 +300,15 @@ function resolveQuestionInPlace(state: TranscriptState, questionId: string, answ
 
 /**
  * Ensure a turn exists at turnId; if it doesn't, append an empty assistant
- * turn. Returns [nextTurns, idx].
+ * turn at the TAIL and count it. A block event with no preceding turnStart means the
+ * frame reached us out of order (an attach re-emit of a pending ask/error whose turn
+ * fell outside the replay window, a delta for an evicted turn) — the fabricated turn
+ * may render far from where its content belongs. Returns [nextTurns, idx].
  */
-function ensureAssistantTurn(turns: Turn[], turnId: string): [Turn[], number] {
+function ensureAssistantTurn(turns: Turn[], turnId: string, evType: string): [Turn[], number] {
   const idx = findTurnIdx(turns, turnId)
   if (idx !== -1) return [turns, idx]
+  clientLogger.warn(`transcript.turn.fabricated type=${evType} turnId=${turnId}`)
   return [[...turns, { id: turnId, role: 'assistant', blocks: [] }], turns.length]
 }
 
@@ -331,7 +360,7 @@ function applyToThread(thread: SubThread, ev: BlockEvent): SubThread {
 
     case 'textDelta': {
       const { turnId, text } = ev
-      const [turns, idx] = ensureAssistantTurn(thread.turns, turnId)
+      const [turns, idx] = ensureAssistantTurn(thread.turns, turnId, ev.type)
       const turn = turns[idx]
       const openBlock = thread.openBlockId
         ? turn.blocks.find((b) => b.id === thread.openBlockId && b.kind === 'text')
@@ -353,7 +382,7 @@ function applyToThread(thread: SubThread, ev: BlockEvent): SubThread {
 
     case 'thinkingDelta': {
       const { turnId, text } = ev
-      const [turns, idx] = ensureAssistantTurn(thread.turns, turnId)
+      const [turns, idx] = ensureAssistantTurn(thread.turns, turnId, ev.type)
       const turn = turns[idx]
       const openBlock = thread.openBlockId
         ? turn.blocks.find((b) => b.id === thread.openBlockId && b.kind === 'thinking')
@@ -375,7 +404,7 @@ function applyToThread(thread: SubThread, ev: BlockEvent): SubThread {
 
     case 'toolCall': {
       const { turnId, toolId, name, toolKind, input } = ev
-      const [turns, idx] = ensureAssistantTurn(thread.turns, turnId)
+      const [turns, idx] = ensureAssistantTurn(thread.turns, turnId, ev.type)
       const turn = turns[idx]
       if (turn.blocks.some((b) => b.kind === 'tool' && b.toolId === toolId)) {
         // Idempotent replay of a tool we already have. Return the *same* thread
@@ -530,9 +559,10 @@ export function transcriptReducer(
         if (state.openBlockId === null) return state
         return { ...state, openBlockId: null, latestSuggestions: [] }
       }
+      const ordinal = ev.turnIndex ?? undefined
       return {
         ...state,
-        turns: [...state.turns, { id: turnId, role: 'assistant', blocks: [] }],
+        turns: [...state.turns, { id: turnId, role: 'assistant', blocks: [], ...(ordinal !== undefined ? { ordinal } : {}) }],
         openBlockId: null,
         latestSuggestions: [],
       }
@@ -541,7 +571,7 @@ export function transcriptReducer(
     // ── textDelta ─────────────────────────────────────────────────────────────
     case 'textDelta': {
       const { turnId, text } = ev
-      const [turns, idx] = ensureAssistantTurn(state.turns, turnId)
+      const [turns, idx] = ensureAssistantTurn(state.turns, turnId, ev.type)
       const turn = turns[idx]
 
       // Check if the currently open block is a text block in this turn
@@ -575,7 +605,7 @@ export function transcriptReducer(
     // ── thinkingDelta ─────────────────────────────────────────────────────────
     case 'thinkingDelta': {
       const { turnId, text } = ev
-      const [turns, idx] = ensureAssistantTurn(state.turns, turnId)
+      const [turns, idx] = ensureAssistantTurn(state.turns, turnId, ev.type)
       const turn = turns[idx]
 
       // Check if the currently open block is a thinking block in this turn
@@ -609,7 +639,7 @@ export function transcriptReducer(
     // ── toolCall ─────────────────────────────────────────────────────────────
     case 'toolCall': {
       const { turnId, toolId, name, toolKind, input } = ev
-      const [turns, idx] = ensureAssistantTurn(state.turns, turnId)
+      const [turns, idx] = ensureAssistantTurn(state.turns, turnId, ev.type)
       const turn = turns[idx]
 
       // Idempotent by toolId. If turn already has this tool and openBlockId is already null, return state unchanged.
@@ -656,7 +686,7 @@ export function transcriptReducer(
     // ── permissionRequest ─────────────────────────────────────────────────────
     case 'permissionRequest': {
       const { permId, turnId, tool, toolKind, input, plan } = ev
-      const [turns, idx] = ensureAssistantTurn(state.turns, turnId)
+      const [turns, idx] = ensureAssistantTurn(state.turns, turnId, ev.type)
       const turn = turns[idx]
 
       // Idempotent by permId
@@ -684,7 +714,7 @@ export function transcriptReducer(
     // ── question ─────────────────────────────────────────────────────────────
     case 'question': {
       const { questionId, turnId, header, question, options, multiSelect, orphaned } = ev
-      const [turns, idx] = ensureAssistantTurn(state.turns, turnId)
+      const [turns, idx] = ensureAssistantTurn(state.turns, turnId, ev.type)
       const turn = turns[idx]
 
       // Idempotent by questionId — but the server re-emits a still-pending
@@ -851,6 +881,7 @@ export function transcriptReducer(
         }))
         turns = [...turns, ...toAppend]
       }
+      warnIfOutOfOrder(turns, ev.earliestTurn ?? state.earliestTurn, 'replay')
       return {
         ...state,
         replaying: false,
@@ -879,11 +910,21 @@ export function transcriptReducer(
       // transcript once the replay settles.
       if (state.replaying) return { ...state, loadingOlder: false }
       const olderTurns = buildTurnsFromEvents(ev.events)
-      // Drop any older turn whose id already exists (defensive; windows are disjoint server-side).
-      const existing = new Set(state.turns.map((t) => t.id))
-      const fresh = olderTurns.filter((t) => !existing.has(t.id))
-      return { ...state, turns: [...fresh, ...state.turns],
-               earliestTurn: ev.earliestTurn, loadingOlder: false }
+      // The OLDER page is authoritative for position. The server prepends a window's
+      // owning UserMessage to any page (and to the attach window) whose head lands
+      // mid-logical-turn, so the same prompt id arrives once per page until the page
+      // holding its real position loads. A copy already on screen therefore sits at a
+      // page boundary, not where the prompt was sent: drop it and let the incoming page
+      // place it. (Keeping the on-screen copy pinned "Start Phase B" hours after its real
+      // position — the page-boundary ordering bug, session 888ad2bf, 2026-09-03.)
+      // The incoming copy replaces the on-screen one wholesale — position AND content —
+      // which is safe because overlapping ids are user turns rebuilt from the same
+      // UserMessage record.
+      const incoming = new Set(olderTurns.map((t) => t.id))
+      const kept = state.turns.filter((t) => !incoming.has(t.id))
+      const turns = [...olderTurns, ...kept]
+      warnIfOutOfOrder(turns, ev.earliestTurn, 'prepend')
+      return { ...state, turns, earliestTurn: ev.earliestTurn, loadingOlder: false }
     }
 
     // ── error ─────────────────────────────────────────────────────────────────
@@ -894,7 +935,7 @@ export function transcriptReducer(
       // single slot; the timeline is append-only).
       const banner = { code: ev.code, message: ev.message, resetsAt: ev.resetsAt }
       if (!ev.turnId) return { ...state, error: banner }
-      const [withTurn, idx] = ensureAssistantTurn(state.turns, ev.turnId)
+      const [withTurn, idx] = ensureAssistantTurn(state.turns, ev.turnId, ev.type)
       const turn = withTurn[idx]
       const errBlock: Block = {
         kind: 'error', id: `${ev.turnId}:err:${turn.blocks.length}`,
@@ -909,7 +950,7 @@ export function transcriptReducer(
       // A dropped turn is being auto-resent. Append a soft inline block; deliberately
       // do NOT raise state.error — this is self-healing, not a failure. If recovery is
       // exhausted the backend sends a real `error` event (the red give-up surface).
-      const [withTurn, idx] = ensureAssistantTurn(state.turns, ev.turnId)
+      const [withTurn, idx] = ensureAssistantTurn(state.turns, ev.turnId, ev.type)
       const turn = withTurn[idx]
       const block: Block = {
         kind: 'recovering', id: `${ev.turnId}:rec:${turn.blocks.length}`,

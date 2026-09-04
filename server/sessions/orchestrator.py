@@ -782,6 +782,10 @@ class SessionOrchestrator:
             journal_failure_count=self._gh_reconcile_journal_failure_count,
             journal_parked=self._gh_reconcile_journal_parked,
             journal_applied_keys=self._gh_reconcile_journal_applied_keys,
+            journal_own_values=self._gh_reconcile_journal_own_values,
+            journal_dry_run_keys=self._gh_reconcile_journal_dry_run_keys,
+            journal_prune_dry_run=self._gh_reconcile_journal_prune_dry_run,
+            journal_prune_applied=self._gh_reconcile_journal_prune_applied,
             journal_recover=self._gh_reconcile_journal_recover,
             request_sync=self._gh_reconcile_request_sync,
             sha_fence=sha_fence.daemon_matches_origin_master,
@@ -2758,26 +2762,10 @@ class SessionOrchestrator:
         absent/invalid row falls back to ``off`` + pure defaults so a bad config
         never spawns.  Single source of truth for the flags the loop reads."""
         from server.automations.backlog_runner import BacklogRunner
-        from server.automations.base import validate_config
-        from sqlalchemy import select
-        from server.db.models import Automation
-        enabled, mode, raw = False, None, {}
-        try:
-            async with db_session() as db:
-                row = (await db.execute(select(Automation).where(
-                    Automation.id == "backlog-runner"))).scalar_one_or_none()
-                if row is not None:
-                    enabled = bool(row.enabled)
-                    mode = row.mode
-                    raw = dict(row.config) if row.config else {}
-        except Exception:
-            log.debug("backlog_runner.config.load_failed", exc_info=True)
-        try:
-            config = validate_config(BacklogRunner.config_schema, raw)
-        except ValueError:
-            config = validate_config(BacklogRunner.config_schema, {})
-        effective = mode if (enabled and mode in ("propose", "auto")) else "off"
-        return effective, config
+        from server.automations.config_store import read_automation_config
+        return await read_automation_config(
+            "backlog-runner", BacklogRunner.config_schema, modes=("propose", "auto"),
+            log_key="backlog_runner")
 
     async def _backlog_count_in_flight(self) -> int:
         """Restart-safe in-flight count: active (not-given-up) durable target
@@ -3301,27 +3289,11 @@ class SessionOrchestrator:
         Mode is ``off`` unless the row is enabled AND carries propose/auto — an
         absent/invalid row falls back to ``off`` + pure defaults so a bad config
         never spawns. Mirrors ``_backlog_read_config`` (single source of truth)."""
-        from sqlalchemy import select
-        from server.automations.base import validate_config
+        from server.automations.config_store import read_automation_config
         from server.automations.sdlc_intake import SdlcIntake
-        from server.db.models import Automation
-        enabled, mode, raw = False, None, {}
-        try:
-            async with db_session() as db:
-                row = (await db.execute(select(Automation).where(
-                    Automation.id == "sdlc-intake"))).scalar_one_or_none()
-                if row is not None:
-                    enabled = bool(row.enabled)
-                    mode = row.mode
-                    raw = dict(row.config) if row.config else {}
-        except Exception:
-            log.debug("sdlc_intake.config.load_failed", exc_info=True)
-        try:
-            config = validate_config(SdlcIntake.config_schema, raw)
-        except ValueError:
-            config = validate_config(SdlcIntake.config_schema, {})
-        effective = mode if (enabled and mode in ("propose", "auto")) else "off"
-        return effective, config
+        return await read_automation_config(
+            "sdlc-intake", SdlcIntake.config_schema, modes=("propose", "auto"),
+            log_key="sdlc_intake")
 
     async def _sdlc_intake_read_triggers(self) -> list:
         """Pending intake triggers. Empty until a trigger source is wired: the
@@ -3436,27 +3408,10 @@ class SessionOrchestrator:
         Mode is ``off`` unless the row is enabled AND carries ``on`` — an
         absent/invalid row falls back to ``off`` + pure defaults so a bad config
         never starts syncing. Mirrors ``_sdlc_intake_read_config`` exactly."""
-        from sqlalchemy import select
-        from server.automations.base import validate_config
+        from server.automations.config_store import read_automation_config
         from server.automations.pm_sync import PmSync
-        from server.db.models import Automation
-        enabled, mode, raw = False, None, {}
-        try:
-            async with db_session() as db:
-                row = (await db.execute(select(Automation).where(
-                    Automation.id == "pm-sync"))).scalar_one_or_none()
-                if row is not None:
-                    enabled = bool(row.enabled)
-                    mode = row.mode
-                    raw = dict(row.config) if row.config else {}
-        except Exception:
-            log.debug("pm_sync.config.load_failed", exc_info=True)
-        try:
-            config = validate_config(PmSync.config_schema, raw)
-        except ValueError:
-            config = validate_config(PmSync.config_schema, {})
-        effective = mode if (enabled and mode == "on") else "off"
-        return effective, config
+        return await read_automation_config(
+            "pm-sync", PmSync.config_schema, modes=("on",), log_key="pm_sync")
 
     async def _pm_sync_list_repos(self) -> list:
         """Query every ProjectRepo (+ owning Project slug) and return views."""
@@ -3788,31 +3743,22 @@ class SessionOrchestrator:
 
         Mirrors ``_sdlc_synth_read_config``: three modes, and anything other than
         an enabled row carrying ``dry_run``/``apply`` resolves to ``off`` — a bad
-        or absent row can never write to GitHub."""
-        from sqlalchemy import select
-        from server.automations.base import validate_config
+        or absent row can never write to GitHub. No ``default_mode``: an enabled row
+        with no mode must NOT fall through to a mode that writes."""
+        from server.automations.config_store import read_automation_config
         from server.automations.gh_reconcile import GhReconcile
-        from server.db.models import Automation
-        enabled, mode, raw = False, None, {}
-        try:
-            async with db_session() as db:
-                row = (await db.execute(select(Automation).where(
-                    Automation.id == "gh-reconcile"))).scalar_one_or_none()
-                if row is not None:
-                    enabled, mode = bool(row.enabled), row.mode
-                    raw = dict(row.config) if row.config else {}
-        except Exception:
-            log.debug("gh_reconcile.config.load_failed", exc_info=True)
-        try:
-            config = validate_config(GhReconcile.config_schema, raw)
-        except ValueError:
-            config = validate_config(GhReconcile.config_schema, {})
-        effective = mode if (enabled and mode in ("dry_run", "apply")) else "off"
-        return effective, config
+        return await read_automation_config(
+            "gh-reconcile", GhReconcile.config_schema, modes=("dry_run", "apply"),
+            log_key="gh_reconcile")
 
     @staticmethod
     def _gh_reconcile_kill_switch() -> bool:
-        """CCSWITCH_GH_RECONCILE_ENABLED, re-read every cycle (env edit + no restart)."""
+        """CCSWITCH_GH_RECONCILE_ENABLED, re-read from settings every cycle.
+
+        Re-reading is not the same as picking up an edit: the value comes from the
+        daemon's process environment (systemd env file), so flipping the kill switch
+        off in ``/etc/ccswitch/daemon.env`` takes effect only after a daemon restart.
+        To stop the reconciler without one, set the automation's mode to ``off``."""
         from server.config import get_settings
         return bool(get_settings().gh_reconcile_enabled)
 
@@ -3828,15 +3774,11 @@ class SessionOrchestrator:
 
         The reconciler uses this both BEFORE writing (a stale mirror is refused,
         not written through) and AFTER (so our own writes are re-ingested and
-        echo-suppressed rather than read back as human edits)."""
-        from sqlalchemy import select
-        from server.db.models import ProjectRepo
-        now = self._pm_sync_now_utc()
+        echo-suppressed rather than read back as human edits). Same helper the
+        sync-now API endpoint uses, so the two cannot drift."""
+        from server.pm.sync_request import request_project_sync
         async with db_session() as db:
-            rows = (await db.execute(select(ProjectRepo).where(
-                ProjectRepo.project_id == project_id))).scalars().all()
-            for row in rows:
-                row.sync_requested_at = now
+            await request_project_sync(db, project_id, self._pm_sync_now_utc())
 
     async def _gh_reconcile_journal_record(self, mutations: list, batch_id: str,
                                            now, dry_run: bool) -> list[str]:
@@ -3875,6 +3817,34 @@ class SessionOrchestrator:
         from server.pm import journal
         async with db_session() as db:
             return await db.run_sync(journal.applied_keys)
+
+    async def _gh_reconcile_journal_own_values(self) -> dict[tuple[str, str], object]:
+        """The value we last APPLIED per (item node, field) — the diff engine uses it
+        to tell a human edit from our own write (which stamped gh_updated_at)."""
+        from server.pm import journal
+        async with db_session() as db:
+            return await db.run_sync(journal.own_applied_values)
+
+    async def _gh_reconcile_journal_dry_run_keys(self, since) -> set[str]:
+        """Mutation keys that already carry a dry-run row newer than *since*."""
+        from server.pm import journal
+        async with db_session() as db:
+            return await db.run_sync(lambda s: journal.recent_dry_run_keys(s, since))
+
+    async def _gh_reconcile_journal_prune_dry_run(self, older_than) -> int:
+        """Drop stale dry-run rows (a preview, not an audit record)."""
+        from server.pm import journal
+        async with db_session() as db:
+            return await db.run_sync(lambda s: journal.prune_dry_run(s, older_than))
+
+    async def _gh_reconcile_journal_prune_applied(self, older_than) -> int:
+        """Drop applied Status/Score/Stage rows a later write has superseded, bounding
+        the per-cycle ``own_applied_values`` scan. The current write per (item, field)
+        is kept whatever its age — it is what un-sticks our own past writes."""
+        from server.pm import journal
+        async with db_session() as db:
+            return await db.run_sync(
+                lambda s: journal.prune_superseded_applied(s, older_than))
 
     async def _gh_reconcile_journal_recover(self, older_than) -> int:
         """Mark pending rows older than *older_than* as interrupted (crash recovery)."""
@@ -4301,27 +4271,11 @@ class SessionOrchestrator:
         """The sdlc-synthesizer row's (mode, config) merged onto schema defaults.
         Mirrors ``_sdlc_intake_read_config``: off + pure defaults on any absent
         or invalid row so a bad config never spawns."""
-        from sqlalchemy import select
-        from server.automations.base import validate_config
+        from server.automations.config_store import read_automation_config
         from server.automations.sdlc_synthesizer import SdlcSynthesizer
-        from server.db.models import Automation
-        enabled, mode, raw = False, None, {}
-        try:
-            async with db_session() as db:
-                row = (await db.execute(select(Automation).where(
-                    Automation.id == "sdlc-synthesizer"))).scalar_one_or_none()
-                if row is not None:
-                    enabled = bool(row.enabled)
-                    mode = row.mode
-                    raw = dict(row.config) if row.config else {}
-        except Exception:
-            log.debug("sdlc_synthesizer.config.load_failed", exc_info=True)
-        try:
-            config = validate_config(SdlcSynthesizer.config_schema, raw)
-        except ValueError:
-            config = validate_config(SdlcSynthesizer.config_schema, {})
-        effective = mode if (enabled and mode in ("propose", "auto")) else "off"
-        return effective, config
+        return await read_automation_config(
+            "sdlc-synthesizer", SdlcSynthesizer.config_schema, modes=("propose", "auto"),
+            log_key="sdlc_synthesizer")
 
     async def _sdlc_list_initiatives(self) -> list[dict]:
         """Every non-done Initiative as a plain dict (the loop's seam shape).
@@ -4550,31 +4504,16 @@ class SessionOrchestrator:
     async def _cicd_read_config(self) -> tuple[str, dict]:
         """(effective mode, validated config) for cicd-doctor; off + defaults on
         any bad row so a corrupt config can never act."""
-        from sqlalchemy import select
-        from server.automations.base import validate_config
         from server.automations.cicd_doctor import CicdDoctor
-        from server.db.models import Automation
-        enabled, mode, raw = False, None, {}
-        try:
-            async with db_session() as db:
-                row = (await db.execute(select(Automation).where(
-                    Automation.id == "cicd-doctor"))).scalar_one_or_none()
-                if row is not None:
-                    enabled, mode = bool(row.enabled), row.mode
-                    raw = dict(row.config) if row.config else {}
-        except Exception:
-            log.debug("cicd_doctor.config.load_failed", exc_info=True)
-        try:
-            config = validate_config(CicdDoctor.config_schema, raw)
-        except ValueError:
-            config = validate_config(CicdDoctor.config_schema, {})
+        from server.automations.config_store import read_automation_config
         # cicd-doctor is a 2-mode (off/propose) automation, so the UI hides the
         # mode <select> and its toggle enables the row with mode left NULL. Resolve
         # enabled + no explicit mode to the first non-off mode (the least-invasive
         # active mode by convention), else an enabled row is stuck 'off' forever.
-        active = [m for m in CicdDoctor.modes if m != "off"]
-        effective = (mode if mode in active else active[0]) if enabled else "off"
-        return effective, config
+        active = tuple(m for m in CicdDoctor.modes if m != "off")
+        return await read_automation_config(
+            "cicd-doctor", CicdDoctor.config_schema, modes=active, default_mode=active[0],
+            log_key="cicd_doctor")
 
     async def _cicd_list_repos(self, config: dict) -> list[str]:
         """enabled_repos config, or every distinct repo ccswitch manages."""
@@ -4612,29 +4551,14 @@ class SessionOrchestrator:
     async def _archaudit_read_config(self) -> tuple[str, dict]:
         """(effective mode, validated config) for archive-audit; off + defaults on
         any bad row so a corrupt config can never act."""
-        from sqlalchemy import select
-        from server.automations.base import validate_config
         from server.automations.archive_audit import ArchiveAudit
-        from server.db.models import Automation
-        enabled, mode, raw = False, None, {}
-        try:
-            async with db_session() as db:
-                row = (await db.execute(select(Automation).where(
-                    Automation.id == "archive-audit"))).scalar_one_or_none()
-                if row is not None:
-                    enabled, mode = bool(row.enabled), row.mode
-                    raw = dict(row.config) if row.config else {}
-        except Exception:
-            log.debug("archive_audit.config.load_failed", exc_info=True)
-        try:
-            config = validate_config(ArchiveAudit.config_schema, raw)
-        except ValueError:
-            config = validate_config(ArchiveAudit.config_schema, {})
+        from server.automations.config_store import read_automation_config
         # archive-audit is a 2-mode (off/act) automation; resolve enabled + no explicit
         # mode to the first non-off mode (act), else an enabled row is stuck 'off' forever.
-        active = [m for m in ArchiveAudit.modes if m != "off"]
-        effective = (mode if mode in active else active[0]) if enabled else "off"
-        return effective, config
+        active = tuple(m for m in ArchiveAudit.modes if m != "off")
+        return await read_automation_config(
+            "archive-audit", ArchiveAudit.config_schema, modes=active, default_mode=active[0],
+            log_key="archive_audit")
 
     # ------------------------------------------------------------------
     # Recurring-session scheduler (#603 dispatch): fire cron-scheduled sessions
@@ -4805,23 +4729,10 @@ class SessionOrchestrator:
         'off' when disabled, invalid, OR while draining (autopilot must never fight a
         deploy drain)."""
         from server.automations.autopilot import Autopilot
-        from server.automations.base import validate_config
-        from sqlalchemy import select
-        from server.db.models import Automation
-        enabled, mode, raw = False, None, {}
-        try:
-            async with db_session() as db:
-                row = (await db.execute(select(Automation).where(
-                    Automation.id == "autopilot"))).scalar_one_or_none()
-                if row is not None:
-                    enabled, mode, raw = bool(row.enabled), row.mode, dict(row.config or {})
-        except Exception:
-            log.debug("autopilot.config.load_failed", exc_info=True)
-        try:
-            config = validate_config(Autopilot.config_schema, raw)
-        except ValueError:
-            config = validate_config(Autopilot.config_schema, {})
-        effective = mode if (enabled and mode in ("propose", "auto")) else "off"
+        from server.automations.config_store import read_automation_config
+        effective, config = await read_automation_config(
+            "autopilot", Autopilot.config_schema, modes=("propose", "auto"),
+            log_key="autopilot")
         if getattr(self, "_draining", False):
             effective = "off"
         return effective, config
@@ -7839,21 +7750,27 @@ class SessionOrchestrator:
     async def cloned_repos(self, names: list[str]) -> list[str]:
         """Return the subset of nameWithOwner values whose clone exists on the DAEMON.
 
-        The repo picker's "cloned" badge checks for <clones_base>/<owner>/<name>/.git;
-        clones live on the daemon host, so an edge-side check is always false and
-        may prompt a redundant clone (issue #709, finding 6). Resolves clones_base
-        from the daemon's own settings.repo_root.
+        The repo picker's "cloned" badge checks for the clone's ``.git``; clones
+        live on the daemon host, so an edge-side check is always false and may
+        prompt a redundant clone (issue #709, finding 6). Resolves the path
+        through ``gitrepos.clone_path`` against the daemon's own
+        ``settings.repo_root`` — the same resolver ``ensure_clone`` uses, so a
+        case-variant repo name badges the clone that actually exists (#1003)
+        instead of a path nothing will ever write to.
         """
         from ccswitch import gitrepos
         from server.config import get_settings
 
-        base = gitrepos.clones_base(get_settings().repo_root)
+        repo_root = get_settings().repo_root
 
         def _present() -> list[str]:
             out: list[str] = []
             for nwo in names:
-                owner, _, name = nwo.partition("/")
-                if owner and name and (base / owner / name / ".git").exists():
+                try:
+                    path = gitrepos.clone_path(repo_root, nwo)
+                except ValueError:
+                    continue  # malformed name from the picker — never a clone
+                if (path / ".git").exists():
                     out.append(nwo)
             return out
 
@@ -10003,11 +9920,12 @@ class SessionOrchestrator:
         counts = sweep_orphaned_worktrees(self._repo_root, live_cwds)
         log.info(
             "worktree-janitor: scanned=%d removed=%d kept_live=%d "
-            "kept_young=%d kept_dirty=%d kept_unpushed=%d kept_error=%d evicted_dirty=%d",
+            "kept_young=%d kept_dirty=%d kept_unpushed=%d kept_error=%d "
+            "evicted_dirty=%d orphaned=%d",
             counts["scanned"], counts["removed"], counts["kept_live"],
             counts["kept_young"], counts["kept_dirty"],
             counts["kept_unpushed"], counts["kept_error"],
-            counts.get("evicted_dirty", 0),
+            counts.get("evicted_dirty", 0), counts.get("orphaned", 0),
         )
 
     async def list_archived(self) -> list[dict]:

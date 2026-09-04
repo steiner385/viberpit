@@ -30,27 +30,69 @@
 set -uo pipefail
 
 DOBBY="${CCSWITCH_DOBBY_HOST:-tony@100.102.11.121}"
-OPTS="reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,idmap=user,dir_cache=yes,dcache_timeout=600,attr_timeout=600,entry_timeout=600"
+SSH_OPTS="reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,idmap=user"
+
+# ---------------------------------------------------------------------------------
+# TWO CACHE PROFILES (#1005) — a mount is either read-mostly or coherent, never both.
+#
+# CACHED_OPTS is the 10-minute attribute/entry cache #826/#851 added to keep the
+# daemon's hot read paths off the tailnet. It is correct ONLY for a mount whose
+# contents dobby does not rewrite underneath us.
+#
+# COHERENT_OPTS is for the account store. Claude Code rewrites `.claude.json`
+# atomically (temp file + rename), so the inode and the size both change on every
+# write, and dobby's live sessions rewrite it continuously. With a 600s attr/entry
+# cache rocky keeps resolving the name to the OLD inode / OLD size, so a reader gets
+# a truncated body -- which Claude Code diagnoses as corruption, backs up, and
+# "repairs" by writing a DEFAULT config back through the mount onto dobby's disk.
+# That cross-host write war reset the shared account config ~1,100x/day from
+# 2026-09-01 (#1005). A file another host rewrites cannot be attribute-cached; the
+# per-stat round trip is the price of coherence, and this mount's reads are cold
+# per-spawn anyway (a few config files), not the hot per-message paths #826 tuned.
+CACHED_OPTS="${SSH_OPTS},dir_cache=yes,dcache_timeout=600,attr_timeout=600,entry_timeout=600"
+COHERENT_OPTS="${SSH_OPTS},dir_cache=no,dcache_timeout=0,attr_timeout=0,entry_timeout=0"
 
 # Overridable so the tests can drive this against stubbed sshfs on temp paths.
 DEFAULT_PATHS="/home/tony/.claude-accounts /home/tony/.claude /mnt/hdd-storage /home/tony/avd-golden"
 PATHS="${CCSWITCH_MOUNT_PATHS:-$DEFAULT_PATHS}"
+# Paths that get COHERENT_OPTS. Only the account store: /home/tony/.claude is the
+# read-mostly share source (plugins/commands/settings), /mnt/hdd-storage and
+# avd-golden are archives.
+DEFAULT_COHERENT_PATHS="/home/tony/.claude-accounts"
+COHERENT_PATHS="${CCSWITCH_MOUNT_COHERENT_PATHS-$DEFAULT_COHERENT_PATHS}"
 ATTEMPTS="${CCSWITCH_MOUNT_ATTEMPTS:-5}"
 RETRY_DELAY="${CCSWITCH_MOUNT_RETRY_DELAY:-3}"
+# Opt-in: tear down and re-establish an ALREADY-mounted path so a cache-profile
+# change lands without a reboot. Off by default -- unmounting a live mount breaks
+# every session reading through it, so an operator has to ask for it explicitly
+# (deploy/README.md § "Cache profiles: the account store must be mounted coherently").
+FORCE_REMOUNT="${CCSWITCH_MOUNT_FORCE_REMOUNT:-0}"
+
+opts_for() {  # opts_for <path> — the cache profile this mount must use
+  local p="$1" c
+  for c in $COHERENT_PATHS; do
+    [ "$p" = "$c" ] && { printf '%s' "$COHERENT_OPTS"; return; }
+  done
+  printf '%s' "$CACHED_OPTS"
+}
 
 rc=0
 for p in $PATHS; do
+  opts=$(opts_for "$p")
   # A live, readable mount is left strictly alone: sessions are reading through it.
   if mountpoint -q "$p" && timeout 5 ls "$p" >/dev/null 2>&1; then
-    echo "ccswitch-mounts: ok (already mounted) $p"
-    continue
+    if [ "$FORCE_REMOUNT" != "1" ]; then
+      echo "ccswitch-mounts: ok (already mounted) $p"
+      continue
+    fi
+    echo "ccswitch-mounts: forced remount of $p (CCSWITCH_MOUNT_FORCE_REMOUNT=1)"
   fi
   mountpoint -q "$p" && fusermount -u "$p" 2>/dev/null   # clear a stale mount
   mkdir -p "$p" 2>/dev/null
 
   mounted=0
   for attempt in $(seq 1 "$ATTEMPTS"); do
-    if sshfs -o "$OPTS" "${DOBBY}:${p}" "$p"; then
+    if sshfs -o "$opts" "${DOBBY}:${p}" "$p"; then
       echo "ccswitch-mounts: mounted $p (attempt $attempt/$ATTEMPTS)"
       mounted=1
       break

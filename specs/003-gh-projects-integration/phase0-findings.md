@@ -192,3 +192,54 @@ directly inside the batch `mutation { ... }` block. That shape is rejected by Gi
 (`rateLimit` only exists on `Query`). The committed script queries `rateLimit` separately
 before/after each batch and reports the `remaining` delta as the batch's cost — this is the shape
 Task 6's builders must copy, not the brief's literal mutation-embedded form.
+
+---
+
+## Option-id probe (#987 item 3) — 2026-09-03
+
+`python scripts/spike_gh_projects_v2.py optionids`, PAT again. Scratch board
+`spike-003-optionids (safe to delete)` created, probed and deleted in a `finally` block.
+
+The Phase B probe above answered "can `updateProjectV2Field` edit the built-in Status options"
+(yes) by replacing a **disjoint** default set. It never answered the question `_ensure_fields`
+actually depends on: when the option list is the **union** — every existing name re-sent
+unchanged, spec names appended — are the existing options' ids preserved?
+
+| Question | Answer |
+|---|---|
+| Are the ids of re-sent, unchanged option names preserved? | **No — regenerated.** `Todo f75ad846 → bf7e76f6`, `In Progress 47fc9ee4 → b311984a`, `Done 98236657 → df4deeee`. Every id changed even though the names and their order were re-sent verbatim. |
+| Do item values pointing at the old ids survive? | **No — silently blanked.** An item set to `Todo` before the update read back `fieldValueByName(name: "Status") == null` after it. No error, no warning; the value is simply gone. |
+| Does the union preserve the human's columns? | Yes — the *columns* all survive by name. Only their contents are lost. |
+
+**Implication:** the union is not "non-destructive", it is "column-preserving". Any Status a human
+had already set by hand on a live board is erased by the one-time migration's Status-option update.
+This is recoverable but not automatic: the reconciler re-derives and re-pushes Status for every
+item **in the mirror**, so managed items refill on the next cycles, and only a value the reconciler
+would not have set anyway (a human's `Icebox` column, say) stays blank. Runbook carries the caveat
+as a pre-apply decision.
+
+**Second finding — case-colliding near-duplicate columns.** The union dedupes on exact name, and
+GitHub's default is `In Progress` while the spec vocabulary is `In progress`. The probe's union
+came back with **both**, so a board bootstrapped from GitHub defaults ends up with two
+near-identical in-progress columns (plus a dead `Todo`). Not a bug in the union — a consequence of
+matching by exact name, and normalising it in code is the wrong lever (`_field_gap` and
+`build_batch` both look options up by the exact spec name, so folding case would park every board
+whose column is cased differently). Handled as a manual pre-apply step in the runbook: rename the
+board's default options to the spec names first, and the union then has nothing to append.
+
+### Follow-up: the ids are regenerated only because the input omitted them (PR #1006)
+
+The probe above sent names only — exactly what `build_update_field_options` did through PR #986.
+Re-run with the `optionids` mode extended to try the union **both ways** on two scratch boards:
+
+| union update | preserved option ids | item assignment |
+|---|---|---|
+| names only | **regenerated** — `Todo` `f75ad846` → `ac49461c` | **lost** (`Status: null`) |
+| echoing each existing `id` | **preserved** | **survived** |
+
+`ProjectV2SingleSelectFieldOptionInput.id` is optional-but-accepted: an entry *with* an id is an
+update of that option, an entry without one is a new option, name match or not. So the "column-
+preserving, not non-destructive" verdict holds only for a names-only input. `build_update_field_options`
+now takes `option_ids` and `_ensure_fields` passes the board's name → option-id map straight from
+`field_cache`, so the reconciler's own union keeps ids and per-item values. The pre-apply caveat in
+the runbook is kept for hand-rolled repairs (spike script, rollback section) that omit the ids.
