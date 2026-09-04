@@ -111,10 +111,14 @@ def check_amendment(base_text: str, head_text: str, pr_body: str) -> list[str]:
 # not an acknowledgment — it is usually the template *asking* for one. Stripping
 # comments first is what stops a checklist from satisfying its own checklist item.
 _HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
-# The marker must open a line (optionally wrapped in markdown emphasis or a quote),
-# so merely discussing the gate in prose does not clear it.
+# The marker must open a line, so merely discussing the gate in prose does not
+# clear it. Everything before it may only be whitespace or decoration: emphasis,
+# heading, blockquote, list bullet, bracket, or backtick. Brackets matter in
+# practice — a template placeholder is usually written `[ ... ]` and authors
+# reasonably type the acknowledgment inside the brackets they were given.
+# Widening here cannot admit prose: the marker still has to open the line.
 _ACK_LINE = re.compile(
-    r"^[\s>*_#-]*" + re.escape(ACKNOWLEDGMENT_MARKER) + r"\s*\S",
+    r"^[\s>*_#\-\[\]()`\"']*" + re.escape(ACKNOWLEDGMENT_MARKER) + r"\s*\S",
     re.IGNORECASE | re.MULTILINE,
 )
 

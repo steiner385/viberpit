@@ -78,6 +78,11 @@ def test_bare_marker_with_no_statement_does_not_count():
         "> Owner acknowledgment: I approve these changes.",
         "## Owner acknowledgment: I approve these changes.",
         "  Owner acknowledgment: I approve these changes.",
+        # Authors type into the brackets the template gave them (real case, #1111).
+        "**[ Owner acknowledgment: I approve these changes ]**",
+        "[Owner acknowledgment: I approve these changes]",
+        "`Owner acknowledgment: I approve these changes`",
+        "- Owner acknowledgment: I approve these changes.",
     ],
 )
 def test_acknowledgment_line_shapes_that_do_count(line):
