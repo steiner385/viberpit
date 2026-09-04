@@ -202,6 +202,22 @@ class TestSelector(unittest.TestCase):
             select_best(usages, set(), self.cfg, self.now,
                         load={"swamped": 1e9}), "calm")
 
+    def test_at_ceiling_session_dimension(self):
+        from ccswitch.selector import at_ceiling
+        self.assertTrue(at_ceiling(usage(session=100.0, weekly=10.0), 100.0))
+
+    def test_at_ceiling_weekly_dimension(self):
+        from ccswitch.selector import at_ceiling
+        self.assertTrue(at_ceiling(usage(session=0.0, weekly=100.0), 100.0))
+
+    def test_at_ceiling_false_below_both(self):
+        from ccswitch.selector import at_ceiling
+        self.assertFalse(at_ceiling(usage(session=99.0, weekly=99.0), 100.0))
+
+    def test_at_ceiling_respects_lower_ceiling(self):
+        from ccswitch.selector import at_ceiling
+        self.assertTrue(at_ceiling(usage(session=90.0, weekly=10.0), 90.0))
+
 
 # --- rank_accounts() tests ---
 
@@ -219,7 +235,7 @@ def _cfg(**kw):
 
 
 def test_rank_accounts_orders_like_select_best():
-    from ccswitch.selector import rank_accounts, select_best, RankedAccount
+    from ccswitch.selector import rank_accounts, select_best
     usages = {
         "a": Usage(40.0, SOON, 20.0, SOON, False),
         "b": Usage(10.0, SOON, 5.0, SOON, False),

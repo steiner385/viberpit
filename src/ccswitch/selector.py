@@ -65,6 +65,18 @@ def _perishability(u: Usage, ceiling: float, now: datetime) -> float:
     return remaining / hours
 
 
+def at_ceiling(u: Usage, ceiling: float) -> bool:
+    """True when either usage dimension has reached *ceiling* (percent).
+
+    The ONE definition of "this account has no headroom": rank_accounts drops such
+    accounts for new picks, and the server's rotation monitor / crash recovery use
+    it to decide a live session's account is dead. The weekly dimension counts —
+    a session on a weekly-exhausted account 429s on its next turn exactly like a
+    session-exhausted one.
+    """
+    return u.session_pct >= ceiling or u.weekly_pct >= ceiling
+
+
 @dataclass
 class RankedAccount:
     name: str
@@ -134,8 +146,7 @@ def rank_accounts(usages: dict[str, Usage | None], reserved: AbstractSet[str],
             if optimistic_fallback and name not in unhealthy:
                 optimistic.append((load.get(name, 0.0), name))
             continue
-        at_ceiling = u.session_pct >= ceiling or u.weekly_pct >= ceiling
-        if at_ceiling:
+        if at_ceiling(u, ceiling):
             resets = []
             if u.session_pct >= ceiling and u.session_resets_at is not None:
                 resets.append(u.session_resets_at)
