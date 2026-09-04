@@ -12,9 +12,10 @@ from server.sessions.driver import SessionDriver
 from server.sessions.events import ToolResult
 from server.sessions.permissions import PermissionRegistry
 from server.tests.fakes import fake_sdk as f
+from server.tests.fakes.fake_sdk import PerQueryScript
 
 
-class _WedgedToolClient:
+class _WedgedToolClient(PerQueryScript):
     """Streams a tool_use then blocks until interrupt(), which — like the real CLI —
     flushes the synthetic interrupt tool_result and a terminal result, then ends."""
 

@@ -24,6 +24,7 @@ from server.sessions.driver import SessionDriver
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.permissions import PermissionRegistry
 from server.tests.fakes import fake_sdk as f
+from server.tests.fakes.fake_sdk import PerQueryScript
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 
@@ -40,7 +41,7 @@ def _fake_usage(account: str):
 # Driver layer
 # ---------------------------------------------------------------------------
 
-class _HangingInterruptClient(f.FakeSDKClient):
+class _HangingInterruptClient(PerQueryScript, f.FakeSDKClient):
     """Stream stays open (turn active) and interrupt() never returns."""
 
     def __init__(self):
@@ -56,7 +57,7 @@ class _HangingInterruptClient(f.FakeSDKClient):
         await self._gate.wait()  # never set — wedged control channel
 
 
-class _CancelSwallowingClient(f.FakeSDKClient):
+class _CancelSwallowingClient(PerQueryScript, f.FakeSDKClient):
     """Stream swallows the first CancelledError, so the pump ignores one cancel."""
 
     def __init__(self):

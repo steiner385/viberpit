@@ -11,9 +11,10 @@ from server.sessions.events import TurnEnd
 from server.sessions.permissions import PermissionRegistry
 from server.tests.fakes.fake_sdk import FakeSDKClient
 from server.tests.fakes import fake_sdk as f
+from server.tests.fakes.fake_sdk import PerQueryScript
 
 
-class _OneTurnClient(FakeSDKClient):
+class _OneTurnClient(PerQueryScript, FakeSDKClient):
     """A FakeSDKClient that always yields one clean turn (no messages list needed)."""
     async def receive_response(self):
         yield f.stream_start(uuid="t1")
@@ -64,7 +65,7 @@ async def test_current_status_reflects_idle_before_first_turn():
     await d.aclose()
 
 
-class _RaisingClient(FakeSDKClient):
+class _RaisingClient(PerQueryScript, FakeSDKClient):
     async def receive_response(self):
         yield f.sys_init("s1")
         raise RuntimeError("stream died")

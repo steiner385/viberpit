@@ -6,6 +6,7 @@ from server.sessions.permissions import PermissionRegistry
 from server.sessions import events as ev
 from server.tests.fakes import fake_sdk as f
 from server.tests.fakes.fake_sdk import FakeSDKClient
+from server.tests.fakes.fake_sdk import PerQueryScript
 
 
 def _driver(**kw):
@@ -76,14 +77,14 @@ async def test_assistant_output_clears_condensing_when_boundary_missing():
     True, the status stays 'condensing' and the UI shows the Condensing… bar while the
     reply visibly streams. This mirrors the ``_retrying`` flag, which any real event
     already clears in the drain loop."""
-    class _PreCompactClient(FakeSDKClient):
+    class _PreCompactClient(PerQueryScript, FakeSDKClient):
         """Fires the SDK PreCompact hook, then streams a reply with NO compact_boundary."""
         def __init__(self, msgs, on_pre_compact, **kw):
             super().__init__(msgs, **kw)
             self._pc = on_pre_compact
         async def receive_response(self):
             await self._pc()                       # compaction begins mid-turn
-            async for m in super().receive_response():
+            for m in self._messages:
                 yield m
 
     msgs = [f.stream_start(uuid="t1"), f.stream_text("post-compaction reply", uuid="t1"),

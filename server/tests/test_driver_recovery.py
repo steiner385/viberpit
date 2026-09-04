@@ -6,6 +6,7 @@ from server.sessions.permissions import PermissionRegistry
 from server.sessions import events as ev
 from server.tests.fakes.fake_sdk import FakeSDKClient
 from server.tests.fakes import fake_sdk as f
+from server.tests.fakes.fake_sdk import PerQueryScript
 
 
 def _factory(msgs):
@@ -78,7 +79,7 @@ def test_successful_turn_does_not_invoke_callback():
 
 
 def test_drain_exception_with_401_is_classified_auth():
-    class _Raising:
+    class _Raising(PerQueryScript):
         async def __aenter__(self): return self
         async def __aexit__(self, *e): return False
         async def query(self, p): pass
@@ -122,7 +123,7 @@ def test_subprocess_crash_signals_process_crash():
     async def on_fail(session_id, kind, retry_after):
         calls.append((session_id, kind, retry_after))
 
-    class _CrashingClient(FakeSDKClient):
+    class _CrashingClient(PerQueryScript, FakeSDKClient):
         async def receive_response(self):
             raise RuntimeError("Command failed with exit code -6")
             yield  # unreachable — makes this an async generator

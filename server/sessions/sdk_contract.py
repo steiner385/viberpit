@@ -20,9 +20,19 @@ class SDKClientProtocol(Protocol):
     async def __aenter__(self) -> "SDKClientProtocol": ...
     async def __aexit__(self, *exc: Any) -> bool | None: ...
     async def query(self, prompt: str) -> None: ...
-    def receive_response(self) -> AsyncIterator[Any]:
-        """Yields, in order: SystemMessage, StreamEvent*, AssistantMessage, UserMessage,
-        ResultMessage (and HookEventMessage/RateLimitEvent, which the translator ignores)."""
+    def receive_messages(self) -> AsyncIterator[Any]:
+        """ONE persistent stream for the life of the client — every message the CLI
+        emits, in order: SystemMessage, StreamEvent*, AssistantMessage, UserMessage,
+        ResultMessage (and HookEventMessage/RateLimitEvent, which the translator
+        ignores). Ends only when the subprocess is gone.
+
+        The driver segments turns on ResultMessage itself and consumes this stream at
+        ALL times (a prompt's drain, or the idle listener between prompts): the CLI
+        also emits whole turns with no ``query()`` behind them — a background task's
+        ``<task-notification>`` it injects as a user message — and the SDK's channel
+        is bounded (100), so an unread stream both blocks the CLI on stdout and
+        replays the stale turn into the next prompt. ``receive_response()`` (stop at
+        the first result) is therefore NOT part of this contract."""
         ...
     async def interrupt(self) -> None: ...
     async def set_permission_mode(self, mode: str) -> None: ...

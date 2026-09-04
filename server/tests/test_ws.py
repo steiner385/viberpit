@@ -31,6 +31,7 @@ from server.app import create_app
 from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.fakes.fake_sdk import FakeSDKClient
 from server.tests.fakes import fake_sdk as f
+from server.tests.fakes.fake_sdk import PerQueryScript
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -527,7 +528,7 @@ def test_replay_complete_reports_turn_extent(ws_env, tmp_path):
 # Permission round-trip: tool needs permission, allow lets it proceed
 # ---------------------------------------------------------------------------
 
-class _PermissionFakeClient(FakeSDKClient):
+class _PermissionFakeClient(PerQueryScript, FakeSDKClient):
     """Fake client that invokes can_use_tool before streaming, simulating a
     tool that requires interactive approval, then proceeds once approved."""
 
@@ -616,7 +617,7 @@ def test_unknown_permission_and_interrupt_safe(ws_env):
 # answerQuestion round-trip: model asks a question, user answers it
 # ---------------------------------------------------------------------------
 
-class _QuestionFakeClient(FakeSDKClient):
+class _QuestionFakeClient(PerQueryScript, FakeSDKClient):
     """Fake client that invokes can_use_tool with AskUserQuestion before streaming,
     blocks until the user answers, then finishes the turn (echoing the chosen answer)."""
 
@@ -680,7 +681,7 @@ def test_answer_question_round_trip(ws_env):
 # Reattach re-emits pending questions (the critical reattach gap fix)
 # ---------------------------------------------------------------------------
 
-class _QuestionBlockingFakeClient(FakeSDKClient):
+class _QuestionBlockingFakeClient(PerQueryScript, FakeSDKClient):
     """Fake client that triggers AskUserQuestion and stays blocked until answered.
 
     Unlike _QuestionFakeClient it does NOT yield a result after the question — it just
@@ -781,7 +782,7 @@ def test_reattach_reemits_pending_question(ws_env):
 # Yes/No card instead of Approve & run / Keep planning).
 # ---------------------------------------------------------------------------
 
-class _PlanPermissionBlockingFakeClient(FakeSDKClient):
+class _PlanPermissionBlockingFakeClient(PerQueryScript, FakeSDKClient):
     """Fake client that requests an ExitPlanMode permission and stays blocked until
     resolved, so the test can detach mid-permission and reattach to verify the
     re-emitted permissionRequest carries plan=True."""
@@ -897,7 +898,7 @@ def test_reattach_reemits_queue(ws_env):
     """A client attaching to a live session with a queued prompt receives a
     queueUpdate frame carrying the queued item (regression: previously only the
     status count was re-emitted, so queued chips vanished on navigation)."""
-    class BusySDK(FakeSDKClient):
+    class BusySDK(PerQueryScript, FakeSDKClient):
         """Fake client whose turn never completes, so a second prompt queues."""
         async def receive_response(self):
             yield f.stream_start(uuid="t1")

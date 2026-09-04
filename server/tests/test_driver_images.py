@@ -5,11 +5,12 @@ from server.sessions.events import UserMessage, Status
 from server.tests.fakes.fake_sdk import FakeSDKClient
 from server.tests.fakes import fake_sdk as f
 from claude_agent_sdk import TextBlock
+from server.tests.fakes.fake_sdk import PerQueryScript
 
 PNG_B64 = ("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
            "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
 
-class RecordingSDK:
+class RecordingSDK(PerQueryScript):
     def __init__(self):
         self.queried = []
     async def __aenter__(self): return self

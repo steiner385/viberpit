@@ -24,11 +24,11 @@ A scenario is a flat ``list`` of **steps**. Each step is one of:
   loop ``ticks`` times (via ``asyncio.sleep(0)``) so other coroutines can interleave —
   NO wall-clock sleep, so tests stay fast and reproducible.
 
-``receive_response()`` yields one *turn* per call, exactly like the real SDK: it streams
-steps until (and including) a ``ResultMessage``, then returns. The step cursor persists
-across calls, so a multi-turn scenario drains turn-by-turn as the driver dequeues prompts
-(``SessionDriver`` starts a fresh drain — hence a fresh ``receive_response()`` — per turn).
-Keep ONE client instance across a session's turns (see :func:`scripted_factory`).
+``receive_messages()`` is ONE persistent stream, exactly like the real SDK: each
+``query()`` streams the next turn's steps until (and including) its ``ResultMessage``,
+then the stream parks until the next query. A multi-turn scenario therefore drains
+turn-by-turn as the driver dequeues prompts. Keep ONE client instance across a session's
+turns (see :func:`scripted_factory`).
 
 Composable builders
 -------------------
@@ -112,16 +112,19 @@ class Delay:
 class ScriptedSDKClient:
     """Implements ``server.sessions.sdk_contract.SDKClientProtocol`` over a scenario.
 
-    Unlike ``FakeSDKClient`` (whole message list per ``receive_response`` call), this
-    walks a persistent cursor across the scenario and yields ONE turn per call —
-    everything up to and including the next ``ResultMessage`` — so a multi-turn scenario
-    drains turn-by-turn through the driver. ``Gate``/``Delay`` steps are honoured inline.
+    Unlike ``FakeSDKClient`` (whole message list per ``query``), this walks a persistent
+    cursor across the scenario and streams ONE turn per ``query()`` — everything up to
+    and including the next ``ResultMessage`` — so a multi-turn scenario drains
+    turn-by-turn through the driver. ``Gate``/``Delay`` steps are honoured inline.
     """
 
     def __init__(self, steps: Iterable[Any], *, on_can_use_tool=None,
                  server_info=None, context_usage=None) -> None:
         self._steps = list(steps)
         self._pos = 0
+        self._queries = 0          # query() calls so far
+        self._served = 0           # turns the stream has started streaming
+        self._woken: asyncio.Future | None = None
         self.on_can_use_tool = on_can_use_tool
         self.interrupted = False
         self.permission_mode = "default"
@@ -138,26 +141,57 @@ class ScriptedSDKClient:
 
     async def query(self, prompt):
         self.sent.append(prompt)
+        self._queries += 1
+        self._wake()
 
-    async def receive_response(self):
-        """Yield the next turn's messages, honouring gates/delays, up to a ResultMessage."""
+    def _wake(self) -> None:
+        if self._woken is not None and not self._woken.done():
+            self._woken.set_result(None)
+
+    async def _next_query(self) -> None:
+        """Park until a ``query()`` opens the next turn (one persistent stream, like the
+        real client: the next turn's steps are NOT streamed until a prompt asks)."""
+        while self._served >= self._queries:
+            self._woken = asyncio.get_running_loop().create_future()
+            await self._woken
+        self._served += 1
+
+    async def receive_messages(self):
+        """The persistent stream: one turn's steps per ``query()``, honouring gates and
+        delays, each turn ending with its ResultMessage. Steps after the scenario's last
+        result are never reached — the stream parks until the next query."""
         while self._pos < len(self._steps):
-            if self.interrupted:
-                return
+            await self._next_query()
+            while self._pos < len(self._steps):
+                if self.interrupted:
+                    # Like the CLI: abandon the rest of this turn (skip to just past its
+                    # scripted result) and flush a synthetic interrupted result.
+                    self.interrupted = False
+                    self._skip_turn()
+                    yield f.result(uuid="interrupted")
+                    break
+                step = self._steps[self._pos]
+                self._pos += 1
+                if isinstance(step, Gate):
+                    await step._arrive()
+                    continue
+                if isinstance(step, Delay):
+                    await step._apply()
+                    continue
+                yield step
+                if isinstance(step, ResultMessage):
+                    break   # turn boundary — the next query resumes after it
+
+    def _skip_turn(self) -> None:
+        while self._pos < len(self._steps):
             step = self._steps[self._pos]
             self._pos += 1
-            if isinstance(step, Gate):
-                await step._arrive()
-                continue
-            if isinstance(step, Delay):
-                await step._apply()
-                continue
-            yield step
             if isinstance(step, ResultMessage):
-                return   # turn boundary — next receive_response() resumes after it
+                return
 
     async def interrupt(self):
         self.interrupted = True
+        self._wake()
 
     async def set_permission_mode(self, mode: str):
         self.permission_mode = mode
