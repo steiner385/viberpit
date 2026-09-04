@@ -189,7 +189,9 @@ class SessionDriver:
         # The permission mode active immediately before plan mode was entered, so
         # exiting plan restores it instead of collapsing to the SDK 'default' engine.
         self._pre_plan_mode: str | None = None
-        self.identity = identity
+        # Backing field for the ``identity`` property — the registries it cascades
+        # to are not built yet at this point, so the ctor writes it directly.
+        self._identity = identity
         self.denylist = denylist
         self.resume = resume
         self.claude_session_id: str | None = None
@@ -538,6 +540,31 @@ class SessionDriver:
         except Exception:
             log.warning("driver: QuestionResolved emit failed session=%s qid=%s",
                         self.session_id, question_id, exc_info=True)
+
+    @property
+    def identity(self) -> str:
+        """The identity AskUserQuestion / permission asks are registered under and
+        resolved against (see QuestionRegistry.resolve / PermissionRegistry.resolve)."""
+        return self._identity
+
+    @identity.setter
+    def identity(self, value: str) -> None:
+        """Re-thread the driver AND its already-pending asks to *value*.
+
+        The registries snapshot ``self.identity`` at request time, so upgrading only
+        the attribute (what orchestrator._rethread_identity does when a real user
+        attaches to a driver an internal path built under "system") stranded every
+        question or permission raised before that attach: still listed as pending,
+        yet every answer rejected as an identity mismatch. Cascading here keeps the
+        attribute and the registries a single source of truth — whoever the driver
+        now belongs to owns everything it is waiting on.
+        """
+        old = self._identity
+        self._identity = value
+        if old == value:
+            return
+        self._qreg.rethread_identity(self.session_id, old, value)
+        self._reg.rethread_identity(self.session_id, old, value)
 
     def answer_question(self, question_id: str, selected: list[str], identity: str,
                         mode: str = "option") -> bool:
