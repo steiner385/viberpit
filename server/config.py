@@ -71,6 +71,10 @@ try:
             default_factory=lambda: str(Path.home() / ".config" / "google-chrome" / "Default"),
             alias="CCSWITCH_CHROME_PROFILE",
         )
+        # Extension ids carried into the temp login profile (comma list). Unset → the
+        # core default (1Password, ccswitch.auth_login.REAUTH_EXTENSION_IDS); set but
+        # empty → carry none. Spec: 2026-09-04-reauth-profile-fidelity-design.md D2.
+        reauth_extension_ids: str | None = Field(default=None, alias="CCSWITCH_REAUTH_EXTENSIONS")
         # A human doing a fresh Google login on a cold browser can take several
         # minutes; the timeout must outlast that or it tears down the localhost
         # callback listener mid-login (zombie consent page).
@@ -158,6 +162,13 @@ try:
             return [item.strip() for item in self.tailnet_allowlist.split(",") if item.strip()]
 
         @property
+        def reauth_extension_id_items(self) -> list[str] | None:
+            """None = use the core default list; [] = disabled; else the configured ids."""
+            if self.reauth_extension_ids is None:
+                return None
+            return [i.strip() for i in self.reauth_extension_ids.split(",") if i.strip()]
+
+        @property
         def fleet_hosts_map(self) -> dict[str, str]:
             """Return {name: endpoint} parsed from CCSWITCH_FLEET_HOSTS.
 
@@ -233,6 +244,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         chrome_profile: str = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_CHROME_PROFILE") or str(Path.home() / ".config" / "google-chrome" / "Default")
+        )
+        reauth_extension_ids: str | None = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_REAUTH_EXTENSIONS")
         )
         reauth_timeout_s: float = dataclasses.field(
             default_factory=lambda: float(os.environ.get("CCSWITCH_REAUTH_TIMEOUT_S", "900"))
@@ -333,6 +347,12 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         @property
         def tailnet_allowlist_items(self) -> list[str]:
             return [item.strip() for item in self.tailnet_allowlist.split(",") if item.strip()]
+
+        @property
+        def reauth_extension_id_items(self) -> list[str] | None:
+            if self.reauth_extension_ids is None:
+                return None
+            return [i.strip() for i in self.reauth_extension_ids.split(",") if i.strip()]
 
         @property
         def fleet_hosts_map(self) -> dict[str, str]:
