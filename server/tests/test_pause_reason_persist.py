@@ -141,7 +141,11 @@ async def test_reassign_clears_pause_fields(monkeypatch):
     orch._clock = time.time; orch._registry = None; orch._suggester = None
     orch._session_factory = lambda sid: None
     orch._persist_claude_session_id = lambda *a, **k: None
-    orch._persist_status = lambda *a, **k: None
+
+    async def _persist_status(sid, status):  # awaited by the parked-status persist
+        rec.status = status
+
+    orch._persist_status = _persist_status
     orch._handle_recoverable_failure = lambda *a, **k: None
     orch._publish_event = lambda e: None
 

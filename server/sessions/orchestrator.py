@@ -9994,6 +9994,14 @@ class SessionOrchestrator:
             self._install_driver(record.id, new_driver)
             if record.model is not None:
                 await new_driver.set_model(record.model)
+            # A parked session (needs_attention / limited) has no turn in flight, so
+            # nothing will move its status once the swap succeeds — a replayed prompt
+            # flips it to in_progress, but a session with no prompt to replay (the
+            # normal state after a daemon restart) would stay parked forever and the
+            # recovery sweep would re-enter on its own output every 30 s. Persist
+            # idle here, before the replay, so a replayed turn's own status wins.
+            if record.status in _STALLED_STATUSES:
+                await self._persist_status(record.id, "idle")
             last = self._last_prompt.get(record.id) if replay_last_prompt else None
             if last:
                 await new_driver.send_prompt(last)
