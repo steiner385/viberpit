@@ -306,7 +306,7 @@ describe('SessionListColumn — the Status/Project/Environment filters (DEC-8)',
   })
 
   it('survives a zero-match filter: the controls, the selection and a way out stay', async () => {
-    // 'Needs attention' is the `error` tier and no session is in it, so the list
+    // 'Failed' is the `error` tier and no session is in it, so the list
     // goes empty by design. The strip is gated on the SESSION count, not the
     // visible rows, so the control that set the filter is still there to undo it.
     renderColumn({ sessions: [session({ id: 'sess-1', name: 'First', repo: 'o/a' })] })

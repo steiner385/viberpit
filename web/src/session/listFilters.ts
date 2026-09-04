@@ -10,7 +10,7 @@
  *
  * `status` is a CLOSED vocabulary — the {@link StatusTier} set — so every tier
  * stays selectable even when no session currently sits in it. Filtering to
- * "Needs attention" with zero red sessions must show an EMPTY list, not
+ * "Failed" with zero red sessions must show an EMPTY list, not
  * silently drop the filter; the control still shows the selection, so the user
  * can undo it.
  *

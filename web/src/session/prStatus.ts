@@ -34,7 +34,7 @@ export function inFlightPrCount(prs?: PullRequestInfo[] | null): number {
  * because there's no action left to take on it.
  *
  * Drives BOTH the triage bucket (a failing PR lifts a calm session into the
- * "Needs attention" group — see prTier in triageTier.ts) AND the PR dropdown's
+ * "Failed" group — see sessionTriage in triageTier.ts) AND the PR dropdown's
  * red tint, so the card's group and the dropdown color can never disagree.
  */
 export function anyChecksFailing(prs?: PullRequestInfo[] | null): boolean {

@@ -9,14 +9,14 @@ import { anyChecksFailing } from './prStatus'
  *  turn and no armed Monitor/wakeup. Only these get lifted by a failing PR.
  *  `waiting` (waiting_external — an armed Monitor/wakeup, see background_tasks.is_parked)
  *  and `busy` (a live turn) both mean an agent is already on the CI, so a red
- *  rollup there is that agent's job, not the user's — don't escalate to "Needs
- *  attention" and contradict the card's own "Waiting…"/"Working…" pill. */
+ *  rollup there is that agent's job, not the user's — don't escalate to "Failed"
+ *  and contradict the card's own "Waiting…"/"Working…" pill. */
 const AT_REST = new Set<StatusTier>(['your-turn'])
 
 /**
  * The ONE triage read for a session: the presentation its card pill shows AND
  * the tier its group header / sort rank use — computed together so they can
- * never disagree (the reported "Waiting…" pill under a "Needs attention" header).
+ * never disagree (the reported "Waiting…" pill under a "Failed" header).
  *
  * Starts from the session's own status presentation (honoring the restart-strand
  * relabel), then lifts an at-rest session into {@link PR_CHECKS_FAILING} when a
