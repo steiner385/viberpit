@@ -86,6 +86,23 @@ def _unsign_session_id(signed: str) -> str | None:
         return None
 
 
+_LOOPBACK = frozenset({"127.0.0.1", "::1"})
+
+
+def _assistant_claims(request: Request):
+    """Claims from a `Bearer ccas1:…` header, or None. Loopback peers only: the token is
+    minted for the daemon on THIS host and must never be usable from the tailnet."""
+    auth = request.headers.get("authorization", "")
+    if not auth.startswith("Bearer ccas1:"):
+        return None
+    client = request.client
+    if client is None or client.host not in _LOOPBACK:
+        return None
+    from server.assistant.token import verify_token  # noqa: PLC0415
+    from server.config import get_settings  # noqa: PLC0415
+    return verify_token(auth[len("Bearer "):], max_age_s=get_settings().assistant_idle_s * 4)
+
+
 class IdentityMiddleware(BaseHTTPMiddleware):
     """ASGI middleware that enforces identity on every request.
 
@@ -100,6 +117,20 @@ class IdentityMiddleware(BaseHTTPMiddleware):
         # Unauthenticated liveness/schema probe (used by auto-deploy health-check).
         if request.url.path in _EXEMPT_PATHS:
             return await call_next(request)
+
+        claims = _assistant_claims(request)
+        if claims is not None:
+            from server.assistant.policy import route_allowed  # noqa: PLC0415
+            if not route_allowed(request.method, request.url.path):
+                return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={"error": {
+                    "code": "ASSISTANT_ROUTE_FORBIDDEN",
+                    "message": "the assistant may not call this route"}})
+            request.state.identity = claims.identity
+            request.state.via = "assistant"
+            request.state.assistant_session_id = claims.session_id
+            request.state.app_session_id = None      # no cookie session for a bearer call
+            return await call_next(request)
+
         identity = verify_identity(request)
         if identity is None:
             return JSONResponse(
