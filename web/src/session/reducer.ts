@@ -879,10 +879,16 @@ export function transcriptReducer(
       // transcript once the replay settles.
       if (state.replaying) return { ...state, loadingOlder: false }
       const olderTurns = buildTurnsFromEvents(ev.events)
-      // Drop any older turn whose id already exists (defensive; windows are disjoint server-side).
-      const existing = new Set(state.turns.map((t) => t.id))
-      const fresh = olderTurns.filter((t) => !existing.has(t.id))
-      return { ...state, turns: [...fresh, ...state.turns],
+      // The OLDER page is authoritative for position. The server prepends a window's
+      // owning UserMessage to any page (and to the attach window) whose head lands
+      // mid-logical-turn, so the same prompt id arrives once per page until the page
+      // holding its real position loads. A copy already on screen therefore sits at a
+      // page boundary, not where the prompt was sent: drop it and let the incoming page
+      // place it. (Keeping the on-screen copy pinned "Start Phase B" hours after its real
+      // position — the page-boundary ordering bug, session 888ad2bf, 2026-09-03.)
+      const incoming = new Set(olderTurns.map((t) => t.id))
+      const kept = state.turns.filter((t) => !incoming.has(t.id))
+      return { ...state, turns: [...olderTurns, ...kept],
                earliestTurn: ev.earliestTurn, loadingOlder: false }
     }
 
