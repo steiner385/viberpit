@@ -45,6 +45,16 @@ class CloneDoctorTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
+    def _url_for(self, name_with_owner: str) -> str:
+        """Re-clone from the local bare fixture, not github.com.
+
+        Without this seam ``repair`` would reconstruct
+        ``https://github.com/cairnea/KinDash.git`` and actually hit the network —
+        passing only on a machine with ambient credentials for that private repo
+        and failing in CI with ``could not read Username``.
+        """
+        return self.url
+
     def _add_worktree(self, session_id: str = "2a158cb3") -> Path:
         info = worktrees.create_worktree(str(self.clone), None, session_id, str(self.root))
         return Path(info.path)
@@ -102,7 +112,8 @@ class CloneDoctorTests(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertNotEqual(broken.returncode, 0)
 
-        results = clone_doctor.repair(str(self.root), base_ref="origin/main")
+        results = clone_doctor.repair(
+            str(self.root), base_ref="origin/main", url_for=self._url_for)
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["action"], "repaired")
         self.assertEqual(results[0]["results"], {str(wt): "repaired"})
@@ -120,7 +131,7 @@ class CloneDoctorTests(unittest.TestCase):
     def test_repair_relocks_recovered_worktree(self) -> None:
         wt = self._add_worktree()
         _rmtree(self.clone)
-        clone_doctor.repair(str(self.root), base_ref="origin/main")
+        clone_doctor.repair(str(self.root), base_ref="origin/main", url_for=self._url_for)
         listing = _git("worktree", "list", "--porcelain", cwd=str(self.clone)).stdout
         self.assertIn("locked", listing)
         self.assertIn(str(wt), listing)
@@ -128,8 +139,8 @@ class CloneDoctorTests(unittest.TestCase):
     def test_repair_is_idempotent(self) -> None:
         self._add_worktree()
         _rmtree(self.clone)
-        clone_doctor.repair(str(self.root), base_ref="origin/main")
-        self.assertEqual(clone_doctor.repair(str(self.root)), [])
+        clone_doctor.repair(str(self.root), base_ref="origin/main", url_for=self._url_for)
+        self.assertEqual(clone_doctor.repair(str(self.root), url_for=self._url_for), [])
 
     def test_repair_dry_run_changes_nothing(self) -> None:
         wt = self._add_worktree()
@@ -138,6 +149,26 @@ class CloneDoctorTests(unittest.TestCase):
         self.assertEqual(results[0]["action"], "would-repair")
         self.assertEqual(results[0]["worktrees"], [str(wt)])
         self.assertFalse(self.clone.exists())
+
+    def test_repair_reports_a_failed_reclone_without_crashing(self) -> None:
+        """No network / no credentials must degrade to a reported failure.
+
+        The orphaned worktrees stay exactly as they were — still recoverable
+        once the clone source is reachable again.
+        """
+        wt = self._add_worktree()
+        _rmtree(self.clone)
+        results = clone_doctor.repair(
+            str(self.root), url_for=lambda repo: str(self.base / "no-such-remote.git"))
+        self.assertEqual(results[0]["action"], "failed")
+        self.assertIn("git clone failed", results[0]["error"])
+        self.assertTrue(wt.exists())
+
+    def test_default_clone_url_is_the_github_https_remote(self) -> None:
+        self.assertEqual(
+            clone_doctor.default_clone_url("cairnea/KinDash"),
+            "https://github.com/cairnea/KinDash.git",
+        )
 
     def test_ensure_clone_self_heals_orphans(self) -> None:
         """Re-cloning at the orphaned path re-links its worktrees automatically."""

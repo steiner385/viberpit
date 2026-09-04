@@ -45,6 +45,7 @@ import subprocess
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from ccswitch.gitrepos import clones_base
 from ccswitch.worktrees import lock_worktree, worktrees_base
@@ -307,11 +308,23 @@ def repair_worktree_links(
     return results
 
 
+def default_clone_url(name_with_owner: str) -> str:
+    """The URL a missing clone is re-created from: the GitHub HTTPS remote.
+
+    Reconstructed rather than read back, because the only place the real remote
+    URL was recorded — the clone's own ``.git/config`` — died with the clone.
+    Authentication is unchanged: ``ensure_clone`` mints the owner's App
+    installation token for the fetch (#887).
+    """
+    return f"https://github.com/{name_with_owner}.git"
+
+
 def repair(
     repo_root: str,
     *,
     dry_run: bool = False,
     base_ref: str | None = None,
+    url_for: "Callable[[str], str] | None" = None,
 ) -> list[dict]:
     """Recover every clone that worktrees still depend on but that is missing.
 
@@ -320,6 +333,11 @@ def repair(
     affected clone: ``{clone, repo, action, worktrees, results}``.
 
     ``dry_run`` reports what would happen and changes nothing.
+
+    ``url_for`` maps ``<owner>/<name>`` to the URL to re-clone from, defaulting
+    to :func:`default_clone_url`. It is the seam for a repo whose remote is not
+    the public GitHub HTTPS URL — a self-hosted remote, or a test fixture —
+    without which recovery would be hard-wired to github.com.
     """
     from ccswitch import gitrepos  # deferred: gitrepos calls back into this module
 
@@ -344,7 +362,7 @@ def repair(
                 entry["error"] = "clone path is outside the ccswitch clones base"
                 out.append(entry)
                 continue
-            url = f"https://github.com/{report.name_with_owner}.git"
+            url = (url_for or default_clone_url)(report.name_with_owner)
             try:
                 gitrepos.ensure_clone(repo_root, report.name_with_owner, url)
             except gitrepos.CloneError as exc:
