@@ -1,0 +1,112 @@
+uid=6_0 RootWebArea "ccswitch" url="http://127.0.0.1:8787/settings/plugins"
+  uid=6_1 navigation "Sections"
+    uid=6_2 link "Sessions (6)" url="http://127.0.0.1:8787/sessions"
+      uid=6_3 StaticText "Sessions (6)"
+    uid=6_4 link "Pipeline (8)" url="http://127.0.0.1:8787/pipeline"
+      uid=6_5 StaticText "Pipeline (8)"
+    uid=6_6 link "Automations (3)" url="http://127.0.0.1:8787/automations"
+      uid=6_7 StaticText "Automations (3)"
+    uid=6_8 link "Initiatives" url="http://127.0.0.1:8787/initiatives"
+      uid=6_9 StaticText "Initiatives"
+    uid=6_10 link "Products" url="http://127.0.0.1:8787/projects"
+      uid=6_11 StaticText "Products"
+    uid=6_12 link "Archived (100)" url="http://127.0.0.1:8787/archived"
+      uid=6_13 StaticText "Archived (100)"
+    uid=6_14 link "Insights" url="http://127.0.0.1:8787/insights"
+      uid=6_15 StaticText "Insights"
+    uid=6_16 link "New session" url="http://127.0.0.1:8787/sessions?dialog=new"
+      uid=6_17 StaticText "New session"
+    uid=6_18 button "Assistant"
+    uid=6_19 button "Help"
+    uid=6_20 button "Theme"
+    uid=6_21 link "Settings" url="http://127.0.0.1:8787/settings"
+      uid=6_22 StaticText "Settings"
+    uid=6_23 button "Expand navigation" expandable
+  uid=6_24 main
+    uid=6_25 tab "General" selectable
+    uid=6_26 tab "Accounts" selectable
+    uid=6_27 tab "Automation" selectable
+    uid=6_28 tab "Notifications" selectable
+    uid=6_29 tab "Hooks" selectable
+    uid=6_30 tab "Plugins" selectable selected
+    uid=6_31 tab "Skills" selectable
+    uid=6_32 tab "Commands" selectable
+    uid=6_33 tab "MCP Servers" selectable
+    uid=6_34 tab "Presets" selectable
+    uid=6_35 tab "Templates" selectable
+    uid=6_36 tab "Profiles" selectable
+    uid=6_37 tab "Snapshots" selectable
+    uid=6_38 tab "Fleet" selectable
+    uid=6_39 StaticText "Plugins are shared across all accounts. Enable/disable applies to newly started sessions."
+    uid=6_40 button "aws-core 1.1.0 development Build, deploy, and operate applications on AWS. Skills to author infrastructure-as-code, use core services, and complete common tasks. 15 skills · 1 MCP · 1 hooks ≈3126 tok always-on" expandable
+    uid=6_41 StaticText "On"
+    uid=6_42 switch "Enable aws-core" checked
+    uid=6_43 button "aws-dev-toolkit 0.4.0 development AWS development toolkit — 34 skills, 11 agents, and 3 MCP servers for building, migrating, and performing architecture reviews on AWS. 35 skills · 11 agents · 3 MCP ≈5278 tok always-on" expandable
+    uid=6_44 StaticText "On"
+    uid=6_45 switch "Enable aws-dev-toolkit" checked
+    uid=6_46 button "chrome-devtools-mcp 1.8.0 development Control and inspect a live Chrome browser from your coding agent. Record performance traces, analyze network requests, check console messages with source-mapped stack traces, and automate browser actions with Puppeteer. 6 skills ≈651 tok always-on" expandable
+    uid=6_47 StaticText "On"
+    uid=6_48 switch "Enable chrome-devtools-mcp" checked
+    uid=6_49 button "claude-code-setup 1.0.0 productivity Analyze codebases and recommend tailored Claude Code automations such as hooks, skills, MCP servers, and subagents. 1 skills ≈144 tok always-on" expandable
+    uid=6_50 StaticText "On"
+    uid=6_51 switch "Enable claude-code-setup" checked
+    uid=6_52 button "claude-md-management 1.0.0 productivity Tools to maintain and improve CLAUDE.md files - audit quality, capture session learnings, and keep project memory current. 1 commands · 1 skills ≈180 tok always-on" expandable
+    uid=6_53 StaticText "On"
+    uid=6_54 switch "Enable claude-md-management" checked
+    uid=6_55 button "code-review 1dd995193ba2 productivity Automated code review for pull requests using multiple specialized agents with confidence-based scoring to filter false positives 1 commands ≈25 tok always-on" expandable
+    uid=6_56 StaticText "On"
+    uid=6_57 switch "Enable code-review" checked
+    uid=6_58 button "code-simplifier 1.0.0 productivity Agent that simplifies and refines code for clarity, consistency, and maintainability while preserving functionality. Focuses on recently modified code. 1 agents ≈69 tok always-on" expandable
+    uid=6_59 StaticText "On"
+    uid=6_60 switch "Enable code-simplifier" checked
+    uid=6_61 button "commit-commands 1dd995193ba2 productivity Commands for git commit workflows including commit, push, and PR creation 3 commands ≈108 tok always-on" expandable
+    uid=6_62 StaticText "On"
+    uid=6_63 switch "Enable commit-commands" checked
+    uid=6_64 button "desktop-commander 0.2.0 productivity MCP server for terminal commands, process management, and file operations across text, code, PDF, DOCX, Excel, images, and structured data. 1 skills ≈129 tok always-on" expandable
+    uid=6_65 StaticText "On"
+    uid=6_66 switch "Enable desktop-commander" checked
+    uid=6_67 button "explanatory-output-style 1.0.0 learning Adds educational insights about implementation choices and codebase patterns (mimics the deprecated Explanatory output style) 1 hooks ≈0 tok always-on" expandable
+    uid=6_68 StaticText "On"
+    uid=6_69 switch "Enable explanatory-output-style" checked
+    uid=6_70 button "frontend-design 1dd995193ba2 development Create distinctive, production-grade frontend interfaces with high design quality. Generates creative, polished code that avoids generic AI aesthetics. 1 skills ≈83 tok always-on" expandable
+    uid=6_71 StaticText "On"
+    uid=6_72 switch "Enable frontend-design" checked
+    uid=6_73 button "github 1dd995193ba2 productivity Official GitHub MCP server for repository management. Create issues, manage pull requests, review code, search repositories, and interact with GitHub's full API directly from Claude Code. 1 MCP ≈0 tok always-on" expandable
+    uid=6_74 StaticText "On"
+    uid=6_75 switch "Enable github" checked
+    uid=6_76 button "learning-output-style 1.0.0 learning Interactive learning mode that requests meaningful code contributions at decision points (mimics the unshipped Learning output style) 1 hooks ≈0 tok always-on" expandable
+    uid=6_77 StaticText "On"
+    uid=6_78 switch "Enable learning-output-style" checked
+    uid=6_79 button "linear 1dd995193ba2 productivity Linear issue tracking integration. Create issues, manage projects, update statuses, search across workspaces, and streamline your software development workflow with Linear's modern issue tracker. 1 MCP ≈0 tok always-on" expandable
+    uid=6_80 StaticText "On"
+    uid=6_81 switch "Enable linear" checked
+    uid=6_82 button "mcp-server-dev 1dd995193ba2 development Skills for designing and building MCP servers that work seamlessly with Claude. Guides you through deployment models (remote HTTP, MCPB, local), tool design patterns, auth, and interactive MCP apps. 3 skills ≈507 tok always-on" expandable
+    uid=6_83 StaticText "On"
+    uid=6_84 switch "Enable mcp-server-dev" checked
+    uid=6_85 button "notion 0.1.0 productivity Notion workspace integration. Search pages, create and update documents, manage databases, and access your team's knowledge base directly from Claude Code for seamless documentation workflows. 6 commands · 1 MCP ≈217 tok always-on" expandable
+    uid=6_86 StaticText "On"
+    uid=6_87 switch "Enable notion" checked
+    uid=6_88 button "railway 1.3.7 deployment Deploy and manage apps, databases, and infrastructure on Railway. Covers project setup, deploys, environment configuration, networking, troubleshooting, and monitoring. 1 skills · 1 MCP · 1 hooks ≈292 tok always-on" expandable
+    uid=6_89 StaticText "On"
+    uid=6_90 switch "Enable railway" checked
+    uid=6_91 button "security-guidance 2.0.7 security Security review for Claude-generated code. Pattern-based warnings on edits, LLM-powered diff review on Stop, and an agentic commit reviewer that catches injection, XSS, SSRF, hardcoded secrets, and 25+ other vulnerability classes. 4 hooks ≈0 tok always-on" expandable
+    uid=6_92 StaticText "On"
+    uid=6_93 switch "Enable security-guidance" checked
+    uid=6_94 button "sentry 1.4.0 monitoring Sentry error monitoring integration. Access error reports, analyze stack traces, search issues by fingerprint, and debug production errors directly from your development environment. 1 commands · 33 skills · 1 MCP ≈4061 tok always-on" expandable
+    uid=6_95 StaticText "On"
+    uid=6_96 switch "Enable sentry" checked
+    uid=6_97 button "stripe 0.6.4 development Stripe development plugin for Claude 2 commands · 5 skills · 1 agents · 1 MCP ≈1037 tok always-on" expandable
+    uid=6_98 StaticText "On"
+    uid=6_99 switch "Enable stripe" checked
+    uid=6_100 button "superpowers 6.3.0 development Superpowers teaches Claude brainstorming, subagent driven development with built in code review, systematic debugging, and red/green TDD. Additionally, it teaches Claude how to author and test new skills. 14 skills · 1 hooks ≈720 tok always-on" expandable
+    uid=6_101 StaticText "On"
+    uid=6_102 switch "Enable superpowers" checked
+    uid=6_103 button "twilio-developer-kit 0.3.2 development Twilio Skills provide procedural knowledge for AI coding agents — which APIs to use, in what order, and what to avoid. Covers SMS, Voice, WhatsApp, Verify, SendGrid, Compliance, and 30+ products. 55 skills ≈8752 tok always-on" expandable
+    uid=6_104 StaticText "On"
+    uid=6_105 switch "Enable twilio-developer-kit" checked
+    uid=6_106 button "typescript-lsp 1.0.0 development TypeScript/JavaScript language server for enhanced code intelligence ≈0 tok always-on" expandable
+    uid=6_107 StaticText "On"
+    uid=6_108 switch "Enable typescript-lsp" checked
+    uid=6_109 StaticText "Marketplaces: "
+    uid=6_110 StaticText "claude-plugins-official"
+  uid=6_111 region "Notifications alt+T" live="polite" relevant="additions text"
