@@ -2,10 +2,12 @@
 """Opt-in, read-only Codex external-auth compatibility spike.
 
 The harness starts one managed-auth authority app-server locally and two runner
-app-servers with separate temporary ``CODEX_HOME`` directories. Tokens and the
-native ChatGPT account id exist only in this process and JSON-RPC stdin pipes.
-Raw protocol frames and child stderr are never forwarded to this script's
-stdout/stderr.
+app-servers with separate temporary ``CODEX_HOME`` directories. Access tokens
+and the native ChatGPT account id enter runner app-servers through JSON-RPC
+stdin. For exact remote-home leak detection, those runner-visible values also
+enter one short-lived authenticated SSH scanner through stdin; the refresh
+token never does. Raw protocol frames and child stderr are never forwarded to
+this script's stdout/stderr.
 
 No thread or model turn is created. The only network-backed calls are account,
 model, rate-limit, and managed token refresh operations exposed by app-server.
@@ -27,7 +29,7 @@ import sys
 import tempfile
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Mapping, Sequence
+from typing import Any, Awaitable, Callable, Literal, Mapping, Sequence, get_args
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -46,7 +48,34 @@ DEFAULT_RUNNERS = "local,rocky"
 REDACTED = "[REDACTED]"
 REQUEST_TIMEOUT_S = 45.0
 PROCESS_TERMINATE_GRACE_S = 2.0
+CALLBACK_QUIET_INTERVAL_S = 0.1
+CALLBACK_FENCE_DEADLINE_S = 2.0
 _CLEANUP_FAILED_NOTE = "ccswitch spike cleanup also failed; details suppressed"
+
+ProtocolMethod = Literal[
+    "initialize",
+    "account/login/start",
+    "account/read",
+    "account/rateLimits/read",
+    "model/list",
+    "account/chatgptAuthTokens/refresh",
+]
+ProtocolStage = Literal[
+    "initialize",
+    "authority_account_read",
+    "authority_refresh",
+    "initial_login",
+    "initial_read_only",
+    "invalid_login",
+    "refresh_callback",
+    "refresh_trigger",
+    "recovery_read_only",
+    "protocol_transport",
+]
+ProtocolRole = Literal["authority", "runner"]
+_PROTOCOL_METHODS: frozenset[str] = frozenset(get_args(ProtocolMethod))
+_PROTOCOL_STAGES: frozenset[str] = frozenset(get_args(ProtocolStage))
+_PROTOCOL_ROLES: frozenset[str] = frozenset(get_args(ProtocolRole))
 
 _SECRET_KEYS = frozenset(
     {
@@ -102,6 +131,35 @@ class SpikeConfigurationError(SpikeError):
 
 class ProtocolError(SpikeError):
     """The app-server protocol failed without retaining raw frame content."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        method: str | None = None,
+        stage: str | None = None,
+        role: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.method = method if method in _PROTOCOL_METHODS else None
+        self.stage = stage if stage in _PROTOCOL_STAGES else None
+        self.role = role if role in _PROTOCOL_ROLES else None
+
+    def with_context(
+        self,
+        *,
+        method: str | None = None,
+        stage: str | None = None,
+        role: str | None = None,
+    ) -> ProtocolError:
+        """Fill missing diagnostic fields from fixed allowlists only."""
+        if self.method is None and method in _PROTOCOL_METHODS:
+            self.method = method
+        if self.stage is None and stage in _PROTOCOL_STAGES:
+            self.stage = stage
+        if self.role is None and role in _PROTOCOL_ROLES:
+            self.role = role
+        return self
 
 
 def validate_account_response(response: Any) -> None:
@@ -275,6 +333,13 @@ def failure_json(exc: BaseException, secrets: SecretValues | None = None) -> str
     notes = getattr(exc, "__notes__", ())
     if _CLEANUP_FAILED_NOTE in notes:
         payload["cleanup_also_failed"] = True
+    if isinstance(exc, ProtocolError):
+        if exc.method is not None:
+            payload["method"] = exc.method
+        if exc.stage is not None:
+            payload["stage"] = exc.stage
+        if exc.role is not None:
+            payload["role"] = exc.role
     return json.dumps(payload, sort_keys=True)
 
 
@@ -553,18 +618,27 @@ class JsonRpcProcess:
         command: Sequence[str],
         environment: Mapping[str, str],
         *,
+        role: ProtocolRole,
         handler: ServerRequestHandler | None = None,
     ) -> None:
         self._command = list(command)
         self._environment = dict(environment)
+        self._role = role if role in _PROTOCOL_ROLES else None
         self._handler = handler
         self._process: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task[None] | None = None
         self._stderr_task: asyncio.Task[None] | None = None
-        self._pending: dict[int, asyncio.Future[Any]] = {}
+        self._pending: dict[
+            int, tuple[asyncio.Future[Any], str | None, str | None]
+        ] = {}
+        self._abandoned_request_ids: set[int] = set()
+        self._server_request_tasks: set[asyncio.Task[None]] = set()
         self._next_id = 1
         self._stderr = bytearray()
         self._background_errors: list[BaseException] = []
+        self._callback_failures: list[ProtocolError | asyncio.CancelledError] = []
+        self._callback_activity_sequence = 0
+        self._callback_activity_event = asyncio.Event()
 
     @property
     def captured_stderr(self) -> bytes:
@@ -590,8 +664,9 @@ class JsonRpcProcess:
                 },
                 "capabilities": {"experimentalApi": experimental_api},
             },
+            stage="initialize",
         )
-        await self.notify("initialized", {})
+        await self.notify("initialized", {}, stage="initialize")
 
     async def _read_stdout(self) -> None:
         assert self._process is not None and self._process.stdout is not None
@@ -602,40 +677,212 @@ class JsonRpcProcess:
                 except (json.JSONDecodeError, UnicodeDecodeError) as exc:
                     raise ProtocolError("app-server emitted a malformed JSONL frame") from exc
                 if "id" in frame and "method" in frame:
-                    asyncio.create_task(self._answer_server_request(frame))
+                    self._start_server_request(frame)
                     continue
                 if "id" in frame:
                     request_id = frame.get("id")
-                    future = self._pending.pop(request_id, None)
-                    if future is None:
+                    if type(request_id) is not int:
+                        raise ProtocolError("app-server replied with an invalid request id")
+                    pending = self._pending.pop(request_id, None)
+                    if pending is None:
+                        if request_id in self._abandoned_request_ids:
+                            if ("result" in frame) == ("error" in frame):
+                                raise ProtocolError(
+                                    "app-server returned an invalid abandoned response"
+                                )
+                            self._abandoned_request_ids.remove(request_id)
+                            continue
                         raise ProtocolError("app-server replied with an unknown request id")
+                    future, method, stage = pending
+                    if future.done():
+                        continue
                     if "error" in frame:
-                        future.set_exception(ProtocolError("app-server request returned an error"))
+                        future.set_exception(
+                            ProtocolError(
+                                "app-server request returned an error",
+                                method=method,
+                                stage=stage,
+                                role=self._role,
+                            )
+                        )
                     else:
                         future.set_result(frame.get("result"))
             if self._pending:
                 raise ProtocolError("app-server closed with pending requests")
         except BaseException as exc:
+            if isinstance(exc, ProtocolError):
+                exc.with_context(stage="protocol_transport", role=self._role)
             self._background_errors.append(exc)
-            for future in self._pending.values():
+            for future, method, stage in self._pending.values():
                 if not future.done():
-                    future.set_exception(ProtocolError("app-server reader stopped"))
+                    future.set_exception(
+                        ProtocolError(
+                            "app-server reader stopped",
+                            method=method,
+                            stage=stage,
+                            role=self._role,
+                        )
+                    )
             self._pending.clear()
+
+    def _start_server_request(self, frame: dict[str, Any]) -> None:
+        self._callback_activity_sequence += 1
+        self._callback_activity_event.set()
+        task = asyncio.create_task(self._answer_server_request(frame))
+        self._server_request_tasks.add(task)
+        task.add_done_callback(self._consume_server_request_task)
+
+    def _consume_server_request_task(self, task: asyncio.Task[None]) -> None:
+        """Retrieve every callback task exception so none escapes the private pipe."""
+        self._server_request_tasks.discard(task)
+        if task.cancelled():
+            return
+        failure = task.exception()
+        if failure is not None:
+            contextual_failure = ProtocolError(
+                "app-server callback task failed",
+                stage="refresh_callback",
+                role=self._role,
+            )
+            self._background_errors.append(contextual_failure)
+            self._callback_failures.append(contextual_failure)
+
+    def callback_checkpoint(self) -> int:
+        return len(self._callback_failures)
+
+    async def callback_failures_after_quiescence(
+        self,
+        checkpoint: int,
+        *,
+        quiet_interval: float = CALLBACK_QUIET_INTERVAL_S,
+        max_wait: float = CALLBACK_FENCE_DEADLINE_S,
+    ) -> tuple[ProtocolError | asyncio.CancelledError, ...]:
+        """Drain callback tasks, then observe a bounded registration quiet period."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max_wait
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            tasks = tuple(self._server_request_tasks)
+            if tasks:
+                _, pending = await asyncio.wait(tasks, timeout=remaining)
+                if pending:
+                    break
+                await asyncio.sleep(0)
+                continue
+
+            observed_sequence = self._callback_activity_sequence
+            self._callback_activity_event.clear()
+            if self._callback_activity_sequence != observed_sequence:
+                continue
+            remaining = deadline - loop.time()
+            if remaining < quiet_interval:
+                break
+            try:
+                await asyncio.wait_for(
+                    self._callback_activity_event.wait(),
+                    quiet_interval,
+                )
+            except TimeoutError:
+                if (
+                    self._callback_activity_sequence == observed_sequence
+                    and not self._server_request_tasks
+                ):
+                    return tuple(self._callback_failures[checkpoint:])
+
+        failure = ProtocolError(
+            "runner callback activity did not quiesce",
+            method="account/chatgptAuthTokens/refresh",
+            stage="refresh_callback",
+            role=self._role,
+        )
+        self._background_errors.append(failure)
+        self._callback_failures.append(failure)
+        return tuple(self._callback_failures[checkpoint:])
 
     async def _answer_server_request(self, frame: dict[str, Any]) -> None:
         try:
             if self._handler is None:
                 raise ProtocolError("unexpected app-server request")
             result = await self._handler(frame)
-            await self._write({"id": frame["id"], "result": result})
-        except BaseException as exc:
+        except asyncio.CancelledError as exc:
             self._background_errors.append(exc)
-            await self._write(
-                {
-                    "id": frame.get("id"),
-                    "error": {"code": -32603, "message": "ccswitch spike rejected request"},
-                }
-            )
+            self._callback_failures.append(exc)
+            raise
+        except BaseException as exc:
+            if isinstance(exc, ProtocolError):
+                failure = exc.with_context(
+                    method=frame.get("method"),
+                    stage="refresh_callback",
+                    role=self._role,
+                )
+            else:
+                failure = ProtocolError(
+                    "app-server callback handler failed",
+                    method=frame.get("method"),
+                    stage="refresh_callback",
+                    role=self._role,
+                )
+            self._background_errors.append(failure)
+            self._callback_failures.append(failure)
+            try:
+                await self._write(
+                    {
+                        "id": frame.get("id"),
+                        "error": {
+                            "code": -32603,
+                            "message": "ccswitch spike rejected request",
+                        },
+                    }
+                )
+            except asyncio.CancelledError as write_cancellation:
+                self._background_errors.append(write_cancellation)
+                self._callback_failures.append(write_cancellation)
+                raise
+            except BaseException as write_failure:
+                if isinstance(write_failure, ProtocolError):
+                    contextual_write_failure = write_failure.with_context(
+                        method=frame.get("method"),
+                        stage="refresh_callback",
+                        role=self._role,
+                    )
+                else:
+                    contextual_write_failure = ProtocolError(
+                        "app-server callback error response transport failed",
+                        method=frame.get("method"),
+                        stage="refresh_callback",
+                        role=self._role,
+                    )
+                self._background_errors.append(contextual_write_failure)
+                self._callback_failures.append(contextual_write_failure)
+                if not isinstance(write_failure, Exception):
+                    raise
+        else:
+            try:
+                await self._write({"id": frame["id"], "result": result})
+            except asyncio.CancelledError as exc:
+                self._background_errors.append(exc)
+                self._callback_failures.append(exc)
+                raise
+            except BaseException as exc:
+                if isinstance(exc, ProtocolError):
+                    failure = exc.with_context(
+                        method=frame.get("method"),
+                        stage="refresh_callback",
+                        role=self._role,
+                    )
+                else:
+                    failure = ProtocolError(
+                        "app-server callback response transport failed",
+                        method=frame.get("method"),
+                        stage="refresh_callback",
+                        role=self._role,
+                    )
+                self._background_errors.append(failure)
+                self._callback_failures.append(failure)
+                if not isinstance(exc, Exception):
+                    raise
 
     async def _read_stderr(self) -> None:
         assert self._process is not None and self._process.stderr is not None
@@ -649,34 +896,106 @@ class JsonRpcProcess:
         self._process.stdin.write(encoded)
         await self._process.stdin.drain()
 
-    async def request_frame(self, frame: dict[str, Any]) -> Any:
+    def _abandon_pending(self, request_id: int, future: asyncio.Future[Any]) -> None:
+        pending = self._pending.get(request_id)
+        if pending is not None and pending[0] is future:
+            self._pending.pop(request_id, None)
+            self._abandoned_request_ids.add(request_id)
+        if not future.done():
+            future.cancel()
+
+    async def request_frame(self, frame: dict[str, Any], *, stage: ProtocolStage) -> Any:
         request_id = frame.get("id")
-        if not isinstance(request_id, int):
-            raise ProtocolError("client request lacks an integer id")
+        method = frame.get("method")
+        safe_method = method if isinstance(method, str) and method in _PROTOCOL_METHODS else None
+        safe_stage = stage if stage in _PROTOCOL_STAGES else None
+        if type(request_id) is not int:
+            raise ProtocolError(
+                "client request lacks an integer id",
+                method=safe_method,
+                stage=safe_stage,
+                role=self._role,
+            )
         if request_id in self._pending:
-            raise ProtocolError("duplicate client request id")
+            raise ProtocolError(
+                "duplicate client request id",
+                method=safe_method,
+                stage=safe_stage,
+                role=self._role,
+            )
         loop = asyncio.get_running_loop()
         future: asyncio.Future[Any] = loop.create_future()
-        self._pending[request_id] = future
-        await self._write(frame)
+        self._pending[request_id] = (future, safe_method, safe_stage)
         try:
-            return await asyncio.wait_for(future, REQUEST_TIMEOUT_S)
+            await self._write(frame)
+        except BaseException as exc:
+            self._abandon_pending(request_id, future)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            if isinstance(exc, ProtocolError):
+                raise exc.with_context(method=safe_method, stage=safe_stage, role=self._role)
+            if isinstance(exc, Exception):
+                raise ProtocolError(
+                    "app-server request transport failed",
+                    method=safe_method,
+                    stage=safe_stage,
+                    role=self._role,
+                ) from None
+            raise
+        try:
+            return await asyncio.wait_for(asyncio.shield(future), REQUEST_TIMEOUT_S)
         except TimeoutError as exc:
-            self._pending.pop(request_id, None)
-            raise ProtocolError("app-server request timed out") from exc
+            self._abandon_pending(request_id, future)
+            raise ProtocolError(
+                "app-server request timed out",
+                method=safe_method,
+                stage=safe_stage,
+                role=self._role,
+            ) from exc
+        except asyncio.CancelledError:
+            self._abandon_pending(request_id, future)
+            raise
 
-    async def request(self, method: str, params: Mapping[str, Any]) -> Any:
+    async def request(
+        self,
+        method: ProtocolMethod,
+        params: Mapping[str, Any],
+        *,
+        stage: ProtocolStage,
+    ) -> Any:
         request_id = self._next_id
         self._next_id += 1
-        return await self.request_frame({"id": request_id, "method": method, "params": dict(params)})
+        return await self.request_frame(
+            {"id": request_id, "method": method, "params": dict(params)},
+            stage=stage,
+        )
 
-    async def external_login(self, secrets: SecretValues) -> None:
+    async def external_login(self, secrets: SecretValues, *, stage: ProtocolStage) -> None:
         request_id = self._next_id
         self._next_id += 1
-        await self.request_frame(build_external_login_frame(request_id, secrets))
+        await self.request_frame(build_external_login_frame(request_id, secrets), stage=stage)
 
-    async def notify(self, method: str, params: Mapping[str, Any]) -> None:
-        await self._write({"method": method, "params": dict(params)})
+    async def notify(
+        self,
+        method: str,
+        params: Mapping[str, Any],
+        *,
+        stage: ProtocolStage,
+    ) -> None:
+        try:
+            await self._write({"method": method, "params": dict(params)})
+        except BaseException as exc:
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            if isinstance(exc, ProtocolError):
+                raise exc.with_context(stage=stage, role=self._role)
+            if isinstance(exc, Exception):
+                raise ProtocolError(
+                    "app-server notification transport failed",
+                    stage=stage,
+                    role=self._role,
+                ) from None
+            raise
 
     async def close(self) -> None:
         if self._process is None:
@@ -699,13 +1018,19 @@ class JsonRpcProcess:
         for task in (self._reader_task, self._stderr_task):
             if task is not None:
                 await task
+        if self._server_request_tasks:
+            await asyncio.gather(*tuple(self._server_request_tasks), return_exceptions=True)
 
     def assert_background_clean(self) -> None:
         if self._background_errors:
             first = self._background_errors[0]
             if isinstance(first, SpikeError):
                 raise first
-            raise ProtocolError("app-server background task failed") from first
+            raise ProtocolError(
+                "app-server background task failed",
+                stage="protocol_transport",
+                role=self._role,
+            ) from first
 
 
 def _mutate_access_token(access_token: str) -> str:
@@ -768,30 +1093,55 @@ class RefreshCoalescer:
 
     async def handle(self, frame: dict[str, Any]) -> dict[str, Any]:
         if frame.get("method") != "account/chatgptAuthTokens/refresh":
-            raise ProtocolError("runner requested an unsupported experimental method")
+            raise ProtocolError(
+                "runner requested an unsupported experimental method",
+                stage="refresh_callback",
+                role="runner",
+            )
         params = frame.get("params")
         if not isinstance(params, dict) or params.get("reason") != "unauthorized":
-            raise ProtocolError("runner refresh request has an invalid reason")
+            raise ProtocolError(
+                "runner refresh request has an invalid reason",
+                method="account/chatgptAuthTokens/refresh",
+                stage="refresh_callback",
+                role="runner",
+            )
         previous = params.get("previousAccountId")
         if previous not in (None, self._current.account_id):
-            raise ProtocolError("runner refresh request is for a different account")
+            raise ProtocolError(
+                "runner refresh request is for a different account",
+                method="account/chatgptAuthTokens/refresh",
+                stage="refresh_callback",
+                role="runner",
+            )
         self.callback_count += 1
         rejected_generation = 0
         async with self._lock:
             if self.generation <= rejected_generation:
                 self.refresh_calls += 1
-                account_response = await self._authority.request(
-                    "account/read", {"refreshToken": True}
-                )
-                validate_account_response(account_response)
-                newer = load_managed_secrets(self._authority_home)
-                if newer.account_id != self._current.account_id:
-                    raise ProtocolError("authority refresh changed the native account")
-                if newer.access_token in {
-                    self._current.access_token,
-                    self._current.invalid_access_token,
-                }:
-                    raise ProtocolError("authority refresh did not advance the managed access token")
+                try:
+                    account_response = await self._authority.request(
+                        "account/read",
+                        {"refreshToken": True},
+                        stage="authority_refresh",
+                    )
+                    validate_account_response(account_response)
+                    newer = load_managed_secrets(self._authority_home)
+                    if newer.account_id != self._current.account_id:
+                        raise ProtocolError("authority refresh changed the native account")
+                    if newer.access_token in {
+                        self._current.access_token,
+                        self._current.invalid_access_token,
+                    }:
+                        raise ProtocolError(
+                            "authority refresh did not advance the managed access token"
+                        )
+                except ProtocolError as exc:
+                    raise exc.with_context(
+                        method="account/read",
+                        stage="authority_refresh",
+                        role="authority",
+                    )
                 self._current = self._current.merge(newer)
                 self.generation += 1
             current = self._current
@@ -908,7 +1258,7 @@ async def create_runner_runtime(
     """Register the process/home cleanup record before any remote mutation."""
     home, is_remote = plan_runner_home(target)
     command, environment = build_runner_process(target, home, codex_bin=codex_bin)
-    client = JsonRpcProcess(command, environment, handler=handler)
+    client = JsonRpcProcess(command, environment, role="runner", handler=handler)
     runtime = RunnerRuntime(target, home, client, is_remote)
     runtimes.append(runtime)
     await provision_runner_home(target, home)
@@ -1009,7 +1359,8 @@ async def scan_remote_home(target: RunnerTarget, home: Path, secrets: SecretValu
     assert target.ssh_host is not None
     if not _REMOTE_HOME_RE.fullmatch(str(home)):
         raise SpikeConfigurationError("refusing to inspect an unsafe remote path")
-    # Refresh tokens are intentionally excluded: they were never transmitted to the runner.
+    # The runner-visible access/account values cross this second authenticated SSH stdin boundary
+    # only for an exact byte scan. Refresh tokens are excluded and output is aggregate counts only.
     payload = json.dumps(secrets.runner_values, separators=(",", ":")).encode("utf-8")
     code, stdout, _ = await _run_command(
         build_ssh_command(
@@ -1147,13 +1498,128 @@ class SpikeEvidence:
         return clean
 
 
-async def _verify_read_only(runner: JsonRpcProcess, *, expected_account_id: str) -> None:
-    account = await runner.request("account/read", {"refreshToken": False})
-    validate_account_response(account)
-    models = await runner.request("model/list", {})
-    validate_model_response(models)
-    rate_limits = await runner.request("account/rateLimits/read", {})
-    validate_rate_limit_response(rate_limits, expected_account_id=expected_account_id)
+async def _verify_read_only(
+    runner: JsonRpcProcess,
+    *,
+    expected_account_id: str,
+    stage: ProtocolStage,
+) -> None:
+    method: ProtocolMethod = "account/read"
+    try:
+        account = await runner.request(method, {"refreshToken": False}, stage=stage)
+        validate_account_response(account)
+        method = "model/list"
+        models = await runner.request(method, {}, stage=stage)
+        validate_model_response(models)
+        method = "account/rateLimits/read"
+        rate_limits = await runner.request(method, {}, stage=stage)
+        validate_rate_limit_response(rate_limits, expected_account_id=expected_account_id)
+    except ProtocolError as exc:
+        raise exc.with_context(method=method, stage=stage, role="runner")
+
+
+async def _capture_refresh_outcome(operation: Awaitable[Any]) -> Any | BaseException:
+    """Retain the exact child failure object, including CancelledError identity."""
+    try:
+        return await operation
+    except BaseException as exc:
+        return exc
+
+
+def _classify_refresh_trigger_failure(
+    coalescer: RefreshCoalescer,
+    *,
+    runner_count: int,
+    checkpoint: tuple[int, int, int],
+) -> ProtocolError:
+    prior_callbacks, prior_refreshes, prior_generation = checkpoint
+    callback_delta = coalescer.callback_count - prior_callbacks
+    refresh_delta = coalescer.refresh_calls - prior_refreshes
+    generation_delta = coalescer.generation - prior_generation
+    anomalous = (
+        callback_delta < 0
+        or refresh_delta < 0
+        or generation_delta < 0
+        or callback_delta > runner_count
+        or refresh_delta > 1
+        or generation_delta > 1
+        or generation_delta > refresh_delta
+        or (callback_delta == 0 and (refresh_delta != 0 or generation_delta != 0))
+    )
+    if anomalous:
+        message = "refresh trigger observed incomplete or anomalous callback state"
+    elif callback_delta == 0:
+        message = "refresh trigger failed before any runner callback"
+    elif callback_delta < runner_count:
+        message = "refresh trigger failed after only some runner callbacks"
+    elif (
+        callback_delta == runner_count
+        and refresh_delta == 1
+        and generation_delta == 1
+    ):
+        message = "refresh trigger failed after callback refresh advanced"
+    else:
+        message = "refresh trigger observed incomplete or anomalous callback state"
+    return ProtocolError(
+        message,
+        method="account/rateLimits/read",
+        stage="refresh_trigger",
+        role="runner",
+    )
+
+
+async def _run_refresh_triggers(
+    runners: Sequence[JsonRpcProcess],
+    *,
+    coalescer: RefreshCoalescer,
+) -> None:
+    """Prefer a refresh callback root failure over its downstream request error."""
+    checkpoints = [runner.callback_checkpoint() for runner in runners]
+    coalescer_checkpoint = (
+        coalescer.callback_count,
+        coalescer.refresh_calls,
+        coalescer.generation,
+    )
+    outcomes = await asyncio.gather(
+        *(
+            _capture_refresh_outcome(
+                runner.request(
+                    "account/rateLimits/read",
+                    {},
+                    stage="refresh_trigger",
+                )
+            )
+            for runner in runners
+        ),
+    )
+    # App-server's host-refresh contract places the callback before retrying the original
+    # request. Completed downstream outcomes are therefore the protocol fence; the bounded
+    # quiet interval below closes only local stdout-reader/task-registration scheduling races.
+    callback_failure_slices = await asyncio.gather(
+        *(
+            runner.callback_failures_after_quiescence(checkpoint)
+            for runner, checkpoint in zip(runners, checkpoints, strict=True)
+        )
+    )
+    for failures in callback_failure_slices:
+        for failure in failures:
+            if isinstance(failure, asyncio.CancelledError):
+                raise failure
+    for outcome in outcomes:
+        if isinstance(outcome, asyncio.CancelledError):
+            raise outcome
+    for failures in callback_failure_slices:
+        if failures:
+            raise failures[0]
+    for outcome in outcomes:
+        if isinstance(outcome, ProtocolError):
+            raise _classify_refresh_trigger_failure(
+                coalescer,
+                runner_count=len(runners),
+                checkpoint=coalescer_checkpoint,
+            )
+        if isinstance(outcome, BaseException):
+            raise outcome
 
 
 async def run_spike(
@@ -1178,6 +1644,7 @@ async def run_spike(
     authority = JsonRpcProcess(
         authority_command,
         _minimal_environment(codex_home=authority_home),
+        role="authority",
     )
     runners: list[RunnerRuntime] = []
     all_secrets: SecretValues | None = None
@@ -1188,8 +1655,19 @@ async def run_spike(
     processes_closed = False
     try:
         await authority.start(experimental_api=False)
-        authority_account = await authority.request("account/read", {"refreshToken": False})
-        validate_account_response(authority_account)
+        try:
+            authority_account = await authority.request(
+                "account/read",
+                {"refreshToken": False},
+                stage="authority_account_read",
+            )
+            validate_account_response(authority_account)
+        except ProtocolError as exc:
+            raise exc.with_context(
+                method="account/read",
+                stage="authority_account_read",
+                role="authority",
+            )
         initial = load_managed_secrets(authority_home)
         all_secrets = initial
         coalescer = RefreshCoalescer(authority, authority_home, initial)
@@ -1203,21 +1681,33 @@ async def run_spike(
             )
             await runtime.process.start(experimental_api=True)
 
-        await asyncio.gather(*(runtime.process.external_login(initial) for runtime in runners))
+        await asyncio.gather(
+            *(
+                runtime.process.external_login(initial, stage="initial_login")
+                for runtime in runners
+            )
+        )
         await asyncio.gather(
             *(
                 _verify_read_only(
                     runtime.process,
                     expected_account_id=initial.account_id,
+                    stage="initial_read_only",
                 )
                 for runtime in runners
             )
         )
 
         invalid = replace(initial, access_token=initial.invalid_access_token)
-        await asyncio.gather(*(runtime.process.external_login(invalid) for runtime in runners))
         await asyncio.gather(
-            *(runtime.process.request("account/rateLimits/read", {}) for runtime in runners)
+            *(
+                runtime.process.external_login(invalid, stage="invalid_login")
+                for runtime in runners
+            )
+        )
+        await _run_refresh_triggers(
+            [runtime.process for runtime in runners],
+            coalescer=coalescer,
         )
         if coalescer.callback_count != 2:
             raise SpikeError("both runners did not request external-token refresh")
@@ -1234,6 +1724,7 @@ async def run_spike(
                 _verify_read_only(
                     runtime.process,
                     expected_account_id=coalescer.current.account_id,
+                    stage="recovery_read_only",
                 )
                 for runtime in runners
             )
