@@ -53,3 +53,16 @@ def test_bearer_cannot_reach_disallowed_route():
         r = c.get("/api/settings", headers={"Authorization": f"Bearer {tok}"})
         assert r.status_code == 403
         assert r.json()["error"]["code"] == "ASSISTANT_ROUTE_FORBIDDEN"
+
+
+def test_bearer_response_sets_no_cookie():
+    with patch.dict(os.environ, _ENV):
+        tok = mint_token("u@example.com", "sess-1")
+        c = TestClient(_client().app, client=("127.0.0.1", 5000))
+        with c:
+            r = c.get("/api/auth/me", headers={"Authorization": f"Bearer {tok}"})
+            assert r.status_code == 200
+            assert "set-cookie" not in {k.lower() for k in r.headers}
+            # Control: a normal Tailscale-identity request DOES set a cookie.
+            r2 = c.get("/api/auth/me", headers={"Tailscale-User-Login": "u@example.com"})
+            assert "set-cookie" in {k.lower() for k in r2.headers}

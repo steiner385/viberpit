@@ -15,6 +15,7 @@ import os
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING
 
 from fastapi import HTTPException, Request, WebSocket, status
 from itsdangerous import BadSignature, TimestampSigner
@@ -26,6 +27,9 @@ from starlette.responses import JSONResponse
 from server.auth.identity import verify_identity
 from server.config import get_settings
 from server.db.models import AppSession
+
+if TYPE_CHECKING:
+    from server.assistant.token import AssistantClaims
 
 # Paths that bypass identity enforcement (unauthenticated probes).
 _EXEMPT_PATHS = frozenset({"/healthz"})
@@ -89,17 +93,17 @@ def _unsign_session_id(signed: str) -> str | None:
 _LOOPBACK = frozenset({"127.0.0.1", "::1"})
 
 
-def _assistant_claims(request: Request):
+def _assistant_claims(request: Request) -> "AssistantClaims | None":
     """Claims from a `Bearer ccas1:…` header, or None. Loopback peers only: the token is
     minted for the daemon on THIS host and must never be usable from the tailnet."""
+    from server.assistant.token import PREFIX, verify_token  # noqa: PLC0415
+    from server.config import get_settings  # noqa: PLC0415
     auth = request.headers.get("authorization", "")
-    if not auth.startswith("Bearer ccas1:"):
+    if not auth.startswith("Bearer " + PREFIX):
         return None
     client = request.client
     if client is None or client.host not in _LOOPBACK:
         return None
-    from server.assistant.token import verify_token  # noqa: PLC0415
-    from server.config import get_settings  # noqa: PLC0415
     return verify_token(auth[len("Bearer "):], max_age_s=get_settings().assistant_idle_s * 4)
 
 
