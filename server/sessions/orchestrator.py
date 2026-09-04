@@ -7997,7 +7997,10 @@ class SessionOrchestrator:
         """
         return self._pending_initial_attachment_ids.pop(session_id, None)
 
-    async def send_prompt(self, session_id, text, attachment_ids=None) -> str:
+    async def send_prompt(self, session_id, text, attachment_ids=None, *,
+                          interrupt: bool = False) -> str:
+        """Deliver a prompt to a live driver. ``interrupt`` = "interrupt and post":
+        stop the in-flight turn and run this prompt next instead of queueing it."""
         if self._draining:
             # No new turns during a deploy drain. Tell the browser so it re-queues
             # (promptRejected) and shows the hold banner — never silently swallow it.
@@ -8027,7 +8030,10 @@ class SessionOrchestrator:
                 resolved = await _attachments.resolve_and_bind(
                     db, session_id, turn_id, ids)
         self._last_prompt[session_id] = text
-        await d.send_prompt(text, resolved)
+        if interrupt:
+            await d.send_prompt(text, resolved, interrupt=True)
+        else:
+            await d.send_prompt(text, resolved)
         return "sent"
 
     async def interrupt(self, session_id):

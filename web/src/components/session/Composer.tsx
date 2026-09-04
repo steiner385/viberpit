@@ -17,6 +17,9 @@ interface Props {
   status: { state: string; count: number }
   onPrompt: (text: string, attachmentIds: string[]) => void
   onInterrupt: () => void
+  /** "Send now" while busy: stop the live turn and run this draft next instead of
+   *  queueing it. Returns false when the frame could not be sent (draft is kept). */
+  onInterruptAndPrompt?: (text: string, attachmentIds: string[]) => boolean
   queued?: QueuedItem[]
   onCancelQueued?: (index: number) => void
   chatArmed?: boolean
@@ -34,7 +37,7 @@ interface Props {
   onActivity?: () => void
 }
 
-export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, onRequestSuggestions, history = [], sessionId, onActivity }: Props) {
+export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, onRequestSuggestions, history = [], sessionId, onActivity }: Props) {
   const draft = useSessionDraft(sessionId)
   const [text, setText] = useState(draft.initial.text)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -126,22 +129,35 @@ export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued
     return true
   }, [commands, onCommand])
 
+  const clearDraft = useCallback((clearAttachments: boolean) => {
+    setText(''); if (clearAttachments) att.clear(); draft.clear()
+    histPosRef.current = 0; draftRef.current = ''
+    if (textareaRef.current) textareaRef.current.style.height = 'auto'
+  }, [att, draft])
+
   const submit = useCallback(() => {
     const trimmed = text.trim()
     const refs = att.refs()
     if (!trimmed && refs.length === 0) return
     if (refs.length === 0 && runCommandFromText(trimmed)) {
-      setText(''); draft.clear(); if (textareaRef.current) textareaRef.current.style.height = 'auto'
-      histPosRef.current = 0; draftRef.current = ''; return
+      clearDraft(false); return
     }
     onPrompt(trimmed, refs)
-    setText(''); att.clear(); draft.clear()
-    histPosRef.current = 0; draftRef.current = ''
-    // Reset height
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto'
-    }
-  }, [text, onPrompt, att, runCommandFromText, draft])
+    clearDraft(true)
+  }, [text, onPrompt, att, runCommandFromText, clearDraft])
+
+  // "Send now": interrupt the live turn and post the draft as the next turn. The
+  // draft is only cleared once the frame actually left the browser — a closed
+  // socket rejects control frames (#505), and the user's text must survive that.
+  const submitNow = useCallback(() => {
+    if (!onInterruptAndPrompt) return
+    const trimmed = text.trim()
+    const refs = att.refs()
+    if (!trimmed && refs.length === 0) return
+    if (!onInterruptAndPrompt(trimmed, refs)) return
+    clearDraft(true)
+  }, [text, onInterruptAndPrompt, att, clearDraft])
+  const canSendNow = isWorking && !chatArmed && onInterruptAndPrompt !== undefined
 
   const prefill = useCallback((value: string) => {
     setText(value)
@@ -216,7 +232,10 @@ export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued
 
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      submit()
+      // Ctrl/Cmd+Enter while a turn is busy = "Send now" (interrupt and post);
+      // plain Enter keeps queueing behind the turn.
+      if ((e.ctrlKey || e.metaKey) && canSendNow) submitNow()
+      else submit()
     }
     // Shift+Enter: let the browser insert a newline naturally (no action needed)
   }
@@ -488,6 +507,21 @@ export function Composer({ status, onPrompt, onInterrupt, queued, onCancelQueued
             >
               Queue
             </button>
+            {canSendNow && (
+              <button
+                type="button"
+                aria-label="Send now (interrupt the current turn)"
+                title="Stop the current turn and send this now (Ctrl+Enter)"
+                onClick={submitNow}
+                className={cn(
+                  'flex-shrink-0 rounded-md px-3 py-2 text-sm font-medium min-h-[44px]',
+                  'bg-amber-600 text-white hover:bg-amber-700',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400',
+                )}
+              >
+                Send now
+              </button>
+            )}
             <button
               type="button"
               aria-label="Stop current turn"

@@ -159,7 +159,11 @@ def register_orchestrator_rpc(app, orch) -> None:
         return {"session": rec.to_dict()}
 
     async def send_prompt(params: dict) -> dict:
-        status = await orch.send_prompt(params["session_id"], params["text"], params.get("images"))
+        # `interrupt` (interrupt-and-post) is only forwarded when set, so an edge
+        # that predates the flag keeps the plain queued-send contract.
+        extra = {"interrupt": True} if params.get("interrupt") is True else {}
+        status = await orch.send_prompt(params["session_id"], params["text"],
+                                        params.get("images"), **extra)
         return {"status": status}
 
     async def pr_for(params: dict) -> dict:

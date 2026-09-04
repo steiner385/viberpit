@@ -1238,3 +1238,44 @@ def test_activity_message_stamps_last_user_interaction_at(ws_env):
         "activity frame must stamp last_user_interaction_at on the session record"
     )
     client.portal.call(orch.close_session, session_id)
+
+
+# ---------------------------------------------------------------------------
+# prompt + interrupt:true — "interrupt and post" instead of queueing
+# ---------------------------------------------------------------------------
+
+def test_prompt_with_interrupt_flag_stops_turn_and_sends(ws_env):
+    """A ``prompt`` frame carrying ``interrupt: true`` while a turn is live must stop
+    that turn (SDK interrupt) and run the new text as the next turn — not park it in
+    the FIFO behind the running one."""
+    class StuckThenQuick(FakeSDKClient):
+        async def query(self, prompt: str):
+            self.sent.append(prompt)
+            if len(self.sent) == 1:
+                self._deliver([f.stream_start(uuid="t1")])   # never closes on its own
+            else:
+                self._deliver([f.result(uuid=f"r{len(self.sent)}")])
+
+    _app, orch, client = ws_env([], client_cls=StuckThenQuick)
+    session = client.portal.call(orch.create_session, "ias-ws")
+    session_id = session.id
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        _drain_events(ws, until_type="replayComplete")
+        ws.send_text(json.dumps({"type": "prompt", "sessionId": session_id, "text": "first"}))
+        _drain_events(ws, until=lambda e: e.get("type") == "status" and "state" in e, timeout=8.0)
+        ws.send_text(json.dumps({"type": "prompt", "sessionId": session_id,
+                                 "text": "now", "interrupt": True}))
+        # The new prompt's echo proves it became a turn of its own.
+        events = _drain_events(
+            ws, until=lambda e: e.get("type") == "user" and e.get("text") == "now",
+            timeout=8.0)
+
+    sdk = orch._drivers[session_id]._client
+    assert sdk.interrupted is True, "interrupt:true must stop the live turn"
+    assert sdk.sent == ["first", "now"], sdk.sent
+    assert any(e.get("type") == "user" and e.get("text") == "now" for e in events), \
+        [e.get("type") for e in events]
+
+    client.portal.call(orch.close_session, session_id)

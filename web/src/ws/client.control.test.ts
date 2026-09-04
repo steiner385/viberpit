@@ -63,6 +63,9 @@ const CONTROL_METHODS: { name: string; call: (s: SessionSocket) => boolean; fram
   { name: 'setPermissionMode',  call: (s) => s.setPermissionMode('sess', 'plan'),          frameType: 'setPermissionMode' },
   { name: 'answerQuestion',     call: (s) => s.answerQuestion('sess', 'q1', ['a']),         frameType: 'answerQuestion' },
   { name: 'command',            call: (s) => s.command('sess', 'clear', ''),                frameType: 'command' },
+  // Interrupt-and-post is a CONTROL frame, not a buffered prompt: replayed late it
+  // would kill whatever turn happens to be running then — same rule as interrupt.
+  { name: 'interruptAndPrompt', call: (s) => s.interruptAndPrompt('sess', 'now', []),      frameType: 'prompt' },
 ]
 
 describe('SessionSocket control-frame rejection (#505)', () => {
@@ -107,6 +110,20 @@ describe('SessionSocket control-frame rejection (#505)', () => {
         expect(frame.type).toBe(m.frameType)
       })
     }
+  })
+})
+
+describe('SessionSocket.interruptAndPrompt frame', () => {
+  beforeEach(() => { MockWebSocket.instances = [] })
+
+  it('writes a prompt frame flagged interrupt:true with the attachment ids', () => {
+    const sock = new SessionSocket('/ws')
+    sock.connect()
+    lastSock().simulateOpen()
+    expect(sock.interruptAndPrompt('sess', 'do this instead', ['att1'])).toBe(true)
+    const frame = JSON.parse(lastSock().sent[0]) as Record<string, unknown>
+    expect(frame).toEqual({ type: 'prompt', sessionId: 'sess', text: 'do this instead',
+      attachmentIds: ['att1'], interrupt: true })
   })
 })
 

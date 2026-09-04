@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { SessionComposer } from './SessionComposer'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
@@ -49,5 +49,20 @@ describe('SessionComposer (shared mobile/desktop wiring)', () => {
   it('renders no ghost when there are no suggestions', () => {
     renderComposer(fakeRuntime())
     expect(screen.queryByTestId('ghost-suggestion')).toBeNull()
+  })
+})
+
+describe('SessionComposer interrupt-and-send wiring', () => {
+  it('routes Send now to the runtime onInterruptAndPrompt', () => {
+    const onInterruptAndPrompt = vi.fn().mockReturnValue(true)
+    const rt = fakeRuntime({
+      onInterruptAndPrompt,
+      state: { status: { state: 'in_progress', count: 0 }, queued: [], turns: [], latestSuggestions: [] },
+    } as unknown as Partial<SessionRuntime>)
+    renderComposer(rt)
+    const textarea = screen.getByLabelText('Message') as HTMLTextAreaElement
+    fireEvent.change(textarea, { target: { value: 'now' } })
+    fireEvent.click(screen.getByRole('button', { name: /send now/i }))
+    expect(onInterruptAndPrompt).toHaveBeenCalledWith('now', [])
   })
 })

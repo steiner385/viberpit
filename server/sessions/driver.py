@@ -287,6 +287,12 @@ class SessionDriver:
         """
         return self._pump is not None and not self._pump.done()
 
+    def _turn_live(self) -> bool:
+        """A turn is in flight: a prompt's pump is draining, or the idle listener is
+        tracking a CLI-initiated turn (`_turn_active`). The one test that decides
+        whether a new prompt starts now or waits."""
+        return self.drain_alive or self._turn_active
+
     @property
     def awaiting_user_input(self) -> bool:
         """True when the turn is blocked inside ``_can_use_tool`` waiting on the human
@@ -630,10 +636,28 @@ class SessionDriver:
         self._closing = False
         self._start_listener()
 
-    async def send_prompt(self, text: str, images: list[dict] | None = None):
+    async def send_prompt(self, text: str, images: list[dict] | None = None, *,
+                          interrupt: bool = False):
+        """Send a prompt. While a turn is live it joins the FIFO queue — unless
+        ``interrupt`` is set, in which case the live turn is stopped and this prompt
+        runs NEXT ("interrupt and post"), ahead of anything already queued."""
         if self._client is None:
             raise RuntimeError("SessionDriver.send_prompt called before start()")
         images = images or []
+        if interrupt and self._turn_live():
+            # Queue-head insert BEFORE the interrupt: the SDK interrupt awaits the
+            # CLI's control response, and the interrupted turn's ResultMessage can
+            # reach the pump during that await — its _end_turn pops the head, so
+            # the head must already be this prompt or a surviving queued one runs
+            # first. Never _start_turn directly here: a pump started before that
+            # result is consumed reads it as its own and closes the fresh turn.
+            # The interrupt also denies any parked permission/question, so the text
+            # is a fresh prompt — the answer short-circuit below must not see it.
+            self._queue.insert(0, (text, images))
+            log.info("driver.send_prompt: interrupt-and-post session=%s queue_depth=%d",
+                     self.session_id, len(self._queue))
+            await self.interrupt(keep_queue=True)
+            return
         # A pending AskUserQuestion means the turn is parked inside _can_use_tool
         # waiting for the user — a message typed now IS the answer, and the driver's
         # own state (not the client's choice of frame type) decides that. It must be
@@ -657,7 +681,7 @@ class SessionDriver:
         # C2 — FIFO queue: if a turn is live — a prompt's pump, or a CLI-initiated turn
         # the idle listener is tracking (`_turn_active`) — enqueue (text, images)
         # instead of rejecting.
-        if (self._pump is not None and not self._pump.done()) or self._turn_active:
+        if self._turn_live():
             self._queue.append((text, images))
             log.debug("driver.send_prompt: queued prompt for session=%s, queue_depth=%d",
                       self.session_id, len(self._queue))
@@ -1174,11 +1198,13 @@ class SessionDriver:
             self._last_turn_id = "resumed"
         self._maybe_start_suggestions()
 
-    async def interrupt(self):
+    async def interrupt(self, *, keep_queue: bool = False):
+        """Stop the live turn. A Stop abandons every queued prompt; ``keep_queue``
+        (interrupt-and-post) leaves the queue for the settling turn to drain."""
         self._reg.deny_all(self.session_id)
         self._qreg.deny_all(self.session_id)
-        # Clear the queue so a Stop abandons all pending queued prompts.
-        self._queue.clear()
+        if not keep_queue:
+            self._queue.clear()
         self._cancel_suggest()
         if self._client:
             try:
@@ -1198,7 +1224,7 @@ class SessionDriver:
             # Forward an inactive boundary so an open session view clears its progress
             # overlay (mirrors _consume_condensing); the normal boundary never arrives.
             self._emit(ev.Condensing(active=False))
-        self._emit(ev.QueueUpdate([]))
+        self._emit(ev.QueueUpdate(self.queue_wire()))
         await self._emit_status()
 
     async def set_permission_mode(self, mode: str):

@@ -8,8 +8,10 @@ Factory:
     app.include_router(router)
 
 Message protocol (JSON):
-  client→server: attach, detach, prompt, interrupt, permissionResponse,
-                 setPermissionMode, answerQuestion, activity
+  client→server: attach, detach, prompt (optional ``interrupt: true`` = stop the
+                 in-flight turn and run this prompt next instead of queueing it),
+                 interrupt, permissionResponse, setPermissionMode, answerQuestion,
+                 activity
   server→client: batch (carrying ALL session-scoped events, including the
                  replayReset/replay/replayComplete sequence and attach re-emits
                  like permissionRequest/status), plus top-level error /
@@ -1070,7 +1072,13 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                     if await _ensure_live(session_id):
                         text = msg.get("text", "")
                         attachment_ids = msg.get("attachmentIds")
-                        status = await orchestrator.send_prompt(session_id, text, attachment_ids)
+                        # "Interrupt and post": stop the in-flight turn and run this
+                        # prompt next instead of queueing it behind the turn. Only
+                        # forwarded when set so the plain contract is untouched.
+                        interrupt = msg.get("interrupt") is True
+                        extra = {"interrupt": True} if interrupt else {}
+                        status = await orchestrator.send_prompt(
+                            session_id, text, attachment_ids, **extra)
                         if status == "no_driver":
                             # The 2026-08-30 unresponsive-session incident: the daemon
                             # dropped the driver AFTER this socket attached, so
@@ -1090,8 +1098,19 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                             await _teardown_live_task(session_id)
                             if await _ensure_live(session_id):
                                 status = await orchestrator.send_prompt(
-                                    session_id, text, attachment_ids)
+                                    session_id, text, attachment_ids, **extra)
                         await orchestrator.note_user_interaction(session_id)
+                        if interrupt and status == "sent":
+                            # Same trail a Stop leaves, tagged so the audit shows the
+                            # turn was cut short to post a prompt, not abandoned.
+                            try:
+                                async with db_session() as db:
+                                    await record_audit(db, "session.interrupt", identity,
+                                                       {"sessionId": session_id,
+                                                        "withPrompt": True})
+                            except Exception:
+                                log.warning("ws.audit_failed event=%s session=%s",
+                                            "session.interrupt", session_id, exc_info=True)
                         if status in ("draining", "no_driver"):
                             # The turn was refused — ack it so the browser re-queues
                             # instead of losing the prompt. "draining": a deploy drain.
