@@ -10,21 +10,34 @@ binary (I); account = `CLAUDE_CONFIG_DIR`, strict per-process isolation (II); ve
 real binary/API, not assumptions (III); security-first, exposure-conditional auth (IV);
 TDD + quality gates (V); single source of truth / no dead code (VI); modern vetted deps (VII).
 
-<!-- SPECKIT START -->
-Active feature: **001-ccswitch-web** — Multi-Account Claude Session Manager (Web).
-- Spec: `specs/001-ccswitch-web/spec.md`
-- Plan: `specs/001-ccswitch-web/plan.md`
-- Research: `specs/001-ccswitch-web/research.md`
-- Data model: `specs/001-ccswitch-web/data-model.md`
-- Contracts: `specs/001-ccswitch-web/contracts/`
-- Quickstart: `specs/001-ccswitch-web/quickstart.md`
+Stack: Python FastAPI/Uvicorn + SQLAlchemy (SQLite in dev/tests, Postgres in prod) · React+Vite+TS
++ Tailwind/shadcn frontend · each session is a `claude` CLI driven through `claude-agent-sdk`
+(`server/sessions/driver.py`), its events bridged to the browser over WebSocket · Tailscale-identity
+auth. Specs live under `specs/` (`001-ccswitch-web` is the base feature, `002-*` session continuity /
+X display, `003-gh-projects-integration`); design notes and plans under `docs/`.
 
-Stack: Python FastAPI/Uvicorn + SQLAlchemy(SQLite) backend · React+Vite+TS + Tailwind/shadcn +
-xterm.js frontend · sessions are native `claude` in PTYs bridged to the browser over WebSocket ·
-Tailscale-identity auth (v1) with a passkey path deferred to public hosting.
-Build phase-by-phase: P0 config-dir launch correctness → P1 backend engine+API → P2 frontend
-(dashboard+terminal) → P3 structured view → P4 public-hosting hardening.
-<!-- SPECKIT END -->
+## Architecture map
+
+- `src/ccswitch/` — CLI core: accounts, `CLAUDE_CONFIG_DIR` isolation, creds, ledger, worktrees.
+  Entry points `ccswitch`, `ccrun`, `ccmax` (`pyproject.toml`). Tests in `tests/`.
+- `server/app.py` — the **edge**: FastAPI `create_app()`; `app = create_app()` runs at import, so
+  importing the module already reads `CCSWITCH_*` env (see the test note below).
+- `server/ipc/` — the **session daemon** (`python -m server.ipc`, `ccswitch-daemon.service`). It owns
+  every live `claude` process; the edge talks to it over mTLS RPC. Remote hosts (e.g. rocky) run the
+  same daemon in worker role (`CCSWITCH_DAEMON_ROLE`).
+- `server/sessions/` — `SessionOrchestrator` (`orchestrator.py`) + per-session `driver.py` (SDK
+  client, permissions, model switching). In remote mode the lifespan swaps `app.state.sessions` for
+  `FleetOrchestrator` (`fleet_orchestrator.py`, routes via `fleet_router.py`) **after** routers are
+  built — capture it lazily, never at router construction.
+- `server/db/` — models, `init_db` reconcile, `clock.py` (see DB clock rule), `migrations/`.
+- `server/deploy/` — deploy controller (`ccswitch-deploy-controller.service`); `server/sdlc/` —
+  governance decisions enforced by `.claude/` (hook + managed deny rules + `REVIEW.md`).
+- Other server packages: `api/` routers, `auth/`, `automations/`, `github/`, `pipeline/`, `pm/`,
+  `library/`, `obs/`, `usage/`, `stt/`, `bridge/`.
+- `web/src/` — `api/` (fetch + React Query hooks per domain), `session/` (event reducer +
+  selectors), `shell/` (`AppShell`, nav, prompt dock), `components/`, `features/`, `ws/`.
+- `deploy/` — systemd units + `deploy/README.md` (the ops runbook); `docs/runbooks/` for host
+  procedures (Postgres cutover, onboarding a session runner, rocky).
 
 ## Completion workflow
 
@@ -33,7 +46,9 @@ When a unit of work is complete and verified (tests + lint green), finish it wit
    branch off the local `master` ref: in a worktree it is a stale leftover (the deploy worktree owns
    `master`) and lags `origin/master` by hundreds of commits, so branching off it silently bases your
    work on ancient code. Never commit feature work directly to `master`.
-2. Commit (end message with `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`).
+2. Commit (end the message with the running model's `Co-Authored-By: Claude <model> <noreply@anthropic.com>`
+   trailer). Write commit messages and PR bodies to a file and pass `-F` / `--body-file`: the Bash
+   hook below denies any command whose *text* pairs a deploy verb with a prod word.
 3. Push and open a PR via `gh pr create` (end body with the Claude Code trailer).
 4. ALWAYS mark the PR ready for review (never leave it a draft) and ALWAYS flip auto-merge on
    once work is complete: open non-draft (omit `--draft`; if one slipped through, run
@@ -50,11 +65,32 @@ is the equivalent. Admins may push directly in emergencies.
 
 ## Dev / testing
 
-- Tests: server → `pytest server/tests/`; web (run in `web/`) → `vitest run`, `tsc --noEmit`, `eslint`.
+- Tests: server → `pytest server/tests/`; web → the npm scripts CI runs, in `web/`:
+  `npm run typecheck` (`tsc -b`), `npm run lint` (eslint with `--max-warnings 0` — a bare `eslint`
+  can pass where CI fails), `npm run test` (vitest), `npm run build`. E2E: `npm run test:e2e`
+  (Playwright). Prompt evals: `python scripts/run_evals.py` (own workflow, `evals.yml`).
 - The `lint-and-test` gate is **four** steps, not one: `ruff check src/ server/`, `mypy server/
   --ignore-missing-imports`, `pytest tests/` (core), `pytest server/tests/`. A green `server/tests/`
   run is not a green gate — mypy in particular catches what no test does (e.g. a `min()` over an
   httpx `Timeout` leg, which is typed `float | None`). Run all four before pushing.
+- CI runs the server suite as `pytest server/tests/ -n auto --dist loadfile --timeout=300`. Serial
+  it takes ~25 min; run it in the background with output tee'd to `/tmp/`, and never two full runs
+  at once — the load spike gets the Bash call SIGKILLed (exit 137).
+- **Unset `CCSWITCH_SESSIOND_*` and `CCSWITCH_DAEMON_ROLE` before running `server/tests/` locally.**
+  `server/app.py` builds the app at import; a live shell's sessiond client-cert vars make it demand
+  certs, and a worker `CCSWITCH_DAEMON_ROLE` turns ~90 tests into "No session with id" failures.
+- Run the **full** `npm run test`, not just changed files: ~47 web test files manually mock
+  `@/api/hooks`, so adding a hook to a shared component (e.g. `SessionList`) breaks tests in files you
+  never touched. CI catches it; a changed-files run does not.
+- **Bash hook trap:** `.claude/settings.json` runs `python3 .claude/hooks/prod-deploy-gate.py` as a
+  `PreToolUse` hook on every Bash call. (1) It matches the command *text* (deploy|release|rollout|promote
+  + prod|production), so a commit message or `grep` pattern containing both words is denied — put the
+  text in a file. (2) The path is cwd-relative: a persisted `cd web` makes every subsequent Bash call
+  fail until you `cd` back; use `(cd web && …)` subshells.
+- **DB clock rule:** never use `func.now()` / `func.current_timestamp()`; use
+  `server/db/clock.py:db_utc_now()`. Every column is naive UTC, but Postgres `CURRENT_TIMESTAMP` is
+  tz-aware and SQLite-only tests hide it — the last slip marked every prod session "Status unknown"
+  (2026-09-03, #964).
 - A fresh git worktree has no built env (network blocks `uv sync` of the ~70MB claude-agent-sdk).
   Run against the main checkout's prebuilt env (`<main-checkout>/.venv/bin/python -m pytest …`) and
   symlink `web/node_modules` from the main checkout.
@@ -95,7 +131,9 @@ is the equivalent. Admins may push directly in emergencies.
 
 Concrete, operational discipline that backs constitution Principle VI (single source of truth / no
 dead code) and IV/V (security-first, quality gates). Several map to installed skills — invoke the
-skill, don't just recall the rule.
+skill, don't just recall the rule. `subagent-driven-development` ships with the `superpowers` plugin;
+the others are user-local skills under `~/.claude/skills/` (if one is missing, follow the rule as
+written here).
 
 ### Execute implementation plans subagent-driven — always
 
