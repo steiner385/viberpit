@@ -310,6 +310,84 @@ def test_incomplete_board_parks_the_product_when_migrate_is_off():
     assert any(m.startswith("Status options: ") and "Ready" in m for m in missing)
 
 
+def _parked_events(ctx):
+    return [s for lvl, s, kind in ctx.events if lvl == "error" and kind == "gh_reconcile_parked"]
+
+
+def test_incomplete_board_park_emit_is_latched_per_product():
+    """The loop ticks every two minutes and "board fields incomplete" needs ONE human action
+    to clear, so an unlatched emit is an error push every cycle, forever. The park is still
+    COUNTED every cycle (the status card must keep showing it) — only the notification is
+    one-shot, and only for as long as the gap stays the same."""
+    cache = {"Status": {"field_id": "F_s", "options": {"Todo": "O_t"}}}
+    ctx = Ctx(); loop, calls = _loop(ctx, load_facts_fn=lambda p: _facts(field_cache=cache))
+    for _ in range(3):
+        asyncio.run(loop.tick())
+        assert ctx.gh_reconcile_counts["parked"] == 1     # counted on every cycle
+    assert len(_parked_events(ctx)) == 1                  # emitted once
+
+    # A CHANGED gap is new information and speaks again.
+    cache["Score"] = {"field_id": "F_sc", "options": {}}
+    asyncio.run(loop.tick())
+    assert len(_parked_events(ctx)) == 2
+    assert "Score" not in _parked_events(ctx)[1]
+
+    # A gap that RESOLVES clears the latch, so the next regression is loud again — a latch that
+    # only ever set would silence the second occurrence of a real problem.
+    current = [{"Status": {"field_id": "F_s", "options": {"Todo": "O_t"}}}]
+    ctx2 = Ctx(); loop2, _ = _loop(ctx2, load_facts_fn=lambda p: _facts(field_cache=current[0]))
+    asyncio.run(loop2.tick())
+    assert len(_parked_events(ctx2)) == 1
+    current[0] = CACHE                                    # human bootstraps the board
+    asyncio.run(loop2.tick())
+    assert len(_parked_events(ctx2)) == 1 and ctx2.gh_reconcile_counts["parked"] == 0
+    current[0] = {"Status": {"field_id": "F_s", "options": {"Todo": "O_t"}}}   # …and it regresses
+    asyncio.run(loop2.tick())
+    assert len(_parked_events(ctx2)) == 2
+
+
+def test_half_done_bootstrap_stops_before_cascading_into_item_batches():
+    """A bootstrap mutation can fail (or already be parked) and ``_ensure_fields`` returns
+    whatever cache it managed to build. Re-checking the gap stops the cycle HERE: every
+    set_field for the still-missing Score would raise UnknownOption in build_batch and park a
+    whole 20-row batch, burying the one real failure under twenty derived ones."""
+    sparse = _facts(field_cache={"Stage": {"field_id": "F_st", "options": {"build": "O_b"}},
+                                 "Status": {"field_id": "F_s",
+                                            "options": {n: f"O_{n}" for n in STATUS_OPTIONS}}})
+
+    def mutate(doc):
+        if doc.startswith("query { rateLimit"):
+            return RATE_OK
+        return {"errors": [{"message": "boom"}]}          # Score creation fails
+
+    ctx = Ctx(); loop, calls = _loop(ctx, facts=sparse, mutate=mutate, config={"migrate": True})
+    asyncio.run(loop.tick())
+    # Exactly one bootstrap mutation was attempted; no item batch followed it.
+    assert [m.kind for m in sum((r[0] for r in calls["record"]), [])] == ["create_field"]
+    assert len(_batches(calls)) == 1 and "createProjectV2Field" in _batches(calls)[0]
+    assert calls["park"] == []                            # no journal row parked for drift
+    assert ctx.gh_reconcile_counts["planned"] == 1        # the bootstrap row only
+    assert ctx.gh_reconcile_counts["failed"] == 1 and ctx.gh_reconcile_counts["parked"] == 1
+    assert any("bootstrap did not complete" in s for s in _parked_events(ctx))
+    assert calls["sync"] == []                            # nothing applied -> no re-ingest
+
+
+def test_dry_run_is_exempt_from_the_post_bootstrap_gap_check():
+    """A dry run writes nothing, so ``_ensure_fields`` returns the cache unchanged by
+    construction — gating on the post-bootstrap gap would erase the preview that the enable
+    sequence's step 2 depends on. It previews the bootstrap AND the item mutations it can
+    still render; drift on the not-yet-created fields shows up as "would park"."""
+    sparse = _facts(field_cache={"Stage": {"field_id": "F_st", "options": {"build": "O_b"}},
+                                 "Status": {"field_id": "F_s",
+                                            "options": {n: f"O_{n}" for n in STATUS_OPTIONS}}})
+    ctx = Ctx(); loop, calls = _loop(ctx, mode="dry_run", facts=sparse, config={"migrate": True})
+    asyncio.run(loop.tick())
+    kinds = [m.kind for m in sum((r[0] for r in calls["record"]), [])]
+    assert "create_field" in kinds and "set_field" in kinds
+    assert calls["mutate"] == [] and calls["park"] == []
+    assert not any("bootstrap did not complete" in s for s in _parked_events(ctx))
+
+
 def test_bootstrap_failure_parks_and_is_then_never_replanned():
     """A bootstrap mutation gets the same no-blind-retry treatment as an item one:
     fail once → journaled failed; fail twice → parked; parked → never planned again."""
@@ -358,6 +436,46 @@ def test_dry_run_surfaces_vocabulary_drift_without_touching_journal_rows():
     assert ctx.gh_reconcile_counts["parked"] == 1
     assert any(lvl == "error" and kind == "gh_reconcile_parked" for lvl, _, kind in ctx.events)
     assert any(d and d.get("dry_run") is True and d.get("error") for d in ctx.details)
+
+
+def test_dry_run_drift_emit_is_latched_like_the_incomplete_board_one():
+    """Sibling of the incomplete-board latch. An apply parks the drifted journal rows, so the
+    same drift is never replanned and its emit is naturally one-shot. A dry run parks nothing
+    by design, so it re-plans identical drift every two minutes — without a latch, leaving dry
+    run on (which the review step asks for) is an error push forever. Still counted every cycle."""
+    cache = dict(CACHE)
+    drifted = dict(items=[_item(5, initiative_stage="deploy", initiative_stage_at=T)],
+                   mirror={f"{REPO}#5": MirrorItem(f"{REPO}#5", "PVTI_5", "Ready", 480.0, None,
+                                                   T - timedelta(days=1))},
+                   open_issue_nodes={})
+    ctx = Ctx(); loop, _ = _loop(ctx, mode="dry_run",
+                                 load_facts_fn=lambda p: _facts(field_cache=cache, **drifted))
+    for _ in range(3):
+        asyncio.run(loop.tick())
+        assert ctx.gh_reconcile_counts["parked"] == 1     # counted every cycle
+    assert len(_parked_events(ctx)) == 1                  # emitted once
+
+    # Board vocabulary gains the option -> drift resolves, latch clears, a later drift speaks.
+    cache["Stage"] = {"field_id": "F_st", "options": {"build": "O_b", "deploy": "O_d"}}
+    asyncio.run(loop.tick())
+    assert len(_parked_events(ctx)) == 1 and ctx.gh_reconcile_counts["parked"] == 0
+    cache["Stage"] = {"field_id": "F_st", "options": {"build": "O_b"}}
+    asyncio.run(loop.tick())
+    assert len(_parked_events(ctx)) == 2
+
+
+def test_apply_mode_drift_emit_is_not_latched():
+    """The latch is dry-run only: an apply parks the row, so a repeat emit means a genuinely
+    new row hit the same drift — that must stay loud."""
+    drifted = _facts(items=[_item(5, initiative_stage="deploy", initiative_stage_at=T)],
+                     mirror={f"{REPO}#5": MirrorItem(f"{REPO}#5", "PVTI_5", "Ready", 480.0, None,
+                                                     T - timedelta(days=1))},
+                     open_issue_nodes={})
+    ctx = Ctx(); loop, calls = _loop(ctx, facts=drifted)
+    for n in (1, 2):
+        asyncio.run(loop.tick())
+        assert len(_parked_events(ctx)) == n
+    assert calls["park"] == [("r0", "field vocabulary drift: Stage='deploy' has no option id")] * 2
 
 
 def test_dry_run_dedupes_journal_rows_and_prunes_stale_ones():

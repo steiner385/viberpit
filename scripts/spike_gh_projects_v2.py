@@ -7,6 +7,7 @@ Usage:
     python scripts/spike_gh_projects_v2.py introspect
     python scripts/spike_gh_projects_v2.py mutations   # Task 2
     python scripts/spike_gh_projects_v2.py phaseb      # Phase B Task 1
+    python scripts/spike_gh_projects_v2.py optionids   # #987: union option-list id preservation
 """
 from __future__ import annotations
 
@@ -336,10 +337,79 @@ def probe_phaseb() -> None:  # noqa: C901 - spike probe, deliberate length
     print(g('mutation { deleteProjectV2(input: {projectId: "%s"}) { clientMutationId } }' % pid).get("errors"))
 
 
+def probe_optionids() -> None:  # noqa: C901 - spike probe, deliberate length
+    """#987 item 3: does `updateProjectV2Field` with a UNION option list preserve the ids of the
+    options that were already there — and do item values pointing at those ids survive?
+
+    `_ensure_fields` sends `have + [missing spec names]`, so every pre-existing option is
+    re-sent by name. If GitHub matches by name and keeps the id, the migration is non-destructive.
+    If it mints fresh ids, the one-time migration silently blanks whatever Status a human had
+    already set on the board, and the runbook needs a much louder warning.
+    """
+    tok = pat_token()
+    g = lambda q: gh_graphql(q, token=tok)  # noqa: E731
+    uid = g('query { user(login: "%s") { id } }' % OWNER)["data"]["user"]["id"]
+    pid = g('mutation { createProjectV2(input: {ownerId: "%s", title: '
+            '"spike-003-optionids (safe to delete)"}) { projectV2 { id } } }'
+            % uid)["data"]["createProjectV2"]["projectV2"]["id"]
+    try:
+        status = g('query { node(id: "%s") { ... on ProjectV2 { field(name: "Status") { '
+                   '... on ProjectV2SingleSelectField { id options { id name } } } } } }'
+                   % pid)["data"]["node"]["field"]
+        before = {o["name"]: o["id"] for o in status["options"]}
+        print("=== built-in Status options BEFORE ===")
+        print(json.dumps(before, indent=2))
+
+        # Put a real item on the board with one of the pre-existing options set, so we can see
+        # whether the value survives the option-set replacement.
+        issue = g('query { repository(owner: "%s", name: "cc-account-switcher") '
+                  "{ issues(first: 1, states: OPEN) { nodes { id number } } } }"
+                  % OWNER)["data"]["repository"]["issues"]["nodes"][0]
+        item_id = g('mutation { addProjectV2ItemById(input: {projectId: "%s", contentId: "%s"}) '
+                    "{ item { id } } }" % (pid, issue["id"]))["data"]["addProjectV2ItemById"]["item"]["id"]
+        keep_name = next(iter(before))            # first default option, e.g. "Todo"
+        print('=== set item Status = %r (option id %s) ===' % (keep_name, before[keep_name]))
+        print(g('mutation { updateProjectV2ItemFieldValue(input: {projectId: "%s", itemId: "%s", '
+                'fieldId: "%s", value: {singleSelectOptionId: "%s"}}) { projectV2Item { id } } }'
+                % (pid, item_id, status["id"], before[keep_name])).get("errors"))
+
+        # Exactly the union `_ensure_fields` builds: existing names in their order, then the
+        # spec names that are missing, appended.
+        spec = ("Backlog", "Ready", "In progress", "Blocked", "Needs human", "Done")
+        union = list(before) + [n for n in spec if n not in before]
+        print("=== updateProjectV2Field with the UNION list ===")
+        print(union)
+        opts = ", ".join('{name: "%s", color: GRAY, description: ""}' % n for n in union)
+        resp = g('mutation { updateProjectV2Field(input: {fieldId: "%s", singleSelectOptions: [%s]}) '
+                 "{ projectV2Field { ... on ProjectV2SingleSelectField { options { id name } } } } }"
+                 % (status["id"], opts))
+        print("errors:", resp.get("errors"))
+        after = {o["name"]: o["id"]
+                 for o in resp["data"]["updateProjectV2Field"]["projectV2Field"]["options"]}
+        print("=== built-in Status options AFTER ===")
+        print(json.dumps(after, indent=2))
+
+        kept = {n: before[n] == after.get(n) for n in before}
+        print("=== ANSWER: pre-existing option ids preserved? ===")
+        print(json.dumps(kept, indent=2), "->", "PRESERVED" if all(kept.values()) else "REGENERATED")
+
+        value = g('query { node(id: "%s") { ... on ProjectV2Item { fieldValueByName(name: "Status") '
+                  "{ ... on ProjectV2ItemFieldSingleSelectValue { name optionId } } } } }"
+                  % item_id)["data"]["node"]["fieldValueByName"]
+        print("=== ANSWER: item value after the update ===")
+        print(json.dumps(value, indent=2),
+              "->", "SURVIVED" if (value or {}).get("name") == keep_name else "LOST")
+    finally:
+        print("=== cleanup ===")
+        print(g('mutation { deleteProjectV2(input: {projectId: "%s"}) { clientMutationId } }'
+                % pid).get("errors"))
+
+
 def main() -> int:
     cmd = sys.argv[1] if len(sys.argv) > 1 else "auth"
     {"auth": probe_auth, "introspect": probe_introspect,
-     "mutations": probe_mutations, "phaseb": probe_phaseb}[cmd]()
+     "mutations": probe_mutations, "phaseb": probe_phaseb,
+     "optionids": probe_optionids}[cmd]()
     return 0
 
 
