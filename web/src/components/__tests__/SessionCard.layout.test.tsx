@@ -50,6 +50,7 @@ const rich: Session = {
   repo: 'cairnea/KinDash',
   host: 'dobby',
   activeGoal: 'ship the thing',
+  model: 'opus',
   // `string | null` — the sticky opt-out reason, not a boolean flag. The card
   // only tests it for truthiness (SessionCard.tsx:522), so this is the same case.
   autoArchiveOptOut: 'manual-unarchive',
@@ -100,7 +101,7 @@ describe('SessionCard two-line skeleton', () => {
     expect(phrase.className).toMatch(/warning/)
   })
 
-  it('marker cluster, PRs and usage live in line 1, not line 2', () => {
+  it('marker cluster, PRs, usage and model live in line 1, not line 2', () => {
     renderCard(rich, {
       account: { name: 'work', status: 'ok', nickname: null, usage: { session: { pct: 74, resetsAt: null } } } as never,
     })
@@ -109,6 +110,7 @@ describe('SessionCard two-line skeleton', () => {
     expect(identity).toContainElement(screen.getByTestId('card-provenance'))
     expect(identity).toContainElement(screen.getByTestId('card-prs'))
     expect(identity).toContainElement(screen.getByTestId('card-usage'))
+    expect(identity).toContainElement(screen.getByTestId('card-model'))
     const context = screen.getByTestId('card-context')
     expect(context).not.toContainElement(screen.getByTestId('card-goal'))
     expect(context).not.toContainElement(screen.getByTestId('card-prs'))
@@ -139,16 +141,17 @@ describe('SessionCard status rail', () => {
 
 // Narrow-card declutter: same policy as before, new slots. Below @md (container
 // query against the card's own width) only the essentials survive: dot, title,
-// account chip, status phrase, actions. Markers, PR pills, usage and the
-// timestamp are wide-card only.
+// account chip, status phrase, actions. Markers, PR pills, usage, the model
+// chip and the timestamp are wide-card only.
 describe('SessionCard narrow-card declutter contract', () => {
-  it('gates the marker cluster, PRs and usage to a wide card', () => {
+  it('gates the marker cluster, PRs, usage and model to a wide card', () => {
     renderCard(rich, {
       account: { name: 'work', status: 'ok', nickname: null, usage: { session: { pct: 74, resetsAt: null } } } as never,
     })
     expect(screen.getByTestId('card-goal')).toHaveClass('hidden', '@md:inline-flex')
     expect(screen.getByTestId('card-prs')).toHaveClass('hidden', '@md:inline-flex')
     expect(screen.getByTestId('card-usage')).toHaveClass('hidden', '@md:inline-flex')
+    expect(screen.getByTestId('card-model')).toHaveClass('hidden', '@md:inline-flex')
   })
 
   it('never gates content on a container width the sidebar cannot reach', () => {

@@ -11,6 +11,7 @@ import { isValidTimestamp, relTime } from '@/lib/relativeTime'
 import { TIER_ACCENT } from '@/session/statusTier'
 import { sessionTriage } from '@/session/triageTier'
 import { anyChecksFailing, isActionablePrState } from '@/session/prStatus'
+import { isGatedTier, tierLabel } from '@/session/modelName'
 import { UsageBadge } from './UsageBadge'
 import { PrList } from './PrList'
 import { SubAgentRows } from './SubAgentRows'
@@ -54,6 +55,19 @@ const AUTOMATION_LABELS: Record<string, string> = {
 
 function automationLabel(id: string): string {
   return AUTOMATION_LABELS[id] ?? id
+}
+
+/**
+ * Tooltip for the model chip: the current model plus whichever transitional
+ * state applies. A queued after-turn switch (`modelPending`) and a parked
+ * upgrade awaiting approval (`pendingModel`) are mutually exclusive on the
+ * server — the former is an already-approved switch, the latter is the hold.
+ */
+function modelTitle(s: Pick<Session, 'model' | 'modelPending' | 'pendingModel'>): string {
+  const label = `Model: ${tierLabel(s.model)}`
+  if (s.pendingModel) return `${label} (${tierLabel(s.pendingModel)} requested, awaiting approval)`
+  if (s.modelPending) return `${label} (switching after this turn)`
+  return label
 }
 
 /** Passive `·` divider between line-2 segments. */
@@ -585,6 +599,27 @@ export function SessionCard({ session, account, selected = false, listMode = fal
                 label="session"
                 resetsAt={account.usage.session.resetsAt}
               />
+            </span>
+          )}
+          {/* Model chip — which model the session is running, right before the
+              account chip so the pair reads together ("Opus · tony@…"). Only
+              shown when the record pins a model; null means the account/binary
+              default, which is the unremarkable case and would just be noise on
+              most cards. Wide-card only, like every other secondary signal. The
+              gated tier is tinted so an expensive session stands out on a scan. */}
+          {session.model && (
+            <span
+              data-testid="card-model"
+              className={cn(
+                markerBase,
+                'text-xs px-1.5 py-0.5 rounded whitespace-nowrap',
+                isGatedTier(session.model)
+                  ? 'bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300'
+                  : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400',
+              )}
+              title={modelTitle(session)}
+            >
+              {tierLabel(session.model)}
             </span>
           )}
           {/* The chip yields before the title does: capped at 30% of the row and
