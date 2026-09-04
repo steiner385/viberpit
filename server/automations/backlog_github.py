@@ -155,10 +155,14 @@ def _graphql_per_owner(repos: list[str], build_query: "Callable[[list[str]], str
 # gate (:mod:`.backlog_deps`): native blocked-by relationships, sub-issue list
 # order, and task-list epic order all arrive inline with the search, so gating
 # on them costs no extra API call (only free-text ``Depends on #N`` body refs
-# need a follow-up state lookup, batched in :func:`_resolve_dep_states`).
+# need a follow-up state lookup, batched in :func:`_resolve_dep_states`). The
+# candidate's OWN ``subIssues`` feed the tracking-issue gate
+# (:func:`_open_sub_issue_count`): an issue with open children is an epic, and
+# its children are the work — never the epic itself.
 _ISSUE_NODES = (
     "nodes { ... on Issue { number title body url author { login } "
     "labels(first: 20) { nodes { name } } repository { nameWithOwner } "
+    "subIssues(first: 50) { nodes { state } } "
     "blockedBy(first: 20) { nodes { number state repository { nameWithOwner } } } "
     "parent { number repository { nameWithOwner } "
     "subIssues(first: 50) { nodes { number state repository { nameWithOwner } } } } "
@@ -185,6 +189,21 @@ def _is_unimplementable(node: dict) -> bool:
     if labels & SKIP_ISSUE_LABELS:
         return True
     return (node.get("title") or "").strip().lower() in SKIP_ISSUE_TITLES
+
+
+def _open_sub_issue_count(issue: dict | None) -> int:
+    """How many of *issue*'s native sub-issues are still open — the tracking-issue
+    signal. Works on both raw GraphQL shapes the runner sees (a candidate node
+    and an issue-signals payload), which share ``subIssues { nodes { state } }``.
+
+    An issue with open sub-issues is an epic under spec 003 D1: GitHub primitives
+    are the planning truth, and the children ARE the work. The runner must
+    neither claim such an issue (a session has nothing to implement) nor close it
+    on a PR merge (ten children orphaned under a closed parent — #997). Once
+    every child is done the count is 0 and the issue is ordinary work again.
+    """
+    nodes = (((issue or {}).get("subIssues") or {}).get("nodes")) or []
+    return sum(1 for n in nodes if n and not backlog_deps._is_done(n.get("state")))
 
 
 def _common_quals(repos: list[str], eligible_label: str) -> list[str]:
@@ -316,6 +335,11 @@ def query_candidates(config: dict, *, gh_run: GhRun = gitrepos._run_gh,
         if _is_unimplementable(node):  # bot/meta issue — never spawn a session (#637)
             log.info("backlog_github.skip_unimplementable ref=%s title=%r author=%s",
                      ref, node.get("title"), ((node.get("author") or {}).get("login")))
+            continue
+        open_children = _open_sub_issue_count(node)
+        if open_children:  # tracking epic — its sub-issues are the work (#997)
+            log.info("backlog_github.skip_tracking ref=%s title=%r open_sub_issues=%d",
+                     ref, node.get("title"), open_children)
             continue
         seen.add(ref)
         kept.append((node, {
@@ -709,11 +733,12 @@ def _close_issue(ref: str, comment: str, *, gh_run: GhRun) -> bool:
 # --------------------------------------------------------------------------- #
 
 def _issue_signals(ref: str, *, gh_run: GhRun) -> dict | None:
-    """Title, body and label names for issue *ref* — the human-gate inputs.
+    """Title, body, label names and open sub-issue count for issue *ref* — the
+    close-gate inputs.
 
-    Returns ``{"title": str, "body": str, "labels": list[str]}`` or ``None`` when
-    the lookup failed / the issue is gone (caller treats ``None`` as *can't
-    assess* → don't block the close)."""
+    Returns ``{"title": str, "body": str, "labels": list[str],
+    "open_sub_issues": int}`` or ``None`` when the lookup failed / the issue is
+    gone (caller treats ``None`` as *can't assess* → don't block the close)."""
     repo, number = _split_ref(ref)
     owner, _, name = repo.partition("/")
     if not owner or not name or not number.isdigit():
@@ -724,6 +749,7 @@ def _issue_signals(ref: str, *, gh_run: GhRun) -> dict | None:
         f"    issue(number: {int(number)}) {{\n"
         "      title body\n"
         "      labels(first: 50) { nodes { name } }\n"
+        "      subIssues(first: 100) { nodes { state } }\n"
         "    }\n"
         "  }\n"
         "}"
@@ -745,7 +771,8 @@ def _issue_signals(ref: str, *, gh_run: GhRun) -> dict | None:
     labels = [((n or {}).get("name") or "")
               for n in (((issue.get("labels") or {}).get("nodes")) or [])]
     return {"title": issue.get("title") or "",
-            "body": issue.get("body") or "", "labels": labels}
+            "body": issue.get("body") or "", "labels": labels,
+            "open_sub_issues": _open_sub_issue_count(issue)}
 
 
 def _pr_changed_files(repo: str, pr_number: int, *, gh_run: GhRun) -> list[str] | None:
@@ -841,6 +868,21 @@ def _escalate_issue(ref: str, reason: str, pr_link: str, *, gh_run: GhRun) -> No
     _issue_edit(ref, add=NEEDS_HUMAN_LABEL, remove=IN_PROGRESS_LABEL, gh_run=gh_run)
 
 
+def _release_tracking_issue(ref: str, open_children: int, pr_link: str, *,
+                            gh_run: GhRun) -> None:
+    """Unclaim a tracking epic a merged PR referenced, leaving it OPEN. Unlike
+    :func:`_escalate_issue` this adds NO ``needs-human`` label: nothing about the
+    epic needs a human — its open sub-issues are the remaining work, and the
+    candidate gate keeps the epic itself out of the pool. Best-effort."""
+    _issue_comment(
+        ref,
+        f"PR {pr_link} merged but this is a tracking issue with {open_children} open "
+        f"sub-issue(s), so ccswitch Backlog Runner left it open (claim released). "
+        f"It closes when its sub-issues do.",
+        gh_run=gh_run)
+    _issue_edit(ref, remove=IN_PROGRESS_LABEL, gh_run=gh_run)
+
+
 def close_batch_issues(batch, info, *, gh_run: GhRun = gitrepos._run_gh) -> str:
     """Close the batch's issues after its PR merged — FAIL CLOSED on linkage.
 
@@ -893,7 +935,14 @@ def close_batch_issues(batch, info, *, gh_run: GhRun = gitrepos._run_gh) -> str:
     # the whole batch), then gate each linked issue on its own signals.
     docs_only = _is_docs_only(_pr_changed_files(repo, pr_number, gh_run=gh_run))
     for ref in linked:
-        reason = _human_gate_reason(_issue_signals(ref, gh_run=gh_run), docs_only)
+        signals = _issue_signals(ref, gh_run=gh_run)
+        open_children = (signals or {}).get("open_sub_issues") or 0
+        if open_children:  # tracking epic — never closeable by one PR (#997)
+            log.info("backlog_github.close_batch_release_tracking ref=%s pr=%s open=%d",
+                     ref, pr_number, open_children)
+            _release_tracking_issue(ref, open_children, pr_link, gh_run=gh_run)
+            continue
+        reason = _human_gate_reason(signals, docs_only)
         if reason:
             log.info("backlog_github.close_batch_escalate ref=%s pr=%s reason=%s",
                      ref, pr_number, reason)
@@ -999,10 +1048,17 @@ def heal_orphan_claims(refs: list[str], tracked: set[str], *,
                 # path auto-close an action/ops issue or one satisfied only by a
                 # docs-only diff — escalate to a human instead.
                 repo, _ = _split_ref(ref)
+                signals = _issue_signals(ref, gh_run=gh_run)
+                open_children = (signals or {}).get("open_sub_issues") or 0
+                if open_children:  # tracking epic — release, never close (#997)
+                    log.info("backlog_github.heal_release_tracking ref=%s pr=%s open=%d",
+                             ref, info.number, open_children)
+                    _release_tracking_issue(ref, open_children, pr_link, gh_run=gh_run)
+                    healed.append((ref, "released"))
+                    continue
                 docs_only = _is_docs_only(
                     _pr_changed_files(repo, info.number, gh_run=gh_run))
-                reason = _human_gate_reason(
-                    _issue_signals(ref, gh_run=gh_run), docs_only)
+                reason = _human_gate_reason(signals, docs_only)
                 if reason:
                     log.info("backlog_github.heal_escalate ref=%s pr=%s reason=%s",
                              ref, info.number, reason)

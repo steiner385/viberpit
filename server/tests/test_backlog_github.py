@@ -103,6 +103,33 @@ def test_query_candidates_synthesizes_url_when_api_omits_it():
                     "body": None, "url": "https://github.com/o/r/issues/9"}]
 
 
+def test_query_candidates_skips_tracking_issue_with_open_sub_issues():
+    """An issue with OPEN sub-issues is a tracking epic, not implementable work:
+    its sub-issues ARE the work (spec 003 D1). The runner must never claim it
+    (#997 was claimed and then closed under ten open children). One whose
+    sub-issues are all done is ordinary work again and stays a candidate."""
+    nodes = [
+        {"number": 997, "title": "Epic: rollout", "url": "u997",
+         "repository": {"nameWithOwner": "o/r"},
+         "subIssues": {"nodes": [{"number": 988, "state": "OPEN"},
+                                 {"number": 987, "state": "CLOSED"}]}},
+        {"number": 50, "title": "Old epic, all done", "url": "u50",
+         "repository": {"nameWithOwner": "o/r"},
+         "subIssues": {"nodes": [{"number": 51, "state": "CLOSED"}]}},
+        {"number": 7, "title": "Fix login", "url": "u7",
+         "repository": {"nameWithOwner": "o/r"}},
+    ]
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout(nodes))})
+
+    out = query_candidates({"enabled_repos": ["o/r"], "eligible_label": "ready"}, gh_run=fake)
+
+    assert [c["number"] for c in out] == [50, 7]
+    # The candidate's OWN sub-issue states must ride along with the search
+    # (the fragment previously fetched only the parent's list, for ordering).
+    query = next(a for a in fake.calls[0] if a.startswith("query="))
+    assert query.count("subIssues(") >= 2
+
+
 def test_query_candidates_empty_enabled_repos_returns_empty_no_call():
     fake = FakeGh()
     out = query_candidates({"enabled_repos": [], "eligible_label": "ready"}, gh_run=fake)
@@ -1043,11 +1070,12 @@ def test_close_batch_issues_mixed_unlinked_and_unverifiable_retries():
 # close_batch_issues — human gate: action-required issues & docs-only PRs (#784)#
 # --------------------------------------------------------------------------- #
 
-def _signals_stdout(title="", body="", labels=()) -> str:
-    """An issue-signals GraphQL response: title + body + labels."""
+def _signals_stdout(title="", body="", labels=(), sub_issue_states=()) -> str:
+    """An issue-signals GraphQL response: title + body + labels + sub-issues."""
     return json.dumps({"data": {"repository": {"issue": {
         "title": title, "body": body,
-        "labels": {"nodes": [{"name": n} for n in labels]}}}}})
+        "labels": {"nodes": [{"name": n} for n in labels]},
+        "subIssues": {"nodes": [{"state": s} for s in sub_issue_states]}}}}})
 
 
 def _files_stdout(paths) -> str:
@@ -1113,6 +1141,48 @@ def test_close_batch_issues_action_required_issue_is_escalated_not_closed():
     assert esc[esc.index("--add-label") + 1] == "needs-human"
     assert "--remove-label" in esc and esc[esc.index("--remove-label") + 1] == "in-progress"
     assert [c for c in gh.calls if c[:2] == ["issue", "comment"]]
+
+
+def test_close_batch_issues_tracking_issue_with_open_sub_issues_is_released_not_closed():
+    """A merged PR that references a tracking epic must not close it while any
+    sub-issue is still open — the #997 incident: PR #1004 said ``Refs #997``, a
+    bare mention counted as linkage, and ten open children were orphaned under
+    a closed parent. The epic is unclaimed and left open; it is NOT escalated to
+    needs-human either, because nothing about it needs a human — its open
+    sub-issues are the remaining work."""
+    from server.automations.backlog_github import close_batch_issues
+    gh = GateGh(
+        pr=_proc(stdout=_linkage_stdout(closing=[8])),  # even a real Fixes #8
+        files=_proc(stdout=_files_stdout(["src/reconcile.py"])),
+        signals={8: _proc(stdout=_signals_stdout(
+            title="Epic: 003 rollout", sub_issue_states=["CLOSED", "OPEN", "OPEN"]))})
+
+    outcome = close_batch_issues(_batch8(), _merged_info(), gh_run=gh)
+
+    assert outcome == "closed"  # the PR IS the batch's; the epic is just not closeable
+    assert not [c for c in gh.calls if c[:2] == ["issue", "close"]]
+    edits = [c for c in gh.calls if c[:2] == ["issue", "edit"]]
+    assert edits and all("--add-label" not in c for c in edits)
+    assert any("--remove-label" in c and c[c.index("--remove-label") + 1] == "in-progress"
+               for c in edits)
+    comment = next(c for c in gh.calls if c[:2] == ["issue", "comment"])
+    assert "2 open sub-issue" in comment[comment.index("--body") + 1]
+
+
+def test_close_batch_issues_epic_whose_sub_issues_are_all_done_still_closes():
+    """The gate is on OPEN children only: an epic whose sub-issues are all
+    closed is ordinary completed work."""
+    from server.automations.backlog_github import close_batch_issues
+    gh = GateGh(
+        pr=_proc(stdout=_linkage_stdout(closing=[8])),
+        files=_proc(stdout=_files_stdout(["src/reconcile.py"])),
+        signals={8: _proc(stdout=_signals_stdout(
+            title="Epic: done", sub_issue_states=["CLOSED", "CLOSED"]))})
+
+    outcome = close_batch_issues(_batch8(), _merged_info(), gh_run=gh)
+
+    assert outcome == "closed"
+    assert [c for c in gh.calls if c[:2] == ["issue", "close"]]
 
 
 def test_close_batch_issues_docs_only_pr_does_not_satisfy_non_doc_issue():
@@ -1320,6 +1390,37 @@ def test_heal_orphan_merged_pr_escalates_action_issue_instead_of_closing():
     esc = next(c for c in router.calls
                if c[:2] == ["issue", "edit"] and "--add-label" in c)
     assert esc[esc.index("--add-label") + 1] == "needs-human"
+
+
+def test_heal_orphan_merged_pr_releases_tracking_issue_instead_of_closing():
+    """The orphan-heal path shares the open-sub-issues gate: a merged PR that
+    mentioned a tracking epic releases the claim and leaves the epic open,
+    without a needs-human label."""
+    pr = {"number": 40, "url": "https://github.com/o/r/pull/40", "title": "part 1",
+          "state": "MERGED", "isDraft": False, "headRefName": "b",
+          "autoMergeRequest": None}
+
+    def router(args, token=None):
+        router.calls.append(list(args))
+        if args[:2] != ["api", "graphql"]:
+            return _proc()
+        q = args[-1]
+        if "timelineItems" in q:
+            return _proc(stdout=_crossref_stdout([pr]))
+        if "pullRequest(" in q and "files(" in q:
+            return _proc(stdout=_files_stdout(["src/x.py"]))
+        if "issue(number" in q:
+            return _proc(stdout=_signals_stdout(
+                title="Epic: rollout", sub_issue_states=["OPEN"]))
+        return _proc()
+    router.calls = []
+
+    healed = heal_orphan_claims(["o/r#5"], set(), gh_run=router)
+
+    assert healed == [("o/r#5", "released")]
+    assert not [c for c in router.calls if c[:2] == ["issue", "close"]]
+    edits = [c for c in router.calls if c[:2] == ["issue", "edit"]]
+    assert edits and all("--add-label" not in c for c in edits)
 
 
 def test_heal_orphan_open_pr_left_untouched():
