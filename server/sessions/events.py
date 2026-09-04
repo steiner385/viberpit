@@ -221,8 +221,17 @@ class ReplayComplete:
 class UserMessage:
     turn_id: str; text: str; src_uuid: str | None = None; images: list[dict] | None = None
     ts: float | None = field(default_factory=_now_ms)
+    # True ONLY on the copy `replay._window` prepends to a window whose head lands
+    # mid-logical-turn: the window's OWNING prompt, re-sent so the turn's content
+    # travels with the prompt that asked for it. Such a copy is at a PAGE BOUNDARY,
+    # not at the prompt's real transcript position — the same prompt id arrives once
+    # per page until the page holding its real position loads. The client uses the
+    # mark to drop boundary copies deterministically on merge, and to detect one left
+    # pinned mid-transcript (the page-boundary ordering bug, #1000).
+    owner_prefix: bool = False
     def to_wire(self): return {"type": "user", "turnId": self.turn_id, "text": self.text, "srcUuid": self.src_uuid,
-                               "images": self.images or [], "ts": self.ts}
+                               "images": self.images or [], "ts": self.ts,
+                               "ownerPrefix": self.owner_prefix}
 
 @dataclass
 class QueueUpdate:
