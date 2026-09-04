@@ -106,7 +106,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   // dot and the line-2 phrase all read the same tier, so they can never disagree
   // (the restart-stranded relabel included). sessionTriage is the SAME function
   // the group header / sort use, so a card can never show a calm "Waiting…"/"Your
-  // turn" pill while sitting under the "Needs attention" header (Fix B).
+  // turn" pill while sitting under the "Failed" header (Fix B).
   const presentation = sessionTriage(session)
   const accent = TIER_ACCENT[presentation.tier]
   const isBusy = presentation.tier === 'busy'

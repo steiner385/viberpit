@@ -96,7 +96,7 @@ describe('deriveFilterOptions', () => {
     expect(deriveFilterOptions([], []).status.map((o) => o.value)).toEqual(
       ['needs-you', 'unreachable', 'error', 'your-turn', 'waiting', 'busy'],
     )
-    expect(OPTIONS.status.map((o) => o.label)).toContain('Needs attention')
+    expect(OPTIONS.status.map((o) => o.label)).toContain('Failed')
   })
 
   it('derives projects from the sessions, deduped, sorted, scratch excluded', () => {

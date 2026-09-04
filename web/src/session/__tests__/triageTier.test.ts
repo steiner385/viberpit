@@ -25,7 +25,7 @@ describe('triageTier', () => {
   })
   it('does NOT elevate a done session for a CLOSED PR with frozen failing checks', () => {
     // A closed PR is terminal: GitHub freezes its statusCheckRollup at red,
-    // but there's no action to take, so it must not pull the card into "Needs attention".
+    // but there's no action to take, so it must not pull the card into "Failed".
     expect(triageTier(s('done', 'failing', 'closed'))).toBe('your-turn')
   })
   it('does NOT elevate a done session for a MERGED PR with frozen failing checks', () => {
@@ -34,7 +34,7 @@ describe('triageTier', () => {
   it('does NOT elevate a waiting_external session for a failing PR (an agent is monitoring it)', () => {
     // A session with an armed Monitor/wakeup (waiting_external, "Waiting…") is
     // already watching its CI — a red rollup is that agent's job, not the user's.
-    // It must stay in the Waiting group, not jump to Needs attention.
+    // It must stay in the Waiting group, not jump to Failed.
     expect(triageTier(s('waiting_external', 'failing'))).toBe('waiting')
   })
   it('does NOT elevate a live (in_progress) session for a failing PR', () => {
@@ -47,7 +47,7 @@ describe('sessionTriage (pill + group share one computation)', () => {
   it('an elevated at-rest session reads "Checks failing", not its calm status label', () => {
     // The whole point of Fix B: when a failing PR lifts a done session into the
     // error tier, the card pill must SAY so — not show "Your turn" under a red
-    // "Needs attention" header. Pill and group can no longer disagree.
+    // "Failed" header. Pill and group can no longer disagree.
     const p = sessionTriage(s('done', 'failing'))
     expect(p.tier).toBe('error')
     expect(p.label).toBe('Checks failing')
@@ -72,7 +72,7 @@ describe('sessionTriage (pill + group share one computation)', () => {
 
   it('an interrupted-by-restart session is NOT overridden by a failing PR (pill == group)', () => {
     // Latent second disagreement: interrupted idle shows an amber "re-send" pill
-    // but used to group under red "Needs attention". Now both read needs-you.
+    // but used to group under red "Failed". Now both read needs-you.
     const sess = { ...s('idle', 'failing'), interruptedByRestart: true } as Session
     const p = sessionTriage(sess)
     expect(p.tier).toBe('needs-you')

@@ -12,7 +12,7 @@ const CHIP_FAILING = 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-3
  * Tints the collapsed "N PRs" chip from its hidden contents. Binary by design:
  * a quiet red warning when any contained PR is failing-and-actionable, else
  * neutral. Routed through `anyChecksFailing` — the SAME predicate that lifts
- * the card into "Needs attention" — so the chip color and the triage group can
+ * the card into "Failed" — so the chip color and the triage group can
  * never disagree (and a terminal closed/merged PR's frozen red is ignored here
  * too, for free).
  */

@@ -104,13 +104,13 @@ describe('orderSessions', () => {
     expect(flat(s, 'none', 'status')).toEqual(['broken', 'idle'])
   })
 
-  it('group by status: done+failing-PR lands in error ("Needs attention") group', () => {
+  it('group by status: done+failing-PR lands in error ("Failed") group', () => {
     const s = [
       mk({ id: 'idle', status: 'idle' }),
       mkWithPr('broken', 'done', 'failing'),
     ]
     const g = orderSessions(s, 'status', 'status')
-    const errorGroup = g.find((x) => x.label === 'Needs attention')
+    const errorGroup = g.find((x) => x.label === 'Failed')
     expect(errorGroup?.sessions.map((x) => x.id)).toEqual(['broken'])
     const doneGroup = g.find((x) => x.label === 'Done')
     expect(doneGroup?.sessions.map((x) => x.id)).toEqual(['idle'])

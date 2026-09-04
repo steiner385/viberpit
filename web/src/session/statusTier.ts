@@ -95,7 +95,7 @@ const RESTART_STRANDABLE = new Set(['idle', 'needs_attention'])
 // Presentation for a session lifted into the error tier by a failing PR (not by
 // its own status) — see sessionTriage() in triageTier.ts. Lives here, beside
 // PRESENTATION, so every "how does an error-tier session read?" decision has one
-// home. The label names the *cause* so a card in the "Needs attention" group can
+// home. The label names the *cause* so a card in the "Failed" group can
 // never sit under a calm "Your turn"/"Ready" pill again.
 export const PR_CHECKS_FAILING: StatusPresentation = {
   tier: 'error', label: 'Checks failing', Icon: AlertTriangle, textClass: ERROR,
@@ -173,11 +173,18 @@ export const TIER_RANK: Record<StatusTier, number> = {
  * label: the 'your-turn' tier bundles several pills (Ready / Your turn / Complete
  * / Ended), so its header is "Done" rather than "Your turn" — otherwise a header
  * named "Your turn" would sit above "Ready" cards and read as misfiled.
+ *
+ * The 'error' header is "Failed", not "Needs attention": that read as a synonym
+ * for "Needs you" while meaning the opposite kind of stop. Amber = the agent is
+ * alive and paused on a decision only a human can make (nothing moves until you
+ * act). Red = something broke and no agent is waiting — the remedy is a re-send,
+ * a CI fix, or the stuck-session sweep's rotation retry, which can clear it with
+ * no human at all. The header should name the cause, like the pills under it.
  */
 export const TIER_LABEL: Record<StatusTier, string> = {
   'needs-you': 'Needs you',
   unreachable: 'Unreachable',
-  error: 'Needs attention',
+  error: 'Failed',
   'your-turn': 'Done',
   waiting: 'Waiting',
   busy: 'Working',
