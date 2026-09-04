@@ -147,6 +147,8 @@ class InProcessOrchestratorAdapter:
     async def latest_summary_many(self, *a, **k): return await _maybe_await(self._orch.latest_summary_many(*a, **k))
     async def resume_interrupted(self, *a, **k): return await _maybe_await(self._orch.resume_interrupted(*a, **k))
     async def reload_session(self, *a, **k): return await _maybe_await(self._orch.reload_session(*a, **k))
+    async def rotate_to_best(self, *a, **k): return await _maybe_await(self._orch.rotate_to_best(*a, **k))
+    async def set_account_pin(self, *a, **k): return await _maybe_await(self._orch.set_account_pin(*a, **k))
     async def transcript_path(self, *a, **k): return await _maybe_await(self._orch.transcript_path(*a, **k))
     async def resolve_transcript_path(self, *a, **k): return await _maybe_await(self._orch.resolve_transcript_path(*a, **k))
     async def transcript_search_text(self, *a, **k): return await _maybe_await(self._orch.transcript_search_text(*a, **k))

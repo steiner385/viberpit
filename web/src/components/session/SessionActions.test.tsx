@@ -172,3 +172,21 @@ describe('SessionActions — Reload session', () => {
     await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
   })
 })
+
+describe('SessionActions — Next best account', () => {
+  it('renders the item only when onRotate is given, and calls it', async () => {
+    const user = userEvent.setup()
+    vi.mocked(hooks.useCloseSession).mockReturnValue(successMutation() as unknown as ReturnType<typeof hooks.useCloseSession>)
+    vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(successMutation() as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
+    const onRotate = vi.fn()
+
+    const { rerender } = render(<SessionActions sessionId="s1" sessionName="My Session" onDone={vi.fn()} />)
+    await user.click(screen.getByRole('button', { name: /more session actions/i }))
+    expect(screen.queryByRole('menuitem', { name: /next best account/i })).not.toBeInTheDocument()
+
+    rerender(<SessionActions sessionId="s1" sessionName="My Session" onDone={vi.fn()} onRotate={onRotate} />)
+    await user.click(screen.getByRole('menuitem', { name: /next best account/i }))
+    expect(onRotate).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
+  })
+})

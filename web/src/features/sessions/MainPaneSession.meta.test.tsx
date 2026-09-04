@@ -37,6 +37,10 @@ vi.mock('@/ws/client', async (importOriginal) => {
 vi.mock('@/api/hooks', () => ({
   // "Reload session" (MainPaneSession → SessionHeader → SessionActions).
   useReloadSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  // "Next best account" (MainPaneSession → SessionHeader → SessionActions).
+  useRotateSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  // Unpin account button (MainPaneSession → SessionBody → SessionMeta).
+  useSetAccountPin: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useGenerateSuggestions: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(() => Promise.resolve([])), isPending: false })),
   useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
   useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),

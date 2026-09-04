@@ -28,6 +28,8 @@ export function sessionTriage(session: Session): StatusPresentation {
   const base = statusPresentation(session.status, {
     interruptedByRestart: session.interruptedByRestart,
     liveness: session.liveness,
+    usageStalled: session.usageStalled,
+    pausedUntil: session.pausedUntil,
   })
   if (
     AT_REST.has(base.tier)

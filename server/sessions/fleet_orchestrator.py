@@ -77,7 +77,7 @@ _PER_SESSION: frozenset[str] = frozenset({
     "latest_summary", "pop_pending_initial_prompt", "pop_pending_initial_attachment_ids",
     "request_pr_fix", "prs_for", "ring_covers", "ring_tail", "unarchive",
     "x11_open_browser", "resolve_model_approval", "resume_interrupted",
-    "reload_session",
+    "reload_session", "rotate_to_best", "set_account_pin",
 })
 
 

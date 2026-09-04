@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shlex
 import sys
 from types import SimpleNamespace
 from pathlib import Path
@@ -86,6 +87,58 @@ def test_build_login_frame_keeps_secrets_only_in_stdin_payload():
     assert frame["params"]["chatgptAccountId"] == secrets.account_id
 
 
+def test_build_ssh_command_preserves_multiline_python_program_as_one_argument():
+    program = 'import sys\nprint("safe", sys.argv[1])'
+    remote_argv = ["python3", "-c", program, "argument with spaces"]
+
+    command = spike.build_ssh_command("runner.example", remote_argv)
+
+    assert command[:-1] == [
+        "ssh",
+        "-T",
+        "-o",
+        "BatchMode=yes",
+        "runner.example",
+        "--",
+    ]
+    assert shlex.split(command[-1]) == remote_argv
+
+
+@pytest.mark.parametrize("ssh_host", ["-oProxyCommand=touch", "runner;touch"])
+def test_build_ssh_command_rejects_unsafe_destination(ssh_host: str):
+    with pytest.raises(spike.SpikeConfigurationError):
+        spike.build_ssh_command(ssh_host, ["true"])
+
+
+def test_build_ssh_command_rejects_empty_or_nul_remote_argv():
+    with pytest.raises(spike.SpikeConfigurationError):
+        spike.build_ssh_command("runner.example", [])
+    with pytest.raises(spike.SpikeConfigurationError):
+        spike.build_ssh_command("runner.example", ["printf", "unsafe\0argument"])
+
+
+def test_remote_runner_process_quotes_shell_and_app_server_argv_without_injection():
+    target = spike.RunnerTarget(name="runner-one", ssh_host="runner.example")
+    home = Path("/tmp/ccswitch-codex-spike." + "a" * 32)
+    hostile_codex_path = "/opt/Codex CLI/codex; printf command-injected"
+
+    command, environment = spike.build_runner_process(
+        target,
+        home,
+        codex_bin=hostile_codex_path,
+    )
+
+    remote_argv = shlex.split(command[-1])
+    assert remote_argv[:2] == ["sh", "-c"]
+    assert remote_argv[3:] == [
+        "ccswitch-codex-spike",
+        str(home),
+        hostile_codex_path,
+    ]
+    assert 'CODEX_HOME="$1" "$2" app-server --stdio' in remote_argv[2]
+    assert environment == spike._minimal_environment()
+
+
 def test_scan_home_flags_auth_json_and_exact_secret_bytes(tmp_path: Path):
     secrets = _secrets()
     (tmp_path / "runtime.db").write_bytes(
@@ -97,6 +150,36 @@ def test_scan_home_flags_auth_json_and_exact_secret_bytes(tmp_path: Path):
 
     assert result.auth_json_present is True
     assert result.secret_file_count == 1
+
+
+@pytest.mark.asyncio
+async def test_remote_scan_secrets_use_only_authenticated_ssh_stdin(monkeypatch):
+    secrets = _secrets()
+    captured = {}
+
+    async def capture_command(command, *, stdin=None, timeout=30.0):
+        captured["command"] = command
+        captured["stdin"] = stdin
+        captured["timeout"] = timeout
+        return 0, b'{"auth":false,"leaks":0,"links":0}', b""
+
+    monkeypatch.setattr(spike, "_run_command", capture_command)
+    target = spike.RunnerTarget("runner.example", "runner.example")
+    home = Path("/tmp/ccswitch-codex-spike." + "a" * 32)
+
+    result = await spike.scan_remote_home(target, home, secrets)
+
+    assert result.clean is True
+    stdin_values = tuple(json.loads(captured["stdin"]))
+    assert stdin_values == secrets.runner_values
+    assert secrets.access_token in stdin_values
+    assert secrets.account_id in stdin_values
+    assert secrets.refresh_token not in stdin_values
+    process_metadata = json.dumps(captured["command"]) + json.dumps(
+        spike._minimal_environment(),
+        sort_keys=True,
+    )
+    assert secrets.find_leaks(process_metadata) == ()
 
 
 def test_safe_evidence_never_serializes_secret_values():
@@ -123,6 +206,794 @@ def test_safe_evidence_never_serializes_secret_values():
     assert secrets.find_leaks(serialized) == ()
     assert "access_token" not in serialized
     assert "account_id" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_native_error_response_reports_only_allowlisted_request_context(monkeypatch):
+    secrets = _secrets()
+    native_detail = {
+        "code": -32000,
+        "message": f"token rejected: {secrets.access_token}",
+        "data": {
+            "account": secrets.account_id,
+            "refresh": secrets.refresh_token,
+            "host": "dobby.internal",
+            "path": "/home/operator/.codex/auth.json",
+            "stderr": "native app-server diagnostic",
+        },
+    }
+    stdout = spike.asyncio.StreamReader()
+    stdout.feed_data(
+        json.dumps({"id": 1, "error": native_detail}, separators=(",", ":")).encode()
+        + b"\n"
+    )
+    stdout.feed_eof()
+    client = spike.JsonRpcProcess(["codex"], {}, role="runner")
+    client._process = SimpleNamespace(stdout=stdout)
+
+    async def discard_write(_frame):
+        return None
+
+    monkeypatch.setattr(client, "_write", discard_write)
+    request = spike.asyncio.create_task(
+        client.request("model/list", {}, stage="initial_read_only")
+    )
+    await spike.asyncio.sleep(0)
+    await client._read_stdout()
+
+    with pytest.raises(spike.ProtocolError) as raised:
+        await request
+
+    # run_spike cannot return its SecretValues on failure, so this proves the
+    # native response is safe even when exact-value replacement is unavailable.
+    output = spike.failure_json(raised.value)
+    assert json.loads(output) == {
+        "error": "app-server request returned an error",
+        "method": "model/list",
+        "release_gate": "fail",
+        "role": "runner",
+        "stage": "initial_read_only",
+    }
+    for forbidden in (
+        *secrets.values,
+        "-32000",
+        "token rejected",
+        "dobby.internal",
+        "/home/operator/.codex/auth.json",
+        "native app-server diagnostic",
+    ):
+        assert forbidden not in output
+
+
+@pytest.mark.asyncio
+async def test_request_tracker_drops_method_outside_fixed_allowlist(monkeypatch):
+    unsafe_method = "method-containing-secret"
+    stdout = spike.asyncio.StreamReader()
+    stdout.feed_data(b'{"id":1,"error":{"message":"raw native detail"}}\n')
+    stdout.feed_eof()
+    client = spike.JsonRpcProcess(["codex"], {}, role="runner")
+    client._process = SimpleNamespace(stdout=stdout)
+
+    async def discard_write(_frame):
+        return None
+
+    monkeypatch.setattr(client, "_write", discard_write)
+    request = spike.asyncio.create_task(
+        client.request_frame(
+            {"id": 1, "method": unsafe_method, "params": {}},
+            stage="initial_login",
+        )
+    )
+    await spike.asyncio.sleep(0)
+    await client._read_stdout()
+
+    with pytest.raises(spike.ProtocolError) as raised:
+        await request
+
+    output = spike.failure_json(raised.value)
+    assert json.loads(output) == {
+        "error": "app-server request returned an error",
+        "release_gate": "fail",
+        "role": "runner",
+        "stage": "initial_login",
+    }
+    assert unsafe_method not in output
+    assert "raw native detail" not in output
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    [
+        BrokenPipeError("broken-pipe native detail"),
+        ConnectionResetError("connection-reset native detail"),
+        RuntimeError("unexpected write native detail"),
+    ],
+)
+async def test_request_write_failure_clears_pending_with_sanitized_context(
+    monkeypatch,
+    failure,
+):
+    client = spike.JsonRpcProcess(["codex"], {}, role="authority")
+
+    async def fail_write(_frame):
+        raise failure
+
+    monkeypatch.setattr(client, "_write", fail_write)
+
+    with pytest.raises(spike.ProtocolError) as raised:
+        await client.request(
+            "account/read",
+            {"refreshToken": False},
+            stage="authority_account_read",
+        )
+
+    assert client._pending == {}
+    output = spike.failure_json(raised.value)
+    assert json.loads(output) == {
+        "error": "app-server request transport failed",
+        "method": "account/read",
+        "release_gate": "fail",
+        "role": "authority",
+        "stage": "authority_account_read",
+    }
+    assert str(failure) not in output
+
+
+@pytest.mark.asyncio
+async def test_request_write_cancellation_clears_pending_and_preserves_identity(monkeypatch):
+    cancellation = spike.asyncio.CancelledError("cancellation native detail")
+    client = spike.JsonRpcProcess(["codex"], {}, role="runner")
+
+    async def cancel_write(_frame):
+        raise cancellation
+
+    monkeypatch.setattr(client, "_write", cancel_write)
+
+    with pytest.raises(spike.asyncio.CancelledError) as raised:
+        await client.request("model/list", {}, stage="initial_read_only")
+
+    assert raised.value is cancellation
+    assert client._pending == {}
+
+
+@pytest.mark.asyncio
+async def test_late_response_after_cancellation_does_not_disrupt_concurrent_request(monkeypatch):
+    stdout = spike.asyncio.StreamReader()
+    client = spike.JsonRpcProcess(["codex"], {}, role="runner")
+    client._process = SimpleNamespace(stdout=stdout)
+
+    async def discard_write(_frame):
+        return None
+
+    monkeypatch.setattr(client, "_write", discard_write)
+    canceled = spike.asyncio.create_task(
+        client.request("model/list", {}, stage="initial_read_only")
+    )
+    concurrent = spike.asyncio.create_task(
+        client.request("account/read", {}, stage="initial_read_only")
+    )
+    await spike.asyncio.sleep(0)
+    canceled.cancel()
+    with pytest.raises(spike.asyncio.CancelledError):
+        await canceled
+
+    stdout.feed_data(
+        b'{"id":1,"error":{"message":"late native detail"}}\n'
+        b'{"id":2,"result":{"safe":true}}\n'
+    )
+    stdout.feed_eof()
+    await client._read_stdout()
+
+    assert await concurrent == {"safe": True}
+    assert client._pending == {}
+    client.assert_background_clean()
+
+
+@pytest.mark.asyncio
+async def test_boolean_response_id_does_not_alias_live_integer_request(monkeypatch):
+    stdout = spike.asyncio.StreamReader()
+    stdout.feed_data(b'{"id":true,"result":{"must_not":"alias request 1"}}\n')
+    stdout.feed_eof()
+    client = spike.JsonRpcProcess(["codex"], {}, role="runner")
+    client._process = SimpleNamespace(stdout=stdout)
+
+    async def discard_write(_frame):
+        return None
+
+    monkeypatch.setattr(client, "_write", discard_write)
+    request = spike.asyncio.create_task(
+        client.request("model/list", {}, stage="initial_read_only")
+    )
+    await spike.asyncio.sleep(0)
+    await client._read_stdout()
+
+    with pytest.raises(spike.ProtocolError, match="reader stopped"):
+        await request
+    with pytest.raises(spike.ProtocolError) as background:
+        client.assert_background_clean()
+    assert json.loads(spike.failure_json(background.value)) == {
+        "error": "app-server replied with an invalid request id",
+        "release_gate": "fail",
+        "role": "runner",
+        "stage": "protocol_transport",
+    }
+
+
+@pytest.mark.asyncio
+async def test_boolean_response_id_does_not_alias_abandoned_integer_request(monkeypatch):
+    stdout = spike.asyncio.StreamReader()
+    client = spike.JsonRpcProcess(["codex"], {}, role="runner")
+    client._process = SimpleNamespace(stdout=stdout)
+
+    async def discard_write(_frame):
+        return None
+
+    monkeypatch.setattr(client, "_write", discard_write)
+    request = spike.asyncio.create_task(
+        client.request("model/list", {}, stage="initial_read_only")
+    )
+    await spike.asyncio.sleep(0)
+    request.cancel()
+    with pytest.raises(spike.asyncio.CancelledError):
+        await request
+
+    stdout.feed_data(b'{"id":true,"error":{"message":"must not match tombstone 1"}}\n')
+    stdout.feed_eof()
+    await client._read_stdout()
+
+    assert client._abandoned_request_ids == {1}
+    with pytest.raises(spike.ProtocolError, match="invalid request id"):
+        client.assert_background_clean()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response_id", "message"),
+    [(999, "unknown request id"), ("not-an-integer", "invalid request id")],
+)
+async def test_unknown_or_malformed_response_id_fails_safely(response_id, message):
+    stdout = spike.asyncio.StreamReader()
+    stdout.feed_data(
+        json.dumps({"id": response_id, "result": {}}, separators=(",", ":")).encode()
+        + b"\n"
+    )
+    stdout.feed_eof()
+    client = spike.JsonRpcProcess(["codex"], {}, role="authority")
+    client._process = SimpleNamespace(stdout=stdout)
+
+    await client._read_stdout()
+
+    with pytest.raises(spike.ProtocolError, match=message):
+        client.assert_background_clean()
+
+
+@pytest.mark.asyncio
+async def test_callback_spike_failure_has_fixed_context_and_no_arbitrary_detail(monkeypatch):
+    handler_detail = "handler detail containing fake-refresh-token"
+    replies = []
+
+    async def fail_handler(_frame):
+        raise spike.SpikeError(handler_detail)
+
+    async def capture_write(frame):
+        replies.append(frame)
+
+    client = spike.JsonRpcProcess(["codex"], {}, role="runner", handler=fail_handler)
+    monkeypatch.setattr(client, "_write", capture_write)
+    frame = {
+        "id": 11,
+        "method": "account/chatgptAuthTokens/refresh",
+        "params": {"reason": "unauthorized"},
+    }
+
+    await client._answer_server_request(frame)
+
+    assert replies == [
+        {
+            "id": 11,
+            "error": {"code": -32603, "message": "ccswitch spike rejected request"},
+        }
+    ]
+    with pytest.raises(spike.ProtocolError) as raised:
+        client.assert_background_clean()
+    output = spike.failure_json(raised.value)
+    assert json.loads(output) == {
+        "error": "app-server callback handler failed",
+        "method": "account/chatgptAuthTokens/refresh",
+        "release_gate": "fail",
+        "role": "runner",
+        "stage": "refresh_callback",
+    }
+    assert handler_detail not in output
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "write_failure",
+    [
+        BrokenPipeError("callback broken-pipe detail"),
+        ConnectionResetError("callback connection-reset detail"),
+    ],
+)
+async def test_callback_error_reply_transport_failure_is_sanitized(
+    monkeypatch,
+    write_failure,
+):
+    async def fail_handler(_frame):
+        raise spike.SpikeError("handler detail")
+
+    async def fail_write(_frame):
+        raise write_failure
+
+    client = spike.JsonRpcProcess(["codex"], {}, role="runner", handler=fail_handler)
+    monkeypatch.setattr(client, "_write", fail_write)
+
+    await client._answer_server_request(
+        {"id": 12, "method": "account/chatgptAuthTokens/refresh", "params": {}}
+    )
+
+    assert len(client._background_errors) == 2
+    output = spike.failure_json(client._background_errors[1])
+    assert json.loads(output) == {
+        "error": "app-server callback error response transport failed",
+        "method": "account/chatgptAuthTokens/refresh",
+        "release_gate": "fail",
+        "role": "runner",
+        "stage": "refresh_callback",
+    }
+    assert str(write_failure) not in output
+
+
+@pytest.mark.asyncio
+async def test_callback_error_reply_cancellation_preserves_identity(monkeypatch):
+    cancellation = spike.asyncio.CancelledError("callback cancellation detail")
+    handler_failure = spike.ProtocolError("sanitized callback handler failure")
+
+    async def fail_handler(_frame):
+        raise handler_failure
+
+    async def cancel_write(_frame):
+        raise cancellation
+
+    client = spike.JsonRpcProcess(["codex"], {}, role="runner", handler=fail_handler)
+    monkeypatch.setattr(client, "_write", cancel_write)
+
+    with pytest.raises(spike.asyncio.CancelledError) as raised:
+        await client._answer_server_request(
+            {"id": 13, "method": "account/chatgptAuthTokens/refresh", "params": {}}
+        )
+
+    assert raised.value is cancellation
+    assert client._background_errors[-1] is cancellation
+    assert await client.callback_failures_after_quiescence(
+        0,
+        quiet_interval=0.001,
+        max_wait=0.1,
+    ) == (handler_failure, cancellation)
+
+
+@pytest.mark.asyncio
+async def test_spawned_callback_cancellation_is_consumed_and_tracked():
+    cancellation = spike.asyncio.CancelledError("spawned callback cancellation")
+
+    async def cancel_handler(_frame):
+        raise cancellation
+
+    client = spike.JsonRpcProcess(["codex"], {}, role="runner", handler=cancel_handler)
+    client._start_server_request(
+        {"id": 14, "method": "account/chatgptAuthTokens/refresh", "params": {}}
+    )
+    await spike.asyncio.sleep(0)
+    await spike.asyncio.sleep(0)
+
+    assert client._server_request_tasks == set()
+    assert client._background_errors == [cancellation]
+
+
+def _quiescence_client(monkeypatch, *, release=None):
+    async def handler(_frame):
+        if release is not None:
+            await release.wait()
+        return {"safe": True}
+
+    async def discard_write(_frame):
+        return None
+
+    client = spike.JsonRpcProcess(["codex"], {}, role="runner", handler=handler)
+    monkeypatch.setattr(client, "_write", discard_write)
+    return client
+
+
+def _safe_callback_frame(request_id):
+    return {
+        "id": request_id,
+        "method": "account/chatgptAuthTokens/refresh",
+        "params": {"reason": "unauthorized"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_callback_registered_before_quiescence_fence_is_drained(monkeypatch):
+    client = _quiescence_client(monkeypatch)
+    checkpoint = client.callback_checkpoint()
+    client._start_server_request(_safe_callback_frame(31))
+
+    failures = await client.callback_failures_after_quiescence(
+        checkpoint,
+        quiet_interval=0.001,
+        max_wait=0.1,
+    )
+
+    assert failures == ()
+    assert client._server_request_tasks == set()
+
+
+@pytest.mark.asyncio
+async def test_callback_registered_within_quiet_interval_resets_fence(monkeypatch):
+    client = _quiescence_client(monkeypatch)
+    checkpoint = client.callback_checkpoint()
+    fence = spike.asyncio.create_task(
+        client.callback_failures_after_quiescence(
+            checkpoint,
+            quiet_interval=0.02,
+            max_wait=0.2,
+        )
+    )
+    await spike.asyncio.sleep(0)
+    assert fence.done() is False
+
+    client._start_server_request(_safe_callback_frame(32))
+
+    assert await fence == ()
+    assert client._server_request_tasks == set()
+
+
+@pytest.mark.asyncio
+async def test_callback_registered_after_quiet_boundary_is_not_misattributed(monkeypatch):
+    client = _quiescence_client(monkeypatch)
+    checkpoint = client.callback_checkpoint()
+
+    assert await client.callback_failures_after_quiescence(
+        checkpoint,
+        quiet_interval=0.001,
+        max_wait=0.1,
+    ) == ()
+
+    client._start_server_request(_safe_callback_frame(33))
+    assert await client.callback_failures_after_quiescence(
+        checkpoint,
+        quiet_interval=0.001,
+        max_wait=0.1,
+    ) == ()
+
+
+@pytest.mark.asyncio
+async def test_callback_fence_deadline_records_static_anomalous_failure(monkeypatch):
+    release = spike.asyncio.Event()
+    client = _quiescence_client(monkeypatch, release=release)
+    checkpoint = client.callback_checkpoint()
+    client._start_server_request(_safe_callback_frame(34))
+
+    failures = await client.callback_failures_after_quiescence(
+        checkpoint,
+        quiet_interval=0.01,
+        max_wait=0.001,
+    )
+
+    assert json.loads(spike.failure_json(failures[0])) == {
+        "error": "runner callback activity did not quiesce",
+        "method": "account/chatgptAuthTokens/refresh",
+        "release_gate": "fail",
+        "role": "runner",
+        "stage": "refresh_callback",
+    }
+    release.set()
+    await spike.asyncio.gather(*tuple(client._server_request_tasks), return_exceptions=True)
+
+
+class _RefreshTriggerRunner:
+    def __init__(
+        self,
+        *,
+        outcome=None,
+        callback_failure=None,
+        calls=None,
+        name="runner",
+        on_request=None,
+    ):
+        self.outcome = outcome
+        self.callback_failure = callback_failure
+        self.calls = calls if calls is not None else []
+        self.name = name
+        self.on_request = on_request
+
+    def callback_checkpoint(self):
+        self.calls.append((self.name, "checkpoint"))
+        return 7
+
+    async def request(self, method, params, *, stage):
+        self.calls.append((self.name, "request"))
+        assert method == "account/rateLimits/read"
+        assert params == {}
+        assert stage == "refresh_trigger"
+        if self.on_request is not None:
+            self.on_request()
+        if isinstance(self.outcome, BaseException):
+            raise self.outcome
+        return self.outcome
+
+    async def callback_failures_after_quiescence(self, checkpoint):
+        self.calls.append((self.name, "callback"))
+        assert checkpoint == 7
+        if self.callback_failure is None:
+            return ()
+        if isinstance(self.callback_failure, tuple):
+            return self.callback_failure
+        return (self.callback_failure,)
+
+
+def _refresh_coalescer(*, callback_count=1, refresh_calls=1, generation=1):
+    return SimpleNamespace(
+        callback_count=callback_count,
+        refresh_calls=refresh_calls,
+        generation=generation,
+    )
+
+
+@pytest.mark.asyncio
+async def test_refresh_trigger_prefers_sanitized_callback_root_failure():
+    downstream = spike.ProtocolError(
+        "app-server request returned an error",
+        method="account/rateLimits/read",
+        stage="refresh_trigger",
+        role="runner",
+    )
+    callback_root = spike.ProtocolError(
+        "app-server callback handler failed",
+        method="account/chatgptAuthTokens/refresh",
+        stage="refresh_callback",
+        role="runner",
+    )
+    runner = _RefreshTriggerRunner(outcome=downstream, callback_failure=callback_root)
+
+    with pytest.raises(spike.ProtocolError) as raised:
+        await spike._run_refresh_triggers([runner], coalescer=_refresh_coalescer())
+
+    assert raised.value is callback_root
+    assert json.loads(spike.failure_json(raised.value)) == {
+        "error": "app-server callback handler failed",
+        "method": "account/chatgptAuthTokens/refresh",
+        "release_gate": "fail",
+        "role": "runner",
+        "stage": "refresh_callback",
+    }
+
+
+@pytest.mark.asyncio
+async def test_refresh_trigger_with_successful_callback_keeps_success():
+    coalescer = _refresh_coalescer(callback_count=2, refresh_calls=1, generation=1)
+
+    def advance_generation():
+        coalescer.callback_count = 3
+        coalescer.refresh_calls = 2
+        coalescer.generation = 2
+
+    runner = _RefreshTriggerRunner(
+        outcome={"rateLimits": {}},
+        callback_failure=None,
+        on_request=advance_generation,
+    )
+
+    await spike._run_refresh_triggers(
+        [runner],
+        coalescer=coalescer,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("after", "message"),
+    [
+        ((2, 1, 1), "refresh trigger failed before any runner callback"),
+        ((3, 1, 1), "refresh trigger failed after only some runner callbacks"),
+        ((4, 2, 2), "refresh trigger failed after callback refresh advanced"),
+        ((5, 2, 2), "refresh trigger observed incomplete or anomalous callback state"),
+        ((4, 3, 2), "refresh trigger observed incomplete or anomalous callback state"),
+    ],
+)
+async def test_refresh_trigger_classifies_only_post_checkpoint_coalescer_transition(after, message):
+    downstream = spike.ProtocolError(
+        "app-server request returned an error",
+        method="account/rateLimits/read",
+        stage="refresh_trigger",
+        role="runner",
+    )
+    coalescer = _refresh_coalescer(callback_count=2, refresh_calls=1, generation=1)
+
+    def apply_transition():
+        coalescer.callback_count, coalescer.refresh_calls, coalescer.generation = after
+
+    runners = [
+        _RefreshTriggerRunner(
+            outcome=downstream,
+            callback_failure=None,
+            name="first",
+            on_request=apply_transition,
+        ),
+        _RefreshTriggerRunner(outcome={"safe": True}, callback_failure=None, name="second"),
+    ]
+
+    with pytest.raises(spike.ProtocolError) as raised:
+        await spike._run_refresh_triggers(
+            runners,
+            coalescer=coalescer,
+        )
+
+    assert json.loads(spike.failure_json(raised.value)) == {
+        "error": message,
+        "method": "account/rateLimits/read",
+        "release_gate": "fail",
+        "role": "runner",
+        "stage": "refresh_trigger",
+    }
+
+
+@pytest.mark.asyncio
+async def test_concurrent_refresh_trigger_failures_are_drained_before_stable_precedence():
+    calls = []
+    first_root = spike.ProtocolError(
+        "first sanitized callback root",
+        method="account/chatgptAuthTokens/refresh",
+        stage="refresh_callback",
+        role="runner",
+    )
+    second_root = spike.ProtocolError(
+        "second sanitized callback root",
+        method="account/chatgptAuthTokens/refresh",
+        stage="refresh_callback",
+        role="runner",
+    )
+    runners = [
+        _RefreshTriggerRunner(
+            outcome=spike.ProtocolError("first downstream"),
+            callback_failure=first_root,
+            calls=calls,
+            name="first",
+        ),
+        _RefreshTriggerRunner(
+            outcome=spike.ProtocolError("second downstream"),
+            callback_failure=second_root,
+            calls=calls,
+            name="second",
+        ),
+    ]
+
+    with pytest.raises(spike.ProtocolError) as raised:
+        await spike._run_refresh_triggers(
+            runners,
+            coalescer=_refresh_coalescer(callback_count=2),
+        )
+
+    assert raised.value is first_root
+    assert ("first", "request") in calls and ("second", "request") in calls
+    assert ("first", "callback") in calls and ("second", "callback") in calls
+
+
+@pytest.mark.asyncio
+async def test_refresh_trigger_preserves_callback_cancellation_identity():
+    cancellation = spike.asyncio.CancelledError("callback cancellation")
+    runner = _RefreshTriggerRunner(
+        outcome=spike.ProtocolError("downstream"),
+        callback_failure=cancellation,
+    )
+
+    with pytest.raises(spike.asyncio.CancelledError) as raised:
+        await spike._run_refresh_triggers([runner], coalescer=_refresh_coalescer())
+
+    assert raised.value is cancellation
+
+
+@pytest.mark.asyncio
+async def test_later_reply_cancellation_dominates_handler_error_in_same_callback_slice():
+    handler_failure = spike.ProtocolError("sanitized callback handler failure")
+    cancellation = spike.asyncio.CancelledError("error reply cancellation")
+    runner = _RefreshTriggerRunner(
+        outcome=spike.ProtocolError("downstream"),
+        callback_failure=(handler_failure, cancellation),
+    )
+
+    with pytest.raises(spike.asyncio.CancelledError) as raised:
+        await spike._run_refresh_triggers([runner], coalescer=_refresh_coalescer())
+
+    assert raised.value is cancellation
+
+
+@pytest.mark.asyncio
+async def test_second_runner_callback_cancellation_dominates_first_runner_protocol_error():
+    first_root = spike.ProtocolError("first callback root")
+    cancellation = spike.asyncio.CancelledError("second runner callback cancellation")
+    runners = [
+        _RefreshTriggerRunner(
+            outcome=spike.ProtocolError("first downstream"),
+            callback_failure=first_root,
+            name="first",
+        ),
+        _RefreshTriggerRunner(
+            outcome=spike.ProtocolError("second downstream"),
+            callback_failure=cancellation,
+            name="second",
+        ),
+    ]
+
+    with pytest.raises(spike.asyncio.CancelledError) as raised:
+        await spike._run_refresh_triggers(
+            runners,
+            coalescer=_refresh_coalescer(callback_count=2),
+        )
+
+    assert raised.value is cancellation
+
+
+@pytest.mark.asyncio
+async def test_downstream_cancellation_dominates_callback_protocol_error():
+    callback_root = spike.ProtocolError("sanitized callback root")
+    cancellation = spike.asyncio.CancelledError("downstream cancellation")
+    runner = _RefreshTriggerRunner(
+        outcome=cancellation,
+        callback_failure=callback_root,
+    )
+
+    with pytest.raises(spike.asyncio.CancelledError) as raised:
+        await spike._run_refresh_triggers([runner], coalescer=_refresh_coalescer())
+
+    assert raised.value is cancellation
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    [
+        BrokenPipeError("broken-pipe notification detail"),
+        ConnectionResetError("connection-reset notification detail"),
+        RuntimeError("unexpected notification detail"),
+    ],
+)
+async def test_notification_write_failure_has_sanitized_context(monkeypatch, failure):
+    client = spike.JsonRpcProcess(["codex"], {}, role="runner")
+
+    async def fail_write(_frame):
+        raise failure
+
+    monkeypatch.setattr(client, "_write", fail_write)
+
+    with pytest.raises(spike.ProtocolError) as raised:
+        await client.notify("initialized", {}, stage="initialize")
+
+    output = spike.failure_json(raised.value)
+    assert json.loads(output) == {
+        "error": "app-server notification transport failed",
+        "release_gate": "fail",
+        "role": "runner",
+        "stage": "initialize",
+    }
+    assert str(failure) not in output
+
+
+@pytest.mark.asyncio
+async def test_notification_write_cancellation_preserves_identity(monkeypatch):
+    cancellation = spike.asyncio.CancelledError("notification cancellation detail")
+    client = spike.JsonRpcProcess(["codex"], {}, role="runner")
+
+    async def cancel_write(_frame):
+        raise cancellation
+
+    monkeypatch.setattr(client, "_write", cancel_write)
+
+    with pytest.raises(spike.asyncio.CancelledError) as raised:
+        await client.notify("initialized", {}, stage="initialize")
+
+    assert raised.value is cancellation
 
 
 @pytest.mark.parametrize(
@@ -320,20 +1191,23 @@ def test_rate_limit_validation_accepts_bound_quota_window():
 @pytest.mark.asyncio
 async def test_read_only_verification_rejects_empty_success_responses():
     class EmptyRunner:
-        async def request(self, _method, _params):
+        async def request(self, _method, _params, *, stage):
+            assert stage == "initial_read_only"
             return {}
 
     with pytest.raises(spike.ProtocolError):
         await spike._verify_read_only(
             EmptyRunner(),
             expected_account_id="acct-secret-workspace-id",
+            stage="initial_read_only",
         )
 
 
 @pytest.mark.asyncio
 async def test_read_only_verification_validates_all_three_authenticated_responses():
     class ValidRunner:
-        async def request(self, method, _params):
+        async def request(self, method, _params, *, stage):
+            assert stage == "initial_read_only"
             return {
                 "account/read": _valid_account_response(),
                 "model/list": _valid_model_response(),
@@ -343,6 +1217,7 @@ async def test_read_only_verification_validates_all_three_authenticated_response
     await spike._verify_read_only(
         ValidRunner(),
         expected_account_id="acct-secret-workspace-id",
+        stage="initial_read_only",
     )
 
 
@@ -350,9 +1225,10 @@ class _FakeAuthority:
     def __init__(self):
         self.calls = 0
 
-    async def request(self, method, params):
+    async def request(self, method, params, *, stage):
         assert method == "account/read"
         assert params == {"refreshToken": True}
+        assert stage == "authority_refresh"
         self.calls += 1
         return _valid_account_response()
 
@@ -516,7 +1392,7 @@ async def test_runner_home_is_registered_before_remote_creation_can_be_cancelled
 
     monkeypatch.setattr(spike, "_run_command", successful_cleanup)
     assert await spike.cleanup_runner(runtimes[0]) is True
-    assert str(runtimes[0].home) in cleanup_commands[0]
+    assert str(runtimes[0].home) in shlex.split(cleanup_commands[0][-1])
 
 
 @pytest.mark.asyncio
