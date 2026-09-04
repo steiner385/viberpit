@@ -4,6 +4,7 @@ import reactHooks from 'eslint-plugin-react-hooks'
 import reactRefresh from 'eslint-plugin-react-refresh'
 import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
+import noRawPalette from './eslint-rules/no-raw-palette.js'
 
 export default defineConfig([
   globalIgnores(['dist']),
@@ -18,5 +19,13 @@ export default defineConfig([
     languageOptions: {
       globals: globals.browser,
     },
+  },
+  {
+    // Token discipline is enforced folder-by-folder: the new UI system and
+    // shell first, features/ joined in PR 4 (task 1), the whole tree in PR 11.
+    files: ['src/ui/**/*.{ts,tsx}', 'src/shell/**/*.{ts,tsx}', 'src/features/**/*.{ts,tsx}'],
+    ignores: ['src/features/pipeline/charts/**'],
+    plugins: { ccswitch: { rules: { 'no-raw-palette': noRawPalette } } },
+    rules: { 'ccswitch/no-raw-palette': 'error' },
   },
 ])

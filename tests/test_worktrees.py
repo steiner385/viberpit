@@ -144,6 +144,17 @@ class WorktreeTests(unittest.TestCase):
             worktrees.create_worktree(str(self.repo), "-evil", "abc12345-0000", str(self.root))
         self.assertIn("invalid branch name", str(ctx.exception))
 
+    def test_nonexistent_branch_raises_unresolvable(self) -> None:
+        """A branch that resolves to no ref at all (deleted on merge between
+        enqueue and spawn — issue #836) raises the distinct
+        BranchRefUnresolvableError so the orchestrator can treat the race as
+        benign. Still a WorktreeError subclass for existing catch-sites."""
+        with self.assertRaises(worktrees.BranchRefUnresolvableError) as ctx:
+            worktrees.create_worktree(
+                str(self.repo), "gone-on-merge", "abc12345-0000", str(self.root))
+        self.assertIsInstance(ctx.exception, worktrees.WorktreeError)
+        self.assertIn("invalid reference", str(ctx.exception))
+
 
 class WorktreeLockingTests(unittest.TestCase):
     """Regression tests for #177 — a sibling session's cleanup must never reap a
@@ -500,3 +511,63 @@ class DiskHeadroomTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WorktreeFetchCredentialsTests(unittest.TestCase):
+    """The worktree base fetch must use the same App credential as ensure_clone.
+
+    Same anti-pattern as gitrepos._run_git before issue #887: a NETWORK git call
+    through a bare subprocess.run, silently unauthenticated for a private repo.
+    Its own docstring used to accept that ("private repos with no cached
+    credentials") — that is the bug, not a fact of life.
+    """
+
+    def setUp(self) -> None:
+        from ccswitch import gitrepos
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.repo = Path(self._tmp.name) / "clone"
+        subprocess.run(["git", "init", str(self.repo)], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "remote", "add", "origin",
+             "https://github.com/cairnea/KinDash.git"],
+            check=True, capture_output=True)
+        self.addCleanup(gitrepos.set_token_provider, None)
+
+    def test_fetch_carries_the_app_credential_env(self) -> None:
+        from unittest import mock
+        from ccswitch import gitrepos
+        gitrepos.set_token_provider(lambda owner: "ghs_wt")
+        seen: dict = {}
+
+        real = subprocess.run
+
+        def spy(args, **kw):
+            if "fetch" in args:
+                seen.update(kw.get("env") or {})
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            return real(args, **kw)
+
+        with mock.patch.object(worktrees.subprocess, "run", spy):
+            worktrees._try_fetch_origin(str(self.repo))
+
+        self.assertEqual(seen.get("CCSWITCH_GIT_TOKEN"), "ghs_wt")
+
+    def test_fetch_without_a_provider_inherits_ambient_env(self) -> None:
+        from unittest import mock
+        from ccswitch import gitrepos
+        gitrepos.set_token_provider(None)
+        seen: list = []
+
+        real = subprocess.run
+
+        def spy(args, **kw):
+            if "fetch" in args:
+                seen.append(kw.get("env"))
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            return real(args, **kw)
+
+        with mock.patch.object(worktrees.subprocess, "run", spy):
+            worktrees._try_fetch_origin(str(self.repo))
+
+        self.assertEqual(seen, [None])

@@ -34,6 +34,38 @@ def to_sdk_permission_mode(mode: str) -> str:
     return mode if mode in _SDK_PASSTHROUGH_MODES else "default"
 
 
+async def resolve_permission_mode(db, *, explicit: str | None = None,
+                                  account: str | None = None) -> str:
+    """The session mode a new session should start in. Single source of truth
+    for the precedence chain, shared by every path that materialises a session
+    (``POST /api/sessions`` and ``SessionOrchestrator.adopt_session``):
+
+        explicit request value
+        → the pinned account's own ``defaultPermissionMode`` (ledger)
+        → the global Settings-page default (``AppSettings.default_permission_mode``)
+        → ``"interactive"``
+
+    The global step is what the DispatchBar quick-create bar and adopted
+    sessions relied on and never got: each hardcoded ``"interactive"`` after the
+    account step, so a "Full auto" operator still saw a permission prompt on
+    every tool call. ``db`` is an open async session; the settings row is read,
+    never created.
+    """
+    if explicit:
+        return explicit
+    if account:
+        from ccswitch import ledger as _ledger
+        with _ledger.locked_ledger() as led:
+            acct_mode = _ledger.get_account_defaults(led, account).get("defaultPermissionMode")
+        if acct_mode:
+            return acct_mode
+    from sqlalchemy import select as _select
+    from server.db.models import AppSettings
+    row = (await db.execute(
+        _select(AppSettings).where(AppSettings.id == "singleton"))).scalar_one_or_none()
+    return (row.default_permission_mode if row is not None else None) or "interactive"
+
+
 def _is_account_memory_path(file_path) -> bool:
     """True if file_path targets a managed-account auto-memory dir.
 
@@ -159,6 +191,22 @@ class PermissionRegistry:
     def pending(self, session_id) -> list[dict]:
         return [{"permId": pid, "tool": r["tool"], "input": r["input"], "turn_id": r["turn_id"]}
                 for pid, r in self._pending.items() if r["session_id"] == session_id]
+
+    def rethread_identity(self, session_id, old, new) -> int:
+        """Hand *session_id*'s pending prompts registered under *old* to *new*.
+
+        Same contract as QuestionRegistry.rethread_identity (see its docstring for
+        the failure it closes): ``request`` snapshots the driver's identity and
+        ``resolve`` gates on it, so a prompt raised while the driver still carried
+        the "system" sentinel must follow the driver when a real user attaches.
+        Returns the number moved.
+        """
+        moved = 0
+        for rec in self._pending.values():
+            if rec["session_id"] == session_id and rec["identity"] == old:
+                rec["identity"] = new
+                moved += 1
+        return moved
 
     def deny_all(self, session_id):
         for pid in [p for p, r in self._pending.items() if r["session_id"] == session_id]:

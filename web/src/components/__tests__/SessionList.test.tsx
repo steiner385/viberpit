@@ -4,37 +4,38 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { SessionList } from '../SessionList'
 import type { Session, Account } from '@/api/types'
+import { account, session } from '@/test/factories'
 
 const SESSIONS: Session[] = [
-  {
+  session({
     id: 'sess-1',
     name: 'Work session',
     accountName: 'alice',
     status: 'in_progress',
     createdAt: '2026-06-19T10:00:00Z',
     updatedAt: '2026-06-19T10:00:00Z',
-  },
-  {
+  }),
+  session({
     id: 'sess-2',
     name: 'Research',
     accountName: 'bob',
     status: 'idle',
     createdAt: '2026-06-19T11:00:00Z',
     updatedAt: '2026-06-19T11:00:00Z',
-  },
+  }),
 ]
 
 const ACCOUNTS: Account[] = [
-  {
+  account({
     name: 'alice',
     status: 'ok',
     usage: { session: { pct: 30, resetsAt: null }, weekly: { pct: 50, resetsAt: null } },
-  },
-  {
+  }),
+  account({
     name: 'bob',
     status: 'limited',
     usage: { session: { pct: 95, resetsAt: null }, weekly: { pct: 80, resetsAt: null } },
-  },
+  }),
 ]
 
 function wrapper({ children }: { children: React.ReactNode }) {
@@ -59,6 +60,7 @@ describe('SessionList', () => {
   const onRename = vi.fn()
   const onClose = vi.fn()
   const onDelete = vi.fn()
+  const onQuickResume = vi.fn()
 
   beforeEach(() => {
     vi.clearAllMocks()
@@ -74,6 +76,7 @@ describe('SessionList', () => {
         onRename={onRename}
         onClose={onClose}
         onDelete={onDelete}
+        onQuickResume={onQuickResume}
       />,
       { wrapper },
     )
@@ -94,6 +97,7 @@ describe('SessionList', () => {
         onRename={onRename}
         onClose={onClose}
         onDelete={onDelete}
+        onQuickResume={onQuickResume}
       />,
       { wrapper },
     )
@@ -113,6 +117,7 @@ describe('SessionList', () => {
         onRename={onRename}
         onClose={onClose}
         onDelete={onDelete}
+        onQuickResume={onQuickResume}
       />,
       { wrapper },
     )
@@ -132,6 +137,7 @@ describe('SessionList', () => {
         onRename={onRename}
         onClose={onClose}
         onDelete={onDelete}
+        onQuickResume={onQuickResume}
       />,
       { wrapper },
     )
@@ -153,6 +159,7 @@ describe('SessionList', () => {
         onRename={onRename}
         onClose={onClose}
         onDelete={onDelete}
+        onQuickResume={onQuickResume}
       />,
       { wrapper },
     )
@@ -162,7 +169,17 @@ describe('SessionList', () => {
     expect(other).toHaveAttribute('data-selected', 'false')
   })
 
-  it('session container has aria-activedescendant when a session is selected', () => {
+  // Successor to 'session container has aria-activedescendant when a session is
+  // selected'. That assertion had two halves and both are still pinned, just in
+  // their correct homes:
+  //   · the container is the DispatchBar's aria-controls target → asserted here;
+  //   · the active row is announced as `row-<id>` → asserted on the DispatchBar
+  //     textarea, where the attribute is valid, by KeyboardSessions.test.tsx
+  //     ('dispatch textarea has aria-activedescendant pointing at the selected
+  //     row') and DesktopShell.test.tsx.
+  // The copy on this div was invalid ARIA (aria-activedescendant on a role-less
+  // element) and is now asserted absent so it cannot come back.
+  it('session container is the aria-controls target and carries no aria-activedescendant of its own', () => {
     render(
       <SessionList
         sessions={SESSIONS}
@@ -173,11 +190,15 @@ describe('SessionList', () => {
         onRename={onRename}
         onClose={onClose}
         onDelete={onDelete}
+        onQuickResume={onQuickResume}
       />,
       { wrapper },
     )
     const container = document.getElementById('session-listbox')!
-    expect(container).toHaveAttribute('aria-activedescendant', 'row-sess-1')
+    expect(container).toBeTruthy()
+    expect(container.hasAttribute('aria-activedescendant')).toBe(false)
+    // The selected row is still identifiable by the id the textarea points at.
+    expect(document.getElementById('row-sess-1')).toBeTruthy()
   })
 
   it('shows EmptyState when sessions list is empty', () => {
@@ -190,6 +211,7 @@ describe('SessionList', () => {
         onRename={onRename}
         onClose={onClose}
         onDelete={onDelete}
+        onQuickResume={onQuickResume}
       />,
       { wrapper },
     )
@@ -209,6 +231,7 @@ describe('SessionList', () => {
         onRename={onRename}
         onClose={onClose}
         onDelete={onDelete}
+        onQuickResume={onQuickResume}
       />,
       { wrapper },
     )
@@ -217,26 +240,7 @@ describe('SessionList', () => {
     expect(screen.getByLabelText('Loading sessions')).toBeInTheDocument()
   })
 
-  it('shows rename, archive, and delete buttons on each session', () => {
-    render(
-      <SessionList
-        sessions={[SESSIONS[0]]}
-        accounts={ACCOUNTS}
-        onNew={onNew}
-        onOpen={onOpen}
-        onRename={onRename}
-        onClose={onClose}
-        onDelete={onDelete}
-      />,
-      { wrapper },
-    )
-
-    expect(screen.getByRole('button', { name: /rename session work session/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /archive session work session/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /delete session work session/i })).toBeInTheDocument()
-  })
-
-  it('calls onRename when the rename button is clicked', async () => {
+  it('offers rename, archive, and delete in each session’s ⋯ menu', async () => {
     const user = userEvent.setup()
     render(
       <SessionList
@@ -247,15 +251,39 @@ describe('SessionList', () => {
         onRename={onRename}
         onClose={onClose}
         onDelete={onDelete}
+        onQuickResume={onQuickResume}
       />,
       { wrapper },
     )
 
-    await user.click(screen.getByRole('button', { name: /rename session work session/i }))
+    await user.click(screen.getByRole('button', { name: /more actions for session work session/i }))
+    expect(screen.getByRole('menuitem', { name: /rename/i })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: /archive/i })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: /delete/i })).toBeInTheDocument()
+  })
+
+  it('calls onRename when the rename menu item is clicked', async () => {
+    const user = userEvent.setup()
+    render(
+      <SessionList
+        sessions={[SESSIONS[0]]}
+        accounts={ACCOUNTS}
+        onNew={onNew}
+        onOpen={onOpen}
+        onRename={onRename}
+        onClose={onClose}
+        onDelete={onDelete}
+        onQuickResume={onQuickResume}
+      />,
+      { wrapper },
+    )
+
+    await user.click(screen.getByRole('button', { name: /more actions for session work session/i }))
+    await user.click(screen.getByRole('menuitem', { name: /rename/i }))
     expect(onRename).toHaveBeenCalledWith('sess-1')
   })
 
-  it('calls onClose when the archive button is clicked', async () => {
+  it('calls onClose when the archive menu item is clicked', async () => {
     const user = userEvent.setup()
     render(
       <SessionList
@@ -266,15 +294,17 @@ describe('SessionList', () => {
         onRename={onRename}
         onClose={onClose}
         onDelete={onDelete}
+        onQuickResume={onQuickResume}
       />,
       { wrapper },
     )
 
-    await user.click(screen.getByRole('button', { name: /archive session work session/i }))
+    await user.click(screen.getByRole('button', { name: /more actions for session work session/i }))
+    await user.click(screen.getByRole('menuitem', { name: /archive/i }))
     expect(onClose).toHaveBeenCalledWith('sess-1')
   })
 
-  it('calls onDelete when the delete button is clicked', async () => {
+  it('calls onDelete when the delete menu item is clicked', async () => {
     const user = userEvent.setup()
     render(
       <SessionList
@@ -285,11 +315,13 @@ describe('SessionList', () => {
         onRename={onRename}
         onClose={onClose}
         onDelete={onDelete}
+        onQuickResume={onQuickResume}
       />,
       { wrapper },
     )
 
-    await user.click(screen.getByRole('button', { name: /delete session work session/i }))
+    await user.click(screen.getByRole('button', { name: /more actions for session work session/i }))
+    await user.click(screen.getByRole('menuitem', { name: /delete/i }))
     expect(onDelete).toHaveBeenCalledWith('sess-1')
   })
 
@@ -308,6 +340,7 @@ describe('SessionList', () => {
         onRename={() => {}}
         onClose={() => {}}
         onDelete={() => {}}
+        onQuickResume={() => {}}
       />,
       { wrapper },
     )
@@ -357,6 +390,7 @@ describe('SessionList', () => {
         onRename={() => {}}
         onClose={() => {}}
         onDelete={() => {}}
+        onQuickResume={() => {}}
       />,
       { wrapper },
     )
@@ -399,6 +433,7 @@ describe('SessionList — repo label', () => {
   const onRename = vi.fn()
   const onClose = vi.fn()
   const onDelete = vi.fn()
+  const onQuickResume = vi.fn()
 
   beforeEach(() => {
     vi.clearAllMocks()
@@ -418,6 +453,7 @@ describe('SessionList — repo label', () => {
         onRename={onRename}
         onClose={onClose}
         onDelete={onDelete}
+        onQuickResume={onQuickResume}
       />,
       { wrapper },
     )
@@ -433,6 +469,7 @@ describe('SessionList — pure renderer (no internal sort)', () => {
   const onRename = vi.fn()
   const onClose = vi.fn()
   const onDelete = vi.fn()
+  const onQuickResume = vi.fn()
 
   beforeEach(() => {
     vi.clearAllMocks()
@@ -442,30 +479,30 @@ describe('SessionList — pure renderer (no internal sort)', () => {
     // Pass sessions in a specific order: busy → your-turn → needs-you
     // SessionList should render them exactly as given, not re-sort.
     const sessions: Session[] = [
-      {
+      session({
         id: 'a',
         name: 'A busy',
         accountName: 'alice',
         status: 'in_progress',
         createdAt: '2026-06-19T10:00:00Z',
         updatedAt: '2026-06-19T10:00:00Z',
-      },
-      {
+      }),
+      session({
         id: 'b',
         name: 'B done',
         accountName: 'alice',
         status: 'done',
         createdAt: '2026-06-19T10:00:00Z',
         updatedAt: '2026-06-19T10:00:00Z',
-      },
-      {
+      }),
+      session({
         id: 'c',
         name: 'C blocked',
         accountName: 'alice',
         status: 'waiting_input',
         createdAt: '2026-06-19T10:00:00Z',
         updatedAt: '2026-06-19T10:00:00Z',
-      },
+      }),
     ]
     render(
       <SessionList
@@ -476,6 +513,7 @@ describe('SessionList — pure renderer (no internal sort)', () => {
         onRename={onRename}
         onClose={onClose}
         onDelete={onDelete}
+        onQuickResume={onQuickResume}
       />,
       { wrapper },
     )
@@ -492,16 +530,15 @@ describe('SessionList — pure renderer (no internal sort)', () => {
 })
 
 describe('SessionList — group header keyboard nav', () => {
-  function mkSession(id: string): Session {
-    return {
+  const mkSession = (id: string): Session =>
+    session({
       id,
       name: `Session ${id}`,
       accountName: 'alice',
       status: 'idle',
       createdAt: '2026-06-24T10:00:00Z',
       updatedAt: '2026-06-24T10:00:00Z',
-    }
-  }
+    })
 
   it('renders a highlighted group header and routes its keys', async () => {
     const u = userEvent.setup()
@@ -536,16 +573,15 @@ describe('SessionList — group header keyboard nav', () => {
 })
 
 describe('SessionList — group panel ARIA disclosure', () => {
-  function mkSession(id: string): Session {
-    return {
+  const mkSession = (id: string): Session =>
+    session({
       id,
       name: `Session ${id}`,
       accountName: 'alice',
       status: 'idle',
       createdAt: '2026-06-24T10:00:00Z',
       updatedAt: '2026-06-24T10:00:00Z',
-    }
-  }
+    })
 
   it('group panel has role=group and aria-labelledby pointing at the header when group.label is non-null', () => {
     const groups = [
@@ -604,11 +640,17 @@ describe('SessionList — no-matches state', () => {
         onRename={() => {}}
         onClose={() => {}}
         onDelete={() => {}}
+        onQuickResume={() => {}}
       />,
       { wrapper },
     )
-    expect(screen.getByText(/no sessions match/i)).toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: /clear search/i }))
+    // R9 successor to the `/clear search/i` assertion this replaces (Task 10).
+    // Both halves are matched EXACTLY rather than by the old loose regexes: "No
+    // sessions match your search." and "Clear search" are both prefixes of the
+    // new strings, so /no sessions match/i and /clear search/i would have stayed
+    // green whether or not the filter-aware copy ever landed.
+    expect(screen.getByText('No sessions match your search or filters.')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Clear search and filters' }))
     expect(onClearSearch).toHaveBeenCalled()
   })
 
@@ -622,6 +664,7 @@ describe('SessionList — no-matches state', () => {
         onRename={() => {}}
         onClose={() => {}}
         onDelete={() => {}}
+        onQuickResume={() => {}}
       />,
       { wrapper },
     )
@@ -638,37 +681,39 @@ describe('SessionCard — null usage guard (needs-reauth account)', () => {
   const onRename = vi.fn()
   const onClose = vi.fn()
   const onDelete = vi.fn()
+  const onQuickResume = vi.fn()
 
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
   it('renders without throwing when account.usage is null', () => {
-    const nullUsageAccount: Account = {
+    const nullUsageAccount: Account = account({
       name: 'kindash',
       status: 'needs-relogin',
       usage: null,
       nickname: null,
-    }
-    const session: Session = {
+    })
+    const nullUsageSession: Session = session({
       id: 'sess-nr',
       name: 'Needs Reauth Session',
       accountName: 'kindash',
       status: 'idle',
       createdAt: '2026-06-20T00:00:00Z',
       updatedAt: '2026-06-20T00:00:00Z',
-    }
+    })
 
     expect(() =>
       render(
         <SessionList
-          sessions={[session]}
+          sessions={[nullUsageSession]}
           accounts={[nullUsageAccount]}
           onNew={onNew}
           onOpen={onOpen}
           onRename={onRename}
           onClose={onClose}
           onDelete={onDelete}
+          onQuickResume={onQuickResume}
         />,
         { wrapper },
       ),
@@ -676,30 +721,31 @@ describe('SessionCard — null usage guard (needs-reauth account)', () => {
   })
 
   it('does not render UsageBadge text when account.usage is null', () => {
-    const nullUsageAccount: Account = {
+    const nullUsageAccount: Account = account({
       name: 'kindash',
       status: 'needs-relogin',
       usage: null,
       nickname: null,
-    }
-    const session: Session = {
+    })
+    const nullUsageSession: Session = session({
       id: 'sess-nr',
       name: 'Needs Reauth Session',
       accountName: 'kindash',
       status: 'idle',
       createdAt: '2026-06-20T00:00:00Z',
       updatedAt: '2026-06-20T00:00:00Z',
-    }
+    })
 
     render(
       <SessionList
-        sessions={[session]}
+        sessions={[nullUsageSession]}
         accounts={[nullUsageAccount]}
         onNew={onNew}
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
         onDelete={onDelete}
+        onQuickResume={onQuickResume}
       />,
       { wrapper },
     )
@@ -710,5 +756,70 @@ describe('SessionCard — null usage guard (needs-reauth account)', () => {
     expect(screen.queryByLabelText(/weekly usage:/i)).not.toBeInTheDocument()
     // Session name still renders
     expect(screen.getByText('Needs Reauth Session')).toBeInTheDocument()
+  })
+})
+
+describe('SessionList — Resume interrupted button', () => {
+  const sharedProps = {
+    accounts: ACCOUNTS,
+    onNew: vi.fn(),
+    onOpen: vi.fn(),
+    onRename: vi.fn(),
+    onClose: vi.fn(),
+    onDelete: vi.fn(),
+    onQuickResume: vi.fn(),
+  }
+
+  beforeEach(() => vi.clearAllMocks())
+
+  it('renders "Resume interrupted (2)" when two sessions have resumable:true', () => {
+    const sessions: Session[] = [
+      { ...SESSIONS[0], resumable: true },
+      { ...SESSIONS[1], resumable: true },
+      session({
+        id: 'sess-3',
+        name: 'Not resumable',
+        accountName: 'alice',
+        status: 'idle',
+        createdAt: '2026-06-19T12:00:00Z',
+        updatedAt: '2026-06-19T12:00:00Z',
+        resumable: false,
+      }),
+    ]
+    render(<SessionList {...sharedProps} sessions={sessions} />, { wrapper })
+    expect(screen.getByRole('button', { name: /resume interrupted \(2\)/i })).toBeInTheDocument()
+  })
+
+  it('does not render the Resume interrupted button when no sessions are resumable', () => {
+    const sessions: Session[] = [
+      { ...SESSIONS[0], resumable: false },
+      { ...SESSIONS[1] },
+    ]
+    render(<SessionList {...sharedProps} sessions={sessions} />, { wrapper })
+    expect(screen.queryByRole('button', { name: /resume interrupted/i })).not.toBeInTheDocument()
+  })
+})
+
+describe('SessionList — Rotate stalled button', () => {
+  const sharedProps = {
+    accounts: ACCOUNTS, onNew: vi.fn(), onOpen: vi.fn(), onRename: vi.fn(),
+    onClose: vi.fn(), onDelete: vi.fn(), onQuickResume: vi.fn(),
+  }
+  beforeEach(() => vi.clearAllMocks())
+
+  it('renders "Rotate stalled (2)" when two sessions are usageStalled', () => {
+    const sessions: Session[] = [
+      { ...SESSIONS[0], status: 'needs_attention', usageStalled: true },
+      { ...SESSIONS[1], status: 'limited', usageStalled: true },
+      session({ id: 'sess-3', name: 'Healthy', accountName: 'alice', status: 'idle',
+                createdAt: '2026-06-19T12:00:00Z', updatedAt: '2026-06-19T12:00:00Z' }),
+    ]
+    render(<SessionList {...sharedProps} sessions={sessions} />, { wrapper })
+    expect(screen.getByRole('button', { name: /rotate stalled \(2\)/i })).toBeInTheDocument()
+  })
+
+  it('does not render the button when nothing is stalled', () => {
+    render(<SessionList {...sharedProps} sessions={SESSIONS} />, { wrapper })
+    expect(screen.queryByRole('button', { name: /rotate stalled/i })).not.toBeInTheDocument()
   })
 })

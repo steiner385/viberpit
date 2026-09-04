@@ -64,10 +64,11 @@ async function distanceFromBottom(page: Page) {
 }
 
 test.describe('Transcript virtualization (#37)', () => {
-  // The routed, full-screen ReviewView only renders on narrow viewports; wide
-  // screens (≥1024px) get the master-detail DesktopShell, which doesn't use the
-  // /review/:id route. A mobile viewport is also the environment this issue
-  // targets (transcript memory/scroll perf on the mobile-accessible UI).
+  // `/review/:id` is a route at every width now — `DesktopShell`, which navigated
+  // with `useState` and never matched it, is gone (Task 17). The phone viewport
+  // stays because it is the environment this issue targets (transcript
+  // memory/scroll perf on the mobile-accessible UI), not because it selects a
+  // different component.
   test.use({ viewport: { width: 390, height: 844 } })
 
   test('keeps the DOM bounded and pins to the bottom on a long transcript', async ({ page }) => {

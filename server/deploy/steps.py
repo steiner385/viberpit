@@ -14,10 +14,34 @@ log = logging.getLogger(__name__)
 Run = Callable[..., subprocess.CompletedProcess]
 _OK_CONCLUSIONS = {"success", "neutral", "skipped"}
 
+# The deploy controller only ever targets its own repo, whose owner gh resolves from
+# the git remote when it expands the ``{owner}/{repo}`` path template. Naming it here
+# lets the gate mint an App installation token for that owner (issue #912/#913) instead
+# of using whatever ambient credential the environment happens to hold.
+_DEPLOY_OWNER = "steiner385"
+
+
+def _gh_api_via_app(args: list[str], *, input: str | None = None) -> str:
+    """Run ``gh <args>`` as the deploy repo's App installation, returning stdout.
+
+    Issue #913: the previous ``subprocess.run(["gh", ...])`` used the raw process
+    environment, so a stale ambient ``GITHUB_TOKEN`` was honoured and the gate broke
+    the moment it expired. ``gitrepos._run_gh`` strips ambient tokens, pins the gh
+    config dir, and sets the App token when one is available (ambient/pinned fallback
+    otherwise). Non-zero still raises ``CalledProcessError`` — the contract
+    ``_gh_err_reason`` and the ``ci_verdict``/``publish_deployment`` callers rely on
+    (they read ``.stderr`` and treat any raise as unavailable)."""
+    from ccswitch import gitrepos
+
+    r = gitrepos._run_gh(args, token=gitrepos.app_token_for_owner(_DEPLOY_OWNER), input=input)
+    if r.returncode != 0:
+        raise subprocess.CalledProcessError(
+            r.returncode, r.args, output=r.stdout, stderr=r.stderr)
+    return r.stdout
+
 
 def _default_gh_api(path: str) -> str:
-    r = subprocess.run(["gh", "api", path], check=True, capture_output=True, text=True)
-    return r.stdout
+    return _gh_api_via_app(["api", path])
 
 
 def _required_contexts(gh_api: Callable[[str], str], branch: str = "master") -> set[str]:
@@ -76,8 +100,9 @@ _EDGE_ONLY = re.compile(
 )
 
 
-# Code the deploy controller itself executes. restart_units restarts the edge and
-# the daemon, but the controller is the process RUNNING the deploy — it cannot
+# Code the deploy controller itself executes. restart_edge (and, for runners,
+# server.deploy.runners) restart the edge and the daemon, but the controller is
+# the process RUNNING the deploy — it cannot
 # restart itself inline without killing that deploy, so it never did. The result
 # was a controller executing whatever code it started with: on 2026-08-21 #719's
 # remote-daemon update landed on disk at 18:18 and the controller kept running its
@@ -144,13 +169,14 @@ def guard_working_tree(repo: str, run: Run = subprocess.run) -> bool:
     return dirty
 
 
-def _clear_incoming_untracked_collisions(repo: str, ref: str, run: Run = subprocess.run) -> list[str]:
-    """Remove untracked working-tree files that collide with paths tracked in origin/<ref>.
+def _clear_incoming_untracked_collisions(repo: str, rev: str, run: Run = subprocess.run) -> list[str]:
+    """Remove untracked working-tree files that collide with paths tracked in *rev*
+    (the fast-forward's merge target: ``origin/<ref>`` or an explicit sha).
 
     A file created out-of-band on the deploy host (untracked) but later committed upstream
     blocks `git merge --ff-only` ("untracked working tree files would be overwritten by
-    merge"). Such a file is safe to drop: origin/<ref> carries the canonical tracked version
-    that the merge is about to install. Only paths that exist in origin/<ref> are removed —
+    merge"). Such a file is safe to drop: *rev* carries the canonical tracked version
+    that the merge is about to install. Only paths that exist in *rev* are removed —
     unrelated untracked state (SQLite DB, .venv, web/dist) is left untouched.
 
     Returns the list of removed paths.
@@ -159,8 +185,8 @@ def _clear_incoming_untracked_collisions(repo: str, ref: str, run: Run = subproc
                  capture_output=True, text=True)
     removed: list[str] = []
     for path in (p for p in others.stdout.split("\0") if p):
-        # Only delete if the path is tracked in the incoming ref (i.e. will be replaced).
-        present = run(["git", "-C", repo, "cat-file", "-e", f"origin/{ref}:{path}"],
+        # Only delete if the path is tracked in the incoming rev (i.e. will be replaced).
+        present = run(["git", "-C", repo, "cat-file", "-e", f"{rev}:{path}"],
                       capture_output=True, text=True)
         if present.returncode == 0:
             run(["git", "-C", repo, "clean", "-f", "-q", "--", path],
@@ -170,31 +196,40 @@ def _clear_incoming_untracked_collisions(repo: str, ref: str, run: Run = subproc
 
 
 def fast_forward(repo: str, ref: str = "master", run: Run = subprocess.run) -> None:
-    """Fast-forward the local branch to origin/<ref>.
+    """Fast-forward the local branch to origin/<ref>, or to an explicit commit sha.
+
+    *ref* may be a branch name (the default deploy: fast-forward to ``origin/<ref>``)
+    or a hex commit sha (green-frontier deploy: fast-forward to exactly that commit,
+    stopping short of a red ``origin/master`` tip — ``git merge --ff-only <sha>`` works
+    the same). A sha cannot be fetched by name, so the fetch still targets ``master``.
 
     Deliberately fetches and then fast-forwards to the *tracking ref* (origin/<ref>)
     rather than using `git pull` (which merges the shared FETCH_HEAD). The deploy
     controller and the 30s DetectLoop both fetch this same worktree's FETCH_HEAD;
     two concurrent `git fetch origin <ref>` duplicate the for-merge line, so a
     `git pull --ff-only` intermittently dies with "Cannot fast-forward to multiple
-    branches". origin/<ref> is a single unambiguous ref, immune to that race.
+    branches". origin/<ref> is a single unambiguous ref, immune to that race — and an
+    explicit sha is immune by construction.
 
-    If an untracked file collides with a path newly tracked in origin/<ref>, the
+    If an untracked file collides with a path newly tracked in the merge target, the
     ff-merge aborts ("untracked working tree files would be overwritten by merge");
     that file is removed and the merge retried once (#320: a health-check script was
     placed out-of-band before its commit landed, wedging every deploy permanently).
 
     Raises DeployError("update", ...) if the fetch or the fast-forward fails.
     """
-    f = run(["git", "-C", repo, "fetch", "--quiet", "origin", ref],
+    is_sha = bool(_SHA_RE.match(ref))
+    fetch_ref = "master" if is_sha else ref
+    target_rev = ref if is_sha else f"origin/{ref}"
+    f = run(["git", "-C", repo, "fetch", "--quiet", "origin", fetch_ref],
             capture_output=True, text=True)
     if f.returncode != 0:
         raise DeployError("update", f"fetch failed: {f.stderr.strip()}")
-    m = run(["git", "-C", repo, "merge", "--ff-only", f"origin/{ref}"],
+    m = run(["git", "-C", repo, "merge", "--ff-only", target_rev],
             capture_output=True, text=True)
     if m.returncode != 0 and "untracked working tree files would be overwritten" in m.stderr:
-        if _clear_incoming_untracked_collisions(repo, ref, run):
-            m = run(["git", "-C", repo, "merge", "--ff-only", f"origin/{ref}"],
+        if _clear_incoming_untracked_collisions(repo, target_rev, run):
+            m = run(["git", "-C", repo, "merge", "--ff-only", target_rev],
                     capture_output=True, text=True)
     if m.returncode != 0:
         raise DeployError("update", f"fast-forward failed: {m.stderr.strip()}")
@@ -206,11 +241,18 @@ def changed_paths(repo: str, a: str, b: str, paths: list[str], run: Run = subpro
     return [p for p in r.stdout.splitlines() if p.strip()]
 
 
-def sync_deps_if_changed(repo: str, a: str, b: str, *, venv_pip: str,
+def sync_deps_if_changed(repo: str, a: str, b: str, *, venv_python: str,
                          run: Run = subprocess.run) -> list[str]:
     done: list[str] = []
     if changed_paths(repo, a, b, ["pyproject.toml", "uv.lock"], run=run):
-        r = run([venv_pip, "install", "-e", ".[server]", "--quiet"],
+        # Invoke pip as a module of the venv's interpreter, never via the `bin/pip`
+        # launcher script: that launcher bakes the venv's ABSOLUTE path into its shebang
+        # at creation time, so a venv that was later moved (or is reached through a
+        # symlink) has a launcher pointing at an interpreter that no longer exists —
+        # exec fails with ENOENT *for the launcher itself*, which looks like "pip is
+        # missing" while `bin/pip` sits right there (2026-08-30 upgrade failure).
+        # `bin/python` is a symlink and survives a move; `-m pip` needs nothing else.
+        r = run([venv_python, "-m", "pip", "install", "-e", ".[server,stt]", "--quiet"],
                 cwd=repo, capture_output=True, text=True)
         if r.returncode != 0:
             raise DeployError("update", f"pip install failed: {r.stderr.strip()}")
@@ -236,124 +278,31 @@ def build_frontend(repo: str, run: Run = subprocess.run) -> None:
 # arbitrary ssh flags — e.g. "-oProxyCommand=...|sh" — into a sudo-privileged deploy command.
 # Require the optional user and the host to each START with an alphanumeric so a leading
 # '-' (or any other flag-introducing character) is structurally impossible.
-_SSH_HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*(@[A-Za-z0-9][A-Za-z0-9_.-]*)?$")
+# Public: the fleet host-upgrade path (server/sessions/host_upgrade.py and the
+# /api/fleet PATCH validation) builds ssh commands from operator-supplied values and
+# MUST validate with these same patterns — one source of truth for "safe ssh argv".
+SSH_HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*(@[A-Za-z0-9][A-Za-z0-9_.-]*)?$")
 # The remote checkout path also lands in an argv position on the far side of ssh.
 # Absolute, and no shell metacharacters, separators or leading '-' (option smuggling).
-_SSH_REPO_RE = re.compile(r"^/[A-Za-z0-9._/-]+$")
+SSH_REPO_RE = re.compile(r"^/[A-Za-z0-9._/-]+$")
 # A git rev passed to `git merge --ff-only`. Hex only, never a ref expression.
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
+# One source of truth for the local daemon-unit restart argv: server.deploy.runners
+# imports this as its own LOCAL_RESTART rather than re-literalling the same list.
+LOCAL_DAEMON_RESTART: list[str] = ["sudo", "systemctl", "restart", "ccswitch-daemon.service"]
 
-def restart_units(*, daemon_changed: bool, daemon_enabled: bool,
-                  target_sha: str | None = None, rewind_remote: bool = False,
-                  run: Run = subprocess.run) -> list[str]:
-    """Restart systemd units in order: daemon first (if changed), then edge.
 
-    Order is load-bearing (browser reconnect-flush race, #190).
-
-    The daemon may live on a remote host (see rocky session-host cutover): when
-    ``CCSWITCH_DAEMON_SSH_HOST`` is set, the daemon restart is issued over SSH instead of
-    locally, and the local ``daemon_enabled`` guard is bypassed for it — dobby's local unit
-    is deliberately *disabled* once the daemon has moved to rocky, so gating on it would
-    make every deploy silently restart nothing and leave rocky running stale code (the
-    Postgres cutover incident this change exists to prevent). rocky is the SINGLE targeted
-    session runner: this env var names exactly one remote daemon, and the fleet registry is
-    seeded to match via ``CCSWITCH_FLEET_HOSTS`` (see ``server/config.py``) — both are set
-    in ``/etc/ccswitch/ccswitch.env`` and must agree, so a deploy that pushes rocky's code
-    and a dispatcher that can see rocky stay consistent. ``daemon_changed`` still gates
-    the remote restart: it reflects whether daemon-relevant files changed in this deploy's
-    diff, so skipping an unneeded restart avoids unnecessary daemon churn.
-
-    A remote daemon has its OWN checkout, so this also UPDATES that checkout before
-    restarting it. Restarting alone just relaunches the same stale commit: on 2026-08-21,
-    deploying #715 gave dobby's edge the ``cloned_repos`` RPC caller while rocky's daemon
-    stayed on f310aa6 without the handler, and every repo listing returned
-    ``409 {"detail": "cloned_repos"}``. The remote is fast-forwarded (never reset) to
-    *target_sha*, so an operator's local commits abort the deploy instead of being lost.
-
-    Requires ``CCSWITCH_DAEMON_SSH_REPO`` (the checkout path on the remote host) whenever a
-    remote daemon actually needs restarting. Missing or unsafe values raise before any
-    command runs — a deploy that cannot update the remote must fail, not silently restart it.
-
-    ``rewind_remote`` flips the remote update from fast-forward to ``reset --hard``, and
-    exists solely for ``rollback_to``. A rollback moves BACKWARD, which ``--ff-only``
-    cannot do at all — and the ``or "origin/master"`` fallback below aims an un-targeted
-    call at the newest commit, i.e. precisely the one being rolled back. Rewinding
-    therefore REQUIRES an explicit target_sha: "wherever origin happens to point" is the
-    bug, not a usable default.
-
-    Returns the ordered list of units restarted.
-    """
-    units: list[str] = []
-    daemon_host = os.environ.get("CCSWITCH_DAEMON_SSH_HOST")
-    if daemon_host and not _SSH_HOST_RE.match(daemon_host):
-        # Fail loud, before issuing ANY command (including the edge restart below) — a
-        # deploy that cannot safely restart the remote daemon must stop, not silently fall
-        # back to a local restart. Falling back would resurrect the exact silent-no-op
-        # hazard this feature exists to prevent, and would mask a misconfiguration or attack.
-        raise DeployError(
-            "restart",
-            f"CCSWITCH_DAEMON_SSH_HOST={daemon_host!r} is not a valid [user@]host value; "
-            "refusing to build an ssh command from it",
-        )
-    # Validate everything the remote path needs BEFORE running anything, so a
-    # misconfiguration cannot leave the edge restarted against a stale daemon.
-    daemon_repo = os.environ.get("CCSWITCH_DAEMON_SSH_REPO")
-    if daemon_host and daemon_changed:
-        if not daemon_repo:
-            raise DeployError(
-                "restart",
-                "CCSWITCH_DAEMON_SSH_HOST is set but CCSWITCH_DAEMON_SSH_REPO is not; "
-                "refusing to restart a remote daemon whose code this deploy cannot update "
-                "(a restarted-but-stale daemon serves the previous commit's RPC surface)",
-            )
-        if not _SSH_REPO_RE.match(daemon_repo):
-            raise DeployError(
-                "restart",
-                f"CCSWITCH_DAEMON_SSH_REPO={daemon_repo!r} is not a safe absolute path; "
-                "refusing to build an ssh command from it",
-            )
-        if target_sha is not None and not _SHA_RE.match(target_sha):
-            raise DeployError(
-                "restart",
-                f"target_sha={target_sha!r} is not a hex git sha; "
-                "refusing to build an ssh command from it",
-            )
-        if rewind_remote and not target_sha:
-            raise DeployError(
-                "restart",
-                "rewind_remote requires an explicit target_sha; refusing to reset a "
-                "remote daemon to origin/master during a rollback (that is the commit "
-                "being rolled back)",
-            )
-
-    # DAEMON FIRST — order is load-bearing (browser reconnect-flush race, #190).
-    if daemon_host:
-        if daemon_changed:
-            assert daemon_repo is not None  # guaranteed by the validation above
-            # Update the remote checkout, then restart. Fast-forward only: a diverged
-            # remote aborts the deploy rather than losing whatever is there.
-            run(["ssh", daemon_host, "git", "-C", daemon_repo, "fetch", "--quiet", "origin"],
-                check=True, capture_output=True)
-            if rewind_remote:
-                # Rollback only. target_sha is guaranteed non-empty by the validation above.
-                run(["ssh", daemon_host, "git", "-C", daemon_repo, "reset", "--hard",
-                     target_sha],
-                    check=True, capture_output=True)
-            else:
-                run(["ssh", daemon_host, "git", "-C", daemon_repo, "merge", "--ff-only",
-                     target_sha or "origin/master"],
-                    check=True, capture_output=True)
-            run(["ssh", daemon_host, "sudo", "systemctl", "restart", "ccswitch-daemon.service"],
-                check=True, capture_output=True)
-            units.append("ccswitch-daemon.service")
-    elif daemon_changed and daemon_enabled:
-        run(["sudo", "systemctl", "restart", "ccswitch-daemon.service"],
-            check=True, capture_output=True)
-        units.append("ccswitch-daemon.service")
+def restart_edge(*, run: Run = subprocess.run) -> list[str]:
+    """Restart the edge unit. Runner (daemon) restarts — local AND remote — are owned by
+    ``server.deploy.runners`` and run BEFORE this (daemon-before-edge order is load-bearing:
+    the browser reconnect-flush race, #190). Returns the units restarted."""
     run(["sudo", "systemctl", "restart", "ccswitch.service"], check=True, capture_output=True)
-    units.append("ccswitch.service")
-    return units
+    return ["ccswitch.service"]
+
+
+def restart_local_daemon(*, run: Run = subprocess.run) -> None:
+    run(LOCAL_DAEMON_RESTART, check=True, capture_output=True)
 
 
 def _default_fetch(url: str) -> str:
@@ -375,16 +324,14 @@ def _default_fetch(url: str) -> str:
         return ""
 
 
-def remote_daemon_configured() -> bool:
-    """True when a REMOTE session daemon is configured (``CCSWITCH_DAEMON_SSH_HOST``).
+def remote_runners_configured(hosts=None) -> bool:
+    """True when the fleet has an enabled REMOTE runner (a host with ``ssh_host``).
 
-    Reads the SAME env var ``restart_units`` uses to decide whether the daemon restart is
-    issued over ssh, so the health window and the restart path can never disagree about the
-    topology. A remote daemon means the edge must RE-ATTACH to it over the tailnet after the
-    edge's own restart — a slow, settling dependency even when the daemon's code did not change
-    (see the health-window note below).
+    Sizes the health window: after its own restart the edge must re-attach to remote
+    daemons over a settling tailnet even on an edge-only deploy (#780). *hosts* is the
+    ``load_runner_targets()`` list; None → False (single-host install).
     """
-    return bool(os.environ.get("CCSWITCH_DAEMON_SSH_HOST"))
+    return any(h.enabled and h.ssh_host for h in (hosts or []))
 
 
 # Health-gate poll windows. wait_healthy returns on the FIRST healthy poll, so a
@@ -392,7 +339,7 @@ def remote_daemon_configured() -> bool:
 # something is actually wrong.
 HEALTH_POLL_INTERVAL_S = 2.0
 # Single-host edge-only deploy (NO remote daemon): nothing slow to wait for, so fail fast.
-# This short window applies only when ``remote_daemon_configured()`` is False; with a remote
+# This short window applies only when ``remote_runners_configured()`` is False; with a remote
 # daemon the edge must re-attach to it after restart, so the controller uses the longer
 # window below even for an edge-only deploy (see controller.deploy_once).
 HEALTH_ATTEMPTS_EDGE_ONLY = 15
@@ -434,7 +381,7 @@ def wait_healthy(expected_sha: str, *, url: str, attempts: int = 15, sleep_s: fl
       * daemonSha, when reported AND *require_daemon_sha*, must match expected_sha.
         That is the #719 skew class: an edge deployed with a new RPC caller while
         the daemon still lacks the handler. But an EDGE-ONLY deploy
-        (daemon_changed=False) never touches the daemon — restart_units skips it —
+        (daemon_changed=False) never touches the daemon — server.deploy.runners skips it —
         so it stays on its previous (older) commit by design. Requiring it to be on
         the target then rolls back every edge-only deploy once the daemon has
         drifted behind the edge (the 2026-08-26 #776 rollback). So the sha
@@ -461,7 +408,7 @@ def wait_healthy(expected_sha: str, *, url: str, attempts: int = 15, sleep_s: fl
     return False
 
 
-def _short_sha_match(a: str, b: str) -> bool:
+def short_sha_match(a: str, b: str) -> bool:
     """True if two git short-SHAs denote the same commit despite differing length.
 
     ``git rev-parse --short`` emits the shortest prefix that is UNIQUE within a
@@ -500,7 +447,7 @@ def _daemon_ok(body: str, expected_sha: str, *, require_sha: bool = True) -> boo
         return False
     if require_sha:
         daemon_sha = doc.get("daemonSha")
-        if daemon_sha and not _short_sha_match(str(daemon_sha), expected_sha):
+        if daemon_sha and not short_sha_match(str(daemon_sha), expected_sha):
             return False
     return True
 
@@ -509,7 +456,10 @@ def _daemon_ok(body: str, expected_sha: str, *, require_sha: bool = True) -> boo
 # process is up and the DB schema matches; it never reads the ledger or the session
 # store, so a corrupt ledger left /api/accounts 500ing while /healthz stayed green
 # (2026-08-22). These are the cheapest endpoints that exercise those paths.
-DEFAULT_PROBE_PATHS: tuple[str, ...] = ("/api/sessions", "/api/accounts")
+# /api/github/repos exercises the gh listing + the daemon cloned_repos RPC — the
+# path whose failure blanked the New Session repo dropdown (2026-08-29); note the
+# probe is unauthenticated, so its 401 only proves the route answers (4xx passes).
+DEFAULT_PROBE_PATHS: tuple[str, ...] = ("/api/sessions", "/api/accounts", "/api/github/repos")
 
 
 def _default_status_fetch(url: str) -> int:
@@ -576,42 +526,22 @@ def require_endpoints_healthy(base_url: str, paths=None, **kw) -> None:
 
 def rollback_to(repo: str, sha: str, *, daemon_changed: bool, daemon_enabled: bool,
                 run: Run = subprocess.run) -> None:
-    """Reset to a known-good commit, rebuild frontend (best-effort), restart both units together.
-
-    Args:
-        repo: Path to repo root.
-        sha: Git commit SHA to reset to.
-        daemon_changed: Whether daemon code changed (controls daemon restart).
-        daemon_enabled: Whether daemon systemd unit is enabled.
-        run: Callable for subprocess execution (defaults to subprocess.run).
-
-    Behavior:
-        1. git reset --hard <sha> — first, reset to the good commit.
-        2. Rebuild frontend best-effort — a rollback build failure only leaves web/dist stale;
-           it must not raise (catches DeployError).
-        3. Restart BOTH units together via restart_units() so they run the same (old) code —
-           never split-version. A REMOTE daemon is rewound to *sha* too (rewind_remote):
-           this call used to omit target_sha entirely, so restart_units fast-forwarded the
-           remote to `origin/master` — the very commit being rolled back. On 2026-08-25 the
-           health gate rejected f26c56ee and this left dobby's edge on 0d15f128 while
-           rocky's daemon stayed on the rejected commit, from the function that promises
-           exactly the opposite.
-    """
+    """Reset the EDGE checkout to a known-good commit, rebuild the frontend (best-effort)
+    and restart the local units. Remote runners this deploy moved are rewound by the
+    controller via ``runners.rewind_runners`` — the two together restore one version
+    fleet-wide (2026-08-25: rollback left rocky on the rejected commit)."""
     run(["git", "-C", repo, "reset", "--hard", sha], check=True, capture_output=True)
-    # Rebuild best-effort — a rollback build failure only leaves web/dist stale; never raise.
     try:
         build_frontend(repo, run=run)
     except DeployError:
         pass
-    # Restart BOTH together so they run the same (old) code — split-version is worse.
-    restart_units(daemon_changed=daemon_changed, daemon_enabled=daemon_enabled,
-                  target_sha=sha, rewind_remote=True, run=run)
+    if daemon_changed and daemon_enabled:
+        restart_local_daemon(run=run)
+    restart_edge(run=run)
 
 
 def _default_gh_api_json(path: str, body: str) -> str:
-    r = subprocess.run(["gh", "api", "-X", "POST", path, "--input", "-"],
-                       input=body, check=True, capture_output=True, text=True)
-    return r.stdout
+    return _gh_api_via_app(["api", "-X", "POST", path, "--input", "-"], input=body)
 
 
 def _gh_err_reason(e: Exception) -> str:

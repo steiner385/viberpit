@@ -34,7 +34,7 @@ const PR_DOCTOR: Automation = {
 }
 
 const CICD: Automation = {
-  id: 'cicd-doctor', name: 'CI/CD Doctor', description: null,
+  id: 'cicd-doctor', name: 'CI/CD Doctor', description: '',
   enabled: false, mode: 'propose', modes: ['off', 'propose'],
   status: { text: 'active', level: 'active', counts: null },
   configSchema: [], config: {}, lastActiveAt: null, activeSessions: 2,

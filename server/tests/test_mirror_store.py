@@ -1,0 +1,465 @@
+from datetime import datetime, timezone
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+
+from server.db.models import (
+    Base, GhProject, GhProjectItem, Initiative, Project, ProjectRepo, WorkItem, WorkItemDep)
+from server.pm.gh_projects import GhProjectItemView, GhProjectView, IssueRelView
+from server.pm import mirror_store
+
+REPO = "steiner385/cc-account-switcher"
+
+
+def _db():
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    return Session(engine)
+
+
+def _seed(db):
+    project = Project(slug="ccswitch", name="cc-account-switcher")
+    db.add(project)
+    db.flush()
+    db.add(ProjectRepo(project_id=project.id, repo=REPO))
+    for number in (945, 950, 951):
+        db.add(WorkItem(repo=REPO, number=number, kind="issue", state="open",
+                        body="Depends on #949" if number == 950 else None))
+    db.commit()
+    return project
+
+
+def test_upsert_gh_project_links_and_is_idempotent():
+    db = _db()
+    project = _seed(db)
+    view = GhProjectView(node_id="PVT_1", number=7, title="cc-account-switcher",
+                         updated_at="2026-09-01T10:00:00Z")
+    gid1 = mirror_store.upsert_gh_project(db, project.id, view)
+    gid2 = mirror_store.upsert_gh_project(db, project.id, view)
+    assert gid1 == gid2
+    assert db.query(GhProject).count() == 1
+    views = mirror_store.list_product_views(db)
+    assert views[0].gh_node_id == "PVT_1" and views[0].repos == [REPO]
+
+
+def test_upsert_project_items_resolves_work_items_and_prunes_gone():
+    db = _db()
+    project = _seed(db)
+    gid = mirror_store.upsert_gh_project(db, project.id, GhProjectView(
+        node_id="PVT_1", number=7, title="x", updated_at=None))
+    now = datetime.now(timezone.utc)
+    items = [GhProjectItemView(item_node_id="PVTI_1", repo=REPO, number=950, kind="issue",
+                               status="Ready", score=12.0, stage=None,
+                               updated_at="2026-09-02T09:00:00Z")]
+    mirror_store.upsert_project_items(db, gid, items, now)
+    row = db.query(GhProjectItem).one()
+    assert row.status == "Ready" and row.score == 12.0
+    assert row.work_item_id == db.query(WorkItem).filter_by(number=950).one().id
+    # second pass without the item removes the stale mirror row
+    mirror_store.upsert_project_items(db, gid, [], now)
+    assert db.query(GhProjectItem).count() == 0
+
+
+def test_upsert_relations_sets_parents_and_plans_deps():
+    db = _db()
+    _seed(db)
+    rels = [
+        IssueRelView(repo=REPO, number=945, blocked_by=[], parent_ref=None,
+                     sub_issue_refs=[f"{REPO}#950", f"{REPO}#951"]),
+        IssueRelView(repo=REPO, number=950, blocked_by=["steiner385/KinDash#12"],
+                     parent_ref=f"{REPO}#945", sub_issue_refs=[]),
+    ]
+    mirror_store.upsert_relations(db, REPO, rels)
+    epic = db.query(WorkItem).filter_by(number=945).one()
+    child = db.query(WorkItem).filter_by(number=950).one()
+    assert epic.is_epic is True and child.parent_work_item_id == epic.id
+    deps = {(d.src_ref, d.dst_ref, d.source, d.active)
+            for d in db.query(WorkItemDep).all()}
+    assert (f"{REPO}#950", "steiner385/KinDash#12", "native", True) in deps
+    assert (f"{REPO}#950", f"{REPO}#949", "prose", True) in deps
+    assert (f"{REPO}#951", f"{REPO}#950", "order", True) in deps
+    # cross-repo target is unmirrored: dst_work_item_id stays None, dst_ref carries it
+    native = [d for d in db.query(WorkItemDep).all() if d.source == "native"][0]
+    assert native.dst_work_item_id is None
+    # edge removed upstream -> deactivated, not deleted
+    mirror_store.upsert_relations(db, REPO, [
+        rels[0],
+        IssueRelView(repo=REPO, number=950, blocked_by=[], parent_ref=f"{REPO}#945",
+                     sub_issue_refs=[]),
+    ])
+    native = [d for d in db.query(WorkItemDep).all()
+              if d.source == "native" and d.dst_ref == "steiner385/KinDash#12"][0]
+    assert native.active is False
+
+
+# --- rename_repo: alias → GitHub's canonical nameWithOwner (issue #999) --------
+
+CANON = "steiner385/ccswitch"
+
+
+def test_rename_repo_rewrites_every_alias_key_and_resolves_fks():
+    """The live shape behind #999: ``ProjectRepo.repo`` and every mirrored key
+    hold the pre-rename alias, while GitHub-sourced dst refs are canonical, so
+    native edges never resolve. One rename rewrites ProjectRepo, WorkItem,
+    WorkItemDep src/dst refs and the Initiative pointers, then re-resolves the
+    FKs that were NULL only because the two halves disagreed."""
+    db = _db()
+    _seed(db)
+    src = db.query(WorkItem).filter_by(number=950).one()
+    db.add(WorkItemDep(src_ref=f"{REPO}#950", dst_ref=f"{CANON}#945", source="native",
+                       active=True, src_work_item_id=src.id, dst_work_item_id=None))
+    db.add(WorkItemDep(src_ref=f"{REPO}#951", dst_ref=f"{REPO}#950", source="order",
+                       active=True))
+    db.add(Initiative(slug="rollout", repo=REPO, epic_repo=REPO, epic_number=945))
+    db.commit()
+
+    counts = mirror_store.rename_repo(db, REPO, CANON)
+    db.commit()
+
+    assert db.query(ProjectRepo).one().repo == CANON
+    assert {w.repo for w in db.query(WorkItem).all()} == {CANON}
+    assert {(d.src_ref, d.dst_ref) for d in db.query(WorkItemDep).all()} == {
+        (f"{CANON}#950", f"{CANON}#945"), (f"{CANON}#951", f"{CANON}#950")}
+    epic = db.query(WorkItem).filter_by(number=945).one()
+    native = db.query(WorkItemDep).filter_by(source="native").one()
+    assert native.dst_work_item_id == epic.id
+    order = db.query(WorkItemDep).filter_by(source="order").one()
+    assert order.src_work_item_id is not None and order.dst_work_item_id == src.id
+    ini = db.query(Initiative).one()
+    assert ini.repo == CANON and ini.epic_repo == CANON
+    assert counts["work_items"] == 3 and counts["deps"] == 2
+    # Idempotent: a second pass finds nothing under the alias.
+    assert sum(mirror_store.rename_repo(db, REPO, CANON).values()) == 0
+    assert mirror_store.rename_repo(db, CANON, CANON) == {}
+
+
+def test_rename_repo_merges_into_an_existing_canonical_twin():
+    """If the canonical row already exists (a repo onboarded under both names),
+    the alias row is dropped rather than tripping the (repo, number, kind)
+    unique key, and rows that pointed at it are re-pointed at the twin."""
+    db = _db()
+    _seed(db)
+    twin = WorkItem(repo=CANON, number=950, kind="issue", state="open")
+    db.add(twin)
+    db.flush()
+    alias_950 = db.query(WorkItem).filter_by(repo=REPO, number=950).one()
+    child = db.query(WorkItem).filter_by(number=951).one()
+    child.parent_work_item_id = alias_950.id
+    db.add(WorkItemDep(src_ref=f"{REPO}#951", dst_ref=f"{REPO}#950", source="order",
+                       active=True, src_work_item_id=child.id, dst_work_item_id=alias_950.id))
+    db.add(WorkItemDep(src_ref=f"{CANON}#951", dst_ref=f"{CANON}#950", source="order",
+                       active=True))
+    db.commit()
+
+    mirror_store.rename_repo(db, REPO, CANON)
+    db.commit()
+
+    assert db.query(WorkItem).filter_by(number=950).one().id == twin.id
+    assert db.query(WorkItem).filter_by(number=951).one().parent_work_item_id == twin.id
+    dep = db.query(WorkItemDep).one()  # the duplicate edge collapsed to one row
+    assert (dep.src_ref, dep.dst_ref) == (f"{CANON}#951", f"{CANON}#950")
+    assert dep.dst_work_item_id == twin.id and dep.src_work_item_id == child.id
+
+
+def test_relations_under_the_canonical_name_link_after_rename():
+    """Issue #999 acceptance: once the mirror is canonical, a relations pass
+    keyed by GitHub's nameWithOwner links parents and resolves native edges."""
+    db = _db()
+    _seed(db)
+    mirror_store.rename_repo(db, REPO, CANON)
+    db.commit()
+    rels = [
+        IssueRelView(repo=CANON, number=945, blocked_by=[], parent_ref=None,
+                     sub_issue_refs=[f"{CANON}#950", f"{CANON}#951"]),
+        IssueRelView(repo=CANON, number=950, blocked_by=[f"{CANON}#945"],
+                     parent_ref=f"{CANON}#945", sub_issue_refs=[]),
+    ]
+    mirror_store.upsert_relations(db, CANON, rels)
+    epic = db.query(WorkItem).filter_by(number=945).one()
+    child = db.query(WorkItem).filter_by(number=950).one()
+    assert epic.is_epic is True and child.parent_work_item_id == epic.id
+    native = db.query(WorkItemDep).filter_by(source="native").one()
+    assert native.dst_work_item_id == epic.id
+    assert db.query(WorkItemDep).filter_by(source="order").one().src_ref == f"{CANON}#951"
+
+
+def test_upsert_relations_backfills_fks_when_target_later_mirrored():
+    """FKs resolve to NULL at creation when the target isn't mirrored yet; a
+    later pass — once repo-sync catches up — must backfill them (issue #973)."""
+    db = _db()
+    _seed(db)
+    rels = [IssueRelView(repo=REPO, number=950, blocked_by=[f"{REPO}#949"],
+                         parent_ref=None, sub_issue_refs=[])]
+    mirror_store.upsert_relations(db, REPO, rels)
+    dep = db.query(WorkItemDep).filter_by(source="native").one()
+    assert dep.dst_work_item_id is None  # #949 not mirrored yet
+    # repo-sync catches up: #949 lands in work_items.
+    db.add(WorkItem(repo=REPO, number=949, kind="issue", state="open"))
+    db.commit()
+    # A refresh pass with the SAME observed edge backfills the FK (no reactivate,
+    # the row stayed active) — exercises the refresh path, not just reactivate.
+    mirror_store.upsert_relations(db, REPO, rels)
+    dep = db.query(WorkItemDep).filter_by(source="native").one()
+    assert dep.dst_work_item_id == db.query(WorkItem).filter_by(number=949).one().id
+
+
+def test_upsert_relations_stores_node_ids():
+    db = _db()
+    _seed(db)
+    mirror_store.upsert_relations(db, REPO, [IssueRelView(
+        repo=REPO, number=945, blocked_by=[], parent_ref=None, sub_issue_refs=[],
+        node_id="I_945")])
+    assert db.query(WorkItem).filter_by(number=945).one().gh_node_id == "I_945"
+
+
+def test_upsert_relations_only_touches_the_given_repo():
+    """The src_ref prefix filter must scope reconciliation to *this* repo — a dep
+    row owned by another repo is never deactivated by an unrelated repo's pass."""
+    db = _db()
+    _seed(db)
+    other = "steiner385/KinDash"
+    db.add(WorkItemDep(src_ref=f"{other}#5", dst_ref=f"{other}#4",
+                       source="native", active=True))
+    db.commit()
+    mirror_store.upsert_relations(db, REPO, [])  # REPO sees no edges
+    foreign = db.query(WorkItemDep).filter_by(src_ref=f"{other}#5").one()
+    assert foreign.active is True  # untouched by REPO's pass
+
+
+def test_upsert_project_items_keys_multiple_items_by_node_id():
+    """Preloaded existing-items dict must key correctly across many items and
+    still upsert-in-place on a second pass (no duplicate rows)."""
+    db = _db()
+    project = _seed(db)
+    gid = mirror_store.upsert_gh_project(db, project.id, GhProjectView(
+        node_id="PVT_1", number=7, title="x", updated_at=None))
+    now = datetime.now(timezone.utc)
+    items = [
+        GhProjectItemView(item_node_id="PVTI_1", repo=REPO, number=950, kind="issue",
+                          status="Ready", score=None, stage=None, updated_at=None),
+        GhProjectItemView(item_node_id="PVTI_2", repo=REPO, number=951, kind="issue",
+                          status="Blocked", score=None, stage=None, updated_at=None),
+    ]
+    mirror_store.upsert_project_items(db, gid, items, now)
+    assert db.query(GhProjectItem).count() == 2
+    # second pass flips a status in place — no new rows.
+    items[0] = GhProjectItemView(item_node_id="PVTI_1", repo=REPO, number=950,
+                                 kind="issue", status="Done", score=None,
+                                 stage=None, updated_at=None)
+    mirror_store.upsert_project_items(db, gid, items, now)
+    assert db.query(GhProjectItem).count() == 2
+    assert db.query(GhProjectItem).filter_by(gh_item_node_id="PVTI_1").one().status == "Done"
+
+
+def test_echo_suppression_distinguishes_own_writes_from_human_edits():
+    """A field change matching a recent own-write (journal shape) is our own
+    write echoing back through the GitHub read path — not a human edit. A
+    brand-new row also produces no edits (nothing to have "changed" yet)."""
+    db = _db()
+    project = _seed(db)
+    gid = mirror_store.upsert_gh_project(db, project.id, GhProjectView(
+        node_id="PVT_1", number=7, title="x", updated_at=None))
+    now = datetime.now(timezone.utc)
+    first = [GhProjectItemView(item_node_id="PVTI_1", repo=REPO, number=950,
+                               kind="issue", status="Backlog", score=None,
+                               stage=None, updated_at=None)]
+    no_edits = mirror_store.upsert_project_items(db, gid, first, now)
+    assert no_edits == []  # brand-new row: nothing classified
+    changed = [GhProjectItemView(item_node_id="PVTI_1", repo=REPO, number=950,
+                                 kind="issue", status="Ready", score=480.0,
+                                 stage=None, updated_at=None)]
+    edits = mirror_store.upsert_project_items(
+        db, gid, changed, now, own_writes={("PVTI_1", "Status", '"Ready"')})
+    assert [(e.field, e.old, e.new) for e in edits] == [("Score", None, 480.0)]
+
+
+def test_echo_suppression_matches_a_score_github_rounds_to_an_int():
+    """We write Score 480.0; GitHub can hand it back as 480. Both sides key through
+    journal.own_write_key, which normalizes numbers, so it is still an echo."""
+    from server.pm import journal
+    db = _db()
+    project = _seed(db)
+    gid = mirror_store.upsert_gh_project(db, project.id, GhProjectView(
+        node_id="PVT_1", number=7, title="x", updated_at=None))
+    now = datetime.now(timezone.utc)
+    mirror_store.upsert_project_items(db, gid, [GhProjectItemView(
+        item_node_id="PVTI_1", repo=REPO, number=950, kind="issue", status=None,
+        score=None, stage=None, updated_at=None)], now)
+    echoed = [GhProjectItemView(item_node_id="PVTI_1", repo=REPO, number=950,
+                                kind="issue", status=None, score=480, stage=None,
+                                updated_at=None)]
+    own = {journal.own_write_key("PVTI_1", "Score", 480.0)}   # what the journal produces
+    assert mirror_store.upsert_project_items(db, gid, echoed, now, own_writes=own) == []
+
+
+def test_back_sync_stage_updates_linked_initiative():
+    """A human "Stage" edit on a linked epic back-syncs Initiative.stage; an
+    unrecognized new value (not in INITIATIVE_STAGES) is rejected — count 0,
+    no write."""
+    db = _db()
+    _seed(db)
+    db.add(Initiative(slug="i", stage="plan", epic_repo=REPO, epic_number=945))
+    db.commit()
+    n = mirror_store.back_sync_stage(
+        db, [mirror_store.HumanEdit(f"{REPO}#945", "Stage", "plan", "build")])
+    assert n == 1 and db.query(Initiative).one().stage == "build"
+    assert mirror_store.back_sync_stage(
+        db, [mirror_store.HumanEdit(f"{REPO}#945", "Stage", "build", "bogus")]) == 0
+
+
+# --- adopt_epics: GitHub-first epics become Initiative overlays (issue #991) --
+
+ADOPT_NOW = datetime(2026, 9, 4, tzinfo=timezone.utc)
+
+
+def _seed_board_epic(db, project, *, number=945, title="Epic Alpha",
+                     state="open", on_board=True, stage=None):
+    """A GhProject board with one epic-flagged WorkItem, optionally linked onto
+    the board via a GhProjectItem row (whose mirrored ``stage`` defaults to
+    unset, matching a board column ccswitch has no Stage vocabulary for)."""
+    gid = mirror_store.upsert_gh_project(db, project.id, GhProjectView(
+        node_id="PVT_1", number=7, title="x", updated_at=None))
+    epic = db.query(WorkItem).filter_by(number=number).one()
+    epic.is_epic = True
+    epic.title = title
+    epic.state = state
+    if on_board:
+        db.add(GhProjectItem(gh_project_id=gid, gh_item_node_id=f"PVTI_{number}",
+                             work_item_id=epic.id, stage=stage))
+    db.commit()
+    return gid
+
+
+def test_adopt_epics_creates_initiative_for_onboard_open_epic():
+    db = _db()
+    project = _seed(db)
+    _seed_board_epic(db, project)
+
+    refs = mirror_store.adopt_epics(db, project.id, now=ADOPT_NOW)
+
+    assert refs == [f"{REPO}#945"]
+    ini = db.query(Initiative).one()
+    assert ini.stage == "build" and ini.status == "active"
+    assert ini.repo == REPO and ini.title == "Epic Alpha"
+    assert ini.origin == "epic-adoption" and ini.origin_ref == f"{REPO}#945"
+    assert ini.epic_repo == REPO and ini.epic_number == 945
+    assert ini.project_id == project.id
+    assert ini.slug == "epic-alpha"
+
+
+def test_adopt_epics_second_call_creates_nothing():
+    db = _db()
+    project = _seed(db)
+    _seed_board_epic(db, project)
+
+    first = mirror_store.adopt_epics(db, project.id, now=ADOPT_NOW)
+    assert first == [f"{REPO}#945"]
+    second = mirror_store.adopt_epics(db, project.id, now=ADOPT_NOW)
+    assert second == []
+    assert db.query(Initiative).count() == 1
+
+
+def test_adopt_epics_skips_epic_not_on_board():
+    db = _db()
+    project = _seed(db)
+    _seed_board_epic(db, project, on_board=False)
+
+    refs = mirror_store.adopt_epics(db, project.id, now=ADOPT_NOW)
+
+    assert refs == []
+    assert db.query(Initiative).count() == 0
+
+
+def test_adopt_epics_skips_closed_epic():
+    db = _db()
+    project = _seed(db)
+    _seed_board_epic(db, project, state="closed")
+
+    refs = mirror_store.adopt_epics(db, project.id, now=ADOPT_NOW)
+
+    assert refs == []
+    assert db.query(Initiative).count() == 0
+
+
+def test_adopt_epics_slug_collision_gets_dash2_suffix():
+    db = _db()
+    project = _seed(db)
+    db.add(Initiative(slug="epic-alpha", repo=REPO, title="Epic Alpha (pre-existing)"))
+    _seed_board_epic(db, project, title="Epic Alpha")
+
+    refs = mirror_store.adopt_epics(db, project.id, now=ADOPT_NOW)
+
+    assert refs == [f"{REPO}#945"]
+    adopted = db.query(Initiative).filter_by(epic_repo=REPO, epic_number=945).one()
+    assert adopted.slug == "epic-alpha-2"
+
+
+def test_adopt_epics_seeds_stage_from_board_stage():
+    """R7 (final review): a board item mirrored at Stage="design" adopts the
+    Initiative at "design", not the old hardcoded "build" — otherwise the
+    first gh-reconcile tick after adoption would push Stage back to Build and
+    silently overwrite a human's deliberate Design/Plan choice."""
+    db = _db()
+    project = _seed(db)
+    _seed_board_epic(db, project, stage="design")
+
+    refs = mirror_store.adopt_epics(db, project.id, now=ADOPT_NOW)
+
+    assert refs == [f"{REPO}#945"]
+    assert db.query(Initiative).one().stage == "design"
+
+
+def test_adopt_epics_falls_back_to_build_for_unknown_board_stage():
+    """A board Stage outside ccswitch's INITIATIVE_STAGES vocabulary (or a
+    board that never mirrored a Stage at all) still adopts at "build" —
+    today's behavior, preserved as the fallback."""
+    db = _db()
+    project = _seed(db)
+    _seed_board_epic(db, project, stage="Some Custom Column")
+
+    refs = mirror_store.adopt_epics(db, project.id, now=ADOPT_NOW)
+
+    assert refs == [f"{REPO}#945"]
+    assert db.query(Initiative).one().stage == "build"
+
+
+def test_adopt_epics_two_same_title_epics_in_one_call_get_distinct_slugs():
+    """`_unique_slug` relies on SQLAlchemy `Session.autoflush` seeing the
+    not-yet-committed sibling INSERT from earlier in the SAME `adopt_epics`
+    call (mirror_store.py `_unique_slug`). `Initiative.slug` is unique, so a
+    future refactor that wraps this loop in `no_autoflush` would fail loudly
+    with an IntegrityError on every tick instead of just here."""
+    db = _db()
+    project = _seed(db)
+    gid = mirror_store.upsert_gh_project(db, project.id, GhProjectView(
+        node_id="PVT_1", number=7, title="x", updated_at=None))
+    for number in (950, 951):
+        epic = db.query(WorkItem).filter_by(number=number).one()
+        epic.is_epic = True
+        epic.title = "Epic Alpha"
+        db.add(GhProjectItem(gh_project_id=gid, gh_item_node_id=f"PVTI_{number}",
+                             work_item_id=epic.id))
+    db.commit()
+
+    refs = mirror_store.adopt_epics(db, project.id, now=ADOPT_NOW)
+
+    assert set(refs) == {f"{REPO}#950", f"{REPO}#951"}
+    slugs = {i.slug for i in db.query(Initiative).all()}
+    assert slugs == {"epic-alpha", "epic-alpha-2"}
+
+
+def test_back_sync_stage_updates_adopted_initiative():
+    """back_sync_stage (Phase B) now has a real target once adopt_epics has run:
+    a human moving Stage on the board updates the adopted overlay (issue #991)."""
+    db = _db()
+    project = _seed(db)
+    _seed_board_epic(db, project)
+    mirror_store.adopt_epics(db, project.id, now=ADOPT_NOW)
+    db.commit()
+
+    n = mirror_store.back_sync_stage(
+        db, [mirror_store.HumanEdit(f"{REPO}#945", "Stage", "build", "deploy")])
+
+    assert n == 1
+    assert db.query(Initiative).filter_by(
+        epic_repo=REPO, epic_number=945).one().stage == "deploy"

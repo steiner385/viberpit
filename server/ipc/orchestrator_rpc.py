@@ -148,7 +148,10 @@ def register_orchestrator_rpc(app, orch) -> None:
         return app.state.ring_tail(params["session_id"], params.get("since"))
 
     async def list_sessions(params: dict) -> dict:
-        return {"sessions": [r.to_dict() for r in orch.list_sessions()]}
+        # The param is only sent when True, so an older edge talking to a newer daemon
+        # (and vice versa) keeps the default "assistants excluded" behaviour.
+        kw = {"include_assistant": True} if params.get("include_assistant") else {}
+        return {"sessions": [r.to_dict() for r in orch.list_sessions(**kw)]}
 
     async def get_session(params: dict) -> dict:
         rec = orch.get_session(params["session_id"])
@@ -159,7 +162,11 @@ def register_orchestrator_rpc(app, orch) -> None:
         return {"session": rec.to_dict()}
 
     async def send_prompt(params: dict) -> dict:
-        status = await orch.send_prompt(params["session_id"], params["text"], params.get("images"))
+        # `interrupt` (interrupt-and-post) is only forwarded when set, so an edge
+        # that predates the flag keeps the plain queued-send contract.
+        extra = {"interrupt": True} if params.get("interrupt") is True else {}
+        status = await orch.send_prompt(params["session_id"], params["text"],
+                                        params.get("images"), **extra)
         return {"status": status}
 
     async def pr_for(params: dict) -> dict:
@@ -270,17 +277,17 @@ def register_orchestrator_rpc(app, orch) -> None:
 
     # Methods whose return value is already JSON-safe (bool / None / str / list-of-dicts).
     _SIMPLE = [
-        "archive_session", "rename_session", "note_user_interaction", "set_autopilot_paused", "interrupt",
+        "archive_session", "resume_interrupted", "reload_session", "rotate_to_best", "set_account_pin", "rename_session", "note_user_interaction", "set_autopilot_paused", "interrupt",
         "set_permission_mode", "cancel_queued", "resolve_permission", "answer_question",
         "transcript_path", "resolve_transcript_path", "transcript_search_text",
-        "pending_questions", "pop_pending_initial_prompt",
+        "pending_questions", "orphaned_interaction", "pop_pending_initial_prompt",
         "pop_pending_initial_attachment_ids", "command_catalog", "run_command", "list_archived",
         "latest_suggestions", "latest_suggestions_many",
         "generate_suggestions_now", "seed_idle_suggestions",
         "latest_summary", "latest_summary_many",
         "begin_drain", "drain_status",
         "live_session_load", "live_session_counts",
-        "snapshot_deploy", "restore_deploy", "resume_recovery_status",
+        "snapshot_deploy", "restore_deploy", "resume_recovery_status", "startup_report",
         "request_pr_fix",
         "automation_statuses", "automation_trigger", "pr_doctor_job",
         "consolidation_candidates", "automation_consolidate",
@@ -289,6 +296,10 @@ def register_orchestrator_rpc(app, orch) -> None:
         "session_queue_move", "session_queue_cancel", "session_queue_positions", "maybe_start_queued",
         "git_credential_alerts", "dismiss_git_credential_alert",
         "list_adoptable_candidates", "migrate_archive_home", "cloned_repos",
+        # pm onboarding seams (phase 2, 2026-08-31) — pm_classify_run returns int
+        "pm_classify_run",
+        # advance map_proposed → map_merged (returns None, JSON-safe)
+        "pm_advance_map_merged",
     ]
 
     def _make_simple(method_name):
@@ -298,6 +309,26 @@ def register_orchestrator_rpc(app, orch) -> None:
 
     for _m in _SIMPLE:
         register_rpc(app, _m, _make_simple(_m))
+
+    import dataclasses
+
+    async def pm_onboarding_counts(params: dict) -> dict:
+        # pm_onboarding_counts returns a ProjectOnboardingView frozen dataclass —
+        # NOT JSON-native. Convert via dataclasses.asdict before the transport's
+        # json.dumps sees it (the _SIMPLE path would raise TypeError here).
+        view = await _maybe_await(orch.pm_onboarding_counts(**params))
+        return dataclasses.asdict(view)
+
+    async def pm_onboard_spawn_map(params: dict) -> dict | None:
+        # pm_onboard_spawn_map returns a session-record OBJECT (or None) — also
+        # not JSON-native. Strip to {"id": ...} which is all the API layer needs.
+        rec = await _maybe_await(orch.pm_onboard_spawn_map(**params))
+        if rec is None:
+            return None
+        return {"id": getattr(rec, "id", None)}
+
+    register_rpc(app, "pm_onboarding_counts", pm_onboarding_counts)
+    register_rpc(app, "pm_onboard_spawn_map", pm_onboard_spawn_map)
 
     async def permanent_delete(params: dict):
         result = await orch.permanent_delete(params["session_id"])
@@ -334,10 +365,19 @@ def register_orchestrator_rpc(app, orch) -> None:
             "totalTurns": window.total_turns,
         }
 
+    async def resolve_model_approval(params: dict) -> dict:
+        # .get, not [] — an older client that omits "model" (pre-counter-offer)
+        # must still work; None means "approve exactly what was requested".
+        rec = await orch.resolve_model_approval(
+            params["session_id"], params["decision"], model=params.get("model"),
+            identity=params["identity"])
+        return {"session": rec.to_dict()}
+
     register_rpc(app, "unarchive", unarchive)
     register_rpc(app, "adopt_session", adopt_session)
     register_rpc(app, "transcript_events", transcript_events)
     register_rpc(app, "transcript_window", transcript_window)
+    register_rpc(app, "resolve_model_approval", resolve_model_approval)
 
     async def usage(params: dict) -> dict:
         u = await orch.poller.get(params["name"])

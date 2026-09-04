@@ -1,8 +1,8 @@
-// Ported from plotroom@5166b52 frontend/src/__tests__/StatusStrip.test.tsx; edits: import repointing (../StatusStrip, ../types); eslint-disable @typescript-eslint/no-unused-vars (Bucket type import — kept verbatim from source)
-/* eslint-disable @typescript-eslint/no-unused-vars */
+// Ported from plotroom@5166b52 frontend/src/__tests__/StatusStrip.test.tsx; edits: import repointing (../StatusStrip, ../types); dropped the unused `Bucket` type import.
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
-import { StatusStrip, bucketPr, isFailedPr, isActivePr, type Bucket } from '../StatusStrip';
+import { InteractionProvider } from '@/shell/InteractionContext';
+import { StatusStrip, bucketPr, isFailedPr, isActivePr } from '../StatusStrip';
 import type { PrView } from '../types';
 
 const pr = (stage: string, substate: string | null = null): PrView => ({
@@ -197,8 +197,11 @@ describe('StatusStrip', () => {
 
 describe('StatusStrip interactive=false (kiosk)', () => {
   it('renders tiles as plain divs — no buttons, counts and labels intact', () => {
-    render(<StatusStrip prs={[pr('ci'), pr('queue')]} activeFilter={null}
-      onFilter={vi.fn()} interactive={false} />);
+    render(
+      <InteractionProvider interactive={false}>
+        <StatusStrip prs={[pr('ci'), pr('queue')]} activeFilter={null} onFilter={vi.fn()} />
+      </InteractionProvider>,
+    );
     const strip = screen.getByRole('group', { name: 'Status overview' });
     expect(within(strip).queryAllByRole('button')).toHaveLength(0);
     expect(within(strip).getByText('CI running')).toBeInTheDocument();
@@ -209,8 +212,11 @@ describe('StatusStrip interactive=false (kiosk)', () => {
 
   it('clicking a non-interactive tile never calls onFilter', () => {
     const onFilter = vi.fn();
-    render(<StatusStrip prs={[pr('ci')]} activeFilter={null}
-      onFilter={onFilter} interactive={false} />);
+    render(
+      <InteractionProvider interactive={false}>
+        <StatusStrip prs={[pr('ci')]} activeFilter={null} onFilter={onFilter} />
+      </InteractionProvider>,
+    );
     fireEvent.click(screen.getByText('CI running'));
     expect(onFilter).not.toHaveBeenCalled();
   });

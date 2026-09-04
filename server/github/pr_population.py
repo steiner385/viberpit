@@ -54,11 +54,44 @@ def _default_query(repo: str, retention_days: int) -> dict:
     query = build_population_query(repo, _merged_since(retention_days))
     token = app_auth.token_for_owner(repo.split("/", 1)[0])
     proc = gitrepos._run_gh(["api", "graphql", "-f", f"query={query}"], token=token)
-    if proc.returncode != 0:
+    try:
+        response = json.loads(proc.stdout or "{}")
+    except (json.JSONDecodeError, TypeError):
+        response = {}
+    data = response.get("data") if isinstance(response, dict) else None
+    # gh exits non-zero whenever the GraphQL response carries an `errors` array —
+    # even when partial `data` is usable. That happens when the App lacks
+    # Deployments/Environments/Checks read: the isolated `deploys` alias (and some
+    # statusCheckRollup contexts) null out, but the PR population survives. Only
+    # treat a non-zero exit as fatal when there is no usable data at all; otherwise
+    # degrade gracefully so the pipeline still renders PRs (issue: blank pipeline).
+    usable = isinstance(data, dict) and (data.get("repo") or data.get("merged"))
+    if proc.returncode != 0 and not usable:
         raise gitrepos.GhError(proc.stderr.strip() or "gh api graphql failed")
-    response = json.loads(proc.stdout or "{}")
+    if proc.returncode != 0:
+        errs = [e.get("message") for e in (response.get("errors") or [])][:3]
+        log.warning("pr_population.partial_graphql repo=%s errors=%s", repo, errs)
+    _fold_deploys(response)
     _supplement_env_deployments(response, repo, token)
     return response
+
+
+def _fold_deploys(response: dict) -> None:
+    """Merge the isolated ``deploys`` alias back into ``data.repo`` so downstream
+    parsing (``parse_population_response`` / ``_supplement_env_deployments``) reads
+    deployments/environments from their historic ``data.repo`` location.
+
+    A null ``deploys`` (permission-forbidden) leaves the repo block's PRs
+    untouched. ``setdefault`` keeps this a no-op for legacy single-block responses
+    that already carry deployments under ``data.repo`` (test fidelity)."""
+    data = response.get("data") if isinstance(response, dict) else None
+    if not isinstance(data, dict):
+        return
+    deploys = data.pop("deploys", None)
+    repo_node = data.get("repo")
+    if isinstance(repo_node, dict) and isinstance(deploys, dict):
+        repo_node.setdefault("deployments", deploys.get("deployments"))
+        repo_node.setdefault("environments", deploys.get("environments"))
 
 
 def _supplement_env_deployments(response: dict, repo: str, token: str | None) -> None:

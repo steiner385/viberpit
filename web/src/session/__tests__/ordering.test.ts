@@ -1,21 +1,19 @@
 import { describe, it, expect } from 'vitest'
 import { orderSessions } from '../ordering'
 import { sortSessionsByTier } from '../statusTier'
-import type { Session, PullRequestInfo } from '@/api/types'
+import type { Session, SessionStatus, PullRequestInfo } from '@/api/types'
+import { mkSession, pullRequest } from '@/test/factories'
 
-function mk(over: Partial<Session> & { id: string }): Session {
-  return {
-    name: over.id, accountName: 'a', status: 'idle',
-    createdAt: '2026-06-01T00:00:00Z', updatedAt: '2026-06-01T00:00:00Z',
+const mk = (over: Partial<Session> & { id: string }): Session =>
+  mkSession(over.id, {
+    accountName: 'a',
+    createdAt: '2026-06-01T00:00:00Z',
+    updatedAt: '2026-06-01T00:00:00Z',
     ...over,
-  }
-}
-
-function mkWithPr(id: string, status: string, checks: PullRequestInfo['checks']): Session {
-  return mk({
-    id, status,
-    prs: [{ number: 1, url: 'u', state: 'open', checks, title: 't', deployed: false } as PullRequestInfo],
   })
+
+function mkWithPr(id: string, status: SessionStatus, checks: PullRequestInfo['checks']): Session {
+  return mk({ id, status, prs: [pullRequest({ url: 'u', checks, title: 't' })] })
 }
 
 const flat = (s: Session[], g: Parameters<typeof orderSessions>[1], so: Parameters<typeof orderSessions>[2]) =>
@@ -104,13 +102,13 @@ describe('orderSessions', () => {
     expect(flat(s, 'none', 'status')).toEqual(['broken', 'idle'])
   })
 
-  it('group by status: done+failing-PR lands in error ("Needs attention") group', () => {
+  it('group by status: done+failing-PR lands in error ("Failed") group', () => {
     const s = [
       mk({ id: 'idle', status: 'idle' }),
       mkWithPr('broken', 'done', 'failing'),
     ]
     const g = orderSessions(s, 'status', 'status')
-    const errorGroup = g.find((x) => x.label === 'Needs attention')
+    const errorGroup = g.find((x) => x.label === 'Failed')
     expect(errorGroup?.sessions.map((x) => x.id)).toEqual(['broken'])
     const doneGroup = g.find((x) => x.label === 'Done')
     expect(doneGroup?.sessions.map((x) => x.id)).toEqual(['idle'])

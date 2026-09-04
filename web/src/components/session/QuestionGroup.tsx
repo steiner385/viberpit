@@ -30,15 +30,17 @@ export function QuestionGroup({ questions, onAnswer }: Props) {
   const [trackH, setTrackH] = useState<number | undefined>(undefined)
   const trackRef = useRef<HTMLDivElement>(null)
 
-  // Start on the first question, and stay there until the user moves. The track
-  // uses `snap-proximity` (not `mandatory`): `mandatory` forces the container to
-  // rest on *some* snap point and re-resolves which one on every relayout — and
-  // when the offset is ambiguous the browser can pick the *last* card, overriding
-  // this reset. That's not a one-time mount glitch: applying `trackH` below (a
-  // `transition-[height]` reflow) and the ResizeObserver re-snap after mount, so a
-  // mount-only fix can't hold. `proximity` only snaps when already near a point,
-  // so at rest it stays at offset 0 (the first card) and never force-jumps.
-  // We still pin scrollLeft to 0 before paint so the initial card is deterministic
+  // Start on the first question, and stay there until the user moves. Two things
+  // conspire to jump the track to the *last* card on open:
+  //   1. Focus theft — every card auto-focuses its first option on mount, and in a
+  //      shared track focusing an off-screen card scrolls the track to it (last one
+  //      wins), firing onScroll → setActive(lastIndex). Fixed at the source: only
+  //      the active card auto-focuses (see `autoFocusOptions` below).
+  //   2. Snap re-resolution — `snap-mandatory` forces the container to rest on
+  //      *some* snap point and re-picks it on every relayout (trackH application,
+  //      ResizeObserver), which can resolve to the last card. We use `snap-proximity`
+  //      so at rest it stays at offset 0 and never force-jumps.
+  // We also pin scrollLeft to 0 before paint so the initial card is deterministic
   // (scrollLeft directly, not scrollIntoView, which would scroll the chat transcript).
   useLayoutEffect(() => {
     if (trackRef.current) trackRef.current.scrollLeft = 0
@@ -95,7 +97,34 @@ export function QuestionGroup({ questions, onAnswer }: Props) {
     setActive(Math.max(0, Math.min(lastIndex, i)))
   }
 
+  // An orphaned group has no live waiter to resolve: the server delivers the
+  // answer as the next turn's PROMPT (send_prompt), which flips the session to
+  // in_progress and clears the interrupted flags. So only the FIRST per-question
+  // frame would land — answers 2..N would find no orphaned interaction, return
+  // false and come back as QUESTION_NOT_PENDING, while every card had already
+  // been optimistically marked answered. Silent partial delivery.
+  //
+  // Fix stays entirely on the client and leaves the wire protocol alone
+  // (answerQuestion is still questionId + selected[]): send ONE frame carrying
+  // every question's answer, each entry labelled "<header>: <label>" so the
+  // question→answer mapping survives the flattening. The server renders a
+  // multi-entry selection one per line (orphaned_answer_prompt).
+  const orphaned = !!questions[0]?.orphaned
+
   const submitAll = () => {
+    if (orphaned) {
+      const first = questions[0]
+      if (!first) return
+      const flattened = questions.flatMap((q) => {
+        const a = answers.get(q.questionId)
+        return (a?.selected ?? []).map((label) => `${q.header}: ${label}`)
+      })
+      if (flattened.length > 0) {
+        onAnswer(first.questionId, flattened, answers.get(first.questionId)?.mode)
+      }
+      return
+    }
+    // Live path — unchanged: one frame per question, each resolving its own future.
     for (const q of questions) {
       const a = answers.get(q.questionId)
       if (a) onAnswer(q.questionId, a.selected, a.mode)
@@ -165,13 +194,17 @@ export function QuestionGroup({ questions, onAnswer }: Props) {
           '[scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
         )}
       >
-        {questions.map((q) => (
+        {questions.map((q, i) => (
           <div key={q.questionId} className="w-full shrink-0 snap-center">
             <QuestionCard
               block={q}
               onAnswer={onAnswer}
               staged={answers.get(q.questionId) ?? null}
               onStage={stage}
+              // Only the visible card auto-focuses its options. Off-screen cards
+              // that grab focus scroll this shared track to themselves, jumping
+              // the carousel to the wrong question on open.
+              autoFocusOptions={i === active}
             />
           </div>
         ))}

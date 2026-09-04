@@ -30,8 +30,11 @@ server = [
     "pytest",
     "pytest-asyncio",
   "pytest-cov",
+    "pytest-xdist",
+    "pytest-timeout",
     "hypothesis",
     "pyyaml",
+    "numpy",
     # Pin below 0.16 for reproducible CI: ruff 0.16.0 enables new lint rules
     # (RUF100/BLE001/UP041/…) that flag pre-existing server/ code, so an unpinned
     # ruff turns every PR's lint-and-test red the moment a new minor ships. Adopting
@@ -40,6 +43,9 @@ server = [
     "mypy",
     "pydantic-settings",
 ]
+# Server-side dictation engine (server/stt). Installed on the edge by the deploy
+# controller (`.[server,stt]`); CI and runner sync keep `[server]` — tests use a fake engine.
+stt = ["faster-whisper>=1.2,<2"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

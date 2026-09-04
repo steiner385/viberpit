@@ -2,12 +2,13 @@
 import { render, screen, act, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { DeployControllerProvider, useDeployController } from './deployController'
+import { DEPLOY_PHASES } from './deployPhases'
 import * as hooks from '@/api/hooks'
 import type { DeployProgress } from '@/api/types'
 
-const allDone = {
-  preflight: 'done', save: 'done', update: 'done', report: 'done', restart: 'done', resume: 'done',
-}
+// Built from DEPLOY_PHASES (not hand-enumerated) so an added/removed phase can't
+// silently leave this fixture "all done" one phase short of the real thing.
+const allDone = Object.fromEntries(DEPLOY_PHASES.map(p => [p.key, 'done']))
 
 function setStatus(deploy: Partial<DeployProgress>, over: { isError?: boolean; failureCount?: number } = {}) {
   vi.spyOn(hooks, 'useDeployStatus').mockReturnValue(
@@ -25,7 +26,7 @@ function Probe() {
     <div>
       <span data-testid="intent">{c.intent}</span>
       <span data-testid="visible">{String(c.visible)}</span>
-      <button onClick={c.start}>start</button>
+      <button onClick={() => c.start()}>start</button>
       <button onClick={c.dismiss}>dismiss</button>
     </div>
   )
@@ -83,6 +84,19 @@ describe('deployController', () => {
     act(() => { rerender.rerender(<DeployControllerProvider><Probe /></DeployControllerProvider>) })
     expect(screen.getByTestId('intent').textContent).not.toBe('held-failure')
     expect(screen.getByTestId('visible').textContent).toBe('true')
+  })
+
+  it('a status wiped by the controller self-restart dismisses instead of held-failure', () => {
+    // Incident shape (#865): poll N reports running with resume in flight; poll N+1 hits
+    // the freshly restarted controller process, which reports an EMPTY status. The
+    // running true→false edge must not classify that wipe as a failed upgrade.
+    setStart()
+    setStatus({ running: true, phases: { restart: 'done', resume: 'running' } })
+    const rerender = renderProbe()
+    setStatus({ running: false, phases: {}, error: null })
+    act(() => { rerender.rerender(<DeployControllerProvider><Probe /></DeployControllerProvider>) })
+    expect(screen.getByTestId('intent').textContent).toBe('idle')
+    expect(screen.getByTestId('visible').textContent).toBe('false')
   })
 
   it('mutation error sends intent to held-failure', () => {

@@ -41,8 +41,11 @@ def test_idle_still_consumes_capacity():
 
 
 def test_exempt_set_is_derived_from_the_inactive_set():
-    """One derivation, no intermediate set: exempt = inactive + queued + complete."""
-    assert CAPACITY_EXEMPT_STATUSES == INACTIVE_SESSION_STATUSES | {"queued", "complete"}
+    """One derivation, no intermediate set: exempt = inactive + queued + complete +
+    pending_approval (a launch-gated session parked awaiting human approval holds no
+    driver and no runtime slot — see SessionOrchestrator._hold_for_approval)."""
+    assert CAPACITY_EXEMPT_STATUSES == (
+        INACTIVE_SESSION_STATUSES | {"queued", "complete", "pending_approval"})
 
 
 def test_seven_finished_sessions_do_not_block_a_queue(monkeypatch):

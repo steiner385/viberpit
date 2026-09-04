@@ -3,13 +3,24 @@ from __future__ import annotations
 import json
 import os
 
-from .account_auth import oauth_env_for
+from .account_auth import helper_env
+from .claude_bin import cli_path_kwargs as _cli_path_kwargs
 from .completion import COMPLETION_INSTRUCTION, NO_PR_INSTRUCTION
 from .permissions import to_sdk_permission_mode
 
 
 def _build_append_string() -> str:
-    return COMPLETION_INSTRUCTION + "\n\n" + NO_PR_INSTRUCTION
+    """Compose every ccswitch marker instruction into the system-prompt append.
+
+    Single composition point: each marker contract owns its own literal, this owns
+    the order they reach the agent in.
+    """
+    from server.config import get_settings
+    from .model_request import MODEL_REQUEST_INSTRUCTION
+    parts = [COMPLETION_INSTRUCTION, NO_PR_INSTRUCTION]
+    if get_settings().self_model_switch_enabled:
+        parts.append(MODEL_REQUEST_INSTRUCTION)
+    return "\n\n".join(parts)
 
 # Inline flag-settings payload (--settings layer, highest priority).  Auto-approves any
 # project-scoped `.mcp.json` MCP server so the CLI's trust gate (LX1 → "pending" → prompt)
@@ -23,7 +34,37 @@ def _import_sdk():
     return ClaudeSDKClient, ClaudeAgentOptions
 
 
-def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *, on_pre_compact=None):
+# Options the CLI-resolution layer owns outright: an overlay may never replace them.
+# Losing `cli_path` means the SDK silently spawns its own vendored, older `claude`
+# (2.1.183 vs the system 2.1.259) — a failure mode this project has hit twice, and one
+# that shows up as "unsupported model" 400s rather than as anything pointing at the path.
+_FACTORY_OWNED_KWARGS = ("cli_path", "path_to_claude_code_executable")
+
+
+def merge_options_overlay(kwargs: dict, overlay: dict | None) -> dict:
+    """Merge *overlay* over the factory's *kwargs*, keeping the factory-owned keys.
+
+    Returns a new dict; *kwargs* is not mutated.
+    """
+    if not overlay:
+        return dict(kwargs)
+    merged = {**kwargs, **overlay}
+    for key in _FACTORY_OWNED_KWARGS:
+        if key in kwargs:
+            merged[key] = kwargs[key]
+    return merged
+
+
+def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *,
+                     on_pre_compact=None, options_overlay=None):
+    """Build the real ``ClaudeSDKClient`` for one session.
+
+    *options_overlay* (assistant sessions only — see ``server/assistant/options.py``)
+    replaces individual ``ClaudeAgentOptions`` kwargs wholesale, including
+    ``system_prompt``: the ccswitch marker instructions appended below are coding-session
+    contracts (completion marker, PR marker, self-directed model request) and mean
+    nothing to the assistant.
+    """
     ClaudeSDKClient, ClaudeAgentOptions = _import_sdk()
     env = dict(os.environ, CLAUDE_CONFIG_DIR=config_dir)
     if extra_env:
@@ -32,7 +73,7 @@ def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None
     if on_pre_compact is not None:
         from claude_agent_sdk import HookMatcher
         hooks = {"PreCompact": [HookMatcher(hooks=[on_pre_compact])]}
-    opts = ClaudeAgentOptions(
+    kwargs = dict(
         cwd=cwd, env=env, can_use_tool=can_use_tool,
         permission_mode=to_sdk_permission_mode(mode),
         include_partial_messages=True, resume=resume,
@@ -43,7 +84,9 @@ def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None
             "preset": "claude_code",
             "append": _build_append_string(),
         },
+        **_cli_path_kwargs(),
     )
+    opts = ClaudeAgentOptions(**merge_options_overlay(kwargs, options_overlay))
     return ClaudeSDKClient(options=opts)
 
 
@@ -63,17 +106,20 @@ def real_suggestion_factory(cwd, config_dir, account=None):
     ``account_auth.oauth_env_for`` — the same auth env session launch uses — so an account
     whose browser-OAuth refresh is dead but which holds a live setup-token can still generate
     suggestions.
+
+    Env comes from ``account_auth.helper_env``, the shared one-shot-helper builder: it adds the
+    same auth AND points CLAUDE_CONFIG_DIR at a host-local scratch copy, so this spawn cannot
+    reset the fleet's shared config after a torn read (#1005).
     """
     from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
     from .suggestions import SUGGEST_SYSTEM_PROMPT
-    env = dict(os.environ, CLAUDE_CONFIG_DIR=config_dir)
-    if account:
-        env.update(oauth_env_for(account))
+    env = helper_env(config_dir, account)
     model = os.environ.get("CCSWITCH_SUGGEST_MODEL", "claude-haiku-4-5") or None
     opts = ClaudeAgentOptions(
         cwd=cwd, env=env, can_use_tool=_deny_all_tools,
         permission_mode="default", include_partial_messages=True,
         max_turns=1, system_prompt=SUGGEST_SYSTEM_PROMPT, model=model, resume=None,
+        **_cli_path_kwargs(),
     )
     return ClaudeSDKClient(options=opts)
 
@@ -88,16 +134,18 @@ def real_summary_factory(cwd, config_dir, account=None):
     ``account_auth.oauth_env_for`` — the same auth env session launch uses — so an account
     whose browser-OAuth refresh is dead but which holds a live setup-token can still generate
     summaries.
+
+    Env comes from ``account_auth.helper_env`` (see ``real_suggestion_factory``): same auth, plus
+    the host-local scratch CLAUDE_CONFIG_DIR that keeps a torn read off the shared store (#1005).
     """
     from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
     from .summaries import SUMMARY_SYSTEM_PROMPT
-    env = dict(os.environ, CLAUDE_CONFIG_DIR=config_dir)
-    if account:
-        env.update(oauth_env_for(account))
+    env = helper_env(config_dir, account)
     model = os.environ.get("CCSWITCH_SUMMARY_MODEL", "claude-haiku-4-5") or None
     opts = ClaudeAgentOptions(
         cwd=cwd, env=env, can_use_tool=_deny_all_tools,
         permission_mode="default", include_partial_messages=True,
         max_turns=1, system_prompt=SUMMARY_SYSTEM_PROMPT, model=model, resume=None,
+        **_cli_path_kwargs(),
     )
     return ClaudeSDKClient(options=opts)

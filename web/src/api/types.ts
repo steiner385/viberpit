@@ -26,9 +26,16 @@ export interface Account {
   usage: {
     session: UsageWindow
     weekly: UsageWindow
+    // Whether the PROVIDER has extra usage enabled — read-only, set in the
+    // Anthropic console. Distinct from `allowExtraUsage` below, which is this
+    // app's opt-in. Optional: older payloads predate the field.
+    extraUsageEnabled?: boolean
   } | null
   nickname?: string | null
   weeklyReservePct?: number | null
+  // Opt-in to spending paid extra-usage credits on this account once it is at
+  // its ceiling. Absent means off — spending is never a silent default.
+  allowExtraUsage?: boolean
   liveSessions: LiveSessionCounts
   rank: number | null
   rankReason: string | null
@@ -42,6 +49,9 @@ export type SessionStatus =
   | 'idle'
   | 'in_progress'
   | 'condensing'
+  // Emitted by server/sessions/status.py (MID_TURN_STATUSES) but missing here until
+  // statusTier's PRESENTATION was typed against this union — the drift ran both ways.
+  | 'retrying'
   | 'waiting_input'
   | 'waiting_question'
   | 'ready_review'
@@ -52,6 +62,61 @@ export type SessionStatus =
   | 'limited'
   | 'ended'
   | 'queued'
+  | 'pending_approval'
+
+/**
+ * Statuses a session holds BEFORE its driver exists — parked at the launch-time
+ * model gate, or waiting for a capacity slot. No runtime slot, no transcript yet;
+ * a WS attach in this state is read-only. Mirrors the server's pre-spawn shapes
+ * (`_hold_for_approval` / `_enqueue_session`), which both defer the initial prompt
+ * until a LIVE attach — so a view open across the transition must re-attach.
+ */
+export const PRE_SPAWN_STATUSES: ReadonlySet<SessionStatus> = new Set<SessionStatus>([
+  'pending_approval',
+  'queued',
+])
+
+export function isPreSpawnStatus(status: string | null | undefined): boolean {
+  return !!status && PRE_SPAWN_STATUSES.has(status as SessionStatus)
+}
+
+// ---------------------------------------------------------------------------
+// Session-status vocabularies — the single home for "which statuses count as X"
+// (constitution VI). These used to live as three independent inline Sets in
+// statusTier.ts, AutomationsTab.tsx and SessionList.tsx, which silently drifted;
+// they are DISTINCT concepts (a session can be terminal-for-liveness without
+// being bulk-archivable), so they stay separate named sets — but co-located here
+// beside PRE_SPAWN_STATUSES so every classification has ONE definition.
+//
+// 'archived' is a real backend lifecycle status but is deliberately NOT in the
+// SessionStatus union (it never arrives on a live session payload), so the sets
+// that include it are typed ReadonlySet<string> rather than <SessionStatus>.
+// ---------------------------------------------------------------------------
+
+/**
+ * Terminal statuses: a session in one of these is truthfully finished WITHOUT a
+ * live daemon, so host liveness never demotes it (statusTier.ts). A "Working…"
+ * pulse or an "Unreachable" pill over a genuinely-complete session would both be
+ * lies — see the liveness demotion in statusPresentation().
+ */
+export const TERMINAL_STATUSES: ReadonlySet<string> = new Set(['complete', 'ended', 'archived'])
+
+/**
+ * Inactive statuses: the session is no longer live ('ended' — process gone;
+ * 'archived' — cwd moved out, kept for review). Mirrors the backend's
+ * INACTIVE_SESSION_STATUSES (server/db/models.py); used to route a click to the
+ * review vs. open handler and to count "active" sessions.
+ */
+export const INACTIVE_SESSION_STATUSES: ReadonlySet<string> = new Set(['ended', 'archived'])
+
+/**
+ * Archivable statuses: a resting, finished session a bulk "Archive done" action
+ * may sweep. Narrower than TERMINAL (excludes already-'archived') and includes
+ * 'done', which TERMINAL does not (a 'done' session is between turns, not finished).
+ */
+export const ARCHIVABLE_STATUSES: ReadonlySet<SessionStatus> = new Set<SessionStatus>([
+  'done', 'complete', 'ended',
+])
 
 /** A sub-agent (Task/Agent call) summary, nested under its session in the list. */
 export interface SubAgentSummary {
@@ -84,6 +149,14 @@ export interface Session {
   accountPinned?: boolean
   /** Current model alias/id for the session; null = account default. */
   model?: string | null
+  /** True while a "switch after this turn" model change waits for the in-flight turn to end. */
+  modelPending?: boolean
+  /** Model id (alias or full id) parked pending human approval; null/absent = no hold. */
+  pendingModel?: string | null
+  /** The requester's stated reason for pendingModel — a session's own words, or null. */
+  pendingModelReason?: string | null
+  /** Identity that requested pendingModel; "session:self" when the session asked. */
+  pendingModelRequestedBy?: string | null
   /** Cached next-prompt suggestions for a live session (empty when none/detached). */
   latestSuggestions?: string[]
   /** One-line LLM status summary of what the session is doing now (empty when none). */
@@ -115,6 +188,27 @@ export interface Session {
   /** Issue #434: the session's in-flight turn was dropped by a daemon wedge/restart (it
    *  came back idle via rehydrate). The dashboard labels it "re-send to resume". Transient. */
   interruptedByRestart?: boolean
+  /** Derived at the edge from the owning host's heartbeat (spec 002 FR-103).
+   *  Absent/`fresh` ⇒ no demotion. `unknown` ⇒ the heartbeat snapshot could not be
+   *  read (DB down at the edge) — visibly degraded, never silently fresh (NFR-5). */
+  liveness?: 'fresh' | 'stale' | 'unreachable' | 'dead' | 'unknown'
+  /** ISO8601 of the owning host's last confirmed heartbeat, or null (in-process
+   *  sessions and hosts with no heartbeat row). */
+  lastConfirmedAliveAt?: string | null
+  /** Server-computed: this session was interrupted mid-work by a restart and can be resumed. */
+  resumable?: boolean
+  /** Pre-restart status when a daemon restart interrupted this session; drives the
+   *  orphaned-ask notice. Sent by server/api/sessions.py:_record_to_dict (the browser
+   *  serializer — server/sessions/types.py:to_dict is the daemon→edge RPC one). */
+  interruptedFromStatus?: string | null
+  /** Why a needs_attention/limited session is parked (server pause reason token,
+   *  e.g. "all_accounts_busy", "rotation_cap", "pinned_account_limited"). */
+  pausedReason?: string | null
+  /** ISO instant of the earliest known usage reset for a parked session, or null. */
+  pausedUntil?: string | null
+  /** Server-derived: parked because no account has usage headroom (or pinned at its
+   *  ceiling). Counts toward the "Rotate stalled (N)" button; relabels the pill. */
+  usageStalled?: boolean
   /** The automation_id that spawned this session (e.g. 'pr-doctor'); null/absent = human-created. */
   origin?: string | null
   /** The automation's reference key (e.g. 'owner/repo#123'); null/absent when origin is absent. */
@@ -285,10 +379,31 @@ export interface ModelOption { id: string; label: string }
 
 export interface PendingDeploy {
   behind: boolean
+  /** Sha the RUNNING edge reports on /healthz (short), falling back to the deploy
+   *  checkout's HEAD when the edge is unreachable (#859). */
   liveSha: string
   targetSha: string
+  /** Deploy checkout HEAD — may be ahead of liveSha after a deploy that advanced the
+   *  checkout without restarting the units. Absent from pre-#859 controllers. */
+  checkoutSha?: string
   commits: { sha: string; subject: string; author: string; iso: string }[]
+  /** What the Deploy button can act on: "green" whenever something pending is
+   *  deployable — the tip, or an older green commit when the tip is red/pending. */
   ci: string
+  /** The tip's own CI verdict. Absent from pre-green-frontier controllers. */
+  tipCi?: string
+  /** Newest pending commit with green CI (equals targetSha when the tip is green);
+   *  ""/absent when nothing pending is deployable. A partial deploy targets this. */
+  deployableSha?: string
+  /** How many of the pending commits a deploy of deployableSha ships. */
+  deployableCount?: number
+}
+
+export interface DeployHostProgress {
+  state: 'pending' | 'running' | 'done' | 'failed' | 'offline' | 'disabled' | 'unconfigured'
+  step: string | null
+  error: string | null
+  sha: string | null
 }
 
 export interface DeployProgress {
@@ -300,7 +415,12 @@ export interface DeployProgress {
   // `failed`/`gaveUp` are the daemon's LIVE unresolved set (reconciled edge-side),
   // not the controller's frozen deploy-time list — so the banner clears as autopilot
   // recovers sessions. `gaveUp` = capped-out recovery, kept visible for a human.
-  restore?: { restored?: string[]; failed: string[]; gaveUp?: string[] }
+  // `replayed` = mid-turn sessions whose interrupted prompt was re-issued after
+  // the restart (issue #864) — a subset of `restored`.
+  restore?: { restored?: string[]; failed: string[]; gaveUp?: string[]; replayed?: string[] }
+  // Per-fleet-runner progress during the `runners` phase, keyed by host name.
+  // Absent/empty when the deploy was a no-op (already up to date).
+  hosts?: Record<string, DeployHostProgress>
 }
 
 export interface DeployStatusResponse {
@@ -341,6 +461,15 @@ export interface CopilotAddState {
   state: 'pending' | 'awaiting_authorization' | 'authorized' | 'failed'
   userCode: string | null
   verificationUri: string | null
+}
+
+export interface McpAuthState {
+  state: 'idle' | 'starting' | 'awaiting_redirect' | 'exchanging' | 'success' | 'error' | 'cancelled'
+  server?: string | null
+  message?: string | null
+  authUrl?: string | null
+  accounts: string[]
+  startedAt?: number | null
 }
 
 // --- Library (plugins / skills / commands / MCP) ---
@@ -436,6 +565,8 @@ export interface AccountDefaults {
   defaultModel: string | null
   defaultPermissionMode: string | null
   envOverrides: Record<string, string> | null
+  /** Action to take when a model requires approval: 'approve' | 'deny' | null (ask). */
+  modelApprovalAction: string | null
 }
 
 // Session Preset (#597)

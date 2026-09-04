@@ -1,19 +1,50 @@
 import type { Session } from '@/api/types'
-import { statusTier, TIER_RANK, type StatusTier } from './statusTier'
+import {
+  statusPresentation, TIER_RANK, PR_CHECKS_FAILING,
+  type StatusTier, type StatusPresentation,
+} from './statusTier'
 import { anyChecksFailing } from './prStatus'
 
-/** A broken PR is an attention signal even on an otherwise-calm session. */
-function prTier(session: Session): StatusTier | null {
-  return anyChecksFailing(session.prs) ? 'error' : null
+/** Tiers at which nothing is already watching the session's PR: it has no live
+ *  turn and no armed Monitor/wakeup. Only these get lifted by a failing PR.
+ *  `waiting` (waiting_external — an armed Monitor/wakeup, see background_tasks.is_parked)
+ *  and `busy` (a live turn) both mean an agent is already on the CI, so a red
+ *  rollup there is that agent's job, not the user's — don't escalate to "Failed"
+ *  and contradict the card's own "Waiting…"/"Working…" pill. */
+const AT_REST = new Set<StatusTier>(['your-turn'])
+
+/**
+ * The ONE triage read for a session: the presentation its card pill shows AND
+ * the tier its group header / sort rank use — computed together so they can
+ * never disagree (the reported "Waiting…" pill under a "Failed" header).
+ *
+ * Starts from the session's own status presentation (honoring the restart-strand
+ * relabel), then lifts an at-rest session into {@link PR_CHECKS_FAILING} when a
+ * still-actionable PR's checks are red. A `waiting`/`busy`/`needs-you` session is
+ * never overridden — either an agent is already on the PR, or the session is
+ * already more urgent than a failing PR.
+ */
+export function sessionTriage(session: Session): StatusPresentation {
+  const base = statusPresentation(session.status, {
+    interruptedByRestart: session.interruptedByRestart,
+    liveness: session.liveness,
+    usageStalled: session.usageStalled,
+    pausedUntil: session.pausedUntil,
+  })
+  if (
+    AT_REST.has(base.tier)
+    && anyChecksFailing(session.prs)
+    && TIER_RANK.error < TIER_RANK[base.tier]
+  ) {
+    return PR_CHECKS_FAILING
+  }
+  return base
 }
 
-/** Triage tier = the MORE URGENT (lower TIER_RANK) of the session's status tier
- *  and any PR-derived tier. Reuses the single TIER_RANK source — no parallel rank. */
+/** Triage tier for grouping/sorting — the tier of the single {@link sessionTriage}
+ *  read, so the group a card lands in always matches the pill it shows. */
 export function triageTier(session: Session): StatusTier {
-  const st = statusTier(session.status)
-  const pt = prTier(session)
-  if (pt && TIER_RANK[pt] < TIER_RANK[st]) return pt
-  return st
+  return sessionTriage(session).tier
 }
 
 export function triageRank(session: Session): number {

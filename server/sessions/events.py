@@ -29,8 +29,14 @@ def tool_kind(name: str) -> ToolKind:
 @dataclass
 class TurnStart:
     turn_id: str; src_uuid: str | None = None; parent_tool_use_id: str | None = None
+    # Ordinal of this assistant entry in the transcript's turn space — the SAME space
+    # `ReplayWindow.earliest_turn` and the `?before=` page cursor index. Stamped only by
+    # the disk reader (`replay._window`); live-translated and sub-agent turns carry None.
+    # The client uses it to verify page merges keep turn order (telemetry only).
+    turn_index: int | None = None
     def to_wire(self): return {"type": "turnStart", "turnId": self.turn_id,
-                               "srcUuid": self.src_uuid, "parentToolUseId": self.parent_tool_use_id}
+                               "srcUuid": self.src_uuid, "parentToolUseId": self.parent_tool_use_id,
+                               "turnIndex": self.turn_index}
 
 @dataclass
 class TurnModel:
@@ -49,10 +55,14 @@ class TurnEnd:
     turn_id: str; usage: dict | None = None; cost_usd: float | None = None
     src_uuid: str | None = None; parent_tool_use_id: str | None = None; outcome: str = "success"
     pr_resolution: str | None = None
+    # Self-directed model request parsed from this turn's text, or None.
+    # {"model": str, "reason": str | None}
+    model_request: dict | None = None
     def to_wire(self): return {"type": "turnEnd", "turnId": self.turn_id, "usage": self.usage,
                                "costUsd": self.cost_usd, "srcUuid": self.src_uuid,
                                "parentToolUseId": self.parent_tool_use_id, "outcome": self.outcome,
-                               "prResolution": self.pr_resolution}
+                               "prResolution": self.pr_resolution,
+                               "modelRequest": self.model_request}
 
 @dataclass
 class TextDelta:
@@ -112,9 +122,14 @@ class PermissionResolved:
 class Question:
     question_id: str; turn_id: str; header: str; question: str; options: list[dict]; multi_select: bool = False
     ts: float | None = field(default_factory=_now_ms)
+    # True when this question's waiter died with the daemon (see
+    # server/sessions/orphaned_asks.py). The card is re-offered as answerable, but
+    # answering sends a NEW prompt — there is no future left to resolve.
+    orphaned: bool = False
     def to_wire(self): return {"type": "question", "questionId": self.question_id, "turnId": self.turn_id,
                                "header": self.header, "question": self.question, "options": self.options,
-                               "multiSelect": self.multi_select, "ts": self.ts}
+                               "multiSelect": self.multi_select, "ts": self.ts,
+                               "orphaned": self.orphaned}
 
 @dataclass
 class QuestionResolved:
@@ -206,8 +221,17 @@ class ReplayComplete:
 class UserMessage:
     turn_id: str; text: str; src_uuid: str | None = None; images: list[dict] | None = None
     ts: float | None = field(default_factory=_now_ms)
+    # True ONLY on the copy `replay._window` prepends to a window whose head lands
+    # mid-logical-turn: the window's OWNING prompt, re-sent so the turn's content
+    # travels with the prompt that asked for it. Such a copy is at a PAGE BOUNDARY,
+    # not at the prompt's real transcript position — the same prompt id arrives once
+    # per page until the page holding its real position loads. The client uses the
+    # mark to drop boundary copies deterministically on merge, and to detect one left
+    # pinned mid-transcript (the page-boundary ordering bug, #1000).
+    owner_prefix: bool = False
     def to_wire(self): return {"type": "user", "turnId": self.turn_id, "text": self.text, "srcUuid": self.src_uuid,
-                               "images": self.images or [], "ts": self.ts}
+                               "images": self.images or [], "ts": self.ts,
+                               "ownerPrefix": self.owner_prefix}
 
 @dataclass
 class QueueUpdate:

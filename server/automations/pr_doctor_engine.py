@@ -5,6 +5,11 @@ orchestrator (Plan B) executes; plus per-target retry/re-arm/terminate helpers.
 v1 handles failing CI, out-of-date branch, and merge conflict (stuck/queued
 checks are deferred to v2).
 
+v2 (issue #806) adds ``comment_command`` — an ``@claude`` review comment on an
+otherwise-healthy Initiative PR spawns a targeted fix session. It is lowest
+priority: a PR with failing CI or a merge conflict gets the real fix first, and
+comment-command fixes only fire once the PR is otherwise green.
+
 Give-up accounting — why a monotonic ceiling:
 Fix injection is ASYNC. ``record_attempt`` records the PRE-fix head_sha, so when
 the agent's fix pushes a NEW (still-failing) head, the next poll's ``apply_rearm``
@@ -24,7 +29,9 @@ from dataclasses import dataclass
 from server.github.pr_status import PullRequestInfo
 
 # First match wins — conflict before CI (never fight CI on an unmergeable branch).
-FAILURE_PRIORITY = ("blocked", "stuck_enqueue", "merge_conflict", "out_of_date", "failing_ci")
+# ``comment_command`` is last: fires only when the PR is otherwise green.
+FAILURE_PRIORITY = ("blocked", "stuck_enqueue", "merge_conflict", "out_of_date",
+                    "failing_ci", "comment_command")
 
 
 def classify(info: PullRequestInfo) -> str | None:
@@ -65,6 +72,20 @@ def classify(info: PullRequestInfo) -> str | None:
     return None
 
 
+def classify_comment_command(comment_body: str) -> str | None:
+    """Return ``"comment_command"`` when *comment_body* contains an ``@claude``
+    directive, or ``None`` otherwise.  Pure + total.
+
+    This is the PR Doctor bridge to ``review_policy.extract_at_claude_command``:
+    it speaks the failure-mode vocabulary so the poller can pass the result
+    straight to ``plan_recovery``. The orchestrator calls it on each unresolved
+    review comment; the first match stops the scan (the poller feeds one comment
+    at a time or a batch — callers normalise that before calling here).
+    """
+    from server.sdlc.review_policy import extract_at_claude_command
+    return "comment_command" if extract_at_claude_command(comment_body) else None
+
+
 # ---------------------------------------------------------------------------
 # Recovery action dataclasses
 # ---------------------------------------------------------------------------
@@ -86,7 +107,7 @@ class Mechanical:
 
 @dataclass(frozen=True)
 class SessionFix:
-    kind: str  # "failing_ci" | "merge_conflict"
+    kind: str  # "failing_ci" | "merge_conflict" | "comment_command"
 
 
 @dataclass(frozen=True)
@@ -104,6 +125,8 @@ _AUTO_FLAG = {
     "failing_ci": "auto_fix_failing_ci",
     "merge_conflict": "auto_resolve_conflicts",
     "stuck_enqueue": "auto_fix_stuck_enqueue",
+    # comment_command: @claude fix directives on Initiative PRs (Phase 4 #806).
+    "comment_command": "auto_fix_comment_commands",
 }
 
 

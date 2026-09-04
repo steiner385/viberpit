@@ -2,6 +2,7 @@ from __future__ import annotations
 import logging
 
 from .translator import Translator
+from .sdk_contract import one_turn
 from . import events as ev
 
 log = logging.getLogger(__name__)
@@ -87,7 +88,7 @@ class SummaryService:
             parts: list[str] = []
             async with client:
                 await client.query(build_summary_prompt(context))
-                async for msg in client.receive_response():
+                async for msg in one_turn(client):
                     for e in tr.feed(msg):
                         if isinstance(e, ev.TextDelta):
                             parts.append(e.text)

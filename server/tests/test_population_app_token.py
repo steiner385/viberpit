@@ -109,3 +109,30 @@ def test_default_query_supplement_failure_keeps_main_response(monkeypatch):
     resp = P._default_query("cairnea/KinDash", retention_days=7)
     assert len(calls) == 2
     assert resp["data"]["repo"]["environments"]["nodes"]  # main intact
+
+
+def test_default_query_tolerates_forbidden_deploys(monkeypatch):
+    """Deployments/Environments forbidden → GraphQL nulls the `deploys` alias and
+    gh exits non-zero, but the PR population (repo.pullRequests + merged search) is
+    intact and must still be returned. Graceful degradation, not a blank board."""
+    monkeypatch.setattr(P.app_auth, "token_for_owner", lambda owner: "tok")
+    pr = {"number": 811, "url": "u", "title": "t", "state": "OPEN",
+          "isDraft": False, "updatedAt": "2026-09-01T10:00:00Z"}
+    partial = {
+        "data": {"repo": {"pullRequests": {"nodes": [pr]}},
+                 "deploys": None, "merged": {"nodes": []}},
+        "errors": [{"message": "Resource not accessible by integration"}],
+    }
+
+    def fake_run(args, token=None, input=None):
+        class R:
+            returncode = 1
+            stdout = json.dumps(partial)
+            stderr = "gh: Resource not accessible by integration"
+        return R()
+
+    monkeypatch.setattr(P.gitrepos, "_run_gh", fake_run)
+    resp = P._default_query("steiner385/cc-account-switcher", retention_days=7)
+    from server.github.pr_status import parse_population_response
+    out = parse_population_response(resp, "steiner385/cc-account-switcher")
+    assert [p.number for p in out] == [811]

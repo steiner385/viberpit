@@ -7,6 +7,12 @@ import { clientLogger } from '@/obs/logger'
 /** Sentinel id for the optimistic user turn seeded before the SDK echoes the prompt. */
 export const OPTIMISTIC_USER_ID = 'optimistic:user'
 
+// Synthetic id prefix for sent-but-unconfirmed prompts in `pendingSent`. The
+// trailing integer is the monotonic send-order sequence (`pendingSentSeq`), which
+// the drain path relies on to enforce FIFO durability.
+const PENDING_ID_PREFIX = 'pending:'
+const pendingSeq = (p: { id: string }): number => Number(p.id.slice(PENDING_ID_PREFIX.length))
+
 // ── Block types ───────────────────────────────────────────────────────────────
 
 export type Block =
@@ -15,14 +21,22 @@ export type Block =
   | { kind: 'image';      id: string; images: Array<{ url: string; mime: string; name: string }>; ts?: number }
   | { kind: 'tool';       id: string; toolId: string; name: string; toolKind: ToolKind; input: Record<string, unknown>; result?: { ok: boolean; payload: Record<string, unknown>; ts?: number }; ts?: number }
   | { kind: 'permission'; id: string; permId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean; ts?: number }
-  | { kind: 'question';   id: string; questionId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; live?: boolean; answered?: string[]; ts?: number }
+  | { kind: 'question';   id: string; questionId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; live?: boolean; orphaned?: boolean; answered?: string[]; ts?: number }
   | { kind: 'notice';     id: string; text: string; ts?: number }
   | { kind: 'error';      id: string; code: string; message: string; resetsAt?: string | null; ts?: number }
   | { kind: 'recovering'; id: string; message: string; ts?: number }
 
 // ── Turn ─────────────────────────────────────────────────────────────────────
 
-export interface Turn { id: string; role: 'user' | 'assistant'; blocks: Block[]; model?: string | null }
+// `ordinal` is the server's turn index in the `?before=` cursor space (disk replay only;
+// live turns have none). It is NOT used to order rendering — arrival order is — only to
+// verify that page merges kept order (transcript.order.* telemetry).
+//
+// `ownerPrefix` marks a user turn the server prepended to a page whose head lands
+// mid-logical-turn (see EvUser.ownerPrefix). It is the ONLY order signal a user turn
+// carries: user turns have no ordinal, so a misplaced prompt — the actual #1000 bug —
+// is invisible to the ordinal scan and detectable only through this mark.
+export interface Turn { id: string; role: 'user' | 'assistant'; blocks: Block[]; model?: string | null; ordinal?: number; ownerPrefix?: boolean }
 
 /** A self-contained conversation thread (the main transcript, or one sub-agent). */
 export interface SubThread { turns: Turn[]; openBlockId: string | null; model?: string | null }
@@ -204,6 +218,83 @@ function findTurnIdx(turns: Turn[], id: string): number {
 }
 
 /**
+ * Every way a merged transcript can be out of order, from one pass.
+ *
+ * The three ordinal classes compare ADJACENT ordinal-bearing turns (turns without an
+ * ordinal — live, user, tool-result-only — are skipped), so they can only be produced by
+ * a merge that placed a disk-replayed turn wrong relative to another. They are disjoint
+ * and exhaustive: any adjacency that is not `prev.ordinal + 1 === this` is exactly one of
+ * them.
+ *
+ * `pinned` is the fourth class and the only one that sees USER turns. It exists because
+ * the ordinal scan is structurally blind to the bug it was built for: the element
+ * misplaced by the pre-#1000 merge rule was always the server's owning-prompt prefix, a
+ * user turn, which carries no ordinal — replaying the production shape through the old
+ * and new merge rules yields identical ordinal sequences either way.
+ */
+export interface OrderAnomalies {
+  /** Adjacent ordinals running BACKWARDS — server/cursor skew, or a bad splice. */
+  violations: Array<[string, string]>
+  /** A HOLE: ordinals ascend but skip. A page resolving after a heal's replayComplete
+   *  splices a non-adjacent older page; order looks fine and the gap is never re-fetched. */
+  gaps: Array<[string, string]>
+  /** Two turns claiming the SAME ordinal — the transcript was rewritten under a loaded
+   *  page (compaction/resume), so the cursor space the page was fetched in no longer holds. */
+  dupes: Array<[string, string]>
+  /** Ids of owner-prefix user turns pinned AFTER loaded content. A prefix is the head of
+   *  the window it prefixes; with disk content already above it, its real position is
+   *  either above (so this copy is a stale boundary duplicate) or in an unloaded hole.
+   *  This is the check that fires on the #1000 production shape. */
+  pinned: string[]
+}
+
+export function findOrderAnomalies(turns: Turn[]): OrderAnomalies {
+  const out: OrderAnomalies = { violations: [], gaps: [], dupes: [], pinned: [] }
+  let prev: Turn | null = null
+  let sawOrdinal = false
+  for (const t of turns) {
+    if (t.role === 'user' && t.ownerPrefix && sawOrdinal) out.pinned.push(t.id)
+    if (t.ordinal === undefined) continue
+    sawOrdinal = true
+    if (prev !== null) {
+      const p = prev.ordinal as number
+      if (t.ordinal < p) out.violations.push([prev.id, t.id])
+      else if (t.ordinal === p) out.dupes.push([prev.id, t.id])
+      else if (t.ordinal > p + 1) out.gaps.push([prev.id, t.id])
+    }
+    prev = t
+  }
+  return out
+}
+
+/**
+ * Log each anomaly class a merge produced, one line per class, uniform shape:
+ * `transcript.order.<kind> count=<n> first=<ids> earliestTurn=<n> phase=<prepend|replay>`
+ * so `transcript.order.` greps them all while each class stays independently countable.
+ *
+ * Counts are an UPPER BOUND, not an incidence count: this runs inside
+ * `transcriptReducer`, which React may invoke more than once per action (StrictMode
+ * double-invoke, concurrent-render replay), so one merge can log the same anomaly twice.
+ * Read them as "this class occurred", not as "it occurred N times".
+ */
+function warnIfOutOfOrder(turns: Turn[], earliestTurn: number, phase: 'prepend' | 'replay'): void {
+  const { violations, gaps, dupes, pinned } = findOrderAnomalies(turns)
+  const tail = `earliestTurn=${earliestTurn} phase=${phase}`
+  const warn = (kind: string, count: number, first: string): void => {
+    if (count === 0) return
+    clientLogger.warn(`transcript.order.${kind} count=${count} first=${first} ${tail}`)
+  }
+  // `first` names the offending adjacency with a glyph for its relation, so the sample
+  // in the log line is self-describing: a>b backwards, a..b hole, a=b same ordinal.
+  const pair = (pairs: Array<[string, string]>, sep: string): string =>
+    pairs.length === 0 ? '' : `${pairs[0][0]}${sep}${pairs[0][1]}`
+  warn('violation', violations.length, pair(violations, '>'))
+  warn('gap', gaps.length, pair(gaps, '..'))
+  warn('dupe', dupes.length, pair(dupes, '='))
+  warn('prefixPinned', pinned.length, pinned[0] ?? '')
+}
+
+/**
  * Return a new turns array with the turn at `idx` replaced by the result of
  * `fn`. Turns before and after are referentially identical (important for
  * React.memo stability).
@@ -269,11 +360,15 @@ function resolveQuestionInPlace(state: TranscriptState, questionId: string, answ
 
 /**
  * Ensure a turn exists at turnId; if it doesn't, append an empty assistant
- * turn. Returns [nextTurns, idx].
+ * turn at the TAIL and count it. A block event with no preceding turnStart means the
+ * frame reached us out of order (an attach re-emit of a pending ask/error whose turn
+ * fell outside the replay window, a delta for an evicted turn) — the fabricated turn
+ * may render far from where its content belongs. Returns [nextTurns, idx].
  */
-function ensureAssistantTurn(turns: Turn[], turnId: string): [Turn[], number] {
+function ensureAssistantTurn(turns: Turn[], turnId: string, evType: string): [Turn[], number] {
   const idx = findTurnIdx(turns, turnId)
   if (idx !== -1) return [turns, idx]
+  clientLogger.warn(`transcript.turn.fabricated type=${evType} turnId=${turnId}`)
   return [[...turns, { id: turnId, role: 'assistant', blocks: [] }], turns.length]
 }
 
@@ -287,6 +382,16 @@ function userTurnBlocks(turnId: string, text: string, images?: EvUser['images'],
   const blocks: Block[] = [{ kind: 'text', id: `${turnId}:u`, text, ts }]
   if (images && images.length) blocks.push({ kind: 'image', id: `${turnId}:img`, images, ts })
   return blocks
+}
+
+/**
+ * Build a user turn. Every user-turn path (append, upsert, optimistic-seed adoption,
+ * pending adoption, sub-thread) goes through here so the server's boundary-prefix mark
+ * travels with the turn from exactly one place — and so an upsert that re-emits the SAME
+ * prompt without the mark (the page holding its real position finally loaded) clears it.
+ */
+function userTurn(turnId: string, blocks: Block[], ownerPrefix?: boolean): Turn {
+  return { id: turnId, role: 'user', blocks, ...(ownerPrefix ? { ownerPrefix: true } : {}) }
 }
 
 // ── Thread-scoped reducer ─────────────────────────────────────────────────────
@@ -306,8 +411,8 @@ function applyToThread(thread: SubThread, ev: BlockEvent): SubThread {
       const idx = findTurnIdx(thread.turns, turnId)
       const turns =
         idx === -1
-          ? [...thread.turns, { id: turnId, role: 'user' as const, blocks }]
-          : replaceTurn(thread.turns, idx, (t) => ({ ...t, blocks }))
+          ? [...thread.turns, userTurn(turnId, blocks, ev.ownerPrefix)]
+          : replaceTurn(thread.turns, idx, () => userTurn(turnId, blocks, ev.ownerPrefix))
       return { turns, openBlockId: null }
     }
 
@@ -325,7 +430,7 @@ function applyToThread(thread: SubThread, ev: BlockEvent): SubThread {
 
     case 'textDelta': {
       const { turnId, text } = ev
-      const [turns, idx] = ensureAssistantTurn(thread.turns, turnId)
+      const [turns, idx] = ensureAssistantTurn(thread.turns, turnId, ev.type)
       const turn = turns[idx]
       const openBlock = thread.openBlockId
         ? turn.blocks.find((b) => b.id === thread.openBlockId && b.kind === 'text')
@@ -347,7 +452,7 @@ function applyToThread(thread: SubThread, ev: BlockEvent): SubThread {
 
     case 'thinkingDelta': {
       const { turnId, text } = ev
-      const [turns, idx] = ensureAssistantTurn(thread.turns, turnId)
+      const [turns, idx] = ensureAssistantTurn(thread.turns, turnId, ev.type)
       const turn = turns[idx]
       const openBlock = thread.openBlockId
         ? turn.blocks.find((b) => b.id === thread.openBlockId && b.kind === 'thinking')
@@ -369,7 +474,7 @@ function applyToThread(thread: SubThread, ev: BlockEvent): SubThread {
 
     case 'toolCall': {
       const { turnId, toolId, name, toolKind, input } = ev
-      const [turns, idx] = ensureAssistantTurn(thread.turns, turnId)
+      const [turns, idx] = ensureAssistantTurn(thread.turns, turnId, ev.type)
       const turn = turns[idx]
       if (turn.blocks.some((b) => b.kind === 'tool' && b.toolId === toolId)) {
         // Idempotent replay of a tool we already have. Return the *same* thread
@@ -451,12 +556,22 @@ export function transcriptReducer(
       const blocks = userTurnBlocks(turnId, text, ev.images, ev.ts)
 
       // A disk replay (replaying=true) re-emitting this prompt proves it is durably
-      // on disk → drop the first matching pending entry. A live echo (replaying=false)
+      // on disk → drop the matching pending entry. A live echo (replaying=false)
       // does NOT confirm durability, so it must not consume the buffer.
+      //
+      // Durability is MONOTONIC in send order: the daemon appends UserMessages in
+      // the order it receives them, so a confirmed prompt proves every prompt sent
+      // BEFORE it is on disk too. Drop the match AND every older (lower-seq) entry —
+      // otherwise a long-since-durable prompt that scrolled out of the replay's tail
+      // window lingers in the buffer and replayComplete resurrects it as an
+      // untimestamped bubble at the very bottom.
       let pendingSent = state.pendingSent
       if (state.replaying) {
         const pi = pendingSent.findIndex((p) => p.text === text)
-        if (pi !== -1) pendingSent = [...pendingSent.slice(0, pi), ...pendingSent.slice(pi + 1)]
+        if (pi !== -1) {
+          const drainedSeq = pendingSeq(pendingSent[pi])
+          pendingSent = pendingSent.filter((p) => pendingSeq(p) > drainedSeq)
+        }
       }
 
       // Adopt an optimistic seed turn if present: re-key it in place to the real
@@ -465,22 +580,43 @@ export function transcriptReducer(
       // user event is always the seeded prompt — and only one optimistic turn exists.
       const optIdx = findTurnIdx(state.turns, OPTIMISTIC_USER_ID)
       if (optIdx !== -1) {
-        const nextTurns = replaceTurn(state.turns, optIdx, () => ({
-          id: turnId,
-          role: 'user' as const,
-          blocks,
-        }))
+        const nextTurns = replaceTurn(state.turns, optIdx, () => userTurn(turnId, blocks, ev.ownerPrefix))
+        return { ...state, turns: nextTurns, openBlockId: null, latestSuggestions: [], pendingSent }
+      }
+
+      // Adopt a re-asserted pending turn with the same text: after a mid-turn
+      // heal, replayComplete re-asserts a sent-but-unconfirmed prompt as a
+      // `pending:N` turn; the open-turn resupply (or a later replay) then
+      // re-emits the real user echo. Re-key the pending turn in place instead of
+      // appending a duplicate bubble. Adoption is display-only — it deliberately
+      // does NOT consume pendingSent (only the replaying=true path above proves
+      // durability), so the buffer still re-asserts if the next replay lacks it.
+      const pendIdx = state.turns.findIndex(
+        (t) => t.role === 'user' && t.id.startsWith(PENDING_ID_PREFIX)
+          && t.blocks.some((b) => b.kind === 'text' && b.text === text),
+      )
+      if (pendIdx !== -1) {
+        const nextTurns = replaceTurn(state.turns, pendIdx, () => userTurn(turnId, blocks, ev.ownerPrefix))
         return { ...state, turns: nextTurns, openBlockId: null, latestSuggestions: [], pendingSent }
       }
 
       const idx = findTurnIdx(state.turns, turnId)
       let nextTurns: Turn[]
       if (idx === -1) {
-        // Append new user turn
-        nextTurns = [...state.turns, { id: turnId, role: 'user', blocks }]
+        // Append new user turn at the TAIL. For an owner-PREFIX copy that is a
+        // FABRICATED position, the third site of the shape ensureAssistantTurn reports
+        // for assistant turns: a prefix belongs at the head of the window it prefixes,
+        // so with content already loaded its real position is either above (making this
+        // a stale boundary copy) or in a hole this page never covered. Reached by a
+        // reattach's ring resupply, not by a replay — a replayReset empties `turns`
+        // first, so the prefix legitimately lands on an empty transcript.
+        if (ev.ownerPrefix && state.turns.length > 0) {
+          clientLogger.warn(`transcript.turn.fabricated type=${ev.type} turnId=${turnId}`)
+        }
+        nextTurns = [...state.turns, userTurn(turnId, blocks, ev.ownerPrefix)]
       } else {
-        // Upsert: rebuild the existing turn's blocks (text + any attachments)
-        nextTurns = replaceTurn(state.turns, idx, (t) => ({ ...t, blocks }))
+        // Upsert: rebuild the turn (blocks + prefix mark) from the newer event.
+        nextTurns = replaceTurn(state.turns, idx, () => userTurn(turnId, blocks, ev.ownerPrefix))
       }
       return { ...state, turns: nextTurns, openBlockId: null, latestSuggestions: [], pendingSent }
     }
@@ -494,9 +630,10 @@ export function transcriptReducer(
         if (state.openBlockId === null) return state
         return { ...state, openBlockId: null, latestSuggestions: [] }
       }
+      const ordinal = ev.turnIndex ?? undefined
       return {
         ...state,
-        turns: [...state.turns, { id: turnId, role: 'assistant', blocks: [] }],
+        turns: [...state.turns, { id: turnId, role: 'assistant', blocks: [], ...(ordinal !== undefined ? { ordinal } : {}) }],
         openBlockId: null,
         latestSuggestions: [],
       }
@@ -505,7 +642,7 @@ export function transcriptReducer(
     // ── textDelta ─────────────────────────────────────────────────────────────
     case 'textDelta': {
       const { turnId, text } = ev
-      const [turns, idx] = ensureAssistantTurn(state.turns, turnId)
+      const [turns, idx] = ensureAssistantTurn(state.turns, turnId, ev.type)
       const turn = turns[idx]
 
       // Check if the currently open block is a text block in this turn
@@ -539,7 +676,7 @@ export function transcriptReducer(
     // ── thinkingDelta ─────────────────────────────────────────────────────────
     case 'thinkingDelta': {
       const { turnId, text } = ev
-      const [turns, idx] = ensureAssistantTurn(state.turns, turnId)
+      const [turns, idx] = ensureAssistantTurn(state.turns, turnId, ev.type)
       const turn = turns[idx]
 
       // Check if the currently open block is a thinking block in this turn
@@ -573,7 +710,7 @@ export function transcriptReducer(
     // ── toolCall ─────────────────────────────────────────────────────────────
     case 'toolCall': {
       const { turnId, toolId, name, toolKind, input } = ev
-      const [turns, idx] = ensureAssistantTurn(state.turns, turnId)
+      const [turns, idx] = ensureAssistantTurn(state.turns, turnId, ev.type)
       const turn = turns[idx]
 
       // Idempotent by toolId. If turn already has this tool and openBlockId is already null, return state unchanged.
@@ -620,7 +757,7 @@ export function transcriptReducer(
     // ── permissionRequest ─────────────────────────────────────────────────────
     case 'permissionRequest': {
       const { permId, turnId, tool, toolKind, input, plan } = ev
-      const [turns, idx] = ensureAssistantTurn(state.turns, turnId)
+      const [turns, idx] = ensureAssistantTurn(state.turns, turnId, ev.type)
       const turn = turns[idx]
 
       // Idempotent by permId
@@ -647,8 +784,8 @@ export function transcriptReducer(
 
     // ── question ─────────────────────────────────────────────────────────────
     case 'question': {
-      const { questionId, turnId, header, question, options, multiSelect } = ev
-      const [turns, idx] = ensureAssistantTurn(state.turns, turnId)
+      const { questionId, turnId, header, question, options, multiSelect, orphaned } = ev
+      const [turns, idx] = ensureAssistantTurn(state.turns, turnId, ev.type)
       const turn = turns[idx]
 
       // Idempotent by questionId — but the server re-emits a still-pending
@@ -665,7 +802,9 @@ export function transcriptReducer(
           const nextTurns = replaceTurn(turns, idx, (t) => ({
             ...t,
             blocks: t.blocks.map((b) =>
-              b.kind === 'question' && b.questionId === questionId ? { ...b, live: true } : b,
+              b.kind === 'question' && b.questionId === questionId
+                ? { ...b, live: true, orphaned: !!orphaned }
+                : b,
             ),
           }))
           return { ...state, turns: nextTurns }
@@ -673,7 +812,7 @@ export function transcriptReducer(
         return { ...state, turns }
       }
 
-      const newBlock: Block = { kind: 'question', id: questionId, questionId, header, question, options, multiSelect, live: !state.replaying, ts: ev.ts }
+      const newBlock: Block = { kind: 'question', id: questionId, questionId, header, question, options, multiSelect, live: !state.replaying, orphaned: !!orphaned, ts: ev.ts }
       const nextTurns = replaceTurn(turns, idx, (t) => ({
         ...t,
         blocks: [...t.blocks, newBlock],
@@ -687,10 +826,21 @@ export function transcriptReducer(
     // real job is re-resolving the block that a mid-turn reattach's ring resupply
     // recreates live, and resolving cards in OTHER attached clients.
     case 'questionResolved': {
-      return resolveQuestionInPlace(state, ev.questionId, ev.selected ?? [])
+      const selected = ev.selected ?? []
+      const next = resolveQuestionInPlace(state, ev.questionId, selected)
+      // A composer prompt sent while this question was pending is delivered by the
+      // server AS the answer (chat mode) — it never echoes as a `user` turn, so
+      // nothing else would consume its pendingSent entry and the next
+      // replayComplete would re-assert the answer as a phantom "pending" bubble.
+      // A resolution carrying that exact text proves the server consumed it.
+      const pendingSent = next.pendingSent.filter((p) => !selected.includes(p.text))
+      return pendingSent.length === next.pendingSent.length ? next : { ...next, pendingSent }
     }
 
     // ── sessionMeta ───────────────────────────────────────────────────────────
+    // The SDK's LAUNCH model (system/init). It is the account default whenever the
+    // session was created without an explicit pick, and it is never re-emitted
+    // after a /model switch — so it seeds `model` but must not own it (see turnModel).
     case 'sessionMeta': {
       return { ...state, model: ev.model }
     }
@@ -698,7 +848,8 @@ export function transcriptReducer(
     // ── turnModel ─────────────────────────────────────────────────────────────
     // The actual producing model for a turn (from AssistantMessage.model). A pid
     // routes it to the spawning Task's sub-thread; otherwise it stamps the
-    // main-thread turn. Display ("only when changed") is decided at render time.
+    // main-thread turn AND refreshes `model`, the live "model in use" readout —
+    // the truth after a switch. Display ("only when changed") is decided at render time.
     case 'turnModel': {
       const pid = ev.parentToolUseId
       if (pid) {
@@ -708,8 +859,12 @@ export function transcriptReducer(
       }
       const idx = findTurnIdx(state.turns, ev.turnId)
       if (idx === -1) return state
-      if (state.turns[idx].model === ev.model) return state
-      return { ...state, turns: replaceTurn(state.turns, idx, (t) => ({ ...t, model: ev.model })) }
+      if (state.turns[idx].model === ev.model && state.model === ev.model) return state
+      return {
+        ...state,
+        model: ev.model,
+        turns: replaceTurn(state.turns, idx, (t) => ({ ...t, model: ev.model })),
+      }
     }
 
     // ── title ─────────────────────────────────────────────────────────────────
@@ -792,11 +947,11 @@ export function transcriptReducer(
       // reset the turns array was wiped, so `pending:N` ids cannot already be present.
       let turns = state.turns
       if (state.hadReset && state.pendingSent.length > 0) {
-        const toAppend: Turn[] = state.pendingSent.map((p) => ({
-          id: p.id, role: 'user' as const, blocks: userTurnBlocks(p.id, p.text),
-        }))
+        const toAppend: Turn[] = state.pendingSent.map((p) =>
+          userTurn(p.id, userTurnBlocks(p.id, p.text)))
         turns = [...turns, ...toAppend]
       }
+      warnIfOutOfOrder(turns, ev.earliestTurn ?? state.earliestTurn, 'replay')
       return {
         ...state,
         replaying: false,
@@ -825,11 +980,33 @@ export function transcriptReducer(
       // transcript once the replay settles.
       if (state.replaying) return { ...state, loadingOlder: false }
       const olderTurns = buildTurnsFromEvents(ev.events)
-      // Drop any older turn whose id already exists (defensive; windows are disjoint server-side).
-      const existing = new Set(state.turns.map((t) => t.id))
-      const fresh = olderTurns.filter((t) => !existing.has(t.id))
-      return { ...state, turns: [...fresh, ...state.turns],
-               earliestTurn: ev.earliestTurn, loadingOlder: false }
+      // The BOUNDARY COPY loses. The server prepends a window's owning UserMessage to any
+      // page (and to the attach window) whose head lands mid-logical-turn, so the same
+      // prompt id arrives once per page until the page holding its real position loads;
+      // that copy is marked `ownerPrefix`. Overlapping ids are always user turns rebuilt
+      // from the same UserMessage record, so replacing one wholesale — position AND
+      // content — is safe; the only question is which position is real, and the mark
+      // answers it outright.
+      //
+      // Normally the incoming older page wins: an on-screen copy that overlaps an older
+      // page is that page's boundary prefix. (Keeping it pinned "Start Phase B" hours
+      // after its real position was the page-boundary ordering bug, session 888ad2bf,
+      // 2026-09-03.) But when the INCOMING copy is the prefix and the on-screen one is
+      // not, the on-screen copy is the real position and must survive — with adjacent
+      // pages that cannot happen, so #1000 shipped "older page always wins" as a
+      // heuristic that was correct by construction. The mark makes the rule explicit,
+      // and holds for the non-adjacent pages a heal race can splice.
+      const incoming = new Map(olderTurns.map((t) => [t.id, t]))
+      const superseded = new Set<string>()   // incoming ids that lose to an on-screen copy
+      const kept = state.turns.filter((t) => {
+        const inc = incoming.get(t.id)
+        if (inc === undefined) return true
+        if (inc.ownerPrefix && !t.ownerPrefix) { superseded.add(t.id); return true }
+        return false
+      })
+      const turns = [...olderTurns.filter((t) => !superseded.has(t.id)), ...kept]
+      warnIfOutOfOrder(turns, ev.earliestTurn, 'prepend')
+      return { ...state, turns, earliestTurn: ev.earliestTurn, loadingOlder: false }
     }
 
     // ── error ─────────────────────────────────────────────────────────────────
@@ -840,7 +1017,7 @@ export function transcriptReducer(
       // single slot; the timeline is append-only).
       const banner = { code: ev.code, message: ev.message, resetsAt: ev.resetsAt }
       if (!ev.turnId) return { ...state, error: banner }
-      const [withTurn, idx] = ensureAssistantTurn(state.turns, ev.turnId)
+      const [withTurn, idx] = ensureAssistantTurn(state.turns, ev.turnId, ev.type)
       const turn = withTurn[idx]
       const errBlock: Block = {
         kind: 'error', id: `${ev.turnId}:err:${turn.blocks.length}`,
@@ -855,7 +1032,7 @@ export function transcriptReducer(
       // A dropped turn is being auto-resent. Append a soft inline block; deliberately
       // do NOT raise state.error — this is self-healing, not a failure. If recovery is
       // exhausted the backend sends a real `error` event (the red give-up surface).
-      const [withTurn, idx] = ensureAssistantTurn(state.turns, ev.turnId)
+      const [withTurn, idx] = ensureAssistantTurn(state.turns, ev.turnId, ev.type)
       const turn = withTurn[idx]
       const block: Block = {
         kind: 'recovering', id: `${ev.turnId}:rec:${turn.blocks.length}`,
@@ -923,14 +1100,14 @@ export function transcriptReducer(
       const block: Block = { kind: 'text', id: `${OPTIMISTIC_USER_ID}:u`, text: ev.text }
       return {
         ...state,
-        turns: [...state.turns, { id: OPTIMISTIC_USER_ID, role: 'user', blocks: [block] }],
+        turns: [...state.turns, userTurn(OPTIMISTIC_USER_ID, [block])],
         openBlockId: null,
       }
     }
 
     case '_trackSentPrompt': {
       const MAX = 20
-      const entry = { id: `pending:${state.pendingSentSeq}`, text: ev.text }
+      const entry = { id: `${PENDING_ID_PREFIX}${state.pendingSentSeq}`, text: ev.text }
       const next = [...state.pendingSent, entry]
       const capped = next.length > MAX ? next.slice(next.length - MAX) : next
       return { ...state, pendingSent: capped, pendingSentSeq: state.pendingSentSeq + 1 }

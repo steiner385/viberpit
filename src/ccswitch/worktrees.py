@@ -28,6 +28,8 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+from ccswitch.gitrepos import git_env_for_remote
+
 log = logging.getLogger(__name__)
 
 # Per-clone serialization. Every worktree creation for one shared clone mutates
@@ -63,6 +65,19 @@ class DiskSpaceError(WorktreeError):
     Subclasses WorktreeError so existing catch-sites keep working; the
     distinct type (and the stable message marker) lets callers detect
     disk exhaustion and stop retrying instead of churning.
+    """
+
+
+class BranchRefUnresolvableError(WorktreeError):
+    """Raised when the requested branch resolves to no ref at all — git's
+    "fatal: invalid reference": not a local branch and not on origin.
+
+    Typical cause is a lost race, not a broken repo: the branch was a PR head
+    the remote auto-deleted on merge between session enqueue and spawn, and
+    the pre-add fetch pruned the remote-tracking ref too (issue #836). The
+    distinct type lets the orchestrator pair it with a merged PR and treat
+    the failure as a benign completion; subclasses WorktreeError so existing
+    catch-sites keep working.
     """
 
 
@@ -118,13 +133,21 @@ class WorktreeInfo:
     repo: str             # absolute toplevel of the main repo the worktree belongs to
 
 
-def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, capture_output=True, text=True)
+def _run(
+    args: list[str], env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(args, capture_output=True, text=True, env=env)
+
+
+def _origin_url(repo_top: str) -> str:
+    """The repo's ``origin`` URL, or "" when it has no origin."""
+    r = _run(["git", "-C", repo_top, "remote", "get-url", "origin"])
+    return r.stdout.strip() if r.returncode == 0 else ""
 
 
 def _has_origin(repo_top: str) -> bool:
     """True if the repo has an `origin` remote configured."""
-    return _run(["git", "-C", repo_top, "remote", "get-url", "origin"]).returncode == 0
+    return bool(_origin_url(repo_top))
 
 
 def _remote_default_ref(repo_top: str) -> str | None:
@@ -145,12 +168,18 @@ def _remote_default_ref(repo_top: str) -> str | None:
 def _try_fetch_origin(repo_top: str) -> bool:
     """Fetch `origin`; return True on success.
 
-    A fetch failure is best-effort, NOT fatal: many real origins are not fetchable
-    non-interactively (private repos with no cached credentials, the credential-less
-    deploy box, offline). On failure we log a warning and return False so the caller
-    bases the session on the local ref rather than refusing to start it.
+    Authenticates with the same per-owner App installation token as
+    ``gitrepos.ensure_clone`` (issue #887) — this is a NETWORK call, and leaving it
+    on the machine's ambient credential helper is what made "private repos with no
+    cached credentials" look like an unavoidable fact rather than a bug. Falls back
+    to ambient auth when no App token is available (CLI usage, non-GitHub remote).
+
+    A fetch failure is still best-effort, NOT fatal: the credential-less deploy box
+    and plain offline both hit it. On failure we log a warning and return False so
+    the caller bases the session on the local ref rather than refusing to start it.
     """
-    r = _run(["git", "-C", repo_top, "fetch", "origin"])
+    r = _run(["git", "-C", repo_top, "fetch", "origin"],
+             env=git_env_for_remote(_origin_url(repo_top)))
     if r.returncode != 0:
         log.warning("worktree.fetch_failed repo=%s — basing on local ref: %s",
                     repo_top, r.stderr.strip())
@@ -287,9 +316,13 @@ def clear_stale_registration(repo_top: str, path: str | Path) -> None:
     _run(["git", "-C", repo_top, "worktree", "remove", "-f", "-f", str(p)])
 
 
-def _lock_worktree(repo_top: str, dest: Path) -> None:
-    """Lock a freshly-created session worktree so a sibling session's global
-    ``git worktree prune`` can never reap its admin record mid-session (#177).
+def lock_worktree(repo_top: str, dest: Path) -> None:
+    """Lock a session worktree so a sibling session's global ``git worktree
+    prune`` can never reap its admin record mid-session (#177).
+
+    Public because recovery re-locks too: :mod:`ccswitch.clone_doctor` re-creates
+    admin records for worktrees orphaned by a deleted clone (#1003), and a
+    recovered record must carry the same protection a freshly-created one does.
 
     Best-effort: a lock failure is logged, not raised — the worktree is fully
     usable unlocked, just less protected against a concurrent prune.
@@ -311,6 +344,8 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
 
     Raises:
         WorktreeError: if `repo_path` is not a git repo, or worktree creation fails.
+        BranchRefUnresolvableError: when `branch` resolves to no ref anywhere
+            (e.g. a PR head branch auto-deleted on merge — issue #836).
     """
     # Argument-injection guard: reject branch names starting with '-' so they
     # cannot be interpreted as git options even with the '--' separator below.
@@ -365,7 +400,7 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
             else:
                 rd = _run(["git", "-C", repo_top, "worktree", "add", "--detach", str(dest)])
             if rd.returncode == 0:
-                _lock_worktree(repo_top, dest)
+                lock_worktree(repo_top, dest)
                 log.info("worktree.create_detached repo=%s path=%s", repo_name, dest)
                 return WorktreeInfo(str(dest), None, is_child=False, repo=repo_top)
             raise WorktreeError(f"git worktree add --detach failed: {rd.stderr.strip()}")
@@ -378,7 +413,7 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
             r = _run(["git", "-C", repo_top, "worktree", "add", "-b", child,
                       str(dest), "--", f"origin/{branch}"])
             if r.returncode == 0:
-                _lock_worktree(repo_top, dest)
+                lock_worktree(repo_top, dest)
                 log.info("worktree.create_child repo=%s base=origin/%s child=%s path=%s",
                          repo_name, branch, child, dest)
                 return WorktreeInfo(str(dest), child, is_child=True, repo=repo_top)
@@ -390,7 +425,7 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
         # be parsed as a git option (belt-and-suspenders with the '-' prefix guard above).
         r = _run(["git", "-C", repo_top, "worktree", "add", str(dest), "--", branch])
         if r.returncode == 0:
-            _lock_worktree(repo_top, dest)
+            lock_worktree(repo_top, dest)
             log.info("worktree.create repo=%s branch=%s path=%s", repo_name, branch, dest)
             return WorktreeInfo(str(dest), branch, is_child=False, repo=repo_top)
 
@@ -398,15 +433,19 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
         child = f"ccswitch/{branch}-{_short(session_id)}"
         r2 = _run(["git", "-C", repo_top, "worktree", "add", "-b", child, str(dest), "--", branch])
         if r2.returncode == 0:
-            _lock_worktree(repo_top, dest)
+            lock_worktree(repo_top, dest)
             log.info("worktree.create_child repo=%s base=%s child=%s path=%s",
                      repo_name, branch, child, dest)
             return WorktreeInfo(str(dest), child, is_child=True, repo=repo_top)
 
-        raise WorktreeError(
-            f"git worktree add failed for {branch!r}: "
-            f"{r.stderr.strip()} / {r2.stderr.strip()}"
-        )
+        msg = (f"git worktree add failed for {branch!r}: "
+               f"{r.stderr.strip()} / {r2.stderr.strip()}")
+        # r2 is the deciding attempt: `-b <child> -- <branch>` needs only that
+        # <branch> resolves as a commit-ish, so "invalid reference" there means
+        # the ref exists nowhere (deleted-on-merge race), not merely "busy".
+        if "invalid reference" in r2.stderr:
+            raise BranchRefUnresolvableError(msg)
+        raise WorktreeError(msg)
 
 
 def remove_worktree(worktree_path: str, force: bool = False) -> bool:

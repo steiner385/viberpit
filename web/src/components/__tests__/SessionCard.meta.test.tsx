@@ -3,8 +3,9 @@ import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect } from 'vitest'
 import { SessionCard } from '../SessionCard'
 import type { Session, SubAgentSummary } from '@/api/types'
+import { session } from '@/test/factories'
 
-const base: Session = {
+const base: Session = session({
   id: '1',
   name: 'Fix login bug',
   accountName: 'work',
@@ -14,7 +15,7 @@ const base: Session = {
   status: 'done',
   createdAt: '2026-06-22T11:00:00Z',
   updatedAt: '2026-06-22T11:58:00Z',
-}
+})
 
 const noop = () => {}
 
@@ -28,6 +29,7 @@ function renderCard(session: Session) {
         onRename={noop}
         onClose={noop}
         onDelete={noop}
+        onQuickResume={noop}
       />
     </MemoryRouter>,
   )

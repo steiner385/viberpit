@@ -74,6 +74,16 @@ def _run_create(tmp_path, *, model):
             await orch.start()
             try:
                 rec = await orch.create_session("auto", model=model)
+                # A session that came back without a driver was parked (queued /
+                # pending_approval) rather than spawned — e.g. the requested
+                # model tier landed on the approval denylist. Name that outcome
+                # instead of failing with a bare KeyError on the driver lookup
+                # (the failure shape run 33400666371 hit while this test still
+                # requested the gated "fable" tier).
+                assert rec.id in orch._drivers, (
+                    f"session was not spawned with a driver: status={rec.status!r} "
+                    f"(model {model!r} gated or capacity-queued?)"
+                )
                 driver_model = orch._drivers[rec.id]._client.model
                 async with db_session() as db:
                     row = (await db.execute(
@@ -87,10 +97,13 @@ def _run_create(tmp_path, *, model):
 
 
 def test_create_session_applies_and_persists_model(tmp_path):
-    rec, row_model, driver_model = _run_create(tmp_path, model="fable")
-    assert driver_model == "fable"   # applied to the live driver before the first turn
-    assert row_model == "fable"      # persisted onto the DB row
-    assert rec.model == "fable"      # mirrored on the in-memory record
+    # A non-gated tier: the model-approval gate parks gated models (e.g. fable) as
+    # pending_approval with no driver instead of applying them — that path is covered
+    # by test_orchestrator_model_gate. Here we assert the ordinary apply+persist path.
+    rec, row_model, driver_model = _run_create(tmp_path, model="opus")
+    assert driver_model == "opus"    # applied to the live driver before the first turn
+    assert row_model == "opus"       # persisted onto the DB row
+    assert rec.model == "opus"       # mirrored on the in-memory record
 
 
 def test_create_session_default_model_is_account_default(tmp_path):

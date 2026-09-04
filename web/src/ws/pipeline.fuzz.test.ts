@@ -24,7 +24,7 @@
 // preserve exactly this net effect (see server/bridge/ws.py _handle_attach).
 import { describe, it, expect } from 'vitest'
 import fc from 'fast-check'
-import { handleLiveBatch, createGapState } from './liveBatch'
+import { handleLiveBatch, createGapState, type WireMeta } from './liveBatch'
 import { transcriptReducer, initialTranscript, type TranscriptState } from '../session/reducer'
 import { selectVisibleTurns } from '../session/selectors'
 import type { SessionEvent } from '../session/events'
@@ -105,7 +105,7 @@ function simulate(plan: Plan): { visible: ReturnType<typeof selectVisibleTurns>;
       // resupply on the server, outside this client-pipeline model.
       const fault: Fault = cursor === truth.length - 1
         ? 'none' : (plan.faults[cursor % plan.faults.length] ?? 'none')
-      const wire = { ...truth[cursor], sessionId: SID, seq } as SessionEvent
+      const wire: SessionEvent & WireMeta = { ...truth[cursor], sessionId: SID, seq }
       cursor++
       if (fault === 'drop') { seq++; continue }  // seq consumed, frame never delivered
       seq++

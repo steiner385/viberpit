@@ -21,6 +21,7 @@ export function SessionComposer({ rt }: { rt: SessionRuntime }) {
       onPrompt={rt.onPrompt}
       onActivity={rt.onActivity}
       onInterrupt={rt.onInterrupt}
+      onInterruptAndPrompt={rt.onInterruptAndPrompt}
       queued={rt.state.queued}
       onCancelQueued={rt.onCancelQueued}
       chatArmed={rt.chatArmed}

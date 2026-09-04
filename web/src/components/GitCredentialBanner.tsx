@@ -1,17 +1,29 @@
 import { useState } from 'react'
-import { KeyRound, X } from 'lucide-react'
+import { X, KeyRound } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { Banner } from '@/ui/Banner'
+import { IconButton } from '@/ui/IconButton'
 import { useCredentialAlerts, useDismissCredentialAlert } from '@/hooks/useCredentialAlerts'
 
 /**
  * App-level banner: when a ccswitch clone can no longer fetch because its git
  * credentials are stale (issue #670), surface a prominent, actionable warning
- * with a link to refresh the token. Renders nothing until at least one repo is
- * flagged. Backlog Runner pauses those repos server-side until a fetch
+ * linking to the page that actually fixes it. Renders nothing until at least one
+ * repo is flagged. Backlog Runner pauses those repos server-side until a fetch
  * succeeds, at which point the alert auto-clears and this banner disappears.
+ *
+ * Two failure shapes, and the wording must match (issue #887): a personal access
+ * token that expired, or a GitHub App installation that lost access. `viaApp`
+ * comes from the server, which knows which credential the failing fetch used —
+ * sending someone to Personal Access Tokens for an App failure is a dead end.
  *
  * Dismiss is client-local (this session) — the underlying pause persists until
  * the credential actually works, so hiding the banner never hides the fix.
+ *
+ * One `Banner` per alert (each independently role="alert") stacked in a shared
+ * wrapper — several stale repos each get their own assertive announcement. The
+ * wrapper renders IN FLOW inside the shell's `BannerStack`; it is never `fixed`,
+ * so it cannot cover the page header or collide with the toaster's band.
  */
 export function GitCredentialBanner() {
   const { data: alerts } = useCredentialAlerts()
@@ -24,50 +36,46 @@ export function GitCredentialBanner() {
   if (visible.length === 0) return null
 
   return (
-    <div
-      role="alert"
-      className={cn(
-        'fixed inset-x-0 top-0 z-50 flex flex-col gap-1',
-        'border-b border-rose-300 dark:border-rose-700 bg-rose-50 dark:bg-rose-900/90 px-4 py-2',
-      )}
-    >
+    <div data-testid="git-credential-banners" className="flex flex-col gap-2">
       {visible.map((alert) => (
-        <div key={alert.repo} className="flex items-center justify-center gap-3">
-          <KeyRound
-            size={16}
-            className="text-rose-700 dark:text-rose-300 flex-shrink-0"
-            aria-hidden="true"
-          />
-          <span className="text-sm font-medium text-rose-900 dark:text-rose-100">
-            Git credential refresh needed for{' '}
-            <span className="font-mono">{alert.repo}</span> — backlog paused for this repo
-          </span>
-          <a
-            href={alert.settingsUrl}
-            target="_blank"
-            rel="noreferrer"
-            className={cn(
-              'rounded-md bg-rose-600 px-3 py-1 text-xs font-semibold text-white',
-              'hover:bg-rose-700 focus:outline-none focus:ring-2 focus:ring-rose-400',
-            )}
-          >
-            Refresh token
-          </a>
-          <button
-            type="button"
-            aria-label={`Dismiss credential alert for ${alert.repo}`}
-            onClick={() => {
-              setHidden((prev) => new Set(prev).add(alert.repo))
-              dismissAlert.mutate(alert.repo)
-            }}
-            className={cn(
-              'rounded-md p-1 text-rose-700 dark:text-rose-300',
-              'hover:bg-rose-100 dark:hover:bg-rose-800 focus:outline-none focus:ring-2 focus:ring-rose-400',
-            )}
-          >
-            <X size={16} aria-hidden="true" />
-          </button>
-        </div>
+        <Banner
+          key={alert.repo}
+          tone="danger"
+          icon={<KeyRound size={18} aria-hidden="true" />}
+          className="items-center"
+          title={
+            <>
+              {alert.viaApp ? 'GitHub App access needs attention for' : 'Git credential refresh needed for'}{' '}
+              <span className="font-mono">{alert.repo}</span> — backlog paused for this repo
+            </>
+          }
+          actions={
+            <>
+              <a
+                href={alert.settingsUrl}
+                target="_blank"
+                rel="noreferrer"
+                className={cn(
+                  'rounded-md bg-danger-strong px-3 py-1 text-xs font-semibold text-white',
+                  'hover:bg-danger-strong/90 focus:outline-none focus:ring-2 focus:ring-accent',
+                )}
+              >
+                {alert.viaApp ? 'Review App access' : 'Refresh token'}
+              </a>
+              <IconButton
+                aria-label={`Dismiss credential alert for ${alert.repo}`}
+                size="sm"
+                className="text-danger"
+                onClick={() => {
+                  setHidden((prev) => new Set(prev).add(alert.repo))
+                  dismissAlert.mutate(alert.repo)
+                }}
+              >
+                <X size={16} aria-hidden="true" />
+              </IconButton>
+            </>
+          }
+        />
       ))}
     </div>
   )

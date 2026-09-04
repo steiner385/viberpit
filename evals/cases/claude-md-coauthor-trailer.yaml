@@ -1,0 +1,5 @@
+id: claude-md-coauthor-trailer
+description: Commits must end with the Co-Authored-By Claude trailer.
+kind: static
+tags: [agent-config, completion-workflow]
+check: 'grep -q "Co-Authored-By: Claude" .agents/instructions/core.md'

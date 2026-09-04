@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { Dashboard } from './Dashboard'
+import { InsightsView } from './InsightsView'
 
 vi.mock('@/api/hooks', () => ({
   useConfig: vi.fn(() => ({ data: { adoptionEnabled: false } })),
@@ -68,11 +68,11 @@ function wrapper({ children }: { children: React.ReactNode }) {
   return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
 }
 
-describe('Insights tab', () => {
-  it('renders InsightsView when the active tab is insights', () => {
+describe('InsightsView', () => {
+  it('renders the slowest/most-variable checks table', () => {
     render(
       <MemoryRouter>
-        <Dashboard activeTab="insights" />
+        <InsightsView />
       </MemoryRouter>,
       { wrapper },
     )

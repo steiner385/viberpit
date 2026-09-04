@@ -1,22 +1,20 @@
 import { useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { api } from '@/api/client'
+import { usePendingDeploy } from '@/api/hooks'
+// The host shape, the query and its KEY live in `@/api/fleet` — one fetch,
+// shared with the prompt bar's Runner dropdown (DEC-2). The four mutations
+// below invalidate through `FLEET_HOSTS_KEY` rather than re-spelling
+// `['fleet','hosts']`: an open-coded invalidation that drifts from the query
+// key does not error, it just silently stops refreshing — a host the operator
+// adds, enables or removes would sit there until a reload.
+import { FLEET_HOSTS_KEY, useFleetHosts, type FleetHost } from '@/api/fleet'
 
-export interface FleetHost {
-  name: string
-  endpoint: string
-  enabled: boolean
-  weight: number
-  maxSessions: number | null
-  healthy: boolean | null
-  activeSessions: number | null
-  loadAvg: number | null
-  memAvailableMb: number | null
-  sha: string | null
-  protocol: number | null
-  lastProbeAt: string | null
-  lastError: string | null
+/** Prefix match, not ===: hosts abbreviate the same commit to different
+ *  lengths (mirrors server.deploy.steps.short_sha_match, #788). */
+function shaMatch(a: string, b: string): boolean {
+  return a.length > 0 && b.length > 0 && (a.startsWith(b) || b.startsWith(a))
 }
 
 /** Tri-state on purpose: null means "never probed", NOT "down". */
@@ -42,11 +40,13 @@ function capacityLabel(h: FleetHost): string {
  */
 export function FleetSection() {
   const queryClient = useQueryClient()
-  const { data, isLoading, isError } = useQuery<{ hosts: FleetHost[] }>({
-    queryKey: ['fleet', 'hosts'],
-    queryFn: () => api.get<{ hosts: FleetHost[] }>('/fleet/hosts'),
-    refetchInterval: 15_000,
-  })
+  // 15s, not the default 30s: this table shows live health and probe results.
+  const { data, isLoading, isError } = useFleetHosts(15_000)
+  // Newest known sha: the deploy's pending target when it reports one, else the
+  // edge's own live sha. A host whose sha trails it (and that has ssh config)
+  // can be updated in place.
+  const { data: pending } = usePendingDeploy()
+  const newestSha = pending?.targetSha || pending?.liveSha || null
 
   const [draft, setDraft] = useState({ name: '', endpoint: '' })
   const [addError, setAddError] = useState<string | null>(null)
@@ -54,7 +54,7 @@ export function FleetSection() {
   const patch = useMutation({
     mutationFn: ({ name, body }: { name: string; body: Partial<FleetHost> }) =>
       api.put<FleetHost>(`/fleet/hosts/${encodeURIComponent(name)}`, body),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['fleet', 'hosts'] }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: FLEET_HOSTS_KEY }),
   })
 
   const add = useMutation({
@@ -63,7 +63,7 @@ export function FleetSection() {
     onSuccess: () => {
       setDraft({ name: '', endpoint: '' })
       setAddError(null)
-      void queryClient.invalidateQueries({ queryKey: ['fleet', 'hosts'] })
+      void queryClient.invalidateQueries({ queryKey: FLEET_HOSTS_KEY })
     },
     onError: (err: unknown) => {
       const body = (err as { body?: { detail?: { message?: string } } })?.body
@@ -73,8 +73,31 @@ export function FleetSection() {
 
   const remove = useMutation({
     mutationFn: (name: string) => api.del(`/fleet/hosts/${encodeURIComponent(name)}`),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['fleet', 'hosts'] }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: FLEET_HOSTS_KEY }),
   })
+
+  const upgrade = useMutation({
+    mutationFn: (name: string) =>
+      api.post<{ started: boolean }>(`/fleet/hosts/${encodeURIComponent(name)}/upgrade`, {}),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: FLEET_HOSTS_KEY }),
+  })
+
+  /** Outdated AND upgradable in-app (ssh config set).
+   *  Two ways to be outdated. The checkout HEAD may trail the newest known sha — compare
+   *  against it rather than the process sha, since a deploy can advance the checkout
+   *  without restarting (#859). But the checkout can also be bang up to date while the
+   *  PROCESS still runs older code: exactly the "version skew" the probe fences on, and
+   *  exactly what an Update (which restarts the daemon) fixes. Without this second case
+   *  the one host that most needs the button is the one host that never shows it. */
+  const canUpdate = (h: FleetHost): boolean => {
+    const compareSha = h.checkoutSha ?? h.sha
+    const checkoutTrails = Boolean(
+      compareSha && newestSha && !shaMatch(compareSha, newestSha))
+    const processSkewed = Boolean(h.lastError?.startsWith('version skew'))
+    return Boolean(h.sshHost && h.repoPath) &&
+      h.upgrade?.state !== 'running' &&
+      (checkoutTrails || processSkewed)
+  }
 
   if (isError) {
     return <p className="text-sm text-red-600 dark:text-red-400">Could not load the fleet.</p>
@@ -134,7 +157,46 @@ export function FleetSection() {
                   <td className="pr-2">
                     {h.memAvailableMb ? `${Math.round(h.memAvailableMb / 1024)} GB` : '—'}
                   </td>
-                  <td className="pr-2 font-mono text-xs">{h.sha ?? '—'}</td>
+                  <td className="pr-2 font-mono text-xs">
+                    {h.sha ?? '—'}
+                    {h.checkoutSha && h.sha && !shaMatch(h.checkoutSha, h.sha) && (
+                      <div className="font-sans text-xs text-ink-muted">checkout {h.checkoutSha}</div>
+                    )}
+                    {canUpdate(h) && (
+                      <button
+                        type="button"
+                        aria-label={`update ${h.name}`}
+                        title={`Update ${h.name} to the deployed version`}
+                        disabled={upgrade.isPending}
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              `Update ${h.name} to the deployed version? Its daemon will restart.`,
+                            )
+                          )
+                            upgrade.mutate(h.name)
+                        }}
+                        className="ml-2 rounded border border-blue-600 px-1.5 py-0.5 font-sans text-xs text-blue-600 hover:bg-blue-600 hover:text-white disabled:opacity-40 dark:border-blue-400 dark:text-blue-400"
+                      >
+                        Update
+                      </button>
+                    )}
+                    {h.upgrade?.state === 'running' && (
+                      <div className="font-sans text-xs text-blue-600 dark:text-blue-400">
+                        updating… {h.upgrade.step ?? ''}
+                      </div>
+                    )}
+                    {h.upgrade?.state === 'failed' && (
+                      <div className="font-sans text-xs text-red-600 dark:text-red-400 break-all">
+                        update failed: {h.upgrade.error}
+                      </div>
+                    )}
+                    {h.upgrade?.state === 'done' && (
+                      <div className="font-sans text-xs text-green-600 dark:text-green-400">
+                        updated
+                      </div>
+                    )}
+                  </td>
                   <td className="pr-2">
                     <input
                       type="number"

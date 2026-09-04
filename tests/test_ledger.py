@@ -84,6 +84,64 @@ def test_list_accounts_includes_weekly_reserve():
         assert acct["weeklyReservePct"] is None
 
 
+# --- extra usage credits opt-in (per-account) ---
+
+
+def test_allow_extra_usage_set_read_clear():
+    with temp_env():
+        from ccswitch import ledger
+        with ledger.locked_ledger() as led:
+            ledger.set_allow_extra_usage(led, "a", True)
+        with ledger.locked_ledger() as led:
+            assert ledger.get_allow_extra_usage(led, "a") is True
+            assert ledger.extra_usage_allowed(led) == {"a"}
+            ledger.set_allow_extra_usage(led, "a", False)
+        with ledger.locked_ledger() as led:
+            assert ledger.get_allow_extra_usage(led, "a") is False
+            assert ledger.extra_usage_allowed(led) == set()
+            # Cleared, not stored as false — absent is the off state.
+            assert "allowExtraUsage" not in led["accounts"]["a"]
+
+
+def test_allow_extra_usage_defaults_false_when_absent():
+    """Opting in must be explicit: an untouched account never spends credits."""
+    with temp_env():
+        from ccswitch import ledger
+        with ledger.locked_ledger() as led:
+            led["accounts"]["fresh"] = {}
+            assert ledger.get_allow_extra_usage(led, "fresh") is False
+            assert ledger.get_allow_extra_usage(led, "never-seen") is False
+            assert ledger.extra_usage_allowed(led) == set()
+
+
+def test_allow_extra_usage_non_boolean_treated_as_unset():
+    with temp_env():
+        from ccswitch import ledger
+        with ledger.locked_ledger() as led:
+            led["accounts"]["junk"] = {"allowExtraUsage": "yes"}
+            led["accounts"]["numeric"] = {"allowExtraUsage": 1}
+            assert ledger.get_allow_extra_usage(led, "junk") is False
+            assert ledger.get_allow_extra_usage(led, "numeric") is False
+            assert ledger.extra_usage_allowed(led) == set()
+
+
+def test_list_accounts_includes_allow_extra_usage():
+    with temp_env():
+        from ccswitch import paths, accounts
+        store = paths.store_dir()
+        store.mkdir(parents=True, exist_ok=True)
+        (store / "a.cred.json").write_text(
+            '{"accessToken":"t","refreshToken":"r","expiresAt":9999999999999}')
+        [acct] = accounts.list_accounts()
+        assert acct["allowExtraUsage"] is False
+        accounts.set_allow_extra_usage("a", True)
+        [acct] = accounts.list_accounts()
+        assert acct["allowExtraUsage"] is True
+        accounts.set_allow_extra_usage("a", False)
+        [acct] = accounts.list_accounts()
+        assert acct["allowExtraUsage"] is False
+
+
 # --- enabled / disabled (per-account) ---
 
 

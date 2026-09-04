@@ -8,8 +8,10 @@ Factory:
     app.include_router(router)
 
 Message protocol (JSON):
-  client→server: attach, detach, prompt, interrupt, permissionResponse,
-                 setPermissionMode, answerQuestion, activity
+  client→server: attach, detach, prompt (optional ``interrupt: true`` = stop the
+                 in-flight turn and run this prompt next instead of queueing it),
+                 interrupt, permissionResponse, setPermissionMode, answerQuestion,
+                 activity
   server→client: batch (carrying ALL session-scoped events, including the
                  replayReset/replay/replayComplete sequence and attach re-emits
                  like permissionRequest/status), plus top-level error /
@@ -48,6 +50,7 @@ from server.ipc import protocol as proto
 from server.ipc.client import DaemonTimeout, DaemonUnavailable
 from server.obs.context import bind_session, log_event
 from server.obs.tasks import supervise
+from server.sessions.commands.catalog import parse_command_line
 from server.sessions.events import ErrorEvent, PermissionRequest, tool_kind
 from server.sessions.facade import call_with_deadline
 from server.sessions.replay import replay_window
@@ -158,6 +161,31 @@ def _redact_buffer(buf: list[dict]) -> list[dict]:
     return out
 
 
+async def _orphaned_question_frames(orchestrator, session_id: str) -> list[dict]:
+    """Wire frames re-offering a question whose waiter died with the daemon.
+
+    Empty unless the session has NO live pending question (that path already
+    re-emits, and a second copy would duplicate the card) and its pre-restart
+    status was waiting_question. The ids come from replay, so the client's reducer
+    upgrades the card already on screen rather than appending a duplicate.
+    """
+    from server.sessions.facade import _maybe_await
+
+    if await orchestrator.pending_questions(session_id):
+        return []
+    if await _maybe_await(orchestrator.orphaned_interaction(session_id)) != "question":
+        return []
+    path = await _maybe_await(orchestrator.transcript_path(session_id))
+    if not path:
+        return []
+    from server.sessions.replay import last_question_events
+    # Off the event loop: last_question_events reads and json-parses the ENTIRE
+    # transcript, and this runs on every attach. A multi-MB transcript would stall
+    # the whole daemon loop. Same treatment as replay_window / replay_events.
+    qs = await asyncio.to_thread(last_question_events, path)
+    return [q.to_wire() for q in qs]
+
+
 async def _run_replay_and_complete(orchestrator, enqueue: "Callable[[dict], None]",
                                    session_id: str,
                                    drop_incomplete: bool = False,
@@ -252,8 +280,16 @@ async def _run_replay_and_complete(orchestrator, enqueue: "Callable[[dict], None
     return events
 
 
-def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
-    """Return an APIRouter containing the /ws endpoint wired to *orchestrator*."""
+def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
+    """Return an APIRouter whose /ws endpoint resolves the LIVE app.state.sessions.
+
+    *default_orchestrator* is only a fallback: in remote mode the lifespan promotes
+    ``app.state.sessions`` from the provisional ``RemoteOrchestrator`` to a
+    ``FleetOrchestrator`` *after* this factory runs, so a captured build-time
+    reference would pin every attach (ring_covers/ring_tail/subscribe/ensure_driver)
+    to the primary host and bypass fleet dispatch. The endpoint therefore reads the
+    current orchestrator from the socket's app at connect time.
+    """
     router = APIRouter()
 
     @router.websocket("/ws")
@@ -263,6 +299,10 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
     ) -> None:
         await websocket.accept()
         log.debug("ws.connect identity=%s", identity)
+
+        # Live orchestrator (see build_ws_router docstring). Falls back to the
+        # build-time reference only if app.state has no sessions bound yet.
+        orchestrator = getattr(websocket.app.state, "sessions", None) or default_orchestrator
 
         # Single outbound queue of already-wire-format dicts, drained by the batcher.
         out_q: asyncio.Queue[dict] = asyncio.Queue()
@@ -382,6 +422,20 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             error frame plus a replayComplete (so the client's loading state always
             clears) and returns None.
             """
+            def _error_complete() -> dict:
+                """Build an error-path replayComplete frame.
+
+                Stamps epoch (#497) via the same cached sync read that _run_replay_and_complete
+                uses — daemon_epoch() is an in-memory field with no DB dependency, so it is safe
+                to call even when the DB connection is broken (e.g. aiosqlite pool corruption on
+                async-generator teardown). The epoch lets a client that retries the attach know
+                which epoch's cursor is valid without a fresh /info round-trip."""
+                frame: dict = {"type": "replayComplete", "sessionId": session_id}
+                ep = orchestrator.daemon_epoch()
+                if ep is not None:
+                    frame["epoch"] = ep
+                return frame
+
             try:
                 # The deadline goes INTO the RPC (call_with_deadline), never around it:
                 # asyncio.wait_for CANCELS an in-flight httpx request, orphaning the
@@ -404,7 +458,7 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                 # The error frame stays a direct top-level send (it's a banner, not
                 # transcript state), but replayComplete IS transcript state — route
                 # it through out_q so it can never overtake queued session frames.
-                out_q.put_nowait({"type": "replayComplete", "sessionId": session_id})
+                out_q.put_nowait(_error_complete())
                 return None
             except DaemonUnavailable:
                 log.warning("ws.attach: session daemon unavailable for %s", session_id)
@@ -425,13 +479,13 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                 await _send({"type": "error", "code": "SESSION_START_FAILED",
                              "message": f"Couldn't resume this session.{hint}",
                              "sessionId": session_id})
-                out_q.put_nowait({"type": "replayComplete", "sessionId": session_id})
+                out_q.put_nowait(_error_complete())
                 return None
             if driver is None:
                 await _send({"type": "error", "code": "SESSION_NOT_FOUND",
                              "message": f"Session {session_id!r} not found",
                              "sessionId": session_id})
-                out_q.put_nowait({"type": "replayComplete", "sessionId": session_id})
+                out_q.put_nowait(_error_complete())
                 return None
             return driver
 
@@ -477,6 +531,29 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                     await _send(redact_event({"type": "commands", "sessionId": session_id, "commands": catalog}))
             except Exception:
                 log.warning("ws.attach: command_catalog failed for %s", session_id, exc_info=True)
+
+        async def _run_command_and_reply(session_id: str, name: str, args: str) -> bool:
+            """Dispatch a slash command and emit its commandResult frame, exactly
+            as the interactive `command` frame does. Returns True if the command
+            was known (handled — whether it succeeded or errored), False if
+            unknown so the caller can decide the fallback (the command frame
+            reports "unknown command"; the initial-prompt path re-sends the text
+            as a normal prompt). Single source for command dispatch-and-reply so
+            the two entry points can't drift."""
+            try:
+                result = await orchestrator.run_command(session_id, name, args,
+                                                        identity=identity)
+            except KeyError:
+                return False
+            except Exception:
+                log.warning("ws.command failed session=%s name=%s", session_id, name, exc_info=True)
+                await _send(redact_event({"type": "commandResult", "sessionId": session_id,
+                             "name": name, "ok": False, "error": "command failed"}))
+                return True
+            if result is not None:
+                await _send(redact_event({"type": "commandResult", "sessionId": session_id,
+                             "ok": True, **result}))
+            return True
 
         async def _emit_live_extras(session_id: str, driver, events: list) -> None:
             """Post-attach live wiring: suggestion seeding, command catalog, pending
@@ -526,6 +603,17 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                     multi_select=q["multi_select"],
                 ).to_wire(), "sessionId": session_id})
 
+            # Re-offer a question whose waiter died with the daemon. The loop above
+            # only ever finds LIVE questions; after a restart the registry is empty
+            # by construction, so without this the replayed card stays read-only and
+            # the session sits in an unknown state (see orphaned_asks.py).
+            try:
+                for frame in await _orphaned_question_frames(orchestrator, session_id):
+                    out_q.put_nowait({**frame, "sessionId": session_id})
+            except Exception:
+                log.warning("ws.attach: orphaned question re-offer failed for %s",
+                            session_id, exc_info=True)
+
             # Emit the current live status so a client attaching or reconnecting mid-turn
             # renders the true state immediately. The live status is otherwise only
             # pushed on transitions, so without this a mid-turn attach would show the
@@ -545,27 +633,59 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
 
             # Re-emit the live queue so a reattach repopulates the queued-prompt
             # chips (with their images). The driver holds the queue across attaches;
-            # without this, a navigate-away/back showed an empty strip. Best-effort.
+            # without this, a navigate-away/back showed an empty strip. Emitted even
+            # when EMPTY: a client that missed the live QueueUpdate([]) as the queue
+            # drained (WS gap mid-dequeue) otherwise renders its stale chip forever —
+            # this re-emit is the only thing that ever corrects it. Best-effort.
             try:
-                if driver.queued():
-                    out_q.put_nowait({**ev.QueueUpdate(driver.queue_wire()).to_wire(),
-                                      "sessionId": session_id})
+                out_q.put_nowait({**ev.QueueUpdate(driver.queue_wire()).to_wire(),
+                                  "sessionId": session_id})
             except Exception:
                 log.warning("ws.attach: queue re-emit failed for %s", session_id, exc_info=True)
 
-            # Send the deferred initial prompt (if any) now that the client is watching.
-            # The prompt was stored in create_session instead of being sent immediately
-            # so that its events stream live to this first attach rather than racing the
-            # transcript-file write or arriving before any subscriber is registered on
-            # the driver. Only fires on the first attach (pop clears the entry);
-            # reconnects fall through to live-stream only. Best-effort like every
-            # other step here: a raise would propagate out of _handle_attach's
-            # try, close the just-opened stream, and kill the whole attach — the
-            # client would spin on a dead socket over a deferred nicety.
+            # Send the deferred initial prompt (if any) now that the client is watching
+            # a live stream.
+            await _send_deferred_initial_prompt(session_id)
+
+        async def _send_deferred_initial_prompt(session_id: str) -> None:
+            """Pop + send the session's deferred initial prompt, if one is staged.
+
+            The prompt is stored at spawn instead of being sent immediately so that
+            its events stream live to a watching client rather than racing the
+            transcript-file write or arriving before any subscriber is registered on
+            the driver. The pop clears the entry, so it fires at most once; a plain
+            reconnect finds nothing and falls through to live-stream only.
+
+            Called from BOTH places this socket opens a live stream — _handle_attach's
+            live path and the lazy _ensure_live a typed prompt triggers — because the
+            "first attach" can happen BEFORE the spawn: a `pending_approval` / `queued`
+            session viewed while it waits attaches on the read-only detached path,
+            which never pops. When the spawn then lands (approval, a freed slot), only
+            a later live-stream open on this same socket can deliver the prompt
+            (incident 2026-09-02: a Fable session approved from its open view sat
+            idle, the user's "continue" ran instead, and the titler named it after the
+            CLI's `/model` bookkeeping). Best-effort like every other attach step: a
+            raise would propagate out of the attach, close the just-opened stream and
+            kill the whole attach — the client would spin on a dead socket over a
+            deferred nicety.
+            """
             try:
                 pending_prompt = await orchestrator.pop_pending_initial_prompt(session_id)
                 pending_attachment_ids = await orchestrator.pop_pending_initial_attachment_ids(session_id)
-                if pending_prompt is not None or pending_attachment_ids:
+                # A bare slash command typed as the initial prompt runs through the
+                # SAME dispatch as one typed mid-session (/model, /account, /clear,
+                # /context, /help, custom commands) — so it executes as a command
+                # instead of being sent to the model as literal text. Only when it
+                # has no attachments (a command carrying images isn't a thing) and
+                # parses as a single-line command; an unknown command falls back to
+                # a normal prompt, mirroring the composer's runCommandFromText.
+                handled = False
+                if pending_prompt and not pending_attachment_ids:
+                    parsed = parse_command_line(pending_prompt)
+                    if parsed is not None:
+                        handled = await _run_command_and_reply(session_id, parsed[0], parsed[1])
+                if not handled and (pending_prompt is not None or pending_attachment_ids):
+                    log.info("ws.attach: sending deferred initial prompt for %s", session_id)
                     await orchestrator.send_prompt(
                         session_id, pending_prompt or "", pending_attachment_ids)
             except Exception:
@@ -869,6 +989,10 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
             # session that had never been live before (e.g. one predating catalog caching,
             # or only ever resumed lazily) — so its NEXT detached view shows the palette.
             await _emit_command_catalog(session_id)
+            # A prompt deferred at spawn goes FIRST: this socket may have attached on
+            # the detached path before the session was spawned (see the helper), and
+            # the user's typed prompt must queue behind the original one, not replace it.
+            await _send_deferred_initial_prompt(session_id)
             # Flip the header from the read-only 'Ready' to the live state as the
             # resumed turn begins. Best-effort; rides out_q like every other
             # session-scoped frame (raw + tagged, batcher redacts — and batching is
@@ -948,8 +1072,45 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                     if await _ensure_live(session_id):
                         text = msg.get("text", "")
                         attachment_ids = msg.get("attachmentIds")
-                        status = await orchestrator.send_prompt(session_id, text, attachment_ids)
+                        # "Interrupt and post": stop the in-flight turn and run this
+                        # prompt next instead of queueing it behind the turn. Only
+                        # forwarded when set so the plain contract is untouched.
+                        interrupt = msg.get("interrupt") is True
+                        extra = {"interrupt": True} if interrupt else {}
+                        status = await orchestrator.send_prompt(
+                            session_id, text, attachment_ids, **extra)
+                        if status == "no_driver":
+                            # The 2026-08-30 unresponsive-session incident: the daemon
+                            # dropped the driver AFTER this socket attached, so
+                            # _ensure_live's live_tasks short-circuit vouched for a
+                            # stream whose driver no longer existed and the user's
+                            # message evaporated behind a "Ready" header. live_tasks is
+                            # EDGE state; only send_prompt's answer reflects the
+                            # daemon's truth — so on no_driver, drop the stale stream,
+                            # rebuild through the FULL _ensure_live path (ensure_driver
+                            # + fresh open_stream), and retry the send exactly once.
+                            # A failed rebuild falls through to promptRejected below —
+                            # recovery must never turn into a retry loop.
+                            log.warning(
+                                "ws.prompt: no_driver with a live stream entry — "
+                                "rebuilding driver and retrying once session=%s",
+                                session_id)
+                            await _teardown_live_task(session_id)
+                            if await _ensure_live(session_id):
+                                status = await orchestrator.send_prompt(
+                                    session_id, text, attachment_ids, **extra)
                         await orchestrator.note_user_interaction(session_id)
+                        if interrupt and status == "sent":
+                            # Same trail a Stop leaves, tagged so the audit shows the
+                            # turn was cut short to post a prompt, not abandoned.
+                            try:
+                                async with db_session() as db:
+                                    await record_audit(db, "session.interrupt", identity,
+                                                       {"sessionId": session_id,
+                                                        "withPrompt": True})
+                            except Exception:
+                                log.warning("ws.audit_failed event=%s session=%s",
+                                            "session.interrupt", session_id, exc_info=True)
                         if status in ("draining", "no_driver"):
                             # The turn was refused — ack it so the browser re-queues
                             # instead of losing the prompt. "draining": a deploy drain.
@@ -974,7 +1135,18 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                 elif msg_type == "permissionResponse":
                     decision = msg.get("decision", "")
                     perm_id = msg.get("permId", "")
-                    await orchestrator.resolve_permission(session_id, perm_id, decision, identity)
+                    ok = await orchestrator.resolve_permission(
+                        session_id, perm_id, decision, identity)
+                    if not ok:
+                        # Same silent-drop shape as answerQuestion below: an
+                        # unresolvable decision must surface, not 200-and-vanish.
+                        log.warning("ws.resolve_permission rejected session=%s perm=%s identity=%s",
+                                    session_id, perm_id, identity)
+                        await _send({"type": "error", "code": "PERMISSION_NOT_PENDING",
+                                     "message": "That permission request is no longer pending "
+                                                "— the session may have moved on. Reload to "
+                                                "see its current state.",
+                                     "sessionId": session_id})
                     await orchestrator.note_user_interaction(session_id)
                     try:
                         async with db_session() as db:
@@ -999,7 +1171,19 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                     mode = msg.get("mode", "option")
                     if mode not in ("option", "freeform", "chat"):
                         mode = "option"
-                    await orchestrator.answer_question(session_id, question_id, selected, identity, mode)
+                    ok = await orchestrator.answer_question(
+                        session_id, question_id, selected, identity, mode)
+                    if not ok:
+                        # Never a silent no-op: an unresolvable answer (no such pending
+                        # question, identity mismatch, no driver) used to return 200
+                        # and leave the user staring at a card that never reacts.
+                        log.warning("ws.answer_question rejected session=%s qid=%s identity=%s",
+                                    session_id, question_id, identity)
+                        await _send({"type": "error", "code": "QUESTION_NOT_PENDING",
+                                     "message": "That question is no longer pending — the "
+                                                "session may have moved on. Reload to see "
+                                                "its current state.",
+                                     "sessionId": session_id})
                     await orchestrator.note_user_interaction(session_id)
                     try:
                         async with db_session() as db:
@@ -1016,23 +1200,26 @@ def build_ws_router(orchestrator: "InProcessOrchestratorAdapter") -> APIRouter:
                 elif msg_type == "cancelQueued":
                     index = msg.get("index")
                     if isinstance(index, int) and not isinstance(index, bool):
-                        await orchestrator.cancel_queued(session_id, index)
+                        ok = await orchestrator.cancel_queued(session_id, index)
+                        if not ok:
+                            # Same silent-drop shape as answerQuestion /
+                            # permissionResponse (issue #917): a cancel the daemon
+                            # can't honor (stale index — the queue already
+                            # drained/shifted — or no live driver) must surface,
+                            # not 200-and-vanish while the chip stays put.
+                            log.warning("ws.cancel_queued rejected session=%s index=%s identity=%s",
+                                        session_id, index, identity)
+                            await _send({"type": "error", "code": "QUEUED_NOT_FOUND",
+                                         "message": "That queued prompt is no longer in the queue "
+                                                    "— it may have already run or been removed. "
+                                                    "Reload to see its current state.",
+                                         "sessionId": session_id})
                 elif msg_type == "command":
                     name = msg.get("name", "")
                     args = msg.get("args", "")
-                    try:
-                        result = await orchestrator.run_command(session_id, name, args)
-                    except KeyError:
+                    if not await _run_command_and_reply(session_id, name, args):
                         await _send(redact_event({"type": "commandResult", "sessionId": session_id,
                                      "name": name, "ok": False, "error": "unknown command"}))
-                    except Exception:
-                        log.warning("ws.command failed session=%s name=%s", session_id, name, exc_info=True)
-                        await _send(redact_event({"type": "commandResult", "sessionId": session_id,
-                                     "name": name, "ok": False, "error": "command failed"}))
-                    else:
-                        if result is not None:
-                            await _send(redact_event({"type": "commandResult", "sessionId": session_id,
-                                         "ok": True, **result}))
                 else:
                     await _send({"type": "error", "code": "UNKNOWN_TYPE",
                                  "message": f"Unknown message type: {msg_type!r}"})

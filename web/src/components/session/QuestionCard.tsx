@@ -17,6 +17,12 @@ interface Props {
   readOnly?: boolean
   staged?: StagedAnswer | null
   onStage?: (questionId: string, answer: StagedAnswer) => void
+  /**
+   * Auto-focus the first option on mount. Defaults to true for a standalone
+   * card; QuestionGroup sets it false for off-screen carousel cards so they
+   * don't scroll the shared track to themselves and hijack the view.
+   */
+  autoFocusOptions?: boolean
 }
 
 function optionLabel(opt: Record<string, unknown>): string {
@@ -36,17 +42,19 @@ const hatchBtn = cn(
 )
 
 function MultiSelectOptions({
-  block, checked, onToggle, onSubmit, showSubmit,
+  block, checked, onToggle, onSubmit, showSubmit, autoFocus,
 }: {
   block: QuestionBlock
   checked: Set<string>
   onToggle: (label: string) => void
   onSubmit?: () => void
   showSubmit: boolean
+  autoFocus: boolean
 }) {
   const kb = useCardKeyboard({
     count: block.options.length,
     multiSelect: true,
+    autoFocus,
     onToggle: (i) => onToggle(optionLabel(block.options[i])),
     onSubmit: () => onSubmit?.(),
   })
@@ -106,11 +114,12 @@ function MultiSelectOptions({
 }
 
 function SingleSelectOptions({
-  block, onPick, selectedLabel,
-}: { block: QuestionBlock; onPick: (label: string) => void; selectedLabel?: string }) {
+  block, onPick, selectedLabel, autoFocus,
+}: { block: QuestionBlock; onPick: (label: string) => void; selectedLabel?: string; autoFocus: boolean }) {
   const headerId = `q-header-${block.questionId}`
   const kb = useCardKeyboard({
     count: block.options.length,
+    autoFocus,
     onActivate: (i) => onPick(optionLabel(block.options[i])),
   })
   return (
@@ -149,7 +158,7 @@ function SingleSelectOptions({
   )
 }
 
-export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, readOnly = false, staged, onStage }: Props) {
+export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, readOnly = false, staged, onStage, autoFocusOptions = true }: Props) {
   const [writing, setWriting] = useState(false)
   const [draft, setDraft] = useState('')
   const [localChecked, setLocalChecked] = useState<Set<string>>(new Set())
@@ -166,6 +175,17 @@ export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, re
       </div>
       <p className="mb-3 text-sm text-gray-700 dark:text-gray-300">{block.question}</p>
     </>
+  )
+
+  const orphanedNotice = block.orphaned && !readOnly && (
+    <div
+      data-testid="orphaned-question-notice"
+      className="mb-2 rounded border border-amber-300 dark:border-amber-700 bg-amber-100/70 dark:bg-amber-900/30 px-2 py-1.5 text-xs text-amber-900 dark:text-amber-200"
+    >
+      A daemon restart interrupted this question, so the original turn is gone.
+      Your choice will be sent as a new message and the session will continue from
+      there.
+    </div>
   )
 
   // Read-only — historical/replayed, OR resolved in place once answered. When the
@@ -290,11 +310,13 @@ export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, re
     return (
       <div role="group" aria-labelledby={headerId} className={containerClass}>
         {heading}
+        {orphanedNotice}
         {/* Grouped: selectedLabel highlights the staged option ('' = nothing
             staged yet, so no radio is checked). Uncontrolled (undefined): fall
             back to the roving keyboard highlight (activeIndex) as before. */}
         <SingleSelectOptions
           block={block}
+          autoFocus={autoFocusOptions}
           onPick={(label) =>
             grouped
               ? onStage!(block.questionId, { selected: [label], mode: 'option' })
@@ -325,8 +347,10 @@ export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, re
   return (
     <div role="group" aria-labelledby={headerId} className={containerClass}>
       {heading}
+      {orphanedNotice}
       <MultiSelectOptions
         block={block}
+        autoFocus={autoFocusOptions}
         checked={grouped ? stagedSet : localChecked}
         onToggle={grouped ? toggleStaged : toggleLocal}
         onSubmit={grouped ? undefined : () => onAnswer(block.questionId, Array.from(localChecked))}

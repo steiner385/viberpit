@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { subAgentTreeFromSummaries, type SubAgentNode } from '@/session/selectors'
+import { subAgentPath } from '@/session/sessionNavState'
 import type { SubAgentSummary } from '@/api/types'
 
 const DOT: Record<string, string> = {
@@ -15,7 +16,7 @@ function Row({ sessionId, node, depth }: { sessionId: string; node: SubAgentNode
     <>
       <button
         type="button"
-        onClick={() => navigate(`/session/${sessionId}/subagent/${node.agentId}`)}
+        onClick={() => navigate(subAgentPath(sessionId, node.agentId))}
         style={{ paddingLeft: 12 + Math.min(depth, 6) * 16 }}
         className={cn(
           'flex w-full items-center gap-2 py-1.5 pr-2 text-left text-xs min-h-[36px] rounded',

@@ -1,6 +1,7 @@
 // Ported from plotroom@5166b52 frontend/src/StatusStrip.tsx; edits: import repointing (./types); eslint-disable react-refresh/only-export-components (mixed export file — intentional port); latestFailed.current sync moved to useLayoutEffect (react-hooks/refs lint gate, same convention as useDashboard.ts)
 /* eslint-disable react-refresh/only-export-components */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useInteractive } from '@/shell/InteractionContext';
 import type { PrView } from './types';
 
 export type Bucket = 'running' | 'queued' | 'deploy' | 'failed' | 'ready' | 'merged';
@@ -71,12 +72,12 @@ interface StatusStripProps {
   prs: PrView[];
   activeFilter: Bucket | null;
   onFilter: (bucket: Bucket | null) => void;
-  /** false in kiosk mode (issue #20): tiles render as plain glanceable divs
-   *  instead of filter buttons. */
-  interactive?: boolean;
 }
 
-export function StatusStrip({ prs, activeFilter, onFilter, interactive = true }: StatusStripProps) {
+export function StatusStrip({ prs, activeFilter, onFilter }: StatusStripProps) {
+  // false in kiosk mode (issue #20), via InteractionContext: tiles render as
+  // plain glanceable divs instead of filter buttons.
+  const interactive = useInteractive();
   const counts = new Map<Bucket, number>();
   for (const p of prs) {
     const b = bucketPr(p);

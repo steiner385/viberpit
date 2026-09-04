@@ -294,7 +294,7 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
           title="Paste your clipboard into the session"
           className={cn(
             'min-h-[44px] min-w-[44px] flex items-center justify-center',
-            'rounded border border-border bg-background/80 px-2',
+            'rounded border border-edge bg-canvas/80 px-2',
           )}
           onClick={pasteFromClipboard}
         >
@@ -306,8 +306,8 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
             aria-pressed={keyboardOpen}
             className={cn(
               'min-h-[44px] min-w-[44px]',
-              'rounded border border-border bg-background/80 px-2 text-base leading-none',
-              keyboardOpen && 'bg-primary text-primary-foreground',
+              'rounded border border-edge bg-canvas/80 px-2 text-base leading-none',
+              keyboardOpen && 'bg-accent text-accent-ink',
             )}
             onClick={toggleKeyboard}
           >
@@ -318,7 +318,7 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
           aria-label="Zoom out"
           className={cn(
             'min-h-[44px] min-w-[44px]',
-            'rounded border border-border bg-background/80 px-2 text-base leading-none',
+            'rounded border border-edge bg-canvas/80 px-2 text-base leading-none',
           )}
           onClick={zoomOut}
         >
@@ -326,7 +326,7 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
         </button>
         <span
           aria-live="polite"
-          className="rounded bg-background/80 px-2 text-xs tabular-nums"
+          className="rounded bg-canvas/80 px-2 text-xs tabular-nums"
         >
           {label}
         </span>
@@ -334,7 +334,7 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
           aria-label="Zoom in"
           className={cn(
             'min-h-[44px] min-w-[44px]',
-            'rounded border border-border bg-background/80 px-2 text-base leading-none',
+            'rounded border border-edge bg-canvas/80 px-2 text-base leading-none',
           )}
           onClick={zoomIn}
         >
@@ -345,7 +345,7 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
             aria-label="Reset to fit"
             className={cn(
               'min-h-[44px] min-w-[44px]',
-              'rounded border border-border bg-background/80 px-2 text-xs',
+              'rounded border border-edge bg-canvas/80 px-2 text-xs',
             )}
             onClick={resetFit}
           >
@@ -362,7 +362,7 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
           ref={pasteCaptureRef}
           aria-label="Paste target"
           placeholder="Paste here (Ctrl+V / long-press)"
-          className="absolute right-2 top-14 w-64 rounded border border-border bg-background px-2 py-2 text-sm shadow"
+          className="absolute right-2 top-14 w-64 rounded border border-edge bg-canvas px-2 py-2 text-sm shadow"
           autoCapitalize="none"
           autoCorrect="off"
           autoComplete="off"
@@ -392,7 +392,7 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
       {pasteHint && (
         <div
           role="status"
-          className="absolute right-2 top-14 rounded bg-background/90 px-2 py-1 text-xs text-muted-foreground shadow"
+          className="absolute right-2 top-14 rounded bg-canvas/90 px-2 py-1 text-xs text-ink-muted shadow"
         >
           {pasteHint}
         </div>
@@ -401,14 +401,14 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
       {/* "Tap to control" caption — shown when connected, canvas not focused, and
           the empty-state hint is not visible (only one bottom caption at a time). */}
       {state === 'connected' && !focused && !showEmpty && (
-        <div className="pointer-events-none absolute inset-x-0 bottom-2 text-center text-xs text-muted-foreground">
+        <div className="pointer-events-none absolute inset-x-0 bottom-2 text-center text-xs text-ink-muted">
           Tap to control · pinch to zoom
         </div>
       )}
 
       {/* Blocking full-screen overlay for transitional/terminal states only */}
       {blockingOverlay && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-background/80 p-6 text-center text-sm text-muted-foreground">
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-canvas/80 p-6 text-center text-sm text-ink-muted">
           {blockingOverlay.copy}
         </div>
       )}
@@ -421,14 +421,14 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
           focus returns to the canvas so keyboard control is immediately available. */}
       {showEmpty && (
         <div className="pointer-events-none absolute inset-x-0 bottom-8 flex flex-col items-center gap-2">
-          <p className="text-xs text-muted-foreground drop-shadow">
+          <p className="text-xs text-ink-muted drop-shadow">
             {openError ?? COPY.empty}
           </p>
           <div className="pointer-events-auto flex items-center gap-2">
             <button
               className={cn(
                 'min-h-[44px]',
-                'rounded bg-primary px-3 py-2 text-sm text-primary-foreground shadow',
+                'rounded bg-accent px-3 py-2 text-sm text-accent-ink shadow',
               )}
               onClick={openBrowser}
             >
@@ -438,7 +438,7 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
               aria-label="Dismiss"
               className={cn(
                 'min-h-[44px] min-w-[44px]',
-                'rounded border border-border bg-background/80 px-3 text-sm text-muted-foreground shadow',
+                'rounded border border-edge bg-canvas/80 px-3 text-sm text-ink-muted shadow',
               )}
               onClick={dismissEmpty}
             >

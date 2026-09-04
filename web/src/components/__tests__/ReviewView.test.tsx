@@ -14,6 +14,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ReviewView } from '../ReviewView'
 import * as hooks from '@/api/hooks'
 import { fetchOlderTurns } from '@/api/transcript'
+import { mutationResult, queryResult } from '@/test/reactQuery'
 
 vi.mock('@/api/hooks', () => ({
   useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
@@ -53,10 +54,7 @@ describe('ReviewView', () => {
   })
 
   it('shows empty state when events array is empty', () => {
-    vi.mocked(hooks.useSessionTranscript).mockReturnValue({
-      data: { events: [] },
-      isLoading: false,
-    } as ReturnType<typeof hooks.useSessionTranscript>)
+    vi.mocked(hooks.useSessionTranscript).mockReturnValue(queryResult({ events: [] }))
 
     render(<ReviewView sessionId="arc-1" onBack={vi.fn()} />, { wrapper })
 
@@ -86,10 +84,7 @@ describe('ReviewView', () => {
   })
 
   it('shows "Read-only (archived)" header note', () => {
-    vi.mocked(hooks.useSessionTranscript).mockReturnValue({
-      data: { events: [] },
-      isLoading: false,
-    } as ReturnType<typeof hooks.useSessionTranscript>)
+    vi.mocked(hooks.useSessionTranscript).mockReturnValue(queryResult({ events: [] }))
 
     render(<ReviewView sessionId="arc-1" onBack={vi.fn()} />, { wrapper })
 
@@ -99,10 +94,7 @@ describe('ReviewView', () => {
   it('Back button calls onBack', async () => {
     const user = userEvent.setup()
     const onBack = vi.fn()
-    vi.mocked(hooks.useSessionTranscript).mockReturnValue({
-      data: { events: [] },
-      isLoading: false,
-    } as ReturnType<typeof hooks.useSessionTranscript>)
+    vi.mocked(hooks.useSessionTranscript).mockReturnValue(queryResult({ events: [] }))
 
     render(<ReviewView sessionId="arc-1" onBack={onBack} />, { wrapper })
 
@@ -174,10 +166,7 @@ describe('ReviewView', () => {
   })
 
   it('renders an Unarchive button', () => {
-    vi.mocked(hooks.useSessionTranscript).mockReturnValue({
-      data: { events: [] },
-      isLoading: false,
-    } as ReturnType<typeof hooks.useSessionTranscript>)
+    vi.mocked(hooks.useSessionTranscript).mockReturnValue(queryResult({ events: [] }))
 
     render(<ReviewView sessionId="arc-1" onBack={vi.fn()} />, { wrapper })
 
@@ -187,11 +176,8 @@ describe('ReviewView', () => {
   it('calls unarchive.mutate with sessionId when Unarchive is clicked', async () => {
     const user = userEvent.setup()
     const mutate = vi.fn()
-    vi.mocked(hooks.useUnarchiveSession).mockReturnValue({ mutate, isPending: false } as ReturnType<typeof hooks.useUnarchiveSession>)
-    vi.mocked(hooks.useSessionTranscript).mockReturnValue({
-      data: { events: [] },
-      isLoading: false,
-    } as ReturnType<typeof hooks.useSessionTranscript>)
+    vi.mocked(hooks.useUnarchiveSession).mockReturnValue(mutationResult({ mutate }))
+    vi.mocked(hooks.useSessionTranscript).mockReturnValue(queryResult({ events: [] }))
 
     render(<ReviewView sessionId="arc-42" onBack={vi.fn()} />, { wrapper })
 
@@ -201,11 +187,9 @@ describe('ReviewView', () => {
   })
 
   it('shows "Restoring…" and disables button while unarchive is pending', () => {
-    vi.mocked(hooks.useUnarchiveSession).mockReturnValue({ mutate: vi.fn(), isPending: true } as ReturnType<typeof hooks.useUnarchiveSession>)
-    vi.mocked(hooks.useSessionTranscript).mockReturnValue({
-      data: { events: [] },
-      isLoading: false,
-    } as ReturnType<typeof hooks.useSessionTranscript>)
+    vi.mocked(hooks.useUnarchiveSession).mockReturnValue(
+      mutationResult({ mutate: vi.fn(), isPending: true, isIdle: false, status: 'pending' }))
+    vi.mocked(hooks.useSessionTranscript).mockReturnValue(queryResult({ events: [] }))
 
     render(<ReviewView sessionId="arc-1" onBack={vi.fn()} />, { wrapper })
 

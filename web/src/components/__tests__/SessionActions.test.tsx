@@ -1,13 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { Dashboard } from '../Dashboard'
+import { renderApp } from '@/test/renderApp'
 import * as hooks from '@/api/hooks'
+import { appSettings } from '@/test/factories'
+import { queryResult } from '@/test/reactQuery'
 
 vi.mock('@/api/hooks', () => ({
   useQueueMove: vi.fn(() => ({ mutate: vi.fn() })),
   useQueueCancel: vi.fn(() => ({ mutate: vi.fn() })),
+  useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
   useAllPrs: vi.fn(() => ({ data: [] })),
   useDaemonHealth: vi.fn(() => ({ data: { available: false } })),  // issue #434 indicator
   useGenerateSuggestions: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(() => Promise.resolve([])), isPending: false })),
@@ -58,6 +60,8 @@ vi.mock('@/api/hooks', () => ({
     settings: ['settings'],
   },
   useAssessDispatch: vi.fn(() => ({ assess: vi.fn() })),
+  useResumeInterrupted: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useRotateStalled: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }))
 
 vi.mock('@/session/useSessionSearch', () => ({
@@ -69,17 +73,9 @@ const NOOP_MUTATION = {
   isPending: false,
 }
 
-function wrapper({ children }: { children: React.ReactNode }) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
-}
-
-describe('SessionActions (via Dashboard)', () => {
+describe('session-card actions (via AppShell)', () => {
   beforeEach(() => {
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([]))
 
     vi.mocked(hooks.useSessions).mockReturnValue({
       data: [
@@ -125,21 +121,11 @@ describe('SessionActions (via Dashboard)', () => {
       mutate: vi.fn(),
     } as unknown as ReturnType<typeof hooks.useDeleteAccount>)
 
-    vi.mocked(hooks.useGithubRepos).mockReturnValue({
-      data: [],
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof hooks.useGithubRepos>)
+    vi.mocked(hooks.useGithubRepos).mockReturnValue(queryResult([]))
 
-    vi.mocked(hooks.useGithubBranches).mockReturnValue({
-      data: { default: null, branches: [] },
-      isLoading: false,
-    } as ReturnType<typeof hooks.useGithubBranches>)
+    vi.mocked(hooks.useGithubBranches).mockReturnValue(queryResult({ default: null, branches: [] }))
 
-    vi.mocked(hooks.useSettings).mockReturnValue({
-      data: { defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null },
-      isLoading: false,
-    } as ReturnType<typeof hooks.useSettings>)
+    vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings()))
 
     vi.mocked(hooks.useUpdateSettings).mockReturnValue({
       mutate: vi.fn(),
@@ -148,89 +134,47 @@ describe('SessionActions (via Dashboard)', () => {
     } as unknown as ReturnType<typeof hooks.useUpdateSettings>)
 
     vi.mocked(hooks.useReauthAccount).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useReauthAccount>)
-    vi.mocked(hooks.useReauthStatus).mockReturnValue({ data: { state: 'idle', message: null, startedAt: null }, isLoading: false } as ReturnType<typeof hooks.useReauthStatus>)
+    vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult({ state: 'idle', message: null, startedAt: null }))
     vi.mocked(hooks.useCancelReauth).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useCancelReauth>)
-    vi.mocked(hooks.useArchivedSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useArchivedSessions>)
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult([]))
     vi.mocked(hooks.useUnarchiveSession).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useUnarchiveSession>)
     vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
     vi.mocked(hooks.useBulkUnarchiveSessions).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useBulkUnarchiveSessions>)
     vi.mocked(hooks.useBulkPermanentDeleteSessions).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useBulkPermanentDeleteSessions>)
   })
 
-  it('renders the "+ New" button', () => {
-    render(<Dashboard />, { wrapper })
-    expect(screen.getByRole('button', { name: /new session/i })).toBeInTheDocument()
-  })
+  // Task 18: the four "+ New opens/closes the New Session dialog" cases that
+  // opened this file are re-pinned in `App.dialogs.test.tsx`, which now covers
+  // opening from `?dialog=new` in every layout mode, opening from the rail's
+  // link, Cancel, and the param clearing without a history push. The New Session
+  // control on the list column is pinned by `SessionListColumn.test.tsx`
+  // ("marks the New Session button when the new-session slot is the target").
+  // What is left here is the part that is genuinely the shell's: the per-card ⋯
+  // menu and the dialogs `AppShell` owns behind it.
 
-  it('opens a New Session dialog when "+ New" is clicked', async () => {
-    const user = userEvent.setup()
-    render(<Dashboard />, { wrapper })
-
-    await user.click(screen.getByRole('button', { name: /new session/i }))
-
-    const dialog = screen.getByRole('dialog', { name: /new session/i })
-    expect(dialog).toBeInTheDocument()
-    // Scope to the dialog: the session cards behind it now expose a "Rename …"
-    // button whose accessible name also contains "name".
-    expect(within(dialog).getByLabelText(/name/i)).toBeInTheDocument()
-  })
-
-  it('closes the dialog when Cancel is clicked', async () => {
-    const user = userEvent.setup()
-    render(<Dashboard />, { wrapper })
-
-    await user.click(screen.getByRole('button', { name: /new session/i }))
-    expect(screen.getByRole('dialog', { name: /new session/i })).toBeInTheDocument()
-
-    await user.click(screen.getByRole('button', { name: /cancel/i }))
-    await waitFor(() => {
-      expect(screen.queryByRole('dialog', { name: /new session/i })).not.toBeInTheDocument()
-    })
-  })
-
-  it('closes the dialog when Escape is pressed', async () => {
-    const user = userEvent.setup()
-    render(<Dashboard />, { wrapper })
-
-    await user.click(screen.getByRole('button', { name: /new session/i }))
-    expect(screen.getByRole('dialog', { name: /new session/i })).toBeInTheDocument()
-
-    await user.keyboard('{Escape}')
-    await waitFor(() => {
-      expect(screen.queryByRole('dialog', { name: /new session/i })).not.toBeInTheDocument()
-    })
-  })
-
-  it('exposes rename, archive, and delete buttons directly on each session', () => {
-    render(<Dashboard />, { wrapper })
-
-    expect(screen.getByRole('button', { name: /rename session alpha session/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /archive session alpha session/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /delete session alpha session/i })).toBeInTheDocument()
-  })
-
-  it('renders a mobile overflow (`…`) button for secondary actions on each session card', () => {
-    // Below lg viewport (default jsdom), Rename/Archive/Delete are in the `…`
-    // overflow menu; at lg+ they appear as direct icon buttons.
-    render(<Dashboard />, { wrapper })
+  it('renders a `…` menu button for session actions on each card', () => {
+    // Rename/Archive/Delete live in the unified `…` menu on every breakpoint.
+    renderApp({ path: '/sessions', mode: 'desktop' })
 
     expect(screen.getAllByRole('button', { name: /more actions for session/i }).length).toBeGreaterThan(0)
   })
 
-  it('clicking rename shows a rename dialog', async () => {
+  it('clicking rename in the ⋯ menu shows a rename dialog', async () => {
     const user = userEvent.setup()
-    render(<Dashboard />, { wrapper })
+    renderApp({ path: '/sessions', mode: 'desktop' })
 
-    await user.click(screen.getByRole('button', { name: /rename session alpha session/i }))
+    await user.click(screen.getByRole('button', { name: /more actions for session alpha session/i }))
+    await user.click(screen.getByRole('menuitem', { name: /rename/i }))
 
     expect(screen.getByRole('dialog', { name: /rename session/i })).toBeInTheDocument()
   })
 
-  it('clicking delete shows a permanent-delete confirmation dialog', async () => {
+  it('clicking delete in the ⋯ menu shows a permanent-delete confirmation dialog', async () => {
     const user = userEvent.setup()
-    render(<Dashboard />, { wrapper })
+    renderApp({ path: '/sessions', mode: 'desktop' })
 
-    await user.click(screen.getByRole('button', { name: /delete session alpha session/i }))
+    await user.click(screen.getByRole('button', { name: /more actions for session alpha session/i }))
+    await user.click(screen.getByRole('menuitem', { name: /delete/i }))
 
     expect(screen.getByRole('dialog', { name: /permanently delete session/i })).toBeInTheDocument()
   })
@@ -243,9 +187,10 @@ describe('SessionActions (via Dashboard)', () => {
     } as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
 
     const user = userEvent.setup()
-    render(<Dashboard />, { wrapper })
+    renderApp({ path: '/sessions', mode: 'desktop' })
 
-    await user.click(screen.getByRole('button', { name: /delete session alpha session/i }))
+    await user.click(screen.getByRole('button', { name: /more actions for session alpha session/i }))
+    await user.click(screen.getByRole('menuitem', { name: /delete/i }))
     await user.click(screen.getByRole('button', { name: /delete permanently/i }))
 
     expect(permanentDelete).toHaveBeenCalledWith('sess-1', expect.anything())

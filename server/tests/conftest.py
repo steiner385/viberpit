@@ -35,13 +35,60 @@ from pathlib import Path
 _REAL_HOME = (Path.home() / ".claude-accounts").resolve()
 
 
+def _db_is_production(db: str | None) -> bool:
+    """True if ``db`` (a CCSWITCH_DB_URL) could be the PRODUCTION database.
+
+    The redirect below rewrites CCSWITCH_DB_URL to a throwaway SQLite file
+    whenever this returns True, so it must err on the side of "yes, prod".
+
+    - ``None`` — unset; ``server.config.Settings`` would default to the real
+      store → production.
+    - In-memory SQLite — ephemeral, never production.
+    - File SQLite — production only if it IS the real ``~/.claude-accounts``
+      store (a tmp-dir file is a test's own isolated DB).
+    - Any networked URL (Postgres, …) — production UNLESS the *database name*
+      contains "test". This mirrors the ``pg_url`` guard's naming convention
+      and is the case the original ``str(_REAL_HOME) in db`` check missed once
+      production moved from a SQLite file to Postgres: the prod URL contains no
+      filesystem path, so it was silently classified non-prod and the whole
+      suite ran against live Postgres.
+    """
+    if db is None:
+        return True
+    if db.startswith("sqlite"):
+        if ":memory:" in db:
+            return False
+        return str(_REAL_HOME) in db
+    from urllib.parse import urlsplit
+    db_name = urlsplit(db).path.lstrip("/")
+    return "test" not in db_name.lower()
+
+
+def _archive_home_is_production(archive: str | None) -> bool:
+    """True if ``archive`` (a CCSWITCH_ARCHIVE_HOME) is a production location.
+
+    ``paths.archive_dir()`` reads this env var and, when unset, falls back to
+    ``$CCSWITCH_HOME/archive``. A dev/deploy shell exports it at the real
+    archive disk (e.g. ``/mnt/hdd-storage/ccswitch-archives``); inherited into
+    a test process it overrides the per-test ``$CCSWITCH_HOME/archive`` and
+    points archive/unarchive at the live archive tree. A test's OWN isolated
+    archive lives under the system temp dir (``tmp_path``), so treat anything
+    outside it as production. Unset is fine — it means "use the fallback".
+    """
+    if archive is None:
+        return False
+    return not str(Path(archive).resolve()).startswith(tempfile.gettempdir())
+
+
 def _redirect_state_off_production():
     home = os.environ.get("CCSWITCH_HOME")
     db = os.environ.get("CCSWITCH_DB_URL")
+    archive = os.environ.get("CCSWITCH_ARCHIVE_HOME")
     home_is_prod = home is None or Path(home).resolve() == _REAL_HOME
-    db_is_prod = db is None or str(_REAL_HOME) in db
-    if not home_is_prod and not db_is_prod:
-        return  # caller already isolated both — respect it
+    db_is_prod = _db_is_production(db)
+    archive_is_prod = _archive_home_is_production(archive)
+    if not home_is_prod and not db_is_prod and not archive_is_prod:
+        return  # caller already isolated everything — respect it
 
     session_home = Path(tempfile.mkdtemp(prefix="ccswitch-tests-"))
     atexit.register(shutil.rmtree, session_home, ignore_errors=True)
@@ -51,9 +98,30 @@ def _redirect_state_off_production():
         os.environ["CCSWITCH_DB_URL"] = (
             f"sqlite+aiosqlite:///{session_home / 'ccswitch.db'}"
         )
+    if archive_is_prod:
+        # Unset (not redirect): archive_dir() then falls back to
+        # $CCSWITCH_HOME/archive, tracking each test's own (isolated)
+        # CCSWITCH_HOME, which per-test patch.dict overrides freely.
+        os.environ.pop("CCSWITCH_ARCHIVE_HOME", None)
 
 
 _redirect_state_off_production()
+
+
+# --------------------------------------------------------------------------- #
+# Helper scratch config dirs must not land in the developer's real ~/.cache.  #
+#                                                                             #
+# account_auth.helper_env() mirrors an account config dir into                #
+# scratch_config.scratch_root() (#1005). Left at its default that is          #
+# ~/.cache/ccswitch/helper-cfg on the dev box, so any test that builds a      #
+# helper env would litter it (and share torn-read markers across runs).       #
+# Anchor it under the system temp dir; test_helper_scratch_config.py          #
+# monkeypatches its own per-test value on top.                                #
+# --------------------------------------------------------------------------- #
+if not os.environ.get("CCSWITCH_HELPER_SCRATCH_ROOT"):
+    _scratch_root = Path(tempfile.mkdtemp(prefix="ccswitch-tests-scratch-"))
+    atexit.register(shutil.rmtree, _scratch_root, ignore_errors=True)
+    os.environ["CCSWITCH_HELPER_SCRATCH_ROOT"] = str(_scratch_root)
 
 
 # --------------------------------------------------------------------------- #
@@ -121,6 +189,28 @@ def _reset_helper_call_breakers():
     helper_call.reset_breakers()
     yield
     helper_call.reset_breakers()
+
+
+@pytest.fixture
+def isolated_db(tmp_path, monkeypatch):
+    """Fresh per-test DB under tmp_path — kills cross-file order dependence (#728).
+
+    Bare ``await init_db()`` re-resolves CCSWITCH_DB_URL on every call (settings
+    are uncached), so tests that relied on it shared the per-session redirect DB
+    above with every other bare caller on their worker — visible rows depended
+    on which files ran before them. Pointing the env var at a private file makes
+    all existing bare call sites land here, and the eager init gives tests that
+    never call init_db themselves a schema to talk to. Opt in by name, or via a
+    module-local autouse wrapper in files whose every test needs it.
+    """
+    import asyncio
+
+    from server.db import init_db
+
+    url = f"sqlite+aiosqlite:///{tmp_path / 'test.db'}"
+    monkeypatch.setenv("CCSWITCH_DB_URL", url)
+    asyncio.run(init_db(url))
+    return url
 
 
 # Enable asyncio mode for all tests in this package
@@ -211,13 +301,27 @@ _install_real_store_write_guard()
 # (WebSocket bridge + orchestrator background loops) hard enough to hit it.    #
 #                                                                              #
 # `server.db._make_engine` is the SOLE engine factory, so wrapping it here     #
-# redirects every in-memory URL to a unique temp FILE, pinned to StaticPool so #
-# it keeps the SAME single-connection semantics a `:memory:` DB has (one       #
-# shared connection — uncommitted writes visible to later reads, no QueuePool  #
-# cross-connection visibility surprises) while being durable across connection #
-# close. Each init_db still gets its own empty DB (per-init isolation), but a   #
-# late write reopens the same file with its tables intact and is harmless      #
-# instead of crashing. Production is unaffected (real file DB, never this shim).#
+# redirects every in-memory URL to a unique temp FILE (durable across          #
+# connection close). Each init_db still gets its own empty DB (per-init         #
+# isolation); a late write reopens the same file with its tables intact and is  #
+# harmless instead of crashing. Production is unaffected (real file DB, never   #
+# this shim).                                                                   #
+#                                                                              #
+# Pool choice — NullPool, NOT StaticPool (issue #890). A StaticPool engine      #
+# holds ONE shared DBAPI connection for every operation. Under `-n auto`        #
+# contention, when any bounded_wait teardown phase (dispose-db,                 #
+# `stop:primary-lease-release`, …) is abandoned mid-query, that single          #
+# connection's aiosqlite worker thread is left wedged — and because the engine  #
+# keeps a handle to it, `engine.dispose()` / asyncio loop-close must await its  #
+# close, hanging TestClient.__exit__'s portal-thread join to the 300s pytest-   #
+# timeout (#846/#881/#882). #882 file-backed the DB but kept StaticPool, so the #
+# shared wedge-able connection survived and the hang merely migrated phases.    #
+# NullPool retains NO connection: it opens a fresh one per operation and closes #
+# it on return, so the engine never holds a reusable handle to a checked-out    #
+# (possibly wedged) connection — teardown has nothing to await and the flake's  #
+# substrate is gone regardless of which phase overruns its budget. The file     #
+# backing keeps the schema durable, and WAL keeps COMMITTED writes visible      #
+# across the now-separate connections (db_session/get_db always commit).        #
 # --------------------------------------------------------------------------- #
 def _cleanup_sqlite_file(path: str) -> None:
     for suffix in ("", "-wal", "-shm"):
@@ -229,7 +333,7 @@ def _cleanup_sqlite_file(path: str) -> None:
 
 def _install_durable_inmemory_db():
     import server.db as _db
-    from sqlalchemy.pool import StaticPool
+    from sqlalchemy.pool import NullPool
 
     _orig_make_engine = _db._make_engine
     if getattr(_orig_make_engine, "_durable_inmemory_shim", False):
@@ -241,7 +345,9 @@ def _install_durable_inmemory_db():
             os.close(fd)
             atexit.register(_cleanup_sqlite_file, path)
             db_url = f"sqlite+aiosqlite:///{path}"
-            poolclass = StaticPool  # keep the one-connection semantics of :memory:
+            # NullPool, not StaticPool: no single shared wedge-able connection,
+            # so no abandoned teardown phase can hang loop-close (issue #890).
+            poolclass = NullPool
         return _orig_make_engine(db_url, poolclass=poolclass)
 
     _durable_make_engine._durable_inmemory_shim = True
@@ -311,6 +417,50 @@ def _install_no_real_grouping_guard():
 
 
 _install_no_real_grouping_guard()
+
+
+# --------------------------------------------------------------------------- #
+# Teardown watchdog on every TestClient exit (issue #846).                     #
+#                                                                              #
+# The dominant CI flake is a random test dying at pytest-timeout's 300s inside #
+# TestClient.__exit__ (lifespan shutdown → anyio portal join). faulthandler    #
+# shows only thread stacks — the portal loop "idle in select" — because the    #
+# never-completing thing is a coroutine. Wrapping __exit__ HERE covers every   #
+# TestClient in the suite with one installer: grab the app loop through the    #
+# portal while it is still healthy, arm a threading.Timer, and if teardown     #
+# overruns ~45s dump every asyncio task (name + coroutine await-chain frames)  #
+# to the real stderr so the hang names its culprit. Happy path: timer          #
+# cancelled, zero overhead. Tune via CCSWITCH_TEARDOWN_WATCHDOG_S.             #
+# --------------------------------------------------------------------------- #
+def _install_testclient_teardown_watchdog():
+    import asyncio as _asyncio
+
+    from fastapi.testclient import TestClient as _TestClient
+
+    from server.tests.teardown_watchdog import TeardownWatchdog
+
+    _orig_exit = _TestClient.__exit__
+    if getattr(_orig_exit, "_teardown_watchdog_shim", False):
+        return  # already wrapped (conftest re-imported)
+
+    def _watched_exit(self, *exc):
+        loop = None
+        portal = getattr(self, "portal", None)
+        if portal is not None:
+            try:
+                loop = portal.call(_asyncio.get_running_loop)
+            except Exception:
+                loop = None
+        if loop is None:  # client never entered / portal gone — nothing to watch
+            return _orig_exit(self, *exc)
+        with TeardownWatchdog(loop, label="TestClient.__exit__"):
+            return _orig_exit(self, *exc)
+
+    _watched_exit._teardown_watchdog_shim = True
+    _TestClient.__exit__ = _watched_exit
+
+
+_install_testclient_teardown_watchdog()
 
 
 # --------------------------------------------------------------------------- #

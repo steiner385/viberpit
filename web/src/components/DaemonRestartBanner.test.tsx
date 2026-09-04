@@ -1,13 +1,13 @@
 import { render, screen } from '@testing-library/react'
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { DaemonRestartBanner } from './DaemonRestartBanner'
-import * as health from '@/hooks/useDaemonHealth'
+import * as health from '@/hooks/useDaemonReachable'
 import * as epochRestart from '@/hooks/useEpochRestart'
 
 afterEach(() => vi.restoreAllMocks())
 
 function mockDaemon(ok: boolean, recovering = false) {
-  vi.spyOn(health, 'useDaemonHealth').mockReturnValue(ok)
+  vi.spyOn(health, 'useDaemonReachable').mockReturnValue(ok)
   vi.spyOn(epochRestart, 'useEpochRestart').mockReturnValue(recovering)
 }
 
@@ -30,13 +30,16 @@ describe('DaemonRestartBanner', () => {
     expect(screen.getByRole('status')).toHaveTextContent(/back in a moment/i)
   })
 
-  it('does not intercept pointer events on the UI beneath it', () => {
-    // Regression (#620): this fixed top-0 z-50 banner overlaid the session top bar
-    // and captured the click meant for "Back to session list" (dashboard e2e T044 —
-    // "…subtree intercepts pointer events"). A role="status" notice has no interactive
-    // children, so it must let clicks pass through to the controls underneath.
+  it('renders in normal flow, never as a fixed overlay', () => {
+    // Regression (#620): as a `fixed top-0 z-50` overlay this banner sat on the
+    // session top bar and captured the click meant for "Back to session list"
+    // (dashboard e2e T044 — "…subtree intercepts pointer events"). It also shared
+    // that band with the toaster. In flow (inside BannerStack) it pushes content
+    // down instead of covering it, so there is nothing beneath it to intercept.
     mockDaemon(false, false)
     render(<DaemonRestartBanner />)
-    expect(screen.getByRole('status')).toHaveClass('pointer-events-none')
+    const el = screen.getByRole('status')
+    expect(el.className).not.toMatch(/\bfixed\b/)
+    expect(el.className).not.toMatch(/\bz-\S+/)
   })
 })

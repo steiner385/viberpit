@@ -261,3 +261,55 @@ def test_plan_recovery_total_on_empty_config():
     assert isinstance(plan_recovery("failing_ci", "auto", {}, {}), Propose)
     # with the flag on but caps missing → uses defaults, still no KeyError
     assert isinstance(plan_recovery("failing_ci", "auto", {"auto_fix_failing_ci": True}, {}), SessionFix)
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 (issue #806): @claude comment-command failure mode
+# ---------------------------------------------------------------------------
+from server.automations.pr_doctor_engine import classify_comment_command
+
+
+def test_classify_comment_command_with_at_claude_fix():
+    assert classify_comment_command("@claude fix the null check") == "comment_command"
+
+
+def test_classify_comment_command_in_multiline_comment():
+    body = "Thanks for the PR!\n\n@claude fix the off-by-one here\n\nOtherwise LGTM."
+    assert classify_comment_command(body) == "comment_command"
+
+
+def test_classify_comment_command_no_directive():
+    assert classify_comment_command("LGTM!") is None
+    assert classify_comment_command("") is None
+    assert classify_comment_command("Mention @claude without a verb?") is None
+
+
+def test_comment_command_is_in_failure_priority():
+    from server.automations.pr_doctor_engine import FAILURE_PRIORITY
+    assert "comment_command" in FAILURE_PRIORITY
+
+
+def test_comment_command_is_lowest_priority():
+    from server.automations.pr_doctor_engine import FAILURE_PRIORITY
+    assert FAILURE_PRIORITY.index("comment_command") == len(FAILURE_PRIORITY) - 1
+
+
+def test_plan_recovery_comment_command_auto_when_opted_in():
+    cfg = {**_CFG, "auto_fix_comment_commands": True}
+    a = plan_recovery("comment_command", "auto", cfg, {})
+    assert isinstance(a, SessionFix) and a.kind == "comment_command"
+
+
+def test_plan_recovery_comment_command_auto_falls_back_to_propose_when_not_opted_in():
+    a = plan_recovery("comment_command", "auto", _CFG, {})
+    assert isinstance(a, Propose) and a.kind == "comment_command"
+
+
+def test_plan_recovery_comment_command_propose_mode():
+    a = plan_recovery("comment_command", "propose", _CFG, {})
+    assert isinstance(a, Propose) and a.kind == "comment_command"
+
+
+def test_plan_recovery_comment_command_off_mode_is_notify():
+    a = plan_recovery("comment_command", "off", _CFG, {})
+    assert isinstance(a, Notify)

@@ -59,6 +59,25 @@ def test_factory_no_hooks_without_callback():
     assert client.options.hooks is None
 
 
+def test_factory_pins_cli_path_to_system_binary(monkeypatch):
+    """Sessions must run the auto-updating system `claude`, never the SDK's stale
+    bundled CLI (claude_agent_sdk/_bundled/claude, frozen behind the API's minimum
+    version). The factory sets cli_path to the resolved system binary."""
+    import server.sessions.claude_bin as cb
+    monkeypatch.setattr(cb, "resolve_claude_bin", lambda: "/usr/local/bin/claude")
+    opts = _captured_options(monkeypatch)
+    assert str(opts.cli_path) == "/usr/local/bin/claude"
+
+
+def test_factory_leaves_cli_path_unset_when_no_system_binary(monkeypatch):
+    """When no system claude can be resolved, cli_path stays None so the SDK falls
+    back to its own discovery rather than crashing on a bogus path."""
+    import server.sessions.claude_bin as cb
+    monkeypatch.setattr(cb, "resolve_claude_bin", lambda: None)
+    opts = _captured_options(monkeypatch)
+    assert opts.cli_path is None
+
+
 def test_factory_auto_trusts_project_mcp_servers(monkeypatch):
     """The session must never hit the binary's project-`.mcp.json` trust gate.
 

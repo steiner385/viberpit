@@ -45,9 +45,14 @@ class FakeGh:
     def __init__(self, scripts: dict[tuple, subprocess.CompletedProcess] | None = None) -> None:
         self._scripts: dict[tuple, subprocess.CompletedProcess] = scripts or {}
         self.calls: list[list[str]] = []
+        # Parallel to ``calls`` — the ``token`` each call was made with (or
+        # ``None`` for ambient auth), so tests can assert the right
+        # installation token reached each gh invocation.
+        self.tokens: list[str | None] = []
 
     def __call__(self, args: list[str], token: str | None = None) -> subprocess.CompletedProcess:
         self.calls.append(list(args))
+        self.tokens.append(token)
         argv = tuple(args)
         # Longest matching prefix wins.
         best: subprocess.CompletedProcess | None = None

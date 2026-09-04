@@ -5,7 +5,7 @@ import asyncio
 
 from sqlalchemy import func, select
 
-from server.db import db_session, init_db
+from server.db import db_session
 from server.db.models import GroupFailure, GroupRun
 from server.pipeline.group_history import (
     count_group_ejects,
@@ -18,16 +18,8 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _clean_group_tables():
-    """Tests here assert with table-wide selects; the conftest DB is shared
-    across the whole pytest session, so wipe our two tables per test."""
-    async def wipe():
-        from sqlalchemy import delete
-        await init_db()
-        async with db_session() as db:
-            await db.execute(delete(GroupRun))
-            await db.execute(delete(GroupFailure))
-    asyncio.run(wipe())
+def _fresh_db(isolated_db):
+    """Every test gets its own DB — table-wide selects need no wiping (#728)."""
 
 
 
@@ -44,7 +36,6 @@ def _green_checks() -> list[dict]:
 
 def test_green_group_records_one_run_with_duration():
     async def run():
-        await init_db()
         await record_group_outcome("o/r", "g1", _green_checks(), "2026-07-12T12:10:00Z")
         async with db_session() as db:
             runs = (await db.execute(select(GroupRun))).scalars().all()
@@ -61,7 +52,6 @@ def test_green_group_records_one_run_with_duration():
 
 def test_green_group_idempotent_on_completed_at():
     async def run():
-        await init_db()
         await record_group_outcome("o/r", "g1", _green_checks(), "2026-07-12T12:10:00Z")
         # Re-record same group (same max completed_at) -> still one row.
         await record_group_outcome("o/r", "g1", _green_checks(), "2026-07-12T12:11:00Z")
@@ -74,7 +64,6 @@ def test_green_group_idempotent_on_completed_at():
 
 def test_failing_group_records_deduped_failures():
     async def run():
-        await init_db()
         checks = [
             {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS",
              "started_at": "2026-07-12T12:00:00Z", "completed_at": "2026-07-12T12:05:00Z"},
@@ -101,7 +90,6 @@ def test_failing_group_records_deduped_failures():
 
 def test_missing_timestamps_skipped_quietly():
     async def run():
-        await init_db()
         checks = [
             {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS",
              "started_at": None, "completed_at": None},
@@ -116,7 +104,6 @@ def test_missing_timestamps_skipped_quietly():
 
 def test_non_terminal_group_not_recorded():
     async def run():
-        await init_db()
         checks = [
             {"name": "build", "status": "IN_PROGRESS", "conclusion": None,
              "started_at": "2026-07-12T12:00:00Z", "completed_at": None},
@@ -131,7 +118,6 @@ def test_non_terminal_group_not_recorded():
 
 def test_group_run_samples_newest_first():
     async def run():
-        await init_db()
         async with db_session() as db:
             db.add(GroupRun(repo="o/r", duration_secs=100, completed_at="2026-07-10T00:00:00Z"))
             db.add(GroupRun(repo="o/r", duration_secs=200, completed_at="2026-07-11T00:00:00Z"))
@@ -146,7 +132,6 @@ def test_group_run_samples_newest_first():
 
 def test_counts_windowed_and_distinct():
     async def run():
-        await init_db()
         async with db_session() as db:
             db.add(GroupRun(repo="o/r", duration_secs=100, completed_at="2026-07-01T00:00:00Z"))
             db.add(GroupRun(repo="o/r", duration_secs=200, completed_at="2026-07-10T00:00:00Z"))
@@ -170,7 +155,6 @@ def test_counts_windowed_and_distinct():
 
 def test_uppercase_conclusion_comparison():
     async def run():
-        await init_db()
         # Lowercase conclusions must normalize for terminal + bucket classification.
         checks = [
             {"name": "build", "status": "COMPLETED", "conclusion": "success",
@@ -190,7 +174,6 @@ def test_eject_window_matches_live_observed_at_format():
     be stored Z-form so a Z-form since_iso windows it correctly (lexicographic
     ISO comparison — '+' sorts below digits)."""
     async def run():
-        await init_db()
         checks = [
             {"name": "e2e", "status": "COMPLETED", "conclusion": "FAILURE",
              "started_at": "2026-07-12T10:00:00Z", "completed_at": "2026-07-12T10:10:00Z"},
@@ -207,7 +190,6 @@ def test_sim_ctx_reads_real_store_rows():
     """Direct coverage of the SSE frame's _sim_ctx glue (review follow-up):
     real store rows in, per-repo sim inputs out; sample-less repos skipped."""
     async def run():
-        await init_db()
         checks = _green_checks()
         await record_group_outcome("o/r", "g1", checks, "2026-07-12T12:10:00Z")
         from server.api.pipeline import _sim_ctx

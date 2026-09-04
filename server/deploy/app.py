@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import functools
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -7,12 +8,19 @@ from typing import Coroutine, Protocol, runtime_checkable
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
-from server.deploy.controller import DeployController, default_daemon_factory
-from server.deploy.detect import DetectLoop
+from server.deploy.controller import DeployController
+from server.deploy.detect import DetectLoop, compute_pending, edge_live_sha
 from server.deploy.types import DeployStatus
 
 log = logging.getLogger("server.deploy.app")
+
+
+class StartBody(BaseModel):
+    """Optional /start body: an explicit deploy target (the green-frontier sha) —
+    absent/None means "origin/master's tip", today's behaviour."""
+    targetSha: str | None = None
 
 
 def _poll_interval() -> float:
@@ -27,19 +35,40 @@ def _poll_interval() -> float:
 class _ControllerLike(Protocol):
     status: DeployStatus
 
-    def deploy_once(self) -> Coroutine[object, object, DeployStatus]: ...
+    def deploy_once(self, target_sha: str | None = None
+                    ) -> Coroutine[object, object, DeployStatus]: ...
 
 
-def build_controller_app(*, repo: str, health_url: str, venv_pip: str, daemon_enabled: bool,
+def build_controller_app(*, repo: str, health_url: str, venv_python: str, daemon_enabled: bool,
                          detect_loop: DetectLoop | None = None,
-                         controller: _ControllerLike | None = None):
-    loop = detect_loop or DetectLoop(repo, interval_s=_poll_interval())
-    ctrl = controller or DeployController(repo, health_url=health_url, venv_pip=venv_pip,
+                         controller: _ControllerLike | None = None,
+                         status_path: str | None = None,
+                         init_db_url: str | None = None):
+    # liveSha comes from the RUNNING edge (/healthz), not the checkout's HEAD — a
+    # checkout fast-forwarded without a unit restart must show as behind, not
+    # deployed (#859). edge_live_sha falls back to checkout HEAD when unreachable.
+    loop = detect_loop or DetectLoop(
+        repo, interval_s=_poll_interval(),
+        compute=functools.partial(compute_pending,
+                                  live_sha_fn=functools.partial(edge_live_sha, health_url)))
+    ctrl = controller or DeployController(repo, health_url=health_url, venv_python=venv_python,
                                           daemon_enabled=daemon_enabled,
-                                          daemon_client_factory=default_daemon_factory(daemon_enabled))
+                                          status_path=status_path)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # The controller reads the DB (load_runner_targets, record_deploy), so the engine
+        # must exist — and it must be created HERE, on the loop uvicorn runs, never in a
+        # separate asyncio.run: an asyncpg pool is loop-bound and fails on first use if it
+        # was built on another loop. Tests pass no init_db_url and touch no DB.
+        # None → this caller wants no DB at all (the tests). An empty string → init, and
+        # let init_db fall back to settings.db_url, matching `python -m server.deploy
+        # --once`. Production passes os.environ.get("CCSWITCH_DB_URL", ""), so an unset
+        # env var still initialises rather than silently leaving the runners phase and
+        # record_deploy without an engine.
+        if init_db_url is not None:
+            from server.db import init_db
+            await init_db(db_url=init_db_url or None)
         task = asyncio.create_task(loop.run(), name="deploy-detect-loop")
         try:
             yield
@@ -49,19 +78,18 @@ def build_controller_app(*, repo: str, health_url: str, venv_pip: str, daemon_en
     app = FastAPI(lifespan=lifespan)
 
     def _deploy_dict() -> dict:
-        s = ctrl.status
-        return {"running": s.running, "phases": s.phases, "error": s.error,
-                "warnings": s.warnings, "targetSha": s.target_sha, "restore": s.restore}
+        return ctrl.status.to_dict()
 
     @app.get("/status")
     async def status() -> dict:
         return {"pending": loop.state.to_dict(), "deploy": _deploy_dict()}
 
     @app.post("/start")
-    async def start() -> JSONResponse:
+    async def start(body: StartBody | None = None) -> JSONResponse:
         if ctrl.status.running:
             return JSONResponse({"started": False, "reason": "in progress"}, status_code=409)
-        task = asyncio.create_task(ctrl.deploy_once(), name="deploy-run")
+        target_sha = body.targetSha if body is not None else None
+        task = asyncio.create_task(ctrl.deploy_once(target_sha=target_sha), name="deploy-run")
         await asyncio.sleep(0)  # yield so the task can run its synchronous guard check
         if task.done() and task.exception() is not None:
             exc = task.exception()

@@ -282,7 +282,7 @@ def test_ensure_driver_threads_attaching_identity(tmp_path):
                 session_id, "t1", "H", "Q?", [{"label": "Yes"}], False, driver.identity,
             )
             # The user answers over the WS with their real identity.
-            resolved = orch.answer_question(session_id, qid, ["Yes"], user)
+            resolved = await orch.answer_question(session_id, qid, ["Yes"], user)
             answer = await fut if fut.done() else None
         return driver.identity, resolved, answer
 

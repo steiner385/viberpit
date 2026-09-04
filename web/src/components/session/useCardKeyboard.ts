@@ -3,6 +3,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 export interface CardKeyboardOptions {
   count: number
   multiSelect?: boolean
+  /**
+   * Focus the first option on mount so keyboard users land on it. Set false for
+   * off-screen cards in a carousel: focusing an option in a non-visible card
+   * scrolls the shared track to it, jumping the view to the wrong question.
+   */
+  autoFocus?: boolean
   onActivate?: (index: number) => void
   onToggle?: (index: number) => void
   onSubmit?: () => void
@@ -23,22 +29,36 @@ export interface CardKeyboardApi {
  * Propagation/default notes:
  * - `preventDefault()` stops native browser defaults (Enter submitting a form,
  *   Space scrolling the page).
- * - `stopPropagation()` stops React synthetic-event bubbling up the React tree;
- *   it does NOT reach native `window.addEventListener` handlers (e.g. SessionView's
- *   detach listener), which sit outside React's event system entirely.
- * - Isolation from SessionView's window-level Esc/ArrowLeft/Shift+Tab detach handler
- *   is provided by SessionView's own `if (hasOpenAction) return` guard, which fires
- *   whenever a permission or question block is pending — not by stopPropagation here.
+ * - `stopPropagation()` stops React synthetic-event bubbling up the React tree.
+ *   A React handler's `preventDefault()` DOES reach the shell's window listener
+ *   (it marks the native event), and that listener bails on `defaultPrevented` —
+ *   which is how the keys this hook handles win over the app's shortcuts.
+ * - Isolation from the Esc / ← / Ctrl+Z detach gesture is not stopPropagation's
+ *   doing, and never was: it comes from `hasOpenAction`, which fires whenever a
+ *   permission or question block is pending. It used to be a guard inside
+ *   `useInSessionKeys`; since PR 4 it is the `when` on the `insession.detach`
+ *   row of `shell/shortcuts.ts`, fed by `MainPaneSession` through
+ *   `shell/sessionGestures`. Ctrl+Z is the deliberate exception — the
+ *   force-detach escape hatch — so a card must never rely on holding it.
  */
 export function useCardKeyboard({
-  count, multiSelect = false, onActivate, onToggle, onSubmit,
+  count, multiSelect = false, autoFocus = true, onActivate, onToggle, onSubmit,
 }: CardKeyboardOptions): CardKeyboardApi {
   const [activeIndex, setActiveIndex] = useState(0)
   const itemRefs = useRef<(HTMLElement | null)[]>([])
 
+  // Depend on `autoFocus` (not `[]`): a carousel card that later becomes the
+  // active one flips false→true and focuses its first option then, so keyboard
+  // focus follows the visible card instead of firing once for every card at mount.
+  //
+  // preventScroll is load-bearing: without it, focusing scrolls the carousel's
+  // shared snap track to reveal the option. Mid-navigation the track's onScroll
+  // still rounds to the *old* card for the first few frames, flipping its
+  // autoFocus back on; a scrolling refocus then drags the track back where it
+  // came from — a feedback loop that pins the carousel to question 1.
   useEffect(() => {
-    itemRefs.current[0]?.focus()
-  }, [])
+    if (autoFocus) itemRefs.current[0]?.focus({ preventScroll: true })
+  }, [autoFocus])
 
   const onKeyDown = useCallback((e: React.KeyboardEvent) => {
     const tag = (e.target as HTMLElement).tagName

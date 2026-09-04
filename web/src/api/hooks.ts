@@ -13,12 +13,25 @@ import {
 import type {
   Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption, BatchResult,
   DeployStatusResponse, PendingDeploy, DeployProgress, PipelinePr, StageModel, CheckInsights,
-  DaemonHealth, CopilotAddState,
+  DaemonHealth, CopilotAddState, McpAuthState,
   LibraryPluginDetail, LibraryPluginsResponse, LibrarySkill, LibraryCommand,
   LibraryMcpServer, McpServerConfig, LibraryContent,
   SessionPreset, PromptTemplate, PermissionProfile, AssessResponse,
 } from './types'
 import { fetchDeployStatus, startDeploy } from './deploy'
+import {
+  fetchInitiatives, advanceInitiative, createInitiative,
+  type Initiative, type CreateInitiativeInput,
+} from './sdlc'
+import {
+  fetchProjects, createProject, requestProjectSync,
+  fetchOnboarding, proposeMap, runClassify,
+  type Project, type CreateProjectInput, type OnboardingView,
+} from './pm'
+import {
+  fetchTriage, acceptProposal, rejectProposal,
+  type TriageProposal, type OverlayEdits,
+} from './triage'
 import type { SessionEvent } from '@/session/events'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { getPendingSessions, subscribePending, addPendingSession, removePendingSession } from '@/lib/pendingSessions'
@@ -57,6 +70,11 @@ export const QK = {
   libraryMcp: ['library', 'mcp'] as const,
   libraryContent: (kind: string, id: string, plugin?: string) =>
     ['library', 'content', kind, id, plugin ?? null] as const,
+  initiatives: ['sdlc', 'initiatives'] as const,
+  initiative: (slug: string) => ['sdlc', 'initiative', slug] as const,
+  projects: ['pm', 'projects'] as const,
+  triage: ['pm', 'triage'] as const,          // phase 2 OWNS this key
+  onboarding: (slug: string) => ['pm', 'onboarding', slug] as const,
 }
 
 export function useModels() {
@@ -132,6 +150,8 @@ export interface GithubBranchInfo {
 export interface ConfigInfo {
   repoRoot: string
   adoptionEnabled: boolean
+  /** Edge runs the server-side dictation engine (`CCSWITCH_ENABLE_STT` + `stt` extra). */
+  sttEnabled?: boolean
 }
 
 export function useConfig() {
@@ -140,6 +160,19 @@ export function useConfig() {
     queryFn: () => api.get<ConfigInfo>('/config'),
     staleTime: 60_000,
   })
+}
+
+// Self-heal for the New Session repo dropdown: a fetch that fails while the
+// edge/daemon is still booting after a restart used to strand the dropdown on
+// "— could not load repos —" until a manual reload. Poll ONLY while errored —
+// a healthy query keeps the ordinary staleTime/refetch-on-focus behavior, so
+// this can never turn into a background request storm.
+export const REPOS_ERROR_REFETCH_MS = 15_000
+
+export function reposRefetchInterval(
+  query: { state: { status: 'pending' | 'error' | 'success' } },
+): number | false {
+  return query.state.status === 'error' ? REPOS_ERROR_REFETCH_MS : false
 }
 
 export function useGithubRepos() {
@@ -151,6 +184,7 @@ export function useGithubRepos() {
     // bound retries anyway (default is 3) so a genuine error can't compound across
     // refetch-on-focus and multiple tabs into a request storm.
     retry: 1,
+    refetchInterval: reposRefetchInterval,
   })
 }
 
@@ -178,6 +212,10 @@ export interface AppSettings {
   // App-wide toggle: when false, completed sessions are not auto-archived (they linger
   // like a per-session manual opt-out). The server's NULL default surfaces here as true.
   autoArchiveEnabled: boolean
+  // Global model-approval policy: 'require_approval' | 'block' | 'allow' | null (server default).
+  modelApprovalAction: string | null
+  // Comma-separated model ids/tiers that require approval; null = server default (fable).
+  modelApprovalDenylist: string | null
 }
 
 export function useSettings() {
@@ -205,12 +243,18 @@ export interface CreateSessionInput {
   permissionMode?: string
   attachmentIds?: string[]
   model?: string
+  /** Optional runner preference. null → auto-rank; a name → that host first. */
+  host?: string | null
 }
 
 export function useCreateSession() {
   const qc = useQueryClient()
   return useMutation<Session, ApiRequestError, CreateSessionInput, { tempId: string }>({
     mutationFn: (input) => api.post<Session>('/sessions', input),
+    // Both callers (NewSessionDialogHost, PromptDock → DispatchBar) render the
+    // failure inline next to the form that raised it; the global toast would be
+    // a second, vaguer copy of the same message.
+    meta: { suppressErrorToast: true },
     onMutate: (input) => {
       // Placeholder lives outside the query cache so the 5s poll can't wipe it
       // while the backend spins up the claude PTY.
@@ -275,6 +319,53 @@ export function useQueueCancel() {
   const qc = useQueryClient()
   return useMutation<void, ApiRequestError, { id: string }>({
     mutationFn: ({ id }) => api.del<void>(`/sessions/${id}/queue`),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
+  })
+}
+
+export function useModelApproval() {
+  const qc = useQueryClient()
+  return useMutation<Session, ApiRequestError, { id: string; decision: 'approve' | 'deny'; model?: string }>({
+    mutationFn: ({ id, decision, model }) =>
+      api.post<Session>(`/sessions/${id}/model-approval`, { decision, model }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
+  })
+}
+
+// "Reload session": rebuild the driver in place (same account, transcript
+// resumed on a fresh CLI). The caller re-attaches the socket on success so the
+// transcript is rebuilt from the daemon's state rather than the stale one the
+// user was staring at.
+export function useReloadSession() {
+  const qc = useQueryClient()
+  return useMutation<Session, ApiRequestError, { id: string }>({
+    mutationFn: ({ id }) => api.post<Session>(`/sessions/${id}/reload`, {}),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
+  })
+}
+
+// "Next best account": the daemon moves the session to the account the selector
+// ranks best and continues the conversation (replays a stalled prompt). The caller
+// re-attaches the socket on success, exactly as reload does.
+export function useRotateSession() {
+  const qc = useQueryClient()
+  return useMutation<Session, ApiRequestError, { id: string }>({
+    mutationFn: ({ id }) => api.post<Session>(`/sessions/${id}/rotate`, {}),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
+    onError: (e) => {
+      const code = (e.body.detail as { code?: string } | null)?.code
+      toast.error(code === 'skipped:all_accounts_busy' ? 'No account has headroom right now' : `Couldn't rotate session`)
+    },
+  })
+}
+
+// Pin the session to its current account (usage-ceiling rotation then parks it as
+// `limited` instead of moving it) or clear the pin; unpinning a limited session
+// rotates it immediately on the server.
+export function useSetAccountPin() {
+  const qc = useQueryClient()
+  return useMutation<Session, ApiRequestError, { id: string; pinned: boolean }>({
+    mutationFn: ({ id, pinned }) => api.post<Session>(`/sessions/${id}/account-pin`, { pinned }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
   })
 }
@@ -377,6 +468,9 @@ export interface AccountUpdate {
   name: string
   nickname?: string | null
   weeklyReservePct?: number | null
+  /** Per-account model-approval override: 'require_approval' | 'block' | 'allow' | null (inherit global). */
+  modelApprovalAction?: string | null
+  allowExtraUsage?: boolean
 }
 
 export function useUpdateAccount() {
@@ -574,9 +668,8 @@ export function usePermanentDeleteSession() {
       if (ctx?.prevSessions) qc.setQueryData(QK.sessions, ctx.prevSessions)
       toast.error(`Couldn't delete ${ctx?.name ?? 'session'}`)
     },
-    onSuccess: (_d, _id, ctx) => {
-      toast.success(`Deleted ${ctx?.name ?? 'session'}`)
-    },
+    // No success toast: the card leaves the list optimistically in onMutate,
+    // which is the acknowledgement. Only the failure needs a voice.
     onSettled: () => {
       qc.invalidateQueries({ queryKey: QK.archived })
       qc.invalidateQueries({ queryKey: QK.sessions })
@@ -637,6 +730,34 @@ export function useBulkArchiveSessions() {
       qc.invalidateQueries({ queryKey: QK.sessions })
       qc.invalidateQueries({ queryKey: QK.archived })
     },
+  })
+}
+
+export function useResumeInterrupted() {
+  const qc = useQueryClient()
+  return useMutation<BatchResult, ApiRequestError, string[]>({
+    mutationFn: (ids) => api.post<BatchResult>('/sessions/batch/resume', { ids }),
+    onSuccess: (result) => {
+      const n = result.succeeded.length
+      const f = result.failed.length
+      if (f > 0) toast.error(`Resumed ${n} · ${f} skipped`)
+      else toast.success(`Resumed ${n}`)
+    },
+    onSettled: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
+  })
+}
+
+export function useRotateStalled() {
+  const qc = useQueryClient()
+  return useMutation<BatchResult, ApiRequestError, string[]>({
+    mutationFn: (ids) => api.post<BatchResult>('/sessions/batch/rotate', { ids }),
+    onSuccess: (result) => {
+      const n = result.succeeded.length
+      const f = result.failed.length
+      if (f > 0) toast.error(`Rotated ${n} · ${f} skipped`)
+      else toast.success(`Rotated ${n}`)
+    },
+    onSettled: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
   })
 }
 
@@ -768,8 +889,10 @@ export function useDeployStatus() {
 
 export function useStartDeploy() {
   const qc = useQueryClient()
-  return useMutation<{ started: boolean; reason?: string }, ApiRequestError, void>({
-    mutationFn: () => startDeploy(),
+  // The variable is an optional explicit target sha (green-frontier deploy);
+  // undefined deploys origin/master's tip as always.
+  return useMutation<{ started: boolean; reason?: string }, ApiRequestError, string | undefined>({
+    mutationFn: (targetSha) => startDeploy(targetSha),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['deploy', 'status'] }),
   })
 }
@@ -880,6 +1003,8 @@ export function useDispatchBacklogGroup() {
   const qc = useQueryClient()
   return useMutation<DispatchGroupResponse, ApiRequestError, string[]>({
     mutationFn: (refs) => postDispatchGroup(refs),
+    // ManualDispatchDialog / BacklogGroupsPanel show the failure inline.
+    meta: { suppressErrorToast: true },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: QK.backlogGroups })
       qc.invalidateQueries({ queryKey: QK.automationSessions('backlog-runner') })
@@ -892,6 +1017,8 @@ export function useConsolidate() {
   const qc = useQueryClient()
   return useMutation<TriggerResult, ApiRequestError, { repo: string; numbers: number[] }>({
     mutationFn: (body) => postConsolidate(body),
+    // ConsolidatePanel shows the outcome inline.
+    meta: { suppressErrorToast: true },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: QK.consolidation })
       qc.invalidateQueries({ queryKey: QK.automationActionable('pr-doctor') })
@@ -1127,5 +1254,198 @@ export function useDeletePermissionProfile() {
   return useMutation({
     mutationFn: (id: string) => api.del(`/permission-profiles/${id}`),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['permission-profiles'] }),
+  })
+}
+
+// ── SDLC initiatives (issues #802/#803) ──────────────────────────────────────
+
+/** The PM / SDLC mutations below all opt out of the global error toast: each
+ *  consumer renders `mutation.error` inline beside the control that fired it
+ *  (via `extractMutationErrorMessage` from queryClient, which already unwraps
+ *  the `{detail: {error, message}}` body shape these endpoints return). Before
+ *  this every failure produced two toasts — the hook's own and the global one. */
+const PM_MUTATION_META = { suppressErrorToast: true } as const
+
+/** The Initiative board's list. Each row already carries its artifact chain, so
+ *  the board renders N tracks from one call. Polled for baseline liveness; the
+ *  board also nudges an invalidation on `/ws` status frames (useInitiativesLive). */
+export function useInitiatives() {
+  return useQuery<Initiative[]>({
+    queryKey: QK.initiatives,
+    queryFn: fetchInitiatives,
+    staleTime: 5_000,
+    refetchInterval: 15_000,
+  })
+}
+
+/** The human-gate tap. On success, refresh the list so the moved node re-renders. */
+export function useAdvanceInitiative() {
+  const qc = useQueryClient()
+  return useMutation<Initiative, ApiRequestError, string>({
+    mutationFn: (slug: string) => advanceInitiative(slug),
+    onSuccess: (updated) => {
+      void qc.invalidateQueries({ queryKey: QK.initiatives })
+      void qc.invalidateQueries({ queryKey: QK.initiative(updated.slug) })
+    },
+    meta: PM_MUTATION_META,
+  })
+}
+
+export function useCreateInitiative() {
+  const qc = useQueryClient()
+  return useMutation<Initiative, ApiRequestError, CreateInitiativeInput>({
+    mutationFn: (input) => createInitiative(input),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: QK.initiatives }),
+    meta: PM_MUTATION_META,
+  })
+}
+
+// ── PM product layer (phase 1) ────────────────────────────────────────────────
+
+/** Projects registry list. Polled like initiatives (baseline liveness). */
+export function useProjects() {
+  return useQuery<Project[]>({
+    queryKey: QK.projects,
+    queryFn: fetchProjects,
+    staleTime: 5_000,
+    refetchInterval: 15_000,
+  })
+}
+
+export function useCreateProject() {
+  const qc = useQueryClient()
+  return useMutation<Project, ApiRequestError, CreateProjectInput>({
+    mutationFn: (input) => createProject(input),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: QK.projects }),
+    meta: PM_MUTATION_META,
+  })
+}
+
+export function useSyncProject() {
+  const qc = useQueryClient()
+  return useMutation<{ requested: boolean }, ApiRequestError, string>({
+    mutationFn: (slug) => requestProjectSync(slug),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: QK.projects }),
+    meta: PM_MUTATION_META,
+  })
+}
+
+// ── PM product layer (phase 2) — onboarding + triage hooks ───────────────────
+
+/** Onboarding-wizard state for one project (a view over the engine). */
+export function useOnboarding(slug: string) {
+  return useQuery<OnboardingView>({
+    queryKey: QK.onboarding(slug),
+    queryFn: () => fetchOnboarding(slug),
+    enabled: !!slug,
+    staleTime: 5_000,
+    refetchInterval: 15_000,
+  })
+}
+
+export function useProposeMap() {
+  const qc = useQueryClient()
+  return useMutation<{ sessionId: string | null }, ApiRequestError, string>({
+    mutationFn: (slug) => proposeMap(slug),
+    onSuccess: (_d, slug) => {
+      void qc.invalidateQueries({ queryKey: QK.onboarding(slug) })
+      void qc.invalidateQueries({ queryKey: QK.projects })
+    },
+    meta: PM_MUTATION_META,
+  })
+}
+
+export function useClassify() {
+  const qc = useQueryClient()
+  return useMutation<{ dispatched: number }, ApiRequestError, string>({
+    mutationFn: (slug) => runClassify(slug),
+    onSuccess: (_d, slug) => {
+      void qc.invalidateQueries({ queryKey: QK.onboarding(slug) })
+      void qc.invalidateQueries({ queryKey: QK.triage })
+    },
+    meta: PM_MUTATION_META,
+  })
+}
+
+export function useTriage(projectSlug?: string) {
+  return useQuery<TriageProposal[]>({
+    queryKey: [...QK.triage, projectSlug ?? null],
+    queryFn: () => fetchTriage(projectSlug),
+    staleTime: 5_000,
+    refetchInterval: 15_000,
+  })
+}
+
+export function useAcceptProposal(projectSlug?: string) {
+  const qc = useQueryClient()
+  return useMutation<
+    { id: string; status: string },
+    ApiRequestError,
+    { id: string; edits?: OverlayEdits }
+  >({
+    mutationFn: ({ id, edits }) => acceptProposal(id, edits),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: [...QK.triage, projectSlug ?? null] })
+      void qc.invalidateQueries({ queryKey: QK.projects })
+    },
+    meta: PM_MUTATION_META,
+  })
+}
+
+export function useRejectProposal(projectSlug?: string) {
+  const qc = useQueryClient()
+  return useMutation<
+    { id: string; status: string },
+    ApiRequestError,
+    { id: string }
+  >({
+    mutationFn: ({ id }) => rejectProposal(id),
+    onSuccess: () =>
+      void qc.invalidateQueries({ queryKey: [...QK.triage, projectSlug ?? null] }),
+    meta: PM_MUTATION_META,
+  })
+}
+
+// MCP OAuth auth flow — mirrors the reauth hooks pattern.
+// useStartMcpAuth: initiates OAuth for a named MCP server.
+export function useStartMcpAuth() {
+  return useMutation<McpAuthState, ApiRequestError, string>({
+    mutationFn: (name) => api.post<McpAuthState>(`/library/mcp/${encodeURIComponent(name)}/auth`),
+  })
+}
+
+// useMcpAuthStatus: polls the auth state; stops automatically at terminal states.
+export function useMcpAuthStatus(name: string, enabled: boolean) {
+  return useQuery<McpAuthState>({
+    queryKey: ['mcp-auth-status', name],
+    queryFn: () => api.get<McpAuthState>(`/library/mcp/${encodeURIComponent(name)}/auth`),
+    enabled,
+    // Poll while auth is in flight; stop on terminal states to avoid unnecessary requests.
+    refetchInterval: (query) => {
+      const s = query.state.data?.state
+      return s === 'success' || s === 'error' || s === 'cancelled' ? false : 1500
+    },
+    refetchOnWindowFocus: false,
+    staleTime: 0,
+  })
+}
+
+// useSubmitMcpRedirect: submits the OAuth redirect URL once the user completes the flow.
+// Invalidates libraryMcp so the needs-auth badge refreshes.
+export function useSubmitMcpRedirect() {
+  const qc = useQueryClient()
+  return useMutation<McpAuthState, ApiRequestError, { name: string; redirectUrl: string }>({
+    mutationFn: ({ name, redirectUrl }) =>
+      api.post<McpAuthState>(`/library/mcp/${encodeURIComponent(name)}/auth/redirect`, { redirectUrl }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: QK.libraryMcp }),
+  })
+}
+
+// useCancelMcpAuth: cancels an in-flight MCP auth flow.
+export function useCancelMcpAuth() {
+  return useMutation<McpAuthState, ApiRequestError, string>({
+    mutationFn: (name) => api.post<McpAuthState>(`/library/mcp/${encodeURIComponent(name)}/auth/cancel`),
+    // fire-and-forget cancel: never toast on error (see queryClient global handler)
+    meta: { suppressErrorToast: true },
   })
 }

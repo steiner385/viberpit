@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Composer } from '../Composer'
+import type { Command } from '@/session/events'
 
 describe('Composer', () => {
   const defaults = {
@@ -292,7 +293,7 @@ describe('Composer', () => {
 
   it('does not recall history while the slash-command palette is open', async () => {
     const user = userEvent.setup()
-    const goalCmd = { name: 'goal', description: 'set goal', argumentHint: '' }
+    const goalCmd: Command = { name: 'goal', description: 'set goal', argumentHint: '', kind: 'client' }
     render(<Composer {...defaults} history={['older', 'newer']} commands={[goalCmd]} onCommand={vi.fn()} />)
     const box = screen.getByRole('textbox', { name: /message/i })
     await user.type(box, '/g')                 // palette is picking a command
@@ -302,7 +303,7 @@ describe('Composer', () => {
 
   it('does not recall history when slash-prefix matches NO command (unmatched slash)', async () => {
     const user = userEvent.setup()
-    const goalCmd = { name: 'goal', description: 'set goal', argumentHint: '' }
+    const goalCmd: Command = { name: 'goal', description: 'set goal', argumentHint: '', kind: 'client' }
     render(<Composer {...defaults} history={['older', 'newer']} commands={[goalCmd]} onCommand={vi.fn()} />)
     const box = screen.getByRole('textbox', { name: /message/i })
     await user.type(box, '/zzz')               // pickingCommand=true, palette has zero matches

@@ -1,0 +1,7 @@
+id: managed-settings-denies-force-push
+description: >-
+  The git-safety non-negotiable — no bare git force-push — is denied by the managed
+  settings.
+kind: static
+tags: [governance, git-safety, managed-settings]
+check: 'grep -q "force" .claude/managed-settings.json'

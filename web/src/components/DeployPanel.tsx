@@ -1,7 +1,38 @@
 // web/src/components/DeployPanel.tsx
 import { useState } from 'react'
+import { Banner } from '@/ui/Banner'
+import { Button } from '@/ui/Button'
 import { usePendingDeploy, useDeployStatus } from '@/api/hooks'
 import { useDeployController } from '@/lib/deployController'
+
+// The failure notice is dismissed by CONTENT, not as a boolean: `gaveUp` is the daemon's
+// live set and only changes when a human retries/archives, so a bare "hidden" flag would
+// either mask the next failure or (if session-scoped) reappear on every reload — the
+// original complaint. Persisting the signature of what was dismissed means the same
+// failure stays gone across reloads while any new session id or error text brings the
+// notice back on its own. Guarded like `lib/lastRepo.ts`: a blocked localStorage degrades
+// to "not dismissed", never a crash.
+const DISMISSED_KEY = 'ccswitch.deployFailureDismissed'
+
+function failureSignature(error: string | null, failed: string[], gaveUp: string[]): string {
+  return JSON.stringify({ error, failed: [...failed].sort(), gaveUp: [...gaveUp].sort() })
+}
+
+function readDismissedSignature(): string | null {
+  try {
+    return window.localStorage.getItem(DISMISSED_KEY)
+  } catch {
+    return null
+  }
+}
+
+function writeDismissedSignature(sig: string): void {
+  try {
+    window.localStorage.setItem(DISMISSED_KEY, sig)
+  } catch {
+    /* ignore — persistence is best-effort */
+  }
+}
 
 export function DeployPanel() {
   const { data: pending } = usePendingDeploy()
@@ -20,6 +51,12 @@ export function DeployPanel() {
   const unresolved = failed.length + gaveUp.length
   const count = pending?.commits.length ?? 0
   const ci = pending?.ci ?? 'unavailable'
+  // Green frontier: the tip is red/pending but an older pending commit is green — the
+  // Deploy button targets that sha and the banner says honestly how much it covers.
+  const tipCi = pending?.tipCi ?? ci
+  const deployableSha = pending?.deployableSha ?? ''
+  const deployableCount = pending?.deployableCount ?? 0
+  const partial = ci === 'green' && tipCi !== 'green' && !!deployableSha && deployableCount > 0
 
   // A prior deploy that failed only at the preflight CI gate is stale once CI is green again.
   const preflightStale = !running && phases.preflight === 'failed' && ci === 'green'
@@ -28,55 +65,72 @@ export function DeployPanel() {
   // (behind=false) the error is pure history — hide it. Session-resume failures are independent (a
   // successful daemon deploy leaves behind=false yet may have lost sessions) and always surface.
   const showError = !running && !preflightStale && behind && !!deploy?.error
-  const showFailure = showError || (!running && unresolved > 0)
+  const hasFailure = showError || (!running && unresolved > 0)
+  // Only the failure notice is dismissible. Pending commits are actionable (Deploy button)
+  // and clear on their own once deployed — hiding them would hide the only way to deploy.
+  const [dismissedSig, setDismissedSig] = useState(readDismissedSignature)
+  const failureSig = failureSignature(showError ? deploy?.error ?? null : null, failed, gaveUp)
+  const showFailure = hasFailure && dismissedSig !== failureSig
+  const dismissFailure = () => {
+    writeDismissedSignature(failureSig)
+    setDismissedSig(failureSig)
+  }
 
   if (!behind && !showFailure) return null
   const canDeploy = behind && !running && ci === 'green'
-  const reason = running ? 'deploying…' : ci !== 'green' ? `CI ${ci}` : ''
+  const reason = running ? 'deploying…'
+    : partial ? `${deployableCount} of ${count} deployable (tip CI ${tipCi})`
+    : ci !== 'green' ? `CI ${ci}` : ''
 
   return (
-    <div className="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/30 p-3 text-sm">
-      {behind && (
-        <div className="flex items-center justify-between gap-3">
-          <button className="font-medium" onClick={() => setOpen(o => !o)}>
-            {count} change{count === 1 ? '' : 's'} pending deploy {open ? '▾' : '▸'}
-          </button>
-          <div className="flex items-center gap-2">
-            {reason && <span className="text-xs text-amber-700 dark:text-amber-400">{reason}</span>}
-            <button
-              className="rounded bg-amber-600 px-3 py-1 text-white transition
-                         hover:bg-amber-700 active:scale-95
-                         focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400
-                         disabled:opacity-50 disabled:hover:bg-amber-600 disabled:active:scale-100"
-              disabled={!canDeploy || starting}
-              onClick={() => start()}
-            >{starting ? 'Starting…' : 'Deploy now'}</button>
-          </div>
-        </div>
-      )}
+    <Banner
+      tone="warning"
+      // Not a live region: commits, phase state and error text all change while a deploy
+      // runs, and role="status" would announce every one of those to a screen reader.
+      role="none"
+      title={behind ? (
+        <button type="button" onClick={() => setOpen((o) => !o)}>
+          {count} change{count === 1 ? '' : 's'} pending deploy {open ? '▾' : '▸'}
+        </button>
+      ) : undefined}
+      actions={behind ? (
+        <>
+          {reason && <span className="text-xs text-warning">{reason}</span>}
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={!canDeploy || starting}
+            onClick={() => start(partial ? deployableSha : undefined)}
+          >
+            {starting ? 'Starting…' : 'Deploy now'}
+          </Button>
+        </>
+      ) : undefined}
+      onDismiss={showFailure ? dismissFailure : undefined}
+    >
       {open && pending && (
         <ul className="mt-2 space-y-1">
-          {pending.commits.map(c => (
+          {pending.commits.map((c) => (
             <li key={c.sha} className="flex gap-2 font-mono text-xs">
-              <span className="text-amber-700 dark:text-amber-400">{c.sha.slice(0, 7)}</span>
+              <span className="text-warning">{c.sha.slice(0, 7)}</span>
               <span className="flex-1 truncate">{c.subject}</span>
-              <span className="text-gray-500">{c.author}</span>
+              <span className="text-ink-muted">{c.author}</span>
             </li>
           ))}
         </ul>
       )}
       {showFailure && (
-        <div className="mt-2 space-y-1 border-t border-amber-200 pt-2">
-          {showError && <p className="text-xs text-red-600">{deploy?.error}</p>}
+        <div className="mt-2 space-y-1 border-t border-edge pt-2">
+          {showError && <p className="text-xs text-danger">{deploy?.error}</p>}
           {failed.length > 0 && (
-            <p className="mt-1 text-xs text-red-600">
+            <p className="mt-1 text-xs text-danger">
               {failed.length} session{failed.length === 1 ? '' : 's'} failed to resume — autopilot is
               recovering {failed.length === 1 ? 'it' : 'them'}…{' '}
               <span className="font-mono">{failed.join(', ')}</span>
             </p>
           )}
           {gaveUp.length > 0 && (
-            <p className="mt-1 text-xs text-red-600">
+            <p className="mt-1 text-xs text-danger">
               {gaveUp.length} session{gaveUp.length === 1 ? '' : 's'} couldn’t be recovered — open to
               retry or archive:{' '}
               <span className="font-mono">{gaveUp.join(', ')}</span>
@@ -84,6 +138,6 @@ export function DeployPanel() {
           )}
         </div>
       )}
-    </div>
+    </Banner>
   )
 }

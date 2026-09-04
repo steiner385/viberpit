@@ -10,6 +10,9 @@ vi.mock('@/api/hooks', () => ({
   useAccounts: () => ({ data: [] }),
   useSessions: () => ({ data: [] }),
   useSessionsViewing: vi.fn(),
+  useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
+  // Unpin account button (SessionBody → SessionMeta).
+  useSetAccountPin: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
   useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
@@ -17,7 +20,7 @@ vi.mock('@/api/hooks', () => ({
 }))
 
 const textBlock = (id: string): Block => ({
-  kind: 'text', id, text: 'hello', streaming: false, thinkingMs: null,
+  kind: 'text', id, text: 'hello',
 })
 
 function makeRuntime(
@@ -30,7 +33,7 @@ function makeRuntime(
       openBlockId: null,
       status: { state: 'idle', count: 0 },
       title: null, model: null, usage: null,
-      replaying: false, error: null, queued: [], rotations: [],
+      replaying: false, error: null, queued: [], rotations: [], latestSuggestions: [],
       condense: null,
       ...overrides,
     },

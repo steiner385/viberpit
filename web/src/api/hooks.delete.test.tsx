@@ -10,20 +10,21 @@ vi.mock('./client', () => ({ api: { del: vi.fn(), post: vi.fn() }, ApiRequestErr
 vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
 import { toast } from 'sonner'
 
-const arch: ArchivedSession = { id: 'a-1', name: 'Bar', account: 'a', cwd: '/x', claudeSessionId: null, permissionMode: 'interactive', createdAt: 'x', archivedAt: 'y' }
+const arch: ArchivedSession = { id: 'a-1', name: 'Bar', account: 'a', cwd: '/x', repo: null, claudeSessionId: null, permissionMode: 'interactive', createdAt: 'x', archivedAt: 'y' }
 
 describe('usePermanentDeleteSession — optimistic', () => {
   let qc: QueryClient
   beforeEach(() => { vi.clearAllMocks(); qc = new QueryClient({ defaultOptions: { queries: { retry: false } } }) })
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={qc}>{children}</QueryClientProvider>
 
-  it('removes from archived immediately and toasts on success', async () => {
+  it('removes from archived immediately; the card leaving IS the acknowledgement (no toast)', async () => {
     qc.setQueryData(QK.archived, [arch])
     vi.mocked(api.del).mockResolvedValue(undefined)
     const { result } = renderHook(() => usePermanentDeleteSession(), { wrapper })
     result.current.mutate('a-1')
     await waitFor(() => expect(qc.getQueryData<ArchivedSession[]>(QK.archived)).toEqual([]))
-    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Deleted Bar'))
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(toast.success).not.toHaveBeenCalled()
   })
 
   it('rolls back and error-toasts on failure', async () => {
@@ -69,7 +70,7 @@ describe('usePermanentDeleteSession — dual-cache rollback', () => {
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={qc}>{children}</QueryClientProvider>
 
   it('rolls back both sessions and archived caches on failure', async () => {
-    const liveSess: Session = { id: 'a-1', name: 'Bar', accountName: 'a', status: 'idle', createdAt: 'x', updatedAt: 'x' }
+    const liveSess: Session = { id: 'a-1', name: 'Bar', accountName: 'a', status: 'idle', createdAt: 'x', updatedAt: 'x', prs: [] }
     qc.setQueryData(QK.archived, [arch])
     qc.setQueryData(QK.sessions, [liveSess])
     vi.mocked(api.del).mockRejectedValue(new Error('500'))

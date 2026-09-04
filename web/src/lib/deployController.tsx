@@ -11,7 +11,9 @@ export interface DeployControllerValue {
   visible: boolean
   starting: boolean
   startError: string | null
-  start: () => void
+  /** Start a deploy. Pass a sha to deploy the green frontier (the newest CI-green
+   *  pending commit) instead of origin/master's tip; omit for the tip. */
+  start: (targetSha?: string) => void
   dismiss: () => void
 }
 
@@ -30,7 +32,12 @@ export function DeployControllerProvider({ children }: { children: ReactNode }) 
     const was = prevRunning.current
     prevRunning.current = running
     if (was && !running) {
-      setIntent(deployOutcome(deploy) === 'success' ? 'held-success' : 'held-failure')
+      // 'idle' means the status was wiped rather than concluded (a controller process
+      // replaced mid-poll reports an empty DeployStatus, #865): there is no outcome to
+      // hold, so dismiss instead of flashing a spurious "Upgrade failed".
+      const outcome = deployOutcome(deploy)
+      setIntent(outcome === 'success' ? 'held-success'
+        : outcome === 'failure' ? 'held-failure' : 'idle')
     }
   }, [running, deploy])
 
@@ -51,9 +58,9 @@ export function DeployControllerProvider({ children }: { children: ReactNode }) 
     return () => clearTimeout(t)
   }, [intent])
 
-  const doStart = useCallback(() => {
+  const doStart = useCallback((targetSha?: string) => {
     setIntent('starting')
-    start.mutate(undefined, { onError: () => setIntent('held-failure') })
+    start.mutate(targetSha, { onError: () => setIntent('held-failure') })
   }, [start])
 
   const dismiss = useCallback(() => setIntent('idle'), [])
@@ -68,6 +75,33 @@ export function DeployControllerProvider({ children }: { children: ReactNode }) 
     dismiss,
   }
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
+}
+
+/**
+ * Assert that a `DeployControllerProvider` is above this point in the tree.
+ *
+ * `useDeployController()` below deliberately degrades to an inert controller
+ * (`visible: false`) when there is no provider, so that leaf components render
+ * in unit tests. For a LEAF that is the right trade: it draws nothing and
+ * nothing is lost. For the component whose whole job is to host `DeployOverlay`
+ * it is the worst possible failure — mounted in the wrong place it would render
+ * silently forever, and the symptom would be "a deploy ran and the user saw no
+ * progress overlay at all", with nothing in the console to say why.
+ *
+ * `shell/regions/Overlays` therefore asserts the provider rather than reading
+ * through the lenient hook. Same idiom as `useViewport()` and
+ * `useSessionRuntimeContext()`: a region whose parent must supply a provider
+ * says so by throwing at mount, where a test or the first dev load catches it.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function useRequireDeployController(): void {
+  const v = useContext(Ctx)
+  if (!v) {
+    throw new Error(
+      'useRequireDeployController: no DeployControllerProvider above this component. ' +
+        'app.overlays hosts DeployOverlay and must render inside DeployControllerProvider.',
+    )
+  }
 }
 
 // eslint-disable-next-line react-refresh/only-export-components

@@ -46,9 +46,17 @@ from .backlog_runner import BacklogRunner  # noqa: E402
 from .autopilot import Autopilot  # noqa: E402
 from .cicd_doctor import CicdDoctor  # noqa: E402
 from .archive_audit import ArchiveAudit  # noqa: E402
+from .sdlc_intake import SdlcIntake  # noqa: E402
+from .sdlc_synthesizer import SdlcSynthesizer  # noqa: E402
+from .pm_sync import PmSync  # noqa: E402
+from .gh_reconcile import GhReconcile  # noqa: E402
 
 registry.register(PrDoctor())
 registry.register(BacklogRunner())
 registry.register(Autopilot())
 registry.register(CicdDoctor())
 registry.register(ArchiveAudit())
+registry.register(SdlcIntake())
+registry.register(SdlcSynthesizer())
+registry.register(PmSync())
+registry.register(GhReconcile())

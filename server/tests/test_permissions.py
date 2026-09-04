@@ -345,3 +345,29 @@ def test_to_sdk_permission_mode_passes_through_sdk_names():
 def test_to_sdk_permission_mode_collapses_ccswitch_modes_to_default():
     for mode in ("interactive", "auto", "allowlist", "full-auto", "", "nonsense"):
         assert to_sdk_permission_mode(mode) == "default", mode
+
+
+def test_rethread_identity_moves_pending_permissions_to_new_identity():
+    """Mirror of test_questions: a permission prompt registered under "system"
+    (driver built by rehydrate / deploy restore) must be resolvable by the real
+    user the driver is re-threaded to, and only for that session."""
+    reg = PermissionRegistry()
+
+    async def run():
+        pid1, fut1 = await reg.request("s1", "t1", "Bash", {"command": "make"},
+                                       mode="interactive", denylist=PermissionRegistry.DANGEROUS,
+                                       allowlist=True, identity="system")
+        pid2, fut2 = await reg.request("s2", "t1", "Bash", {"command": "make"},
+                                       mode="interactive", denylist=PermissionRegistry.DANGEROUS,
+                                       allowlist=True, identity="system")
+        moved = reg.rethread_identity("s1", "system", "user@example.test")
+        assert reg.resolve(pid1, "allow", "system") is False
+        assert reg.resolve(pid1, "allow", "user@example.test") is True
+        assert reg.resolve(pid2, "deny", "user@example.test") is False
+        assert reg.resolve(pid2, "deny", "system") is True
+        return moved, await fut1, await fut2
+
+    moved, r1, r2 = asyncio.run(run())
+    assert moved == 1
+    assert r1 is True
+    assert r2 is False

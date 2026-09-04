@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import base64
+import contextlib
 import dataclasses
 import functools
 import hashlib
@@ -9,15 +10,17 @@ import os
 import time
 import uuid
 from typing import Callable
-from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
+from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny, ResultMessage
 from claude_agent_sdk._errors import CLIConnectionError
 from ccswitch import copilot as _copilot_mod
 from ccswitch.accounts import provider_of as _provider_of
+from server.aio import bounded_wait
 from . import events as ev
 from .failure import classify, TurnFailure
 from .translator import Translator
 from .permissions import PermissionRegistry, to_sdk_permission_mode
 from .questions import QuestionRegistry
+from .sdk_contract import is_turn_message
 from .status import StatusSignals, derive_status
 from .transcript_repair import repair_resumed_transcript
 
@@ -45,12 +48,73 @@ _TURN_CONTENT = (ev.UserMessage, ev.TurnStart, ev.TurnModel, ev.SessionMeta,
 # turn wedged mid-tool-call before giving up and cancelling the drain.
 _CLOSE_GRACE_SEC = 5.0
 
+# Budget for the SDK client's __aexit__ during aclose(): the real client runs two
+# 5s subprocess-terminate timeouts internally, so 15s covers it with headroom while
+# still keeping a wedged exit from hanging teardown (#846).
+_CLOSE_AEXIT_TIMEOUT_S = 15.0
+
 # Soft notice text surfaced when a dropped turn is being auto-resent.
 _RECOVERING_MSG = "Recovering the dropped turn…"
 
 
 async def _aiter_one(message: dict):
     yield message
+
+
+# Sentinel returned by _MessageSource.next() once the SDK stream has ended (the
+# subprocess is gone). A value rather than an exception so the two consumers (a
+# prompt's drain, the idle listener) branch on it the same way as on a message.
+_EOF = object()
+
+
+class _MessageSource:
+    """The ONE cursor over ``client.receive_messages()``, shared by a prompt's drain and
+    the idle listener, and safe to hand over between them by cancellation.
+
+    The SDK's stream is a single bounded channel; whoever awaits it must be exactly one
+    consumer at a time, and the hand-off (idle listener cancelled → drain takes over)
+    must not lose the message that was in flight at that instant. anyio's memory-stream
+    ``receive()`` CAN drop an item delivered in the same tick as the cancellation (the
+    sender hands it to the parked receiver, whose wake-up then raises CancelledError).
+    So the in-flight ``__anext__`` is never cancelled with its awaiter: it runs as its
+    own future, the awaiter waits on a shield, and a cancelled awaiter leaves the
+    future in place for the next caller to collect.
+    """
+
+    def __init__(self, client) -> None:
+        self._gen = client.receive_messages()
+        self._pending: asyncio.Future | None = None
+
+    async def next(self):
+        """The next SDK message, or ``_EOF`` once the stream has ended."""
+        if self._pending is None:
+            self._pending = asyncio.ensure_future(self._gen.__anext__())
+        pending = self._pending
+        try:
+            msg = await asyncio.shield(pending)
+        except asyncio.CancelledError:
+            # Only this awaiter was cancelled: `pending` keeps running and stays
+            # stored, so its message is delivered to the next next() — never lost.
+            raise
+        except StopAsyncIteration:
+            self._pending = None
+            return _EOF
+        except BaseException:
+            self._pending = None
+            raise
+        self._pending = None
+        return msg
+
+    async def aclose(self, grace: float, *, phase: str) -> None:
+        """Retire the cursor. Bounded like every other teardown wait: a cancel-immune
+        ``__anext__`` (a stream that swallows the cancel, #846) is abandoned after
+        ``grace`` rather than wedging the close."""
+        pending, self._pending = self._pending, None
+        if pending is not None and not pending.done():
+            pending.cancel()
+            await bounded_wait(pending, timeout=grace, phase=phase, cancel_grace=grace)
+        with contextlib.suppress(BaseException):
+            await self._gen.aclose()
 
 
 class DriverStream:
@@ -122,7 +186,12 @@ class SessionDriver:
         self.cwd = cwd
         self.config_dir = config_dir
         self.mode = mode
-        self.identity = identity
+        # The permission mode active immediately before plan mode was entered, so
+        # exiting plan restores it instead of collapsing to the SDK 'default' engine.
+        self._pre_plan_mode: str | None = None
+        # Backing field for the ``identity`` property — the registries it cascades
+        # to are not built yet at this point, so the ctor writes it directly.
+        self._identity = identity
         self.denylist = denylist
         self.resume = resume
         self.claude_session_id: str | None = None
@@ -175,6 +244,7 @@ class SessionDriver:
         self._turns_completed: int = 0
         self._last_turn_outcome: str = "success"
         self._last_pr_resolution: str | None = None
+        self._last_model_request: dict | None = None
         self._suggester = suggester
         self._suggest_task: asyncio.Task | None = None
         self._last_user_text: str = ""
@@ -186,6 +256,17 @@ class SessionDriver:
         # against regenerating byte-identical suggestions across turn boundaries.
         self._last_suggest_sig: str | None = None
         self._idle_seeded: bool = False
+        # The single cursor over the SDK stream (see _MessageSource) and the task that
+        # drains it BETWEEN prompts. The CLI emits whole turns with no query() behind
+        # them (a background task's <task-notification> it injects as a user message),
+        # and the SDK channel is bounded — an unread stream blocks the CLI on stdout and
+        # replays the stale turn into the next prompt (incident 2026-09-03: a stale
+        # `complete` result released the driver mid-answer). So the stream is consumed
+        # at ALL times: by the prompt's pump while a prompt turn runs, else by the
+        # listener, which tracks a CLI-initiated turn exactly like a prompt's.
+        self._source: _MessageSource | None = None
+        self._listener: asyncio.Task | None = None
+        self._closing: bool = False
 
     def _turn(self):
         return getattr(self._tr, "_turn_id", None) or "turn"
@@ -207,6 +288,12 @@ class SessionDriver:
         instead of abandoning the zombie turn.
         """
         return self._pump is not None and not self._pump.done()
+
+    def _turn_live(self) -> bool:
+        """A turn is in flight: a prompt's pump is draining, or the idle listener is
+        tracking a CLI-initiated turn (`_turn_active`). The one test that decides
+        whether a new prompt starts now or waits."""
+        return self.drain_alive or self._turn_active
 
     @property
     def awaiting_user_input(self) -> bool:
@@ -454,6 +541,31 @@ class SessionDriver:
             log.warning("driver: QuestionResolved emit failed session=%s qid=%s",
                         self.session_id, question_id, exc_info=True)
 
+    @property
+    def identity(self) -> str:
+        """The identity AskUserQuestion / permission asks are registered under and
+        resolved against (see QuestionRegistry.resolve / PermissionRegistry.resolve)."""
+        return self._identity
+
+    @identity.setter
+    def identity(self, value: str) -> None:
+        """Re-thread the driver AND its already-pending asks to *value*.
+
+        The registries snapshot ``self.identity`` at request time, so upgrading only
+        the attribute (what orchestrator._rethread_identity does when a real user
+        attaches to a driver an internal path built under "system") stranded every
+        question or permission raised before that attach: still listed as pending,
+        yet every answer rejected as an identity mismatch. Cascading here keeps the
+        attribute and the registries a single source of truth — whoever the driver
+        now belongs to owns everything it is waiting on.
+        """
+        old = self._identity
+        self._identity = value
+        if old == value:
+            return
+        self._qreg.rethread_identity(self.session_id, old, value)
+        self._reg.rethread_identity(self.session_id, old, value)
+
     def answer_question(self, question_id: str, selected: list[str], identity: str,
                         mode: str = "option") -> bool:
         """Resolve a pending question with the user's selection and mode. Mirrors resolve_permission.
@@ -547,13 +659,56 @@ class SessionDriver:
         self._client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode,
                                      self.resume, on_pre_compact=self._on_pre_compact)
         await self._client.__aenter__()
+        self._source = _MessageSource(self._client)
+        self._closing = False
+        self._start_listener()
 
-    async def send_prompt(self, text: str, images: list[dict] | None = None):
+    async def send_prompt(self, text: str, images: list[dict] | None = None, *,
+                          interrupt: bool = False):
+        """Send a prompt. While a turn is live it joins the FIFO queue — unless
+        ``interrupt`` is set, in which case the live turn is stopped and this prompt
+        runs NEXT ("interrupt and post"), ahead of anything already queued."""
         if self._client is None:
             raise RuntimeError("SessionDriver.send_prompt called before start()")
         images = images or []
-        # C2 — FIFO queue: if a pump is live, enqueue (text, images) instead of rejecting.
-        if self._pump is not None and not self._pump.done():
+        if interrupt and self._turn_live():
+            # Queue-head insert BEFORE the interrupt: the SDK interrupt awaits the
+            # CLI's control response, and the interrupted turn's ResultMessage can
+            # reach the pump during that await — its _end_turn pops the head, so
+            # the head must already be this prompt or a surviving queued one runs
+            # first. Never _start_turn directly here: a pump started before that
+            # result is consumed reads it as its own and closes the fresh turn.
+            # The interrupt also denies any parked permission/question, so the text
+            # is a fresh prompt — the answer short-circuit below must not see it.
+            self._queue.insert(0, (text, images))
+            log.info("driver.send_prompt: interrupt-and-post session=%s queue_depth=%d",
+                     self.session_id, len(self._queue))
+            await self.interrupt(keep_queue=True)
+            return
+        # A pending AskUserQuestion means the turn is parked inside _can_use_tool
+        # waiting for the user — a message typed now IS the answer, and the driver's
+        # own state (not the client's choice of frame type) decides that. It must be
+        # delivered as one: the C2 queue below only drains when the turn ENDS, which
+        # needs this very answer, so enqueueing here deadlocked the session (reply
+        # stuck in the queue strip, model blocked, forever — the frozen "Answer
+        # needed" failure mode). Every still-pending question of the call gets the
+        # text (a multi-question call is answered as a group) in chat framing, so the
+        # model reads it as the user's own words rather than a picked option. The
+        # question channel is text-only: images follow as an attachment-only prompt
+        # once the turn ends, never dropped.
+        if text.strip():
+            answered = self._qreg.resolve_all(self.session_id, [text], "chat")
+            if answered:
+                log.info("driver.send_prompt: delivered prompt as the answer to %d pending "
+                         "question(s) session=%s", answered, self.session_id)
+                if images:
+                    self._queue.append(("", images))
+                    self._emit(ev.QueueUpdate(self.queue_wire()))
+                return
+        # C2 — FIFO queue: if a turn is live — a prompt's pump, or a CLI-initiated turn
+        # the idle listener is tracking (`_turn_active`) — enqueue (text, images)
+        # instead of rejecting.
+        if self._turn_live():
             self._queue.append((text, images))
             log.debug("driver.send_prompt: queued prompt for session=%s, queue_depth=%d",
                       self.session_id, len(self._queue))
@@ -570,6 +725,9 @@ class SessionDriver:
     async def _start_turn(self, text: str, images: list[dict] | None = None):
         """Echo the user prompt, emit working status, query the SDK, drain."""
         images = images or []
+        # The prompt's pump takes over the SDK cursor: park the idle listener first
+        # (a no-op when this runs INSIDE the listener, dequeuing at a turn's end).
+        await self._stop_listener()
         self._cancel_suggest()
         self._last_user_text = text
         self._last_assistant_parts = []
@@ -664,102 +822,197 @@ class SessionDriver:
         self._emit(ev.ErrorEvent(code, message, turn_id=self._last_turn_id or self._turn()))
 
     async def _drain(self):
+        """A prompt turn's pump: consume the SDK cursor up to and including this turn's
+        ResultMessage (the CLI closes every turn with one), then settle the turn."""
+        assert self._source is not None  # only started after start() built the cursor
         try:
-            async for msg in self._client.receive_response():
-                for e in self._tr.feed(msg):
-                    if isinstance(e, ev.RateLimit):
-                        # Internal: stash the reset for retry timing; don't forward.
-                        if e.resets_at is not None:
-                            self._last_rate_reset = e.resets_at
-                        continue
-                    if isinstance(e, ev.ApiRetry):
-                        # Internal: count as progress so the stall watchdog leaves a
-                        # 529-backoff turn alone; flip the retrying flag on transition.
-                        self._note_progress(e)
-                        if not self._retrying:
-                            self._retrying = True
-                            await self._emit_status()
-                        continue   # internal — do not forward to the client
-                    # Any real (non-retry) event resumes the turn; clear the flag.
-                    if self._retrying:
-                        self._retrying = False
-                        await self._emit_status()
-                    if isinstance(e, ev.Condensing):
-                        await self._consume_condensing(e)
-                        continue
-                    # Genuine assistant output proves compaction is over. The clean
-                    # signal is the SDK's compact_boundary (a Condensing(active=False),
-                    # handled above), but it does not always arrive before the
-                    # post-compaction reply streams. Since derive_status ranks
-                    # 'condensing' ABOVE 'turn_active', a lingering flag pins the status
-                    # to "Condensing…" while real text streams in. Clear it on the first
-                    # content event — exactly as _retrying is cleared by any real event.
-                    if self._condensing and isinstance(e, (ev.TextDelta, ev.ThinkingDelta, ev.ToolCall, ev.ToolResult)):
-                        await self._consume_condensing(ev.Condensing(active=False))
-                    if isinstance(e, ev.TextDelta):
-                        self._last_assistant_parts.append(e.text)
-                    elif isinstance(e, ev.TurnEnd):
-                        self._last_turn_outcome = e.outcome
-                        self._last_turn_id = e.turn_id
-                        if e.pr_resolution is not None:
-                            # Intentionally sticky: set-only; first-write-wins is enforced
-                            # downstream by the rec.pr_resolution is None guard in _persist_status.
-                            self._last_pr_resolution = e.pr_resolution
-                    elif isinstance(e, ev.ErrorEvent):
-                        failure = await self._maybe_signal_recovery(
-                            e.code, e.raw_message or e.message)
-                        if failure.kind == "turn_dropped":
-                            # Self-healing auto-resend is in flight (signalled above).
-                            # Show a soft "recovering" notice instead of the alarming
-                            # red error; the orchestrator pauses with a red surface only
-                            # if the resend cap is hit.
-                            self._note_progress(e)
-                            self._emit(ev.Recovering(
-                                turn_id=e.turn_id, message=_RECOVERING_MSG))
-                            continue
-                    if isinstance(e, (ev.TextDelta, ev.ToolCall, ev.ToolResult)):
-                        self._turn_produced_output = True
-                    self._note_progress(e)
-                    self._emit(e)
-                if self.claude_session_id is None and self._tr.session_id:
-                    self.claude_session_id = self._tr.session_id
-                    if self._on_session_id is not None:
-                        try:
-                            await self._on_session_id(self.session_id, self.claude_session_id)
-                        except Exception:
-                            log.exception("driver.on_session_id session=%s", self.session_id)
+            while True:
+                msg = await self._source.next()
+                if msg is _EOF:
+                    break
+                await self._handle_msg(msg)
+                if isinstance(msg, ResultMessage):
+                    break
         except Exception as exc:
             log.exception("driver.drain session=%s", self.session_id)
-            # Surface the real failure to the UI, not a generic placeholder. The cause
-            # (e.g. a dead token or a closed subprocess) is exactly what the user needs
-            # to act on; redaction scrubs any secret-shaped substrings downstream.
-            detail = str(exc).strip() or "no detail"
-            full = f"{type(exc).__name__}: {detail}"
-            self._emit(ev.ErrorEvent(
-                "driver_error", full[:500], turn_id=self._turn()))
-            self._last_turn_outcome = "failed"
-            await self._maybe_signal_recovery("driver_error", full)
+            await self._surface_drain_error(exc)
         finally:
-            # Capture any token rotation the SDK performed during this turn.
-            await self._call_sync_back()
-            # Clear every turn-scoped flag so none outlives the turn that set it.
-            self._reset_turn_flags()
-            # If queued prompts remain, pop the front and start the next turn.
-            if self._queue:
-                next_text, next_images = self._queue.pop(0)
-                log.debug("driver.drain: dequeuing next prompt for session=%s, remaining=%d",
-                          self.session_id, len(self._queue))
-                self._emit(ev.QueueUpdate(self.queue_wire()))
-                await self._start_turn(next_text, next_images)
-            else:
-                self._turn_active = False
-                self._turn_started_at = None
-                self._turn_buffer = []
-                self._turns_completed += 1
-                # Turn settled — refresh the exact context-window readout.
-                await self._emit_context_usage()
+            await self._end_turn()
+
+    async def _handle_msg(self, msg) -> None:
+        """Route ONE SDK message through the translator and the per-event side effects.
+        Shared by the prompt pump and the idle listener — one turn semantics."""
+        for e in self._tr.feed(msg):
+            if isinstance(e, ev.RateLimit):
+                # Internal: stash the reset for retry timing; don't forward.
+                if e.resets_at is not None:
+                    self._last_rate_reset = e.resets_at
+                continue
+            if isinstance(e, ev.ApiRetry):
+                # Internal: count as progress so the stall watchdog leaves a
+                # 529-backoff turn alone; flip the retrying flag on transition.
+                self._note_progress(e)
+                if not self._retrying:
+                    self._retrying = True
+                    await self._emit_status()
+                continue   # internal — do not forward to the client
+            # Any real (non-retry) event resumes the turn; clear the flag.
+            if self._retrying:
+                self._retrying = False
                 await self._emit_status()
-                self._maybe_start_suggestions()
+            if isinstance(e, ev.Condensing):
+                await self._consume_condensing(e)
+                continue
+            # Genuine assistant output proves compaction is over. The clean
+            # signal is the SDK's compact_boundary (a Condensing(active=False),
+            # handled above), but it does not always arrive before the
+            # post-compaction reply streams. Since derive_status ranks
+            # 'condensing' ABOVE 'turn_active', a lingering flag pins the status
+            # to "Condensing…" while real text streams in. Clear it on the first
+            # content event — exactly as _retrying is cleared by any real event.
+            if self._condensing and isinstance(e, (ev.TextDelta, ev.ThinkingDelta, ev.ToolCall, ev.ToolResult)):
+                await self._consume_condensing(ev.Condensing(active=False))
+            if isinstance(e, ev.TextDelta):
+                self._last_assistant_parts.append(e.text)
+            elif isinstance(e, ev.TurnEnd):
+                self._last_turn_outcome = e.outcome
+                self._last_turn_id = e.turn_id
+                if e.pr_resolution is not None:
+                    # Intentionally sticky: set-only; first-write-wins is enforced
+                    # downstream by the rec.pr_resolution is None guard in _persist_status.
+                    self._last_pr_resolution = e.pr_resolution
+                self._latch_model_request(e)
+            elif isinstance(e, ev.ErrorEvent):
+                failure = await self._maybe_signal_recovery(
+                    e.code, e.raw_message or e.message)
+                if failure.kind == "turn_dropped":
+                    # Self-healing auto-resend is in flight (signalled above).
+                    # Show a soft "recovering" notice instead of the alarming
+                    # red error; the orchestrator pauses with a red surface only
+                    # if the resend cap is hit.
+                    self._note_progress(e)
+                    self._emit(ev.Recovering(
+                        turn_id=e.turn_id, message=_RECOVERING_MSG))
+                    continue
+            if isinstance(e, (ev.TextDelta, ev.ToolCall, ev.ToolResult)):
+                self._turn_produced_output = True
+            self._note_progress(e)
+            self._emit(e)
+        if self.claude_session_id is None and self._tr.session_id:
+            self.claude_session_id = self._tr.session_id
+            if self._on_session_id is not None:
+                try:
+                    await self._on_session_id(self.session_id, self.claude_session_id)
+                except Exception:
+                    log.exception("driver.on_session_id session=%s", self.session_id)
+
+    async def _surface_drain_error(self, exc: BaseException) -> None:
+        """Surface a stream failure to the UI as the real cause, not a generic
+        placeholder (e.g. a dead token or a closed subprocess is exactly what the user
+        needs to act on; redaction scrubs any secret-shaped substrings downstream), mark
+        the turn failed and signal recovery."""
+        detail = str(exc).strip() or "no detail"
+        full = f"{type(exc).__name__}: {detail}"
+        self._emit(ev.ErrorEvent(
+            "driver_error", full[:500], turn_id=self._turn()))
+        self._last_turn_outcome = "failed"
+        await self._maybe_signal_recovery("driver_error", full)
+
+    async def _end_turn(self) -> None:
+        """Settle a turn that just closed (prompt or CLI-initiated alike): sync back,
+        clear turn flags, then either dequeue the next prompt or go idle — status
+        refresh, suggestions, and the listener back on the cursor."""
+        # Capture any token rotation the SDK performed during this turn.
+        await self._call_sync_back()
+        # Clear every turn-scoped flag so none outlives the turn that set it.
+        self._reset_turn_flags()
+        # If queued prompts remain, pop the front and start the next turn.
+        if self._queue:
+            next_text, next_images = self._queue.pop(0)
+            log.debug("driver.drain: dequeuing next prompt for session=%s, remaining=%d",
+                      self.session_id, len(self._queue))
+            self._emit(ev.QueueUpdate(self.queue_wire()))
+            await self._start_turn(next_text, next_images)
+        else:
+            self._turn_active = False
+            self._turn_started_at = None
+            self._turn_buffer = []
+            self._turns_completed += 1
+            # Turn settled — refresh the exact context-window readout.
+            await self._emit_context_usage()
+            await self._emit_status()
+            self._maybe_start_suggestions()
+            self._start_listener()
+
+    # ---- idle listener: the SDK cursor is never left unread -----------------------
+    def _start_listener(self) -> None:
+        if self._closing or self._source is None:
+            return
+        if self._listener is not None and not self._listener.done():
+            return
+        pump = self._pump
+        if pump is not None and not pump.done() and pump is not asyncio.current_task():
+            return   # a prompt's pump owns the cursor (a pump settling ITS turn is done with it)
+        self._listener = asyncio.create_task(
+            self._idle_listen(), name=f"driver-idle-listen:{self.session_id}")
+
+    async def _stop_listener(self) -> None:
+        """Park the idle listener so a prompt's pump can take the cursor. Cancel-safe:
+        a message in flight at the cancel stays in the shared cursor (_MessageSource).
+        From INSIDE the listener (a turn's end dequeuing a prompt) just unregister it —
+        its loop exits once the current step returns."""
+        task, self._listener = self._listener, None
+        if task is None or task.done() or task is asyncio.current_task():
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+
+    async def _open_autonomous_turn(self) -> None:
+        """The CLI started a turn on its own — a background task's <task-notification>
+        it injected as a user message, the model continuing. Track it like a prompt turn
+        (status, stall watchdog, attach snapshot) so the dashboard shows the work and
+        the turn's own ResultMessage — not the next prompt's — closes it."""
+        self._cancel_suggest()
+        self._last_user_text = ""      # nothing of ours to resend if it drops
+        self._last_assistant_parts = []
+        self._turn_buffer = []
+        self._turn_produced_output = False
+        self._turn_active = True
+        self._turn_started_at = time.time()
+        self._last_turn_outcome = "success"
+        log.info("driver.autonomous_turn: CLI-initiated turn session=%s", self.session_id)
+        await self._emit_status()
+
+    async def _idle_listen(self) -> None:
+        assert self._source is not None
+        me = asyncio.current_task()
+        try:
+            while self._listener is me:
+                msg = await self._source.next()
+                if msg is _EOF:
+                    log.warning("driver.idle_listen: SDK stream ended while idle session=%s",
+                                self.session_id)
+                    return
+                # Only a turn's own frames open a turn. Bookkeeping frames (SessionStart
+                # hook lifecycle right after connect, task notices) are fed through
+                # without one — a turn opened on those never gets its ResultMessage and
+                # every prompt queues behind it (see sdk_contract.TURN_MESSAGES).
+                if not self._turn_active and is_turn_message(msg):
+                    await self._open_autonomous_turn()
+                await self._handle_msg(msg)
+                if isinstance(msg, ResultMessage):
+                    await self._end_turn()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.exception("driver.idle_listen session=%s", self.session_id)
+            if self._turn_active:
+                await self._surface_drain_error(exc)
+                await self._end_turn()
+        finally:
+            if self._listener is me:
+                self._listener = None
 
     def queued(self) -> list[str]:
         """Return a snapshot of the queued prompt texts."""
@@ -817,6 +1070,22 @@ class SessionDriver:
     def turn_started_at(self) -> float | None:
         """Epoch seconds of the in-progress turn's start, or None when idle."""
         return self._turn_started_at
+
+    def _latch_model_request(self, e) -> None:
+        """Latch a self-directed model request from a completed turn.
+
+        Stamped with the turn id so the orchestrator can consume each request exactly
+        once. Set-only: a turn carrying no request leaves the previous value alone,
+        matching _last_pr_resolution's stickiness.
+        """
+        if e.model_request is not None:
+            self._last_model_request = {"turn_id": e.turn_id, **e.model_request}
+
+    @property
+    def last_model_request(self) -> dict | None:
+        """The most recent ``<!-- ccswitch:model=… -->`` request, or None.
+        ``{"turn_id", "model", "reason"}``."""
+        return self._last_model_request
 
     @property
     def last_pr_resolution(self) -> str | None:
@@ -956,11 +1225,13 @@ class SessionDriver:
             self._last_turn_id = "resumed"
         self._maybe_start_suggestions()
 
-    async def interrupt(self):
+    async def interrupt(self, *, keep_queue: bool = False):
+        """Stop the live turn. A Stop abandons every queued prompt; ``keep_queue``
+        (interrupt-and-post) leaves the queue for the settling turn to drain."""
         self._reg.deny_all(self.session_id)
         self._qreg.deny_all(self.session_id)
-        # Clear the queue so a Stop abandons all pending queued prompts.
-        self._queue.clear()
+        if not keep_queue:
+            self._queue.clear()
         self._cancel_suggest()
         if self._client:
             try:
@@ -980,10 +1251,20 @@ class SessionDriver:
             # Forward an inactive boundary so an open session view clears its progress
             # overlay (mirrors _consume_condensing); the normal boundary never arrives.
             self._emit(ev.Condensing(active=False))
-        self._emit(ev.QueueUpdate([]))
+        self._emit(ev.QueueUpdate(self.queue_wire()))
         await self._emit_status()
 
     async def set_permission_mode(self, mode: str):
+        # Plan mode is a temporary overlay. The web plan toggle turns it OFF by
+        # sending the 'default' sentinel; treat that as "return to the mode the
+        # session had before plan" rather than the SDK 'default' engine, which
+        # PermissionRegistry.request reads as "prompt on every dangerous tool" —
+        # silently dropping a full-auto session into constant approvals.
+        if mode == "plan" and self.mode != "plan":
+            self._pre_plan_mode = self.mode
+        elif mode == "default" and self.mode == "plan":
+            mode = self._pre_plan_mode or "default"
+            self._pre_plan_mode = None
         self.mode = mode
         if self._client:
             await self._client.set_permission_mode(to_sdk_permission_mode(mode))
@@ -1037,15 +1318,24 @@ class SessionDriver:
         clearing == dropping the resume handle and reconnecting. Resets per-turn
         and titling state so the new session behaves like a brand-new one.
         """
+        grace = getattr(self, "_close_grace", _CLOSE_GRACE_SEC)
+        self._closing = True
+        await self._stop_listener()
         if self._pump is not None and not self._pump.done():
             self._pump.cancel()
-            try:
-                await self._pump
-            except asyncio.CancelledError:
-                pass
+            # Same bounded reap as aclose(): a cancel-immune pump must wedge only
+            # this /clear, not the driver forever (#846).
+            await bounded_wait(self._pump, timeout=grace,
+                               phase=f"driver.reconnect-pump:{self.session_id}",
+                               cancel_grace=grace)
         self._pump = None
+        if self._source is not None:
+            await self._source.aclose(grace, phase=f"driver.reconnect-source:{self.session_id}")
+            self._source = None
         if self._client is not None:
-            await self._client.__aexit__(None, None, None)
+            await bounded_wait(self._client.__aexit__(None, None, None),
+                               timeout=_CLOSE_AEXIT_TIMEOUT_S,
+                               phase=f"driver.reconnect-aexit:{self.session_id}")
             await self._call_sync_back()
         self.resume = None
         self.claude_session_id = None
@@ -1058,14 +1348,22 @@ class SessionDriver:
                                on_pre_compact=self._on_pre_compact)
         self._client = client
         await client.__aenter__()
+        self._source = _MessageSource(client)
+        self._closing = False
+        self._start_listener()
 
     def resolve_permission(self, perm_id, decision, identity) -> bool:
         return self._reg.resolve(perm_id, decision, identity)
 
     async def aclose(self):
+        # No more listening: an idle driver's listener is parked on the cursor and
+        # must not be counted as a live turn to flush (the grace below is for those).
+        self._closing = True
+        await self._stop_listener()
         self._cancel_suggest()
         self._reg.deny_all(self.session_id)
         self._qreg.deny_all(self.session_id)
+        grace = getattr(self, "_close_grace", _CLOSE_GRACE_SEC)
         if self._pump is not None and not self._pump.done():
             # A turn wedged mid-tool-call must not be abandoned: hard-cancelling the
             # drain kills the subprocess before the CLI writes its synthetic
@@ -1076,24 +1374,29 @@ class SessionDriver:
             # can't launch a fresh turn while we're closing.
             self._queue.clear()
             if self._turn_active and self._client is not None:
-                try:
-                    await self._client.interrupt()
-                except Exception:
-                    log.warning("driver.aclose: interrupt failed session=%s",
-                                self.session_id, exc_info=True)
-            grace = getattr(self, "_close_grace", _CLOSE_GRACE_SEC)
+                # interrupt() awaits a control-channel reply from the CLI — a wedged
+                # subprocess left it blocked forever, hanging every close (#846).
+                await bounded_wait(self._client.interrupt(), timeout=grace,
+                                   phase=f"driver.interrupt:{self.session_id}",
+                                   cancel_grace=grace)
             try:
                 await asyncio.wait_for(asyncio.shield(self._pump), timeout=grace)
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 pass
             if not self._pump.done():
                 self._pump.cancel()
-                try:
-                    await self._pump
-                except asyncio.CancelledError:
-                    pass
+                # The reap must be bounded too: a pump wedged in an uncancellable
+                # region (mid-to_thread, or a stream that swallows the cancel)
+                # otherwise blocks close forever (#846).
+                await bounded_wait(self._pump, timeout=grace,
+                                   phase=f"driver.pump:{self.session_id}",
+                                   cancel_grace=grace)
+        if self._source is not None:
+            await self._source.aclose(grace, phase=f"driver.source:{self.session_id}")
         if self._client:
-            await self._client.__aexit__(None, None, None)
+            await bounded_wait(self._client.__aexit__(None, None, None),
+                               timeout=_CLOSE_AEXIT_TIMEOUT_S,
+                               phase=f"driver.aexit:{self.session_id}")
         # Final sync_back: capture any token rotation that occurred during the
         # session (e.g. a long-running session where the SDK refreshed but the
         # drain's finally sync_back already ran before the close was requested).

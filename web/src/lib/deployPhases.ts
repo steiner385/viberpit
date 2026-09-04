@@ -1,4 +1,4 @@
-import type { DeployProgress } from '@/api/types'
+import type { DeployProgress, DeployHostProgress } from '@/api/types'
 
 export interface DeployPhaseMeta { key: string; label: string; description: string }
 
@@ -7,6 +7,7 @@ export const DEPLOY_PHASES: DeployPhaseMeta[] = [
   { key: 'save', label: 'Save', description: 'Backing up live sessions' },
   { key: 'update', label: 'Update', description: 'Pulling latest code' },
   { key: 'report', label: 'Report', description: 'Recording the change' },
+  { key: 'runners', label: 'Runners', description: 'Updating session hosts' },
   { key: 'restart', label: 'Restart', description: 'Restarting service' },
   { key: 'resume', label: 'Resume', description: 'Restoring your sessions' },
 ]
@@ -27,12 +28,26 @@ export function allPhasesDone(deploy: DeployProgress | undefined): boolean {
   return DEPLOY_PHASES.every(p => phaseState(deploy, p.key) === 'done')
 }
 
-export function deployOutcome(deploy: DeployProgress | undefined): 'success' | 'failure' {
+/** Per-fleet-runner rows for the `runners` phase, sorted by host name. Empty
+ *  (never a placeholder error) when the deploy is a no-op with no hosts to update. */
+export function hostRows(deploy: DeployProgress | undefined): Array<[string, DeployHostProgress]> {
+  return Object.entries(deploy?.hosts ?? {}).sort(([a], [b]) => a.localeCompare(b))
+}
+
+export type DeployOutcome = 'success' | 'failure' | 'idle'
+
+export function deployOutcome(deploy: DeployProgress | undefined): DeployOutcome {
   // A lost session (restore.failed) is NOT a deploy failure: the backend keeps the
   // RESUME phase DONE, never sets error, and never rolls back — the upgrade completed.
   // Those sessions are surfaced as a warning on the success screen instead.
   const failed = !!deploy?.error
     || DEPLOY_PHASES.some(p => phaseState(deploy, p.key) === 'failed')
   if (failed) return 'failure'
-  return allPhasesDone(deploy) ? 'success' : 'failure'
+  if (allPhasesDone(deploy)) return 'success'
+  // Not running, no error, and NO phase ever started: a fresh controller process with
+  // no deploy in flight (e.g. reborn from its post-deploy self-restart, #865). That is
+  // "nothing happening", never "Upgrade failed".
+  const started = DEPLOY_PHASES.some(p => phaseState(deploy, p.key) !== 'pending')
+  if (!started && !deploy?.running) return 'idle'
+  return 'failure'
 }

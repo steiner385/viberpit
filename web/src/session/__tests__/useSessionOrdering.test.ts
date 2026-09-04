@@ -2,13 +2,15 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { useSessionOrdering } from '../useSessionOrdering'
 import type { Session } from '@/api/types'
+import { mkSession } from '@/test/factories'
 
-function mk(id: string, over: Partial<Session> = {}): Session {
-  return {
-    id, name: id, accountName: 'a', status: 'idle',
-    createdAt: '2026-06-01T00:00:00Z', updatedAt: '2026-06-01T00:00:00Z', ...over,
-  }
-}
+const mk = (id: string, over: Partial<Session> = {}): Session =>
+  mkSession(id, {
+    accountName: 'a',
+    createdAt: '2026-06-01T00:00:00Z',
+    updatedAt: '2026-06-01T00:00:00Z',
+    ...over,
+  })
 
 describe('useSessionOrdering', () => {
   beforeEach(() => window.localStorage.clear())
@@ -55,6 +57,30 @@ describe('useSessionOrdering', () => {
     const { result } = renderHook(() => useSessionOrdering([mk('a')], new Set<string>()))
     expect(result.current.orderedSessions).toEqual([])
     expect(result.current.groups).toEqual([])
+  })
+
+  // `allItems` exists for the DEC-8 list filters, which narrow `items` BEFORE
+  // this hook runs. `allOrderedSessions` is the close/archive fallback
+  // (nextSessionAfterClose's second argument), so it must keep the rows the
+  // filter removed — otherwise archiving the last match dead-ends.
+  it('allOrderedSessions is built from allItems, not from the narrowed items', () => {
+    const all = [mk('a'), mk('b'), mk('c')]
+    const { result } = renderHook(() => useSessionOrdering([all[1]], null, all))
+    expect(result.current.orderedSessions.map((s) => s.id)).toEqual(['b'])
+    expect(result.current.allOrderedSessions.map((s) => s.id).sort()).toEqual(['a', 'b', 'c'])
+  })
+
+  it('allItems defaults to items, so an unfiltered caller sees no change', () => {
+    const { result } = renderHook(() => useSessionOrdering([mk('a'), mk('b')]))
+    expect(result.current.allOrderedSessions.map((s) => s.id))
+      .toEqual(result.current.orderedSessions.map((s) => s.id))
+  })
+
+  it('search still hides from orderedSessions without touching allOrderedSessions', () => {
+    const sessions = [mk('a'), mk('b')]
+    const { result } = renderHook(() => useSessionOrdering(sessions, new Set(['a'])))
+    expect(result.current.orderedSessions.map((s) => s.id)).toEqual(['a'])
+    expect(result.current.allOrderedSessions.map((s) => s.id).sort()).toEqual(['a', 'b'])
   })
 
   it('toggleCollapse adds then removes a key, returning new sets', () => {

@@ -1,7 +1,13 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef } from 'react'
 import { useSaveMcpServer, useDeleteMcpServer } from '@/api/hooks'
 import type { LibraryMcpServer, McpServerConfig } from '@/api/types'
 import { ApiRequestError } from '@/api/client'
+import { Dialog } from '@/ui/Dialog'
+import { Button } from '@/ui/Button'
+import { Field } from '@/ui/Field'
+import { Input } from '@/ui/Input'
+import { Textarea } from '@/ui/Textarea'
+import { Select } from '@/ui/Select'
 
 interface McpServerDialogProps {
   /** null = create-new mode */
@@ -78,7 +84,6 @@ function buildConfig(
 export function McpServerDialog({ server, onClose }: McpServerDialogProps) {
   const isCreate = server === null
   const isReadonly = !isCreate && server.readonly
-  const dialogRef = useRef<HTMLDivElement>(null)
   const firstFieldRef = useRef<HTMLInputElement | HTMLSelectElement | null>(null)
 
   // Create-mode name
@@ -125,33 +130,6 @@ export function McpServerDialog({ server, onClose }: McpServerDialogProps) {
     setJsonError(null)
     setJsonMode(false)
   }
-
-  // Focus first field on mount
-  useEffect(() => {
-    firstFieldRef.current?.focus()
-  }, [])
-
-  // Escape closes; Tab traps focus
-  useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') { onClose(); return }
-      if (e.key === 'Tab') {
-        const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
-        )
-        if (!focusable || focusable.length === 0) return
-        const first = focusable[0]
-        const last = focusable[focusable.length - 1]
-        if (e.shiftKey) {
-          if (document.activeElement === first) { e.preventDefault(); last.focus() }
-        } else {
-          if (document.activeElement === last) { e.preventDefault(); first.focus() }
-        }
-      }
-    }
-    document.addEventListener('keydown', handleKeyDown)
-    return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [onClose])
 
   const effectiveName = isCreate ? newName : server!.name
   const nameIsValid = !isCreate || NAME_RE.test(newName)
@@ -224,256 +202,187 @@ export function McpServerDialog({ server, onClose }: McpServerDialogProps) {
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/50"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="mcp-dialog-title"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
-    >
-      <div
-        ref={dialogRef}
-        className="w-full max-w-lg rounded-xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 shadow-xl p-6 space-y-4"
-      >
-        <h2
-          id="mcp-dialog-title"
-          className="text-lg font-semibold text-gray-900 dark:text-gray-100"
-        >
-          {title}
-        </h2>
+    <Dialog open onClose={onClose} title={title} size="lg" initialFocus={firstFieldRef}>
+      {/* Readonly: show config as pretty JSON */}
+      {isReadonly && server && (
+        <Textarea
+          aria-label="Server config (JSON)"
+          readOnly
+          value={JSON.stringify(server.config, null, 2)}
+          className="font-mono h-48"
+        />
+      )}
 
-        {/* Readonly: show config as pretty JSON */}
-        {isReadonly && server && (
-          <textarea
-            aria-label="Server config (JSON)"
-            readOnly
-            value={JSON.stringify(server.config, null, 2)}
-            className="font-mono text-sm w-full h-48 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 px-2 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"
-          />
-        )}
+      {/* Editable form */}
+      {!isReadonly && (
+        <>
+          {/* Name input (create mode only) */}
+          {isCreate && (
+            <Field
+              label="Server name"
+              htmlFor="mcp-name"
+              error={newName.length > 0 && !nameIsValid ? 'Letters, numbers, . _ - only (must start with letter/digit).' : undefined}
+            >
+              <Input
+                ref={(el) => { firstFieldRef.current = el }}
+                id="mcp-name"
+                type="text"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder="my-mcp-server"
+                aria-label="Server name"
+                invalid={newName.length > 0 && !nameIsValid}
+              />
+            </Field>
+          )}
 
-        {/* Editable form */}
-        {!isReadonly && (
-          <>
-            {/* Name input (create mode only) */}
-            {isCreate && (
-              <div className="space-y-1">
-                <label
-                  htmlFor="mcp-name"
-                  className="block text-sm text-gray-700 dark:text-gray-300"
-                >
-                  Server name
-                </label>
-                <input
-                  ref={(el) => { firstFieldRef.current = el }}
-                  id="mcp-name"
-                  type="text"
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                  placeholder="my-mcp-server"
-                  aria-label="Server name"
-                  className="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-                {newName.length > 0 && !nameIsValid && (
-                  <p className="text-xs text-red-600 dark:text-red-400" role="alert">
-                    Letters, numbers, . _ - only (must start with letter/digit).
-                  </p>
-                )}
-              </div>
-            )}
+          {/* Display server name when editing */}
+          {!isCreate && (
+            <p className="text-sm text-ink-muted font-medium">
+              {server!.name}
+            </p>
+          )}
 
-            {/* Display server name when editing */}
-            {!isCreate && (
-              <p className="text-sm text-gray-500 dark:text-gray-400 font-medium">
-                {server!.name}
-              </p>
-            )}
+          {/* JSON toggle */}
+          <div className="flex justify-end">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={jsonMode ? exitJsonMode : enterJsonMode}
+              className="text-xs text-accent"
+            >
+              {jsonMode ? 'Form mode' : 'Edit as JSON'}
+            </Button>
+          </div>
 
-            {/* JSON toggle */}
-            <div className="flex justify-end">
-              <button
-                type="button"
-                onClick={jsonMode ? exitJsonMode : enterJsonMode}
-                className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
-              >
-                {jsonMode ? 'Form mode' : 'Edit as JSON'}
-              </button>
+          {jsonMode ? (
+            <div className="space-y-1">
+              <Textarea
+                aria-label="Config JSON"
+                value={jsonText}
+                onChange={(e) => { setJsonText(e.target.value); setJsonError(null) }}
+                invalid={!!jsonError}
+                className="font-mono h-48"
+              />
+              {jsonError && (
+                <p className="text-xs text-danger" role="alert">{jsonError}</p>
+              )}
             </div>
+          ) : (
+            <>
+              {/* Transport select */}
+              <Field label="Transport" htmlFor="mcp-transport">
+                <Select
+                  ref={(el) => { if (!isCreate) firstFieldRef.current = el }}
+                  id="mcp-transport"
+                  value={transport}
+                  onChange={(e) => { setTransport(e.target.value as Transport); setFormIsDirty(true) }}
+                  aria-label="Transport"
+                >
+                  <option value="stdio">stdio</option>
+                  <option value="http">http</option>
+                  <option value="sse">sse</option>
+                </Select>
+              </Field>
 
-            {jsonMode ? (
-              <div className="space-y-1">
-                <textarea
-                  aria-label="Config JSON"
-                  value={jsonText}
-                  onChange={(e) => { setJsonText(e.target.value); setJsonError(null) }}
-                  className="font-mono text-sm w-full h-48 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 px-2 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"
-                />
-                {jsonError && (
-                  <p className="text-xs text-red-600 dark:text-red-400" role="alert">{jsonError}</p>
-                )}
-              </div>
-            ) : (
-              <>
-                {/* Transport select */}
-                <div className="space-y-1">
-                  <label
-                    htmlFor="mcp-transport"
-                    className="block text-sm text-gray-700 dark:text-gray-300"
-                  >
-                    Transport
-                  </label>
-                  <select
-                    ref={(el) => { if (!isCreate) firstFieldRef.current = el }}
-                    id="mcp-transport"
-                    value={transport}
-                    onChange={(e) => { setTransport(e.target.value as Transport); setFormIsDirty(true) }}
-                    aria-label="Transport"
-                    className="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  >
-                    <option value="stdio">stdio</option>
-                    <option value="http">http</option>
-                    <option value="sse">sse</option>
-                  </select>
-                </div>
+              {transport === 'stdio' ? (
+                <>
+                  <Field label="Command" htmlFor="mcp-command">
+                    <Input
+                      id="mcp-command"
+                      type="text"
+                      value={command}
+                      onChange={(e) => { setCommand(e.target.value); setFormIsDirty(true) }}
+                      placeholder="npx"
+                      aria-label="Command"
+                    />
+                  </Field>
 
-                {transport === 'stdio' ? (
-                  <>
-                    {/* Command */}
-                    <div className="space-y-1">
-                      <label
-                        htmlFor="mcp-command"
-                        className="block text-sm text-gray-700 dark:text-gray-300"
-                      >
-                        Command
-                      </label>
-                      <input
-                        id="mcp-command"
-                        type="text"
-                        value={command}
-                        onChange={(e) => { setCommand(e.target.value); setFormIsDirty(true) }}
-                        placeholder="npx"
-                        aria-label="Command"
-                        className="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      />
-                    </div>
+                  <Field label="Args (one per line)" htmlFor="mcp-args">
+                    <Textarea
+                      id="mcp-args"
+                      value={argsText}
+                      onChange={(e) => { setArgsText(e.target.value); setFormIsDirty(true) }}
+                      placeholder="-y&#10;some-mcp-package"
+                      aria-label="Args"
+                      className="font-mono h-24"
+                    />
+                  </Field>
 
-                    {/* Args */}
-                    <div className="space-y-1">
-                      <label
-                        htmlFor="mcp-args"
-                        className="block text-sm text-gray-700 dark:text-gray-300"
-                      >
-                        Args <span className="opacity-60">(one per line)</span>
-                      </label>
-                      <textarea
-                        id="mcp-args"
-                        value={argsText}
-                        onChange={(e) => { setArgsText(e.target.value); setFormIsDirty(true) }}
-                        placeholder="-y&#10;some-mcp-package"
-                        aria-label="Args"
-                        className="font-mono text-sm w-full h-24 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 px-2 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"
-                      />
-                    </div>
+                  <Field label="Env (KEY=VALUE per line)" htmlFor="mcp-env">
+                    <Textarea
+                      id="mcp-env"
+                      value={envText}
+                      onChange={(e) => { setEnvText(e.target.value); setFormIsDirty(true) }}
+                      placeholder="API_KEY=secret"
+                      aria-label="Env"
+                      className="font-mono h-24"
+                    />
+                  </Field>
+                </>
+              ) : (
+                <>
+                  <Field label="URL" htmlFor="mcp-url">
+                    <Input
+                      id="mcp-url"
+                      type="text"
+                      value={url}
+                      onChange={(e) => { setUrl(e.target.value); setFormIsDirty(true) }}
+                      placeholder="https://example.com/mcp"
+                      aria-label="URL"
+                    />
+                  </Field>
 
-                    {/* Env */}
-                    <div className="space-y-1">
-                      <label
-                        htmlFor="mcp-env"
-                        className="block text-sm text-gray-700 dark:text-gray-300"
-                      >
-                        Env <span className="opacity-60">(KEY=VALUE per line)</span>
-                      </label>
-                      <textarea
-                        id="mcp-env"
-                        value={envText}
-                        onChange={(e) => { setEnvText(e.target.value); setFormIsDirty(true) }}
-                        placeholder="API_KEY=secret"
-                        aria-label="Env"
-                        className="font-mono text-sm w-full h-24 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 px-2 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"
-                      />
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    {/* URL */}
-                    <div className="space-y-1">
-                      <label
-                        htmlFor="mcp-url"
-                        className="block text-sm text-gray-700 dark:text-gray-300"
-                      >
-                        URL
-                      </label>
-                      <input
-                        id="mcp-url"
-                        type="text"
-                        value={url}
-                        onChange={(e) => { setUrl(e.target.value); setFormIsDirty(true) }}
-                        placeholder="https://example.com/mcp"
-                        aria-label="URL"
-                        className="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      />
-                    </div>
+                  <Field label="Headers (Name: value per line)" htmlFor="mcp-headers">
+                    <Textarea
+                      id="mcp-headers"
+                      value={headersText}
+                      onChange={(e) => { setHeadersText(e.target.value); setFormIsDirty(true) }}
+                      placeholder="Authorization: Bearer token"
+                      aria-label="Headers"
+                      className="font-mono h-24"
+                    />
+                  </Field>
+                </>
+              )}
+            </>
+          )}
 
-                    {/* Headers */}
-                    <div className="space-y-1">
-                      <label
-                        htmlFor="mcp-headers"
-                        className="block text-sm text-gray-700 dark:text-gray-300"
-                      >
-                        Headers <span className="opacity-60">(Name: value per line)</span>
-                      </label>
-                      <textarea
-                        id="mcp-headers"
-                        value={headersText}
-                        onChange={(e) => { setHeadersText(e.target.value); setFormIsDirty(true) }}
-                        placeholder="Authorization: Bearer token"
-                        aria-label="Headers"
-                        className="font-mono text-sm w-full h-24 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 px-2 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"
-                      />
-                    </div>
-                  </>
-                )}
-              </>
-            )}
+          {/* API error */}
+          {apiError && (
+            <p className="text-xs text-danger" role="alert">{apiError}</p>
+          )}
+        </>
+      )}
 
-            {/* API error */}
-            {apiError && (
-              <p className="text-xs text-red-600 dark:text-red-400" role="alert">{apiError}</p>
-            )}
-          </>
-        )}
-
-        {/* Footer */}
-        <div className="flex gap-3 justify-end pt-2">
-          <button
+      {/* Footer */}
+      <div className="flex gap-3 justify-end pt-2">
+        <Button type="button" variant="secondary" onClick={onClose}>
+          Cancel
+        </Button>
+        {!isCreate && !isReadonly && (
+          <Button
             type="button"
-            onClick={onClose}
-            className="rounded border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-700"
+            variant="danger"
+            onClick={handleDelete}
+            disabled={deleteMutation.isPending || saveMutation.isPending}
           >
-            Cancel
-          </button>
-          {!isCreate && !isReadonly && (
-            <button
-              type="button"
-              onClick={handleDelete}
-              disabled={deleteMutation.isPending || saveMutation.isPending}
-              className="rounded border border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 px-3 py-2 text-sm hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-60"
-            >
-              Delete
-            </button>
-          )}
-          {!isReadonly && (
-            <button
-              type="button"
-              onClick={handleSave}
-              disabled={!canSave}
-              className="rounded bg-blue-600 text-white px-3 py-2 text-sm hover:bg-blue-700 disabled:opacity-60"
-            >
-              {saveMutation.isPending ? 'Saving…' : 'Save'}
-            </button>
-          )}
-        </div>
+            Delete
+          </Button>
+        )}
+        {!isReadonly && (
+          <Button
+            type="button"
+            size="lg"
+            onClick={handleSave}
+            disabled={!canSave}
+            loading={saveMutation.isPending}
+          >
+            {saveMutation.isPending ? 'Saving…' : 'Save'}
+          </Button>
+        )}
       </div>
-    </div>
+    </Dialog>
   )
 }

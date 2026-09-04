@@ -11,6 +11,7 @@ import { cn } from '@/lib/utils'
 import { formatResetTime } from '@/lib/formatReset'
 import { contextSeverity } from '@/lib/contextWindow'
 import type { SubAgent, SubAgentStatus } from '@/session/selectors'
+import { modelName } from '@/session/modelName'
 import { SubAgentList } from './SubAgentList'
 
 interface Quota {
@@ -28,7 +29,13 @@ function quotaTitle(window: string, resetsAt: string | null): string {
 
 interface Props {
   account: string
+  /** The CHOSEN model alias (session record); null = account default. Drives the picker. */
   model: string | null
+  /** The model actually producing (SDK id, e.g. "claude-opus-4-8"); shown as a read-only
+   *  readout beside the picker. After a switch it lags `model` by one turn. */
+  liveModel?: string | null
+  /** True while a "switch after this turn" change waits for the in-flight turn to end. */
+  modelPending?: boolean
   /** Permission mode for the session ('plan' shows the plan-mode toggle as on). */
   mode: string
   contextPct: number | null
@@ -52,6 +59,8 @@ interface Props {
   onSelectModel: (id: string) => void
   onSelectAccount: (name: string) => void
   onSetMode: (mode: string) => void
+  /** Clear the account pin; the server rotates a `limited` session immediately. */
+  onUnpin?: () => void
 }
 
 const DASH = '—'
@@ -69,7 +78,7 @@ const DOT_CLASS: Record<SubAgentStatus, string> = {
   failed: 'bg-red-500',
 }
 
-export function SessionMeta({ account, model, mode, contextPct, quota, subAgents, statusSlot, exportSlot, actionsSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onSetMode }: Props) {
+export function SessionMeta({ account, model, liveModel = null, modelPending = false, mode, contextPct, quota, subAgents, statusSlot, exportSlot, actionsSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onSetMode, onUnpin }: Props) {
   const [open, setOpen] = useState(false)
   const agentCount = subAgents.length
 
@@ -97,25 +106,61 @@ export function SessionMeta({ account, model, mode, contextPct, quota, subAgents
             ))}
           </select>
           {accountPinned && (
-            <span aria-label="Account pinned" title="Pinned — auto-rotation off" className="text-amber-500">📌</span>
+            <button
+              type="button"
+              onClick={onUnpin}
+              aria-label="Unpin account"
+              title="Pinned — auto-rotation off. Click to unpin."
+              className="text-amber-500 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+            >
+              📌
+            </button>
           )}
         </span>
 
-        {/* Model switcher */}
-        <span className="inline-flex items-center gap-1">
-          <span className="text-gray-400 dark:text-gray-500">model</span>
-          <select
-            aria-label="Select model"
-            value={model ?? 'default'}
-            onChange={(e) => e.target.value && e.target.value !== (model ?? 'default') && onSelectModel(e.target.value)}
-            className="bg-transparent font-medium text-gray-900 dark:text-gray-100 truncate max-w-[14rem] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded"
-          >
-            {model && !models.some((m) => m.id === model) && <option value={model}>{model}</option>}
-            {models.map((m) => (
-              <option key={m.id} value={m.id}>{m.label}</option>
-            ))}
-          </select>
-        </span>
+        {/* Model switcher: bound to the CHOSEN alias (the session record), never to
+            the SDK-reported id — that id is the launch default until a turn runs on
+            the new model, so binding to it made the picker snap back on every switch. */}
+        {(() => {
+          const chosen = model ?? 'default'
+          const live = liveModel ? modelName(liveModel) : ''
+          return (
+            <span className="inline-flex items-center gap-1">
+              <span className="text-gray-400 dark:text-gray-500">model</span>
+              <select
+                aria-label="Select model"
+                value={chosen}
+                onChange={(e) => e.target.value && e.target.value !== chosen && onSelectModel(e.target.value)}
+                className="bg-transparent font-medium text-gray-900 dark:text-gray-100 truncate max-w-[14rem] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded"
+              >
+                {!models.some((m) => m.id === chosen) && (
+                  <option value={chosen}>{chosen === 'default' ? 'Default' : chosen}</option>
+                )}
+                {models.map((m) => (
+                  <option key={m.id} value={m.id}>{m.label}</option>
+                ))}
+              </select>
+              {live && (
+                <span
+                  aria-label="Model in use"
+                  title="Model currently answering (a switch takes effect on the next turn)"
+                  className="text-gray-400 dark:text-gray-500 truncate max-w-[8rem]"
+                >
+                  {live}
+                </span>
+              )}
+              {modelPending && (
+                <span
+                  aria-label="Model switch pending"
+                  title="Switching when the current turn finishes"
+                  className="text-amber-600 dark:text-amber-400"
+                >
+                  · after this turn
+                </span>
+              )}
+            </span>
+          )
+        })()}
 
         {/* Remaining context */}
         {(() => {

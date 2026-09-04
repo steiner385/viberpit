@@ -3,9 +3,12 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
-import { Dashboard } from '../Dashboard'
+import { SettingsView } from '../settings/SettingsView'
 import * as hooks from '@/api/hooks'
 import type { Account, Session } from '@/api/types'
+import { appSettings } from '@/test/factories'
+import { session } from '@/test/factories'
+import { queryResult } from '@/test/reactQuery'
 
 vi.mock('@/api/hooks', () => ({
   useAllPrs: vi.fn(() => ({ data: [] })),
@@ -82,8 +85,8 @@ function makeAccount(overrides: Partial<Account> = {}): Account {
   }
 }
 
-function makeSession(overrides: Partial<Session> = {}): Session {
-  return {
+const makeSession = (overrides: Partial<Session> = {}): Session =>
+  session({
     id: 'sess-1',
     name: 'My Session',
     accountName: 'work',
@@ -91,8 +94,7 @@ function makeSession(overrides: Partial<Session> = {}): Session {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     ...overrides,
-  }
-}
+  })
 
 function wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -112,15 +114,15 @@ function setupDefaultMocks(deleteMutate = vi.fn()) {
   vi.mocked(hooks.useRefreshAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useRefreshAccount>)
   vi.mocked(hooks.useUpdateAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUpdateAccount>)
   vi.mocked(hooks.useDeleteAccount).mockReturnValue({ ...NOOP_MUTATION, mutate: deleteMutate } as unknown as ReturnType<typeof hooks.useDeleteAccount>)
-  vi.mocked(hooks.useGithubRepos).mockReturnValue({ data: [], isLoading: false, isError: false } as ReturnType<typeof hooks.useGithubRepos>)
-  vi.mocked(hooks.useGithubBranches).mockReturnValue({ data: { default: null, branches: [] }, isLoading: false } as ReturnType<typeof hooks.useGithubBranches>)
-  vi.mocked(hooks.useSettings).mockReturnValue({ data: { defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null }, isLoading: false } as ReturnType<typeof hooks.useSettings>)
+  vi.mocked(hooks.useGithubRepos).mockReturnValue(queryResult([]))
+  vi.mocked(hooks.useGithubBranches).mockReturnValue(queryResult({ default: null, branches: [] }))
+  vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings()))
   vi.mocked(hooks.useUpdateSettings).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUpdateSettings>)
   vi.mocked(hooks.useReauthAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useReauthAccount>)
-  vi.mocked(hooks.useReauthStatus).mockReturnValue({ data: { state: 'idle', message: null, startedAt: null }, isLoading: false } as ReturnType<typeof hooks.useReauthStatus>)
+  vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult({ state: 'idle', message: null, startedAt: null }))
   vi.mocked(hooks.useCancelReauth).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCancelReauth>)
   vi.mocked(hooks.useSubmitReauthCode).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useSubmitReauthCode>)
-  vi.mocked(hooks.useArchivedSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useArchivedSessions>)
+  vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult([]))
   vi.mocked(hooks.useUnarchiveSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUnarchiveSession>)
   vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
   vi.mocked(hooks.useBulkUnarchiveSessions).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useBulkUnarchiveSessions>)
@@ -133,17 +135,14 @@ describe('AccountRow — Delete button', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     setupDefaultMocks(deleteMutate)
-    vi.mocked(hooks.useSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useSessions>)
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult([]))
   })
 
   it('renders a Delete button for each account row', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'work' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work' })]))
 
-    render(<Dashboard initialTab="settings" />, { wrapper })
+    render(<SettingsView />, { wrapper })
 
     // Default tab is Sessions; switch to Accounts
     await user.click(screen.getByRole('tab', { name: /accounts/i }))
@@ -153,12 +152,9 @@ describe('AccountRow — Delete button', () => {
 
   it('clicking Delete opens a confirmation dialog', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'work' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work' })]))
 
-    render(<Dashboard initialTab="settings" />, { wrapper })
+    render(<SettingsView />, { wrapper })
 
     // Switch to Accounts tab
     await user.click(screen.getByRole('tab', { name: /accounts/i }))
@@ -171,12 +167,9 @@ describe('AccountRow — Delete button', () => {
 
   it('confirming the delete calls the hook with the account name', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'work' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work' })]))
 
-    render(<Dashboard initialTab="settings" />, { wrapper })
+    render(<SettingsView />, { wrapper })
 
     await user.click(screen.getByRole('tab', { name: /accounts/i }))
     await user.click(screen.getByRole('button', { name: /delete account work/i }))
@@ -190,12 +183,9 @@ describe('AccountRow — Delete button', () => {
 
   it('clicking Cancel in the dialog closes it without calling the hook', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'work' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work' })]))
 
-    render(<Dashboard initialTab="settings" />, { wrapper })
+    render(<SettingsView />, { wrapper })
 
     await user.click(screen.getByRole('tab', { name: /accounts/i }))
     await user.click(screen.getByRole('button', { name: /delete account work/i }))
@@ -210,12 +200,9 @@ describe('AccountRow — Delete button', () => {
 
   it('pressing Escape on the dialog closes it without calling the hook', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'work' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work' })]))
 
-    render(<Dashboard initialTab="settings" />, { wrapper })
+    render(<SettingsView />, { wrapper })
 
     await user.click(screen.getByRole('tab', { name: /accounts/i }))
     await user.click(screen.getByRole('button', { name: /delete account work/i }))
@@ -230,10 +217,7 @@ describe('AccountRow — Delete button', () => {
 
   it('shows active-session warning when sessions reference the account', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'work' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work' })]))
     vi.mocked(hooks.useSessions).mockReturnValue({
       data: [
         makeSession({ id: 'sess-1', accountName: 'work', status: 'idle' }),
@@ -242,7 +226,7 @@ describe('AccountRow — Delete button', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useSessions>)
 
-    render(<Dashboard initialTab="settings" />, { wrapper })
+    render(<SettingsView />, { wrapper })
 
     await user.click(screen.getByRole('tab', { name: /accounts/i }))
     await user.click(screen.getByRole('button', { name: /delete account work/i }))
@@ -253,16 +237,10 @@ describe('AccountRow — Delete button', () => {
 
   it('does NOT show active-session warning when no sessions reference the account', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue({
-      data: [makeAccount({ name: 'work' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useAccounts>)
-    vi.mocked(hooks.useSessions).mockReturnValue({
-      data: [makeSession({ id: 'sess-1', accountName: 'personal', status: 'idle' })],
-      isLoading: false,
-    } as ReturnType<typeof hooks.useSessions>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work' })]))
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult([makeSession({ id: 'sess-1', accountName: 'personal', status: 'idle' })]))
 
-    render(<Dashboard initialTab="settings" />, { wrapper })
+    render(<SettingsView />, { wrapper })
 
     await user.click(screen.getByRole('tab', { name: /accounts/i }))
     await user.click(screen.getByRole('button', { name: /delete account work/i }))

@@ -10,15 +10,17 @@ class FakeClient:
         self._status = status_body or {"pending": {"behind": True}, "deploy": {"running": False}}
         self._start = start_ret
         self._unavailable = unavailable
+        self.start_calls: list[str | None] = []
 
     async def get_status(self):
         if self._unavailable:
             raise DeployControllerUnavailable("x")
         return self._status
 
-    async def start(self):
+    async def start(self, target_sha=None):
         if self._unavailable:
             raise DeployControllerUnavailable("x")
+        self.start_calls.append(target_sha)
         return self._start
 
 
@@ -90,6 +92,21 @@ def test_start_proxies_status_code():
     c = make_app(FakeClient(start_ret=(409, {"started": False, "reason": "in progress"})))
     r = c.post("/api/deploy/start")
     assert r.status_code == 409 and r.json()["started"] is False
+
+
+def test_start_forwards_target_sha_to_controller():
+    fc = FakeClient()
+    c = make_app(fc)
+    r = c.post("/api/deploy/start", json={"targetSha": "abc1234"})
+    assert r.status_code == 200
+    assert fc.start_calls == ["abc1234"]
+
+
+def test_start_without_body_passes_no_target():
+    fc = FakeClient()
+    c = make_app(fc)
+    assert c.post("/api/deploy/start").status_code == 200
+    assert fc.start_calls == [None]
 
 
 def test_start_unavailable_is_503():

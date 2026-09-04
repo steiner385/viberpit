@@ -1,16 +1,13 @@
 import { useState, useRef } from 'react'
-import { Archive } from 'lucide-react'
+import { Archive, RotateCcw, Shuffle } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useAutomations, useFixPr, useGenerateSuggestions, useSetAutopilotPaused, useBulkArchiveSessions } from '@/api/hooks'
+import { useAutomations, useFixPr, useGenerateSuggestions, useSetAutopilotPaused, useBulkArchiveSessions, useResumeInterrupted, useRotateStalled } from '@/api/hooks'
 import { SessionCard } from './SessionCard'
 import { GroupedList } from './GroupedList'
 import { EmptyState } from './EmptyState'
-import { Button } from '@/components/ui/button'
-import type { Session, Account } from '@/api/types'
+import { Button } from '@/ui/Button'
+import { ARCHIVABLE_STATUSES, type Session, type Account } from '@/api/types'
 import type { SessionGroup } from '@/session/ordering'
-
-// Sessions in these statuses are safe to bulk-archive via the quick action.
-const ARCHIVABLE_STATUSES = new Set(['done', 'complete', 'ended'])
 
 const CHECKBOX_CLS = cn(
   'h-4 w-4 flex-shrink-0 rounded border-gray-300 text-blue-600',
@@ -44,7 +41,7 @@ function BulkActionBar({ count, archivableDoneCount, archivePending, onArchive, 
         {archivableDoneCount > 0 && (
           <Button
             type="button"
-            variant="outline"
+            variant="secondary"
             onClick={onArchiveDone}
             disabled={archivePending}
             className="min-h-[44px] text-xs"
@@ -66,7 +63,7 @@ function BulkActionBar({ count, archivableDoneCount, archivePending, onArchive, 
             {archivePending ? 'Archiving…' : `Archive (${count})`}
           </Button>
         )}
-        <Button type="button" variant="outline" onClick={onClear} className="min-h-[44px]">
+        <Button type="button" variant="secondary" onClick={onClear} className="min-h-[44px]">
           Done
         </Button>
       </div>
@@ -150,6 +147,8 @@ export function SessionList({
   const genSuggestions = useGenerateSuggestions()
   const setAutopilot = useSetAutopilotPaused()
   const bulkArchive = useBulkArchiveSessions()
+  const resumeInterrupted = useResumeInterrupted()
+  const rotateStalled = useRotateStalled()
 
   const [selectMode, setSelectMode] = useState(false)
   const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set())
@@ -215,6 +214,14 @@ export function SessionList({
   }
 
   const archivableDoneCount = sessions.filter((s) => ARCHIVABLE_STATUSES.has(s.status)).length
+  const resumableIds = sessions.filter((s) => s.resumable).map((s) => s.id)
+  const handleResumeInterrupted = () => {
+    if (resumableIds.length > 0) resumeInterrupted.mutate(resumableIds)
+  }
+  const stalledIds = sessions.filter((s) => s.usageStalled).map((s) => s.id)
+  const handleRotateStalled = () => {
+    if (stalledIds.length > 0) rotateStalled.mutate(stalledIds)
+  }
 
   if (isLoading) {
     return (
@@ -239,14 +246,19 @@ export function SessionList({
           className="rounded-lg border border-dashed border-gray-200 dark:border-gray-700 p-6 text-center"
           role="status"
         >
-          <p className="text-sm text-gray-500 dark:text-gray-400">No sessions match your search.</p>
+          {/* Copy covers BOTH causes. Task 9 gave the list status/project/
+              environment filters, so "your search" became a lie for the filter
+              case — and the reset below already clears whichever caused it
+              (`SessionListColumn` clears the query AND the filters), so the
+              wording was the only thing that was search-only. */}
+          <p className="text-sm text-gray-500 dark:text-gray-400">No sessions match your search or filters.</p>
           {onClearSearch && (
             <button
               type="button"
               onClick={onClearSearch}
               className="mt-2 text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline"
             >
-              Clear search
+              Clear search and filters
             </button>
           )}
         </div>
@@ -299,6 +311,28 @@ export function SessionList({
     <div className="space-y-2">
       {/* Bulk-select toolbar */}
       <div className="flex items-center justify-end gap-2">
+        {!selectMode && resumableIds.length > 0 && (
+          <button
+            type="button"
+            onClick={handleResumeInterrupted}
+            disabled={resumeInterrupted.isPending}
+            className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 py-1"
+          >
+            <RotateCcw size={12} aria-hidden="true" />
+            Resume interrupted ({resumableIds.length})
+          </button>
+        )}
+        {!selectMode && stalledIds.length > 0 && (
+          <button
+            type="button"
+            onClick={handleRotateStalled}
+            disabled={rotateStalled.isPending}
+            className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 py-1"
+          >
+            <Shuffle size={12} aria-hidden="true" />
+            Rotate stalled ({stalledIds.length})
+          </button>
+        )}
         {!selectMode && archivableDoneCount > 0 && (
           <button
             type="button"
@@ -331,15 +365,13 @@ export function SessionList({
         />
       )}
 
-      {/* id and aria attrs mirror the original session-listbox contract for DispatchBar. */}
-      <div
-        id="session-listbox"
-        aria-label="Sessions"
-        aria-activedescendant={
-          selectedId ? `row-${selectedId}` : selectedGroupKey ? `group-header-${selectedGroupKey}` : undefined
-        }
-        className="space-y-2"
-      >
+      {/* The `aria-controls` target of the DispatchBar textarea — that textarea is
+          also where `aria-activedescendant` lives, and the only place it is valid.
+          A second copy used to sit here on this plain <div>: aria-activedescendant
+          is not an allowed attribute on a role-less element (axe
+          `aria-allowed-attr`), so assistive tech ignored it while it drifted from
+          the real one. DispatchBar owns the cursor; this element owns the id. */}
+      <div id="session-listbox" aria-label="Sessions" className="space-y-2">
         {groups ? (
           <GroupedList
             groups={groups}

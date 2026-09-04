@@ -39,6 +39,12 @@ ACTIVITY_STATUSES: frozenset[str] = frozenset({
     "waiting_input", "waiting_question", "ready_review",
 })
 
+# Statuses derived while the SDK still owns the turn (`sig.turn_active`, or condensing
+# — which outranks it). Everything else means the turn has been handed back, so an SDK
+# set_model issued mid-turn (a "switch after this turn") is now in force for the next
+# turn — see SessionOrchestrator._settle_model_pending.
+MID_TURN_STATUSES: frozenset[str] = frozenset({"in_progress", "condensing", "retrying"})
+
 
 def derive_status(sig: StatusSignals) -> str:
     if sig.pending_plan:

@@ -36,11 +36,11 @@ function RepoMultiselect({ field, value, onChange }: FieldProps) {
   }
 
   if (repos.isLoading) {
-    return <p className="text-sm text-muted-foreground">Loading repos…</p>
+    return <p className="text-sm text-ink-muted">Loading repos…</p>
   }
 
   return (
-    <div className="space-y-1 max-h-40 overflow-y-auto border border-border rounded p-2">
+    <div className="space-y-1 max-h-40 overflow-y-auto border border-edge rounded p-2">
       {(repos.data ?? []).map((repo) => (
         <label key={repo.nameWithOwner} className="flex items-center gap-2 text-sm cursor-pointer">
           <input
@@ -53,7 +53,7 @@ function RepoMultiselect({ field, value, onChange }: FieldProps) {
         </label>
       ))}
       {(repos.data ?? []).length === 0 && (
-        <p className="text-sm text-muted-foreground">No repos available.</p>
+        <p className="text-sm text-ink-muted">No repos available.</p>
       )}
     </div>
   )
@@ -80,11 +80,11 @@ function RepoNumberMap({ field, value, onChange, enabledRepos }: FieldProps & {
   }
 
   if (enabledRepos.length === 0) {
-    return <p className="text-sm text-muted-foreground">Select repositories above first.</p>
+    return <p className="text-sm text-ink-muted">Select repositories above first.</p>
   }
 
   return (
-    <div className="space-y-1 border border-border rounded p-2">
+    <div className="space-y-1 border border-edge rounded p-2">
       {enabledRepos.map((repo) => (
         <label key={repo} className="flex items-center justify-between gap-2 text-sm">
           <span className="truncate">{repo}</span>
@@ -94,7 +94,7 @@ function RepoNumberMap({ field, value, onChange, enabledRepos }: FieldProps & {
             aria-label={`${field.label}: ${repo}`}
             value={repo in map ? String(map[repo]) : ''}
             onChange={(e) => setRepo(repo, e.target.value)}
-            className="text-sm rounded border border-border bg-background px-2 py-1 w-24 shrink-0"
+            className="text-sm rounded border border-edge bg-canvas px-2 py-1 w-24 shrink-0"
           />
         </label>
       ))}
@@ -121,7 +121,7 @@ function ConfigInput({ field, value, onChange, enabledRepos }: FieldProps & {
           type="number"
           value={value == null ? '' : String(value)}
           onChange={(e) => { const v = e.target.valueAsNumber; if (!Number.isNaN(v)) onChange(field.key, v) }}
-          className="text-sm rounded border border-border bg-background px-2 py-1 w-28"
+          className="text-sm rounded border border-edge bg-canvas px-2 py-1 w-28"
         />
       )
     case 'string':
@@ -130,7 +130,7 @@ function ConfigInput({ field, value, onChange, enabledRepos }: FieldProps & {
           type="text"
           value={value == null ? '' : String(value)}
           onChange={(e) => onChange(field.key, e.target.value)}
-          className="text-sm rounded border border-border bg-background px-2 py-1 w-full"
+          className="text-sm rounded border border-edge bg-canvas px-2 py-1 w-full"
         />
       )
     case 'enum':
@@ -138,7 +138,7 @@ function ConfigInput({ field, value, onChange, enabledRepos }: FieldProps & {
         <select
           value={value == null ? '' : String(value)}
           onChange={(e) => onChange(field.key, e.target.value)}
-          className="text-sm rounded border border-border bg-background px-2 py-1"
+          className="text-sm rounded border border-edge bg-canvas px-2 py-1"
         >
           {(field.choices ?? []).map((c) => (
             <option key={c} value={c}>{c}</option>
@@ -185,7 +185,7 @@ function ConfigPanel({ automation: a }: ConfigPanelProps) {
 
   return (
     <section>
-      <h4 className="text-xs font-semibold uppercase text-muted-foreground mb-2">Configuration</h4>
+      <h4 className="text-xs font-semibold uppercase text-ink-muted mb-2">Configuration</h4>
       <div className="space-y-3">
         {a.configSchema.map((field) => (
           <div key={field.key}>
@@ -203,7 +203,7 @@ function ConfigPanel({ automation: a }: ConfigPanelProps) {
               )}
             </label>
             {field.help && (
-              <p className="text-xs text-muted-foreground mt-0.5">{field.help}</p>
+              <p className="text-xs text-ink-muted mt-0.5">{field.help}</p>
             )}
           </div>
         ))}
@@ -218,8 +218,8 @@ function SchedulePanel({ automation: a }: ConfigPanelProps) {
   const patch = usePatchAutomation()
   return (
     <section>
-      <h4 className="text-xs font-semibold uppercase text-muted-foreground mb-2">Schedule</h4>
-      <p className="text-xs text-muted-foreground mb-2">
+      <h4 className="text-xs font-semibold uppercase text-ink-muted mb-2">Schedule</h4>
+      <p className="text-xs text-ink-muted mb-2">
         Restrict when this automation runs (active-hours window) or preview a cron cadence.
         Outside its window the loop pauses and logs a "paused — outside scheduled active
         hours" entry in the activity feed.
@@ -243,7 +243,7 @@ export function AutomationCard({ automation: a }: {
   const hasConfig = a.configSchema.length > 0
 
   return (
-    <div className="rounded-lg border border-border bg-card">
+    <div className="rounded-lg border border-edge bg-surface">
       <div className="flex items-center gap-3 p-4">
         <div className="text-left flex-1 min-w-0">
           <div className="flex items-center gap-2">
@@ -255,9 +255,9 @@ export function AutomationCard({ automation: a }: {
             )}
           </div>
           {a.description && (
-            <p className="text-xs text-muted-foreground mt-0.5 leading-snug">{a.description}</p>
+            <p className="text-xs text-ink-muted mt-0.5 leading-snug">{a.description}</p>
           )}
-          <div className="flex items-center gap-2 text-sm text-muted-foreground mt-0.5">
+          <div className="flex items-center gap-2 text-sm text-ink-muted mt-0.5">
             <span className={cn('inline-block w-2 h-2 rounded-full shrink-0', LEVEL_DOT[a.status.level])} />
             {a.status.text}
           </div>
@@ -268,12 +268,12 @@ export function AutomationCard({ automation: a }: {
               aria-label="Mode"
               value={a.mode ?? ''}
               onChange={(e) => patch.mutate({ id: a.id, body: { mode: e.target.value } })}
-              className="text-sm rounded border border-border bg-background px-2 py-1"
+              className="text-sm rounded border border-edge bg-canvas px-2 py-1"
             >
               {a.modes.map((m) => <option key={m} value={m}>{m}</option>)}
             </select>
             {a.mode && MODE_DESCRIPTIONS[a.mode] && (
-              <span className="text-xs text-muted-foreground text-right max-w-36">
+              <span className="text-xs text-ink-muted text-right max-w-36">
                 {MODE_DESCRIPTIONS[a.mode]}
               </span>
             )}
@@ -308,7 +308,7 @@ export function AutomationCard({ automation: a }: {
             aria-label={open ? 'Collapse' : 'Expand'}
             aria-expanded={open}
             onClick={() => setOpen((v) => !v)}
-            className="text-muted-foreground hover:text-foreground shrink-0 p-1"
+            className="text-ink-muted hover:text-ink shrink-0 p-1"
           >
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
               <path
@@ -320,7 +320,7 @@ export function AutomationCard({ automation: a }: {
         )}
       </div>
       {open && hasConfig && (
-        <div className="border-t border-border p-4 space-y-5">
+        <div className="border-t border-edge p-4 space-y-5">
           <ConfigPanel automation={a} />
           <SchedulePanel automation={a} />
         </div>

@@ -1,0 +1,5 @@
+id: codex-force-push-rules
+description: Codex rules forbid unleased force pushes.
+kind: static
+tags: [agent-config, codex, git-safety]
+check: 'grep -q ''pattern = \["git", "push", "--force"\]'' .codex/rules/default.rules && grep -q ''decision = "forbidden"'' .codex/rules/default.rules'

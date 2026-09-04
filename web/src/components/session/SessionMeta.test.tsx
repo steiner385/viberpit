@@ -3,11 +3,16 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { SessionMeta } from './SessionMeta'
 
+// `mode` and `onSetMode` are required (the plan-mode toggle reads them); the
+// fixture omitted both, so the toggle rendered against `undefined`. 'default' is
+// the same case it was already exercising — `mode === 'plan'` stays false.
 const base = {
-  account: 'acct-a', model: 'opus', contextPct: null, quota: null, subAgents: [],
+  account: 'acct-a', model: 'opus', mode: 'default', contextPct: null, quota: null,
+  subAgents: [],
   models: [{ id: 'opus', label: 'Opus' }, { id: 'sonnet', label: 'Sonnet' }],
   accounts: [{ name: 'acct-a' }, { name: 'acct-b' }],
   accountPinned: false,
+  onSetMode: vi.fn(),
 }
 
 describe('SessionMeta switchers', () => {
@@ -32,8 +37,15 @@ describe('SessionMeta switchers', () => {
     expect(onSelectAccount).toHaveBeenCalledWith('acct-b')
   })
 
-  it('shows a pin indicator when pinned', () => {
-    render(<SessionMeta {...base} accountPinned onSelectModel={vi.fn()} onSelectAccount={vi.fn()} />)
-    expect(screen.getByLabelText('Account pinned')).toBeInTheDocument()
+  it('renders the pin as an Unpin button and dispatches onUnpin', () => {
+    const onUnpin = vi.fn()
+    render(<SessionMeta {...base} accountPinned onSelectModel={vi.fn()} onSelectAccount={vi.fn()} onUnpin={onUnpin} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Unpin account' }))
+    expect(onUnpin).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders no pin control when not pinned', () => {
+    render(<SessionMeta {...base} onSelectModel={vi.fn()} onSelectAccount={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: 'Unpin account' })).not.toBeInTheDocument()
   })
 })

@@ -626,7 +626,7 @@ describe('transcriptReducer', () => {
   // ── question live flag ─────────────────────────────────────────────────────
 
   describe('question live flag', () => {
-    const qEvent = { type: 'question', questionId: 'q1', turnId: 't1', header: 'H', question: 'Q?', options: [{ label: 'A' }], multiSelect: false } as const
+    const qEvent: SessionEvent = { type: 'question', questionId: 'q1', turnId: 't1', header: 'H', question: 'Q?', options: [{ label: 'A' }], multiSelect: false }
 
     it('marks a question received during replay as not live', () => {
       // Precondition: the initial transcript must be in replaying mode
@@ -756,6 +756,7 @@ test('block ts is stamped at creation and not overwritten by streaming append', 
   s = transcriptReducer(s, { type: 'textDelta', turnId: 'a1', text: 'Hel', ts: 1000 })
   s = transcriptReducer(s, { type: 'textDelta', turnId: 'a1', text: 'lo', ts: 2000 })
   const block = s.turns.at(-1)!.blocks[0]
+  if (block.kind !== 'text') throw new Error(`expected a text block, got ${block.kind}`)
   expect(block.text).toBe('Hello')
   expect(block.ts).toBe(1000) // first delta wins
 })

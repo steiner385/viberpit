@@ -1,41 +1,149 @@
 @import "tailwindcss";
 
 /* ───────────────────────────────────────────────────────────────────────────
-   Design tokens. Only the tokens still referenced by app CSS remain; the Vite
-   scaffold's landing-page tokens (--accent*, --social-bg, --shadow, --heading)
-   were removed along with the scaffold rules that used them.
+   Design tokens — the ONLY place a color, layer, radius, target size or type
+   size is defined (spec: docs/superpowers/specs/2026-09-02-ui-foundation-tokens-primitives-design.md).
+
+   Two layers:
+     1. Raw theme variables on :root (light) with a dark override. These are
+        plain CSS custom properties, always present, switchable at runtime by
+        [data-theme] or prefers-color-scheme.
+     2. The @theme inline block, which maps them onto Tailwind namespaces so
+        `bg-surface`, `z-drawer`, `min-h-target`, `text-sm` compile to utilities
+        that read the raw variable. `inline` makes the utility reference the
+        raw var directly, so theme switching never needs a class change.
    ─────────────────────────────────────────────────────────────────────────── */
 :root {
-  --text: #6b6375;
-  --text-h: #08060d;
-  --bg: #fff;
-  --border: #e5e4e7;
-  --code-bg: #f4f3ec;
+  --scale: 1;                    /* kiosk sets 1.25 (sub-spec B) */
 
-  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --mono: ui-monospace, Consolas, monospace;
+  /* surfaces & ink */
+  --t-canvas: #f6f7f9;  --t-surface: #ffffff;  --t-surface-raised: #eef1f5;
+  --t-edge: #d9dde3;    --t-edge-strong: #b9c1cc;
+  --t-ink: #1a1f29;     --t-ink-muted: #646a77;  --t-ink-faint: #8b929e;
+  --t-accent: #2461e7;  --t-accent-ink: #ffffff; --t-accent-wash: #e8effc;
 
-  /* Canonical 16px root so Tailwind's rem scale renders at its intended sizes
-     (text-xs=12px, text-sm=14px, text-base=16px, text-2xl=24px). Every size in
-     the app derives from this single base — do not hard-code px font-sizes. */
-  font: 16px/1.5 var(--sans);
+  /* semantic status — base is AA as text on surface; -strong is AA behind white
+     text; -wash is a tint for backgrounds.
+     -strong is deliberately theme-invariant: declared once, here, with NO dark
+     override. White text/glyphs on a -strong fill (metro node circles,
+     ready-merge button) must stay AA in BOTH themes, so the fill itself must
+     not change with the theme — see plotroom.css's UX-H5 rationale, which
+     holds --accent-strong/--done-strong/--amber-strong at the same AA-vs-white
+     values in its light and dark blocks.
+     Every tone/wash and ink/surface pair below is held at >= 4.5:1 (WCAG AA for
+     normal text — pills and banner copy are 12px) by
+     src/__tests__/contrast.test.ts. Retune a hex here and that test tells you
+     which pair you broke; do not add a parallel `-on-wash` token family. */
+  --t-success: #147c3b; --t-success-wash: #e6f4ea; --t-success-strong: #15803d;
+  --t-warning: #9a5d00; --t-warning-wash: #fbf0dc; --t-warning-strong: #9a5d00;
+  --t-danger:  #c23636; --t-danger-wash:  #fbe9e7; --t-danger-strong:  #b42318;
+  --t-info:    #4f6d8f; --t-info-wash:    #e9eef5; --t-info-strong:    #3d5674;
+  --t-neutral: #646a77; --t-neutral-wash: #eceff3; --t-neutral-strong: #5b6472;
+
+  /* layers (lowest → highest) */
+  --layer-raised: 1; --layer-sticky: 20; --layer-nav: 25; --layer-popover: 30;
+  --layer-overlay: 40; --layer-drawer: 50; --layer-dialog: 60; --layer-palette: 1000; --layer-toast: 1100;
+
+  /* metrics */
+  --target: 44px;
+  --r-sm: 4px; --r-md: 6px; --r-lg: 10px; --r-pill: 999px;
+
+  /* type scale (rem × --scale) */
+  --fs-2xs: calc(0.6875rem * var(--scale)); --fs-xs: calc(0.75rem * var(--scale));
+  --fs-sm: calc(0.875rem * var(--scale));   --fs-base: calc(1rem * var(--scale));
+  --fs-lg: calc(1.125rem * var(--scale));   --fs-xl: calc(1.25rem * var(--scale));
+  --fs-2xl: calc(1.5rem * var(--scale));
+
+  /* Legacy aliases — consumed by plotroom.css / projects.css / initiatives.css
+     and a few settings sections until sub-spec C removes the last use. */
+  --bg: var(--t-canvas); --surface: var(--t-surface); --text: var(--t-ink);
+  --muted: var(--t-ink-muted); --border: var(--t-edge); --accent: var(--t-accent);
+  --done: var(--t-success); --fail: var(--t-danger); --amber: var(--t-warning); --purple: var(--t-info);
+  --accent-strong: var(--t-accent); --done-strong: var(--t-success-strong); --amber-strong: var(--t-warning-strong);
+
+  font: 16px/1.5 var(--font-sans);
   color-scheme: light dark;
-  color: var(--text);
-  background: var(--bg);
+  color: var(--t-ink);
+  background: var(--t-canvas);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Dark values. Three viewer states: explicit data-theme="dark" | explicit
+   data-theme="light" | nothing stamped (follow the OS). */
 @media (prefers-color-scheme: dark) {
-  :root {
-    --text: #9ca3af;
-    --text-h: #f3f4f6;
-    --bg: #16171d;
-    --border: #2e303a;
-    --code-bg: #1f2028;
+  :root:not([data-theme="light"]) {
+    --t-canvas: #14171c;  --t-surface: #1d2128;  --t-surface-raised: #262b34;
+    --t-edge: #323843;    --t-edge-strong: #46505e;
+    --t-ink: #e8eaee;     --t-ink-muted: #98a0ac;  --t-ink-faint: #6f7886;
+    --t-accent: #5c9bff;  --t-accent-ink: #0b1416; --t-accent-wash: #1c2a44;
+    /* -strong intentionally absent here — inherits from :root (see the
+       light-block comment: it must stay AA-vs-white in both themes). */
+    --t-success: #3dbb66; --t-success-wash: #17301f;
+    --t-warning: #e0a23b; --t-warning-wash: #3a2d16;
+    --t-danger:  #ef6262; --t-danger-wash:  #3a1d1b;
+    --t-info:    #8aa4c8; --t-info-wash:    #1f2836;
+    --t-neutral: #98a0ac; --t-neutral-wash: #252a33;
+    color-scheme: dark;
   }
+}
+:root[data-theme="dark"] {
+  --t-canvas: #14171c;  --t-surface: #1d2128;  --t-surface-raised: #262b34;
+  --t-edge: #323843;    --t-edge-strong: #46505e;
+  --t-ink: #e8eaee;     --t-ink-muted: #98a0ac;  --t-ink-faint: #6f7886;
+  --t-accent: #5c9bff;  --t-accent-ink: #0b1416; --t-accent-wash: #1c2a44;
+  /* -strong intentionally absent here — inherits from :root (see the
+     light-block comment: it must stay AA-vs-white in both themes). */
+  --t-success: #3dbb66; --t-success-wash: #17301f;
+  --t-warning: #e0a23b; --t-warning-wash: #3a2d16;
+  --t-danger:  #ef6262; --t-danger-wash:  #3a1d1b;
+  --t-info:    #8aa4c8; --t-info-wash:    #1f2836;
+  --t-neutral: #98a0ac; --t-neutral-wash: #252a33;
+  color-scheme: dark;
+}
+:root[data-theme="light"] { color-scheme: light; }
+
+/* Tailwind bridge. Namespaces: --color-* → bg-/text-/border-/ring-/fill-…,
+   --z-index-* → z-*, --spacing-* → h-/w-/min-h-/p-…, --radius-* → rounded-*,
+   --text-* → text-<size>, --font-* → font-<family>. */
+@theme inline {
+  --color-canvas: var(--t-canvas);
+  --color-surface: var(--t-surface);
+  --color-surface-raised: var(--t-surface-raised);
+  --color-edge: var(--t-edge);
+  --color-edge-strong: var(--t-edge-strong);
+  --color-ink: var(--t-ink);
+  --color-ink-muted: var(--t-ink-muted);
+  --color-ink-faint: var(--t-ink-faint);
+  --color-accent: var(--t-accent);
+  --color-accent-ink: var(--t-accent-ink);
+  --color-accent-wash: var(--t-accent-wash);
+  --color-success: var(--t-success);  --color-success-wash: var(--t-success-wash);  --color-success-strong: var(--t-success-strong);
+  --color-warning: var(--t-warning);  --color-warning-wash: var(--t-warning-wash);  --color-warning-strong: var(--t-warning-strong);
+  --color-danger:  var(--t-danger);   --color-danger-wash:  var(--t-danger-wash);   --color-danger-strong:  var(--t-danger-strong);
+  --color-info:    var(--t-info);     --color-info-wash:    var(--t-info-wash);     --color-info-strong:    var(--t-info-strong);
+  --color-neutral: var(--t-neutral);  --color-neutral-wash: var(--t-neutral-wash);  --color-neutral-strong: var(--t-neutral-strong);
+
+  --z-index-raised: var(--layer-raised);   --z-index-sticky: var(--layer-sticky);
+  --z-index-nav: var(--layer-nav);         --z-index-popover: var(--layer-popover);
+  --z-index-overlay: var(--layer-overlay); --z-index-drawer: var(--layer-drawer);
+  --z-index-dialog: var(--layer-dialog);   --z-index-palette: var(--layer-palette);
+  --z-index-toast: var(--layer-toast);
+
+  --spacing-target: var(--target);
+
+  --radius-sm: var(--r-sm); --radius-md: var(--r-md); --radius-lg: var(--r-lg); --radius-pill: var(--r-pill);
+
+  --text-2xs: var(--fs-2xs); --text-xs: var(--fs-xs); --text-sm: var(--fs-sm); --text-base: var(--fs-base);
+  --text-lg: var(--fs-lg);   --text-xl: var(--fs-xl); --text-2xl: var(--fs-2xl);
+
+  --font-sans: system-ui, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, Consolas, monospace;
+
+  --animate-sheet-right: slide-in-right 200ms ease-out;
+  --animate-sheet-bottom: slide-in-bottom 200ms ease-out;
 }
 
 /* The app is a fixed-viewport column: the *document* must never scroll. Without
@@ -50,27 +158,17 @@ html, body {
 }
 
 #root {
-  /* Full-bleed: fill the entire viewport. The old `width: 1126px; margin: 0 auto`
-     was a leftover Vite scaffold default that caged the whole app in a centered
-     column, wasting all the space on wide monitors. The master-detail DesktopShell
-     (fixed `w-80` sidebar + `flex-1` main pane) is built to fill this width. */
+  /* Full-bleed; the shells size with `flex-1 min-h-0`, never their own viewport
+     units. dvh so the Android keyboard (interactive-widget=resizes-content, see
+     index.html) shrinks the layout instead of covering the composer. */
   width: 100%;
-  /* Left-aligned, not centered: `text-align: center` here was a leftover Vite
-     scaffold default that center-justified all text app-wide (chat prompts,
-     responses, headings, account rows). */
   text-align: left;
-  /* Fixed height, not `min-height: 100svh`: `min-` lets in-flow siblings of the
-     shell (banners, overlay fallbacks) GROW the column past the viewport. dvh so
-     the Android keyboard (interactive-widget=resizes-content, see index.html)
-     shrinks the layout instead of covering the composer. Shells below size with
-     `flex-1 min-h-0`, never their own viewport units. */
   height: 100dvh;
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
   /* viewport-fit=cover extends the CSS viewport into notch/side-bar regions in
-     landscape; keep horizontal content clear of those gutters. env() is 0 on
-     desktop and on non-notch devices. */
+     landscape; keep horizontal content clear of those gutters. */
   padding-left: env(safe-area-inset-left);
   padding-right: env(safe-area-inset-right);
 }
@@ -79,122 +177,45 @@ body {
   margin: 0;
 }
 
-/* ───────────────────────────────────────────────────────────────────────────
-   Inline code. Layered into `base` so Tailwind utilities (e.g. the
-   `text-xs font-mono` on <pre> result blocks) always win, and sized in `em`
-   so an inline chip is always 0.875× of whatever text surrounds it — never an
-   absolute px that fights the local scale. Excludes <code> inside <pre> so
-   fenced code blocks keep their own (utility / highlight.js) styling.
-   ─────────────────────────────────────────────────────────────────────────── */
+/* Inline code (excludes <code> inside <pre>, which keeps highlight.js styling). */
 @layer base {
   :not(pre) > code {
-    font-family: var(--mono);
+    font-family: var(--font-mono);
     font-size: 0.875em;
     padding: 0.1em 0.35em;
-    border-radius: 4px;
-    background: var(--code-bg);
-    color: var(--text-h);
-    /* Long unbreakable inline tokens (minified classNames, base64 blobs, IDs)
-       must wrap, not force their box wide — otherwise they leak a horizontal
-       scrollbar onto the whole transcript pane (its overflow-y-auto makes
-       overflow-x compute to auto). Fenced code keeps its own scroll (see
-       `.markdown pre`); only inline code wraps. */
+    border-radius: var(--r-sm);
+    background: var(--t-surface-raised);
+    color: var(--t-ink);
     overflow-wrap: anywhere;
   }
 }
 
-/* ───────────────────────────────────────────────────────────────────────────
-   Markdown rendered by AssistantText. The `prose`/`prose-sm` classes it used to
-   carry were no-ops (the @tailwindcss/typography plugin isn't installed), so
-   assistant messages inherited the raw root size with no controlled scale and
-   lost list markers to Tailwind's preflight reset. This gives them one tight,
-   consistent type scale anchored to text-sm.
-   ─────────────────────────────────────────────────────────────────────────── */
+/* Markdown rendered by AssistantText — one tight type scale anchored to text-sm. */
 @layer components {
-  .markdown {
-    font-size: 0.875rem; /* 14px — matches the app's text-sm body */
-    line-height: 1.6;
-  }
-  .markdown > * + * {
-    margin-top: 0.75em;
-  }
-  .markdown h1 { font-size: 1.25rem; font-weight: 600; line-height: 1.3; }
-  .markdown h2 { font-size: 1.125rem; font-weight: 600; line-height: 1.3; }
-  .markdown h3 { font-size: 1rem; font-weight: 600; line-height: 1.4; }
-  .markdown h4,
-  .markdown h5,
-  .markdown h6 { font-size: 0.875rem; font-weight: 600; }
+  .markdown { font-size: var(--fs-sm); line-height: 1.6; }
+  .markdown > * + * { margin-top: 0.75em; }
+  .markdown h1 { font-size: var(--fs-xl); font-weight: 600; line-height: 1.3; }
+  .markdown h2 { font-size: var(--fs-lg); font-weight: 600; line-height: 1.3; }
+  .markdown h3 { font-size: var(--fs-base); font-weight: 600; line-height: 1.4; }
+  .markdown h4, .markdown h5, .markdown h6 { font-size: var(--fs-sm); font-weight: 600; }
   .markdown ul { list-style: disc; padding-left: 1.4em; }
   .markdown ol { list-style: decimal; padding-left: 1.4em; }
   .markdown li { margin-top: 0.25em; }
-  .markdown li > ul,
-  .markdown li > ol { margin-top: 0.25em; }
-  .markdown a {
-    color: #2563eb;
-    text-decoration: underline;
-    /* A long bare URL is one unbreakable token; let it wrap so it can't leak a
-       horizontal scrollbar onto the pane (same reasoning as inline code). */
-    overflow-wrap: anywhere;
-  }
-  .markdown blockquote {
-    border-left: 3px solid var(--border);
-    padding-left: 0.75em;
-    color: var(--text);
-  }
-  .markdown pre {
-    overflow-x: auto;
-    border-radius: 6px;
-    padding: 0.625em 0.75em;
-    font-size: 0.75rem; /* 12px — matches the app's other code blocks */
-    line-height: 1.5;
-  }
-  .markdown pre code {
-    background: transparent;
-    padding: 0;
-    font-size: inherit;
-  }
-  .markdown table {
-    /* `display: block` turns the table into its own scroll container so a wide
-       table scrolls horizontally *within itself* (like `pre`) instead of
-       dragging the whole transcript pane sideways. */
-    display: block;
-    overflow-x: auto;
-    max-width: 100%;
-    border-collapse: collapse;
-    font-size: 0.8125rem;
-  }
-  .markdown th,
-  .markdown td {
-    border: 1px solid var(--border);
-    padding: 0.3em 0.5em;
-    text-align: left;
-  }
-  .markdown hr {
-    border: 0;
-    border-top: 1px solid var(--border);
-  }
+  .markdown li > ul, .markdown li > ol { margin-top: 0.25em; }
+  .markdown a { color: var(--t-accent); text-decoration: underline; overflow-wrap: anywhere; }
+  .markdown blockquote { border-left: 3px solid var(--t-edge); padding-left: 0.75em; color: var(--t-ink-muted); }
+  .markdown pre { overflow-x: auto; border-radius: var(--r-md); padding: 0.625em 0.75em; font-size: var(--fs-xs); line-height: 1.5; }
+  .markdown pre code { background: transparent; padding: 0; font-size: inherit; }
+  .markdown table { display: block; overflow-x: auto; max-width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
+  .markdown th, .markdown td { border: 1px solid var(--t-edge); padding: 0.3em 0.5em; text-align: left; }
+  .markdown hr { border: 0; border-top: 1px solid var(--t-edge); }
 }
 
-@media (prefers-color-scheme: dark) {
-  .markdown a { color: #60a5fa; }
-}
-
-/* ───────────────────────────────────────────────────────────────────────────
-   WorkingIndicator phrase shimmer. A soft highlight sweeps L→R across the
-   "working" gerund while Claude is busy. Implemented with background-clip:text
-   so only the glyphs are tinted. The component drops the class under
-   prefers-reduced-motion; the media query below is a belt-and-suspenders reset.
-   ─────────────────────────────────────────────────────────────────────────── */
+/* WorkingIndicator phrase shimmer (background-clip:text). The component drops
+   the class under prefers-reduced-motion; the media query is belt-and-suspenders. */
 @layer components {
   .working-shimmer {
-    background: linear-gradient(
-      90deg,
-      var(--text) 0%,
-      var(--text) 40%,
-      var(--text-h) 50%,
-      var(--text) 60%,
-      var(--text) 100%
-    );
+    background: linear-gradient(90deg, var(--t-ink-muted) 0%, var(--t-ink-muted) 40%, var(--t-ink) 50%, var(--t-ink-muted) 60%, var(--t-ink-muted) 100%);
     background-size: 200% 100%;
     -webkit-background-clip: text;
     background-clip: text;
@@ -202,18 +223,18 @@ body {
     animation: working-shimmer 1.8s linear infinite;
   }
 }
-
+@keyframes slide-in-right {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+@keyframes slide-in-bottom {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
 @keyframes working-shimmer {
   from { background-position: 200% 0; }
   to   { background-position: -200% 0; }
 }
-
 @media (prefers-reduced-motion: reduce) {
-  .working-shimmer {
-    animation: none;
-    background: none;
-    -webkit-background-clip: border-box;
-    background-clip: border-box;
-    color: inherit;
-  }
+  .working-shimmer { animation: none; background: none; -webkit-background-clip: border-box; background-clip: border-box; color: inherit; }
 }

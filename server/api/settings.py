@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -38,6 +38,10 @@ class SettingsBody(BaseModel):
     # App-wide auto-archive toggle. Omitted (None) → unchanged; true/false sets it.
     # Exposed to the UI as a plain bool (the storage-level NULL default surfaces as true).
     autoArchiveEnabled: bool | None = None
+    # Global model-approval policy. Uses model_fields_set so explicit null clears to
+    # env fallback. action ∈ VALID_ACTIONS or null; denylist is a free-text comma list.
+    modelApprovalAction: str | None = None
+    modelApprovalDenylist: str | None = None
 
 
 async def _migrate_archive_home(orch, db, old_home: str | None, new_home: str | None) -> None:
@@ -98,6 +102,8 @@ def _to_dict(s: AppSettings) -> dict:
         "maxActiveSessions": s.max_active_sessions,
         # NULL (unset) surfaces as enabled — the client sees a plain bool.
         "autoArchiveEnabled": s.auto_archive_enabled is not False,
+        "modelApprovalAction": s.model_approval_action,
+        "modelApprovalDenylist": s.model_approval_denylist,
     }
 
 
@@ -150,5 +156,12 @@ async def put_settings_row(
             except AttributeError:
                 # Orchestrator not yet attached (e.g. during tests with minimal app).
                 log.debug("settings.put: orchestrator unavailable for queue drain")
+    from server.sessions.model_policy import VALID_ACTIONS
+    if "modelApprovalAction" in body.model_fields_set:
+        if body.modelApprovalAction is not None and body.modelApprovalAction not in VALID_ACTIONS:
+            raise HTTPException(status_code=422, detail="invalid modelApprovalAction")
+        row.model_approval_action = body.modelApprovalAction
+    if "modelApprovalDenylist" in body.model_fields_set:
+        row.model_approval_denylist = body.modelApprovalDenylist
     await db.flush()
     return _to_dict(row)

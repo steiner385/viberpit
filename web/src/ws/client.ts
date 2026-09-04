@@ -17,7 +17,7 @@ import { shouldApplyRev } from '@/session/reconcile'
 
 // ── Inbound message shapes ───────────────────────────────────────────────────
 
-export interface WsStatusMsg       { type: 'status';        sessionId: string; status: string; updatedAt?: string; revAt?: string; interruptedByRestart?: boolean }
+export interface WsStatusMsg       { type: 'status';        sessionId: string; status: string; updatedAt?: string; revAt?: string; interruptedByRestart?: boolean; pausedReason?: string | null; pausedUntil?: string | null; usageStalled?: boolean }
 export interface WsUsageMsg        { type: 'usage';         account: string; session: { pct: number; resetsAt: string | null }; weekly: { pct: number; resetsAt: string | null } }
 export interface WsRotatedMsg      { type: 'rotated';       sessionId: string; fromAccount: string; toAccount: string; reason?: string; turnRestarted?: boolean; revAt?: string }
 export interface WsErrorMsg        { type: 'error';         sessionId?: string; code: string; message: string; resetsAt?: string | null }
@@ -240,6 +240,14 @@ export class SessionSocket {
     return this._sendControl({ type: 'interrupt', sessionId })
   }
 
+  /** "Interrupt and post": stop the in-flight turn and run this prompt next, instead
+   *  of queueing it behind the turn. A CONTROL frame (not a buffered prompt): replayed
+   *  late it would cut short whatever turn is running by then — the interrupt rule. */
+  interruptAndPrompt(sessionId: string, text: string, attachmentIds?: string[]): boolean {
+    return this._sendControl({ type: 'prompt', sessionId, text,
+      ...(attachmentIds && attachmentIds.length ? { attachmentIds } : {}), interrupt: true })
+  }
+
   permissionResponse(sessionId: string, permId: string, decision: 'allow' | 'deny' | 'always'): boolean {
     return this._sendControl({ type: 'permissionResponse', sessionId, permId, decision })
   }
@@ -446,7 +454,7 @@ export class SessionSocket {
     switch (msg.type) {
       case 'status':
         this._emit('status', msg)
-        this._patchSessionStatus(msg.sessionId, msg.status as Session['status'], msg.updatedAt, msg.revAt, msg.interruptedByRestart)
+        this._patchSessionStatus(msg.sessionId, msg.status as Session['status'], msg.updatedAt, msg.revAt, msg.interruptedByRestart, msg)
         break
       case 'usage':
         this._emit('usage', msg)
@@ -521,7 +529,7 @@ export class SessionSocket {
 
   // ── TanStack Query cache patching ────────────────────────────────────────────
 
-  private _patchSessionStatus(sessionId: string, status: Session['status'], updatedAt?: string, revAt?: string, interruptedByRestart?: boolean) {
+  private _patchSessionStatus(sessionId: string, status: Session['status'], updatedAt?: string, revAt?: string, interruptedByRestart?: boolean, stall?: Pick<WsStatusMsg, 'pausedReason' | 'pausedUntil' | 'usageStalled'>) {
     const qc = this._queryClient
     if (!qc) return
     qc.setQueryData<Session[]>(QK.sessions, (old) => {
@@ -536,7 +544,14 @@ export class SessionSocket {
                  ...(revAt ? { revAt } : {}),
                  // Issue #434: the status frame carries the live restart-interruption flag
                  // (cleared on resume) so the pill relabels without waiting for the 5s poll.
-                 ...(interruptedByRestart !== undefined ? { interruptedByRestart } : {}) }
+                 ...(interruptedByRestart !== undefined
+                     ? { interruptedByRestart, ...(interruptedByRestart ? {} : { resumable: false }) }
+                     : {}),
+                 // Stall fields ride the same frame so the "Waiting for capacity" pill
+                 // and the Rotate-stalled count update without waiting for the poll.
+                 ...(stall?.usageStalled !== undefined
+                     ? { usageStalled: stall.usageStalled, pausedReason: stall.pausedReason ?? null, pausedUntil: stall.pausedUntil ?? null }
+                     : {}) }
       })
     })
   }
@@ -556,7 +571,8 @@ export class SessionSocket {
       return old.map((s) => {
         if (s.id !== sessionId) return s
         if (!shouldApplyRev(revAt, s.revAt)) return s
-        return { ...s, accountName, ...(revAt ? { revAt } : {}) }
+        // A rotation ends whatever pause parked the session.
+        return { ...s, accountName, usageStalled: false, pausedReason: null, pausedUntil: null, ...(revAt ? { revAt } : {}) }
       })
     })
   }
@@ -617,6 +633,7 @@ export function useSessionSocket() {
   const interrupt           = useCallback((sessionId: string) => socket.interrupt(sessionId), [socket])
   const prompt              = useCallback((sessionId: string, text: string, attachmentIds?: string[]) => socket.prompt(sessionId, text, attachmentIds), [socket])
   const sendInterrupt       = useCallback((sessionId: string) => socket.sendInterrupt(sessionId), [socket])
+  const interruptAndPrompt  = useCallback((sessionId: string, text: string, attachmentIds?: string[]) => socket.interruptAndPrompt(sessionId, text, attachmentIds), [socket])
   const permissionResponse  = useCallback((sessionId: string, permId: string, decision: 'allow' | 'deny' | 'always') => socket.permissionResponse(sessionId, permId, decision), [socket])
   const answerQuestion      = useCallback((sessionId: string, questionId: string, selected: string[], mode: 'option' | 'freeform' | 'chat' = 'option') => socket.answerQuestion(sessionId, questionId, selected, mode), [socket])
   const setPermissionMode   = useCallback((sessionId: string, mode: string) => socket.setPermissionMode(sessionId, mode), [socket])
@@ -629,7 +646,7 @@ export function useSessionSocket() {
 
   return {
     attach, detach, interrupt,
-    prompt, sendInterrupt, permissionResponse, answerQuestion, setPermissionMode, cancelQueued,
+    prompt, sendInterrupt, interruptAndPrompt, permissionResponse, answerQuestion, setPermissionMode, cancelQueued,
     command, activity,
     on, off,
     connectionState,

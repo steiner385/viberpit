@@ -58,6 +58,16 @@ in. The rest can be omitted unless you need to change them.
 > **Display range conflict:** ensure `CCSWITCH_REAUTH_DISPLAY` (default `:0`) does not
 > fall within `[CCSWITCH_DISPLAY_START, CCSWITCH_DISPLAY_START + CCSWITCH_DISPLAY_COUNT)`.
 
+> **Login profile fidelity:** the reauth Chrome is a temp copy of `CCSWITCH_CHROME_PROFILE`
+> with the Claude cookies stripped, so Google stays signed in and 1Password is available.
+> Two things make that work from a systemd service: `capture_login` injects the user's
+> `DBUS_SESSION_BUS_ADDRESS` (found at `$XDG_RUNTIME_DIR/bus`, default `/run/user/<uid>/bus`)
+> so Chrome can reach gnome-keyring, and `CCSWITCH_REAUTH_EXTENSIONS` (comma-separated
+> extension ids; default = 1Password `aeblfdkhhhdcdjpifhhbdiojplfjncoa`; set to an empty
+> string to carry none) selects which extensions are copied. If Google shows a password
+> prompt anyway, check that `/run/user/<uid>/bus` exists for the service user
+> (`loginctl enable-linger <user>` keeps the user session bus alive without a desktop login).
+
 Restart the service after editing:
 
 ```bash

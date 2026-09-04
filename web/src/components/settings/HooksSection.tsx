@@ -9,7 +9,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/lib/utils'
-import { Button } from '@/components/ui/button'
+import { Button } from '@/ui/Button'
 import { api, ApiRequestError } from '@/api/client'
 
 /** A single hook row, matching the backend `HookRow` shape. */
@@ -211,7 +211,7 @@ export function HooksSection() {
                       <div className="flex shrink-0 items-center gap-2">
                         <Button
                           type="button"
-                          variant="outline"
+                          variant="secondary"
                           size="sm"
                           onClick={() => handleDryRun(index, row.command)}
                           disabled={dryRun.isPending && dryRunFor === index}
@@ -220,7 +220,7 @@ export function HooksSection() {
                         </Button>
                         <Button
                           type="button"
-                          variant="destructive"
+                          variant="danger"
                           size="sm"
                           onClick={() => handleDelete(index)}
                           disabled={saveMutation.isPending}

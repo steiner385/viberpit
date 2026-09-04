@@ -168,3 +168,65 @@ describe('Composer activity ping', () => {
     expect(onActivity).toHaveBeenCalled()
   })
 })
+
+describe('Composer interrupt-and-send ("Send now")', () => {
+  const busy = { state: 'in_progress', count: 0 }
+
+  function type(value: string) {
+    const textarea = screen.getByLabelText('Message') as HTMLTextAreaElement
+    fireEvent.change(textarea, { target: { value } })
+    return textarea
+  }
+
+  it('offers Send now only while a turn is busy', () => {
+    const { rerender } = renderComposer({ status: busy, onInterruptAndPrompt: vi.fn() })
+    expect(screen.getByRole('button', { name: /send now/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /queue message/i })).toBeInTheDocument()
+    rerender(<Composer {...defaultProps({ status: { state: 'idle', count: 0 }, onInterruptAndPrompt: vi.fn() })} />)
+    expect(screen.queryByRole('button', { name: /send now/i })).not.toBeInTheDocument()
+  })
+
+  it('Send now interrupts-and-posts the draft instead of queueing it', () => {
+    const onPrompt = vi.fn()
+    const onInterrupt = vi.fn()
+    const onInterruptAndPrompt = vi.fn().mockReturnValue(true)
+    renderComposer({ status: busy, onPrompt, onInterrupt, onInterruptAndPrompt })
+    const textarea = type('do this instead')
+    fireEvent.click(screen.getByRole('button', { name: /send now/i }))
+    expect(onInterruptAndPrompt).toHaveBeenCalledWith('do this instead', [])
+    expect(onPrompt).not.toHaveBeenCalled()
+    expect(onInterrupt).not.toHaveBeenCalled()
+    expect(textarea.value).toBe('')
+  })
+
+  it('Ctrl/Cmd+Enter while busy is the keyboard path to Send now; plain Enter still queues', () => {
+    const onPrompt = vi.fn()
+    const onInterruptAndPrompt = vi.fn().mockReturnValue(true)
+    renderComposer({ status: busy, onPrompt, onInterruptAndPrompt })
+    let textarea = type('now please')
+    fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true })
+    expect(onInterruptAndPrompt).toHaveBeenCalledWith('now please', [])
+    expect(onPrompt).not.toHaveBeenCalled()
+
+    textarea = type('later is fine')
+    fireEvent.keyDown(textarea, { key: 'Enter' })
+    expect(onPrompt).toHaveBeenCalledWith('later is fine', [])
+    expect(onInterruptAndPrompt).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the draft when the interrupt-and-post could not be sent', () => {
+    const onInterruptAndPrompt = vi.fn().mockReturnValue(false)
+    renderComposer({ status: busy, onInterruptAndPrompt })
+    const textarea = type('keep me')
+    fireEvent.click(screen.getByRole('button', { name: /send now/i }))
+    expect(onInterruptAndPrompt).toHaveBeenCalledWith('keep me', [])
+    expect(textarea.value).toBe('keep me')
+  })
+
+  it('Send now with an empty draft does nothing', () => {
+    const onInterruptAndPrompt = vi.fn()
+    renderComposer({ status: busy, onInterruptAndPrompt })
+    fireEvent.click(screen.getByRole('button', { name: /send now/i }))
+    expect(onInterruptAndPrompt).not.toHaveBeenCalled()
+  })
+})

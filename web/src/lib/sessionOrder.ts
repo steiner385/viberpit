@@ -1,13 +1,47 @@
 /**
- * Persists session-list group/sort selection, namespaced per list ('live',
- * 'archived', …). All access is try/catch-wrapped so a blocked localStorage
- * degrades to defaults. Namespace 'live' maps to the original key so existing
- * user prefs survive.
+ * Persists session-list group/sort selection AND the Status/Project/Environment
+ * filters, namespaced per list ('live', 'archived', …). All access is
+ * try/catch-wrapped so a blocked localStorage degrades to defaults. Namespace
+ * 'live' maps to the original key so existing user prefs survive.
+ *
+ * Filters live in the SAME stored object as groupBy/sortBy (DEC-8) rather than
+ * under a `ccswitch.listFilters` key of their own: one list's state, one key,
+ * one module — a third mechanism would fragment it across three. Both writers
+ * merge into the stored object, so saving an ordering never drops the filters
+ * and saving filters never drops the ordering.
  */
 import type { GroupBy, SortBy } from '@/session/ordering'
+import {
+  coerceFilters, sanitizeFilters,
+  type FilterOptions, type ListFilters,
+} from '@/session/listFilters'
 
 const keyFor = (ns: string): string =>
   ns === 'live' ? 'ccswitch.sessionOrder' : `ccswitch.sessionOrder.${ns}`
+
+/** The stored object, read as unknown keys — every field is validated on the
+ *  way out, so a hand-edited or stale entry can never widen the app's state. */
+function readStored(ns: string): Record<string, unknown> {
+  try {
+    const raw = window.localStorage.getItem(keyFor(ns))
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as unknown
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {}
+    return parsed as Record<string, unknown>
+  } catch {
+    return {}
+  }
+}
+
+/** Merge `patch` into the stored object so the two writers cannot clobber
+ *  each other's half of the pref. */
+function writeMerged(ns: string, patch: Record<string, unknown>): void {
+  try {
+    window.localStorage.setItem(keyFor(ns), JSON.stringify({ ...readStored(ns), ...patch }))
+  } catch {
+    /* ignore — persistence is best-effort */
+  }
+}
 
 export function loadOrderPref<G extends string, S extends string>(
   ns: string,
@@ -15,16 +49,10 @@ export function loadOrderPref<G extends string, S extends string>(
   validSort: readonly S[],
   def: { groupBy: G; sortBy: S },
 ): { groupBy: G; sortBy: S } {
-  try {
-    const raw = window.localStorage.getItem(keyFor(ns))
-    if (!raw) return { ...def }
-    const parsed = JSON.parse(raw) as Partial<{ groupBy: G; sortBy: S }>
-    return {
-      groupBy: validGroup.includes(parsed.groupBy as G) ? (parsed.groupBy as G) : def.groupBy,
-      sortBy: validSort.includes(parsed.sortBy as S) ? (parsed.sortBy as S) : def.sortBy,
-    }
-  } catch {
-    return { ...def }
+  const parsed = readStored(ns)
+  return {
+    groupBy: validGroup.includes(parsed.groupBy as G) ? (parsed.groupBy as G) : def.groupBy,
+    sortBy: validSort.includes(parsed.sortBy as S) ? (parsed.sortBy as S) : def.sortBy,
   }
 }
 
@@ -32,11 +60,30 @@ export function saveOrderPref<G extends string, S extends string>(
   ns: string,
   pref: { groupBy: G; sortBy: S },
 ): void {
-  try {
-    window.localStorage.setItem(keyFor(ns), JSON.stringify(pref))
-  } catch {
-    /* ignore — persistence is best-effort */
-  }
+  writeMerged(ns, { groupBy: pref.groupBy, sortBy: pref.sortBy })
+}
+
+/**
+ * The persisted filters, validated against the values `options` currently
+ * offers. A stored value that no longer exists (a retired fleet host, a repo no
+ * session uses) falls back to "no filter" — see session/listFilters for why
+ * emptying the list instead would be unrecoverable from the UI.
+ *
+ * **Omit `options` while the domains are still unknown.** The option lists are
+ * derived from two React Query results (the sessions and the fleet registry);
+ * on the first render both are empty, so sanitizing there would discard EVERY
+ * stored project/environment filter — silently, on every page load, in a way no
+ * user could distinguish from "the filter was never saved". Callers hold the
+ * raw value until their queries resolve and sanitize then
+ * (`features/sessions/useSessionListState`).
+ */
+export function loadListFilters(ns: string, options?: FilterOptions): ListFilters {
+  const raw = coerceFilters(readStored(ns).filters)
+  return options ? sanitizeFilters(raw, options) : raw
+}
+
+export function saveListFilters(ns: string, filters: ListFilters): void {
+  writeMerged(ns, { filters })
 }
 
 // ── Live wrappers (unchanged public API) ─────────────────────────────────────

@@ -94,7 +94,12 @@ class InProcessOrchestratorAdapter:
     def __init__(self, orch):
         self._orch = orch
 
-    async def create_session(self, *a, **k): return await _maybe_await(self._orch.create_session(*a, **k))
+    async def create_session(self, *a, **k):
+        # In-process is a single host — 'prefer' is a fleet-routing hint that does
+        # not apply here. Pop it before forwarding so the underlying orchestrator
+        # (which does not accept prefer=) never sees it. (Ruling D)
+        k.pop("prefer", None)
+        return await _maybe_await(self._orch.create_session(*a, **k))
     async def send_prompt(self, *a, **k): return await _maybe_await(self._orch.send_prompt(*a, **k))
     async def ensure_driver(self, *a, **k): return await _maybe_await(self._orch.ensure_driver(*a, **k))
     # Local/in-process mode has no daemon replay ring, so the wave-3 cursor catch-up never
@@ -140,10 +145,15 @@ class InProcessOrchestratorAdapter:
     async def prs_for_many(self, *a, **k): return await _maybe_await(self._orch.prs_for_many(*a, **k))
     async def latest_suggestions_many(self, *a, **k): return await _maybe_await(self._orch.latest_suggestions_many(*a, **k))
     async def latest_summary_many(self, *a, **k): return await _maybe_await(self._orch.latest_summary_many(*a, **k))
+    async def resume_interrupted(self, *a, **k): return await _maybe_await(self._orch.resume_interrupted(*a, **k))
+    async def reload_session(self, *a, **k): return await _maybe_await(self._orch.reload_session(*a, **k))
+    async def rotate_to_best(self, *a, **k): return await _maybe_await(self._orch.rotate_to_best(*a, **k))
+    async def set_account_pin(self, *a, **k): return await _maybe_await(self._orch.set_account_pin(*a, **k))
     async def transcript_path(self, *a, **k): return await _maybe_await(self._orch.transcript_path(*a, **k))
     async def resolve_transcript_path(self, *a, **k): return await _maybe_await(self._orch.resolve_transcript_path(*a, **k))
     async def transcript_search_text(self, *a, **k): return await _maybe_await(self._orch.transcript_search_text(*a, **k))
     async def pending_questions(self, *a, **k): return await _maybe_await(self._orch.pending_questions(*a, **k))
+    async def orphaned_interaction(self, *a, **k): return await _maybe_await(self._orch.orphaned_interaction(*a, **k))
     async def pop_pending_initial_prompt(self, *a, **k): return await _maybe_await(self._orch.pop_pending_initial_prompt(*a, **k))
     async def pop_pending_initial_attachment_ids(self, *a, **k): return await _maybe_await(self._orch.pop_pending_initial_attachment_ids(*a, **k))
     async def resolve_permission(self, *a, **k): return await _maybe_await(self._orch.resolve_permission(*a, **k))
@@ -164,6 +174,7 @@ class InProcessOrchestratorAdapter:
     async def request_pr_fix(self, *a, **k): return await _maybe_await(self._orch.request_pr_fix(*a, **k))
     async def automation_statuses(self, *a, **k): return await _maybe_await(self._orch.automation_statuses(*a, **k))
     async def resume_recovery_status(self, *a, **k): return await _maybe_await(self._orch.resume_recovery_status(*a, **k))
+    async def startup_report(self, *a, **k): return await _maybe_await(self._orch.startup_report(*a, **k))
     async def automation_actionable(self, *a, **k): return await _maybe_await(self._orch.automation_actionable(*a, **k))
     async def automation_trigger(self, *a, **k): return await _maybe_await(self._orch.automation_trigger(*a, **k))
     async def pr_doctor_job(self, *a, **k): return await _maybe_await(self._orch.pr_doctor_job(*a, **k))
@@ -192,3 +203,9 @@ class InProcessOrchestratorAdapter:
     # --- backlog runner manual dispatch ---
     async def backlog_candidates(self, *a, **k): return await _maybe_await(self._orch.backlog_candidates(*a, **k))
     async def backlog_runner_dispatch(self, *a, **k): return await _maybe_await(self._orch.backlog_runner_dispatch(*a, **k))
+    async def resolve_model_approval(self, *a, **k): return await _maybe_await(self._orch.resolve_model_approval(*a, **k))
+    # --- pm onboarding seams (phase 2, 2026-08-31) ---
+    async def pm_onboarding_counts(self, *a, **k): return await _maybe_await(self._orch.pm_onboarding_counts(*a, **k))
+    async def pm_onboard_spawn_map(self, *a, **k): return await _maybe_await(self._orch.pm_onboard_spawn_map(*a, **k))
+    async def pm_classify_run(self, *a, **k): return await _maybe_await(self._orch.pm_classify_run(*a, **k))
+    async def pm_advance_map_merged(self, *a, **k): return await _maybe_await(self._orch.pm_advance_map_merged(*a, **k))

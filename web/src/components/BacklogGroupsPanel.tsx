@@ -18,10 +18,10 @@ function GroupRow({
   isDispatching: boolean
 }) {
   return (
-    <li className="rounded border border-border p-2">
+    <li className="rounded border border-edge p-2">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
         {group.repo && (
-          <span className="text-xs text-muted-foreground shrink-0">{group.repo}</span>
+          <span className="text-xs text-ink-muted shrink-0">{group.repo}</span>
         )}
         {group.refs.map((ref) => (
           <a
@@ -52,7 +52,7 @@ function GroupRow({
         )}
       </div>
       {group.rationale && (
-        <p className="mt-0.5 text-xs text-muted-foreground leading-snug">{group.rationale}</p>
+        <p className="mt-0.5 text-xs text-ink-muted leading-snug">{group.rationale}</p>
       )}
     </li>
   )
@@ -69,29 +69,33 @@ export function BacklogGroupsPanel({
   const { data } = useBacklogGroups(enabled)
   const dispatch = useDispatchBacklogGroup()
   const [dispatchingId, setDispatchingId] = useState<number | null>(null)
+  const [error, setError] = useState<string | null>(null)
   const groups = data?.groups ?? []
   if (!groups.length) return null
 
   async function handleDispatch(group: BacklogGroup) {
     setDispatchingId(group.id)
+    setError(null)
     try {
       const r = await dispatch.mutateAsync(group.refs)
       if (r.status === 'spawned') {
+        // The new session may open on another page, so success has no
+        // reliable inline owner here — keep the toast for it.
         toast.success(r.session_name ? `Session spawned: ${r.session_name}` : 'Session spawned')
         if (r.session_id) onOpenSession?.(r.session_id)
       } else {
-        toast.error(`Dispatch failed: ${r.status}`)
+        setError(`Dispatch failed: ${r.status}`)
       }
     } catch {
-      toast.error('Failed to dispatch group')
+      setError('Failed to dispatch group')
     } finally {
       setDispatchingId(null)
     }
   }
 
   return (
-    <section className="mt-3 border-t border-border pt-3">
-      <h4 className="text-xs font-semibold uppercase text-muted-foreground mb-2">
+    <section className="mt-3 border-t border-edge pt-3">
+      <h4 className="text-xs font-semibold uppercase text-ink-muted mb-2">
         Planned groups
         {data?.createdAt && (
           <span className="ml-2 font-normal normal-case">
@@ -99,6 +103,7 @@ export function BacklogGroupsPanel({
           </span>
         )}
       </h4>
+      {error && <p role="alert" className="text-sm text-danger mb-2">{error}</p>}
       <ul className="space-y-2">
         {groups.map((g) => (
           <GroupRow

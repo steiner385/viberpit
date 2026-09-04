@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { BacklogGroupsPanel } from './BacklogGroupsPanel'
+import type { BacklogGroup } from '@/api/automations'
 
 const mutate = vi.fn()
-const baseGroup = () => ({
+const baseGroup = (): BacklogGroup => ({
   id: 1,
   repo: 'o/r',
   refs: ['o/r#7', 'o/r#8'],
@@ -71,11 +72,34 @@ describe('BacklogGroupsPanel', () => {
     await waitFor(() => expect(onOpenSession).toHaveBeenCalledWith('s-1'))
   })
 
-  it('shows toast.error on dispatch failure', async () => {
+  it('shows the failure inline instead of a toast', async () => {
     const { toast } = await import('sonner')
     mutate.mockRejectedValue(new Error('network error'))
     render(<BacklogGroupsPanel enabled />)
     fireEvent.click(screen.getByRole('button', { name: /dispatch/i }))
-    await waitFor(() => expect(toast.error).toHaveBeenCalled())
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent('Failed to dispatch group'),
+    )
+    expect(toast.error).not.toHaveBeenCalled()
+  })
+
+  it('shows a non-spawned status inline instead of a toast', async () => {
+    const { toast } = await import('sonner')
+    mutate.mockResolvedValue({ status: 'no_capacity' })
+    render(<BacklogGroupsPanel enabled />)
+    fireEvent.click(screen.getByRole('button', { name: /dispatch/i }))
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent('Dispatch failed: no_capacity'),
+    )
+    expect(toast.error).not.toHaveBeenCalled()
+  })
+
+  it('clears the inline error on the next dispatch attempt', async () => {
+    mutate.mockRejectedValueOnce(new Error('network error'))
+    render(<BacklogGroupsPanel enabled />)
+    fireEvent.click(screen.getByRole('button', { name: /dispatch/i }))
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: /dispatch/i }))
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
   })
 })

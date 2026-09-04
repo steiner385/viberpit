@@ -298,9 +298,12 @@ def build_pr_query(pairs: list[tuple[str, str]]) -> str:
 
 
 def build_population_query(repo: str, merged_since: str) -> str:
-    """One GraphQL doc: all OPEN PRs (incl. drafts) + recent deployments across
-    all environments for ``repo``, plus a search() for PRs merged on/after
-    ``merged_since`` (ISO date).
+    """One GraphQL doc: all OPEN PRs (incl. drafts) in a ``repo:`` block, recent
+    deployments + environments in a SEPARATE ``deploys:`` block, plus a search()
+    for PRs merged on/after ``merged_since`` (ISO date). Splitting the deploy
+    fields into their own aliased repository block keeps a forbidden Deployments/
+    Environments App permission from null-propagating away the PR population;
+    ``_default_query`` folds ``deploys`` back into ``data.repo`` for the parser.
 
     Strings are JSON-encoded so a repo/owner/name can't break the literal.
     NOTE: deployments are capped at first:30 across ALL environments — on a
@@ -314,14 +317,21 @@ def build_population_query(repo: str, merged_since: str) -> str:
     return (
         "query {\n"
         f"  repo: repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{\n"
-        f"    deployments(orderBy: {{field: CREATED_AT, direction: DESC}}, first: 30) {{\n"
-        f"      nodes {{ {_DEPLOY_NODE_FIELDS} }}\n"
-        f"    }}\n"
-        f"    environments(first: 100) {{ nodes {{ name }} }}\n"
         f"    pullRequests(states: OPEN, first: 100, "
         f"orderBy: {{field: UPDATED_AT, direction: DESC}}) {{\n"
         f"      nodes {{ {_PR_NODE_FIELDS} }}\n"
         f"    }}\n"
+        f"  }}\n"
+        # deployments/environments live in their OWN aliased repository block so a
+        # forbidden Deployments/Environments App permission null-propagates only
+        # here — it can never collapse the `repo:` block that carries the PRs (a
+        # blank pipeline). _default_query folds this back into data.repo, and a
+        # null `deploys` degrades to "no deploy data" rather than "no PRs".
+        f"  deploys: repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{\n"
+        f"    deployments(orderBy: {{field: CREATED_AT, direction: DESC}}, first: 30) {{\n"
+        f"      nodes {{ {_DEPLOY_NODE_FIELDS} }}\n"
+        f"    }}\n"
+        f"    environments(first: 100) {{ nodes {{ name }} }}\n"
         f"  }}\n"
         f"  merged: search(query: {json.dumps(merged_q)}, type: ISSUE, first: 50) {{\n"
         f"    nodes {{ ... on PullRequest {{ {_PR_NODE_FIELDS} }} }}\n"
@@ -522,6 +532,8 @@ def _checks_detail(pr: dict) -> tuple[CheckDetail, ...]:
     ctx = ((rollup.get("contexts") or {}).get("nodes")) or []
     out: list[CheckDetail] = []
     for c in ctx:
+        if not c:  # forbidden CheckRun contexts null out when the App lacks checks:read
+            continue
         if c.get("__typename") == "CheckRun":
             name = c.get("name", "")
             raw = c.get("conclusion") or "PENDING"  # null conclusion = still running

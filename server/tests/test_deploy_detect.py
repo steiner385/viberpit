@@ -4,6 +4,14 @@ import pytest
 from server.deploy import detect
 
 
+@pytest.fixture(autouse=True)
+def _fresh_verdict_cache():
+    """The module-level CI-verdict cache is process-global; isolate every test."""
+    detect._verdict_cache.clear()
+    yield
+    detect._verdict_cache.clear()
+
+
 class _Flaky:
     """A ``compute`` callable whose behavior the test flips between ticks: assign a
     ``PendingState`` to succeed, or an ``Exception`` instance to raise it."""
@@ -18,13 +26,23 @@ class _Flaky:
 
 
 class FakeGit:
-    def __init__(self, live, remote, commits):
+    def __init__(self, live, remote, commits, resolvable=None):
         self._live, self._remote, self._commits = live, remote, commits
+        # SHAs `short_sha` resolves; None => everything resolves (single-repo reality:
+        # any sha a process of this repo ever ran exists in the checkout's history).
+        self._resolvable = resolvable
         self.fetched = False
+        self.log_ranges: list[tuple[str, str]] = []
     def fetch(self, repo, ref="master", run=None): self.fetched = True
     def current_sha(self, repo, run=None): return self._live
     def remote_sha(self, repo, ref="origin/master", run=None): return self._remote
-    def log_range(self, repo, a, b, run=None): return self._commits
+    def short_sha(self, repo, sha, run=None):
+        if self._resolvable is not None and sha not in self._resolvable:
+            raise RuntimeError(f"unknown revision {sha}")
+        return sha[:7]
+    def log_range(self, repo, a, b, run=None):
+        self.log_ranges.append((a, b))
+        return self._commits
 
 
 def test_up_to_date_is_not_behind():
@@ -57,6 +75,197 @@ def test_diverged_checkout_is_not_behind():
     assert st.behind is False and st.commits == []
     assert st.live_sha == "ahead" and st.target_sha == "behind"
     assert ci_calls == []
+
+
+# --- liveSha comes from the RUNNING edge, not the deploy checkout (#859) ---------------
+#
+# `compute_pending` used to derive liveSha from the checkout's HEAD. A deploy that
+# fast-forwards the checkout but never restarts the units (2026-08-30: checkout f4977c3,
+# edge/daemon still 5516d05) then reported "behind: false" while the deployment was two
+# commits stale — the Upgrade banner vanished with no way back short of rewinding the
+# checkout. "Live" must mean the sha the running edge reports on /healthz, with the
+# checkout HEAD exposed separately as checkoutSha.
+
+
+def test_live_sha_prefers_edge_report_over_checkout():
+    # Checkout already fast-forwarded to B (== origin), but the RUNNING edge still
+    # reports A: the deployment IS behind, and the pending range is A..B.
+    commits = [{"sha": "bbbbbbb2", "subject": "s", "author": "t", "iso": "i"}]
+    g = FakeGit("bbbbbbb2", "bbbbbbb2", commits)
+    st = detect.compute_pending("/r", git_mod=g, ci_fn=lambda s: "green",
+                                live_sha_fn=lambda: "aaaaaaa1")
+    assert st.behind is True
+    assert st.live_sha == "aaaaaaa1"
+    assert st.checkout_sha == "bbbbbbb2"
+    assert g.log_ranges == [("aaaaaaa1", "bbbbbbb2")]
+    d = st.to_dict()
+    assert d["liveSha"] == "aaaaaaa1" and d["checkoutSha"] == "bbbbbbb2"
+
+
+def test_live_sha_falls_back_to_checkout_when_edge_unreachable(caplog):
+    # Edge down => probe returns "" => fall back to checkout HEAD (the old behavior),
+    # loudly: operators must be able to see the signal degraded to the proxy.
+    g = FakeGit("abc", "abc", [])
+    with caplog.at_level(logging.WARNING):
+        st = detect.compute_pending("/r", git_mod=g, ci_fn=lambda s: "green",
+                                    live_sha_fn=lambda: "")
+    assert st.behind is False and st.live_sha == "abc" and st.checkout_sha == "abc"
+    assert any("checkout HEAD" in r.getMessage() for r in caplog.records)
+
+
+def test_short_edge_sha_prefix_matches_full_target():
+    # /healthz reports `git rev-parse --short`; git rev-parse gives the full sha. The
+    # same commit must compare equal despite the length difference (#788 prefix match),
+    # or every tick would claim a freshly-deployed edge is behind.
+    full = "f4977c3" + "0" * 33
+    g = FakeGit(full, full, [{"sha": "x"}])
+    st = detect.compute_pending("/r", git_mod=g, ci_fn=lambda s: "green",
+                                live_sha_fn=lambda: "f4977c3")
+    assert st.behind is False and st.commits == []
+    assert g.log_ranges == [], "prefix-equal shas must short-circuit before git log"
+
+
+def test_unresolvable_edge_sha_falls_back_to_checkout(caplog):
+    # An edge sha that doesn't resolve in the checkout (garbage body, GC'd commit)
+    # must not wedge the poll loop into persistent failure — fall back, loudly.
+    g = FakeGit("abc", "abc", [], resolvable={"abc"})
+    with caplog.at_level(logging.WARNING):
+        st = detect.compute_pending("/r", git_mod=g, ci_fn=lambda s: "green",
+                                    live_sha_fn=lambda: "deadbee")
+    assert st.behind is False and st.live_sha == "abc"
+    assert any("does not resolve" in r.getMessage() for r in caplog.records)
+
+
+def test_default_compute_pending_keeps_checkout_head():
+    # Without a live_sha_fn (CLI callers, existing tests) behavior is unchanged:
+    # liveSha == checkoutSha == checkout HEAD.
+    g = FakeGit("abc", "def", [{"sha": "d1", "subject": "s", "author": "t", "iso": "i"}])
+    st = detect.compute_pending("/r", git_mod=g, ci_fn=lambda s: "green")
+    assert st.live_sha == "abc" and st.checkout_sha == "abc"
+
+
+def test_edge_live_sha_parses_healthz_body():
+    ok = '{"status":"ok","sha":"5516d05","daemonSha":"5516d05"}'
+    assert detect.edge_live_sha("http://h", fetch=lambda url: ok) == "5516d05"
+
+
+@pytest.mark.parametrize("body", [
+    "",                       # edge unreachable (fetch error path returns "")
+    "not json",               # proxy error page
+    "[1,2]",                  # parseable but not an object
+    '{"status":"ok"}',        # sha key absent (edge too old to report it)
+    '{"sha":"unknown"}',      # source tarball / no .git — not a usable sha
+])
+def test_edge_live_sha_unusable_bodies_yield_empty(body):
+    assert detect.edge_live_sha("http://h", fetch=lambda url: body) == ""
+
+
+# --- green frontier: deploy the newest GREEN commit when the tip is red ----------------
+#
+# `ci` keeps meaning "what the UI's Deploy button can act on"; `tip_ci` is the tip's own
+# verdict. When the tip is not green, the pending commits are walked newest→oldest for the
+# first green one (`deployable_sha`, covering `deployable_count` of the pending commits).
+
+
+def _commits(*shas):
+    return [{"sha": s, "subject": f"s {s}", "author": "t", "iso": "i"} for s in shas]
+
+
+def _counting_ci(verdicts, default="red"):
+    calls: list[str] = []
+
+    def ci_fn(sha: str) -> str:
+        calls.append(sha)
+        return verdicts.get(sha, default)
+    return ci_fn, calls
+
+
+def test_red_tip_with_an_older_green_is_deployable():
+    # Pending (newest first): c3(red tip), c2(green), c1 — the frontier is c2 and it
+    # covers 2 of the 3 pending commits (c2 and c1).
+    g = FakeGit("d0", "c3", _commits("c3", "c2", "c1"))
+    ci_fn, calls = _counting_ci({"c3": "red", "c2": "green"})
+    st = detect.compute_pending("/r", git_mod=g, ci_fn=ci_fn)
+    assert st.behind is True
+    assert st.tip_ci == "red"
+    assert st.ci == "green", "a deployable frontier exists — the UI can act"
+    assert st.deployable_sha == "c2"
+    assert st.deployable_count == 2
+    assert calls == ["c3", "c2"], "the walk stops at the first green"
+    d = st.to_dict()
+    assert d["tipCi"] == "red" and d["deployableSha"] == "c2" and d["deployableCount"] == 2
+
+
+def test_all_red_pending_has_no_deployable():
+    g = FakeGit("d0", "c3", _commits("c3", "c2", "c1"))
+    ci_fn, calls = _counting_ci({})
+    st = detect.compute_pending("/r", git_mod=g, ci_fn=ci_fn)
+    assert st.ci == "red" and st.tip_ci == "red"
+    assert st.deployable_sha == "" and st.deployable_count == 0
+    assert calls == ["c3", "c2", "c1"]
+
+
+def test_green_tip_behaviour_unchanged_and_covers_everything():
+    g = FakeGit("d0", "c3", _commits("c3", "c2", "c1"))
+    ci_fn, calls = _counting_ci({}, default="green")
+    st = detect.compute_pending("/r", git_mod=g, ci_fn=ci_fn)
+    assert st.behind is True and st.ci == "green" and st.tip_ci == "green"
+    assert st.deployable_sha == "c3" and st.deployable_count == 3
+    assert calls == ["c3"], "a green tip never walks the backlog"
+
+
+def test_green_walk_is_capped():
+    # A deep all-red backlog must not burn one GitHub round-trip per commit: the walk
+    # is capped at 10 lookups beyond the tip.
+    shas = [f"c{i:02d}" for i in range(20, 0, -1)]     # c20 (tip) .. c01
+    g = FakeGit("d0", "c20", _commits(*shas))
+    ci_fn, calls = _counting_ci({})
+    st = detect.compute_pending("/r", git_mod=g, ci_fn=ci_fn)
+    assert st.deployable_sha == ""
+    assert len(calls) == 11, "tip + at most 10 walked lookups"
+
+
+def test_completed_verdicts_are_cached_across_ticks():
+    # green/red are immutable for a given sha: the second tick must serve both from
+    # the cache — ci_fn is called once per sha across ticks, not once per tick.
+    ci_fn, calls = _counting_ci({"c2": "green"})       # c3 red, c2 green
+    for _ in range(2):
+        g = FakeGit("d0", "c3", _commits("c3", "c2", "c1"))
+        st = detect.compute_pending("/r", git_mod=g, ci_fn=ci_fn)
+        assert st.deployable_sha == "c2" and st.tip_ci == "red"
+    assert calls == ["c3", "c2"]
+
+
+def test_pending_verdicts_are_requeried_every_tick():
+    ci_fn, calls = _counting_ci({}, default="pending")
+    for _ in range(2):
+        g = FakeGit("d0", "c1", _commits("c1"))
+        st = detect.compute_pending("/r", git_mod=g, ci_fn=ci_fn)
+        assert st.ci == "pending" and st.tip_ci == "pending"
+    assert calls == ["c1", "c1"], "a non-terminal verdict must be re-checked"
+
+
+def test_red_verdicts_expire_after_the_ttl(monkeypatch):
+    """Master reds are often flaky runs later re-run to green (#846 victims): a red
+    verdict must be re-queried once its TTL passes, while green stays cached."""
+    clock = {"t": 0.0}
+    monkeypatch.setattr(detect, "_now", lambda: clock["t"])
+    ci_fn, calls = _counting_ci({"c2": "green"})       # c3 red, c2 green
+    assert detect._cached_ci("c3", ci_fn) == "red"
+    assert detect._cached_ci("c2", ci_fn) == "green"
+    clock["t"] = detect._RED_TTL_S - 1
+    assert detect._cached_ci("c3", ci_fn) == "red"      # inside TTL: cached
+    clock["t"] = detect._RED_TTL_S + 1
+    ci_fn2, calls2 = _counting_ci({"c3": "green"})      # the re-run went green
+    assert detect._cached_ci("c3", ci_fn2) == "green"   # TTL passed: re-queried
+    assert detect._cached_ci("c2", ci_fn2) == "green"   # green: cached forever
+    assert calls == ["c3", "c2"] and calls2 == ["c3"]
+
+
+def test_verdict_cache_is_bounded():
+    for i in range(detect._VERDICT_CACHE_MAX + 8):
+        detect._cached_ci(f"s{i}", lambda s: "green")
+    assert len(detect._verdict_cache) == detect._VERDICT_CACHE_MAX
 
 
 @pytest.mark.asyncio

@@ -1,10 +1,25 @@
+/**
+ * The Automation SECTION of Settings.
+ *
+ * Task 18: this file used to mount `Dashboard` twice — once with
+ * `activeTab="automations"` and once with `activeTab="settings"` — and assert on
+ * `role="tabpanel"` ids. There are no tabpanels any more: `/automations` and
+ * `/settings/:section` are routes, and the scroll wrapper each page needs lives
+ * in `shell/routes.tsx`. That half moved to `routes.test.tsx`
+ * ("gives the scrolling pages their own vertical scroll container"), which
+ * asserts it against the REAL wrappers; what stays here is the part that was
+ * always about `SettingsView` — that Automation is one of its sections and that
+ * `?section=automation` selects it.
+ */
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { Dashboard } from '../Dashboard'
+import { SettingsView } from '../settings/SettingsView'
 
 vi.mock('@/api/hooks', () => ({
+  // "Reload session" (MainPaneSession → SessionHeader → SessionActions).
+  useReloadSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useConfig: vi.fn(() => ({ data: { adoptionEnabled: false } })),
   useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
   useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
@@ -33,13 +48,13 @@ vi.mock('@/api/hooks', () => ({
   useSendPrompt: () => ({ mutate: vi.fn() }),
   useSetAutopilotPaused: () => ({ mutate: vi.fn() }),
   useFixPr: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useAutomations: vi.fn(() => ({ data: [], isLoading: false })),
   usePendingDeploy: () => ({ data: { behind: false, commits: [], ci: 'green' } }),
   useDeployStatus: () => ({ data: { running: false, phases: {} } }),
   useStartDeploy: () => ({ mutate: vi.fn(), isPending: false }),
   useAllPrs: vi.fn(() => ({ data: [] })),
   useStageModels: vi.fn(() => ({ data: {} })),
   useSessionsViewing: vi.fn(),
-  useAutomations: vi.fn(() => ({ data: [], isLoading: false })),
   useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
   useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
@@ -59,41 +74,24 @@ vi.mock('@/session/useSessionSearch', () => ({
   useSessionSearch: () => ({ query: '', setQuery: vi.fn(), matchedIds: null, isFiltered: false }),
 }))
 
+// Stubbed so the "which section is on screen" assertion has something to name.
+// `AutomationView` renders an empty list for `useAutomations() === []`, which is
+// indistinguishable from any other empty section — the trap the old tabpanel-id
+// assertions fell into.
+vi.mock('../AutomationView', () => ({
+  AutomationView: () => <div data-testid="section-automation" />,
+}))
+
 function wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
 }
 
-describe('Automations top-level tab', () => {
-  function renderAutomationsTab() {
-    return render(
-      <MemoryRouter>
-        <Dashboard activeTab="automations" onTabChange={vi.fn()} onOpenSession={vi.fn()} />
-      </MemoryRouter>,
-      { wrapper },
-    )
-  }
-
-  it('renders the automations tabpanel', () => {
-    renderAutomationsTab()
-    const panel = screen.getByRole('tabpanel', { hidden: false })
-    expect(panel.id).toBe('tabpanel-automations')
-  })
-
-  it('automations panel is a scroll container (scroll-wrapper invariant)', () => {
-    renderAutomationsTab()
-    const panel = screen.getByRole('tabpanel', { hidden: false })
-    expect(panel.className).toContain('overflow-y-auto')
-    expect(panel.className).toContain('min-h-0')
-  })
-})
-
-describe('Automation section (Settings tab)', () => {
-  // Automation lives inside the Settings tab as a ?section=automation section.
+describe('Automation section (Settings)', () => {
   function renderAutomation() {
     return render(
       <MemoryRouter initialEntries={['/settings?section=automation']}>
-        <Dashboard activeTab="settings" onTabChange={vi.fn()} onOpenSession={vi.fn()} />
+        <SettingsView />
       </MemoryRouter>,
       { wrapper },
     )
@@ -111,22 +109,10 @@ describe('Automation section (Settings tab)', () => {
     expect(sections.getByRole('tab', { name: 'Automation' })).toHaveAttribute('aria-selected', 'true')
   })
 
-  it('renders the settings tabpanel when the Settings tab is active', () => {
+  it('renders the automation view for that section, not the general one', () => {
+    // The lower bound the two assertions above do not have: a section strip that
+    // highlights "Automation" while rendering General would satisfy both.
     renderAutomation()
-    const panel = screen.getByRole('tabpanel', { hidden: false })
-    expect(panel).toBeTruthy()
-    expect(panel.id).toBe('tabpanel-settings')
-  })
-
-  it('renders the automation section inside a vertical scroll container (mobile scroll fix)', () => {
-    // In the mobile Dashboard, the tab area is a fixed-height flex column
-    // (flex-1 min-h-0). Every tab panel must be its own overflow-y-auto region
-    // or its content — e.g. an expanded automation card — overflows the clipped
-    // parent with nowhere to scroll. The settings panel owns that scroll region
-    // for all of its sections, automation included.
-    renderAutomation()
-    const panel = screen.getByRole('tabpanel', { hidden: false })
-    expect(panel.className).toContain('overflow-y-auto')
-    expect(panel.className).toContain('min-h-0')
+    expect(screen.getByTestId('section-automation')).toBeInTheDocument()
   })
 })

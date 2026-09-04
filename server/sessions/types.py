@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from server.sessions.usage_stall import is_usage_stalled
 from server.time_iso import iso_utc
 
 # Sentinel identity for internal/background callers (rehydrate, dispatch, eager
@@ -18,6 +19,26 @@ from server.time_iso import iso_utc
 # AskUserQuestion/permission answers under it, so a real user attaching later must
 # upgrade it (see SessionOrchestrator.ensure_driver) or their answers are rejected.
 SYSTEM_IDENTITY = "system"
+
+# Original pre-restart status is normalized to "idle" by rehydrate(); these are the
+# subset that represents genuinely dropped WORK (vs awaiting-human waiting_input /
+# waiting_question / ready_review, which normalize identically but must NOT be nudged).
+RESUME_ELIGIBLE_STATUSES = frozenset({"in_progress", "working", "condensing"})
+
+# The full ccswitch session permission-mode vocabulary — the single source of
+# truth for "what modes exist". The first four are ccswitch-native (gated by
+# PermissionRegistry.request); the last two share the Claude Agent SDK's own
+# vocabulary and pass through to its permission engine (see
+# server.sessions.permissions._SDK_PASSTHROUGH_MODES / to_sdk_permission_mode).
+# Defined here (a dependency-light module) so API validators and the SDLC
+# governance tier resolver reference ONE list instead of drifting copies
+# (constitution VI: single source of truth / no dead code).
+VALID_SESSION_MODES = frozenset({
+    "interactive", "auto", "allowlist", "full-auto",
+    "acceptEdits", "bypassPermissions",
+})
+
+ASSISTANT_KIND = "assistant"
 
 
 @dataclass
@@ -37,7 +58,7 @@ class SessionRecord:
     origin: str | None = None        # automation_id that spawned this session (None = human-created)
     origin_ref: str | None = None    # automation's reference key (e.g. "owner/repo#123")
     assisted_by: str | None = None   # automation_id that has acted on this session (e.g. "autopilot")
-    detached: bool = False           # True for rehydrated sessions with no live driver
+    detached: bool = False           # no live driver — DERIVED on read (orchestrator._sync_detached), never hand-set
     status: str = "idle"             # idle / in_progress / condensing / waiting_input / ready_review / done / waiting_external / limited / ended
     name_is_auto: bool = True        # False once the user manually renames the session
     permission_mode: str = "interactive"
@@ -47,10 +68,32 @@ class SessionRecord:
     adopted_in_place: bool = False   # resumed in original cwd, no worktree (adopted session)
     sub_agents: list | None = None   # [{agentId,parentAgentId,agentType,description,status}], refreshed at status changes
     model: str | None = None         # persisted model alias/id; None = account default
+    # Requested model held pending human approval while status == "pending_approval"
+    # (the launch gate parks a gated tier here rather than spawning it — see
+    # SessionOrchestrator._hold_for_approval). Mirrors DB Session.pending_model; None
+    # once approved/rejected. Distinct from `model` (which stays None until approval).
+    pending_model: str | None = None
+    pending_model_reason: str | None = None
+    # Identity that requested `pending_model`; "session:self" means the session asked
+    # for itself (vs. a human requesting on its behalf). Mirrors DB
+    # Session.pending_model_requested_by.
+    pending_model_requested_by: str | None = None
+    # transient: a "switch after this turn" model change has been handed to the SDK
+    # (set_model without an interrupt) but the in-flight turn is still on the old model —
+    # the binary applies it on the NEXT turn. Cleared when the turn ends (see
+    # SessionOrchestrator._settle_model_pending). Never a DB column: a daemon restart
+    # drops the turn anyway and resume re-applies `model` before any new turn.
+    model_pending: bool = False
     account_pinned: bool = False      # user pinned the account (skips usage-ceiling rotation)
     active_goal: str | None = None    # active /goal condition; None = no goal
     inferred_goal: str | None = None  # LLM-inferred goal (middle effective_goal tier)
     autopilot_paused: bool = False    # per-session autopilot opt-out (True = pinned to manual)
+    kind: str | None = None           # "assistant" for the AI-drawer session; None = coding session
+    owner_identity: str | None = None # identity owning an assistant thread (idempotency key)
+    # Monotonic time of the last prompt or `activity` WS frame. In-memory only — drives
+    # the assistant idle reap; never a DB column (a restart resets it, which is fine:
+    # the reap re-arms from the next interaction).
+    last_activity_at: float | None = None
     # Sticky auto-archive opt-out reason. None = eligible for auto-archive; "manual-unarchive"
     # = a human unarchived this session, so it is never auto-archived again (see orchestrator).
     auto_archive_opt_out_reason: str | None = None
@@ -60,6 +103,11 @@ class SessionRecord:
     # marker from the probabilistic classifier. None until explicitly set.
     pr_resolution: str | None = None
     pr_resolution_source: str | None = None
+    # Fleet host that runs this session, mirroring DB Session.host (stamped at
+    # creation by the dispatcher; None for pre-fleet rows and primary-local spawns).
+    # Ownership input for host-partitioned recovery (#852): a daemon must not
+    # rotate/sweep a session whose driver lives on another live fleet host.
+    host: str | None = None
     # Wall-clock time the user last steered this session (prompt/answer/permission/typing ping).
     # Drives autopilot human-deference + the cooldown badge. In-memory/process-local ONLY: NOT in
     # to_dict/from_dict, NOT a DB column — a 120s window is meaningless across a restart.
@@ -71,6 +119,17 @@ class SessionRecord:
     # by daemon restart — re-send to resume" instead of a generic idle/"Turn failed" card.
     # Cleared on the next turn (see SessionOrchestrator._persist_status). Never persisted.
     interrupted_by_restart: bool = False
+    # transient companion to interrupted_by_restart: the ORIGINAL pre-restart status
+    # (before rehydrate normalized it to "idle"). Drives resume-eligibility only — a
+    # session is resumable iff it was flagged AND this is in RESUME_ELIGIBLE_STATUSES.
+    # Never persisted; cleared with the flag on the next turn.
+    interrupted_from_status: str | None = None
+    # Why the session is parked (a _pause_session reason token, or
+    # "pinned_account_limited" for the `limited` overlay) and the earliest known
+    # usage reset (naive UTC). Persisted so a poll/reload keeps the cause; cleared by
+    # _persist_status on any non-stalled status. See server/sessions/usage_stall.py.
+    paused_reason: str | None = None
+    paused_until: datetime | None = None
     authored_branches: list[str] = field(default_factory=list)  # feature branches → multi-PR badges
     # Last EXACT context-window occupancy from the SDK (the `/context` data), refreshed
     # each turn. Persisted + replayed on attach so a reloaded/idle session shows real
@@ -124,6 +183,10 @@ class SessionRecord:
             "revAt": self.rev_at,
             "adoptedInPlace": self.adopted_in_place,
             "model": self.model,
+            "pendingModel": self.pending_model,
+            "pendingModelReason": self.pending_model_reason,
+            "pendingModelRequestedBy": self.pending_model_requested_by,
+            "modelPending": self.model_pending,
             "accountPinned": self.account_pinned,
             "activeGoal": self.active_goal,
             "inferredGoal": self.inferred_goal,
@@ -131,12 +194,23 @@ class SessionRecord:
             "autoArchiveOptOut": self.auto_archive_opt_out_reason,
             "prResolution": self.pr_resolution,
             "prResolutionSource": self.pr_resolution_source,
+            "host": self.host,
             "usageUnverified": self.usage_unverified,
             "interruptedByRestart": self.interrupted_by_restart,
+            "interruptedFromStatus": self.interrupted_from_status,
+            "resumable": (self.interrupted_by_restart
+                          and self.interrupted_from_status in RESUME_ELIGIBLE_STATUSES),
+            "pausedReason": self.paused_reason,
+            "pausedUntil": iso_utc(self.paused_until),
+            "usageStalled": is_usage_stalled(self.status, self.paused_reason),
             "authoredBranches": list(self.authored_branches),
             "contextUsedTokens": self.context_used_tokens,
             "contextMaxTokens": self.context_max_tokens,
             "commandCatalog": self.command_catalog,
+            # Carried over RPC so a fleet mirror of an assistant session is still
+            # recognised by is_assistant() on the edge (list filtering, sweeps).
+            "kind": self.kind,
+            "ownerIdentity": self.owner_identity,
         }
 
     @classmethod
@@ -160,6 +234,10 @@ class SessionRecord:
             updated_at=datetime.fromisoformat(rev) if rev else None,
             adopted_in_place=d.get("adoptedInPlace", False),
             model=d.get("model"),
+            pending_model=d.get("pendingModel"),
+            pending_model_reason=d.get("pendingModelReason"),
+            pending_model_requested_by=d.get("pendingModelRequestedBy"),
+            model_pending=bool(d.get("modelPending", False)),
             account_pinned=d.get("accountPinned", False),
             active_goal=d.get("activeGoal"),
             inferred_goal=d.get("inferredGoal"),
@@ -167,10 +245,32 @@ class SessionRecord:
             auto_archive_opt_out_reason=d.get("autoArchiveOptOut"),
             pr_resolution=d.get("prResolution"),
             pr_resolution_source=d.get("prResolutionSource"),
+            host=d.get("host"),
             usage_unverified=d.get("usageUnverified", False),
             interrupted_by_restart=d.get("interruptedByRestart", False),
+            interrupted_from_status=d.get("interruptedFromStatus"),
+            paused_reason=d.get("pausedReason"),
+            paused_until=(datetime.fromisoformat(d["pausedUntil"])
+                          if d.get("pausedUntil") else None),
             authored_branches=list(d.get("authoredBranches") or []),
             context_used_tokens=d.get("contextUsedTokens"),
             context_max_tokens=d.get("contextMaxTokens"),
             command_catalog=d.get("commandCatalog"),
+            kind=d.get("kind"),
+            owner_identity=d.get("ownerIdentity"),
         )
+
+
+def is_assistant_kind(kind: str | None) -> bool:
+    """The ONE comparison against ``ASSISTANT_KIND``, for the paths that hold a bare
+    kind STRING rather than a record (``create_session``'s parameter, the queue params).
+    Keeps the literal from being open-coded a second time (constitution VI)."""
+    return kind == ASSISTANT_KIND
+
+
+def is_assistant(rec) -> bool:
+    """The ONE predicate for 'is this the AI-drawer session' — every loop that
+    iterates sessions (autopilot, titles, summaries, suggestions, goal inference,
+    auto-archive, capacity) routes through it. Duck-typed so fleet mirrors and DB rows
+    qualify too."""
+    return is_assistant_kind(getattr(rec, "kind", None))

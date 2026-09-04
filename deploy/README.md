@@ -29,6 +29,14 @@ Holds the secrets/config the server needs — `CCSWITCH_DB_URL`, `CCSWITCH_MASTE
 `CCSWITCH_SESSION_SECRET`, `CCSWITCH_TAILNET_ALLOWLIST`, `CCSWITCH_HOST`, `CCSWITCH_PORT`
 — plus `PATH`/`HOME` so the service can find `git`/`node`/`claude`. `chmod 600`, `root:root`.
 
+A host may point the **daemon** at a different env file via a local
+`ccswitch-daemon.service.d/` drop-in (`EnvironmentFile=` then `EnvironmentFile=/etc/ccswitch/daemon.env`,
+as on dobby). Whatever file the daemon actually loads is the one that matters for its `PATH`; check it
+with `systemctl cat ccswitch-daemon.service`. The daemon does not strictly need `~/.local/bin` on that
+`PATH` any more: `server/sessions/claude_bin.py` falls back to the native installer's well-known
+locations (`~/.local/bin/claude`, newest `~/.local/share/claude/versions/*`) when `claude` is not on
+`PATH`, and logs a WARNING if none exist. `CCSWITCH_CLAUDE_BIN` still overrides everything.
+
 ## Install
 
 ```bash
@@ -66,6 +74,17 @@ sudo nginx -t
 systemctl status ccswitch-cert-renew.timer
 ```
 
+## Server-side dictation (optional)
+
+Set `CCSWITCH_ENABLE_STT=true` in `/etc/ccswitch/ccswitch.env` and restart the edge
+(`ccswitch.service` only — the daemon is untouched). The venv needs the `stt` extra
+(`pip install -e '.[server,stt]'`, ~440 MB; the deploy controller does this automatically
+when `pyproject.toml` changes). The `base.en` model (~150 MB) is downloaded into
+`~/.cache/huggingface` at the first edge start after enabling, by the lifespan's warm
+thread — so the mic is normally ready within ~10 s of startup, and a dictation started
+while that download is still running simply waits for `ready`.
+`GET /api/config` shows `sttEnabled: true` when it is live.
+
 ## Operate
 
 ```bash
@@ -78,7 +97,7 @@ PYTHONPATH=<repo>/src <repo>/.venv/bin/python -m server.deploy --once
 
 ## Notes
 
-- **Backend dependency changes** (new Python deps) trigger `pip install -e .[server]`
+- **Backend dependency changes** (new Python deps) trigger `pip install -e '.[server,stt]'`
   automatically when `uv.lock`/`pyproject.toml` changed since the last deploy.
 - **Frontend dependency changes** trigger `npm ci` automatically when
   `web/package-lock.json` changed.
@@ -114,10 +133,46 @@ sudo systemctl daemon-reload
 changed, but only when `systemctl is-enabled ccswitch-daemon.service` succeeds — making
 the block a complete no-op on hosts where the unit is not yet enabled.
 
+### Stopping / restarting the daemon (`systemctl stop|restart ccswitch-daemon.service`)
+
+The daemon owns every live `claude` session. **Any** stop or restart — the deploy
+controller, the health watchdog, or you typing it after an env edit — is the same
+SIGTERM, and until 2026-08-30 it ended every in-flight turn (five sessions at once,
+each left "Interrupted — re-send to resume").
+
+The daemon now drains itself on SIGTERM (`server/ipc/drain_on_signal.py`): it refuses
+new turns, snapshots pending work, tells the UI "update pending", keeps serving while
+in-flight turns finish, and only then runs the ordinary shutdown. The wait is bounded by
+the same caps as the deploy drain — `CCSWITCH_DRAIN_TURN_CAP_SEC` (180 s) per ordinary
+turn, `CCSWITCH_DRAIN_CONDENSE_CAP_SEC` (570 s) while a session is mid-compaction — so an
+idle daemon still stops in seconds and a busy one makes `systemctl restart` block for
+up to a few minutes. That is the feature. Two unit settings make it work and are pinned
+by `test_restart_turn_interruption.py`:
+
+- `KillMode=mixed` — SIGTERM reaches only the daemon; control-group delivery would kill
+  the `claude` children in parallel and leave nothing to drain.
+- `TimeoutStopSec=660` — the 570 s condense cap plus the ≤90 s shutdown budget. Lower
+  it and systemd SIGKILLs the daemon mid-drain.
+
+Escape hatches: a second SIGTERM (`sudo systemctl kill -s TERM ccswitch-daemon.service`)
+skips the wait; `systemctl kill -s SIGKILL` is what the health watchdog does to a
+daemon whose loop is wedged (it can't run the drain, so waiting 660 s is pointless).
+
+**These are unit-file settings — deploys do not re-install unit files** (see the note
+above). After pulling this change, re-run the Install steps and `daemon-reload` on each
+daemon host, or the installed unit keeps its old `control-group` / 60 s behaviour and
+the drain is defeated before it starts.
+
 ## Deploy controller (`ccswitch-deploy-controller.service`)
 
 Long-lived service that polls `origin/master` (notify-only) and runs user-triggered deploys.
 Serves a UDS at `/run/ccswitch/deploy.sock`; the edge proxies `/api/deploy/*` to it.
+
+A triggered deploy runs seven phases, in order (`server/deploy/types.py::Phase`):
+`preflight` (gate on GitHub CI green) → `save` (snapshot) → `update` (fast-forward, sync deps,
+rebuild `web/dist`) → `report` → `runners` (fan out to every fleet host — see
+`docs/runbooks/rocky-session-host.md` § "5. Deploy") → `restart` (the edge) → `resume`. The UI's
+deploy panel and `GET /api/deploy/status` mirror this phase list.
 
 Poll cadence defaults to **30s** (how quickly the "changes pending" banner appears after a
 merge). Tune it with `CCSWITCH_DEPLOY_POLL_INTERVAL=<seconds>` in `ccswitch.env`, then
@@ -173,9 +228,8 @@ instead of being OOM-killed. On an already-running host apply it live without a 
 This is a **host-level** hardware-watchdog test, separate from the application health
 timer above. It closes the gap that let rocky sit off the network for ~46 min on
 2026-08-25 while its `watchdog.service` ran happily the whole time
-([#767](https://github.com/steiner385/ccswitch/issues/767)): the stock
-`/etc/watchdog.d/test-ssh.sh` only probed **loopback** (`localhost:22`,
-`127.0.0.1/22`), which proves `sshd` is alive *on the box* but says nothing about
+([#767](https://github.com/steiner385/ccswitch/issues/767)): `test-ssh.sh` (below) only
+probes **loopback**, which proves `sshd` is alive *on the box* but says nothing about
 whether anything can **reach** the box. A hardware watchdog only fires on a *hung*
 system; an alive-but-unreachable host never hangs, so nothing tripped.
 
@@ -205,7 +259,7 @@ Install on the daemon host (this needs the `watchdog` package with
         /etc/ccswitch/watchdog-reachability.conf
     sudo $EDITOR /etc/ccswitch/watchdog-reachability.conf   # set WDR_TARGETS
 
-    # 2. drop the test beside (or replacing) the loopback-only test-ssh.sh
+    # 2. drop the test beside the loopback-only test-ssh.sh
     sudo install -m755 deploy/watchdog/test-reachability.sh /etc/watchdog.d/
     sudo systemctl restart watchdog.service
 
@@ -213,6 +267,66 @@ The `watchdog` daemon runs the script every interval with `test`; a non-zero exi
 makes it re-run the script with `repair`, and a non-zero `repair` triggers the reset.
 State (outage-window start + cooldown anchor) lives in `WDR_STATE_DIR`
 (`/var/lib/watchdog-reachability`, must survive reboots for the cooldown to hold).
+
+## Hardware watchdog SSH liveness test (`deploy/watchdog/test-ssh.sh`)
+
+The loopback half of the pair above: it proves `sshd` on this host is not merely
+listening but actually **speaking SSH**. It opens a TCP connection to `127.0.0.1:22`,
+reads the protocol version-exchange greeting, and requires it to start with `SSH-`.
+
+This replaces an earlier version that lived only on the host and had two defects:
+
+1. Its first branch ran `ssh … localhost exit 0` **as root**, which cannot
+   authenticate, so every 10s interval logged
+   `Connection closed by authenticating user root 127.0.0.1 … [preauth]` —
+   ~8,700 sshd auth failures a day, burying real signal during an incident.
+2. Its fallback, `echo > /dev/tcp/127.0.0.1/22`, only proved the port *accepts* a
+   connection and then wrote garbage into it (`banner exchange: … invalid format`
+   every 10s). It would still have passed with `sshd` wedged mid-handshake.
+
+Reading the greeting fixes both: it attempts **no authentication at all**, so it
+produces no auth failures, and a wedged `sshd` that accepts TCP without ever greeting
+is now correctly caught.
+
+What remains is one benign line per interval at `LogLevel INFO`
+(`Connection closed by 127.0.0.1 port N`, with no `[preauth]` and no user) — that is
+unavoidable for *any* TCP connection to `sshd`, and it is an ordinary disconnect
+notice rather than an auth failure or a protocol error. Sending a client
+identification string first was measured and is **not** quieter: same volume, but the
+lines come back tagged `[preauth]`, which reads more like a failure than less.
+
+**A non-zero exit here reboots the physical host**, so the script is deliberately
+fail-safe and every knob below serves that:
+
+* It exits **0** on any *inconclusive* result and returns non-zero only on a clear,
+  positive determination. In particular, before trusting a failed connect it
+  self-tests that this `bash` really supports `/dev/tcp` (a build with
+  `--disable-net-redirections` reports `No such file or directory` rather than
+  `Connection refused`); if that is unproven it passes rather than reboots.
+* Three attempts must **all** fail, absorbing transients; combined with
+  `retry-timeout = 60` a reboot needs ~6 consecutive failures over a full minute.
+* Every probe is wrapped in `timeout -s KILL`, bounding a run at ~18s — safely under
+  `test-timeout = 30` — so it can never hang the daemon.
+* There is intentionally **no `set -e`**: an unexpected non-zero from an intermediate
+  command must never become the script's exit status.
+
+Install on the daemon host:
+
+    sudo install -m755 deploy/watchdog/test-ssh.sh /etc/watchdog.d/
+    sudo systemctl restart watchdog.service
+
+Note that `systemctl restart watchdog.service` can fail on Debian/Ubuntu: the unit's
+`ExecStopPost` exits non-zero by design to hand `/dev/watchdog` to
+`wd_keepalive.service` via `OnFailure=`, which cancels the queued restart and leaves
+`watchdog.service` **inactive**. If that happens, `sudo systemctl start
+watchdog.service` completes the handoff back. Always confirm `systemctl is-active
+watchdog.service` afterwards, and check the startup log lists the tests you expect:
+
+    sudo journalctl -u watchdog.service -n 30 | grep 'test/repair'
+
+Keep anything else in `/etc/watchdog.d/` **non-executable** — the daemon runs *every*
+executable file in that directory, so an executable `test-ssh.sh.bak-<timestamp>` left
+beside the script silently keeps running the old test.
 
 ## Remote mounts (`ccswitch-mounts.service`, remote session host only)
 
@@ -254,6 +368,62 @@ Install on the remote session host:
         /etc/systemd/system/ccswitch-daemon.service.d/
     sudo systemctl daemon-reload
     sudo systemctl enable --now ccswitch-mounts.service
+
+### Cache profiles: the account store must be mounted coherently (#1005)
+
+`bin-ccswitch-mounts.sh` picks one of two `-o` profiles per path:
+
+| profile | paths | options |
+|---|---|---|
+| cached (read-mostly) | `~/.claude`, `/mnt/hdd-storage`, `~/avd-golden` | `dir_cache=yes,dcache_timeout=600,attr_timeout=600,entry_timeout=600` |
+| coherent | `~/.claude-accounts` (`CCSWITCH_MOUNT_COHERENT_PATHS`) | `dir_cache=no,dcache_timeout=0,attr_timeout=0,entry_timeout=0` |
+
+The 600s cache (#779, tuned by #826/#851) is a latency win and stays for everything dobby
+does not rewrite underneath us. It is **wrong for the account store**. Claude Code writes
+`.claude.json` atomically — temp file + `rename(2)` — so both the inode and the size change
+on every write, and dobby's live sessions rewrite it continuously. A reader holding a 10-minute
+attribute cache therefore gets a **truncated body**, which Claude Code's config loader reports
+as corruption:
+
+    Claude configuration file at …/.claude.json is corrupted: JSON Parse error: Unterminated string
+    The corrupted file has been backed up to: …/backups/.claude.json.corrupted.<ts>
+
+…and then starts from a **default** config and writes it back — through the mount, onto
+dobby's disk. From 2026-09-01 rocky did this ~1,100×/day, repeatedly wiping project trust,
+`projects` history, onboarding flags and cached identity for all three accounts while dobby
+logged zero such events. The file was never corrupt; the *view* was stale.
+
+**A cache-profile change does not apply itself.** The script leaves a live mount alone on
+purpose — unmounting drops every in-flight read. After deploying, remount the account store
+when the Sessions page shows nothing mid-turn:
+
+    CCSWITCH_MOUNT_FORCE_REMOUNT=1 CCSWITCH_MOUNT_PATHS=/home/tony/.claude-accounts \
+      /home/tony/bin-ccswitch-mounts.sh
+    grep .claude-accounts /proc/mounts    # expect attr_timeout=0, no dir_cache=yes
+
+Two further layers make this safe even where a host's mount profile is still wrong:
+
+- **One-shot helper spawns never touch the shared config.** `account_auth.helper_env()`
+  points `CLAUDE_CONFIG_DIR` at a host-local mirror under `~/.cache/ccswitch/helper-cfg`
+  (`server/sessions/scratch_config.py`): `.claude.json`/`.credentials.json` are copies, the
+  shared assets are symlinks, and a torn read reuses the last-known-good copy instead of
+  resetting anything. Live sessions still use the real account dir — they must, since their
+  history and token refreshes belong there. Kill switch:
+  `CCSWITCH_HELPER_SCRATCH_CONFIG=false`.
+- **The evidence survives.** `configdir.compose()` used to `rmtree` `backups/` on every call,
+  destroying each `.claude.json.corrupted.*` within seconds of its creation — which is why
+  three days of resets left nothing to diagnose. It now prunes only entries older than
+  `CCSWITCH_CONFIG_BACKUP_RETENTION_S` (default 24h).
+
+**Verifying the fix.** `scripts/ccswitch-health-check.sh` section 6 alerts on either counter
+being non-zero over the last hour:
+
+    ALERT[config-torn-read] shared config coherence: N torn read(s) … and M '.claude.json.corrupted.*' reset(s) …
+
+- `N > 0` — **this** host is still reading a stale view; its account-store mount profile is wrong.
+- `N == 0, M > 0` — some **other** host is; check each host's `/proc/mounts`.
+- Both 0 for a few hours, and `.claude.json`'s size on dobby no longer oscillating
+  (`watch -n5 stat -c '%s %i' ~/.claude-accounts/cfg/<account>/.claude.json`) — fixed.
 
 ## Hardware watchdog load thresholds (`/etc/watchdog.conf`)
 

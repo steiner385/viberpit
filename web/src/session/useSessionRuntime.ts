@@ -18,6 +18,7 @@ import type { SessionEvent, Command } from '@/session/events'
 import { selectSubAgents, selectVisibleTurns, selectVisibleSubAgents } from '@/session/selectors'
 import { remainingContextPct, remainingFromContextUsage } from '@/lib/contextWindow'
 import { useSessions, useAccounts, useSettings } from '@/api/hooks'
+import { isPreSpawnStatus } from '@/api/types'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { fetchOlderTurns } from '@/api/transcript'
 
@@ -39,6 +40,14 @@ export interface SessionRuntime {
   /** Where the reckoned goal came from: "explicit" | "inferred" | "initial_prompt". */
   goalSource: string | null
   account: string
+  /** The model the user CHOSE for this session (record alias, e.g. "opus"); null =
+   *  account default. Optimistically reflects a pick until the record catches up. */
+  model: string | null
+  /** True while a "switch after this turn" change waits for the in-flight turn to end. */
+  modelPending: boolean
+  /** The model actually producing (SDK id, e.g. "claude-opus-4-8") — launch model,
+   *  refreshed per turn. Read-only: after a switch it lags `model` by one turn. */
+  liveModel: string | null
   quota: {
     sessionPct: number
     weeklyPct: number
@@ -62,11 +71,17 @@ export interface SessionRuntime {
   /** Fire while the user is typing/steering (before send) — refreshes autopilot's human-deference window. */
   onActivity: () => void
   onInterrupt: () => void
+  /** Stop the live turn and run this prompt next ("interrupt and post"). Returns
+   *  whether the frame was written — false means keep the draft (socket closed). */
+  onInterruptAndPrompt: (text: string, attachmentIds: AttachmentIds) => boolean
   onSetMode: (mode: string) => void
   onCancelQueued: (index: number) => void
   commands: Command[]
   commandResult: { render: 'help' | 'context'; data: unknown } | null
   onCommand: (name: string, args: string) => void
+  /** Switch model: 'now' stops + restarts a busy turn on the new model; 'after_turn'
+   *  hands the model to the SDK without interrupting (applies on the next turn). */
+  onSetModel: (id: string, when: 'now' | 'after_turn') => void
   dismissCommandResult: () => void
   /** Fetch and prepend the previous window of older turns (lazy scrollback). */
   onLoadOlder: () => void
@@ -81,6 +96,7 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     connectionState,
     prompt,
     sendInterrupt,
+    interruptAndPrompt,
     permissionResponse,
     answerQuestion,
     setPermissionMode,
@@ -187,12 +203,15 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     [sessionId, permissionResponse],
   )
 
-  // Answer handler for question cards. The answer is delivered as a tool result,
-  // NOT a user prompt, so the server never echoes it back — optimistically echo the
-  // chosen labels into the transcript as a user bubble.
-  // Send an answer over WS. On a confirmed send, resolve the question locally and
-  // echo the chosen labels (the server delivers the answer as a tool result and
-  // never echoes it). Returns whether the frame actually went out.
+  // Answer handler for question cards. Send an answer over WS; on a confirmed
+  // send, resolve the question locally and carry the chosen labels on the card.
+  // Returns whether the frame actually went out.
+  //
+  // On the LIVE path the server delivers the answer as a tool result and never
+  // echoes it, so the local resolution is the only record of it. The ORPHANED
+  // path (a restart killed the waiter — see server/sessions/orphaned_asks.py) is
+  // the exception: there is no future left to resolve, so the server delivers the
+  // selection as the next turn's PROMPT, which does echo back as a user bubble.
   const deliverAnswer = useCallback(
     (questionId: string, selected: string[], mode: 'option' | 'freeform' | 'chat') => {
       const sent = answerQuestion(sessionId, questionId, selected, mode)
@@ -266,6 +285,19 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     },
     [sessionId, sendInterrupt],
   )
+  // "Interrupt and post": stop the live turn and run this text next. The server's
+  // interrupt denies any parked question, so this is always a fresh prompt (never a
+  // chat reply) — disarm locally to match. Returns whether the frame left the browser
+  // so the composer can keep the draft on a closed socket (#505 rule for controls).
+  const onInterruptAndPrompt = useCallback(
+    (text: string, attachmentIds: AttachmentIds): boolean => {
+      setArmedQuestionId(null)
+      const sent = interruptAndPrompt(sessionId, text, attachmentIds)
+      if (sent) dispatch({ type: '_trackSentPrompt', text })
+      return sent
+    },
+    [sessionId, interruptAndPrompt],
+  )
   const onSetMode = useCallback(
     (m: string) => {
       // Only apply the mode locally when the frame actually left the browser. On a
@@ -320,6 +352,25 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
   const thinkingCollapsed = appSettings?.thinkingCollapsed ?? true
   const sessionRecord = sessions?.find((s) => s.id === sessionId)
 
+  // Re-attach when this session leaves a PRE-SPAWN state (`pending_approval` /
+  // `queued`) while the view is open. The mount-time attach above ran BEFORE the
+  // driver existed, so the bridge took its read-only detached path; the server
+  // defers the initial prompt "until the first WS attach" and only a LIVE attach
+  // pops + sends it. Without a fresh attach the prompt is orphaned: a Fable session
+  // approved from its own view sat empty, and the titler named it after the CLI's
+  // `/model` bookkeeping (2026-09-02). Keyed on the record's status — the approve
+  // mutation invalidates the sessions query, and the poll covers approvals (or a
+  // freed queue slot) that happen elsewhere. The ref carries the session id so a
+  // route change can't pair the old session's status with the new one's.
+  const recordStatus = sessionRecord?.status
+  const prevStatusRef = useRef<{ id: string; status: string | undefined }>({ id: sessionId, status: undefined })
+  useEffect(() => {
+    const prev = prevStatusRef.current
+    prevStatusRef.current = { id: sessionId, status: recordStatus }
+    if (prev.id !== sessionId || prev.status === undefined || recordStatus === undefined) return
+    if (isPreSpawnStatus(prev.status) && !isPreSpawnStatus(recordStatus)) attach(sessionId)
+  }, [sessionId, recordStatus, attach])
+
   // Header title: prefer the session's name (the AI-generated/auto title, the
   // same value shown on the dashboard card) so the two stay consistent. Fall
   // back to a live transcript `title` event, then the sessionId prefix.
@@ -331,6 +382,29 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
   const latestRotation =
     state.rotations.length > 0 ? state.rotations[state.rotations.length - 1].to : null
   const account = latestRotation ?? sessionRecord?.accountName ?? '—'
+
+  // Model: the record's chosen alias (same source the dashboard card shows), with the
+  // optimistic pick layered on top until the record catches up. `state.model` is the
+  // SDK's producing model and is exposed separately as `liveModel` — binding the picker
+  // to it is what made every session look pinned to the account default.
+  const recordModel = sessionRecord?.model ?? null
+  // Optimistic model pick: the picker shows the requested alias the moment it is
+  // chosen instead of waiting for the 5s sessions poll (a lagging picker reads as
+  // "snapped back", the very bug this replaces). `seen` is the record's model at pick
+  // time; the override retires as soon as the record moves off it (caught up, or
+  // changed elsewhere — either way the record is fresher).
+  const [modelOverride, setModelOverride] = useState<{ model: string | null; seen: string | null } | null>(null)
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- retire the override once the record moves
+    if (modelOverride && recordModel !== modelOverride.seen) setModelOverride(null)
+  }, [recordModel, modelOverride])
+  const onSetModel = useCallback((id: string, when: 'now' | 'after_turn') => {
+    setModelOverride((cur) => ({ model: id === 'default' ? null : id, seen: cur ? cur.seen : recordModel }))
+    command(sessionId, 'model', when === 'after_turn' ? `${id} --after-turn` : id)
+  }, [sessionId, command, recordModel])
+  const model = modelOverride ? modelOverride.model : recordModel
+  const modelPending = sessionRecord?.modelPending ?? false
+  const liveModel = state.model
 
   const accountUsage = accounts?.find((a) => a.name === account)?.usage ?? null
   const quota = accountUsage
@@ -383,6 +457,9 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     goal,
     goalSource,
     account,
+    model,
+    modelPending,
+    liveModel,
     quota,
     contextPct,
     subAgents,
@@ -396,11 +473,13 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     onPrompt,
     onActivity,
     onInterrupt,
+    onInterruptAndPrompt,
     onSetMode,
     onCancelQueued,
     commands,
     commandResult,
     onCommand,
+    onSetModel,
     dismissCommandResult,
     onLoadOlder,
   }

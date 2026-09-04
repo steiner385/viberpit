@@ -16,6 +16,7 @@ import inspect
 import logging
 import os
 import re
+from datetime import datetime
 from typing import Any, Literal, TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -26,6 +27,8 @@ from ccswitch import accounts as _accounts
 from ccswitch import gitrepos
 from server.auth.middleware import current_identity
 from server.sessions.search import parse_terms, session_matches
+from server.sessions.types import ASSISTANT_KIND, RESUME_ELIGIBLE_STATUSES, is_assistant
+from server.sessions.usage_stall import is_usage_stalled
 from server.audit import record_audit
 from server.config import get_settings
 from server.db import db_session, get_db
@@ -33,10 +36,14 @@ from server.sessions.orchestrator import (
     ArchiveMissingError,
     BranchSwitchError,
     InsufficientStorageError,
+    ModelBlockedError,
 )
 from server.ipc.client import DaemonError, DaemonUnavailable
 from server.sessions.facade import call_with_deadline
+from server.sessions.permissions import resolve_permission_mode
 from server.sessions.selection import AllAccountsBusy
+from server.sessions.fleet_router import UnknownHost, NoHostAvailable
+from server.sessions import host_heartbeat
 from server.time_iso import iso_utc
 
 if TYPE_CHECKING:
@@ -74,6 +81,9 @@ class CreateSessionRequest(BaseModel):
     # Model alias/id to start the session on (e.g. "opus", "fable"). None / "default"
     # → the account default; the value is applied to the driver once it starts.
     model: str | None = None
+    # Optional runner preference. None → auto-rank; a name → that host first, still
+    # failing over. Forwarded to FleetOrchestrator.create_session as prefer=.
+    host: str | None = None
 
 
 class RenameSessionRequest(BaseModel):
@@ -97,17 +107,32 @@ class SendPromptRequest(BaseModel):
     text: str
 
 
+class ModelApprovalBody(BaseModel):
+    decision: Literal["approve", "deny"]
+    # Optional counter-offer: approve the hold at THIS model instead of the parked
+    # one. Absent = approve exactly what was requested (pre-override behaviour).
+    model: str | None = None
+
+
 class FixPrRequest(BaseModel):
     number: int
 
 
 _UNSET = object()
 
+# Passed as ``heartbeats`` when the per-request heartbeat snapshot could not be read
+# (DB down at the edge). Distinct from ``None`` (mutation endpoints that never fetch a
+# snapshot — those OMIT liveness) and from an empty dict (snapshot succeeded, no rows —
+# ``fresh``): a failed snapshot yields ``unknown`` so degradation is visible, never
+# false-fresh (spec 002 NFR-5).
+_SNAPSHOT_FAILED = object()
+
 
 def _record_to_dict(
     record, repo: Any = _UNSET, suggestions: list[str] | None = None,
     prs: list | None = None, summary: str = "", defer_seconds: int | None = None,
     queue_position: int | None = None, queue_stall_reason: dict[str, Any] | None = None,
+    heartbeats: Any = None, heartbeats_now: datetime | None = None,
 ) -> dict[str, Any]:
     """Convert an in-memory SessionRecord to the wire-format dict.
 
@@ -131,8 +156,39 @@ def _record_to_dict(
     is not actually stalled. Purely additive: a client that has never heard of
     this field sees nothing new to worry about.
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import timedelta, timezone
     from server.sessions.goals import effective_goal
+    from server.sessions.liveness import derive_liveness, heartbeat_interval_s, host_dead_after_s
+    # Per-session liveness is DERIVED at the edge from the owning host's heartbeat
+    # (spec 002 FR-102/FR-103), never stored. `heartbeats` is snapshotted once per
+    # request by the caller — never fetched per session (NFR-4) — and arrives as one
+    # of three shapes, each a distinct liveness contract:
+    #   * None                — a mutation endpoint that never fetched a snapshot: OMIT
+    #                           the liveness keys entirely so a field-level cache merge
+    #                           cannot clobber an existing demotion with a stale "fresh".
+    #   * _SNAPSHOT_FAILED     — the snapshot read raised (DB down at the edge): report
+    #                           "unknown" — degradation is visible, never false-fresh (NFR-5).
+    #   * dict (may be empty)  — a successful snapshot: derive per host. host=None
+    #                           (primary/in-process) and a host with no row are BOTH fresh
+    #                           (NFR-3: absence of a row is never evidence of death).
+    #
+    # Thresholds are evaluated against `heartbeats_now` — the DB clock the snapshot was
+    # read at (FR-102), so a host whose local clock lags the edge is not falsely demoted.
+    # They come from the shared env_float-backed accessors: this runs inside the serializer
+    # for EVERY session with no try/except above it, so a raw float() on a typo'd knob
+    # would 500 the entire sessions page.
+    _liveness = None
+    if heartbeats is _SNAPSHOT_FAILED:
+        _liveness = derive_liveness(None, datetime.utcnow(), snapshot_failed=True)
+    elif heartbeats is not None:
+        _hb_host = getattr(record, "host", None)
+        _hb = heartbeats.get(_hb_host) if _hb_host is not None else None
+        _liveness = derive_liveness(
+            _hb.beat_at if _hb is not None else None,
+            heartbeats_now or datetime.utcnow(),
+            interval_s=heartbeat_interval_s(),
+            dead_after_s=host_dead_after_s(),
+        )
     goal_text, goal_source = effective_goal(record)
     cooldown_until = None
     _last = getattr(record, "last_user_interaction_at", None)
@@ -142,7 +198,7 @@ def _record_to_dict(
         _until = _last + timedelta(seconds=defer_seconds)
         if _until > datetime.utcnow():
             cooldown_until = iso_utc(_until)
-    return {
+    d: dict[str, Any] = {
         "id": record.id,
         "name": record.name,
         "accountName": record.account,
@@ -168,7 +224,26 @@ def _record_to_dict(
         "updatedAt": record.updated_at_iso,
         "revAt": record.rev_at,
         "accountPinned": getattr(record, "account_pinned", False),
+        # Why a needs_attention/limited session is parked, when it may recover, and
+        # the derived "stalled on usage" flag the Rotate-stalled batch button counts.
+        # Same two-serializer rule as `resumable`: SessionRecord.to_dict is the
+        # daemon→edge RPC copy, this is the browser copy — both must emit them.
+        "pausedReason": getattr(record, "paused_reason", None),
+        "pausedUntil": iso_utc(getattr(record, "paused_until", None)),
+        "usageStalled": is_usage_stalled(record.status, getattr(record, "paused_reason", None)),
         "model": getattr(record, "model", None),
+        # Approval-hold model: set when the model-approval gate parks a requested
+        # model pending admin sign-off (status="pending_approval" or a mid-session
+        # hold). Null once approved/denied or for non-gated sessions.
+        "pendingModel": getattr(record, "pending_model", None),
+        # Why the session asked for pendingModel (its own stated reason), or null.
+        "pendingModelReason": getattr(record, "pending_model_reason", None),
+        # Identity that requested pendingModel; "session:self" when the session asked
+        # for itself (vs. a human requesting on its behalf).
+        "pendingModelRequestedBy": getattr(record, "pending_model_requested_by", None),
+        # True while a "switch after this turn" model change waits for the in-flight
+        # turn to end (transient, never persisted) — the picker shows it as pending.
+        "modelPending": getattr(record, "model_pending", False),
         "latestSuggestions": list(suggestions or []),
         "activeGoal": getattr(record, "active_goal", None),
         "inferredGoal": getattr(record, "inferred_goal", None),
@@ -182,10 +257,35 @@ def _record_to_dict(
         "prs": [p.to_dict() for p in (prs or [])],
         "usageUnverified": getattr(record, "usage_unverified", False),
         "interruptedByRestart": getattr(record, "interrupted_by_restart", False),
+        # Pre-restart status, and whether that status means dropped WORK (resumable,
+        # #938's "Resume interrupted" batch) rather than a dropped ASK (which
+        # InterruptedAskNotice / the orphaned-question re-offer handle instead).
+        # This is the BROWSER serializer; SessionRecord.to_dict is the daemon→edge
+        # RPC one. Both must emit these or the feature is dead on the wire.
+        "interruptedFromStatus": getattr(record, "interrupted_from_status", None),
+        "resumable": bool(getattr(record, "interrupted_by_restart", False)
+                          and getattr(record, "interrupted_from_status", None)
+                          in RESUME_ELIGIBLE_STATUSES),
         "summary": summary or "",
         "queuePosition": queue_position,
         "queueStallReason": queue_stall_reason,
+        # "assistant" for the AI-drawer thread, null for a coding session. The drawer
+        # fetches its thread by id (this list excludes assistants by default), so this
+        # is what lets a client tell the two apart when it does get one.
+        "kind": getattr(record, "kind", None),
     }
+    # Liveness derived at the edge from the owning host's heartbeat snapshot (spec 002
+    # FR-103). Never stored — always computed from host_heartbeats. Emitted ONLY when a
+    # snapshot was available to this call (success or explicit failure): a mutation
+    # endpoint that fetched no snapshot omits the keys, so a field-level cache merge
+    # preserves whatever demotion the last list/get computed instead of overwriting it
+    # with an unconditional "fresh" (item 7 of #961).
+    if _liveness is not None:
+        d["liveness"] = _liveness.state
+        d["lastConfirmedAliveAt"] = (
+            iso_utc(_liveness.last_confirmed_alive_at)
+            if _liveness.last_confirmed_alive_at is not None else None)
+    return d
 
 
 async def _resolve_repo(record) -> str | None:
@@ -391,9 +491,20 @@ async def list_sessions(
     request: Request,
     _identity: str = Depends(current_identity),
 ) -> list[dict]:
-    """Return all in-memory session records."""
+    """Return all in-memory session records.
+
+    Assistant threads are a UI surface, not dashboard cards, so they are excluded by
+    default. `?kind=assistant` SELECTS them — it returns assistant threads only, not
+    everything-plus-assistants; the orchestrator flag merely stops them being filtered
+    out upstream, and the narrowing happens here. The kwarg is passed ONLY when asked
+    for, so the default call is byte-identical for every orchestrator flavour
+    (in-process, remote, fleet) and for test doubles.
+    """
     orch = _get_orchestrator(request)
-    records = await orch.list_sessions()
+    want_assistant = request.query_params.get("kind") == ASSISTANT_KIND
+    records = await orch.list_sessions(**({"include_assistant": True} if want_assistant else {}))
+    if want_assistant:
+        records = [r for r in records if is_assistant(r)]
     viewing = request.query_params.get("viewing") in ("1", "true", "yes")
     # Enrich the whole page in three batched RPCs (one per field) rather than three per
     # session: 21 sessions cost 3 daemon round trips, not 63 (#742). Each is bounded by
@@ -412,11 +523,20 @@ async def list_sessions(
         except Exception:
             log.warning("list_sessions: session_queue_positions fetch failed", exc_info=True)
     stall_reason = await _compute_queue_stall_reason(records)
+    heartbeats: Any = _SNAPSHOT_FAILED
+    hb_now: datetime | None = None
+    try:
+        _snap = await host_heartbeat.snapshot()
+        heartbeats, hb_now = _snap.hosts, _snap.now
+    except Exception:                          # DB down: report "unknown", never false-fresh (NFR-5)
+        log.warning("list_sessions: heartbeat snapshot failed — liveness degrades to unknown",
+                    exc_info=True)
     return [
         _record_to_dict(
             r, repo=repo, suggestions=s, prs=pr_list, summary=summary,
             defer_seconds=defer_seconds, queue_position=positions.get(r.id),
-            queue_stall_reason=stall_reason if r.status == "queued" else None)
+            queue_stall_reason=stall_reason if r.status == "queued" else None,
+            heartbeats=heartbeats, heartbeats_now=hb_now)
         for r, repo, s, pr_list, summary in zip(records, repos, suggs, prs, summaries)
     ]
 
@@ -491,20 +611,22 @@ async def create_session(
     # why ensure_clone is daemon-owned). Passing repo= through and leaving cwd
     # unset lets create_session resolve it wherever it actually runs.
 
-    # Resolve per-account defaults as fallbacks (only when account is explicitly pinned)
-    _resolved_permission_mode = body.permissionMode
+    # Permission mode: explicit → pinned-account default → global Settings default
+    # → interactive. One resolver shared with adopt_session (see permissions.py) so
+    # no create path can drift back to a hardcoded "interactive".
+    _resolved_permission_mode = await resolve_permission_mode(
+        db, explicit=body.permissionMode, account=body.account)
+    # Model: the pinned account's own default is the only fallback (only when the
+    # account is explicitly pinned); "account default" otherwise.
     _resolved_model = body.model
-    if body.account:
+    if body.account and not _resolved_model:
         from ccswitch import ledger as _ledger
         with _ledger.locked_ledger() as _led:
-            _acct_defs = _ledger.get_account_defaults(_led, body.account)
-        if not _resolved_permission_mode:
-            _resolved_permission_mode = _acct_defs.get("defaultPermissionMode")
-        if not _resolved_model:
-            _resolved_model = _acct_defs.get("defaultModel")
+            _resolved_model = _ledger.get_account_defaults(_led, body.account).get("defaultModel")
 
     try:
         record = await orch.create_session(
+            prefer=getattr(body, "host", None),
             name=name,
             account=body.account,
             initial_prompt=body.initialPrompt,
@@ -516,6 +638,16 @@ async def create_session(
             attachment_ids=body.attachmentIds,
             name_is_auto=name_is_auto,
             model=_resolved_model,
+        )
+    except UnknownHost as exc:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"error": {"code": "unknown_host", "message": str(exc)}},
+        )
+    except NoHostAvailable as exc:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"error": {"code": "no_host_available", "message": str(exc)}},
         )
     except (gitrepos.CloneError, gitrepos.GhError) as exc:
         # repo→clone resolution now happens inside orch.create_session (on
@@ -554,6 +686,9 @@ async def create_session(
                 },
             },
         )
+    except ModelBlockedError:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="model blocked by policy")
     except AllAccountsBusy as exc:
         if exc.kind == "no_usable_accounts":
             return JSONResponse(
@@ -576,23 +711,6 @@ async def create_session(
                 "earliestReset": reset_iso,
             },
         )
-
-    # Stamp the fleet host that ran this session. app.state.host_name is resolved
-    # at startup from the daemon endpoint; it is None when this deployment's
-    # endpoint is not in an operator-managed registry, in which case we record
-    # nothing rather than guessing — a wrong host stamp is worse than an absent one.
-    _host_name = getattr(request.app.state, "host_name", None)
-    if _host_name:
-        from sqlalchemy import update as _sa_update
-
-        from server.db.models import Session as _HostStampSession
-        await db.execute(_sa_update(_HostStampSession)
-                         .where(_HostStampSession.id == record.id)
-                         .values(host=_host_name))
-        try:
-            record.host = _host_name  # so the 201 body reports it too
-        except Exception:  # pragma: no cover — frozen record types
-            pass
 
     # Audit: session.create
     await record_audit(
@@ -826,6 +944,65 @@ async def batch_archive_sessions(
     return {"succeeded": succeeded, "failed": failed}
 
 
+@router.post("/batch/resume")
+async def batch_resume_sessions(
+    body: BatchSessionIdsRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Resume restart-interrupted sessions (re-attach + nudge). Best-effort:
+    a resumed session lands in `succeeded`; a skip / no_driver lands in `failed`."""
+    orch = _get_orchestrator(request)
+    succeeded: list[str] = []
+    failed: list[dict] = []
+    for session_id in dict.fromkeys(body.ids):  # dedupe, preserve order
+        try:
+            result = await orch.resume_interrupted(session_id, identity)
+        except Exception as exc:  # noqa: BLE001 — best-effort batch must not abort
+            log.warning("batch resume failed for %s: %s", session_id, exc)
+            failed.append({"id": session_id, "error": str(exc)})
+            continue
+        if result == "resumed":
+            succeeded.append(session_id)
+            await record_audit(
+                db=db, type="session.resume", identity=identity,
+                detail={"session_id": session_id},
+            )
+        else:
+            failed.append({"id": session_id, "error": result})
+    return {"succeeded": succeeded, "failed": failed}
+
+
+@router.post("/batch/rotate")
+async def batch_rotate_sessions(
+    body: BatchSessionIdsRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Move each session to the next best account and continue its conversation —
+    the "Rotate stalled (N)" button. Best-effort: "rotated" lands in `succeeded`;
+    any skip / no_driver lands in `failed` with the reason as `error`."""
+    orch = _get_orchestrator(request)
+    succeeded: list[str] = []
+    failed: list[dict] = []
+    for session_id in dict.fromkeys(body.ids):  # dedupe, preserve order
+        try:
+            result = await orch.rotate_to_best(session_id, identity)
+        except Exception as exc:  # noqa: BLE001 — best-effort batch must not abort
+            log.warning("batch rotate failed for %s: %s", session_id, exc)
+            failed.append({"id": session_id, "error": str(exc)})
+            continue
+        if result == "rotated":
+            succeeded.append(session_id)
+            await record_audit(db=db, type="session.rotate", identity=identity,
+                               detail={"session_id": session_id, "batch": True})
+        else:
+            failed.append({"id": session_id, "error": result})
+    return {"succeeded": succeeded, "failed": failed}
+
+
 @router.get("/{session_id}")
 async def get_session(
     session_id: str,
@@ -850,7 +1027,17 @@ async def get_session(
             queue_position = (_pos_res or {}).get(session_id)
         except Exception:
             log.warning("get_session: session_queue_positions fetch failed", exc_info=True)
-    return _record_to_dict(record, repo=await _resolve_repo(record), queue_position=queue_position)
+    heartbeats: Any = _SNAPSHOT_FAILED
+    hb_now: datetime | None = None
+    try:
+        _snap = await host_heartbeat.snapshot()
+        heartbeats, hb_now = _snap.hosts, _snap.now
+    except Exception:
+        log.warning("get_session: heartbeat snapshot failed — liveness degrades to unknown",
+                    exc_info=True)
+    return _record_to_dict(record, repo=await _resolve_repo(record),
+                           queue_position=queue_position,
+                           heartbeats=heartbeats, heartbeats_now=hb_now)
 
 
 @router.patch("/{session_id}")
@@ -955,13 +1142,24 @@ async def close_session(
     Returns 404 if unknown. Disk is reclaimed later, when the
     max_archived_sessions cap purges the row.
     """
+    from server.db.models import INACTIVE_SESSION_STATUSES, Session as _DbSession
+
     orch = _get_orchestrator(request)
     record = await orch.get_session(session_id)
     if record is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
-        )
+        # Orphaned-session fallback (#898): the owning daemon has lost the in-memory
+        # record (process exited, daemon restarted, worktree removed) but the DB row
+        # may still exist. A fleet primary loads ALL sessions into _records, but a
+        # worker's get_session only sees its own. Verify via DB before returning 404
+        # so orphaned sessions don't become permanently undeletable through the UI.
+        _db_row = await db.get(_DbSession, session_id)
+        if _db_row is None or _db_row.status in INACTIVE_SESSION_STATUSES:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
+            )
+        # Session is known to DB but not to the owning daemon (orphaned). Proceed:
+        # archive_session handles a missing _records entry gracefully (DB-only update).
     try:
         await orch.archive_session(session_id)
     except DaemonUnavailable:
@@ -1137,6 +1335,97 @@ async def fix_session_pr(
     return _record_to_dict(updated, repo=await _resolve_repo(updated))
 
 
+@router.post("/{session_id}/reload")
+async def reload_session(
+    session_id: str,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """"Reload session": rebuild the session's driver in place.
+
+    The recovery a human reaches for when the UI can no longer act on a session
+    (answers rejected, a turn that stopped streaming, a driver the daemon lost).
+    Routes through orch.reload_session — the same driver-swap primitive rotation
+    and crash recovery use — with the caller's identity threaded onto the new
+    driver. 404 for an unknown session; 409 (code = the orchestrator's reason)
+    when the session is parked somewhere a rebuild makes no sense (archived,
+    queued, awaiting approval) or the rebuild left it driverless."""
+    orch = _get_orchestrator(request)
+    record = await orch.get_session(session_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
+        )
+    result = await orch.reload_session(session_id, identity)
+    if result != "reloaded":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": result, "message": f"Session could not be reloaded: {result}"},
+        )
+    await record_audit(db, "session.reload", identity, {"sessionId": session_id})
+    updated = await orch.get_session(session_id) or record
+    return _record_to_dict(updated, repo=await _resolve_repo(updated))
+
+
+@router.post("/{session_id}/rotate")
+async def rotate_session(
+    session_id: str,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """"Next best account": move the session to the account the selector ranks
+    best and continue the conversation (orch.rotate_to_best — the same driver-swap
+    primitive rotation uses). 404 unknown; 409 (code = the orchestrator's reason)
+    when nothing has headroom or the session is parked where a move makes no sense."""
+    orch = _get_orchestrator(request)
+    record = await orch.get_session(session_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
+        )
+    result = await orch.rotate_to_best(session_id, identity)
+    if result != "rotated":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": result, "message": f"Session could not be rotated: {result}"},
+        )
+    await record_audit(db, "session.rotate", identity, {"sessionId": session_id})
+    updated = await orch.get_session(session_id) or record
+    return _record_to_dict(updated, repo=await _resolve_repo(updated))
+
+
+class AccountPinRequest(BaseModel):
+    pinned: bool
+
+
+@router.post("/{session_id}/account-pin")
+async def set_account_pin(
+    session_id: str,
+    body: AccountPinRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Pin the session to its current account, or clear the pin (the 📌 button).
+    Unpinning a `limited` session rotates it immediately."""
+    orch = _get_orchestrator(request)
+    record = await orch.get_session(session_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
+        )
+    await orch.set_account_pin(session_id, body.pinned)
+    await record_audit(db, "session.account_pin", identity,
+                       {"sessionId": session_id, "pinned": body.pinned})
+    updated = await orch.get_session(session_id) or record
+    return _record_to_dict(updated, repo=await _resolve_repo(updated))
+
+
 @router.delete("/{session_id}/permanent", status_code=status.HTTP_204_NO_CONTENT)
 async def permanent_delete_session(
     session_id: str,
@@ -1289,3 +1578,44 @@ async def export_session_jsonl(
     fname = safe_filename(f"{session_id}") + ".jsonl"
     return StreamingResponse(_iter(), media_type="application/x-ndjson",
                              headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+@router.post("/{session_id}/model-approval")
+async def model_approval(
+    session_id: str,
+    body: ModelApprovalBody,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Approve or deny a parked model-approval hold for a session.
+
+    ``body.model``, when given, is a human COUNTER-OFFER: approve the hold at this
+    model instead of the parked one. Absent means approve exactly what was requested.
+    Ignored when ``decision`` is ``"deny"`` — a denial rejects the hold outright, so
+    there is no model to approve at.
+
+    Returns the updated session record (200), 404 if unknown, 409 if no pending
+    approval to resolve or the counter-offer is blocked by policy, 422 if the
+    counter-offered model is unknown. Bad ``decision`` values yield 422 from the
+    ``Literal`` constraint.
+    """
+    if body.model is not None:
+        from server.sessions.model_catalog import is_known_alias, model_tier
+        if not (is_known_alias(body.model) or model_tier(body.model)):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={"code": "unknown_model", "message": f"unknown model: {body.model}"})
+    orch = _get_orchestrator(request)
+    try:
+        rec = await orch.resolve_model_approval(
+            session_id, body.decision, model=body.model, identity=identity)
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    except ModelBlockedError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "model_blocked", "message": f"{body.model} is blocked by policy"})
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="no pending model approval")
+    return _record_to_dict(rec)

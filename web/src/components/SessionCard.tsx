@@ -2,15 +2,17 @@ import { useRef, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Pencil, Archive, Trash2, FolderGit2, ChevronRight, ChevronDown, Sparkles, Loader2, Target, Wrench, Bot, MoreVertical } from 'lucide-react'
 import { toast } from 'sonner'
-import { matchListShortcut } from '@/lib/shortcuts'
+import { inGroup, matchShortcut } from '@/shell/shortcuts'
+import { popOverlay, pushOverlay } from '@/shell/useOverlayState'
 import { QUICK_REPLIES } from '@/lib/quickReplies'
 import { cn } from '@/lib/utils'
 import { formatRepoLabel } from '@/lib/repoLabel'
-import { HostBadge } from './HostBadge'
 import { isValidTimestamp, relTime } from '@/lib/relativeTime'
-import { statusTier } from '@/session/statusTier'
+import { TIER_ACCENT } from '@/session/statusTier'
+import { sessionTriage } from '@/session/triageTier'
 import { anyChecksFailing, isActionablePrState } from '@/session/prStatus'
-import { StatusPill, UsageBadge } from './UsageBadge'
+import { isGatedTier, tierLabel } from '@/session/modelName'
+import { UsageBadge } from './UsageBadge'
 import { PrList } from './PrList'
 import { SubAgentRows } from './SubAgentRows'
 import { useMediaQuery } from '@/lib/useMediaQuery'
@@ -22,7 +24,7 @@ import type { Session, Account } from '@/api/types'
 // a denser 32px on hover-capable (desktop) pointers.
 const actionBtn = cn(
   'h-11 w-11 [@media(hover:hover)]:h-8 [@media(hover:hover)]:w-8',
-  'flex items-center justify-center rounded-md',
+  'flex items-center justify-center rounded-md flex-shrink-0',
   'focus-visible:outline-none focus-visible:ring-2',
   // Press feedback: a quick scale-down + background darken so a tap/click
   // is unmistakable (hover alone gives no change once the cursor is already
@@ -31,7 +33,19 @@ const actionBtn = cn(
   'active:scale-90 active:duration-75',
 )
 
-// Human-readable labels for automation ids in the provenance badge — one map for
+// Line-1 marker: a 12px icon with the full text demoted to tooltip + sr-only.
+// Wide-card only (`hidden @md:inline-flex`), same declutter gate the old chips
+// used — narrow cards keep the triage essentials and nothing else.
+const markerBase = 'hidden @md:inline-flex items-center flex-shrink-0'
+
+// Menu item styling shared by every entry of the unified ⋯ menu.
+const menuItem = cn(
+  'flex w-full items-center gap-2 px-3 py-2 text-sm text-left',
+  'hover:bg-gray-100 dark:hover:bg-gray-700',
+  'focus-visible:outline-none focus-visible:bg-gray-100 dark:focus-visible:bg-gray-700',
+)
+
+// Human-readable labels for automation ids in the provenance marker — one map for
 // spawned-by and assisted-by (the pr-doctor special case previously lived inline).
 const AUTOMATION_LABELS: Record<string, string> = {
   'pr-doctor': 'PR Doctor',
@@ -41,6 +55,24 @@ const AUTOMATION_LABELS: Record<string, string> = {
 
 function automationLabel(id: string): string {
   return AUTOMATION_LABELS[id] ?? id
+}
+
+/**
+ * Tooltip for the model chip: the current model plus whichever transitional
+ * state applies. A queued after-turn switch (`modelPending`) and a parked
+ * upgrade awaiting approval (`pendingModel`) are mutually exclusive on the
+ * server — the former is an already-approved switch, the latter is the hold.
+ */
+function modelTitle(s: Pick<Session, 'model' | 'modelPending' | 'pendingModel'>): string {
+  const label = `Model: ${tierLabel(s.model)}`
+  if (s.pendingModel) return `${label} (${tierLabel(s.pendingModel)} requested, awaiting approval)`
+  if (s.modelPending) return `${label} (switching after this turn)`
+  return label
+}
+
+/** Passive `·` divider between line-2 segments. */
+function Sep() {
+  return <span aria-hidden="true" className="flex-shrink-0 text-gray-300 dark:text-gray-600">·</span>
 }
 
 interface SessionCardProps {
@@ -56,7 +88,7 @@ interface SessionCardProps {
   /** Quick-resume: text present → fire that suggestion in place; undefined → caller opens the session. */
   onQuickResume: (id: string, text?: string) => void
   /** Sparkle (✨): generate a fresh next-prompt via the LLM. Resolves to the suggestion
-   *  strings; the card sends the top one. Hard-coded replies stay in the dropdown only. */
+   *  strings; the card sends the top one. Hard-coded replies stay in the menu only. */
   onGenerateSuggestion?: (id: string) => Promise<string[]>
   /** When true, the highlighted row takes real DOM focus (list-focus mode). */
   listMode?: boolean
@@ -79,26 +111,33 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   const hasSubAgents = subAgents.length > 0
   const [expanded, setExpanded] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
-  const [overflowOpen, setOverflowOpen] = useState(false)
-  const overflowRef = useRef<HTMLDivElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const menuTriggerRef = useRef<HTMLButtonElement>(null)
   const [generating, setGenerating] = useState(false)
 
   const suggestions = session.latestSuggestions ?? []
-  const isBusy = statusTier(session.status) === 'busy'
+  // One triage read drives everything status-colored on the card: the rail, the
+  // dot and the line-2 phrase all read the same tier, so they can never disagree
+  // (the restart-stranded relabel included). sessionTriage is the SAME function
+  // the group header / sort use, so a card can never show a calm "Waiting…"/"Your
+  // turn" pill while sitting under the "Failed" header (Fix B).
+  const presentation = sessionTriage(session)
+  const accent = TIER_ACCENT[presentation.tier]
+  const isBusy = presentation.tier === 'busy'
 
   // "Guided by autopilot": the robot has acted on this session (assistedBy) AND it
   // isn't pinned to manual. The pause veto matters — a session can carry the
   // autopilot provenance yet be paused now, so a green "being driven" signal would
-  // contradict the grey "Manual" badge. autopilotLive narrows that to "acting right
+  // contradict the grey "Manual" marker. autopilotLive narrows that to "acting right
   // now" (busy turn), which is what earns the pulse.
   const guidedByAutopilot = session.assistedBy === 'autopilot' && !session.autopilotPaused
   const autopilotLive = guidedByAutopilot && isBusy
 
   // Sparkle (✨) tap ALWAYS asks the LLM for a fresh next-prompt, then sends the
   // top result — never a cached value or a hard-coded fallback (those live only in
-  // the dropdown). The backend lazily resumes a detached session before delivering.
+  // the menu). The backend lazily resumes a detached session before delivering.
   // When the model returns nothing we surface a hint instead of silently sending
-  // "continue"; the dropdown's canned replies are the manual escape hatch.
+  // "continue"; the menu's canned replies are the manual escape hatch.
   async function handleSparkle() {
     if (!onGenerateSuggestion || generating) return
     setGenerating(true)
@@ -125,26 +164,12 @@ export function SessionCard({ session, account, selected = false, listMode = fal
 
   // Autopilot human-deference countdown: show while the server-supplied cooldown instant is still
   // in the future. `now === 0` is the pre-first-tick frame (useNow returns 0 until it ticks) — show
-  // the badge then too so there's no mount flash; the minutes label fills in on the first tick.
+  // the marker then too so there's no mount flash; the minutes label fills in on the first tick.
   const cooldownUntilMs = session.autopilotCooldownUntil ? Date.parse(session.autopilotCooldownUntil) : null
   const showCooldown = cooldownUntilMs !== null && (now === 0 || now < cooldownUntilMs)
   const cooldownMinsLeft = cooldownUntilMs !== null && now > 0
     ? Math.max(1, Math.ceil((cooldownUntilMs - now) / 60000))
     : null
-
-  // Whether the wide-card badge footer has anything to show — mirrors the
-  // render conditions of each badge below so an empty row never adds height.
-  const hasBadges = Boolean(
-    session.activeGoal
-    || (session.goalSource === 'inferred' && session.effectiveGoal)
-    || session.autopilotPaused
-    || session.autoArchiveOptOut
-    || session.origin
-    || session.assistedBy
-    || (session.prs?.length ?? 0) > 0
-    || showFix
-    || showCooldown,
-  )
 
   // Scroll selected row into view when selection changes (jsdom doesn't implement scrollIntoView)
   useEffect(() => {
@@ -159,20 +184,44 @@ export function SessionCard({ session, account, selected = false, listMode = fal
     if (listMode && selected) buttonRef.current?.focus()
   }, [listMode, selected])
 
-  // Close the mobile overflow menu on outside-click or Escape (mirrors SessionActions).
+  // Close the ⋯ menu on outside-click (mirrors SessionActions). Escape is the
+  // `onKeyDown` on the menu's own container below — a component handling its own
+  // key, not a second app-wide listener; PR 4 removed the `document` keydown that
+  // used to live here.
   useEffect(() => {
-    if (!overflowOpen) return
+    if (!menuOpen) return
     function onDocClick(e: MouseEvent) {
-      if (overflowRef.current && !overflowRef.current.contains(e.target as Node)) setOverflowOpen(false)
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false)
     }
-    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') { e.stopPropagation(); setOverflowOpen(false) } }
     document.addEventListener('mousedown', onDocClick)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onDocClick)
-      document.removeEventListener('keydown', onKey)
-    }
-  }, [overflowOpen])
+    return () => document.removeEventListener('mousedown', onDocClick)
+  }, [menuOpen])
+
+  // An open menu is an OVERLAY: it covers the rows under it, so the shell's
+  // shortcuts (↑/↓ over the list, ← / Esc out of a session) must not fire
+  // through it. One owner for that fact — `shell/useOverlayState` — the same one
+  // `Dialog`, `Sheet` and `ui/Menu` register with.
+  useEffect(() => {
+    if (!menuOpen) return
+    pushOverlay()
+    return () => popOverlay()
+  }, [menuOpen])
+
+  // …and an open menu must OWN the keyboard, which means focus has to be inside
+  // it. On macOS Safari and Firefox, clicking a `<button>` does not move focus to
+  // it, and the browser delivers keydown to `document.activeElement` — so without
+  // this the container's Escape handler below never fires for a mouse-opened
+  // menu, while the overlay push above keeps every global shortcut suppressed.
+  // The keyboard would go silently inert until the user clicked elsewhere.
+  //
+  // The TRIGGER, not the first item: it is what the markup names as the menu's
+  // control (`aria-haspopup` / `aria-expanded`), the items carry no roving
+  // tabindex to hand focus back to, and it stays mounted when the menu closes —
+  // so nothing has to restore focus, and Tab walks straight into the menu, which
+  // is the next thing in the DOM.
+  useEffect(() => {
+    if (menuOpen) menuTriggerRef.current?.focus()
+  }, [menuOpen])
 
   const repoLabel = formatRepoLabel(session.repo)
 
@@ -205,7 +254,13 @@ export function SessionCard({ session, account, selected = false, listMode = fal
       }
       return
     }
-    const action = matchListShortcut(e)
+    // The registry's key→action table for a focused ROW, through the one
+    // selection rule the shell's listener uses (`matchShortcut`). No context is
+    // passed: a focused row cannot honestly answer `hasOpenAction` or
+    // `sessionOpen`, so a `list-mode` row that ever grows a `when` stops firing
+    // here — loudly, in this component's tests — instead of being judged against
+    // a fabricated context.
+    const action = matchShortcut(e, inGroup('list-mode'))?.action
     if (!action) return
     e.preventDefault()
     switch (action.type) {
@@ -217,6 +272,16 @@ export function SessionCard({ session, account, selected = false, listMode = fal
       case 'navigate': onNavigate?.(action.dir); break
       case 'exit': onExit?.(); break
     }
+  }
+
+  /** Whole-card click-to-open. Interactive descendants (action buttons, PR
+   *  links, the provenance link, open menus) keep their own behavior — a click
+   *  that lands on or inside one is theirs, everything else opens the session. */
+  function handleCardClick(e: React.MouseEvent) {
+    if ((e.target as HTMLElement).closest('button, a, [role="menu"]')) return
+    if (swipe.openSide) { swipe.reset(); return }   // tap closes a revealed card
+    if (swipe.consumeDrag()) return                  // swallow the click that ends a drag
+    onOpen(session.id)
   }
 
   if (session.pending) {
@@ -247,37 +312,34 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   return (
     <article
       ref={articleRef}
+      onClick={handleCardClick}
       className={cn(
         // `@container` makes the card a container-query context so the layout
         // below responds to the card's OWN width (i.e. the drag-resizable
-        // sidebar), not the viewport. A narrow sidebar on a wide (≥1024px)
-        // window used to keep the full desktop layout — all badges + the 6-icon
-        // grid — crammed into a tiny box, so the badge row overflowed under the
-        // action icons. Container queries (`@md:*` below) collapse to the
-        // compact layout by real available width instead.
-        //
-        // The variant must stay ≤ @md (28rem/448px): queries resolve against
-        // this element's CONTENT box, whose width tops out around 503px even at
-        // SIDEBAR_MAX (560 − sidebar p-2 − scrollbar − border − px-3), so @lg
-        // (512px) can never match inside the sidebar and would hide the gated
-        // content everywhere on desktop.
-        'group @container flex flex-col rounded-lg border border-gray-200 dark:border-gray-700',
-        'bg-white dark:bg-gray-800 px-3 py-2 min-h-[44px]',
+        // sidebar), not the viewport. The gated variant must stay ≤ @md
+        // (28rem/448px): queries resolve against this element's CONTENT box,
+        // whose width tops out around 503px even at SIDEBAR_MAX, so @lg (512px)
+        // can never match inside the sidebar and would hide the gated content
+        // everywhere on desktop.
+        'group @container relative flex flex-col rounded-lg border border-gray-200 dark:border-gray-700',
+        'bg-white dark:bg-gray-800 px-3 py-2 min-h-[44px] cursor-pointer',
         'focus-within:ring-2 focus-within:ring-blue-500',
-        // Autopilot-driven cards get an emerald left edge so they pop out of the
-        // list at a glance — costs no horizontal space, so it reads identically on
-        // mobile and desktop. The side-specific border-l color wins over the base
-        // border-gray; the `selected` ring sits outside the border and is unaffected.
-        guidedByAutopilot && 'border-l-4 border-l-emerald-500 dark:border-l-emerald-400',
         selected && 'ring-2 ring-blue-500 bg-blue-50 dark:bg-blue-950/30',
         // Clip the swipe edge panels only while they are mounted (drag in flight
         // or a side held open). A permanent overflow-hidden on every sub-lg
-        // viewport also clipped the quick-replies dropdown on wide touch
-        // devices (tablets), where the card is ≥ @md and the menu renders.
-        !isWide && 'relative',
+        // viewport also clipped the ⋯ menu on wide touch devices (tablets).
         !isWide && (swipe.dragging || swipe.openSide !== null) && 'overflow-hidden',
       )}
     >
+      {/* Status rail — the card's left edge always names the status tier
+          (emerald working / amber needs-you / red error / gray done). It sits
+          OUTSIDE the swipe foreground so triage color holds while swiping. */}
+      <span
+        data-testid="card-status-rail"
+        aria-hidden="true"
+        className={cn('absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-r-full', accent.rail)}
+      />
+
       {/* Edge panels mount only while a swipe is in flight or held open. The
           foreground sits inside the article's px-3/py-2 padding, so panels
           pinned to the border box (inset-0) would otherwise peek out around it
@@ -321,8 +383,8 @@ export function SessionCard({ session, account, selected = false, listMode = fal
         </>
       )}
 
-      {/* Foreground — the existing card body. On mobile it translates over the
-          panels; on desktop it is a plain wrapper with no gesture handlers. */}
+      {/* Foreground — the card body. On mobile it translates over the panels;
+          on desktop it is a plain wrapper with no gesture handlers. */}
       <div
         {...(!isWide ? { 'data-testid': 'card-swipe-fg', onPointerDown: swipe.onPointerDown } : {})}
         style={(!isWide && restX !== 0) ? { transform: `translateX(${restX}px)` } : undefined}
@@ -331,84 +393,92 @@ export function SessionCard({ session, account, selected = false, listMode = fal
           !isWide && !swipe.dragging && !reduceMotion && 'transition-transform duration-200',
         )}
       >
-     <div className="flex items-center gap-2">
-      {hasSubAgents && (
-        <button
-          type="button"
-          onClick={() => setExpanded((v) => !v)}
-          aria-label={expanded ? 'Hide sub-agents' : 'Show sub-agents'}
-          aria-expanded={expanded}
-          className={cn(
-            'flex-shrink-0 h-6 w-6 flex items-center justify-center rounded',
-            'text-gray-400 hover:text-gray-600 dark:hover:text-gray-200',
-            'hover:bg-gray-100 dark:hover:bg-gray-700',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-          )}
-        >
-          {expanded ? <ChevronDown size={14} aria-hidden /> : <ChevronRight size={14} aria-hidden />}
-        </button>
-      )}
-      {/* Main tappable area — opens the session.
-          id is used by DispatchBar's aria-activedescendant to signal the highlighted
-          row to assistive technologies without moving DOM focus.
-          data-selected is used for CSS + testing; aria-selected is omitted on a plain
-          button because axe rejects it without role="option". The AT announcement
-          comes from the textarea's aria-activedescendant pointing to this id. */}
-      <button
-        type="button"
-        id={`row-${session.id}`}
-        ref={buttonRef}
-        tabIndex={selected ? 0 : -1}
-        data-selected={selected}
-        className={cn(
-          'flex-1 min-w-0 text-left min-h-[44px] flex flex-col justify-center gap-1',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded',
-        )}
-        onClick={() => {
-          if (swipe.openSide) { swipe.reset(); return }   // tap closes a revealed card
-          if (swipe.consumeDrag()) return                  // swallow the click that ends a drag
-          onOpen(session.id)
-        }}
-        onKeyDown={handleKeyDown}
-        aria-label={`Open session ${session.name}`}
-      >
-        {/* The card lives in a drag-resizable sidebar, so the layout must read
-            identically at every width: fixed rows (identity / summary / context /
-            telemetry), each truncating rather than wrapping — mixed-content rows
-            that wrap land their pieces in a different place on every card.
-            Truncation + `min-w-0` collapses uniformly at any sidebar/viewport
-            width, so every card shares one skeleton. The one exception is the
-            badge FOOTER below (outside this button): uniform chips wrapping in a
-            dedicated row are deterministic, and wrapping is what keeps them from
-            overflowing the card. */}
+        {/* The dense two-line skeleton: every element has ONE fixed slot, so a
+            vertical scan reads the same on every card regardless of which
+            optional signals a session carries.
+            Line 1 (identity): dot · title · markers · PRs · usage · account · ✦ · ⋯
+            Line 2 (context):  repo · host · status phrase — summary · last-active */}
 
-        {/* Row 1 — identity: title truncates, account chip pinned right. */}
-        <div data-testid="card-identity" className="flex items-center gap-2 min-w-0">
-          {/* Autopilot marker — the mobile-visible eye-catcher (the provenance badge
-              below is desktop-only). Non-interactive, so it's safe inside the
-              open-session button. Pulses only while the robot is actively working
-              (autopilotLive), and degrades to a static glyph under reduced-motion. */}
-          {guidedByAutopilot && (
-            <span
-              data-testid="card-autopilot-active"
+        {/* Line 1 — identity. The open-session button wraps only passive content
+            (dot, autopilot marker, title); every interactive chip is a sibling,
+            so there are no nested-interactive violations. */}
+        <div data-testid="card-identity" className="flex items-center gap-1.5 min-w-0">
+          {hasSubAgents && (
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              aria-label={expanded ? 'Hide sub-agents' : 'Show sub-agents'}
+              aria-expanded={expanded}
               className={cn(
-                'flex-shrink-0 inline-flex items-center text-emerald-600 dark:text-emerald-400',
-                autopilotLive && !reduceMotion && 'animate-pulse',
+                'flex-shrink-0 h-6 w-6 flex items-center justify-center rounded',
+                'text-gray-400 hover:text-gray-600 dark:hover:text-gray-200',
+                'hover:bg-gray-100 dark:hover:bg-gray-700',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
               )}
-              title={autopilotLive ? 'Autopilot active — working now' : 'Guided by Autopilot'}
             >
-              <Bot size={14} aria-hidden="true" />
-              <span className="sr-only">
-                {autopilotLive ? 'Autopilot active, working now' : 'Guided by Autopilot'}
-              </span>
-            </span>
+              {expanded ? <ChevronDown size={14} aria-hidden /> : <ChevronRight size={14} aria-hidden />}
+            </button>
           )}
-          <span
-            className="flex-1 min-w-0 truncate text-sm font-semibold text-gray-900 dark:text-gray-100"
-            title={session.nameIsAuto ? 'Auto-named by Claude' : undefined}
+          {/* Main tappable area — opens the session.
+              id is used by DispatchBar's aria-activedescendant to signal the highlighted
+              row to assistive technologies without moving DOM focus.
+              data-selected is used for CSS + testing; aria-selected is omitted on a plain
+              button because axe rejects it without role="option". */}
+          <button
+            type="button"
+            id={`row-${session.id}`}
+            ref={buttonRef}
+            tabIndex={selected ? 0 : -1}
+            data-selected={selected}
+            className={cn(
+              'flex-1 min-w-0 flex items-center gap-1.5 text-left py-0.5',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded',
+            )}
+            onClick={(e) => {
+              // The article-level handler skips clicks on buttons — this IS the
+              // open control, so it acts directly (with the same swipe guards).
+              e.stopPropagation()
+              if (swipe.openSide) { swipe.reset(); return }
+              if (swipe.consumeDrag()) return
+              onOpen(session.id)
+            }}
+            onKeyDown={handleKeyDown}
+            aria-label={`Open session ${session.name}`}
           >
-            {session.name}
-          </span>
+            <span
+              data-testid="card-status-dot"
+              aria-hidden="true"
+              className={cn(
+                'h-2 w-2 rounded-full flex-shrink-0',
+                accent.dot,
+                accent.pulse && !reduceMotion && 'motion-safe:animate-pulse',
+              )}
+            />
+            {/* Autopilot marker — non-interactive, safe inside the open button.
+                Pulses only while the robot is actively working (autopilotLive),
+                and degrades to a static glyph under reduced-motion. */}
+            {guidedByAutopilot && (
+              <span
+                data-testid="card-autopilot-active"
+                className={cn(
+                  'flex-shrink-0 inline-flex items-center text-emerald-600 dark:text-emerald-400',
+                  autopilotLive && !reduceMotion && 'animate-pulse',
+                )}
+                title={autopilotLive ? 'Autopilot active — working now' : 'Guided by Autopilot'}
+              >
+                <Bot size={14} aria-hidden="true" />
+                <span className="sr-only">
+                  {autopilotLive ? 'Autopilot active, working now' : 'Guided by Autopilot'}
+                </span>
+              </span>
+            )}
+            <span
+              className="min-w-0 truncate text-sm font-semibold text-gray-900 dark:text-gray-100"
+              title={session.nameIsAuto ? 'Auto-named by Claude' : undefined}
+            >
+              {session.name}
+            </span>
+          </button>
           {/* Sub-agent count, visible without expanding. Only shown while
               collapsed — once expanded, the chevron + SubAgentRows carry it. */}
           {hasSubAgents && !expanded && (
@@ -416,144 +486,201 @@ export function SessionCard({ session, account, selected = false, listMode = fal
               {subAgents.length} {subAgents.length === 1 ? 'agent' : 'agents'}
             </span>
           )}
-          {/* The chip yields before the title does: capped at 45% of the row and
-              truncating, so a long account email can't starve the session name on
-              a narrow (mobile) width. `title` keeps the full value reachable. */}
-          <span
-            className="flex-shrink-0 max-w-[45%] truncate text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded"
-            title={account?.nickname || session.accountName}
-          >
-            {account?.nickname || session.accountName}
-          </span>
-        </div>
-        {/* Summary — one muted truncated line of "what's happening now", below the
-            name. Hidden when absent so dormant cards keep their compact height. */}
-        {session.summary && (
-          <div
-            data-testid="card-summary"
-            className="truncate text-xs text-gray-500 dark:text-gray-400"
-            title={session.summary}
-          >
-            {session.summary}
-          </div>
-        )}
-        {/* Row 2 — context: repo anchors the left and absorbs slack (flex-1
-            min-w-0 → truncates under pressure); the status pill is pinned to
-            the right edge. This row is IDENTICAL at every card width — the
-            secondary badges (goal / autopilot / provenance / PRs) live in the
-            wrapping badge footer below, so nothing can push the pill around or
-            overflow this row. */}
-        <div data-testid="card-context" className="flex items-center gap-2 min-w-0">
-          <span
-            className={cn(
-              'flex-1 min-w-0 inline-flex items-center gap-1 text-xs',
-              repoLabel.isScratch
-                ? 'text-gray-400 dark:text-gray-500 italic'
-                : 'text-gray-600 dark:text-gray-300',
-            )}
-            title={repoLabel.text}
-          >
-            <FolderGit2 size={12} aria-hidden="true" className="flex-shrink-0" />
-            <span className="truncate">{repoLabel.text}</span>
-          </span>
-          <HostBadge host={session.host} />
-          <StatusPill
-            className="flex-shrink-0"
-            status={session.status}
-            interruptedByRestart={session.interruptedByRestart}
-          />
-        </div>
 
-        {/* Row 3 — telemetry: session usage left, last-active pinned right via
-            `ml-auto` so the timestamp sits in the same spot whether or not a
-            usage bar is present. Weekly usage is omitted on purpose — it's an
-            account-level figure shown in the Accounts tab and in-session meta
-            strip, so repeating it per card is just noise. The row renders only
-            when there's something to show, but at least one is near-always
-            present (every live session has an updatedAt). */}
-        {/* The whole telemetry row (usage % + "active … ago") shows only on a
-            wide card: `hidden @md:flex`. It's the least glanceable line in a
-            narrow sidebar and the biggest source of vertical density; the usage
-            figure also lives in the Accounts tab and the in-session meta strip. */}
-        {(account?.usage || (!isBusy && isValidTimestamp(session.updatedAt))) && (
-          <div data-testid="card-telemetry" className="hidden @md:flex items-center gap-2 min-w-0">
-            {account?.usage && (
+          {/* Marker cluster — secondary state demoted to quiet 12px icons. Each
+              keeps its old testid and full text (tooltip + sr-only), so nothing
+              is lost, it just stops shouting. */}
+          {session.activeGoal && (
+            <span
+              data-testid="card-goal"
+              className={cn(markerBase, 'text-indigo-600 dark:text-indigo-400')}
+              title={`Goal: ${session.activeGoal}`}
+            >
+              <Target size={12} aria-hidden="true" />
+              <span className="sr-only">Goal</span>
+            </span>
+          )}
+          {!session.activeGoal && session.goalSource === 'inferred' && session.effectiveGoal && (
+            /* Subdued variant: the goal is LLM-inferred, not user-set. */
+            <span
+              data-testid="card-goal-inferred"
+              className={cn(markerBase, 'text-indigo-400 dark:text-indigo-500')}
+              title={`Goal (inferred): ${session.effectiveGoal}`}
+            >
+              <Target size={12} aria-hidden="true" />
+              <span className="sr-only">Goal</span>
+            </span>
+          )}
+          {session.autopilotPaused && (
+            <span
+              data-testid="card-autopilot-badge"
+              className={cn(markerBase, 'text-slate-400 dark:text-slate-500')}
+              title="Autopilot paused — this session is on manual"
+            >
+              <Bot size={12} aria-hidden="true" />
+              <span className="sr-only">Manual</span>
+            </span>
+          )}
+          {showCooldown && (
+            <span
+              data-testid="card-cooldown-badge"
+              className={cn(markerBase, 'text-amber-600 dark:text-amber-400')}
+              title={`Autopilot is standing down while you steer this session${cooldownMinsLeft ? ` (${cooldownMinsLeft}m left)` : ''}`}
+            >
+              <Bot size={12} aria-hidden="true" />
+              <span className="sr-only">
+                Autopilot paused — you're steering{cooldownMinsLeft ? ` (${cooldownMinsLeft}m left)` : ''}
+              </span>
+            </span>
+          )}
+          {session.autoArchiveOptOut && (
+            /* Passive indicator: this session was manually unarchived, so
+               autopilot will never auto-archive it again. */
+            <span
+              data-testid="card-no-autoarchive-badge"
+              className={cn(markerBase, 'text-amber-600 dark:text-amber-400')}
+              title="Auto-archive off — you unarchived this session, so autopilot won't archive it again"
+            >
+              <Archive size={12} aria-hidden="true" />
+              <span className="sr-only">Auto-archive off</span>
+            </span>
+          )}
+          {(session.origin || session.assistedBy) && (
+            /* Provenance: one marker for any automation involvement.
+               Spawned-by (origin) outranks assisted-by when both apply. */
+            <Link
+              to="/automation"
+              data-testid="card-provenance"
+              className={cn(
+                markerBase,
+                'rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+                // Emerald when autopilot is actively guiding (matches the title
+                // marker); generic violet for created-by/other automation, and
+                // for an autopilot session that's paused.
+                guidedByAutopilot && !session.origin
+                  ? 'text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300'
+                  : 'text-violet-500 dark:text-violet-400 hover:text-violet-700 dark:hover:text-violet-300',
+              )}
+              title={session.origin
+                ? `Created by automation: ${session.origin}`
+                : `Assisted by automation: ${session.assistedBy}`}
+            >
+              <Bot size={12} aria-hidden="true" />
+              <span className="sr-only">
+                {session.origin
+                  ? `Created by ${automationLabel(session.origin)}`
+                  : `Assisted by ${automationLabel(session.assistedBy!)}`}
+              </span>
+            </Link>
+          )}
+          {(session.prs?.length ?? 0) > 0 && (
+            <span data-testid="card-prs" className="hidden @md:inline-flex items-center flex-shrink-0">
+              <PrList prs={session.prs!} />
+            </span>
+          )}
+          {showFix && failingPr && (
+            <button
+              type="button"
+              data-testid="card-fix-pr"
+              onClick={() => onFixPr?.(session.id, failingPr.number)}
+              aria-label={`Fix PR #${failingPr.number}`}
+              className="hidden @md:inline-flex items-center gap-1 flex-shrink-0 text-xs font-medium px-1.5 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            >
+              <Wrench size={11} aria-hidden />
+              <span>Fix</span>
+            </button>
+          )}
+          {account?.usage && (
+            <span data-testid="card-usage" className="hidden @md:inline-flex items-center flex-shrink-0">
               <UsageBadge
+                compact
+                className="inline-flex"
                 pct={account.usage.session.pct}
                 label="session"
                 resetsAt={account.usage.session.resetsAt}
               />
-            )}
-            {/* Last activity — helps tell live sessions from stale ones at a
-                glance. Refreshes as React Query refetches the session list.
-                Guarded against a missing/invalid timestamp so we never show
-                "NaN" or the 1970 epoch. Suppressed while busy: `last_turn_at`
-                (its source) freezes for the whole in-progress turn, so it would
-                read "active 10m ago" on a session that is actively streaming —
-                stale-looking next to its live "Working…" spinner, which already
-                conveys liveness. */}
-            {!isBusy && isValidTimestamp(session.updatedAt) && (
-              <span
-                className="ml-auto flex-shrink-0 text-xs text-gray-400 dark:text-gray-500 tabular-nums"
-                title={`Last active ${new Date(session.updatedAt).toLocaleString()}`}
-              >
-                active {relTime(session.updatedAt, now || undefined)}
-              </span>
-            )}
-          </div>
-        )}
-      </button>
-
-      {/* Per-session actions — Resume and Quick Replies are always visible on both
-          mobile and desktop. Below lg (mobile/tablet) the secondary actions
-          (Rename, Archive, Delete, and optionally Autopilot) fold into a `…`
-          overflow menu following the ExportMenu pattern. At lg+ (desktop) they
-          show as individual icon buttons via `hidden lg:contents`.
-          On hover-capable devices all controls hide until the row is hovered,
-          focused, or selected. */}
-      <div
-        className={cn(
-          'flex flex-shrink-0 items-center gap-0.5 transition-opacity',
-          '[@media(hover:hover)]:opacity-0',
-          '[@media(hover:hover)]:group-hover:opacity-100',
-          '[@media(hover:hover)]:group-focus-within:opacity-100',
-          selected && '[@media(hover:hover)]:opacity-100',
-        )}
-      >
-        {/* Resume — always visible. */}
-        {!isBusy && (
-          <button
-            type="button"
-            className={cn(actionBtn, 'text-emerald-600 dark:text-emerald-400',
-              'hover:bg-emerald-50 dark:hover:bg-emerald-900/20 focus-visible:ring-emerald-500',
-              'active:bg-emerald-100 dark:active:bg-emerald-900/40',
-              'disabled:opacity-60')}
-            aria-label={`Resume session ${session.name}`}
-            aria-busy={generating}
-            disabled={generating}
-            title="Resume — generate the next step with AI"
-            onClick={() => void handleSparkle()}
+            </span>
+          )}
+          {/* Model chip — which model the session is running, right before the
+              account chip so the pair reads together ("Opus · tony@…"). Only
+              shown when the record pins a model; null means the account/binary
+              default, which is the unremarkable case and would just be noise on
+              most cards. Wide-card only, like every other secondary signal. The
+              gated tier is tinted so an expensive session stands out on a scan. */}
+          {session.model && (
+            <span
+              data-testid="card-model"
+              className={cn(
+                markerBase,
+                'text-xs px-1.5 py-0.5 rounded whitespace-nowrap',
+                isGatedTier(session.model)
+                  ? 'bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300'
+                  : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400',
+              )}
+              title={modelTitle(session)}
+            >
+              {tierLabel(session.model)}
+            </span>
+          )}
+          {/* The chip yields before the title does: capped at 30% of the row and
+              truncating, so a long account email can't starve the session name.
+              (Line 1 now also hosts the action buttons, so the old 45% cap left
+              starved one-word titles.) `title` keeps the full value reachable. */}
+          <span
+            className="flex-shrink-0 max-w-[30%] truncate text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded"
+            title={account?.nickname || session.accountName}
           >
-            {generating
-              ? <Loader2 size={16} aria-hidden="true" className="animate-spin" />
-              : <Sparkles size={16} aria-hidden="true" />}
-          </button>
-        )}
-        {/* Quick Replies — always visible on both mobile and desktop so users can
-            send canned replies without opening the session. */}
-        {!isBusy && (
-          <div className="relative flex items-center">
+            {account?.nickname || session.accountName}
+          </span>
+
+          {/* Actions — two permanent slots, identical on every device: Resume (✦)
+              and the unified ⋯ menu. Nothing appears or disappears on hover, so
+              the card's right edge is static. */}
+          {!isBusy && (
             <button
               type="button"
-              aria-label={`Quick replies for ${session.name}`}
-              aria-haspopup="menu"
-              aria-expanded={menuOpen}
               className={cn(actionBtn, 'text-emerald-600 dark:text-emerald-400',
                 'hover:bg-emerald-50 dark:hover:bg-emerald-900/20 focus-visible:ring-emerald-500',
-                'active:bg-emerald-100 dark:active:bg-emerald-900/40')}
+                'active:bg-emerald-100 dark:active:bg-emerald-900/40',
+                'disabled:opacity-60')}
+              aria-label={`Resume session ${session.name}`}
+              aria-busy={generating}
+              disabled={generating}
+              title="Resume — generate the next step with AI"
+              onClick={() => void handleSparkle()}
+            >
+              {generating
+                ? <Loader2 size={16} aria-hidden="true" className="animate-spin" />
+                : <Sparkles size={16} aria-hidden="true" />}
+            </button>
+          )}
+          {/* Escape closes the menu here, on the container that holds both the
+              trigger and the menu, so it works while focus is on either. It
+              `stopPropagation`s so the shell's one keydown listener never sees
+              the key — dismissing a menu must not also detach from a session. */}
+          <div
+            className="relative flex-shrink-0"
+            ref={menuRef}
+            onKeyDown={(e) => {
+              if (menuOpen && e.key === 'Escape') {
+                e.stopPropagation()
+                setMenuOpen(false)
+              }
+            }}
+          >
+            <button
+              type="button"
+              ref={menuTriggerRef}
+              className={cn(actionBtn, 'text-gray-500 dark:text-gray-400',
+                'hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:ring-blue-500',
+                'active:bg-gray-200 dark:active:bg-gray-600')}
+              aria-label={`More actions for session ${session.name}`}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              title="More actions"
               onClick={() => setMenuOpen((o) => !o)}
             >
-              <ChevronDown size={16} aria-hidden="true" />
+              <MoreVertical size={16} aria-hidden="true" />
             </button>
             {menuOpen && (
               <div
@@ -567,10 +694,9 @@ export function SessionCard({ session, account, selected = false, listMode = fal
                   'bg-white dark:bg-gray-800 shadow-lg py-1',
                 )}
               >
-                {/* Dynamic section: the backend's cached context suggestions. The
-                    sparkle generates fresh on tap, so none is "already sent" — show
-                    them all here. Empty for most sessions. */}
-                {suggestions.map((s, i) => (
+                {/* Reply sections — only for a resumable (non-busy) session.
+                    Dynamic cached suggestions first, canned replies below. */}
+                {!isBusy && suggestions.map((s, i) => (
                   <button
                     key={`suggestion-${i}`}
                     type="button"
@@ -582,11 +708,10 @@ export function SessionCard({ session, account, selected = false, listMode = fal
                     {s}
                   </button>
                 ))}
-                {suggestions.length > 0 && (
+                {!isBusy && suggestions.length > 0 && (
                   <div role="separator" className="my-1 border-t border-gray-200 dark:border-gray-700" />
                 )}
-                {/* Canned section: hard-coded one-tap replies, always available. */}
-                {QUICK_REPLIES.map((reply) => (
+                {!isBusy && QUICK_REPLIES.map((reply) => (
                   <button
                     key={reply}
                     type="button"
@@ -598,278 +723,124 @@ export function SessionCard({ session, account, selected = false, listMode = fal
                     {reply}
                   </button>
                 ))}
-              </div>
-            )}
-          </div>
-        )}
-        {/* Mobile overflow (hidden at lg+): Autopilot, Rename, Archive, Delete in a
-            single `…` menu. Follows the ExportMenu pattern: a relative wrapper
-            anchors the absolute dropdown to the trigger button; outside-click and
-            Escape close it via the useEffect above. */}
-        <div className="relative lg:hidden" ref={overflowRef}>
-          <button
-            type="button"
-            className={cn(actionBtn, 'text-gray-500 dark:text-gray-400',
-              'hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:ring-blue-500',
-              'active:bg-gray-200 dark:active:bg-gray-600')}
-            aria-label={`More actions for session ${session.name}`}
-            aria-haspopup="menu"
-            aria-expanded={overflowOpen}
-            title="More actions"
-            onClick={() => setOverflowOpen((o) => !o)}
-          >
-            <MoreVertical size={16} aria-hidden="true" />
-          </button>
-          {overflowOpen && (
-            <div
-              role="menu"
-              className={cn(
-                'absolute right-0 top-full mt-1 min-w-[10rem] z-20',
-                'rounded-md border border-gray-200 dark:border-gray-700',
-                'bg-white dark:bg-gray-800 shadow-lg py-1',
-              )}
-            >
-              {onToggleAutopilot && (
+                {!isBusy && (
+                  <div role="separator" className="my-1 border-t border-gray-200 dark:border-gray-700" />
+                )}
+                {/* Management section — always available, busy or not. */}
+                {onToggleAutopilot && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-testid="card-overflow-autopilot"
+                    onClick={() => { setMenuOpen(false); onToggleAutopilot(session.id, !session.autopilotPaused) }}
+                    className={cn(menuItem,
+                      session.autopilotPaused
+                        ? 'text-gray-700 dark:text-gray-200'
+                        : 'text-emerald-700 dark:text-emerald-300')}
+                  >
+                    <Bot size={16} aria-hidden="true" />
+                    {session.autopilotPaused ? 'Resume autopilot' : 'Pause autopilot'}
+                  </button>
+                )}
                 <button
                   type="button"
                   role="menuitem"
-                  data-testid="card-overflow-autopilot"
-                  onClick={() => { setOverflowOpen(false); onToggleAutopilot(session.id, !session.autopilotPaused) }}
-                  className={cn(
-                    'flex w-full items-center gap-2 px-3 py-2 text-sm text-left',
-                    session.autopilotPaused
-                      ? 'text-gray-700 dark:text-gray-200'
-                      : 'text-emerald-700 dark:text-emerald-300',
-                    'hover:bg-gray-100 dark:hover:bg-gray-700',
-                    'focus-visible:outline-none focus-visible:bg-gray-100 dark:focus-visible:bg-gray-700',
-                  )}
+                  onClick={() => { setMenuOpen(false); onRename(session.id) }}
+                  className={cn(menuItem, 'text-gray-700 dark:text-gray-200')}
                 >
-                  <Bot size={16} aria-hidden="true" />
-                  {session.autopilotPaused ? 'Resume autopilot' : 'Pause autopilot'}
+                  <Pencil size={16} aria-hidden="true" />
+                  Rename
                 </button>
-              )}
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => { setOverflowOpen(false); onRename(session.id) }}
-                className={cn(
-                  'flex w-full items-center gap-2 px-3 py-2 text-sm text-left',
-                  'text-gray-700 dark:text-gray-200',
-                  'hover:bg-gray-100 dark:hover:bg-gray-700',
-                  'focus-visible:outline-none focus-visible:bg-gray-100 dark:focus-visible:bg-gray-700',
-                )}
-              >
-                <Pencil size={16} aria-hidden="true" />
-                Rename
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => { setOverflowOpen(false); onClose(session.id) }}
-                className={cn(
-                  'flex w-full items-center gap-2 px-3 py-2 text-sm text-left',
-                  'text-gray-700 dark:text-gray-200',
-                  'hover:bg-gray-100 dark:hover:bg-gray-700',
-                  'focus-visible:outline-none focus-visible:bg-gray-100 dark:focus-visible:bg-gray-700',
-                )}
-              >
-                <Archive size={16} aria-hidden="true" />
-                Archive
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => { setOverflowOpen(false); onDelete(session.id) }}
-                className={cn(
-                  'flex w-full items-center gap-2 px-3 py-2 text-sm text-left',
-                  'text-red-600 dark:text-red-400',
-                  'hover:bg-gray-100 dark:hover:bg-gray-700',
-                  'focus-visible:outline-none focus-visible:bg-gray-100 dark:focus-visible:bg-gray-700',
-                )}
-              >
-                <Trash2 size={16} aria-hidden="true" />
-                Delete
-              </button>
-            </div>
-          )}
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => { setMenuOpen(false); onClose(session.id) }}
+                  className={cn(menuItem, 'text-gray-700 dark:text-gray-200')}
+                >
+                  <Archive size={16} aria-hidden="true" />
+                  Archive
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => { setMenuOpen(false); onDelete(session.id) }}
+                  className={cn(menuItem, 'text-red-600 dark:text-red-400')}
+                >
+                  <Trash2 size={16} aria-hidden="true" />
+                  Delete
+                </button>
+              </div>
+            )}
+          </div>
         </div>
-        {/* Desktop secondary actions (hidden below lg): Autopilot, Rename, Archive,
-            Delete as individual icon buttons at lg+. `lg:contents` dissolves this
-            wrapper so the buttons become direct flex children of the action row. */}
-        <div data-testid="card-secondary-actions" className="hidden lg:contents">
-          {onToggleAutopilot && (
-            <button
-              type="button"
-              data-testid="card-autopilot"
-              className={cn(actionBtn,
-                session.autopilotPaused
-                  ? 'text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700'
-                  : 'text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20',
-                'focus-visible:ring-blue-500')}
-              aria-label={session.autopilotPaused
-                ? `Autopilot paused for session ${session.name} — resume`
-                : `Autopilot on for session ${session.name} — pause`}
-              aria-pressed={!session.autopilotPaused}
-              title={session.autopilotPaused
-                ? 'Autopilot paused — click to resume'
-                : 'Autopilot on — click to pause'}
-              onClick={() => onToggleAutopilot(session.id, !session.autopilotPaused)}
-            >
-              <Bot size={16} aria-hidden="true" />
-            </button>
-          )}
-          <button
-            type="button"
-            className={cn(actionBtn, 'text-gray-500 dark:text-gray-400',
-              'hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:ring-blue-500',
-              'active:bg-gray-200 dark:active:bg-gray-600')}
-            aria-label={`Rename session ${session.name}`}
-            title="Rename"
-            onClick={() => onRename(session.id)}
-          >
-            <Pencil size={16} aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            className={cn(actionBtn, 'text-gray-500 dark:text-gray-400',
-              'hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:ring-blue-500',
-              'active:bg-gray-200 dark:active:bg-gray-600')}
-            aria-label={`Archive session ${session.name}`}
-            title="Archive"
-            onClick={() => onClose(session.id)}
-          >
-            <Archive size={16} aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            className={cn(actionBtn, 'text-red-600 dark:text-red-400',
-              'hover:bg-red-50 dark:hover:bg-red-900/20 focus-visible:ring-red-500',
-              'active:bg-red-100 dark:active:bg-red-900/40')}
-            aria-label={`Delete session ${session.name}`}
-            title="Delete"
-            onClick={() => onDelete(session.id)}
-          >
-            <Trash2 size={16} aria-hidden="true" />
-          </button>
-        </div>
-      </div>
-     </div>
 
-      {/* Badge footer — wide-card only (`hidden @md:flex`), a SIBLING of the
-          open-session button rather than content inside it. Two reasons:
-          1. Overflow safety: this row `flex-wrap`s, so any number of badges
-             lays out within the card instead of overflowing the border and
-             colliding with the action buttons (the old single-line cluster was
-             flex-shrink-0 inside a row it could exceed).
-          2. A11y: the PR chip, provenance link and Fix-PR button are
-             interactive — inside the open button they were nested-interactive
-             violations; as siblings they are legal targets. */}
-      {hasBadges && (
-        <div data-testid="card-badges" className="hidden @md:flex flex-wrap items-center gap-1.5 mt-1 min-w-0">
-          {session.activeGoal && (
-            <span
-              data-testid="card-goal"
-              className="hidden @md:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 max-w-[12rem]"
-              title={`Goal: ${session.activeGoal}`}
-            >
-              <Target size={12} aria-hidden="true" className="flex-shrink-0" />
-              <span className="truncate">Goal</span>
-            </span>
-          )}
-          {!session.activeGoal && session.goalSource === 'inferred' && session.effectiveGoal && (
-            /* Subdued variant: the goal is LLM-inferred, not user-set — outline
-               styling distinguishes it from the solid explicit-goal pill. */
-            <span
-              data-testid="card-goal-inferred"
-              className="hidden @md:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded border border-indigo-200 dark:border-indigo-800 text-indigo-500 dark:text-indigo-400 max-w-[12rem]"
-              title={`Goal (inferred): ${session.effectiveGoal}`}
-            >
-              <Target size={12} aria-hidden="true" className="flex-shrink-0" />
-              <span className="truncate">Goal</span>
-            </span>
-          )}
-          {session.autopilotPaused && (
-            <span
-              data-testid="card-autopilot-badge"
-              className="hidden @md:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
-              title="Autopilot paused — this session is on manual"
-            >
-              <Bot size={12} aria-hidden="true" className="flex-shrink-0" />
-              <span className="truncate">Manual</span>
-            </span>
-          )}
-          {showCooldown && (
-            <span
-              data-testid="card-cooldown-badge"
-              className="hidden @md:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300"
-              title="Autopilot is standing down while you steer this session"
-            >
-              <Bot size={12} aria-hidden="true" className="flex-shrink-0" />
-              <span className="truncate">
-                Autopilot paused — you're steering{cooldownMinsLeft ? ` (${cooldownMinsLeft}m left)` : ''}
+        {/* Line 2 — context narrative: repo · host · status phrase — summary,
+            with last-active pinned right. All passive; a click here falls
+            through to the article's open-session handler. */}
+        <div data-testid="card-context" className="mt-0.5 flex items-center gap-1.5 min-w-0 text-xs">
+          <span
+            className={cn(
+              'min-w-0 inline-flex items-center gap-1',
+              repoLabel.isScratch
+                ? 'text-gray-400 dark:text-gray-500 italic'
+                : 'text-gray-600 dark:text-gray-300',
+            )}
+            title={repoLabel.text}
+          >
+            <FolderGit2 size={12} aria-hidden="true" className="flex-shrink-0" />
+            <span className="truncate">{repoLabel.text}</span>
+          </span>
+          {session.host && (
+            <>
+              <Sep />
+              <span
+                data-testid="card-host"
+                className="flex-shrink-0 text-gray-500 dark:text-gray-400"
+                title={`host ${session.host}`}
+              >
+                {session.host}
               </span>
+            </>
+          )}
+          <Sep />
+          {/* The status phrase is the labeled, always-visible triage read; the
+              rail + dot carry the same tier as color. */}
+          <span
+            aria-label={`Status: ${presentation.label}`}
+            className={cn('flex-shrink-0 font-medium', presentation.textClass)}
+          >
+            {presentation.label}
+          </span>
+          {presentation.tier === 'unreachable' && isValidTimestamp(session.lastConfirmedAliveAt) && (
+            <span className="flex-shrink-0 text-slate-500 dark:text-slate-400">
+              {' '}— last seen {relTime(session.lastConfirmedAliveAt, now || undefined)}
             </span>
           )}
-          {session.autoArchiveOptOut && (
-            /* Passive indicator (not interactive — a11y): this session was manually
-               unarchived, so autopilot will never auto-archive it again. */
+          {session.summary && (
             <span
-              data-testid="card-no-autoarchive-badge"
-              className="hidden @md:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300"
-              title="Auto-archive off — you unarchived this session, so autopilot won't archive it again"
+              data-testid="card-summary"
+              className="min-w-0 flex-1 truncate text-gray-500 dark:text-gray-400"
+              title={session.summary}
             >
-              <Archive size={12} aria-hidden="true" className="flex-shrink-0" />
-              <span className="truncate">Auto-archive off</span>
+              — {session.summary}
             </span>
           )}
-          {(session.origin || session.assistedBy) && (
-            /* Provenance: one violet badge for any automation involvement.
-               Spawned-by (origin) outranks assisted-by when both apply. */
-            <Link
-              to="/automation"
-              data-testid="card-provenance"
-              className={cn(
-                'hidden @md:inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 max-w-[12rem]',
-                // Emerald when autopilot is actively guiding (matches the edge +
-                // marker); generic violet for created-by/other automation, and for
-                // an autopilot session that's paused (guidedByAutopilot is false).
-                guidedByAutopilot && !session.origin
-                  ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-200 dark:hover:bg-emerald-900/60'
-                  : 'bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300 hover:bg-violet-200 dark:hover:bg-violet-900/60',
-              )}
-              title={session.origin
-                ? `Created by automation: ${session.origin}`
-                : `Assisted by automation: ${session.assistedBy}`}
+          {/* Last activity — helps tell live sessions from stale ones at a
+              glance. Guarded against a missing/invalid timestamp so we never
+              show "NaN" or the 1970 epoch. Suppressed while busy: `last_turn_at`
+              (its source) freezes for the whole in-progress turn, so it would
+              read "active 10m ago" on a session that is actively streaming. */}
+          {!isBusy && isValidTimestamp(session.updatedAt) && (
+            <span
+              className="ml-auto flex-shrink-0 text-gray-400 dark:text-gray-500 tabular-nums"
+              title={`Last active ${new Date(session.updatedAt).toLocaleString()}`}
             >
-              <Bot size={12} aria-hidden="true" className="flex-shrink-0" />
-              <span className="truncate">
-                {session.origin
-                  ? `Created by ${automationLabel(session.origin)}`
-                  : `Assisted by ${automationLabel(session.assistedBy!)}`}
-              </span>
-            </Link>
-          )}
-          {session.prs?.length > 0 && (
-            <span data-testid="card-prs" className="hidden @md:inline-flex items-center">
-              <PrList prs={session.prs} />
+              active {relTime(session.updatedAt, now || undefined)}
             </span>
-          )}
-          {showFix && failingPr && (
-            <button
-              type="button"
-              data-testid="card-fix-pr"
-              onClick={() => onFixPr?.(session.id, failingPr.number)}
-              aria-label={`Fix PR #${failingPr.number}`}
-              className="hidden @md:inline-flex items-center gap-1 text-xs font-medium px-1.5 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-            >
-              <Wrench size={11} aria-hidden />
-              <span>Fix PR #{failingPr.number}</span>
-            </button>
           )}
         </div>
-      )}
 
-      {hasSubAgents && expanded && <SubAgentRows sessionId={session.id} subAgents={subAgents} />}
+        {hasSubAgents && expanded && <SubAgentRows sessionId={session.id} subAgents={subAgents} />}
       </div>
     </article>
   )

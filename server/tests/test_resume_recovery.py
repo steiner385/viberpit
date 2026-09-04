@@ -50,7 +50,7 @@ async def test_restore_enrolls_only_failed_sessions(tmp_path):
     ds.write_snapshot([{"id": "s1", "status": "working"}, {"id": "s2", "status": "idle"}], path=p)
     o = MiniOrch(resumable={"s1"})
     res = await o.restore_deploy(path=p)
-    assert res == {"restored": ["s1"], "failed": ["s2"]}
+    assert res == {"restored": ["s1"], "failed": ["s2"], "replayed": []}
     # s2 (failed) is enrolled for recovery at attempt 0; s1 (restored) is not.
     assert o._resume_recovery == {"s2": 0}
 

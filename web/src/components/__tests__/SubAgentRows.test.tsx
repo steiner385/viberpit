@@ -26,7 +26,7 @@ describe('SubAgentRows', () => {
     expect(screen.getByText(/find X/)).toBeInTheDocument()
     expect(screen.getByText(/nested/)).toBeInTheDocument()
     fireEvent.click(screen.getByText(/find X/))
-    expect(screen.getByTestId('loc').textContent).toBe('/session/s1/subagent/A')
+    expect(screen.getByTestId('loc').textContent).toBe('/sessions/s1/agents/A')
   })
 
   it('renders nothing when there are no sub-agents', () => {

@@ -134,7 +134,7 @@ class ReauthManager:
         <temp>/launcher.pid and SIGTERM the Chrome window even if cancel() or
         a timeout fires before the runner finishes.
 
-        prepare_reauth_profile(chrome_profile)
+        prepare_reauth_profile(chrome_profile, extension_ids=settings.reauth_extension_id_items)
           → env_extra {BROWSER: realpath(launcher), DISPLAY: reauth_display,
                        CCSWITCH_REAUTH_PROFILE: temp}
           → asyncio.to_thread(capture_login, name, env_extra=...)
@@ -168,7 +168,11 @@ class ReauthManager:
             )
             launcher_real = os.path.realpath(str(launcher))
 
-            temp = auth_login.prepare_reauth_profile(chrome_profile)
+            temp = await asyncio.to_thread(
+                auth_login.prepare_reauth_profile,
+                chrome_profile,
+                extension_ids=settings.reauth_extension_id_items,
+            )
             # Record immediately so _kill_launcher can find <temp>/launcher.pid
             manager._state._temp_profile = temp
             x11 = manager._x11() if manager._x11 else None

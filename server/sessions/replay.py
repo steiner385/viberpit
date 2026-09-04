@@ -1,10 +1,11 @@
 from __future__ import annotations
-import json, asyncio, logging, os, time
+import dataclasses, json, asyncio, logging, os, time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from server.config import env_float
 from . import events as ev
+from .transcript_entries import is_harness_user_entry
 
 log = logging.getLogger("server.sessions.replay")
 
@@ -219,30 +220,18 @@ def _build_events(path: str) -> tuple[list, object | None]:
                         mt = src.get("media_type", "image/png")
                         imgs.append({"url": f"data:{mt};base64,{data}",
                                      "mime": mt, "name": ""})
-            # `isMeta` user entries are harness-injected context, not a real user
-            # turn: the Skill-tool body ("Base directory for this skill: …"), the
-            # "Continue from where you left off." resume prompt, Stop-hook notices,
-            # etc. Rendering them makes the skill's own prompt look like the user's
-            # (or our) message — suppress the bubble. (Any tool_results on the entry
-            # still emit below; in practice these meta entries carry only text.)
-            #
-            # A background task's termination is delivered the same way — a plain-string
-            # `type:"user"` entry holding a `<task-notification>` block — but is NOT
-            # flagged `isMeta`. It is still harness plumbing (the live translator drops
-            # it, forwarding only tool_result blocks from user messages), so suppress its
-            # raw-XML bubble too. The tool_result-carried form still renders in its card.
-            is_task_notification = text.lstrip().startswith("<task-notification>")
-            # The CLI's auto-compaction summary ("This session is being continued from a
-            # previous conversation…") is a `type:"user"` entry flagged `isCompactSummary`
-            # / `isVisibleInTranscriptOnly` — NOT `isMeta`. It is a CLI-local artifact, not
-            # a real user prompt (the live stream never shows it). Emitting it as a
-            # UserMessage both renders a bogus giant bubble AND — because it is a
-            # UserMessage — becomes the `drop_incomplete_turn` boundary, so a live reattach
-            # would drop EVERY completed post-compaction turn (they live only on disk, not
-            # in the in-progress live buffer) and they vanish from the reloaded transcript.
-            is_compact_summary = bool(o.get("isCompactSummary"))
-            if (text or imgs) and not o.get("isMeta") and not is_task_notification \
-                    and not is_compact_summary:
+            # Only a HUMAN prompt renders as a user bubble. The CLI journals several
+            # `type:"user"` entries nobody typed — `isMeta` context (a Skill body, the
+            # resume prompt), the auto-compaction summary (`isCompactSummary`, which as a
+            # UserMessage would also become the `drop_incomplete_turn` boundary and wipe
+            # every completed post-compaction turn on a live reattach), a background
+            # task's `<task-notification>`, and the `/model` local-command records a
+            # `set_model` writes (`<command-name>…`, `<local-command-stdout>Set model
+            # to fable…`) — none of which the live stream shows. The predicate is shared
+            # with the fallback titler (transcript_entries) so the two readers of the
+            # transcript can't disagree about what a prompt is. (Any tool_results on the
+            # entry still emit below.)
+            if (text or imgs) and not is_harness_user_entry(o, text):
                 out.append(ev.UserMessage(turn_id=uuid, text=text, src_uuid=uuid,
                                           images=imgs or None, ts=ts))
             out.extend(_tool_result_events(content, uuid, ts, None))
@@ -492,6 +481,38 @@ def _window(path: str, before: int | None, limit: int | None, drop_incomplete_tu
     slice_lo = 0 if start == 0 else ends[start - 1] + 1
     slice_hi = starts[end] if end < total else len(out)
     window = out[slice_lo:slice_hi]
+    # Stamp each in-window TurnStart with its ordinal in the cursor space. Done on the
+    # slice (not `out`) so the stamp is applied exactly once per windowed turn and
+    # before the owner/meta prepends below shift list positions. `_parse` shares this
+    # function, so `replay_events` consumers see stamped values too — same untrimmed
+    # cursor space; nothing there reads the field.
+    for k, si in enumerate(starts[start:end]):
+        window[si - slice_lo] = dataclasses.replace(out[si], turn_index=start + k)
+    # A "turn" here is one assistant JSONL entry, so a tool-heavy LOGICAL turn
+    # spans many of them — a window whose head lands mid-logical-turn carries the
+    # turn's content with NO owning UserMessage at all. Client-side that leaves
+    # the sent-prompt buffer unconsumed, and every reconnect re-asserts the
+    # prompt at the very bottom of the transcript ("last prompt stuck at the
+    # bottom"). Prepend the nearest preceding UserMessage so the turn's prompt
+    # always travels with its content. Detection: no UserMessage between the
+    # slice head and the window's first TurnStart (a boundary-start window has
+    # its user entry in that gap). A drop_incomplete trim removed the open
+    # turn's prompt from `out` entirely, so it can never be re-added here — the
+    # nearest preceding UserMessage then belongs to a completed turn, which is
+    # exactly the prompt its sliced content needs.
+    if start > 0 and end > start:
+        first_ts = starts[start]
+        head_has_user = any(isinstance(e, ev.UserMessage) for e in out[slice_lo:first_ts])
+        if not head_has_user:
+            owner = next((e for e in reversed(out[:slice_lo])
+                          if isinstance(e, ev.UserMessage)), None)
+            if owner is not None:
+                # Mark the copy so the client can tell "this prompt is here because the
+                # page head needed it" from "this prompt is here because that is where
+                # it was sent". Only this prepend sets the flag — the same UserMessage
+                # left unmarked in `out` is the one at its real position, and the page
+                # carrying it wins the client-side merge.
+                window = [dataclasses.replace(owner, owner_prefix=True)] + window
     if include_subagents:
         # Reconstruct sub-agent threads for exactly the Task calls in THIS window
         # (scoping to the window naturally excludes sub-agents of trimmed turns).
@@ -526,3 +547,48 @@ async def replay_window(jsonl_path: str, *, before: int | None = None, limit: in
 
 async def replay_events(jsonl_path: str, *, max_turns: int | None = 20) -> list:
     return await asyncio.to_thread(_parse, jsonl_path, max_turns)
+
+
+def last_question_events(path: str) -> list["ev.Question"]:
+    """Question events for the LAST AskUserQuestion tool_use in *path*, marked orphaned.
+
+    Reuses the same reconstruction the full replay uses (``_assistant_block_events``)
+    so the re-offer can never drift from what the transcript already rendered — in
+    particular the ``f"{tool_use_id}-{index}"`` ids, which is what lets the client's
+    reducer UPGRADE the card already on screen instead of appending a duplicate.
+
+    Only the most recent call is returned: a long session may have asked several
+    times, and only the one open at the restart is still awaiting an answer.
+    Never raises — a missing or corrupt transcript yields [].
+
+    Synchronous (so it stays exhaustively table-testable) but it reads and parses
+    a whole transcript, so callers on the event loop MUST wrap it in
+    ``asyncio.to_thread`` — as every other transcript reader in this module does.
+    """
+    latest: list[ev.Question] = []
+    try:
+        with open(path, errors="ignore") as fh:
+            for line in fh:
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                msg = d.get("message") or {}
+                content = msg.get("content")
+                if not isinstance(content, list):
+                    continue
+                # _ts_ms, not the raw ISO string: Question.ts is float-millis on
+                # the wire (and numeric in the client's EvQuestion). A string
+                # would only show when the block does NOT already exist — i.e.
+                # the question fell outside the replay window — and the reducer
+                # would then mint a block with a string ts.
+                qs = [e for e in _assistant_block_events(
+                          content, d.get("uuid"), _ts_ms(d), None)
+                      if isinstance(e, ev.Question)]
+                if qs:
+                    latest = qs
+    except OSError:
+        return []
+    for q in latest:
+        q.orphaned = True
+    return latest

@@ -21,25 +21,29 @@ def make_run(diff_map, fail_cmd=None):
 
 def test_no_lockfile_change_skips_dep_sync():
     run, calls = make_run({})
-    assert steps.sync_deps_if_changed("/r", "a", "b", venv_pip="/v/pip", run=run) == []
+    assert steps.sync_deps_if_changed("/r", "a", "b", venv_python="/v/python", run=run) == []
     assert not any("install" in c for c in calls)
 
 
-def test_pyproject_change_runs_pip():
+def test_pyproject_change_runs_pip_as_a_module_of_the_venv_interpreter():
+    """`python -m pip`, never the `bin/pip` launcher: the launcher's shebang bakes in the
+    venv's absolute path at creation, so a moved/symlinked venv exec-fails with ENOENT
+    (the 2026-08-30 upgrade failure). `bin/python` is a relative symlink and survives."""
     run, calls = make_run({"pyproject.toml": True})
-    assert steps.sync_deps_if_changed("/r", "a", "b", venv_pip="/v/pip", run=run) == ["pip"]
-    assert ["/v/pip", "install", "-e", ".[server]", "--quiet"] in calls
+    assert steps.sync_deps_if_changed("/r", "a", "b", venv_python="/v/python", run=run) == ["pip"]
+    assert ["/v/python", "-m", "pip", "install", "-e", ".[server,stt]", "--quiet"] in calls
+    assert not any(c and c[0].endswith("/pip") for c in calls), "must not exec the pip launcher"
 
 
 def test_npm_lock_change_runs_npm_ci():
     run, calls = make_run({"web/package-lock.json": True})
-    assert steps.sync_deps_if_changed("/r", "a", "b", venv_pip="/v/pip", run=run) == ["npm"]
+    assert steps.sync_deps_if_changed("/r", "a", "b", venv_python="/v/python", run=run) == ["npm"]
 
 
 def test_pip_failure_raises():
     run, _ = make_run({"uv.lock": True}, fail_cmd="install")
     with pytest.raises(DeployError):
-        steps.sync_deps_if_changed("/r", "a", "b", venv_pip="/v/pip", run=run)
+        steps.sync_deps_if_changed("/r", "a", "b", venv_python="/v/python", run=run)
 
 
 def test_build_failure_raises():

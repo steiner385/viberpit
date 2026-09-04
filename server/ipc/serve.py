@@ -11,6 +11,7 @@ import uvicorn
 from server.config import get_settings
 from server.db import init_db
 from server.ipc.daemon import create_daemon_app
+from server.ipc.drain_on_signal import install_drain_on_sigterm
 from server.ipc.orchestrator_rpc import register_orchestrator_rpc
 from server.ipc.reauth_rpc import register_reauth
 from server.ipc.x11_rpc import register_x11
@@ -77,6 +78,13 @@ def build_daemon(orchestrator=None):
     set_copilot_usage_reader(
         lambda name: orchestrator._copilot.usage(name) if orchestrator._copilot else None
     )
+    # git clone/fetch authenticate with a per-owner App installation token, and repo
+    # enumeration lists the App's installation repos, rather than the machine's ambient
+    # gh user (issues #887, #912). Registered HERE because the daemon is the process
+    # where gitrepos.ensure_clone runs; the edge and deploy controller register the same
+    # seams from their own entrypoints. No-ops to ambient/viewer when no App is configured.
+    from server.github import app_auth as _app_auth
+    _app_auth.register_git_providers()
     register_orchestrator_rpc(app, orchestrator)
     app.state.x11 = orchestrator._x11
     register_x11(app, app.state.x11)
@@ -85,6 +93,8 @@ def build_daemon(orchestrator=None):
         x11=lambda: app.state.x11,
     )
     register_reauth(app, app.state.reauth)
+    from server.mcp_auth import build_default_manager as _build_mcp_auth
+    app.state.mcp_auth = _build_mcp_auth()
     return app, orchestrator
 
 
@@ -97,13 +107,25 @@ async def daemon_lifespan(app, orchestrator):
     await init_db(db_url=db_url)
     try:
         await orchestrator.rehydrate()
-    except Exception:
+    except Exception as exc:
         log.error("daemon rehydrate() failed — starting with no sessions restored", exc_info=True)
+        # Feed the startup report (surfaced via /api/daemon/health on the edge) so a
+        # boot that silently restored nothing is observable, not just a log line.
+        orchestrator.note_startup_failure("rehydrate", exc)
     try:
         await orchestrator.rearm_background_tasks()
-    except Exception:
+    except Exception as exc:
         log.error("daemon rearm_background_tasks() failed", exc_info=True)
+        orchestrator.note_startup_failure("rearm", exc)
+    try:
+        await orchestrator.auto_resume_interrupted()
+    except Exception:
+        log.error("daemon auto_resume_interrupted() failed", exc_info=True)
     await orchestrator.start()
+    # Drain in-flight turns on SIGTERM before uvicorn begins shutting down, whoever
+    # sent it (deploy, watchdog, a bare `systemctl restart`). Needs KillMode=mixed and
+    # a TimeoutStopSec that covers the drain caps — see the unit file.
+    uninstall_drain_on_sigterm = install_drain_on_sigterm(orchestrator)
     # RC1 (blocking sqlite3 on the loop) ran for hours before it was noticed, and only
     # via an external py-spy dump — this makes the same class of saturation
     # self-reporting instead of requiring an audit. Deliberately unguarded: a watchdog
@@ -149,6 +171,7 @@ async def daemon_lifespan(app, orchestrator):
     try:
         yield
     finally:
+        uninstall_drain_on_sigterm()
         # Tear down every virtual display before stopping (issue #206, daemon half).
         # orchestrator.stop() only cancels background tasks — it never freed displays,
         # so the daemon (which owns sessions in remote mode) leaked Xvfb/x11vnc/chrome
@@ -164,6 +187,10 @@ async def daemon_lifespan(app, orchestrator):
             await app.state.reauth.shutdown()
         except Exception:
             log.warning("daemon shutdown: reauth shutdown failed", exc_info=True)
+        try:
+            await app.state.mcp_auth.shutdown()
+        except Exception:
+            log.warning("daemon shutdown: mcp_auth shutdown failed", exc_info=True)
         try:
             loop_lag_task = getattr(app.state, "loop_lag_task", None)
         except Exception:

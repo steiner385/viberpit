@@ -15,6 +15,7 @@ vi.mock('./client', () => ({
 const created: Session = {
   id: 'sess-1', name: 'New Session', accountName: 'a',
   status: 'idle', createdAt: '2026-06-21T00:00:00Z', updatedAt: '2026-06-21T00:00:00Z',
+  prs: [],
 }
 
 describe('useCreateSession — optimistic cache insert', () => {

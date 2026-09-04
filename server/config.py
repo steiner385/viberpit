@@ -71,6 +71,10 @@ try:
             default_factory=lambda: str(Path.home() / ".config" / "google-chrome" / "Default"),
             alias="CCSWITCH_CHROME_PROFILE",
         )
+        # Extension ids carried into the temp login profile (comma list). Unset → the
+        # core default (1Password, ccswitch.auth_login.REAUTH_EXTENSION_IDS); set but
+        # empty → carry none. Spec: 2026-09-04-reauth-profile-fidelity-design.md D2.
+        reauth_extension_ids: str | None = Field(default=None, alias="CCSWITCH_REAUTH_EXTENSIONS")
         # A human doing a fresh Google login on a cold browser can take several
         # minutes; the timeout must outlast that or it tears down the localhost
         # callback listener mid-login (zombie consent page).
@@ -94,6 +98,13 @@ try:
         copilot_port_base: int = Field(default=4142, alias="CCSWITCH_COPILOT_PORT_BASE")
         copilot_port_count: int = Field(default=8, alias="CCSWITCH_COPILOT_PORT_COUNT")
         copilot_idle_grace_s: float = Field(default=300.0, alias="CCSWITCH_COPILOT_IDLE_GRACE_S")
+        # Server-side dictation (server/stt): off by default; needs the `stt` extra.
+        enable_stt: bool = Field(default=False, alias="CCSWITCH_ENABLE_STT")
+        stt_model: str = Field(default="base.en", alias="CCSWITCH_STT_MODEL")
+        stt_cpu_threads: int = Field(default=4, alias="CCSWITCH_STT_CPU_THREADS")
+        stt_tick_s: float = Field(default=1.0, alias="CCSWITCH_STT_TICK_S")
+        stt_max_concurrent: int = Field(default=3, alias="CCSWITCH_STT_MAX_CONCURRENT")
+        stt_max_session_s: float = Field(default=600.0, alias="CCSWITCH_STT_MAX_SESSION_S")
         log_level: str = Field(default="INFO", alias="CCSWITCH_LOG_LEVEL")
         log_dir: str = Field(
             default_factory=lambda: os.environ.get("CCSWITCH_LOG_DIR")
@@ -112,15 +123,44 @@ try:
         #
         # Deployed topology: rocky is the SOLE targeted session runner. dobby is the
         # edge/master (web UI, config, reauth, deploy) and its local ccswitch-daemon is
-        # deliberately disabled after the rocky session-host cutover — see
-        # server/deploy/steps.py::restart_units (CCSWITCH_DAEMON_SSH_HOST), which pins the
-        # remote daemon restart to rocky. Production therefore sets this to rocky ONLY, in
+        # deliberately disabled after the rocky session-host cutover. A deploy now fans
+        # out to every row here (server/deploy/runners.py), reaching each host over its
+        # registered ``ssh_host``. Production therefore sets this to rocky ONLY, in
         # the out-of-band /etc/ccswitch/ccswitch.env:
         #   CCSWITCH_FLEET_HOSTS=rocky=https://rocky.tail0dd570.ts.net:9443
         # Adding dobby (…,dobby=https://dobby:9443) is a supported but currently-unenabled
         # two-host expansion (fleet plan Task 13); the ranking/routing code is already
         # N-host, so this is a config flip, not a code change.
         fleet_hosts: str = Field(default="", alias="CCSWITCH_FLEET_HOSTS")
+        # Model-approval gate. Which model TIERS require human approval (comma list,
+        # matched via model_catalog.model_tier), and the action a gated tier triggers.
+        # Overridable per-install by AppSettings and per-account by the ledger; this is
+        # the ops-level default (see server/sessions/model_policy.resolve_model_policy).
+        model_approval_action: str = Field(
+            default="require_approval", alias="CCSWITCH_MODEL_APPROVAL_ACTION")
+        model_approval_denylist: str = Field(
+            default="fable", alias="CCSWITCH_MODEL_APPROVAL_DENYLIST")
+        # Self-directed model switching: whether sessions are told they may request a
+        # model change (and whether a marker found in output is acted on at all).
+        self_model_switch_enabled: bool = Field(
+            default=True, alias="CCSWITCH_SELF_MODEL_SWITCH_ENABLED")
+        # How many model switches one session may auto-apply before further requests
+        # are parked for a human instead. Bounds a session driving itself in circles.
+        self_model_switch_cap: int = Field(
+            default=3, alias="CCSWITCH_SELF_MODEL_SWITCH_CAP")
+        # Reconciler kill switch (spec 003 Phase B): whether the reconciler is
+        # allowed to write back to GitHub (project moves, addBlockedBy, etc.).
+        # Defaults off — Phase B lands the schema/read-side before any write path.
+        gh_reconcile_enabled: bool = Field(
+            default=False, alias="CCSWITCH_GH_RECONCILE_ENABLED")
+        # AI assistant (docs/superpowers/specs/2026-09-04-ai-assistant-design.md §4.11).
+        # Off by default until the launch PR flips it; AppSettings.assistant_enabled overrides.
+        assistant_enabled: bool = Field(default=False, alias="CCSWITCH_ASSISTANT_ENABLED")
+        assistant_model: str = Field(default="sonnet", alias="CCSWITCH_ASSISTANT_MODEL")
+        assistant_idle_s: float = Field(default=900.0, alias="CCSWITCH_ASSISTANT_IDLE_S")
+        assistant_max_turns: int = Field(default=30, alias="CCSWITCH_ASSISTANT_MAX_TURNS")
+        assistant_max_prompts_per_hour: int = Field(
+            default=120, alias="CCSWITCH_ASSISTANT_MAX_PROMPTS_PER_HOUR")
 
         model_config = {"populate_by_name": True, "env_file": ".env", "extra": "ignore"}
 
@@ -128,6 +168,13 @@ try:
         def tailnet_allowlist_items(self) -> list[str]:
             """Return the tailnet allowlist as a list of non-empty strings."""
             return [item.strip() for item in self.tailnet_allowlist.split(",") if item.strip()]
+
+        @property
+        def reauth_extension_id_items(self) -> list[str] | None:
+            """None = use the core default list; [] = disabled; else the configured ids."""
+            if self.reauth_extension_ids is None:
+                return None
+            return [i.strip() for i in self.reauth_extension_ids.split(",") if i.strip()]
 
         @property
         def fleet_hosts_map(self) -> dict[str, str]:
@@ -206,6 +253,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         chrome_profile: str = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_CHROME_PROFILE") or str(Path.home() / ".config" / "google-chrome" / "Default")
         )
+        reauth_extension_ids: str | None = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_REAUTH_EXTENSIONS")
+        )
         reauth_timeout_s: float = dataclasses.field(
             default_factory=lambda: float(os.environ.get("CCSWITCH_REAUTH_TIMEOUT_S", "900"))
         )
@@ -251,6 +301,24 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         copilot_idle_grace_s: float = dataclasses.field(
             default_factory=lambda: float(os.environ.get("CCSWITCH_COPILOT_IDLE_GRACE_S", "300.0"))
         )
+        enable_stt: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_ENABLE_STT", "false").lower() in ("1","true","yes","on")
+        )
+        stt_model: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_STT_MODEL", "base.en")
+        )
+        stt_cpu_threads: int = dataclasses.field(
+            default_factory=lambda: int(os.environ.get("CCSWITCH_STT_CPU_THREADS", "4"))
+        )
+        stt_tick_s: float = dataclasses.field(
+            default_factory=lambda: float(os.environ.get("CCSWITCH_STT_TICK_S", "1.0"))
+        )
+        stt_max_concurrent: int = dataclasses.field(
+            default_factory=lambda: int(os.environ.get("CCSWITCH_STT_MAX_CONCURRENT", "3"))
+        )
+        stt_max_session_s: float = dataclasses.field(
+            default_factory=lambda: float(os.environ.get("CCSWITCH_STT_MAX_SESSION_S", "600.0"))
+        )
         log_level: str = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_LOG_LEVEL", "INFO")
         )
@@ -268,10 +336,46 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         fleet_hosts: str = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_FLEET_HOSTS", "")
         )
+        model_approval_action: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_MODEL_APPROVAL_ACTION", "require_approval")
+        )
+        model_approval_denylist: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_MODEL_APPROVAL_DENYLIST", "fable")
+        )
+        self_model_switch_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_SELF_MODEL_SWITCH_ENABLED", "true").lower() in ("1","true","yes","on")
+        )
+        self_model_switch_cap: int = dataclasses.field(
+            default_factory=lambda: int(v) if (v := os.environ.get("CCSWITCH_SELF_MODEL_SWITCH_CAP", "")) and v.isdigit() else 3
+        )
+        gh_reconcile_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_GH_RECONCILE_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+        )
+        assistant_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_ASSISTANT_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+        )
+        assistant_model: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_ASSISTANT_MODEL", "sonnet")
+        )
+        assistant_idle_s: float = dataclasses.field(
+            default_factory=lambda: float(os.environ.get("CCSWITCH_ASSISTANT_IDLE_S", "900.0"))
+        )
+        assistant_max_turns: int = dataclasses.field(
+            default_factory=lambda: int(os.environ.get("CCSWITCH_ASSISTANT_MAX_TURNS", "30"))
+        )
+        assistant_max_prompts_per_hour: int = dataclasses.field(
+            default_factory=lambda: int(os.environ.get("CCSWITCH_ASSISTANT_MAX_PROMPTS_PER_HOUR", "120"))
+        )
 
         @property
         def tailnet_allowlist_items(self) -> list[str]:
             return [item.strip() for item in self.tailnet_allowlist.split(",") if item.strip()]
+
+        @property
+        def reauth_extension_id_items(self) -> list[str] | None:
+            if self.reauth_extension_ids is None:
+                return None
+            return [i.strip() for i in self.reauth_extension_ids.split(",") if i.strip()]
 
         @property
         def fleet_hosts_map(self) -> dict[str, str]:

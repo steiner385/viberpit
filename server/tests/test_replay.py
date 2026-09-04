@@ -274,3 +274,32 @@ def test_replay_assistant_without_model_emits_no_turn_model(tmp_path):
     )
     out = _parse(str(p), 20)
     assert not any(isinstance(e, TurnModel) for e in out)
+
+
+def test_replay_skips_cli_local_command_records(tmp_path):
+    """``driver.set_model()`` makes the CLI write its own ``/model`` bookkeeping into
+    the transcript as ``type:"user"`` entries: a caveat (``isMeta``), then
+    ``<command-name>/model…`` and ``<local-command-stdout>Set model to fable…`` which
+    are NOT flagged. The live stream never shows them, so replay must not render them
+    as user bubbles either — on a Fable session's reload they stood in for the real
+    prompt (2026-09-02). The sibling real turn still shows."""
+    rows = [
+        {"type": "user", "uuid": "u1", "isMeta": True,
+         "message": {"role": "user", "content":
+             "<local-command-caveat>Caveat: local commands.</local-command-caveat>"}},
+        {"type": "user", "uuid": "u2",
+         "message": {"role": "user", "content":
+             "<command-name>/model</command-name>\n<command-message>model"
+             "</command-message>\n<command-args>fable</command-args>"}},
+        {"type": "user", "uuid": "u3",
+         "message": {"role": "user", "content":
+             "<local-command-stdout>Set model to fable (claude-fable-5)"
+             "</local-command-stdout>"}},
+        {"type": "user", "uuid": "u4",
+         "message": {"role": "user", "content": "audit the landing page"}},
+    ]
+    p = tmp_path / "model.jsonl"
+    p.write_text("\n".join(json.dumps(r) for r in rows))
+    out = _parse(str(p), 20)
+    user_evs = [e for e in out if e.to_wire()["type"] == "user"]
+    assert [e.text for e in user_evs] == ["audit the landing page"]

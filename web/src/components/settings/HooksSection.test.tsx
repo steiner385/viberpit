@@ -120,7 +120,8 @@ describe('HooksSection', () => {
   it('surfaces a 422 detail inline without losing the form', async () => {
     // Match the mocked ApiRequestError so instanceof works in errorMessage().
     const { ApiRequestError } = await import('@/api/client')
-    const err = new ApiRequestError() as Error & { body?: Record<string, unknown> }
+    const err = new ApiRequestError(422, { detail: 'command must not be empty' }) as Error & { body?: Record<string, unknown> }
+    // The module mock's stand-in class ignores its constructor args, so set body directly.
     err.body = { detail: 'command must not be empty' }
 
     vi.mocked(api.put).mockRejectedValueOnce(err)

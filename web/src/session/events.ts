@@ -4,8 +4,12 @@ export type ToolKind = 'edit' | 'write' | 'read' | 'bash' | 'todo' | 'search' | 
 // One attached image on a user turn. `url` is ready to use directly as an <img> src:
 // `/api/attachments/{id}` for a live turn, or a `data:` URL reconstructed on replay.
 export interface EvUserImage     { url: string; mime: string; name: string }
-export interface EvUser          { type: 'user';          turnId: string; text: string; images?: EvUserImage[]; srcUuid?: string | null; ts?: number }
-export interface EvTurnStart     { type: 'turnStart';     turnId: string; srcUuid?: string | null; parentToolUseId?: string | null }
+// `ownerPrefix` marks the server's boundary copy of a prompt: the window's owning
+// UserMessage, re-sent at the head of a page that starts mid-logical-turn so the turn's
+// content arrives with its prompt. It is NOT the prompt's real transcript position —
+// see `UserMessage.owner_prefix` (server/sessions/events.py).
+export interface EvUser          { type: 'user';          turnId: string; text: string; images?: EvUserImage[]; srcUuid?: string | null; ts?: number; ownerPrefix?: boolean }
+export interface EvTurnStart     { type: 'turnStart';     turnId: string; srcUuid?: string | null; parentToolUseId?: string | null; turnIndex?: number | null }
 export interface EvTurnEnd       { type: 'turnEnd';       turnId: string; usage?: Record<string, unknown> | null; costUsd?: number | null; srcUuid?: string | null; parentToolUseId?: string | null }
 export interface EvTextDelta     { type: 'textDelta';     turnId: string; text: string; srcUuid?: string | null; parentToolUseId?: string | null; ts?: number }
 export interface EvThinkingDelta { type: 'thinkingDelta'; turnId: string; text: string; srcUuid?: string | null; parentToolUseId?: string | null; ts?: number }
@@ -16,7 +20,7 @@ export interface EvPermissionRequest { type: 'permissionRequest'; permId: string
 // as the request frame so a mid-turn reattach (ring resupply re-delivers the request)
 // clears the recreated card instead of resurrecting an already-decided permission.
 export interface EvPermissionResolved { type: 'permissionResolved'; permId: string; turnId: string; allowed: boolean; ts?: number }
-export interface EvQuestion      { type: 'question';      questionId: string; turnId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; ts?: number }
+export interface EvQuestion      { type: 'question';      questionId: string; turnId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; orphaned?: boolean; ts?: number }
 // A question's future settled server-side — answered (selected carries the labels) or
 // dismissed (selected null). Rides the same stream as the question frame so a mid-turn
 // reattach (ring resupply re-delivers the question) re-resolves the recreated block.

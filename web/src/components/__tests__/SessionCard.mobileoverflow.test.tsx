@@ -1,21 +1,19 @@
 /**
- * Mobile overflow menu — the `…` button that surfaces Rename, Archive, Delete
- * (and Autopilot when applicable) on viewports below lg (1024px).
- *
- * In jsdom `lg:` viewport breakpoints never fire, so `lg:hidden` elements are
- * always rendered and `hidden lg:contents` elements are always hidden. Tests
- * therefore exercise the mobile path by default — the overflow button is always
- * present and the desktop secondary group is always hidden in jsdom.
+ * Unified `…` menu — the single overflow that surfaces Quick Replies plus
+ * Rename, Archive, Delete (and Autopilot when applicable) on EVERY device.
+ * There is no desktop/mobile split: one trigger, one menu, all breakpoints.
  */
 import { render, screen, fireEvent, within } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
 import { SessionCard } from '../SessionCard'
+import { overlayIsOpen, resetOverlayState } from '@/shell/useOverlayState'
 import type { Session } from '@/api/types'
+import { session } from '@/test/factories'
 
 const noop = () => {}
 
-function mkSession(overrides: Partial<Session> = {}): Session {
-  return {
+const mkSession = (overrides: Partial<Session> = {}): Session =>
+  session({
     id: 's1',
     name: 'Fix login bug',
     accountName: 'work',
@@ -23,8 +21,7 @@ function mkSession(overrides: Partial<Session> = {}): Session {
     createdAt: '2026-06-22T11:00:00Z',
     updatedAt: '2026-06-22T11:58:00Z',
     ...overrides,
-  }
-}
+  })
 
 function renderCard(
   overrides: Partial<Session> = {},
@@ -119,12 +116,88 @@ describe('SessionCard mobile overflow menu', () => {
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
   })
 
-  it('closes the overflow menu on Escape key', () => {
+  /**
+   * R9 successor to "closes the overflow menu on Escape key", which fired the
+   * key at `document`.
+   *
+   * PR 4 left the app ONE keydown listener (`shell/useShortcuts`), so this menu's
+   * own `document` listener is gone; Escape is handled on the container that
+   * holds the trigger and the menu, and stopped there so the shell's listener
+   * never sees it. The key is therefore dispatched where a user's Escape
+   * actually lands — on the ⋯ button, which is what has focus while the menu is
+   * open — rather than on `document`, which no user can focus.
+   *
+   * The other half of the old case, "and it does not ALSO detach from the open
+   * session", was never assertable here (this file mounts a card, not a shell);
+   * it is pinned in `shell/useShortcuts.test.tsx` — "a session row's ⋯ menu".
+   */
+  it('closes the overflow menu on Escape from the trigger', () => {
+    renderCard()
+    const trigger = screen.getByRole('button', { name: /more actions for session/i })
+    fireEvent.click(trigger)
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+    fireEvent.keyDown(trigger, { key: 'Escape' })
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
+  /**
+   * The case the two above CANNOT fail on: they aim Escape at a node inside the
+   * menu's container, so they hold no matter where focus actually is.
+   *
+   * A real browser delivers keydown to `document.activeElement`, and on macOS
+   * Safari and Firefox clicking a `<button>` does NOT move focus to it. So the
+   * container's `onKeyDown` only ever sees the key if the component itself puts
+   * focus inside the container when the menu opens. It must, or Escape does
+   * nothing AND — because the open menu is still registered as an overlay — every
+   * global shortcut stays suppressed: the keyboard goes silently inert.
+   *
+   * `fireEvent.click` is deliberate here: unlike `userEvent.click` it does not
+   * focus the target, which is exactly the platform behaviour above. The Escape
+   * is then dispatched where the browser would put it — at `document.activeElement`
+   * — rather than at a node chosen to make the assertion pass.
+   */
+  it('focuses the trigger on open, so Escape from document.activeElement closes it', () => {
+    resetOverlayState()
+    renderCard()
+    const trigger = screen.getByRole('button', { name: /more actions for session/i })
+    expect(document.activeElement).toBe(document.body)
+
+    fireEvent.click(trigger)
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+    expect(document.activeElement).toBe(trigger)
+
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    // The overlay is released too — the half that makes the app's whole keyboard
+    // work again, not just this menu's.
+    expect(overlayIsOpen()).toBe(false)
+  })
+
+  it('closes the overflow menu on Escape from inside the menu', () => {
     renderCard()
     fireEvent.click(screen.getByRole('button', { name: /more actions for session/i }))
-    expect(screen.getByRole('menu')).toBeInTheDocument()
-    fireEvent.keyDown(document, { key: 'Escape' })
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
+  /**
+   * An open menu covers the rows under it, so the shell's global keys (↑/↓ over
+   * the list, ← / Esc out of a session) must not fire through it. The card
+   * registers with the same owner `Dialog`, `Sheet` and `ui/Menu` use, which is
+   * what makes that true without the card knowing any shortcut exists. The
+   * behaviour side is `shell/useShortcuts.test.tsx` — "a session row's ⋯ menu".
+   */
+  it('an open overflow menu registers as an overlay, and releases it on close', () => {
+    resetOverlayState()
+    renderCard()
+    expect(overlayIsOpen()).toBe(false)
+
+    const trigger = screen.getByRole('button', { name: /more actions for session/i })
+    fireEvent.click(trigger)
+    expect(overlayIsOpen()).toBe(true)
+
+    fireEvent.keyDown(trigger, { key: 'Escape' })
+    expect(overlayIsOpen()).toBe(false)
   })
 
   it('closes the overflow menu on outside click', () => {
@@ -172,27 +245,27 @@ describe('SessionCard mobile overflow menu', () => {
     })
   })
 
-  describe('Quick Replies always visible', () => {
-    it('Quick Replies button is present regardless of overflow state', () => {
+  describe('Quick Replies inside the menu', () => {
+    it('surfaces the canned quick replies at the top of the menu for a resumable session', () => {
       renderCard({ status: 'done' })
-      // Always-visible button outside the secondary group.
-      expect(screen.getByRole('button', { name: /quick replies/i })).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: /more actions for session/i }))
+      expect(screen.getByRole('menuitem', { name: 'continue' })).toBeInTheDocument()
     })
 
-    it('Quick Replies is NOT inside the desktop secondary-actions group', () => {
+    it('there is no separate quick-replies trigger button', () => {
       renderCard({ status: 'done' })
-      const secondary = screen.getByTestId('card-secondary-actions')
-      const quickReplies = screen.getByRole('button', { name: /quick replies/i })
-      expect(secondary).not.toContainElement(quickReplies)
+      expect(screen.queryByRole('button', { name: /quick replies/i })).not.toBeInTheDocument()
     })
   })
 
-  describe('overflow button visibility class', () => {
-    it('overflow wrapper has lg:hidden so it disappears at the desktop breakpoint', () => {
+  describe('one menu for all breakpoints', () => {
+    it('the overflow trigger is not gated behind a viewport breakpoint', () => {
       renderCard()
       const trigger = screen.getByRole('button', { name: /more actions for session/i })
-      // The overflow button lives inside a div.relative.lg:hidden wrapper.
-      expect(trigger.parentElement).toHaveClass('lg:hidden')
+      // The unified menu replaces the old lg:hidden mobile-only overflow and the
+      // hidden lg:contents desktop icon row — nothing about it is viewport-gated.
+      expect(trigger.parentElement).not.toHaveClass('lg:hidden')
+      expect(screen.queryByTestId('card-secondary-actions')).not.toBeInTheDocument()
     })
   })
 })

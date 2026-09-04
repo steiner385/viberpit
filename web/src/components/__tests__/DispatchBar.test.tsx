@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { DispatchBar } from '../DispatchBar'
+import { DispatchError } from '../dispatchError'
 import { caretLineEdges } from '@/lib/caretLineEdges'
 import type { GithubRepo } from '@/api/hooks'
 import type { Account, ModelOption } from '@/api/types'
@@ -79,8 +80,35 @@ describe('DispatchBar', () => {
     await user.click(box)
     await user.type(box, 'fix the bug')
     await user.keyboard('{Enter}')
-    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, account: null, model: null, attachmentIds: [] })
+    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, account: null, model: null, host: null, attachmentIds: [] })
     await waitFor(() => expect(box).toHaveValue(''))
+  })
+
+  it('shows a DispatchError inline, keeps the draft, and clears it on the next edit', async () => {
+    const user = userEvent.setup()
+    const onDispatch = vi.fn().mockRejectedValue(new DispatchError('No usable accounts'))
+    render(<DispatchBar {...makeProps({ onDispatch })} />)
+    const box = screen.getByRole('textbox', { name: /new session prompt/i })
+    await user.click(box)
+    await user.type(box, 'retry me')
+    await user.keyboard('{Enter}')
+    expect(await screen.findByRole('alert')).toHaveTextContent('No usable accounts')
+    expect(box).toHaveValue('retry me')
+    await user.type(box, '!')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('says nothing for a rejection that is not a DispatchError (another surface owns it)', async () => {
+    const user = userEvent.setup()
+    const onDispatch = vi.fn().mockRejectedValue(new Error('API error 409'))
+    render(<DispatchBar {...makeProps({ onDispatch })} />)
+    const box = screen.getByRole('textbox', { name: /new session prompt/i })
+    await user.click(box)
+    await user.type(box, 'retry me')
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(onDispatch).toHaveBeenCalled())
+    expect(box).toHaveValue('retry me')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('Shift+Enter inserts a newline (does not dispatch)', async () => {
@@ -116,7 +144,7 @@ describe('DispatchBar', () => {
     await user.type(box, 'fix the bug')
     expect(create).toBeEnabled()
     await user.click(create)
-    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, account: null, model: null, attachmentIds: [] })
+    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, account: null, model: null, host: null, attachmentIds: [] })
     await waitFor(() => expect(box).toHaveValue(''))
   })
 
@@ -141,7 +169,7 @@ describe('DispatchBar', () => {
     await user.type(box, 'ship it')
     await user.keyboard('{Enter}')
 
-    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'ship it', repo: null, account: 'work', model: 'opus', attachmentIds: [] })
+    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'ship it', repo: null, account: 'work', model: 'opus', host: null, attachmentIds: [] })
   })
 
   it('normalizes the "Default" model to null so the backend keeps the account default', async () => {
@@ -155,7 +183,7 @@ describe('DispatchBar', () => {
     await user.type(box, 'go')
     await user.keyboard('{Enter}')
 
-    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'go', repo: null, account: 'personal', model: null, attachmentIds: [] })
+    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'go', repo: null, account: 'personal', model: null, host: null, attachmentIds: [] })
   })
 
   it('Create button never opens the highlighted session (stays disabled when empty)', async () => {
@@ -346,7 +374,7 @@ describe('DispatchBar mobile collapse (More options)', () => {
   it('shows an indicator only when collapsed with a non-default account or model', async () => {
     const user = userEvent.setup()
     render(<DispatchBar {...makeProps()} />)
-    const indicator = () => screen.queryByText(/non-default account or model selected/i)
+    const indicator = () => screen.queryByText(/non-default account, model, or runner selected/i)
     // Collapsed but everything default → no indicator.
     expect(indicator()).not.toBeInTheDocument()
     await user.click(moreBtn())
@@ -364,6 +392,60 @@ describe('DispatchBar mobile collapse (More options)', () => {
     await user.click(moreBtn())
     await user.selectOptions(screen.getByRole('combobox', { name: /model/i }), 'opus')
     await user.click(moreBtn())
-    expect(screen.getByText(/non-default account or model selected/i)).toBeInTheDocument()
+    expect(screen.getByText(/non-default account, model, or runner selected/i)).toBeInTheDocument()
+  })
+})
+
+describe('DispatchBar Runner dropdown', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    vi.clearAllMocks()
+  })
+
+  it('includes the selected runner host in the dispatch payload', async () => {
+    const user = userEvent.setup()
+    const onDispatch = vi.fn().mockResolvedValue(undefined)
+    render(<DispatchBar {...makeProps({ onDispatch, hosts: [{ name: 'rocky' }, { name: 'dobby' }] })} />)
+
+    // Runner dropdown is present
+    const runnerSel = screen.getByRole('combobox', { name: /runner/i })
+    expect(runnerSel).toBeInTheDocument()
+
+    // Select dobby
+    await user.selectOptions(runnerSel, 'dobby')
+
+    // Type a prompt and submit
+    const box = screen.getByRole('textbox', { name: /new session prompt/i })
+    await user.type(box, 'do a thing')
+    await user.keyboard('{Enter}')
+
+    expect(onDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ host: 'dobby' })
+    )
+  })
+
+  it('sends host=null when Runner is set to Auto', async () => {
+    const user = userEvent.setup()
+    const onDispatch = vi.fn().mockResolvedValue(undefined)
+    render(<DispatchBar {...makeProps({ onDispatch, hosts: [{ name: 'rocky' }] })} />)
+
+    // Default is Auto — do not change the runner
+    const box = screen.getByRole('textbox', { name: /new session prompt/i })
+    await user.type(box, 'do a thing')
+    await user.keyboard('{Enter}')
+
+    expect(onDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ host: null })
+    )
+  })
+
+  it('does not render a Runner dropdown when hosts prop is absent', () => {
+    render(<DispatchBar {...makeProps()} />)
+    expect(screen.queryByRole('combobox', { name: /runner/i })).not.toBeInTheDocument()
+  })
+
+  it('does not render a Runner dropdown when hosts array is empty', () => {
+    render(<DispatchBar {...makeProps({ hosts: [] })} />)
+    expect(screen.queryByRole('combobox', { name: /runner/i })).not.toBeInTheDocument()
   })
 })

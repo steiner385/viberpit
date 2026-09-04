@@ -8,19 +8,36 @@
  *
  * Run: npx playwright test e2e/dashboard.spec.ts
  *
- * Viewport note: tests use a mobile viewport (375×812) so that the app takes the
- * routed mobile path (DashboardRoute → /sessions → SessionView) rather than the
- * DesktopShell master-detail layout. On the mobile path:
- *   - The /sessions page renders a top-level <h1>ccswitch</h1>.
- *   - Navigating to /session/:id unmounts the dashboard and mounts SessionView,
- *     which has no h1 but does have "Back to session list" + the Composer.
- * The desktop layout (≥1024px) keeps the h1 persistent and has no "Back" button,
- * so the heading-disappears and back-button assertions only hold on mobile.
+ * ## Viewport note — a LAYOUT MODE, not a code path
+ *
+ * The 375×812 viewport used to select which SHELL rendered: below 1024px `App`
+ * mounted `Dashboard` (a routed, full-screen mobile UI) and at or above it
+ * `DesktopShell` (master-detail, `useState` navigation). Two components, two sets
+ * of affordances — which is why the assertions below used to hold only on mobile
+ * and the header comment had to spell out the differences.
+ *
+ * There is one shell now (`AppShell`) and one route table. The viewport selects a
+ * layout MODE — which regions the shell places, per the visibility matrix — and
+ * nothing else. At this width that means: the phone rails (`TopBar` + `NavBar`)
+ * instead of the left `NavRail`, and the single content band given to EITHER the
+ * session list or the open session, never both. The routes, the pages and the
+ * controls are identical at every width.
+ *
+ * What that changes here:
+ *   - There is no `<h1>ccswitch</h1>`. `TopBar` renders the brand as plain text
+ *     precisely so the page's own `PageHeader` owns the only `h1`.
+ *   - Sections are a `nav` of links ("Sections"), not a `tablist` of tabs. The
+ *     phone bar shows the first four and puts the rest behind "More".
+ *   - The session pane and the list are still mutually exclusive at this width,
+ *     so "open a session ⇒ the list is gone" still holds — it is now a property
+ *     of `REGION_VISIBILITY`, not of which component mounted.
+ *
+ * The four-viewport project matrix is PR 10; this file stays single-viewport.
  */
 
 import { test, expect, type Page } from '@playwright/test'
 
-// Force the mobile routing branch for all tests in this file.
+// Phone layout mode for every test in this file.
 test.use({ viewport: { width: 375, height: 812 } })
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -103,14 +120,20 @@ test.describe('T044 — Dashboard', () => {
   test('dashboard loads with session list', async ({ page }) => {
     await page.goto('/sessions')
 
-    // Heading visible
-    await expect(page.getByRole('heading', { name: /ccswitch/i })).toBeVisible()
+    // The phone shell is up: brand in the top rail, sections in the bottom one.
+    // (Plain text, not a heading — see the viewport note.)
+    await expect(page.getByText('ccswitch', { exact: true })).toBeVisible()
+    await expect(page.getByRole('navigation', { name: /sections/i })).toBeVisible()
 
     // Session list loads. Scope the account-badge check to the session card —
     // the DispatchBar's Account dropdown also renders an "alice" <option>, so a
-    // page-wide getByText('alice') trips Playwright's strict mode.
+    // page-wide getByText('alice') trips Playwright's strict mode. The account
+    // chip is a SIBLING of the open-session button (interactive chips must not
+    // nest inside it), so scope to the card <article> that contains the button.
     await expect(page.getByText('Work session')).toBeVisible()
-    const sessionCard = page.getByRole('button', { name: /open session work session/i })
+    const sessionCard = page.locator('article', {
+      has: page.getByRole('button', { name: /open session work session/i }),
+    })
     await expect(sessionCard.getByText('alice')).toBeVisible()
   })
 
@@ -122,12 +145,12 @@ test.describe('T044 — Dashboard', () => {
     // Click the session open button
     await page.getByRole('button', { name: /open session work session/i }).click()
 
-    // SessionView is mounted: the dashboard h1 is gone, replaced by the session
-    // top bar. The "Back to session list" button and the message composer confirm
-    // we are in the full-screen terminal view.
-    await expect(page.getByRole('heading', { name: /ccswitch/i })).not.toBeVisible()
+    // The session pane is mounted and the list has given up the content band
+    // (`app.list` is dropped once an item is open, at this width). The "Back to
+    // session list" control and the composer confirm the session UI is up.
+    await expect(page.getByRole('button', { name: /open session work session/i })).toHaveCount(0)
     await expect(page.getByRole('button', { name: /back to session list/i })).toBeVisible()
-    // The Composer textarea is present (confirms the session UI is mounted).
+    // The composer is the dock's, sharing the pane's runtime.
     await expect(page.getByRole('textbox', { name: /message/i })).toBeVisible()
   })
 
@@ -140,8 +163,9 @@ test.describe('T044 — Dashboard', () => {
     // Click back
     await page.getByRole('button', { name: /back to session list/i }).click()
 
-    // Dashboard heading visible again
-    await expect(page.getByRole('heading', { name: /ccswitch/i })).toBeVisible()
+    // The list has the band again.
+    await expect(page.getByRole('button', { name: /open session work session/i })).toBeVisible()
+    await expect(page.getByRole('button', { name: /back to session list/i })).toHaveCount(0)
   })
 
   test('mobile viewport: no horizontal overflow, composer present in session view', async ({ page }) => {
@@ -160,38 +184,39 @@ test.describe('T044 — Dashboard', () => {
     await expect(page.getByRole('button', { name: /send message/i })).toBeVisible()
   })
 
-  test('mobile: all header tabs are reachable and badges render', async ({ page }) => {
+  test('mobile: every section is reachable and badges render', async ({ page }) => {
     await page.goto('/sessions')
 
     // Wait for the shell to settle.
     await expect(page.getByText('Work session')).toBeVisible()
 
-    // All six sections render as tabs in the strip — nothing is dropped on a
-    // narrow viewport. (Accounts/Library live inside Settings now.)
-    const tablist = page.getByRole('tablist', { name: /dashboard sections/i })
-    await expect(tablist.getByRole('tab')).toHaveCount(6)
-    for (const name of [/sessions/i, /pipeline/i, /automations/i, /archived/i, /insights/i, /settings/i]) {
-      await expect(tablist.getByRole('tab', { name })).toHaveCount(1)
+    // The phone bar shows the first four sections plus More; the rest live in
+    // the More sheet. Nothing is dropped — the assertion below reaches one of
+    // them — but the bar deliberately does not try to fit eight icon+label
+    // controls across 375px, which is what the scrolling tab strip used to do.
+    const bar = page.getByRole('navigation', { name: /sections/i })
+    for (const name of [/^Sessions/, /^Pipeline/, /^Automations/, /^Initiatives/]) {
+      await expect(bar.getByRole('link', { name })).toHaveCount(1)
     }
+    await expect(bar.getByRole('button', { name: /^More/ })).toBeVisible()
 
-    // Count badges follow the "Archived 111" pattern: 1 live session.
-    await expect(tablist.getByRole('tab', { name: /sessions \(1\)/i })).toBeVisible()
+    // The badge convention is unchanged ("Sessions (1)"), and it is in the
+    // accessible name whether or not the control shows a label.
+    await expect(bar.getByRole('link', { name: /^Sessions \(1\)/ })).toBeVisible()
 
-    // The strip itself scrolls horizontally rather than widening the page, so the
-    // body never overflows the viewport.
+    // The bar never widens the page.
     const bodyWidth = await page.evaluate(() => document.body.scrollWidth)
     const viewportWidth = await page.evaluate(() => window.innerWidth)
     expect(bodyWidth).toBeLessThanOrEqual(viewportWidth)
 
-    // An off-screen tab (last in the strip) is still reachable: scroll to it,
-    // click it, and confirm it activates. This is the core "reachable on mobile"
-    // guarantee.
-    const settings = tablist.getByRole('tab', { name: /settings/i })
-    await settings.scrollIntoViewIfNeeded()
-    await settings.click()
-    await expect(settings).toHaveAttribute('aria-selected', 'true')
+    // A section behind More is still reachable: open the sheet, click it, and
+    // confirm the app navigated. This is the core "reachable on mobile"
+    // guarantee the tab-strip scroll test used to make.
+    await bar.getByRole('button', { name: /^More/ }).click()
+    await page.getByRole('link', { name: /^Settings/ }).click()
+    await expect(page).toHaveURL(/\/settings/)
 
-    await page.screenshot({ path: 'test-results/mobile-header-tabs.png' })
+    await page.screenshot({ path: 'test-results/mobile-nav-sections.png' })
   })
 
   test('session view composer send button is ≥44px tall', async ({ page }) => {

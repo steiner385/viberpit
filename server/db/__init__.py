@@ -5,6 +5,7 @@ Alembic is the migration path for Postgres production (see server/db/migrations/
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 from contextlib import asynccontextmanager
@@ -28,6 +29,12 @@ class SchemaDriftError(RuntimeError):
 _engine = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
 
+# Budget for dispose_db()'s GRACEFUL engine.dispose() before it drops the pool
+# without awaiting the wedged connection (see dispose_db). Kept well under
+# app.py's _SHUTDOWN_DB_TIMEOUT_S (10s) bounded_wait budget so dispose_db falls
+# back and returns on its own rather than being force-abandoned (issue #881).
+_DISPOSE_GRACE_TIMEOUT_S = 5.0
+
 
 def _make_engine(db_url: str, *, poolclass=None):
     connect_args: dict[str, object] = {}
@@ -42,8 +49,9 @@ def _make_engine(db_url: str, *, poolclass=None):
         connect_args["timeout"] = 30
     engine_kwargs = {"connect_args": connect_args, "echo": False}
     # `poolclass` lets a caller pin the pool strategy (the test harness pins
-    # StaticPool so a file-backed stand-in for an in-memory DB keeps the same
-    # single-connection semantics). Default None = SQLAlchemy's own choice.
+    # NullPool for its file-backed stand-in for an in-memory DB, so there is no
+    # single shared wedge-able connection to hang teardown — issue #890).
+    # Default None = SQLAlchemy's own choice.
     if poolclass is not None:
         engine_kwargs["poolclass"] = poolclass
     engine = create_async_engine(db_url, **engine_kwargs)
@@ -225,11 +233,39 @@ async def dispose_db() -> None:
     before — leaves one connection per app bound to a loop that then closes; its
     later cleanup callback fires `RuntimeError: Event loop is closed`, and across a
     full test run those leaked connections/threads pile up (100+ per run).
+
+    Graceful ``engine.dispose()`` awaits every pooled connection's close. A
+    single shared, pooled connection held checked-out by an abandoned in-flight
+    query (issue #846) makes that close (``aiosqlite …
+    _terminate_graceful_close → _conn.close() → await future``) never return —
+    wedging ``TestClient.__exit__``'s portal-thread join and tripping the 300s
+    pytest-timeout (issue #881). So the graceful close is bounded: if it
+    overruns, fall back to ``dispose(close=False)``, which swaps in a fresh pool
+    and drops the wedged connection WITHOUT awaiting it. Leaking one connection
+    at process/test teardown is harmless; hanging the whole run is not.
+
+    The test harness (``conftest._install_durable_inmemory_db``) also pins
+    ``NullPool`` (issue #890), so no single shared connection persists in the
+    pool to wedge in the first place; this bounded fallback remains as
+    defense-in-depth for any pooled-connection engine (e.g. production Postgres).
     """
     global _engine, _session_factory
-    if _engine is not None:
-        with contextlib.suppress(Exception):
-            await _engine.dispose()
+    engine = _engine
+    if engine is not None:
+        try:
+            await asyncio.wait_for(engine.dispose(), timeout=_DISPOSE_GRACE_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            log.warning(
+                "dispose_db: graceful engine.dispose() exceeded %.1fs (wedged "
+                "connection) — dropping the pool without awaiting its close (#881)",
+                _DISPOSE_GRACE_TIMEOUT_S,
+            )
+            with contextlib.suppress(Exception):
+                await engine.dispose(close=False)
+        except Exception:
+            # e.g. an engine bound to an already-closed loop can't clean up
+            # gracefully — nothing more to do; drop it and move on.
+            pass
     _engine = None
     _session_factory = None
 

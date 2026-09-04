@@ -15,10 +15,11 @@ import os
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING
 
 from fastapi import HTTPException, Request, WebSocket, status
 from itsdangerous import BadSignature, TimestampSigner
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
@@ -26,6 +27,9 @@ from starlette.responses import JSONResponse
 from server.auth.identity import verify_identity
 from server.config import get_settings
 from server.db.models import AppSession
+
+if TYPE_CHECKING:
+    from server.assistant.token import AssistantClaims
 
 # Paths that bypass identity enforcement (unauthenticated probes).
 _EXEMPT_PATHS = frozenset({"/healthz"})
@@ -86,6 +90,23 @@ def _unsign_session_id(signed: str) -> str | None:
         return None
 
 
+_LOOPBACK = frozenset({"127.0.0.1", "::1"})
+
+
+def _assistant_claims(request: Request) -> "AssistantClaims | None":
+    """Claims from a `Bearer ccas1:…` header, or None. Loopback peers only: the token is
+    minted for the daemon on THIS host and must never be usable from the tailnet."""
+    from server.assistant.token import PREFIX, verify_token  # noqa: PLC0415
+    from server.config import get_settings  # noqa: PLC0415
+    auth = request.headers.get("authorization", "")
+    if not auth.startswith("Bearer " + PREFIX):
+        return None
+    client = request.client
+    if client is None or client.host not in _LOOPBACK:
+        return None
+    return verify_token(auth[len("Bearer "):], max_age_s=get_settings().assistant_idle_s * 4)
+
+
 class IdentityMiddleware(BaseHTTPMiddleware):
     """ASGI middleware that enforces identity on every request.
 
@@ -100,6 +121,20 @@ class IdentityMiddleware(BaseHTTPMiddleware):
         # Unauthenticated liveness/schema probe (used by auto-deploy health-check).
         if request.url.path in _EXEMPT_PATHS:
             return await call_next(request)
+
+        claims = _assistant_claims(request)
+        if claims is not None:
+            from server.assistant.policy import route_allowed  # noqa: PLC0415
+            if not route_allowed(request.method, request.url.path):
+                return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={"error": {
+                    "code": "ASSISTANT_ROUTE_FORBIDDEN",
+                    "message": "the assistant may not call this route"}})
+            request.state.identity = claims.identity
+            request.state.via = "assistant"
+            request.state.assistant_session_id = claims.session_id
+            request.state.app_session_id = None      # no cookie session for a bearer call
+            return await call_next(request)
+
         identity = verify_identity(request)
         if identity is None:
             return JSONResponse(
@@ -196,6 +231,33 @@ async def _resolve_or_create_app_session(
     )
     db.add(new_session)
     return new_session
+
+
+# ---------------------------------------------------------------------------
+# Session pruning (janitor)
+# ---------------------------------------------------------------------------
+
+# How far past expiry (or revocation) before we delete a row. A short grace
+# window (7 days) keeps the table tiny while leaving room for post-mortem
+# inspection of recent auth events. Long-expired stock (the 42k rows observed
+# in prod) is reclaimed on the first pass. (#830)
+_PRUNE_GRACE = timedelta(days=7)
+
+
+async def prune_app_sessions(db: AsyncSession) -> int:
+    """Delete app_sessions rows that expired or were revoked more than _PRUNE_GRACE ago.
+
+    Returns the number of rows deleted. Safe to call concurrently — DELETE WHERE
+    is atomic; duplicated deletes are harmless no-ops.
+    """
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - _PRUNE_GRACE
+    result = await db.execute(
+        delete(AppSession).where(
+            (AppSession.expires_at < cutoff) | (AppSession.revoked_at < cutoff)
+        )
+    )
+    await db.flush()
+    return int(result.rowcount)  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,7 @@
+id: claude-md-issue-close-keyword
+description: >-
+  The issue auto-close keyword convention (Fixes #N in the PR body) is documented,
+  so merged PRs actually close their issue instead of merely linking it.
+kind: static
+tags: [agent-config, github]
+check: 'grep -q "Fixes #" .agents/instructions/core.md'

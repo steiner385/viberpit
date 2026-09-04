@@ -4,43 +4,24 @@
     0%, 100% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent); }
     50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--accent) 11%, transparent); }
   }
-@keyframes prdash-settings-slide-in {
-    from { transform: translateX(100%); }
-    to   { transform: translateX(0); }
-  }
 @keyframes prdash-skeleton-shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
 
 .prdash-root {
-  color-scheme: light dark;
-  /* Light base tokens darkened to ≥4.5:1 vs white so they pass AA both as small
-     colored TEXT and behind white (UX-H5). */
-  --bg: #f6f7f9; --surface: #fff; --text: #1a1f29; --muted: #69707d;
-  --border: #d9dde3; --accent: #2563eb; --done: #15803d; --fail: #d23b3b;
-  --purple: #7a2fc4; --amber: #9a5d00;
-  /* `-strong` = the shade used when WHITE text/glyphs sit on a filled status
-     surface (metro node circles, ready-merge button). Held at an AA-vs-white
-     value in BOTH themes so the base token stays bright enough for foreground
-     text on a dark background (UX-H5). */
-  --accent-strong: #2563eb; --done-strong: #15803d; --amber-strong: #9a5d00;
-  /* z-index layer system (#182) — single source of truth so stacking can't
-     collide, and the embed (these remap onto .prdash-root) stays overridable by
-     the host. Values are unchanged from the prior literals; spaced to leave room
-     for host content between layers. Lowest → highest. */
-  --z-raised: 1;             /* sticky table/section headers within a scroll area */
-  --z-sticky-header: 20;     /* the workspace top header */
-  --z-bottom-nav: 25;        /* mobile bottom nav */
-  --z-popover: 30;           /* dropdown popovers (e.g. the pipeline switcher) */
-  --z-overlay: 40;           /* drawer / settings-overlay backdrop */
-  --z-drawer: 50;            /* drawer / settings-overlay panel */
-  --z-command-palette: 1000; /* ⌘K command palette — above everything */
-  font-family: system-ui, -apple-system, sans-serif;
-}
-@media (prefers-color-scheme: dark) {
-  .prdash-root { --bg: #14171c; --surface: #1d2128; --text: #e8eaee; --muted: #98a0ac;
-    --border: #323843; --accent: #5c9bff; --done: #3dbb66; --fail: #ef6262;
-    --purple: #a855f7; --amber: #e0a23b;
-    /* same AA-vs-white fills as light — white on #5c9bff was only 2.77:1 */
-    --accent-strong: #2563eb; --done-strong: #15803d; --amber-strong: #9a5d00; }
+  /* Token REMAP (sub-spec A §2.2): plotroom's names now point at the global
+     tokens in src/index.css. No literals here — light/dark flip at :root. */
+  --bg: var(--t-canvas); --surface: var(--t-surface); --text: var(--t-ink); --muted: var(--t-ink-muted);
+  --border: var(--t-edge); --accent: var(--t-accent); --done: var(--t-success); --fail: var(--t-danger);
+  --purple: var(--t-info); --amber: var(--t-warning);
+  --accent-strong: var(--t-accent); --done-strong: var(--t-success-strong); --amber-strong: var(--t-warning-strong);
+  /* z-index layer system → global layers */
+  --z-raised: var(--layer-raised);
+  --z-sticky-header: var(--layer-sticky);
+  --z-bottom-nav: var(--layer-nav);
+  --z-popover: var(--layer-popover);
+  --z-overlay: var(--layer-overlay);
+  --z-drawer: var(--layer-drawer);
+  --z-command-palette: var(--layer-palette);
+  font-family: var(--font-sans);
 }
 
 .prdash-root {
@@ -339,30 +320,6 @@ section h2 { font-size: 14px; margin: 18px 0 8px; color: var(--muted); }
   outline: 2px solid var(--accent); outline-offset: 2px;
 }
 
-.settings-overlay {
-  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.32);
-  z-index: var(--z-overlay);
-}
-.settings-panel {
-  position: fixed; top: 0; right: 0; bottom: 0; z-index: var(--z-drawer);
-  width: min(460px, 92vw); background: var(--surface);
-  border-left: 1px solid var(--border); box-shadow: -8px 0 24px rgba(0, 0, 0, 0.18);
-  display: flex; flex-direction: column; overflow-y: auto;
-}
-@media (prefers-reduced-motion: no-preference) {
-  .settings-panel { animation: prdash-settings-slide-in 180ms ease-out; }
-}
-.settings-head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 14px 18px; border-bottom: 1px solid var(--border);
-  position: sticky; top: 0; background: var(--surface); z-index: var(--z-raised);
-}
-.settings-head h2 { margin: 0; font-size: 17px; }
-.settings-close {
-  background: none; border: none; cursor: pointer; font-size: 22px;
-  line-height: 1; color: var(--muted); padding: 0 4px;
-}
-.settings-close:hover { color: var(--text); }
 .settings-body { padding: 14px 18px 24px; }
 .settings-loading, .settings-error { padding: 14px 18px; color: var(--muted); }
 .settings-error { color: var(--fail); }
@@ -727,8 +684,11 @@ section h2 { font-size: 14px; margin: 18px 0 8px; color: var(--muted); }
 .lint-info { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 
 /* --- Legend slide-over (reuses the settings overlay/panel shell) --- */
-/* the legend's example "active" node must not pulse — the slide-in is the
-   only animation the panel adds (and it is reduced-motion gated already) */
+/* the legend's example "active" node is a static swatch, not a live node, so it
+   must not pulse. (This note used to add "the slide-in is the only animation the
+   panel adds"; that stopped being true when @keyframes prdash-settings-slide-in
+   was deleted and the panel moved onto the Sheet primitive, which animates
+   nothing — so this rule is now the panel's only animation-related declaration.) */
 .legend-panel .node.active .c { animation: none; }
 .legend-row { display: flex; align-items: center; gap: 12px; margin: 8px 0; }
 .legend-ex { flex-shrink: 0; display: flex; align-items: center; min-width: 30px;

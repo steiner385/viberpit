@@ -3,13 +3,12 @@ from __future__ import annotations
 
 import asyncio
 
-from server.db import db_session, init_db
+from server.db import db_session
 from server.db.models import CiFinding, CiJob, CiRun, CiTestResult
 
 
-def test_ci_tables_roundtrip(tmp_path):
+def test_ci_tables_roundtrip(isolated_db):
     async def run():
-        await init_db()
         async with db_session() as db:
             db.add(CiRun(id=1, repo="o/r", workflow_path=".github/workflows/ci.yml",
                          event="pull_request", head_sha="abc", head_branch="feat",

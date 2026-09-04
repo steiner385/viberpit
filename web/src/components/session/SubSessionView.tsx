@@ -8,6 +8,7 @@
 import { useNavigate } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { useSessionRuntime } from '@/session/useSessionRuntime'
+import { sessionPath } from '@/session/sessionNavState'
 import { TranscriptView } from './TranscriptView'
 
 interface Props {
@@ -41,7 +42,7 @@ export function SubSessionView({ sessionId, agentId, onBack }: Props) {
         <nav aria-label="Breadcrumb" className="text-sm text-gray-600 dark:text-gray-300 truncate">
           <button
             type="button"
-            onClick={() => navigate(`/session/${sessionId}`)}
+            onClick={() => navigate(sessionPath(sessionId))}
             className="opacity-80 hover:underline focus-visible:outline-none focus-visible:underline"
           >
             {rt.title || sessionId.slice(0, 8)}
@@ -55,7 +56,11 @@ export function SubSessionView({ sessionId, agentId, onBack }: Props) {
         <span className="ml-auto text-xs text-gray-400 italic">Read-only sub-agent</span>
       </header>
       {/* paddingBottom keeps last item above the home indicator; env() is 0 on desktop. */}
-      <main className="flex-1 overflow-hidden flex flex-col" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
+      {/* A `div`, not a `<main>`: since Task 17 the shell's `app.main` region
+          (`shell/regions/PageHost`) IS the page's single `main` landmark, and a
+          second one nested inside it is a landmark violation rather than a
+          second landmark. */}
+      <div className="flex-1 overflow-hidden flex flex-col" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
         {turns.length === 0 ? (
           <div className="flex-1 flex items-center justify-center">
             <p className="text-sm text-gray-500 dark:text-gray-400">
@@ -72,7 +77,7 @@ export function SubSessionView({ sessionId, agentId, onBack }: Props) {
             onAnswer={() => {/* read-only */}}
           />
         )}
-      </main>
+      </div>
     </div>
   )
 }

@@ -6,9 +6,10 @@ import server.sessions.events as ev
 from server.tests.fakes.fake_sdk import FakeSDKClient
 from server.tests.fakes import fake_sdk as f
 from claude_agent_sdk import TextBlock
+from server.tests.fakes.fake_sdk import PerQueryScript
 
 
-class _RaisingClient:
+class _RaisingClient(PerQueryScript):
     """SDK client whose stream raises partway through, to exercise _drain's except."""
     def __init__(self, exc):
         self._exc = exc
@@ -45,6 +46,51 @@ def test_drain_exception_emits_error_event_with_detail():
     assert err.code == "driver_error"
     assert "ValueError" in err.message
     assert "token expired mid-stream" in err.message
+
+
+class _ModeRecorder:
+    """Minimal SDK client stand-in that records set_permission_mode calls."""
+    def __init__(self):
+        self.modes = []
+    async def set_permission_mode(self, mode):
+        self.modes.append(mode)
+
+
+def test_exiting_plan_restores_pre_plan_permission_mode():
+    """The web plan toggle sends the 'default' sentinel to turn plan OFF. Exiting
+    plan must return the session to the mode it had BEFORE plan (here full-auto),
+    NOT collapse to the SDK 'default' engine — which the registry treats as
+    "prompt on every dangerous tool", silently breaking a full-auto session."""
+    async def run():
+        rec = _ModeRecorder()
+        d = SessionDriver("sp-plan", "primary", "/tmp/r", "/tmp/cfg", mode="full-auto",
+                          sdk_factory=lambda *a, **k: None, registry=PermissionRegistry(),
+                          identity="me")
+        d._client = rec
+        await d.set_permission_mode("plan")      # toggle plan ON
+        assert d.mode == "plan"
+        await d.set_permission_mode("default")   # toggle plan OFF (UI sentinel)
+        return d
+    d = asyncio.run(run())
+    # The ENFORCED ccswitch mode (what PermissionRegistry.request reads) is back to
+    # full-auto, so tools auto-approve again — not 'default', which would prompt.
+    assert d.mode == "full-auto"
+
+
+def test_default_outside_plan_is_not_hijacked():
+    """A 'default' that does NOT follow plan is a real target and must pass through
+    unchanged — the restore only fires when actually exiting plan."""
+    async def run():
+        rec = _ModeRecorder()
+        d = SessionDriver("sp-nodef", "primary", "/tmp/r", "/tmp/cfg", mode="full-auto",
+                          sdk_factory=lambda *a, **k: None, registry=PermissionRegistry(),
+                          identity="me")
+        d._client = rec
+        await d.set_permission_mode("default")   # not exiting plan → literal 'default'
+        return d
+    d = asyncio.run(run())
+    assert d.mode == "default"
+
 
 def _factory(msgs):
     def make(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *, on_pre_compact=None):
@@ -132,7 +178,7 @@ def test_concurrent_send_prompt_enqueues():
 
     # Use a slow fake SDK: yield results only after a short delay so the first
     # drain is still running when the second send_prompt fires.
-    class SlowFakeSDK:
+    class SlowFakeSDK(PerQueryScript):
         def __init__(self):
             self.queries: list[str] = []
         async def __aenter__(self): return self
@@ -179,7 +225,7 @@ def test_queued_prompt_runs_after_first_turn():
     import asyncio
 
     # SDK that sends responses immediately (no delay), so both turns can complete.
-    class QuickFakeSDK:
+    class QuickFakeSDK(PerQueryScript):
         def __init__(self):
             self.queries: list[str] = []
             self._call = 0
@@ -220,7 +266,7 @@ def test_interrupt_clears_queue():
     """interrupt() clears the queue and emits an idle status."""
     import asyncio
 
-    class SlowFakeSDK:
+    class SlowFakeSDK(PerQueryScript):
         def __init__(self):
             self.queries: list[str] = []
         async def __aenter__(self): return self
@@ -295,7 +341,7 @@ def test_auto_title_only_fires_once():
 
     call_count = 0
 
-    class MultiCallSDK:
+    class MultiCallSDK(PerQueryScript):
         def __init__(self):
             self.sent: list[str] = []
         async def __aenter__(self): return self
@@ -736,7 +782,7 @@ def test_askuserquestion_options_normalized_from_strings():
 def test_queue_update_emitted_when_enqueuing():
     """Enqueuing two prompts while busy should emit QueueUpdate events with the queue contents."""
 
-    class SlowFakeSDK:
+    class SlowFakeSDK(PerQueryScript):
         def __init__(self):
             self.queries: list[str] = []
         async def __aenter__(self): return self
@@ -782,7 +828,7 @@ def test_queue_update_emitted_when_enqueuing():
 def test_cancel_queued_removes_item_and_emits_queue_update():
     """cancel_queued(0) removes the first queued item and emits a QueueUpdate + Status."""
 
-    class SlowFakeSDK:
+    class SlowFakeSDK(PerQueryScript):
         async def __aenter__(self): return self
         async def __aexit__(self, *_): return False
         async def query(self, prompt: str): pass
@@ -833,7 +879,7 @@ def test_cancel_queued_removes_item_and_emits_queue_update():
 def test_cancel_queued_out_of_range_returns_false():
     """cancel_queued with an out-of-range index returns False without emitting events."""
 
-    class SlowFakeSDK:
+    class SlowFakeSDK(PerQueryScript):
         async def __aenter__(self): return self
         async def __aexit__(self, *_): return False
         async def query(self, prompt: str): pass
@@ -954,7 +1000,7 @@ def test_queue_wire_includes_images_for_queued_prompt():
     """A prompt queued while busy is exposed via queue_wire() with its image refs."""
     import asyncio
 
-    class SlowFakeSDK:
+    class SlowFakeSDK(PerQueryScript):
         def __init__(self): self.queries = []
         async def __aenter__(self): return self
         async def __aexit__(self, *_): return False

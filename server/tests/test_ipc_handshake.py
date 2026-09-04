@@ -5,7 +5,7 @@ import pytest
 from starlette.testclient import TestClient
 from server.ipc.daemon import create_daemon_app
 from server.ipc import protocol as proto
-from server.ipc.paths import DEFAULT_SOCKET_PATH, sessiond_socket
+from server.ipc.paths import DEFAULT_SOCKET_PATH, sessiond_endpoint
 from server.ipc.client import DaemonClient, DaemonUnavailable, protocol_compatible
 from server.tests.ipc_harness import serve_daemon_uds
 
@@ -14,9 +14,11 @@ def test_default_socket_path_and_env_override():
     assert DEFAULT_SOCKET_PATH == "/run/ccswitch/sessiond.sock"
     with mock.patch.dict(os.environ, {}, clear=False):
         os.environ.pop("CCSWITCH_SESSIOND_SOCKET", None)
-        assert sessiond_socket() == DEFAULT_SOCKET_PATH
+        os.environ.pop("CCSWITCH_SESSIOND_ENDPOINT", None)
+        assert sessiond_endpoint().path == DEFAULT_SOCKET_PATH
     with mock.patch.dict(os.environ, {"CCSWITCH_SESSIOND_SOCKET": "/tmp/x.sock"}):
-        assert sessiond_socket() == "/tmp/x.sock"
+        os.environ.pop("CCSWITCH_SESSIOND_ENDPOINT", None)
+        assert sessiond_endpoint().path == "/tmp/x.sock"
 
 
 def test_daemon_info_and_healthz_routes():

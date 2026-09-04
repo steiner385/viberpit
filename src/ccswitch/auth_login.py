@@ -1,6 +1,7 @@
 """Reauth profile preparation and cleanup for the account-reauthenticator flow."""
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shlex
@@ -9,7 +10,7 @@ import sqlite3
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from . import configdir, paths
 from .creds import read_json, split_credentials, write_credentials, write_json_secure
@@ -17,6 +18,11 @@ from .creds import read_json, split_credentials, write_credentials, write_json_s
 log = logging.getLogger(__name__)
 
 _STRIP_SQL = "DELETE FROM cookies WHERE host_key LIKE '%claude%' OR host_key LIKE '%anthropic%'"
+
+# Extensions carried into the temp login profile. 1Password by default: with its
+# files + state copied, the user unlocks with the master password inside the reauth
+# window instead of typing credentials by hand. Override: CCSWITCH_REAUTH_EXTENSIONS.
+REAUTH_EXTENSION_IDS: tuple[str, ...] = ("aeblfdkhhhdcdjpifhhbdiojplfjncoa",)
 
 
 def _reauth_root() -> Path:
@@ -35,11 +41,121 @@ def _under_reauth_tmp(path: str) -> bool:
         return False
 
 
-def prepare_reauth_profile(source_profile_dir: str) -> str:
-    """Copy a Chrome profile directory to a temp location and strip Claude cookies.
+def session_bus_env(
+    environ: Mapping[str, str] | None = None,
+    *,
+    uid: int | None = None,
+    run_root: str = "/run/user",
+) -> dict[str, str]:
+    """Env vars a keyring-backed Chrome needs when launched from a bus-less service.
+
+    The reauth Chrome runs ``--password-store=gnome-libsecret`` so it can decrypt the
+    v11 cookies copied from the real profile. systemd services do not inherit the
+    user's session bus, so without these two variables Chrome cannot reach
+    gnome-keyring and silently drops every keyring-encrypted cookie — Google looks
+    logged out. Returns only the variables *environ* lacks; never overrides.
+    """
+    env = os.environ if environ is None else environ
+    uid = os.getuid() if uid is None else uid
+    runtime_dir = env.get("XDG_RUNTIME_DIR") or f"{run_root}/{uid}"
+    bus = Path(runtime_dir) / "bus"
+    if not bus.is_socket():
+        return {}
+    out: dict[str, str] = {}
+    if "DBUS_SESSION_BUS_ADDRESS" not in env:
+        out["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus}"
+    if "XDG_RUNTIME_DIR" not in env:
+        out["XDG_RUNTIME_DIR"] = runtime_dir
+    return out
+
+
+def _copy_extensions(src: Path, default: Path, extension_ids: Sequence[str]) -> None:
+    """Copy the curated extension set and register it in a MINIMAL Preferences.
+
+    Copies, per id that exists both on disk (Extensions/<id>) and in the source
+    Preferences' extensions.settings: Extensions/<id> and Local Extension Settings/<id>.
+    Once: Extension State/. Then writes Default/Preferences containing ONLY
+    {"extensions": {"settings": {<id>: <entry>}}}.
+
+    Why minimal: copying the full Preferences names the signed-in Google account whose
+    refresh token lives in the (uncopied) Web Data, and Chrome's account reconciler then
+    logs the Gaia cookies out — undoing the whole point of the cookie copy.
+    Anything missing is skipped at INFO; this must never fail the login (spec D4).
+    """
+    if not extension_ids:
+        return
+    prefs_path = src / "Preferences"
+    try:
+        parsed = json.loads(prefs_path.read_text())
+    except (OSError, ValueError) as e:
+        log.info("reauth profile: source Preferences unreadable (%s); skipping extensions", e)
+        return
+    extensions = parsed.get("extensions") if isinstance(parsed, dict) else None
+    settings_obj = extensions.get("settings") if isinstance(extensions, dict) else None
+    registered = settings_obj if isinstance(settings_obj, dict) else {}
+    settings: dict[str, object] = {}
+    for ext_id in extension_ids:
+        ext_dir = src / "Extensions" / ext_id
+        entry = registered.get(ext_id)
+        if not ext_dir.is_dir() or entry is None:
+            log.info("reauth profile: extension %s not installed in source; skipping", ext_id)
+            continue
+        dst_ext_dir = default / "Extensions" / ext_id
+        try:
+            shutil.copytree(ext_dir, dst_ext_dir, ignore_dangling_symlinks=True)
+        except (OSError, shutil.Error) as e:
+            # A half-copied Extensions/<id> hands Chrome a corrupt extension —
+            # worse than no 1Password at all — so the id must NOT be registered.
+            log.info(
+                "reauth profile: copying extension %s failed (%s); skipping id", ext_id, e
+            )
+            shutil.rmtree(dst_ext_dir, ignore_errors=True)
+            continue
+        les = src / "Local Extension Settings" / ext_id
+        if les.is_dir():
+            try:
+                shutil.copytree(
+                    les, default / "Local Extension Settings" / ext_id,
+                    ignore_dangling_symlinks=True,
+                )
+            except (OSError, shutil.Error) as e:
+                # Live LevelDB store the running Chrome compacts continuously —
+                # a failed copy here only loses saved state, not the extension
+                # itself, so the id stays registered (D4: never fatal).
+                log.info(
+                    "reauth profile: copying Local Extension Settings for %s failed (%s); "
+                    "skipping saved state", ext_id, e
+                )
+                shutil.rmtree(default / "Local Extension Settings" / ext_id, ignore_errors=True)
+        settings[ext_id] = entry
+    if not settings:
+        return
+    state = src / "Extension State"
+    if state.is_dir():
+        try:
+            shutil.copytree(state, default / "Extension State", ignore_dangling_symlinks=True)
+        except (OSError, shutil.Error) as e:
+            log.info("reauth profile: copying Extension State failed (%s); skipping", e)
+            shutil.rmtree(default / "Extension State", ignore_errors=True)
+    dst_prefs = default / "Preferences"
+    dst_prefs.write_text(json.dumps({"extensions": {"settings": settings}}))
+    os.chmod(dst_prefs, 0o600)
+
+
+def prepare_reauth_profile(
+    source_profile_dir: str,
+    *,
+    extension_ids: Sequence[str] | None = None,
+) -> str:
+    """Copy a Chrome profile's login state to a temp location and strip Claude cookies.
+
+    Copies Cookies + Local State (always), Login Data (if present) and the curated
+    extension set (see _copy_extensions). Google stays signed in, Claude is signed out,
+    1Password is available.
 
     Args:
         source_profile_dir: Path to a Chrome profile directory (e.g. ~/.config/google-chrome/Default)
+        extension_ids: Extension ids to carry over. None → REAUTH_EXTENSION_IDS; () → none.
 
     Returns:
         Path to the temp profile directory (under reauth-tmp)
@@ -83,6 +199,19 @@ def prepare_reauth_profile(source_profile_dir: str) -> str:
     finally:
         conn.close()
 
+    # Saved passwords (v11-encrypted like Cookies; same keyring, same trust class).
+    login_data = src / "Login Data"
+    if login_data.exists():
+        dst_ld = default / "Login Data"
+        shutil.copy(login_data, dst_ld)
+        os.chmod(dst_ld, 0o600)
+    else:
+        log.info("reauth profile: no Login Data in source; skipping")
+
+    _copy_extensions(
+        src, default, REAUTH_EXTENSION_IDS if extension_ids is None else extension_ids
+    )
+
     return temp
 
 
@@ -115,6 +244,7 @@ def capture_login(
     Args:
         name: Account slot name to store credentials under.
         env_extra: Additional environment variables to merge (e.g. BROWSER, DISPLAY).
+            Applied last, so they override the injected session-bus variables.
         claude_bin: Override the claude command argv list (default: ["claude"]).
 
     Returns:
@@ -137,7 +267,15 @@ def capture_login(
     capture_dir = tempfile.mkdtemp(prefix="capture-", dir=str(_reauth_root()))
     os.chmod(capture_dir, 0o700)
     try:
-        env = {**os.environ, "CLAUDE_CONFIG_DIR": capture_dir, **(env_extra or {})}
+        # Service-launched (no session bus) → Chrome can't reach gnome-keyring and drops
+        # every v11 cookie copied from the real profile. Inject the user's bus so the
+        # copied Google session survives; explicit env_extra always wins.
+        env = {
+            **os.environ,
+            **session_bus_env(),
+            "CLAUDE_CONFIG_DIR": capture_dir,
+            **(env_extra or {}),
+        }
         subprocess.run(claude_cmd + login_args, env=env, shell=False)
 
         cred_path = os.path.join(capture_dir, ".credentials.json")

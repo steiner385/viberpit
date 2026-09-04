@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import React from 'react'
 import { useAutoReload } from './useAutoReload'
 import * as hooks from '@/api/hooks'
 import * as updatePending from '@/hooks/useUpdatePending'

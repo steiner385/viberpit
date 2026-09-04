@@ -8,6 +8,7 @@ Name-guard on ALL /{name} routes (reauth + refresh/delete/nickname/patch).
 from __future__ import annotations
 
 import os
+import pytest
 import sys
 import time
 from pathlib import Path
@@ -28,6 +29,16 @@ IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
 # ---------------------------------------------------------------------------
 # Fake ReauthManager (injectable into app.state)
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _fresh_db(isolated_db):
+    """Per-test DB (#728): several tests here exit their CCSWITCH_DB_URL patch
+    before `with client:`, so the app lifespan resolves the AMBIENT env var at
+    init_db time — without this fixture that was the worker-shared session DB,
+    coupling these files to whatever ran (or leaked a writer) before them."""
+
+
 
 class FakeReauthManager:
     """Injectable fake for testing the API layer without a real ReauthManager."""

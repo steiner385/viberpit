@@ -1,13 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { Dashboard } from '../Dashboard'
+import { NewSessionDialog } from '@/features/sessions/NewSessionDialog'
 import * as hooks from '@/api/hooks'
+import { appSettings, githubRepo } from '@/test/factories'
+import { queryResult } from '@/test/reactQuery'
 
 vi.mock('@/api/hooks', () => ({
   useQueueMove: vi.fn(() => ({ mutate: vi.fn() })),
   useQueueCancel: vi.fn(() => ({ mutate: vi.fn() })),
+  useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
   useAllPrs: vi.fn(() => ({ data: [] })),
   useDaemonHealth: vi.fn(() => ({ data: { available: false } })),  // issue #434 indicator
   useGenerateSuggestions: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(() => Promise.resolve([])), isPending: false })),
@@ -58,6 +61,8 @@ vi.mock('@/api/hooks', () => ({
     settings: ['settings'],
   },
   useAssessDispatch: vi.fn(() => ({ assess: vi.fn() })),
+  useResumeInterrupted: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useRotateStalled: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }))
 
 vi.mock('@/session/useSessionSearch', () => ({
@@ -72,8 +77,8 @@ function wrapper({ children }: { children: React.ReactNode }) {
 }
 
 function setupMocks() {
-  vi.mocked(hooks.useAccounts).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useAccounts>)
-  vi.mocked(hooks.useSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useSessions>)
+  vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([]))
+  vi.mocked(hooks.useSessions).mockReturnValue(queryResult([]))
   vi.mocked(hooks.useCreateSession).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useCreateSession>)
   vi.mocked(hooks.useRenameSession).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useRenameSession>)
   vi.mocked(hooks.useCloseSession).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useCloseSession>)
@@ -81,29 +86,37 @@ function setupMocks() {
   vi.mocked(hooks.useUpdateAccount).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useUpdateAccount>)
   vi.mocked(hooks.useDeleteAccount).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useDeleteAccount>)
   // One repo whose default branch is "main".
-  vi.mocked(hooks.useGithubRepos).mockReturnValue({
-    data: [{ nameWithOwner: 'owner/repo', defaultBranch: 'main', isPrivate: false, cloned: true }],
-    isLoading: false,
-    isError: false,
-  } as ReturnType<typeof hooks.useGithubRepos>)
+  vi.mocked(hooks.useGithubRepos).mockReturnValue(queryResult([githubRepo({ nameWithOwner: 'owner/repo' })]))
   // Branches resolve with "main" as the default.
-  vi.mocked(hooks.useGithubBranches).mockReturnValue({
-    data: { default: 'main', branches: ['main', 'dev'] },
-    isLoading: false,
-  } as ReturnType<typeof hooks.useGithubBranches>)
-  vi.mocked(hooks.useSettings).mockReturnValue({
-    data: { defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null },
-    isLoading: false,
-  } as ReturnType<typeof hooks.useSettings>)
+  vi.mocked(hooks.useGithubBranches).mockReturnValue(queryResult({ default: 'main', branches: ['main', 'dev'] }))
+  vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings()))
   vi.mocked(hooks.useUpdateSettings).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useUpdateSettings>)
   vi.mocked(hooks.useReauthAccount).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useReauthAccount>)
-  vi.mocked(hooks.useReauthStatus).mockReturnValue({ data: { state: 'idle', message: null, startedAt: null }, isLoading: false } as ReturnType<typeof hooks.useReauthStatus>)
+  vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult({ state: 'idle', message: null, startedAt: null }))
   vi.mocked(hooks.useCancelReauth).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useCancelReauth>)
-  vi.mocked(hooks.useArchivedSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useArchivedSessions>)
+  vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult([]))
   vi.mocked(hooks.useUnarchiveSession).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useUnarchiveSession>)
   vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
   vi.mocked(hooks.useBulkUnarchiveSessions).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useBulkUnarchiveSessions>)
   vi.mocked(hooks.useBulkPermanentDeleteSessions).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useBulkPermanentDeleteSessions>)
+}
+
+/**
+ * The submit payload the dialog builds. It used to be read off
+ * `useCreateSession().mutate`, because `Dashboard` was the only way to open the
+ * dialog; the dialog's own contract is `onSubmit(input)`, and the half that
+ * hands that to the mutation now lives in `NewSessionDialogHost` (and is pinned
+ * there). Nothing is lost: `expect.not.objectContaining` still runs, on the
+ * value the dialog actually produces.
+ */
+const onSubmit = vi.fn()
+
+function openDialog() {
+  render(
+    <NewSessionDialog accounts={[]} onClose={vi.fn()} onSubmit={onSubmit} isPending={false} />,
+    { wrapper },
+  )
+  return within(screen.getByRole('dialog', { name: /new session/i }))
 }
 
 describe('New Session dialog — branch default selection', () => {
@@ -114,10 +127,7 @@ describe('New Session dialog — branch default selection', () => {
 
   it('defaults the branch select to the loaded default branch after a repo is chosen', async () => {
     const user = userEvent.setup()
-    render(<Dashboard />, { wrapper })
-
-    await user.click(screen.getAllByRole('button', { name: /new session/i })[0])
-    const dialog = within(screen.getByRole('dialog', { name: /new session/i }))
+    const dialog = openDialog()
 
     // Choose a repo → branches load with default "main".
     await user.selectOptions(dialog.getByLabelText(/^repository/i), 'owner/repo')
@@ -128,10 +138,7 @@ describe('New Session dialog — branch default selection', () => {
 
   it('lets the user override the default branch', async () => {
     const user = userEvent.setup()
-    render(<Dashboard />, { wrapper })
-
-    await user.click(screen.getAllByRole('button', { name: /new session/i })[0])
-    const dialog = within(screen.getByRole('dialog', { name: /new session/i }))
+    const dialog = openDialog()
     await user.selectOptions(dialog.getByLabelText(/^repository/i), 'owner/repo')
 
     const branchSelect = dialog.getByLabelText(/^branch/i) as HTMLSelectElement
@@ -140,11 +147,7 @@ describe('New Session dialog — branch default selection', () => {
   })
 
   it('defaults the model select to "Default" and offers Fable', async () => {
-    const user = userEvent.setup()
-    render(<Dashboard />, { wrapper })
-
-    await user.click(screen.getAllByRole('button', { name: /new session/i })[0])
-    const dialog = within(screen.getByRole('dialog', { name: /new session/i }))
+    const dialog = openDialog()
 
     const modelSelect = dialog.getByLabelText(/^model/i) as HTMLSelectElement
     expect(modelSelect.value).toBe('default')
@@ -152,11 +155,7 @@ describe('New Session dialog — branch default selection', () => {
   })
 
   it('groups the repo chooser, account, and model under a "Launch target" fieldset', async () => {
-    const user = userEvent.setup()
-    render(<Dashboard />, { wrapper })
-
-    await user.click(screen.getAllByRole('button', { name: /new session/i })[0])
-    const dialog = within(screen.getByRole('dialog', { name: /new session/i }))
+    const dialog = openDialog()
 
     // The launch-config controls live together in one accessible group.
     const group = within(dialog.getByRole('group', { name: /launch target/i }))
@@ -170,11 +169,7 @@ describe('New Session dialog — branch default selection', () => {
   })
 
   it('places the model select before "Tool approvals" in DOM order', async () => {
-    const user = userEvent.setup()
-    render(<Dashboard />, { wrapper })
-
-    await user.click(screen.getAllByRole('button', { name: /new session/i })[0])
-    const dialog = within(screen.getByRole('dialog', { name: /new session/i }))
+    const dialog = openDialog()
 
     const model = dialog.getByLabelText(/^model/i)
     const toolApprovals = dialog.getByLabelText(/tool approvals/i)
@@ -182,27 +177,56 @@ describe('New Session dialog — branch default selection', () => {
     expect(model.compareDocumentPosition(toolApprovals) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
+  it('never preselects a gated (fable) tier as the default model', async () => {
+    const dialog = openDialog()
+
+    const modelSelect = dialog.getByLabelText(/^model/i) as HTMLSelectElement
+    // fable is a gated tier — it must not be the default selected value
+    expect(modelSelect.value).not.toBe('fable')
+  })
+
+  it('shows an approval note when a gated (fable) model is selected', async () => {
+    const user = userEvent.setup()
+    const dialog = openDialog()
+
+    // No note before selecting fable
+    expect(dialog.queryByText(/requires approval/i)).not.toBeInTheDocument()
+
+    await user.selectOptions(dialog.getByLabelText(/^model/i), 'fable')
+    expect(dialog.getByText(/requires approval/i)).toBeInTheDocument()
+  })
+
+  it('hides the approval note when a non-gated model is selected', async () => {
+    const user = userEvent.setup()
+    const dialog = openDialog()
+
+    await user.selectOptions(dialog.getByLabelText(/^model/i), 'fable')
+    expect(dialog.getByText(/requires approval/i)).toBeInTheDocument()
+
+    await user.selectOptions(dialog.getByLabelText(/^model/i), 'opus')
+    expect(dialog.queryByText(/requires approval/i)).not.toBeInTheDocument()
+  })
+
   it('submits the chosen model, and omits it when left on "Default"', async () => {
     const user = userEvent.setup()
-    render(<Dashboard />, { wrapper })
 
     // Default → model omitted from the payload (account default).
-    await user.click(screen.getAllByRole('button', { name: /new session/i })[0])
-    let dialog = within(screen.getByRole('dialog', { name: /new session/i }))
-    await user.click(dialog.getByRole('button', { name: /^create$/i }))
-    expect(NOOP.mutate).toHaveBeenLastCalledWith(
+    const first = openDialog()
+    await user.click(first.getByRole('button', { name: /^create$/i }))
+    expect(onSubmit).toHaveBeenLastCalledWith(
       expect.not.objectContaining({ model: expect.anything() }),
-      expect.anything(),
     )
 
+    // A fresh dialog, because the model select is local state — the same reset
+    // the old close/reopen through the shell produced.
+    cleanup()
+
     // Pick Fable → forwarded as model: 'fable'.
-    await user.click(screen.getAllByRole('button', { name: /new session/i })[0])
-    dialog = within(screen.getByRole('dialog', { name: /new session/i }))
-    await user.selectOptions(dialog.getByLabelText(/^model/i), 'fable')
-    await user.click(dialog.getByRole('button', { name: /^create$/i }))
-    expect(NOOP.mutate).toHaveBeenLastCalledWith(
+    const second = openDialog()
+    await user.selectOptions(second.getByLabelText(/^model/i), 'fable')
+    await user.click(second.getByRole('button', { name: /^create$/i }))
+    expect(onSubmit).toHaveBeenLastCalledWith(
       expect.objectContaining({ model: 'fable' }),
-      expect.anything(),
     )
   })
 })

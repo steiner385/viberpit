@@ -4,11 +4,10 @@
  */
 import { useState } from 'react'
 import { cn } from '@/lib/utils'
-import { Button } from '@/components/ui/button'
+import { Button } from '@/ui/Button'
 import { useSettings, useUpdateSettings, type AppSettings } from '@/api/hooks'
 import { PERMISSION_MODES } from '@/session/permissionModes'
 import { NotificationsToggle } from './NotificationsToggle'
-import { toast } from 'sonner'
 
 export function GeneralSection() {
   const { data: settings } = useSettings()
@@ -33,6 +32,10 @@ function GeneralForm({ settings }: { settings: AppSettings | undefined }) {
   )
   // Defaults to true — the server surfaces its NULL "unset" state as enabled.
   const [autoArchiveEnabled, setAutoArchiveEnabled] = useState(settings?.autoArchiveEnabled ?? true)
+  // '' = server default (require_approval for fable).
+  const [modelApprovalAction, setModelApprovalAction] = useState(settings?.modelApprovalAction ?? '')
+  // Comma-separated list; empty = server default (fable).
+  const [modelApprovalDenylist, setModelApprovalDenylist] = useState(settings?.modelApprovalDenylist ?? '')
 
   function handleSave() {
     const parsed = Number.parseInt(maxArchived, 10)
@@ -48,7 +51,10 @@ function GeneralForm({ settings }: { settings: AppSettings | undefined }) {
       archiveHome: archiveHome,
       maxActiveSessions: Number.isFinite(parsedActive) && parsedActive > 0 ? parsedActive : null,
       autoArchiveEnabled,
-    }, { onSuccess: () => toast('Settings saved') })
+      // '' → null means "use server default". Non-empty value is sent as-is.
+      modelApprovalAction: modelApprovalAction || null,
+      modelApprovalDenylist: modelApprovalDenylist.trim() || null,
+    })
   }
 
   const inputClass = cn(
@@ -88,6 +94,54 @@ function GeneralForm({ settings }: { settings: AppSettings | undefined }) {
               ⚠ Full auto lets sessions run shell/edits without prompting. Anyone who can reach this server can run code as you.
             </p>
           )}
+        </div>
+
+        {/* Model approval policy */}
+        <div className="space-y-3 border-t border-gray-200 dark:border-gray-700 pt-4">
+          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+            Model approval
+          </h3>
+          <div className="space-y-1">
+            <label
+              htmlFor="settings-model-approval-action"
+              className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+            >
+              Action for gated models
+            </label>
+            <select
+              id="settings-model-approval-action"
+              value={modelApprovalAction}
+              onChange={(e) => setModelApprovalAction(e.target.value)}
+              className={inputClass}
+            >
+              <option value="">Server default (require approval)</option>
+              <option value="require_approval">Require approval</option>
+              <option value="block">Block</option>
+              <option value="allow">Allow</option>
+            </select>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              What to do when a session requests a model on the approval denylist.
+            </p>
+          </div>
+          <div className="space-y-1">
+            <label
+              htmlFor="settings-model-approval-denylist"
+              className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+            >
+              Approval denylist <span className="text-gray-400">(blank = default: fable)</span>
+            </label>
+            <input
+              id="settings-model-approval-denylist"
+              type="text"
+              value={modelApprovalDenylist}
+              onChange={(e) => setModelApprovalDenylist(e.target.value)}
+              placeholder="fable"
+              className={inputClass}
+            />
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              Comma-separated model ids or tier names that require approval.
+            </p>
+          </div>
         </div>
 
         {/* Transcript display */}
@@ -257,7 +311,13 @@ function GeneralForm({ settings }: { settings: AppSettings | undefined }) {
         </div>
       </div>
 
-      <div className="flex justify-end pt-2">
+      <div className="flex items-center justify-end gap-3 pt-2">
+        {/* The acknowledgement lives beside the button it answers, not in a
+            toast over the page header. `isSuccess` flips back to false the
+            moment the next save starts, so the note never outlives its save. */}
+        {updateSettings.isSuccess && !updateSettings.isPending && (
+          <p role="status" className="text-sm text-success">Settings saved</p>
+        )}
         <Button type="button" onClick={handleSave} disabled={updateSettings.isPending} className="min-h-[44px]">
           {updateSettings.isPending ? 'Saving…' : 'Save'}
         </Button>

@@ -7,9 +7,11 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
 
 from . import copilot, ledger, oauth, paths
+from .account_names import aliases_store_root
 from .config import Config, load_config
 from .creds import merge_keep_later, read_credentials, read_json, split_credentials, write_credentials, write_json_secure
 from .selector import AllAccountsBusy, Picked, select_picked
@@ -147,10 +149,32 @@ def _anthropic_account_names() -> list[str]:
     d = paths.store_dir()
     if not d.exists():
         return []
-    return sorted(p.name[: -len(".cred.json")] for p in d.glob("*.cred.json"))
+    # `Path.glob` — unlike a shell glob — does NOT hide dotfiles, so `*.cred.json`
+    # matches a bare `.cred.json` whose stem is "". Such a slot is not an account:
+    # it is shared state that a caller with an empty account name wrote over the
+    # store root. Enumerating it hands the rotation picker a nameless account.
+    return sorted(
+        stem for stem in (p.name[: -len(".cred.json")] for p in d.glob("*.cred.json"))
+        if not aliases_store_root(stem)
+    )
+
+
+def anthropic_slot_paths() -> list[Path]:
+    """The credential slots in the store that belong to a REAL account.
+
+    The one place the store is enumerated as FILES, mirroring
+    _anthropic_account_names() (the one place it is enumerated as NAMES) so a stray
+    dotfile cannot be picked up by one and skipped by the other.
+    """
+    return [paths.slot_path(n) for n in _anthropic_account_names()]
 
 
 def provider_of(name: str) -> str:
+    # copilot_token_dir("") is the copilot store ROOT, which exists as soon as any
+    # Copilot account is configured — so without this guard a nameless account is
+    # reported as Copilot and the orchestrator tries to start a proxy for it.
+    if aliases_store_root(name):
+        return "anthropic"
     return copilot.PROVIDER if paths.copilot_token_dir(name).exists() else "anthropic"
 
 
@@ -456,9 +480,11 @@ def pick_account_detailed(cfg: Config, exclude: set[str] = frozenset(),
         reserved = {n for n in names if ledger.reservation_active(led, n, now_ts)}
         unhealthy = frozenset(n for n in names if ledger.get_status(led, n) == "needs-reauth")
         reserves = ledger.weekly_reserves(led)
+        extra_allowed = ledger.extra_usage_allowed(led)
         def _pick(excl, rsv):
             return select_picked(usages, rsv, cfg, now, excl, load or {},
-                                 unhealthy, optimistic_fallback=True, reserves=reserves)
+                                 unhealthy, optimistic_fallback=True, reserves=reserves,
+                                 extra_usage_allowed=extra_allowed)
         try:
             picked = _pick(exclude, reserved)
         except AllAccountsBusy as _first_exc:
@@ -548,6 +574,7 @@ def list_accounts() -> list[dict]:
                 "nickname": acct.get("nickname"),
                 "provider": provider_of(name),
                 "weeklyReservePct": ledger.get_weekly_reserve(led, name),
+                "allowExtraUsage": ledger.get_allow_extra_usage(led, name),
                 "accountDefaults": ledger.get_account_defaults(led, name),
                 "enabled": ledger.is_account_enabled(led, name),
             })
@@ -564,6 +591,12 @@ def set_weekly_reserve(name: str, pct: float | None) -> None:
         ledger.set_weekly_reserve(led, name, pct)
 
 
+def set_allow_extra_usage(name: str, allow: bool) -> None:
+    """Opt an account in/out of spending paid extra-usage credits past its ceiling."""
+    with ledger.locked_ledger() as led:
+        ledger.set_allow_extra_usage(led, name, allow)
+
+
 def set_account_enabled(name: str, enabled: bool) -> None:
     """Enable/disable an account without deleting it (reversible pause)."""
     with ledger.locked_ledger() as led:
@@ -577,6 +610,8 @@ def set_account_defaults(
     clear_model: bool = False,
     default_permission_mode: str | None = None,
     clear_permission_mode: bool = False,
+    model_approval_action: str | None = None,
+    clear_model_approval_action: bool = False,
     env_overrides: dict | None = None,
     clear_env_overrides: bool = False,
 ) -> None:
@@ -588,6 +623,8 @@ def set_account_defaults(
             clear_model=clear_model,
             default_permission_mode=default_permission_mode,
             clear_permission_mode=clear_permission_mode,
+            model_approval_action=model_approval_action,
+            clear_model_approval_action=clear_model_approval_action,
             env_overrides=env_overrides,
             clear_env_overrides=clear_env_overrides,
         )

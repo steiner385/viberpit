@@ -1,31 +1,34 @@
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
+import type { ComponentProps } from 'react'
 import { SessionCard } from '../SessionCard'
 import type { Session } from '@/api/types'
+import { pullRequest, session } from '@/test/factories'
 
-// The session card lives in a drag-resizable sidebar, so its layout must be
-// deterministic at every width: the same three rows (identity / context /
-// telemetry) in the same order on every card, each row truncating rather than
-// wrapping. These tests lock that skeleton in place so a future tweak can't
-// regress back to content-dependent flex-wrap (where the account chip and the
-// usage bar landed in a different spot on every card).
+// Dense two-line card contract. The card lives in a drag-resizable sidebar, so
+// its layout must be deterministic at every width and for every session shape:
+// exactly two fixed rows — line 1 (identity: status dot, title, marker cluster,
+// PRs, usage, account, actions) and line 2 (context narrative: repo · host ·
+// status phrase · last-active) — plus a colored status rail on the left edge.
+// Every optional element has ONE fixed slot; nothing floats between rows based
+// on content. These tests lock that skeleton so a future tweak can't regress to
+// the old grab-bag badge footer / floating status pill.
 
-const base: Session = {
+const base: Session = session({
   id: '1',
   name: 'Fix login bug',
   accountName: 'work',
-  // Non-busy: the telemetry row's "active … ago" label is suppressed on the busy
-  // tier (see SessionCard.meta.test), so the skeleton tests below — which assert
-  // the telemetry row and its timestamp — use a handed-back status.
+  // Non-busy: the "active … ago" label is suppressed on the busy tier (see
+  // SessionCard.meta.test), and these skeleton tests assert its slot.
   status: 'done',
   createdAt: '2026-06-22T11:00:00Z',
   updatedAt: '2026-06-22T11:58:00Z',
-}
+})
 
 const noop = () => {}
 
-function renderCard(session: Session) {
+function renderCard(session: Session, extra: Partial<ComponentProps<typeof SessionCard>> = {}) {
   return render(
     <MemoryRouter>
       <SessionCard
@@ -36,187 +39,184 @@ function renderCard(session: Session) {
         onClose={noop}
         onDelete={noop}
         onQuickResume={noop}
+        {...extra}
       />
     </MemoryRouter>,
   )
 }
 
-describe('SessionCard deterministic skeleton', () => {
-  it('renders the three fixed rows in order', () => {
-    renderCard(base)
+const rich: Session = {
+  ...base,
+  repo: 'cairnea/KinDash',
+  host: 'dobby',
+  activeGoal: 'ship the thing',
+  model: 'opus',
+  // `string | null` — the sticky opt-out reason, not a boolean flag. The card
+  // only tests it for truthiness (SessionCard.tsx:522), so this is the same case.
+  autoArchiveOptOut: 'manual-unarchive',
+  assistedBy: 'autopilot',
+  latestSuggestions: ['run the tests', 'open the PR'],
+  prs: [
+    pullRequest({ number: 1, url: 'u1', checks: 'passing', title: 'A', deployed: true }),
+    pullRequest({ number: 2, url: 'u2', checks: 'passing', title: 'B', deployed: false }),
+  ],
+}
+
+describe('SessionCard two-line skeleton', () => {
+  it('renders exactly the two fixed rows — no telemetry row, no badge footer', () => {
+    renderCard(rich)
     expect(screen.getByTestId('card-identity')).toBeInTheDocument()
     expect(screen.getByTestId('card-context')).toBeInTheDocument()
-    expect(screen.getByTestId('card-telemetry')).toBeInTheDocument()
+    expect(screen.queryByTestId('card-telemetry')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('card-badges')).not.toBeInTheDocument()
   })
 
-  it('truncates the title so the account chip stays pinned on the identity row', () => {
+  it('truncates the title inside the open button so the right cluster stays pinned', () => {
     renderCard(base)
-    const identity = screen.getByTestId('card-identity')
-    const title = within(identity).getByText('Fix login bug')
-    // Without `flex-1 min-w-0`, `truncate` is a no-op and a long title shoves
-    // the account chip onto a second line — the original inconsistency.
-    expect(title).toHaveClass('truncate', 'min-w-0', 'flex-1')
-    expect(within(identity).getByText('work')).toBeInTheDocument()
+    const open = screen.getByRole('button', { name: /open session/i })
+    const title = within(open).getByText('Fix login bug')
+    expect(title).toHaveClass('truncate')
+    expect(open).toHaveClass('flex-1', 'min-w-0')
   })
 
   it('caps and truncates the account chip so a long email cannot starve the title', () => {
-    // On a narrow (mobile) viewport a long account email used to be pinned at
-    // full width (`flex-shrink-0`, no cap), collapsing the session name to a few
-    // characters ("M…"). The chip must yield instead: cap its share and truncate
-    // it so the title — the primary identifier — keeps the bulk of the row.
     renderCard({ ...base, accountName: 'tonystein85@gmail.com' })
     const identity = screen.getByTestId('card-identity')
     const chip = within(identity).getByText('tonystein85@gmail.com')
-    expect(chip).toHaveClass('truncate', 'max-w-[45%]')
+    expect(chip).toHaveClass('truncate', 'max-w-[30%]')
   })
 
-  it('places the last-active timestamp in the telemetry row, not the context row', () => {
-    renderCard(base)
-    const telemetry = screen.getByTestId('card-telemetry')
-    expect(within(telemetry).getByText(/^active \d+[smhd] ago$/)).toBeInTheDocument()
+  it('line 2 carries repo, host, status phrase and last-active — in the context row', () => {
+    renderCard(rich)
+    const context = screen.getByTestId('card-context')
+    expect(within(context).getByText('cairnea/KinDash')).toBeInTheDocument()
+    expect(within(context).getByTestId('card-host')).toHaveTextContent('dobby')
+    expect(within(context).getByLabelText(/^Status:/)).toBeInTheDocument()
+    expect(within(context).getByText(/^active \d+[smhd] ago$/)).toBeInTheDocument()
+  })
+
+  it('the status phrase carries the presentation label and its tier text color', () => {
+    renderCard({ ...base, status: 'waiting_input' })
+    const phrase = screen.getByLabelText('Status: Permission needed')
+    expect(phrase.className).toMatch(/warning/)
+  })
+
+  it('marker cluster, PRs, usage and model live in line 1, not line 2', () => {
+    renderCard(rich, {
+      account: { name: 'work', status: 'ok', nickname: null, usage: { session: { pct: 74, resetsAt: null } } } as never,
+    })
+    const identity = screen.getByTestId('card-identity')
+    expect(identity).toContainElement(screen.getByTestId('card-goal'))
+    expect(identity).toContainElement(screen.getByTestId('card-provenance'))
+    expect(identity).toContainElement(screen.getByTestId('card-prs'))
+    expect(identity).toContainElement(screen.getByTestId('card-usage'))
+    expect(identity).toContainElement(screen.getByTestId('card-model'))
+    const context = screen.getByTestId('card-context')
+    expect(context).not.toContainElement(screen.getByTestId('card-goal'))
+    expect(context).not.toContainElement(screen.getByTestId('card-prs'))
   })
 })
 
-// Mobile declutter contract (PR: mobile session-card declutter).
-// On a phone the card crammed title + account + repo + status + Goal + PRs +
-// usage% + "active … ago" + five 44px action icons into ~360px. Per-element
-// truncation can shrink things but can't *drop* one when space runs out, so the
-// secondary signals are gated to a wide card via Tailwind container queries
-// (`@md:*`, resolved against the card's own width — the drag-resizable sidebar —
-// not the viewport). This replaced viewport `lg:` breakpoints, which left a
-// narrow sidebar on a wide window in the full desktop layout and overflowed the
-// badge row under the action icons. When the card is narrow, only the
-// at-a-glance essentials (title, account chip, status pill) and a single resume
-// action survive; everything else is `hidden @md:*`. These assertions lock that
-// contract so a refactor can't silently un-hide the demoted elements (or hide an
-// essential) in a narrow card.
-//
-// The threshold must be REACHABLE inside the sidebar. Container queries resolve
-// against the card's content box, and the card's width budget tops out at
-// SIDEBAR_MAX 560 − sidebar p-2 (16) − scrollbar (~15) − card border (2) − card
-// px-3 (24) ≈ 503px. `@lg` (32rem = 512px) is therefore unsatisfiable at ANY
-// permitted sidebar width — gating on it hid the badges/telemetry/actions for
-// every desktop user. `@md` (28rem = 448px) engages once the sidebar is dragged
-// to ≳505px while keeping the compact layout at the 320px default.
+describe('SessionCard status rail', () => {
+  it.each([
+    ['in_progress', /success/],
+    ['waiting_input', /warning/],
+    ['needs_attention', /danger/],
+    ['done', /neutral/],
+  ] as const)('colors the rail by tier for %s', (status, color) => {
+    renderCard({ ...base, status })
+    expect(screen.getByTestId('card-status-rail').className).toMatch(color)
+  })
+
+  it('pulses the status dot only on action-required tiers', () => {
+    renderCard({ ...base, status: 'waiting_input' })
+    expect(screen.getByTestId('card-status-dot').className).toMatch(/animate-pulse/)
+  })
+
+  it('does not pulse the dot on calm tiers', () => {
+    renderCard(base)
+    expect(screen.getByTestId('card-status-dot').className).not.toMatch(/animate-pulse/)
+  })
+})
+
+// Narrow-card declutter: same policy as before, new slots. Below @md (container
+// query against the card's own width) only the essentials survive: dot, title,
+// account chip, status phrase, actions. Markers, PR pills, usage, the model
+// chip and the timestamp are wide-card only.
 describe('SessionCard narrow-card declutter contract', () => {
-  const rich: Session = {
-    ...base,
-    activeGoal: 'ship the thing',
-    latestSuggestions: ['run the tests', 'open the PR'],
-    prs: [
-      { number: 1, url: 'u1', state: 'open', checks: 'passing', title: 'A', deployed: true },
-      { number: 2, url: 'u2', state: 'open', checks: 'passing', title: 'B', deployed: false },
-    ],
-  }
-
-  it('gates the telemetry row to a wide card (hidden when narrow)', () => {
-    renderCard(rich)
-    expect(screen.getByTestId('card-telemetry')).toHaveClass('hidden', '@md:flex')
-  })
-
-  it('gates the Goal badge to a wide card', () => {
-    renderCard(rich)
+  it('gates the marker cluster, PRs, usage and model to a wide card', () => {
+    renderCard(rich, {
+      account: { name: 'work', status: 'ok', nickname: null, usage: { session: { pct: 74, resetsAt: null } } } as never,
+    })
     expect(screen.getByTestId('card-goal')).toHaveClass('hidden', '@md:inline-flex')
-  })
-
-  it('gates the PR badge to a wide card', () => {
-    renderCard(rich)
     expect(screen.getByTestId('card-prs')).toHaveClass('hidden', '@md:inline-flex')
+    expect(screen.getByTestId('card-usage')).toHaveClass('hidden', '@md:inline-flex')
+    expect(screen.getByTestId('card-model')).toHaveClass('hidden', '@md:inline-flex')
   })
 
   it('never gates content on a container width the sidebar cannot reach', () => {
-    // Regression guard for the unreachable-breakpoint bug: `@lg:` (512px)
-    // exceeds the card's ~503px max content width inside the sidebar, so any
-    // element gated on it is permanently invisible on desktop. No card element
-    // may use an `@lg:` (or larger) container variant.
     const { container } = renderCard(rich)
     const unreachable = container.querySelectorAll('[class*="@lg:"], [class*="@xl:"]')
     expect([...unreachable].map((el) => el.getAttribute('data-testid') ?? el.className)).toEqual([])
   })
 
-  it('gates rename/archive/delete to desktop (lg+) but keeps resume and quick-replies always visible', () => {
+  it('keeps the essentials (title, account chip, status phrase) ungated', () => {
     renderCard(rich)
-    const secondary = screen.getByTestId('card-secondary-actions')
-    // Hidden below lg via viewport breakpoint; dissolves to `contents` at lg+
-    // so its children become direct flex members of the action row.
-    expect(secondary).toHaveClass('hidden', 'lg:contents')
-    expect(within(secondary).getByRole('button', { name: /rename session/i })).toBeInTheDocument()
-    expect(within(secondary).getByRole('button', { name: /archive session/i })).toBeInTheDocument()
-    expect(within(secondary).getByRole('button', { name: /delete session/i })).toBeInTheDocument()
-    // Resume and Quick Replies are always visible — they must NOT live inside
-    // the desktop-only group.
-    const resume = screen.getByRole('button', { name: /resume session/i })
-    expect(secondary).not.toContainElement(resume)
-    expect(resume).not.toHaveClass('hidden')
-    const quickReplies = screen.getByRole('button', { name: /quick replies/i })
-    expect(secondary).not.toContainElement(quickReplies)
-  })
-
-  it('keeps the essentials (title + account chip) visible when narrow', () => {
-    renderCard(rich)
-    const identity = screen.getByTestId('card-identity')
-    expect(within(identity).getByText('Fix login bug')).not.toHaveClass('hidden')
-    expect(within(identity).getByText('work')).not.toHaveClass('hidden')
+    expect(within(screen.getByTestId('card-identity')).getByText('Fix login bug')).not.toHaveClass('hidden')
+    expect(within(screen.getByTestId('card-identity')).getByText('work')).not.toHaveClass('hidden')
+    expect(screen.getByLabelText(/^Status:/)).not.toHaveClass('hidden')
   })
 })
 
-// Badge-footer contract (session-card overlap fix).
-// The secondary badges used to live in a single non-wrapping, non-shrinking
-// cluster inside the context row. With a badge-rich session (goal + autopilot +
-// provenance + PRs) that cluster was WIDER than the row, so it overflowed the
-// card border and painted underneath the hover action buttons — measured
-// 25–32px of real overlap at a wide (≥505px) sidebar. The fix moves the badges
-// into a dedicated footer row that (a) wraps, so any badge count stays inside
-// the card, and (b) is a sibling of the open-session button, so its interactive
-// chips (PR popover, provenance link, Fix-PR) are no longer nested-interactive
-// violations. These tests lock both properties.
-describe('SessionCard badge footer', () => {
-  const rich: Session = {
-    ...base,
-    activeGoal: 'ship the thing',
-    autoArchiveOptOut: true,
-    assistedBy: 'autopilot',
-    prs: [
-      { number: 1, url: 'u1', state: 'open', checks: 'passing', title: 'A', deployed: true },
-      { number: 2, url: 'u2', state: 'open', checks: 'passing', title: 'B', deployed: false },
-    ],
-  }
-
-  it('collects the secondary badges into a wrapping footer row', () => {
+// Unified actions contract: Resume (✦) and the ⋯ menu are the ONLY action
+// controls, permanently visible on every device — no hover-revealed icon row,
+// no desktop/mobile split, no separate quick-replies dropdown.
+describe('SessionCard unified actions', () => {
+  it('shows Resume and More-actions as the only inline action buttons', () => {
     renderCard(rich)
-    const footer = screen.getByTestId('card-badges')
-    // `flex-wrap` is the overflow-safety property: N badges lay out inside the
-    // card at any width instead of exceeding the row and colliding with the
-    // action buttons. Wide-card-only, like the badges it hosts.
-    expect(footer).toHaveClass('flex-wrap', 'hidden', '@md:flex')
-    expect(footer).toContainElement(screen.getByTestId('card-goal'))
-    expect(footer).toContainElement(screen.getByTestId('card-no-autoarchive-badge'))
-    expect(footer).toContainElement(screen.getByTestId('card-provenance'))
-    expect(footer).toContainElement(screen.getByTestId('card-prs'))
+    expect(screen.getByRole('button', { name: /resume session/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /more actions for session/i })).toBeInTheDocument()
+    // The old split is gone: no desktop-only group, no standalone quick-replies
+    // trigger, no always-visible rename/archive/delete icons.
+    expect(screen.queryByTestId('card-secondary-actions')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /quick replies for/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^rename session/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^archive session/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^delete session/i })).not.toBeInTheDocument()
   })
 
-  it('renders no footer row when the session has no badges', () => {
-    renderCard(base)
-    // An empty flex row still costs gap/margin height — it must not mount.
-    expect(screen.queryByTestId('card-badges')).not.toBeInTheDocument()
+  it('never hides the action cluster behind hover', () => {
+    renderCard(rich)
+    const more = screen.getByRole('button', { name: /more actions for session/i })
+    // The old cluster used opacity-0 + group-hover reveal; the new one is static.
+    expect(more.closest('[class*="opacity-0"]')).toBeNull()
   })
 
+  it('the ⋯ button stays available while the session is busy (management actions must not vanish)', () => {
+    renderCard({ ...base, status: 'in_progress' })
+    expect(screen.getByRole('button', { name: /more actions for session/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /resume session/i })).not.toBeInTheDocument()
+  })
+})
+
+describe('SessionCard interaction surface', () => {
   it('keeps interactive elements out of the open-session button (nested-interactive)', () => {
-    renderCard(rich)
+    renderCard(rich, { prAutofixMode: 'propose' })
     const open = screen.getByRole('button', { name: /open session/i })
-    // Nested <button>/<a> inside the open button is invalid HTML and an axe
-    // nested-interactive violation; it also made badge clicks fight the
-    // open-session click. The button may contain text and passive spans only.
     expect(open.querySelectorAll('button, a, [tabindex]')).toHaveLength(0)
   })
 
-  it('keeps the status pill pinned in the context row at every width', () => {
-    renderCard(rich)
-    const context = screen.getByTestId('card-context')
-    // The pill is the context row's ONLY chip — placement can't vary with badge
-    // count anymore (badges live in the footer). Not gated: visible when narrow.
-    expect(within(context).getByLabelText(/^Status:/)).toBeInTheDocument()
-    expect(context).not.toContainElement(screen.getByTestId('card-prs'))
-    expect(context).not.toContainElement(screen.getByTestId('card-goal'))
+  it('clicking the context row (empty card area) opens the session', () => {
+    const onOpen = vi.fn()
+    renderCard(rich, { onOpen })
+    fireEvent.click(screen.getByTestId('card-context'))
+    expect(onOpen).toHaveBeenCalledWith('1')
+  })
+
+  it('clicking an interactive chip does NOT also open the session', () => {
+    const onOpen = vi.fn()
+    renderCard(rich, { onOpen })
+    fireEvent.click(screen.getByTestId('card-provenance'))
+    expect(onOpen).not.toHaveBeenCalled()
   })
 })

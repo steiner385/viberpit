@@ -90,6 +90,106 @@ async def test_window_limit_none_returns_all_turns(tmp_path):
     assert "r0" in texts
 
 
+def _write_megaturn_transcript(tmp_path, n_pre_turns: int, n_asst_msgs: int):
+    """n_pre_turns completed user+assistant pairs, then ONE user prompt ("big")
+    followed by n_asst_msgs assistant messages — the shape of a tool-heavy
+    logical turn, where every SDK step is its own assistant JSONL entry."""
+    p = tmp_path / "mega.jsonl"
+    lines = []
+    for i in range(n_pre_turns):
+        lines.append({"type": "user", "uuid": f"u{i}",
+                      "message": {"content": f"q{i}"}})
+        lines.append({"type": "assistant", "uuid": f"a{i}",
+                      "message": {"model": "claude-x",
+                                  "content": [{"type": "text", "text": f"r{i}"}],
+                                  "usage": {"input_tokens": 1}}})
+    lines.append({"type": "user", "uuid": "u-big", "message": {"content": "big"}})
+    for i in range(n_asst_msgs):
+        lines.append({"type": "assistant", "uuid": f"m{i}",
+                      "message": {"model": "claude-x",
+                                  "content": [{"type": "text", "text": f"step{i}"}],
+                                  "usage": {"input_tokens": 1}}})
+    p.write_text("\n".join(json.dumps(o) for o in lines))
+    return str(p)
+
+
+def _user_texts(window):
+    from server.sessions import events as ev
+    return [e.text for e in window.events if isinstance(e, ev.UserMessage)]
+
+
+@pytest.mark.asyncio
+async def test_midturn_tail_window_includes_owning_user_prompt(tmp_path):
+    """A logical turn longer than the window limit must not lose its own prompt:
+    the tail window slices into the middle of the mega-turn (turn counting is per
+    assistant message), so without the prepend the replay carries the turn's
+    content with NO UserMessage at all. Client-side that leaves the sent-prompt
+    buffer unconsumed, and every reconnect re-asserts the prompt at the very
+    bottom of the transcript — the "last prompt stuck at the bottom" bug."""
+    from server.sessions import events as ev
+    path = _write_megaturn_transcript(tmp_path, 3, 30)   # 33 assistant messages total
+    w = await replay_window(path, limit=20)
+    assert w.total_turns == 33
+    assert w.earliest_turn == 13                         # window = m13..m29 region
+    assert _user_texts(w) == ["big"]
+    # The owning prompt renders ABOVE the turn content: it precedes every TurnStart.
+    first_ts = next(i for i, e in enumerate(w.events) if isinstance(e, ev.TurnStart))
+    user_at = next(i for i, e in enumerate(w.events) if isinstance(e, ev.UserMessage))
+    assert user_at < first_ts
+
+
+@pytest.mark.asyncio
+async def test_midturn_pagination_window_includes_owning_user_prompt(tmp_path):
+    """Scrolling back within a mega-turn pages in windows that also start
+    mid-turn — they get the same owning-prompt prepend (the client dedupes the
+    repeated turn id across pages)."""
+    path = _write_megaturn_transcript(tmp_path, 3, 30)
+    w = await replay_window(path, before=23, limit=10)   # m10..m19: mid-mega-turn
+    assert _user_texts(w) == ["big"]
+
+
+@pytest.mark.asyncio
+async def test_window_starting_at_turn_boundary_gains_no_extra_prompt(tmp_path):
+    """A window whose head already sits on a user boundary is unchanged."""
+    path = _write_transcript(tmp_path, 50)
+    w = await replay_window(path, limit=20)              # turns 30..49, u30 included
+    from server.sessions import events as ev
+    users = [e.text for e in w.events if isinstance(e, ev.UserMessage)]
+    assert users == [f"q{i}" for i in range(30, 50)]     # exactly the window's own
+    # None of them is a boundary copy — every one sits at its real position.
+    assert not any(e.owner_prefix for e in w.events if isinstance(e, ev.UserMessage))
+
+
+@pytest.mark.asyncio
+async def test_owning_prompt_prepend_is_marked_owner_prefix(tmp_path):
+    """The prepended copy is flagged on the wire so the client can tell a page-boundary
+    prompt from one at its real position. Without the mark the client can only guess
+    ("the older page wins"), and the misplaced copy — a user turn, so it carries no
+    ordinal — is invisible to the order telemetry (#1020)."""
+    from server.sessions import events as ev
+    path = _write_megaturn_transcript(tmp_path, 3, 30)
+    w = await replay_window(path, before=23, limit=10)   # mid-mega-turn: gets the prepend
+    users = [e for e in w.events if isinstance(e, ev.UserMessage)]
+    assert [e.text for e in users] == ["big"]
+    assert users[0].owner_prefix is True
+    assert users[0].to_wire()["ownerPrefix"] is True
+    # The mark is on the COPY only: the same record in a window that holds its real
+    # position stays unmarked, which is what makes the client's merge rule decidable.
+    full = await replay_window(path, limit=None)
+    real = [e for e in full.events if isinstance(e, ev.UserMessage) and e.text == "big"]
+    assert len(real) == 1 and real[0].owner_prefix is False
+    assert real[0].to_wire()["ownerPrefix"] is False
+
+
+@pytest.mark.asyncio
+async def test_trimmed_open_megaturn_prompt_stays_out(tmp_path):
+    """drop_incomplete_turn trims the whole open turn — its prompt must NOT be
+    re-added by the mid-turn prepend (the live resupply owns that turn)."""
+    path = _write_megaturn_transcript(tmp_path, 3, 30)
+    w = await replay_window(path, limit=20, drop_incomplete_turn=True)
+    assert "big" not in _user_texts(w)
+
+
 @pytest.mark.asyncio
 async def test_replay_events_wrapper_unchanged(tmp_path):
     path = _write_transcript(tmp_path, 30)
@@ -109,3 +209,49 @@ async def test_replay_events_max_turns_none_returns_all(tmp_path):
     from server.sessions import events as ev
     starts = [e for e in events if isinstance(e, ev.TurnStart)]
     assert len(starts) == 30
+
+
+@pytest.mark.asyncio
+async def test_window_turnstarts_carry_turn_index_in_cursor_space(tmp_path):
+    """Each in-window TurnStart is stamped with its ordinal in the same space the
+    `?before=` cursor / `earliest_turn` index, so the client can verify that page
+    merges keep turn order (the page-boundary ordering bug, session 888ad2bf)."""
+    from server.sessions import events as ev
+    path = _write_transcript(tmp_path, 50)
+    w = await replay_window(path, before=30, limit=20)
+    idx = [e.turn_index for e in w.events if isinstance(e, ev.TurnStart)]
+    assert idx == list(range(10, 30))
+    assert idx[0] == w.earliest_turn
+
+
+@pytest.mark.asyncio
+async def test_window_turn_index_survives_owner_prefix_and_meta(tmp_path):
+    """The owning-prompt prepend and the SessionMeta prepend shift list positions
+    but must not shift ordinals."""
+    from server.sessions import events as ev
+    path = _write_megaturn_transcript(tmp_path, 3, 30)     # 33 assistant messages
+    w = await replay_window(path, before=23, limit=10)     # m10..m19, prefixed with "big"
+    starts = [e for e in w.events if isinstance(e, ev.TurnStart)]
+    # Cursor space counts ALL turns (the 3 pre-turns too), so m10 (the 14th assistant
+    # entry, 0-indexed 13) carries turn_index 13, matching w.earliest_turn below —
+    # not its bare "m" suffix.
+    assert [e.turn_index for e in starts] == list(range(13, 23))
+    assert starts[0].turn_index == w.earliest_turn
+    assert isinstance(w.events[0], ev.SessionMeta)
+    assert isinstance(w.events[1], ev.UserMessage)
+
+
+def test_live_turnstart_has_no_turn_index():
+    """Live-translated turns are not positioned in the disk turn space."""
+    from server.sessions import events as ev
+    assert ev.TurnStart("a").to_wire()["turnIndex"] is None
+
+
+@pytest.mark.asyncio
+async def test_replay_events_turn_index_shares_cursor_space(tmp_path):
+    """`_parse` is `_window(before=None, …)`, so replay_events consumers see the
+    same untrimmed ordinals a `?before=` page would — never a different numbering."""
+    from server.sessions import events as ev
+    path = _write_transcript(tmp_path, 5)
+    events = await replay_events(path, max_turns=2)
+    assert [e.turn_index for e in events if isinstance(e, ev.TurnStart)] == [3, 4]

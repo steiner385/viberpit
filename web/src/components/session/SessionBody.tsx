@@ -17,11 +17,14 @@ import { WorkingIndicator } from './WorkingIndicator'
 import { CondensingProgress } from './CondensingProgress'
 import { PendingQuestionPanel } from './PendingQuestionPanel'
 import { PendingPermissionPanel } from './PendingPermissionPanel'
+import { InterruptedAskNotice } from './InterruptedAskNotice'
+import { YourTurnPanel } from './YourTurnPanel'
+import { PendingModelApprovalPanel } from './PendingModelApprovalPanel'
 import { SessionAriaLive } from './SessionAriaLive'
 import { statusTier } from '@/session/statusTier'
 import { selectRunningSubAgentCount } from '@/session/selectors'
 import { BrowserTab } from '../BrowserTab'
-import { useModels, useAccounts, useSessions } from '@/api/hooks'
+import { useModels, useAccounts, useSessions, useModelApproval, useSetAccountPin } from '@/api/hooks'
 import { ExportMenu } from './ExportMenu'
 import { ModelSwitchDialog } from './ModelSwitchDialog'
 
@@ -32,6 +35,8 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
   const { data: sessions = [] } = useSessions()
   const sessionRecord = sessions.find((s) => s.id === rt.sessionId)
   const pinned = sessionRecord?.accountPinned ?? false
+  const { mutate: modelApproval, isPending: modelApprovalPending } = useModelApproval()
+  const setAccountPin = useSetAccountPin()
 
   // Whether the x11/browser feature is available on this server.
   // Starts as false (unknown); set to true only when /api/x11/metrics returns
@@ -40,9 +45,10 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
   // Active tab: 'conversation' (default) or 'browser'
   const [activeTab, setActiveTab] = useState<'conversation' | 'browser'>('conversation')
 
-  // Model id awaiting confirmation: switching model on a BUSY session stops the
-  // in-flight turn and restarts it on the new model, so the picker gates on a
-  // confirm dialog instead of firing immediately. Non-busy tiers fire directly.
+  // Model id awaiting confirmation: switching model on a BUSY session either stops
+  // the in-flight turn and restarts it on the new model, or waits for the turn to
+  // finish — so the picker gates on a choice dialog instead of firing immediately.
+  // Non-busy tiers switch directly.
   const [pendingModelId, setPendingModelId] = useState<string | null>(null)
 
   useEffect(() => {
@@ -70,7 +76,9 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
       <div className="flex-shrink-0">
         <SessionMeta
           account={rt.account}
-          model={rt.state.model}
+          model={rt.model}
+          liveModel={rt.liveModel}
+          modelPending={rt.modelPending}
           mode={rt.mode}
           contextPct={rt.contextPct}
           quota={rt.quota}
@@ -83,10 +91,11 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
           accountPinned={pinned}
           onSelectModel={(id) => {
             if (statusTier(rt.state.status.state) === 'busy') setPendingModelId(id)
-            else rt.onCommand('model', id)
+            else rt.onSetModel(id, 'now')
           }}
           onSelectAccount={(name) => rt.onCommand('account', name)}
           onSetMode={rt.onSetMode}
+          onUnpin={() => setAccountPin.mutate({ id: rt.sessionId, pinned: false })}
         />
       </div>
 
@@ -96,8 +105,8 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
           role="tablist"
           aria-label="Session view"
           className={cn(
-            'flex-shrink-0 flex border-b border-border',
-            'bg-background text-sm',
+            'flex-shrink-0 flex border-b border-edge',
+            'bg-canvas text-sm',
           )}
         >
           <button
@@ -109,8 +118,8 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
             className={cn(
               'px-4 py-2 font-medium',
               activeTab === 'conversation'
-                ? 'border-b-2 border-primary text-foreground'
-                : 'text-muted-foreground hover:text-foreground',
+                ? 'border-b-2 border-accent text-ink'
+                : 'text-ink-muted hover:text-ink',
             )}
           >
             Conversation
@@ -124,8 +133,8 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
             className={cn(
               'px-4 py-2 font-medium',
               activeTab === 'browser'
-                ? 'border-b-2 border-primary text-foreground'
-                : 'text-muted-foreground hover:text-foreground',
+                ? 'border-b-2 border-accent text-ink'
+                : 'text-ink-muted hover:text-ink',
             )}
           >
             Browser
@@ -212,11 +221,36 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
                 permission below the fold left the user with a "Permission needed" status
                 and no reachable buttons (just a "scroll up" banner). Pinning it above the
                 composer keeps the controls always visible. */}
+            <InterruptedAskNotice
+              interruptedFromStatus={sessionRecord?.interruptedFromStatus}
+              onAskAgain={() => rt.onPrompt(
+                'The permission or plan approval you were waiting on was lost when the '
+                + 'daemon restarted — I never saw it. Please re-request whatever you need '
+                + 'approved, or tell me where things stand.',
+                [],
+              )}
+            />
+
             <PendingPermissionPanel
               turns={rt.state.turns}
               permissionMode={rt.mode}
               onDecision={rt.onDecision}
             />
+
+            {/* Pinned model-approval panel for a mid-session gated model switch.
+                `pendingModel` is read from the session record (server source of truth for
+                approval state) — not the reducer, which tracks transcript model events only. */}
+            {sessionRecord?.pendingModel && (
+              <PendingModelApprovalPanel
+                model={sessionRecord.pendingModel}
+                reason={sessionRecord.pendingModelReason}
+                requestedBy={sessionRecord.pendingModelRequestedBy}
+                onDecision={(decision, model) =>
+                  modelApproval({ id: rt.sessionId, decision, model })
+                }
+                pending={modelApprovalPending}
+              />
+            )}
 
             {/* Pinned answer panel for the live open question (answer in place). Lives
                 here in SessionBody so BOTH the mobile SessionView and the desktop
@@ -228,6 +262,24 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
               onAnswer={rt.onAnswer}
               onChat={rt.onChat}
               armedQuestionId={rt.armedQuestionId}
+            />
+
+            {/* Pinned "Your turn" call-to-action for a finished turn. The session
+                list flags these sessions loudly, but inside the session the only
+                cue was a calm gray pill and an ask buried in transcript prose —
+                so pin an explicit CTA with the cached suggestions as one-tap
+                replies (see YourTurnPanel). */}
+            <YourTurnPanel
+              statusState={rt.state.status.state}
+              // A detached done session never received a live `suggestions` WS
+              // event, so runtime state is empty — fall back to the record cache
+              // (the same source the session card's chips render from).
+              suggestions={
+                rt.state.latestSuggestions.length > 0
+                  ? rt.state.latestSuggestions
+                  : sessionRecord?.latestSuggestions ?? []
+              }
+              onPrompt={rt.onPrompt}
             />
 
             {/* sr-only aria-live mirror (owns its own ref + effect) */}
@@ -258,15 +310,15 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
         return <div {...convoWrapperProps}>{conversationPanel}</div>
       })()}
 
-      {/* Confirm stop-and-restart before switching model on a busy session. Cancel
-          just closes: the <select> is controlled by the record model, so it snaps
-          back on its own. */}
+      {/* Choose stop-now vs after-this-turn before switching model on a busy
+          session. Cancel just closes: the <select> is controlled by rt.model (the
+          record's chosen alias), so it snaps back on its own. */}
       {pendingModelId !== null && (
         <ModelSwitchDialog
           modelLabel={models.find((m) => m.id === pendingModelId)?.label ?? pendingModelId}
           onClose={() => setPendingModelId(null)}
-          onConfirm={() => {
-            rt.onCommand('model', pendingModelId)
+          onConfirm={(when) => {
+            rt.onSetModel(pendingModelId, when)
             setPendingModelId(null)
           }}
         />

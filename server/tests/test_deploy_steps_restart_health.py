@@ -2,27 +2,18 @@ from types import SimpleNamespace
 from server.deploy import steps
 
 
-def test_daemon_restarts_before_edge():
+def test_restart_edge_restarts_only_the_edge_unit(monkeypatch):
+    """restart_edge is edge-only now — runner (daemon) restarts, local and remote, are owned
+    by server.deploy.runners and run BEFORE it. The env var that used to steer restart_units'
+    daemon branch must have no effect here at all."""
+    monkeypatch.setenv("CCSWITCH_DAEMON_SSH_HOST", "tony@rocky")
     order = []
     def run(cmd, **kw):
-        if "restart" in cmd:
-            order.append(cmd[-1])
+        order.append(cmd)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
-    units = steps.restart_units(daemon_changed=True, daemon_enabled=True, run=run)
-    assert units == ["ccswitch-daemon.service", "ccswitch.service"]
-    assert order == ["ccswitch-daemon.service", "ccswitch.service"]
-
-
-def test_edge_only_restarts_edge_alone():
-    units = steps.restart_units(daemon_changed=False, daemon_enabled=True,
-                                run=lambda c, **k: SimpleNamespace(returncode=0, stdout="", stderr=""))
+    units = steps.restart_edge(run=run)
     assert units == ["ccswitch.service"]
-
-
-def test_daemon_disabled_skips_daemon_restart():
-    units = steps.restart_units(daemon_changed=True, daemon_enabled=False,
-                                run=lambda c, **k: SimpleNamespace(returncode=0, stdout="", stderr=""))
-    assert units == ["ccswitch.service"]
+    assert order == [["sudo", "systemctl", "restart", "ccswitch.service"]]
 
 
 def test_health_requires_both_status_and_sha():
@@ -68,11 +59,15 @@ def test_gate_fetch_timeout_outlasts_a_slow_but_healthy_healthz(monkeypatch):
     assert captured["timeout"] >= 6.0
 
 
-def test_remote_daemon_configured_reads_ssh_host(monkeypatch):
-    """A REMOTE daemon is present iff CCSWITCH_DAEMON_SSH_HOST is set — the same env var
-    restart_units uses to decide whether the daemon restart is issued over ssh. One source of
-    truth so the health window and the restart path never disagree about the topology."""
+def test_remote_runners_configured_reads_the_fleet(monkeypatch):
+    """A REMOTE runner is present iff the fleet has an enabled host with an ssh_host — the
+    registry, not an env var, is the one source of truth for topology now."""
+    from server.deploy.runners import RunnerTarget
     monkeypatch.delenv("CCSWITCH_DAEMON_SSH_HOST", raising=False)
-    assert steps.remote_daemon_configured() is False
-    monkeypatch.setenv("CCSWITCH_DAEMON_SSH_HOST", "rocky")
-    assert steps.remote_daemon_configured() is True
+    local = RunnerTarget(name="dobby", endpoint="https://d", enabled=True, healthy=True,
+                         ssh_host=None, repo_path=None)
+    remote = RunnerTarget(name="rocky", endpoint="https://r", enabled=True, healthy=True,
+                          ssh_host="rocky", repo_path="/srv/cc")
+    assert steps.remote_runners_configured(None) is False
+    assert steps.remote_runners_configured([local]) is False
+    assert steps.remote_runners_configured([local, remote]) is True

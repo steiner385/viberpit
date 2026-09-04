@@ -1,5 +1,41 @@
 import json
+import subprocess
+
+import pytest
+
 from server.deploy import steps
+
+
+def test_default_gh_api_authenticates_as_app(monkeypatch):
+    """The deploy gate's default gh reader authenticates as the deploy repo's App
+    installation, not an ambient GITHUB_TOKEN in the process environment (issue #913).
+    Non-zero must still raise CalledProcessError (the ci_verdict/publish contract)."""
+    from types import SimpleNamespace
+
+    from ccswitch import gitrepos
+    monkeypatch.setattr(gitrepos, "_app_token", lambda owner: f"ghs_{owner}")
+    seen = {}
+
+    def fake_run_gh(args, token=None, *, input=None, timeout=None):
+        seen["token"] = token
+        seen["args"] = args
+        return SimpleNamespace(returncode=0, stdout='{"ok":true}', stderr="",
+                               args=["gh", *args])
+
+    monkeypatch.setattr(gitrepos, "_run_gh", fake_run_gh)
+    out = steps._default_gh_api("repos/{owner}/{repo}/commits/abc/check-runs")
+    assert out == '{"ok":true}'
+    assert seen["token"] == f"ghs_{steps._DEPLOY_OWNER}"  # App token for steiner385
+
+    # A non-zero gh must surface as CalledProcessError carrying stderr, so
+    # _gh_err_reason and the "any raise → unavailable" callers still work.
+    def failing(args, token=None, *, input=None, timeout=None):
+        return SimpleNamespace(returncode=1, stdout="", stderr="gh: HTTP 403",
+                               args=["gh", *args])
+
+    monkeypatch.setattr(gitrepos, "_run_gh", failing)
+    with pytest.raises(subprocess.CalledProcessError):
+        steps._default_gh_api("repos/{owner}/{repo}/commits/abc/check-runs")
 
 
 def _runs(*concs, status="completed"):

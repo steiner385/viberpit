@@ -31,6 +31,7 @@ from server.app import create_app
 from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.fakes.fake_sdk import FakeSDKClient
 from server.tests.fakes import fake_sdk as f
+from server.tests.fakes.fake_sdk import PerQueryScript
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -527,7 +528,7 @@ def test_replay_complete_reports_turn_extent(ws_env, tmp_path):
 # Permission round-trip: tool needs permission, allow lets it proceed
 # ---------------------------------------------------------------------------
 
-class _PermissionFakeClient(FakeSDKClient):
+class _PermissionFakeClient(PerQueryScript, FakeSDKClient):
     """Fake client that invokes can_use_tool before streaming, simulating a
     tool that requires interactive approval, then proceeds once approved."""
 
@@ -589,17 +590,23 @@ def test_unknown_permission_and_interrupt_safe(ws_env):
         ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
         _drain_events(ws, until_type="replayComplete")
 
-        # Unknown permId — must not crash, no error frame expected.
+        # Unknown permId — must not crash, and must NOT be a silent no-op either:
+        # a decision the daemon can't apply is reported (PERMISSION_NOT_PENDING),
+        # the sibling of the answerQuestion silent-drop that froze a session on
+        # 2026-09-02 (see test_ws_rejected_answer.py).
         ws.send_text(json.dumps({
             "type": "permissionResponse", "sessionId": session_id,
             "permId": "does-not-exist", "decision": "allow",
         }))
+        events = _drain_events(ws, until=lambda e: e.get("type") == "error", timeout=4.0)
+        err = next((e for e in events if e.get("type") == "error"), None)
+        assert err is not None and err.get("code") == "PERMISSION_NOT_PENDING"
         # interrupt is accepted.
         ws.send_text(json.dumps({"type": "interrupt", "sessionId": session_id}))
 
         # Send a benign unknown frame and confirm we get a well-formed error back.
         ws.send_text(json.dumps({"type": "bogus", "sessionId": session_id}))
-        events = _drain_events(ws, until_type="error", timeout=4.0)
+        events = _drain_events(ws, until=lambda e: e.get("type") == "error", timeout=4.0)
         err = next((e for e in events if e.get("type") == "error"), None)
         assert err is not None and err.get("code") == "UNKNOWN_TYPE"
 
@@ -610,7 +617,7 @@ def test_unknown_permission_and_interrupt_safe(ws_env):
 # answerQuestion round-trip: model asks a question, user answers it
 # ---------------------------------------------------------------------------
 
-class _QuestionFakeClient(FakeSDKClient):
+class _QuestionFakeClient(PerQueryScript, FakeSDKClient):
     """Fake client that invokes can_use_tool with AskUserQuestion before streaming,
     blocks until the user answers, then finishes the turn (echoing the chosen answer)."""
 
@@ -674,7 +681,7 @@ def test_answer_question_round_trip(ws_env):
 # Reattach re-emits pending questions (the critical reattach gap fix)
 # ---------------------------------------------------------------------------
 
-class _QuestionBlockingFakeClient(FakeSDKClient):
+class _QuestionBlockingFakeClient(PerQueryScript, FakeSDKClient):
     """Fake client that triggers AskUserQuestion and stays blocked until answered.
 
     Unlike _QuestionFakeClient it does NOT yield a result after the question — it just
@@ -775,7 +782,7 @@ def test_reattach_reemits_pending_question(ws_env):
 # Yes/No card instead of Approve & run / Keep planning).
 # ---------------------------------------------------------------------------
 
-class _PlanPermissionBlockingFakeClient(FakeSDKClient):
+class _PlanPermissionBlockingFakeClient(PerQueryScript, FakeSDKClient):
     """Fake client that requests an ExitPlanMode permission and stays blocked until
     resolved, so the test can detach mid-permission and reattach to verify the
     re-emitted permissionRequest carries plan=True."""
@@ -891,7 +898,7 @@ def test_reattach_reemits_queue(ws_env):
     """A client attaching to a live session with a queued prompt receives a
     queueUpdate frame carrying the queued item (regression: previously only the
     status count was re-emitted, so queued chips vanished on navigation)."""
-    class BusySDK(FakeSDKClient):
+    class BusySDK(PerQueryScript, FakeSDKClient):
         """Fake client whose turn never completes, so a second prompt queues."""
         async def receive_response(self):
             yield f.stream_start(uuid="t1")
@@ -918,6 +925,25 @@ def test_reattach_reemits_queue(ws_env):
     qu = [e for e in events if e.get("type") == "queueUpdate"]
     assert qu, f"no queueUpdate on reattach; saw {[e.get('type') for e in events]}"
     assert qu[-1]["items"] == [{"text": "second", "images": []}]
+
+    client.portal.call(orch.close_session, session_id)
+
+
+def test_attach_reemits_empty_queue(ws_env):
+    """Attach re-emits the queue even when it is EMPTY. A client that missed the
+    live QueueUpdate([]) when the queue drained (WS gap mid-dequeue) otherwise
+    renders its stale queued chip forever — nothing else ever clears it."""
+    _app, orch, client = ws_env([])
+    session = client.portal.call(orch.create_session, "q-empty")
+    session_id = session.id
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        events = _drain_events(ws, until_type="queueUpdate", timeout=8.0)
+
+    qu = [e for e in events if e.get("type") == "queueUpdate"]
+    assert qu, f"no queueUpdate on attach with empty queue; saw {[e.get('type') for e in events]}"
+    assert qu[-1]["items"] == []
 
     client.portal.call(orch.close_session, session_id)
 
@@ -1211,4 +1237,45 @@ def test_activity_message_stamps_last_user_interaction_at(ws_env):
     assert orch._records[session_id].last_user_interaction_at is not None, (
         "activity frame must stamp last_user_interaction_at on the session record"
     )
+    client.portal.call(orch.close_session, session_id)
+
+
+# ---------------------------------------------------------------------------
+# prompt + interrupt:true — "interrupt and post" instead of queueing
+# ---------------------------------------------------------------------------
+
+def test_prompt_with_interrupt_flag_stops_turn_and_sends(ws_env):
+    """A ``prompt`` frame carrying ``interrupt: true`` while a turn is live must stop
+    that turn (SDK interrupt) and run the new text as the next turn — not park it in
+    the FIFO behind the running one."""
+    class StuckThenQuick(FakeSDKClient):
+        async def query(self, prompt: str):
+            self.sent.append(prompt)
+            if len(self.sent) == 1:
+                self._deliver([f.stream_start(uuid="t1")])   # never closes on its own
+            else:
+                self._deliver([f.result(uuid=f"r{len(self.sent)}")])
+
+    _app, orch, client = ws_env([], client_cls=StuckThenQuick)
+    session = client.portal.call(orch.create_session, "ias-ws")
+    session_id = session.id
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        _drain_events(ws, until_type="replayComplete")
+        ws.send_text(json.dumps({"type": "prompt", "sessionId": session_id, "text": "first"}))
+        _drain_events(ws, until=lambda e: e.get("type") == "status" and "state" in e, timeout=8.0)
+        ws.send_text(json.dumps({"type": "prompt", "sessionId": session_id,
+                                 "text": "now", "interrupt": True}))
+        # The new prompt's echo proves it became a turn of its own.
+        events = _drain_events(
+            ws, until=lambda e: e.get("type") == "user" and e.get("text") == "now",
+            timeout=8.0)
+
+    sdk = orch._drivers[session_id]._client
+    assert sdk.interrupted is True, "interrupt:true must stop the live turn"
+    assert sdk.sent == ["first", "now"], sdk.sent
+    assert any(e.get("type") == "user" and e.get("text") == "now" for e in events), \
+        [e.get("type") for e in events]
+
     client.portal.call(orch.close_session, session_id)

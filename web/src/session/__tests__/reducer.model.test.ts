@@ -27,4 +27,25 @@ describe('turnModel reducer', () => {
     const s = run([{ type: 'turnModel', turnId: 'ghost', model: 'claude-opus-4-8' }])
     expect(s.turns).toHaveLength(0)
   })
+
+  it('a main-thread turnModel refreshes state.model (the live producing model)', () => {
+    // sessionMeta only carries the LAUNCH model (SDK init). After a /model switch
+    // the next turn's AssistantMessage.model is the truth — without this, the
+    // "model in use" readout stayed pinned to the launch default forever.
+    const s = run([
+      { type: 'sessionMeta', model: 'claude-fable-5', sessionId: 's1' },
+      { type: 'turnStart', turnId: 't1' },
+      { type: 'turnModel', turnId: 't1', model: 'claude-opus-4-8' },
+    ])
+    expect(s.model).toBe('claude-opus-4-8')
+  })
+
+  it('a sub-thread turnModel does NOT touch state.model', () => {
+    const s = run([
+      { type: 'sessionMeta', model: 'claude-opus-4-8', sessionId: 's1' },
+      { type: 'turnStart', turnId: 'st1', parentToolUseId: 'task1' },
+      { type: 'turnModel', turnId: 'st1', model: 'claude-haiku-4-5', parentToolUseId: 'task1' },
+    ])
+    expect(s.model).toBe('claude-opus-4-8')
+  })
 })

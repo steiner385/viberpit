@@ -1,0 +1,46 @@
+/* Initiative board layout. Tokens (--surface/--border/--accent/…) come from
+   .prdash-root in plotroom.css, which wraps this board — so these rules only add
+   layout, never re-declare colors. */
+.init-board { padding: 12px 14px; }
+.init-board-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-bottom: 12px;
+}
+.init-board-title { font-size: 16px; font-weight: 700; color: var(--text); margin: 0; }
+
+.init-empty { color: var(--muted); font-size: 13px; }
+
+.init-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  padding: 12px 14px; margin-bottom: 10px;
+}
+.init-card-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 12px; margin-bottom: 10px;
+}
+.init-title { font-size: 14px; font-weight: 700; color: var(--text); margin: 0 0 2px; }
+.init-meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 11px; }
+.init-slug { color: var(--muted); font-variant-numeric: tabular-nums; }
+.init-repo { color: var(--muted); }
+.init-status {
+  padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border);
+  color: var(--muted); font-weight: 600;
+}
+.init-status-active { color: var(--accent); border-color: var(--accent); }
+.init-status-blocked { color: var(--amber); border-color: var(--amber); }
+.init-status-done { color: var(--done); border-color: var(--done); }
+
+.init-advance { white-space: nowrap; flex: 0 0 auto; }
+/* Inline mutation failure (advance/create) — replaces the toast; --fail is a
+   plotroom token, matching .pm-error. */
+.init-error { color: var(--fail); font-size: 12px; margin: 0 0 8px; flex-basis: 100%; }
+
+.init-artifacts { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; align-items: center; }
+.init-artifact-pending { color: var(--muted); font-size: 12px; }
+.init-commit-link { margin-left: auto; }
+
+.init-new-form { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.init-new-form input {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  padding: 4px 8px; font-size: 12px; color: var(--text);
+}

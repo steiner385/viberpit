@@ -5,12 +5,16 @@ Every gh call is routed through the injected ``gh_run`` seam, so these tests use
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import subprocess
 from datetime import datetime, timezone
+from typing import Callable
 
+from ccswitch import gitrepos
 from server.automations.backlog_github import (
     claim_batch,
+    ensure_claim_labels,
     label_needs_human,
     query_candidates,
     query_claimed_refs,
@@ -24,6 +28,24 @@ from server.tests.fakes.fake_backlog import FakeGh
 
 def _proc(stdout: str = "", returncode: int = 0, stderr: str = "") -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+@contextlib.contextmanager
+def _app_tokens(mapping: dict[str, str] | None = None):
+    """Register a fake GitHub App token provider for the duration of the block —
+    ``owner -> "tok-<owner>"`` by default, or an explicit ``{owner: token}`` map
+    (missing owners resolve to ``None``, i.e. ambient auth). Always restores the
+    global provider afterward so tests never leak state to each other."""
+    fn: "Callable[[str], str | None]"
+    if mapping is None:
+        fn = lambda owner: f"tok-{owner}"  # noqa: E731
+    else:
+        fn = lambda owner: mapping.get(owner)  # noqa: E731
+    gitrepos.set_token_provider(fn)
+    try:
+        yield
+    finally:
+        gitrepos.set_token_provider(None)
 
 
 # --------------------------------------------------------------------------- #
@@ -79,6 +101,33 @@ def test_query_candidates_synthesizes_url_when_api_omits_it():
     out = query_candidates({"enabled_repos": ["o/r"], "eligible_label": "ready"}, gh_run=fake)
     assert out == [{"ref": "o/r#9", "number": 9, "repo": "o/r", "title": "No url",
                     "body": None, "url": "https://github.com/o/r/issues/9"}]
+
+
+def test_query_candidates_skips_tracking_issue_with_open_sub_issues():
+    """An issue with OPEN sub-issues is a tracking epic, not implementable work:
+    its sub-issues ARE the work (spec 003 D1). The runner must never claim it
+    (#997 was claimed and then closed under ten open children). One whose
+    sub-issues are all done is ordinary work again and stays a candidate."""
+    nodes = [
+        {"number": 997, "title": "Epic: rollout", "url": "u997",
+         "repository": {"nameWithOwner": "o/r"},
+         "subIssues": {"nodes": [{"number": 988, "state": "OPEN"},
+                                 {"number": 987, "state": "CLOSED"}]}},
+        {"number": 50, "title": "Old epic, all done", "url": "u50",
+         "repository": {"nameWithOwner": "o/r"},
+         "subIssues": {"nodes": [{"number": 51, "state": "CLOSED"}]}},
+        {"number": 7, "title": "Fix login", "url": "u7",
+         "repository": {"nameWithOwner": "o/r"}},
+    ]
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout(nodes))})
+
+    out = query_candidates({"enabled_repos": ["o/r"], "eligible_label": "ready"}, gh_run=fake)
+
+    assert [c["number"] for c in out] == [50, 7]
+    # The candidate's OWN sub-issue states must ride along with the search
+    # (the fragment previously fetched only the parent's list, for ordering).
+    query = next(a for a in fake.calls[0] if a.startswith("query="))
+    assert query.count("subIssues(") >= 2
 
 
 def test_query_candidates_empty_enabled_repos_returns_empty_no_call():
@@ -271,6 +320,280 @@ def test_query_candidates_keeps_human_issues_without_author_field():
     assert [c["ref"] for c in out] == ["o/r#5"]
 
 
+def test_query_candidates_passes_owner_app_token_single_owner():
+    """When every enabled repo shares one owner, the single gh call carries that
+    owner's installation token (App-authenticated instead of ambient gh)."""
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout([]))})
+    with _app_tokens():
+        query_candidates({"enabled_repos": ["acme/r1", "acme/r2"], "eligible_label": ""},
+                         gh_run=fake)
+    assert fake.calls, "expected a gh api graphql call"
+    assert fake.tokens == ["tok-acme"]
+
+
+def test_query_candidates_no_provider_configured_uses_ambient_auth():
+    """No App configured (the default) → token=None on every call, i.e. current
+    ambient-gh behaviour is byte-for-byte unchanged."""
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout([]))})
+    query_candidates({"enabled_repos": ["acme/r1"], "eligible_label": ""}, gh_run=fake)
+    assert fake.tokens == [None]
+
+
+class OwnerRoutedGh:
+    """Routes graphql calls by which owner's repo the query targets, returning a
+    distinct node set per owner and recording (args, token) per call — used to
+    verify multi-owner grouping issues exactly one call per owner with that
+    owner's token, and merges every owner's results."""
+
+    def __init__(self, nodes_by_owner: dict[str, list[dict]], *, data_key: str = "issues"):
+        self.calls: list[list[str]] = []
+        self.tokens: list[str | None] = []
+        self._nodes_by_owner = nodes_by_owner
+        self._data_key = data_key
+
+    def __call__(self, args, token=None):
+        self.calls.append(list(args))
+        self.tokens.append(token)
+        query = next(a for a in args if a.startswith("query="))
+        for owner, nodes in self._nodes_by_owner.items():
+            if f"repo:{owner}/" in query:
+                return _proc(stdout=json.dumps({"data": {self._data_key: {"nodes": nodes}}}))
+        raise AssertionError(f"query did not target a known owner: {query}")
+
+
+def test_query_candidates_groups_by_owner_and_merges_results():
+    """Enabled repos spanning two owners must never send one owner's token
+    against another owner's repo (it would 404) — group by owner, one call per
+    owner, each with that owner's own token, merged into one candidate list."""
+    gh = OwnerRoutedGh({
+        "acme": [{"number": 1, "title": "acme issue",
+                  "repository": {"nameWithOwner": "acme/r1"}}],
+        "other": [{"number": 2, "title": "other issue",
+                   "repository": {"nameWithOwner": "other/r2"}}],
+    })
+    with _app_tokens():
+        out = query_candidates(
+            {"enabled_repos": ["acme/r1", "other/r2"], "eligible_label": ""}, gh_run=gh)
+
+    assert len(gh.calls) == 2, "one call per owner, not one call spanning both"
+    assert set(gh.tokens) == {"tok-acme", "tok-other"}
+    for call_args, token in zip(gh.calls, gh.tokens):
+        query = next(a for a in call_args if a.startswith("query="))
+        if "repo:acme/r1" in query:
+            assert token == "tok-acme"
+            assert "repo:other/r2" not in query
+        else:
+            assert "repo:other/r2" in query
+            assert token == "tok-other"
+            assert "repo:acme/r1" not in query
+    assert {c["ref"] for c in out} == {"acme/r1#1", "other/r2#2"}
+
+
+class OwnerFreshRetryGh:
+    """Routes graphql calls by owner, returning that owner's own fresh+retry
+    node sets (both pools, per call) — used to verify that grouping the
+    candidate query by owner (an AUTH decision) never reorders the product
+    invariant that fresh work always outranks a retry."""
+
+    def __init__(self, fresh_retry_by_owner: dict[str, tuple[list[dict], list[dict]]]):
+        self.calls: list[list[str]] = []
+        self._by_owner = fresh_retry_by_owner
+
+    def __call__(self, args, token=None):
+        self.calls.append(list(args))
+        query = next(a for a in args if a.startswith("query="))
+        for owner, (fresh, retry) in self._by_owner.items():
+            if f"repo:{owner}/" in query:
+                return _proc(stdout=_graphql_stdout_with_retry(fresh, retry))
+        raise AssertionError(f"query did not target a known owner: {query}")
+
+
+def test_query_candidates_owner_grouping_keeps_fresh_before_retry_globally():
+    """Regression for the ordering bug: grouping by owner (an AUTH decision)
+    must NOT change scheduling priority. With two owners, each contributing
+    one fresh and one retry item, every fresh item across BOTH owners must
+    precede every retry item in the merged output — never
+    owner1-fresh, owner1-retry, owner2-fresh, owner2-retry, which would let a
+    stale needs-human issue in one owner outrank fresh work in another."""
+    gh = OwnerFreshRetryGh({
+        "acme": (
+            [{"number": 1, "title": "acme fresh",
+              "repository": {"nameWithOwner": "acme/r1"}}],
+            [{"number": 2, "title": "acme retry",
+              "repository": {"nameWithOwner": "acme/r1"}}],
+        ),
+        "other": (
+            [{"number": 3, "title": "other fresh",
+              "repository": {"nameWithOwner": "other/r2"}}],
+            [{"number": 4, "title": "other retry",
+              "repository": {"nameWithOwner": "other/r2"}}],
+        ),
+    })
+    config = {"enabled_repos": ["acme/r1", "other/r2"], "eligible_label": "",
+              "needs_human_retry_days": 7}
+
+    out = query_candidates(config, gh_run=gh, now=_NOW)
+
+    refs = [c["ref"] for c in out]
+    assert set(refs) == {"acme/r1#1", "acme/r1#2", "other/r2#3", "other/r2#4"}
+    fresh_refs = {"acme/r1#1", "other/r2#3"}
+    retry_refs = {"acme/r1#2", "other/r2#4"}
+    last_fresh_index = max(refs.index(r) for r in fresh_refs)
+    first_retry_index = min(refs.index(r) for r in retry_refs)
+    assert last_fresh_index < first_retry_index, (
+        f"a retry item outranked a fresh item across owners: {refs}")
+
+
+class OwnerFailureGh:
+    """Routes graphql calls by owner; the named ``failing_owner`` gets a
+    non-zero-returncode failure, every other owner gets its scripted nodes —
+    used to verify ``_graphql_per_owner``'s per-owner failure isolation (one
+    bad owner must skip-and-continue, never blank out the rest)."""
+
+    def __init__(self, nodes_by_owner: dict[str, list[dict]], *, failing_owner: str,
+                 data_key: str = "issues"):
+        self.calls: list[list[str]] = []
+        self._nodes_by_owner = nodes_by_owner
+        self._failing_owner = failing_owner
+        self._data_key = data_key
+
+    def __call__(self, args, token=None):
+        self.calls.append(list(args))
+        query = next(a for a in args if a.startswith("query="))
+        if f"repo:{self._failing_owner}/" in query:
+            return _proc(returncode=1, stderr="boom")
+        for owner, nodes in self._nodes_by_owner.items():
+            if f"repo:{owner}/" in query:
+                return _proc(stdout=json.dumps({"data": {self._data_key: {"nodes": nodes}}}))
+        raise AssertionError(f"query did not target a known owner: {query}")
+
+
+def test_query_candidates_one_owner_gh_failure_does_not_blank_others():
+    """``_graphql_per_owner`` must tolerate ONE owner's gh call failing while
+    other owners succeed: a failing owner is logged and skipped (``continue``),
+    not treated as a reason to give up on the whole call (``return []``) —
+    which would silently drop every healthy owner's results too."""
+    gh = OwnerFailureGh({
+        "other": [{"number": 2, "title": "other issue",
+                   "repository": {"nameWithOwner": "other/r2"}}],
+    }, failing_owner="acme")
+    with _app_tokens():
+        out = query_candidates(
+            {"enabled_repos": ["acme/r1", "other/r2"], "eligible_label": ""}, gh_run=gh)
+
+    assert {c["ref"] for c in out} == {"other/r2#2"}
+
+
+# --------------------------------------------------------------------------- #
+# query_candidates — dependency gating (issue readiness)                       #
+# --------------------------------------------------------------------------- #
+
+def _issue(number: int, repo: str = "o/r", **extra) -> dict:
+    return {"number": number, "title": f"t{number}",
+            "url": f"https://github.com/{repo}/issues/{number}",
+            "repository": {"nameWithOwner": repo}, **extra}
+
+
+class DepGh:
+    """Routes the candidate search vs. the dependency-state lookup by query
+    content (the state lookup is the only one using ``issueOrPullRequest``),
+    recording every call so tests can assert whether a lookup happened."""
+
+    def __init__(self, candidates: list[dict],
+                 states: "dict[str, dict] | None" = None, *, states_rc: int = 0):
+        self.calls: list[list[str]] = []
+        self._candidates = candidates
+        self._states = states or {}
+        self._states_rc = states_rc
+
+    def __call__(self, args, token=None):
+        self.calls.append(list(args))
+        query = next(a for a in args if a.startswith("query="))
+        if "issueOrPullRequest" in query:
+            return _proc(stdout=json.dumps({"data": self._states}),
+                         returncode=self._states_rc)
+        return _proc(stdout=_graphql_stdout(self._candidates))
+
+    @property
+    def state_lookups(self) -> int:
+        return sum(1 for c in self.calls
+                   if "issueOrPullRequest" in next(a for a in c if a.startswith("query=")))
+
+
+_DEP_CFG = {"enabled_repos": ["o/r"], "eligible_label": "ready"}
+
+
+def test_query_candidates_query_fetches_dependency_fields():
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout([]))})
+    query_candidates(_DEP_CFG, gh_run=fake)
+    query = next(a for a in fake.calls[0] if a.startswith("query="))
+    assert "blockedBy" in query
+    assert "parent" in query
+    assert "trackedInIssues" in query
+
+
+def test_query_candidates_drops_natively_blocked_issue_without_lookup():
+    blocked = _issue(7, blockedBy={"nodes": [
+        {"number": 3, "state": "OPEN", "repository": {"nameWithOwner": "o/r"}}]})
+    gh = DepGh([blocked, _issue(12)])
+    out = query_candidates(_DEP_CFG, gh_run=gh)
+    assert [c["ref"] for c in out] == ["o/r#12"]
+    assert gh.state_lookups == 0  # native states arrive inline — no extra call
+
+
+def test_query_candidates_body_dep_closed_is_kept():
+    gh = DepGh([_issue(7, body="Depends on #12")],
+               states={"r0": {"nameWithOwner": "o/r",
+                              "i12": {"number": 12, "state": "CLOSED"}}})
+    out = query_candidates(_DEP_CFG, gh_run=gh)
+    assert [c["ref"] for c in out] == ["o/r#7"]
+    assert gh.state_lookups == 1
+
+
+def test_query_candidates_body_dep_open_is_dropped():
+    gh = DepGh([_issue(7, body="Depends on #12"), _issue(9)],
+               states={"r0": {"nameWithOwner": "o/r",
+                              "i12": {"number": 12, "state": "OPEN"}}})
+    out = query_candidates(_DEP_CFG, gh_run=gh)
+    assert [c["ref"] for c in out] == ["o/r#9"]
+
+
+def test_query_candidates_dep_lookup_failure_fails_closed():
+    """An unresolvable dependency state blocks (order is the point; the sweep
+    retries every tick) — but must never drop unrelated candidates."""
+    gh = DepGh([_issue(7, body="Depends on #12"), _issue(9)], states_rc=1)
+    out = query_candidates(_DEP_CFG, gh_run=gh)
+    assert [c["ref"] for c in out] == ["o/r#9"]
+
+
+def test_query_candidates_dep_in_candidate_pool_blocks_without_lookup():
+    """A body dep that is itself a fetched candidate is open by definition —
+    no state lookup call is spent on it."""
+    gh = DepGh([_issue(7, body="Depends on #12"), _issue(12)])
+    out = query_candidates(_DEP_CFG, gh_run=gh)
+    assert [c["ref"] for c in out] == ["o/r#12"]
+    assert gh.state_lookups == 0
+
+
+def test_query_candidates_respect_dependencies_off_disables_gating():
+    blocked = _issue(7, body="Depends on #12", blockedBy={"nodes": [
+        {"number": 3, "state": "OPEN", "repository": {"nameWithOwner": "o/r"}}]})
+    gh = DepGh([blocked])
+    out = query_candidates({**_DEP_CFG, "respect_dependencies": False}, gh_run=gh)
+    assert [c["ref"] for c in out] == ["o/r#7"]
+    assert gh.state_lookups == 0
+
+
+def test_query_candidates_blocked_out_collects_skips():
+    blocked = _issue(7, blockedBy={"nodes": [
+        {"number": 3, "state": "OPEN", "repository": {"nameWithOwner": "o/r"}}]})
+    gh = DepGh([blocked, _issue(12)])
+    blocked_out: list[dict] = []
+    out = query_candidates(_DEP_CFG, gh_run=gh, blocked_out=blocked_out)
+    assert [c["ref"] for c in out] == ["o/r#12"]
+    assert blocked_out == [{"ref": "o/r#7", "blockers": ["o/r#3"]}]
+
+
 # --------------------------------------------------------------------------- #
 # claim_batch                                                                  #
 # --------------------------------------------------------------------------- #
@@ -352,6 +675,34 @@ def test_claim_batch_rolls_back_on_partial_failure():
     assert "3" not in rolled_back
 
 
+def test_claim_batch_passes_repo_app_token_to_every_call():
+    """Every gh call claim_batch makes (label provisioning, add-label edits, the
+    linking comment) is for issues in repo ``o/r`` — every one must carry o's
+    installation token, never ambient auth, when an App is configured."""
+    fake = FakeGh()
+    batch = Batch(primary="o/r#1", issues=["o/r#1", "o/r#2"], repo="o/r")
+
+    with _app_tokens():
+        ok = claim_batch(batch, gh_run=fake, comment="claiming")
+
+    assert ok is True
+    assert fake.calls, "expected gh calls"
+    assert all(tok == "tok-o" for tok in fake.tokens)
+
+
+def test_ensure_claim_labels_passes_each_repos_own_owner_token():
+    """Repos spanning different owners must each get their OWNER's token — never
+    one owner's token sent for another owner's repo (it would 404)."""
+    fake = FakeGh()
+    with _app_tokens():
+        ensure_claim_labels(["acme/r1", "other/r2"], gh_run=fake)
+
+    assert fake.calls
+    for call_args, token in zip(fake.calls, fake.tokens):
+        repo = call_args[call_args.index("--repo") + 1]
+        assert token == f"tok-{repo.split('/')[0]}"
+
+
 # --------------------------------------------------------------------------- #
 # unclaim_batch / label_needs_human                                           #
 # --------------------------------------------------------------------------- #
@@ -385,6 +736,15 @@ def test_unclaim_batch_continues_on_individual_failure():
     assert numbers == {"5", "6"}
 
 
+def test_unclaim_batch_passes_repo_app_token():
+    fake = FakeGh()
+    batch = Batch(primary="o/r#5", issues=["o/r#5", "o/r#6"], repo="o/r")
+    with _app_tokens():
+        unclaim_batch(batch, gh_run=fake)
+    assert fake.calls
+    assert all(tok == "tok-o" for tok in fake.tokens)
+
+
 def test_label_needs_human_adds_needs_human_removes_in_progress():
     fake = FakeGh()
     batch = Batch(primary="o/r#8", issues=["o/r#8", "o/r#9"], repo="o/r")
@@ -401,6 +761,15 @@ def test_label_needs_human_adds_needs_human_removes_in_progress():
         assert "--add-label" in flat
         assert "--remove-label" in flat
         assert "in-progress" in flat
+
+
+def test_label_needs_human_passes_repo_app_token():
+    fake = FakeGh()
+    batch = Batch(primary="o/r#8", issues=["o/r#8", "o/r#9"], repo="o/r")
+    with _app_tokens():
+        label_needs_human(batch, gh_run=fake)
+    assert fake.calls
+    assert all(tok == "tok-o" for tok in fake.tokens)
 
 
 # --------------------------------------------------------------------------- #
@@ -428,6 +797,14 @@ def test_reconcile_dangling_no_op_when_all_live():
     fake = FakeGh()
     reconcile_dangling(["o/r#1"], {"o/r#1"}, gh_run=fake)
     assert fake.calls == []
+
+
+def test_reconcile_dangling_passes_repo_app_token():
+    fake = FakeGh()
+    with _app_tokens():
+        reconcile_dangling(["o/r#1", "o/r#2"], {"o/r#1"}, gh_run=fake)
+    assert fake.calls
+    assert all(tok == "tok-o" for tok in fake.tokens)
 
 
 # --------------------------------------------------------------------------- #
@@ -494,6 +871,14 @@ def test_find_referencing_pr_ignores_closed_only_and_failures():
     assert find_referencing_pr("o/r#3", gh_run=unparseable) is None
 
 
+def test_find_referencing_pr_passes_repo_app_token():
+    from server.automations.backlog_github import find_referencing_pr
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_timeline_stdout([]))})
+    with _app_tokens():
+        find_referencing_pr("acme/r1#3", gh_run=fake)
+    assert fake.tokens == ["tok-acme"]
+
+
 # --------------------------------------------------------------------------- #
 # close_batch_issues — fail-closed linkage verification (#642)                #
 # --------------------------------------------------------------------------- #
@@ -515,11 +900,13 @@ class RoutedGh:
 
     def __init__(self, pr_proc, timeline_procs=None):
         self.calls: list[list[str]] = []
+        self.tokens: list[str | None] = []
         self._pr = pr_proc
         self._timelines = dict(timeline_procs or {})  # issue number -> proc
 
     def __call__(self, args, token=None):
         self.calls.append(list(args))
+        self.tokens.append(token)
         if args[:2] == ["api", "graphql"]:
             q = args[-1]
             if "pullRequest(" in q:
@@ -555,6 +942,21 @@ def test_close_batch_issues_closes_each_with_a_linking_comment():
         assert "--repo" in c and c[c.index("--repo") + 1] == "o/r"
         comment = c[c.index("--comment") + 1]
         assert "https://github.com/o/r/pull/42" in comment
+
+
+def test_close_batch_issues_passes_repo_app_token_to_every_call():
+    """Every lookup and mutation close_batch_issues makes (PR linkage, per-issue
+    signals, PR files, the issue close) is scoped to the batch's repo ``o/r`` —
+    every gh call must carry o's installation token."""
+    from server.automations.backlog_github import close_batch_issues
+    gh = RoutedGh(_proc(stdout=_linkage_stdout(closing=[8, 9])))
+
+    with _app_tokens():
+        outcome = close_batch_issues(_batch89(), _merged_info(), gh_run=gh)
+
+    assert outcome == "closed"
+    assert gh.calls
+    assert all(tok == "tok-o" for tok in gh.tokens)
 
 
 def test_close_batch_issues_body_and_commit_references_count_as_linkage():
@@ -668,11 +1070,12 @@ def test_close_batch_issues_mixed_unlinked_and_unverifiable_retries():
 # close_batch_issues — human gate: action-required issues & docs-only PRs (#784)#
 # --------------------------------------------------------------------------- #
 
-def _signals_stdout(title="", body="", labels=()) -> str:
-    """An issue-signals GraphQL response: title + body + labels."""
+def _signals_stdout(title="", body="", labels=(), sub_issue_states=()) -> str:
+    """An issue-signals GraphQL response: title + body + labels + sub-issues."""
     return json.dumps({"data": {"repository": {"issue": {
         "title": title, "body": body,
-        "labels": {"nodes": [{"name": n} for n in labels]}}}}})
+        "labels": {"nodes": [{"name": n} for n in labels]},
+        "subIssues": {"nodes": [{"state": s} for s in sub_issue_states]}}}}})
 
 
 def _files_stdout(paths) -> str:
@@ -689,12 +1092,14 @@ class GateGh:
 
     def __init__(self, *, pr, files=None, signals=None):
         self.calls: list[list[str]] = []
+        self.tokens: list[str | None] = []
         self._pr = pr
         self._files = files
         self._signals = dict(signals or {})  # issue number -> proc
 
     def __call__(self, args, token=None):
         self.calls.append(list(args))
+        self.tokens.append(token)
         if args[:2] != ["api", "graphql"]:
             return _proc()
         q = args[-1]
@@ -736,6 +1141,48 @@ def test_close_batch_issues_action_required_issue_is_escalated_not_closed():
     assert esc[esc.index("--add-label") + 1] == "needs-human"
     assert "--remove-label" in esc and esc[esc.index("--remove-label") + 1] == "in-progress"
     assert [c for c in gh.calls if c[:2] == ["issue", "comment"]]
+
+
+def test_close_batch_issues_tracking_issue_with_open_sub_issues_is_released_not_closed():
+    """A merged PR that references a tracking epic must not close it while any
+    sub-issue is still open — the #997 incident: PR #1004 said ``Refs #997``, a
+    bare mention counted as linkage, and ten open children were orphaned under
+    a closed parent. The epic is unclaimed and left open; it is NOT escalated to
+    needs-human either, because nothing about it needs a human — its open
+    sub-issues are the remaining work."""
+    from server.automations.backlog_github import close_batch_issues
+    gh = GateGh(
+        pr=_proc(stdout=_linkage_stdout(closing=[8])),  # even a real Fixes #8
+        files=_proc(stdout=_files_stdout(["src/reconcile.py"])),
+        signals={8: _proc(stdout=_signals_stdout(
+            title="Epic: 003 rollout", sub_issue_states=["CLOSED", "OPEN", "OPEN"]))})
+
+    outcome = close_batch_issues(_batch8(), _merged_info(), gh_run=gh)
+
+    assert outcome == "closed"  # the PR IS the batch's; the epic is just not closeable
+    assert not [c for c in gh.calls if c[:2] == ["issue", "close"]]
+    edits = [c for c in gh.calls if c[:2] == ["issue", "edit"]]
+    assert edits and all("--add-label" not in c for c in edits)
+    assert any("--remove-label" in c and c[c.index("--remove-label") + 1] == "in-progress"
+               for c in edits)
+    comment = next(c for c in gh.calls if c[:2] == ["issue", "comment"])
+    assert "2 open sub-issue" in comment[comment.index("--body") + 1]
+
+
+def test_close_batch_issues_epic_whose_sub_issues_are_all_done_still_closes():
+    """The gate is on OPEN children only: an epic whose sub-issues are all
+    closed is ordinary completed work."""
+    from server.automations.backlog_github import close_batch_issues
+    gh = GateGh(
+        pr=_proc(stdout=_linkage_stdout(closing=[8])),
+        files=_proc(stdout=_files_stdout(["src/reconcile.py"])),
+        signals={8: _proc(stdout=_signals_stdout(
+            title="Epic: done", sub_issue_states=["CLOSED", "CLOSED"]))})
+
+    outcome = close_batch_issues(_batch8(), _merged_info(), gh_run=gh)
+
+    assert outcome == "closed"
+    assert [c for c in gh.calls if c[:2] == ["issue", "close"]]
 
 
 def test_close_batch_issues_docs_only_pr_does_not_satisfy_non_doc_issue():
@@ -858,6 +1305,28 @@ def test_query_claimed_refs_empty_repos_and_gh_failure_return_empty():
     assert query_claimed_refs(["o/r"], gh_run=fake) == []
 
 
+def test_query_claimed_refs_passes_owner_app_token_single_owner():
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_claimed_stdout([("acme/r", 5)]))})
+    with _app_tokens():
+        query_claimed_refs(["acme/r"], gh_run=fake)
+    assert fake.tokens == ["tok-acme"]
+
+
+def test_query_claimed_refs_groups_by_owner_and_merges_results():
+    """Repos spanning two owners must never share one search — group by owner,
+    one call per owner with that owner's token, merged into one ref list."""
+    gh = OwnerRoutedGh({
+        "acme": [{"number": 5, "repository": {"nameWithOwner": "acme/r1"}}],
+        "other": [{"number": 9, "repository": {"nameWithOwner": "other/r2"}}],
+    }, data_key="claimed")
+    with _app_tokens():
+        out = query_claimed_refs(["acme/r1", "other/r2"], gh_run=gh)
+
+    assert len(gh.calls) == 2, "one call per owner, not one call spanning both"
+    assert set(gh.tokens) == {"tok-acme", "tok-other"}
+    assert set(out) == {"acme/r1#5", "other/r2#9"}
+
+
 def _crossref_stdout(prs: list[dict]) -> str:
     nodes = [{"source": {**pr, "repository": {"nameWithOwner": "o/r"}}} for pr in prs]
     return json.dumps({"data": {"repository": {"issue": {"timelineItems": {"nodes": nodes}}}}})
@@ -875,6 +1344,21 @@ def test_heal_orphan_merged_pr_closes_issue_and_strips_label():
     assert "--comment" in close and "o/r" in close
     edit = next(c for c in fake.calls if c[:2] == ["issue", "edit"])
     assert "--remove-label" in edit and "in-progress" in edit
+
+
+def test_heal_orphan_claims_passes_repo_app_token():
+    """Every lookup and mutation heal_orphan_claims makes for issue o/r#5 (the
+    cross-ref timeline lookup, the close, the label edit) must carry o's App
+    installation token."""
+    fake = FakeGh({("api", "graphql"): _proc(stdout=_crossref_stdout(
+        [{"number": 40, "url": "https://github.com/o/r/pull/40", "title": "fix",
+          "state": "MERGED", "isDraft": False, "headRefName": "b",
+          "autoMergeRequest": None}]))})
+    with _app_tokens():
+        healed = heal_orphan_claims(["o/r#5"], set(), gh_run=fake)
+    assert healed == [("o/r#5", "closed")]
+    assert fake.calls
+    assert all(tok == "tok-o" for tok in fake.tokens)
 
 
 def test_heal_orphan_merged_pr_escalates_action_issue_instead_of_closing():
@@ -906,6 +1390,37 @@ def test_heal_orphan_merged_pr_escalates_action_issue_instead_of_closing():
     esc = next(c for c in router.calls
                if c[:2] == ["issue", "edit"] and "--add-label" in c)
     assert esc[esc.index("--add-label") + 1] == "needs-human"
+
+
+def test_heal_orphan_merged_pr_releases_tracking_issue_instead_of_closing():
+    """The orphan-heal path shares the open-sub-issues gate: a merged PR that
+    mentioned a tracking epic releases the claim and leaves the epic open,
+    without a needs-human label."""
+    pr = {"number": 40, "url": "https://github.com/o/r/pull/40", "title": "part 1",
+          "state": "MERGED", "isDraft": False, "headRefName": "b",
+          "autoMergeRequest": None}
+
+    def router(args, token=None):
+        router.calls.append(list(args))
+        if args[:2] != ["api", "graphql"]:
+            return _proc()
+        q = args[-1]
+        if "timelineItems" in q:
+            return _proc(stdout=_crossref_stdout([pr]))
+        if "pullRequest(" in q and "files(" in q:
+            return _proc(stdout=_files_stdout(["src/x.py"]))
+        if "issue(number" in q:
+            return _proc(stdout=_signals_stdout(
+                title="Epic: rollout", sub_issue_states=["OPEN"]))
+        return _proc()
+    router.calls = []
+
+    healed = heal_orphan_claims(["o/r#5"], set(), gh_run=router)
+
+    assert healed == [("o/r#5", "released")]
+    assert not [c for c in router.calls if c[:2] == ["issue", "close"]]
+    edits = [c for c in router.calls if c[:2] == ["issue", "edit"]]
+    assert edits and all("--add-label" not in c for c in edits)
 
 
 def test_heal_orphan_open_pr_left_untouched():

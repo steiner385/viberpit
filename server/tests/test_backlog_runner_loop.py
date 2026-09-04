@@ -52,7 +52,7 @@ async def _seed_row(automation_id: str = "backlog-runner") -> None:
 def build_loop(*, mode="auto", config=None, clock=None,
                candidates=None, healthy="a", in_flight_counter=None,
                pr_status=None, pr_doctor_active=True, claim_result=True,
-               candidate_count=None, heal_orphans_result=None,
+               candidate_count=None, blocked_count=0, heal_orphans_result=None,
                refresh_groups=None, spawn=None, close_out_result=None,
                credential_alerts=None):
     """Construct a BacklogRunnerLoop over recorder fakes.
@@ -129,7 +129,10 @@ def build_loop(*, mode="auto", config=None, clock=None,
         return close_out_result
 
     async def count_candidates():
-        return candidate_count if candidate_count is not None else 0
+        # The seam reports (eligible, blocked) — blocked = dependency-gated
+        # issues skipped this sweep, surfaced on the Automation card.
+        return (candidate_count if candidate_count is not None else 0,
+                blocked_count)
 
     async def heal_orphans(config, tracked):
         rec.heals.append((config, set(tracked)))
@@ -181,6 +184,28 @@ def test_eligible_reflects_candidate_count_even_when_saturated(tmp_path):
         counts = getattr(ctx, "backlog_counts", {})
         assert counts.get("eligible") == 7
         assert counts.get("in_flight") == 1
+
+    asyncio.run(run())
+
+
+def test_blocked_count_surfaces_on_ctx(tmp_path):
+    """Dependency-gated skips must be visible on the Automation card — the
+    'why isn't the backlog draining' note — not just in the log."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'blocked.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=1),
+            candidates=[batch("r#1")],
+            candidate_count=2,
+            blocked_count=3,            # 3 issues skipped as dependency-blocked
+        )
+        await loop.tick()
+        counts = getattr(ctx, "backlog_counts", {})
+        assert counts.get("blocked") == 3
+        assert counts.get("eligible") == 2
 
     asyncio.run(run())
 

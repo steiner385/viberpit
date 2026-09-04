@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useLibraryMcp } from '@/api/hooks'
 import type { LibraryMcpServer } from '@/api/types'
 import { McpServerDialog } from './McpServerDialog'
+import { McpAuthFlow } from './McpAuthFlow'
 
 export function McpSection() {
   const { data, isLoading } = useLibraryMcp()
@@ -20,19 +21,19 @@ export function McpSection() {
         {servers.map((s) => (
           <li key={`${s.source}/${s.name}`}>
             <button
-              className="w-full text-left border border-[var(--border)] rounded-lg p-3 hover:bg-gray-50 dark:hover:bg-gray-700/50 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full text-left border border-edge rounded-lg p-3 hover:bg-gray-50 dark:hover:bg-gray-700/50 focus:outline-none focus:ring-2 focus:ring-blue-500"
               aria-label={s.name}
               onClick={() => setDialogServer(s)}
             >
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-medium">{s.name}</span>
                 {/* Transport badge */}
-                <span className="text-xs px-1.5 py-0.5 rounded-full border border-[var(--border)] opacity-70">
+                <span className="text-xs px-1.5 py-0.5 rounded-full border border-edge opacity-70">
                   {s.transport}
                 </span>
                 {/* Source badge (plugin id only — omit for 'user') */}
                 {s.source !== 'user' && (
-                  <span className="text-xs px-1.5 py-0.5 rounded-full border border-[var(--border)] opacity-70">
+                  <span className="text-xs px-1.5 py-0.5 rounded-full border border-edge opacity-70">
                     {s.source}
                   </span>
                 )}
@@ -44,6 +45,10 @@ export function McpSection() {
                 )}
               </div>
             </button>
+            {/* Inline auth flow — rendered as sibling below the card button to avoid nesting interactive elements */}
+            {s.needsAuth.length > 0 && (
+              <McpAuthFlow server={s.name} accounts={s.needsAuth} />
+            )}
           </li>
         ))}
         {servers.length === 0 && (

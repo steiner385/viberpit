@@ -64,6 +64,40 @@ describe('QuestionGroup', () => {
     expect(track.className).not.toMatch(/snap-mandatory/)
   })
 
+  it('does not let a later card steal focus on mount (which jumps the indicator to the last question)', () => {
+    render(<QuestionGroup questions={[mk('a'), mk('b'), mk('c')]} onAnswer={vi.fn()} />)
+    // Each card auto-focuses its first option on mount. In a shared horizontal
+    // scroll track, a *later* card winning that focus scrolls the track to the
+    // end, firing onScroll → setActive(lastIndex) — the "Question 3 of 3 on
+    // open" bug. Only the active (first) card may hold focus after mount.
+    const firstOptions = screen.getAllByRole('radio', { name: 'Yes' })
+    expect(document.activeElement).toBe(firstOptions[0])
+    // …and the indicator stays on the first question.
+    expect(screen.getByText(/question 1 of 3/i)).toBeInTheDocument()
+  })
+
+  it('navigating moves focus to the newly active card without scrolling the track', async () => {
+    // Regression: clicking Next starts a smooth scrollIntoView; early scroll
+    // events still round to the old index, its card's autoFocus flips back on,
+    // and a plain focus() scrolls the track back to it — navigation never
+    // escapes question 1. jsdom has no scroll engine, so the enforceable
+    // contract is: focus follows navigation, and every auto-focus call passes
+    // preventScroll so it can never move the track.
+    const user = userEvent.setup()
+    const focusSpy = vi.spyOn(HTMLElement.prototype, 'focus')
+    render(<QuestionGroup questions={[mk('a'), mk('b'), mk('c')]} onAnswer={vi.fn()} />)
+    focusSpy.mockClear()
+    await user.click(screen.getByRole('button', { name: /next question/i }))
+    expect(screen.getByText(/question 2 of 3/i)).toBeInTheDocument()
+    // the second card's first option now holds focus…
+    expect(document.activeElement).toBe(screen.getAllByRole('radio', { name: 'Yes' })[1])
+    // …and the auto-focus that moved it was barred from scrolling the track.
+    // (userEvent's click() also calls focus() with no args; only the hook's
+    // auto-focus passes options, and it must always pass preventScroll.)
+    expect(focusSpy).toHaveBeenCalledWith({ preventScroll: true })
+    focusSpy.mockRestore()
+  })
+
   it('disables submit until all questions are answered', async () => {
     const user = userEvent.setup()
     render(<QuestionGroup questions={[mk('a'), mk('b')]} onAnswer={vi.fn()} />)
@@ -107,5 +141,36 @@ describe('QuestionGroup', () => {
     expect(submit).toBeEnabled()
     await user.click(screen.getByRole('checkbox', { name: /yes/i }))   // back to empty
     expect(submit).toBeDisabled()
+  })
+
+  // ── Orphaned group (waiter died with the daemon) ──────────────────────────
+  // The server delivers an orphaned answer as the next turn's PROMPT, which
+  // flips the session to in_progress and clears the interrupted flags. A second
+  // per-question frame would therefore find nothing orphaned and come back as
+  // QUESTION_NOT_PENDING — every answer but the first silently lost, while the
+  // client had already marked all N cards answered.
+  describe('orphaned group', () => {
+    const orph = (id: string): QuestionBlock => ({ ...mk(id), orphaned: true })
+
+    it('sends exactly ONE onAnswer carrying every answer, header-labelled', async () => {
+      const user = userEvent.setup()
+      const onAnswer = vi.fn()
+      render(<QuestionGroup questions={[orph('a'), orph('b')]} onAnswer={onAnswer} />)
+      await user.click(screen.getAllByRole('radio', { name: 'Yes' })[0]) // a → Yes
+      await user.click(screen.getAllByRole('radio', { name: 'No' })[1])  // b → No
+      await user.click(screen.getByRole('button', { name: /submit all answers/i }))
+      expect(onAnswer).toHaveBeenCalledTimes(1)
+      expect(onAnswer).toHaveBeenCalledWith('a', ['H-a: Yes', 'H-b: No'], 'option')
+    })
+
+    it('still sends one frame for a single orphaned question', async () => {
+      const user = userEvent.setup()
+      const onAnswer = vi.fn()
+      render(<QuestionGroup questions={[orph('a')]} onAnswer={onAnswer} />)
+      await user.click(screen.getByRole('radio', { name: 'Yes' }))
+      await user.click(screen.getByRole('button', { name: /submit all answers/i }))
+      expect(onAnswer).toHaveBeenCalledTimes(1)
+      expect(onAnswer).toHaveBeenCalledWith('a', ['H-a: Yes'], 'option')
+    })
   })
 })

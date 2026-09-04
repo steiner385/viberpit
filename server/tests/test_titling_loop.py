@@ -112,6 +112,61 @@ def test_titling_interval_defaults_to_15s(tmp_path):
     assert asyncio.run(run()) == 15.0
 
 
+def test_titling_sweep_does_not_regenerate_when_transcript_unchanged(tmp_path):
+    """A repeated sweep over an idle session (no new prompts) must not re-run the
+    fallback title generator — see #1013: an idle session's transcript is static
+    between sweeps, so re-querying every _titling_interval wastes a Haiku call
+    (and the `claude -p` helper subprocess it spawns) for no reason."""
+    transcript = tmp_path / "claude-s1.jsonl"
+    transcript.write_text(
+        '{"type":"user","message":{"role":"user","content":"fix the nightly build"}}\n'
+    )
+
+    called = {"n": 0}
+
+    async def stub_title_fn(prompts, *, account, cwd):
+        called["n"] += 1
+        return "Fix the nightly build"
+
+    async def run():
+        orch = await _build_orch(tmp_path, title_fn=stub_title_fn, cwd=str(tmp_path))
+        orch.transcript_path = lambda sid: str(transcript)
+        await orch._titling_sweep()
+        await orch._titling_sweep()
+        await orch._titling_sweep()
+        return called["n"]
+
+    assert asyncio.run(run()) == 1
+
+
+def test_titling_sweep_regenerates_when_transcript_changes(tmp_path):
+    """A genuinely new user prompt must still trigger a fresh title attempt even
+    though a previous sweep already generated one for the earlier prompt."""
+    transcript = tmp_path / "claude-s1.jsonl"
+    transcript.write_text(
+        '{"type":"user","message":{"role":"user","content":"fix the nightly build"}}\n'
+    )
+
+    called = {"n": 0}
+
+    async def stub_title_fn(prompts, *, account, cwd):
+        called["n"] += 1
+        return f"Generated {called['n']}"
+
+    async def run():
+        orch = await _build_orch(tmp_path, title_fn=stub_title_fn, cwd=str(tmp_path))
+        orch.transcript_path = lambda sid: str(transcript)
+        await orch._titling_sweep()
+        transcript.write_text(
+            '{"type":"user","message":{"role":"user","content":"fix the nightly build"}}\n'
+            '{"type":"user","message":{"role":"user","content":"also fix the flaky test"}}\n'
+        )
+        await orch._titling_sweep()
+        return called["n"]
+
+    assert asyncio.run(run()) == 2
+
+
 def test_titling_sweep_skips_when_cwd_missing(tmp_path):
     """A session whose worktree vanished (removed/archived out from under a still-active
     record) must NOT run the cwd-bound fallback title query — it errors every sweep,

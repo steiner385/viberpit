@@ -48,6 +48,15 @@ IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _fresh_db(isolated_db):
+    """Per-test DB (#728): several tests here exit their CCSWITCH_DB_URL patch
+    before `with client:`, so the app lifespan resolves the AMBIENT env var at
+    init_db time — without this fixture that was the worker-shared session DB,
+    coupling these files to whatever ran (or leaked a writer) before them."""
+
+
+
 def _make_usage_fn(accounts: dict):
     """Return a usage_fn that returns fake Usage for named accounts."""
     def usage_fn(name: str):
@@ -472,6 +481,128 @@ def test_create_optimistic_sets_usage_unverified():
 
     assert resp.status_code == 201, resp.text
     assert resp.json()["usageUnverified"] is True
+
+
+def _create_harness_ctx(d):
+    """Shared patch stack for create-session tests that need a healthy picked account."""
+    from contextlib import ExitStack
+    stack = ExitStack()
+    _seed_slot("acct-a")
+    usage_fn = _make_usage_fn({"acct-a": make_usage(session=10.0, weekly=20.0)})
+    stack.enter_context(patch("ccswitch.accounts.usage_for", side_effect=usage_fn))
+    stack.enter_context(patch("server.sessions.selection.pick_account_detailed",
+                              return_value=Picked(name="acct-a", optimistic=False)))
+    stack.enter_context(patch("server.sessions.orchestrator.compose",
+                              return_value=d / "cfg" / "acct-a"))
+    # File-backed DB, NOT :memory: — these tests PUT /api/settings, and an
+    # in-memory DB shares one connection with the orchestrator's startup poll,
+    # which races the settings write (see server/tests/test_settings.py).
+    stack.enter_context(patch.dict(
+        os.environ, {"CCSWITCH_DB_URL": f"sqlite+aiosqlite:///{d / 'api-test.db'}"}))
+    (d / "cfg" / "acct-a").mkdir(parents=True, exist_ok=True)
+    return stack, usage_fn
+
+
+def _spy_create(orch):
+    """Wrap orch.create_session, recording the kwargs the API resolved."""
+    captured: dict = {}
+    orig = orch.create_session
+
+    async def spy(*args, **kwargs):
+        captured.update(kwargs)
+        return await orig(*args, **kwargs)
+
+    orch.create_session = spy
+    return captured
+
+
+def test_create_without_mode_uses_global_default_permission_mode():
+    """POST /api/sessions with no permissionMode honours Settings' defaultPermissionMode.
+
+    The DispatchBar quick-create path sends no permissionMode at all; before this
+    fix the endpoint fell straight through to "interactive", silently ignoring the
+    global "Default tool approvals" setting (e.g. full-auto) and re-introducing
+    permission prompts the user had turned off.
+    """
+    with temp_env() as d:
+        stack, usage_fn = _create_harness_ctx(d)
+        with stack:
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.app import create_app
+            orch = SessionOrchestrator(
+                sdk_factory=fake_sdk_factory(), usage_fn=usage_fn, poll_interval=9999.0)
+            captured = _spy_create(orch)
+            app = create_app(orchestrator=orch)
+            client = TestClient(app, raise_server_exceptions=True)
+            with client:
+                put = client.put("/api/settings",
+                                 json={"defaultPermissionMode": "full-auto"},
+                                 headers=IDENTITY_HEADERS)
+                assert put.status_code == 200, put.text
+                resp = client.post("/api/sessions", json={"name": "QuickCreate"},
+                                   headers=IDENTITY_HEADERS)
+
+    assert resp.status_code == 201, resp.text
+    assert captured["permission_mode"] == "full-auto"
+
+
+def test_create_explicit_mode_beats_global_default():
+    """An explicit body permissionMode always wins over the global default."""
+    with temp_env() as d:
+        stack, usage_fn = _create_harness_ctx(d)
+        with stack:
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.app import create_app
+            orch = SessionOrchestrator(
+                sdk_factory=fake_sdk_factory(), usage_fn=usage_fn, poll_interval=9999.0)
+            captured = _spy_create(orch)
+            app = create_app(orchestrator=orch)
+            client = TestClient(app, raise_server_exceptions=True)
+            with client:
+                put = client.put("/api/settings",
+                                 json={"defaultPermissionMode": "full-auto"},
+                                 headers=IDENTITY_HEADERS)
+                assert put.status_code == 200, put.text
+                resp = client.post("/api/sessions",
+                                   json={"name": "Explicit", "permissionMode": "allowlist"},
+                                   headers=IDENTITY_HEADERS)
+
+    assert resp.status_code == 201, resp.text
+    assert captured["permission_mode"] == "allowlist"
+
+
+def test_create_account_default_beats_global_default():
+    """A pinned account's own defaultPermissionMode outranks the global default."""
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _fake_ledger():
+        yield {}
+
+    with temp_env() as d:
+        stack, usage_fn = _create_harness_ctx(d)
+        with stack, \
+             patch("ccswitch.ledger.locked_ledger", _fake_ledger), \
+             patch("ccswitch.ledger.get_account_defaults",
+                   return_value={"defaultPermissionMode": "auto"}):
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.app import create_app
+            orch = SessionOrchestrator(
+                sdk_factory=fake_sdk_factory(), usage_fn=usage_fn, poll_interval=9999.0)
+            captured = _spy_create(orch)
+            app = create_app(orchestrator=orch)
+            client = TestClient(app, raise_server_exceptions=True)
+            with client:
+                put = client.put("/api/settings",
+                                 json={"defaultPermissionMode": "full-auto"},
+                                 headers=IDENTITY_HEADERS)
+                assert put.status_code == 200, put.text
+                resp = client.post("/api/sessions",
+                                   json={"name": "AcctDefault", "account": "acct-a"},
+                                   headers=IDENTITY_HEADERS)
+
+    assert resp.status_code == 201, resp.text
+    assert captured["permission_mode"] == "auto"
 
 
 def test_create_all_unusable_returns_needs_reauth():
@@ -982,3 +1113,58 @@ def test_batch_archive_oversized_ids_returns_422():
             ids = [f"x{i}" for i in range(201)]
             resp = client.post("/api/sessions/batch/archive", json={"ids": ids}, headers=IDENTITY_HEADERS)
             assert resp.status_code == 422
+
+
+def test_delete_orphaned_session_returns_204():
+    """DELETE /api/sessions/{id} returns 204 even when the session is not in the
+    orchestrator's _records (orphaned — daemon restarted or worktree removed on a
+    fleet worker host, #898).
+
+    Simulates the bug scenario: the session row exists in DB (status='idle'), but
+    the owning daemon's _records no longer has it. The fix falls back to a DB check
+    and proceeds with archive_session, which updates the DB without needing an
+    in-memory record.
+    """
+    with temp_env() as d:
+        _seed_slot("account1")
+        usage_fn = _make_usage_fn({"account1": make_usage(session=10.0, weekly=20.0)})
+        db_path = d / "ccswitch.db"
+
+        with patch("ccswitch.accounts.usage_for", side_effect=usage_fn), \
+             patch("server.sessions.orchestrator.select_account", return_value=Picked("account1")), \
+             patch("server.sessions.orchestrator.compose", return_value=d / "cfg" / "account1"), \
+             patch.dict(os.environ, {"CCSWITCH_DB_URL": f"sqlite+aiosqlite:///{db_path}"}):
+            (d / "cfg" / "account1").mkdir(parents=True, exist_ok=True)
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.app import create_app
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), usage_fn=usage_fn, poll_interval=9999.0)
+            app = create_app(orchestrator=orch)
+            client = TestClient(app, raise_server_exceptions=False)
+
+            with client:
+                # Create a session (lands in DB and _records).
+                create_resp = client.post(
+                    "/api/sessions",
+                    json={"name": "Orphaned Session", "account": "account1"},
+                    headers=IDENTITY_HEADERS,
+                )
+                assert create_resp.status_code == 201, create_resp.text
+                session_id = create_resp.json()["id"]
+                assert session_id in orch._records
+
+                # Simulate orphan: remove from _records (like a daemon restart that
+                # lost in-memory state, but left the DB row intact).
+                del orch._records[session_id]
+                assert session_id not in orch._records
+
+                # DELETE should still succeed via the DB fallback (#898).
+                del_resp = client.delete(
+                    f"/api/sessions/{session_id}", headers=IDENTITY_HEADERS
+                )
+                assert del_resp.status_code == 204, del_resp.text
+
+                # Verify the session is now archived in DB.
+                archived = client.get("/api/sessions/archived", headers=IDENTITY_HEADERS)
+                assert archived.status_code == 200
+                archived_ids = [s["id"] for s in archived.json()]
+                assert session_id in archived_ids, "orphaned session must be archived in DB after DELETE"

@@ -44,6 +44,15 @@ def _make_shims(tmp_path: Path, fail_times: int) -> Path:
         f"""#!/bin/bash
 target="${{@: -1}}"
 key=$(printf '%s' "$target" | tr / _)
+# Record the -o value this path was mounted with so the cache-profile tests (#1005)
+# can assert on it instead of grepping the script.
+opts=""
+prev=""
+for a in "$@"; do
+  [ "$prev" = "-o" ] && opts="$a"
+  prev="$a"
+done
+echo "$opts" > "{state}/opts_$key"
 n=$(cat "{state}/calls" 2>/dev/null || echo 0)
 n=$((n + 1))
 echo "$n" > "{state}/calls"
@@ -71,16 +80,23 @@ key=$(printf '%s' "$p" | tr / _)
     return bindir
 
 
-def _run(tmp_path: Path, fail_times: int, attempts: int, paths: list[str]):
+def _run(tmp_path: Path, fail_times: int, attempts: int, paths: list[str], **extra_env):
     bindir = _make_shims(tmp_path, fail_times)
     env = dict(os.environ)
     env["PATH"] = f"{bindir}:{env['PATH']}"
     env["CCSWITCH_MOUNT_PATHS"] = " ".join(paths)
     env["CCSWITCH_MOUNT_ATTEMPTS"] = str(attempts)
     env["CCSWITCH_MOUNT_RETRY_DELAY"] = "0"
+    env.update(extra_env)
     return subprocess.run(
         ["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60
     )
+
+
+def _opts_for(tmp_path: Path, path: str) -> str:
+    """The `-o` value the stubbed sshfs was invoked with for *path*."""
+    key = path.replace("/", "_")
+    return (tmp_path / "state" / f"opts_{key}").read_text().strip()
 
 
 def test_mount_script_is_owned_by_the_repo():
@@ -154,3 +170,84 @@ def test_daemon_drop_in_still_requires_the_mounts():
     drop_in = DROP_IN.read_text()
     assert "Requires=ccswitch-mounts.service" in drop_in
     assert "After=ccswitch-mounts.service" in drop_in
+
+
+# --- #1005: cache-profile split (coherent account store vs read-mostly archives) ------
+#
+# The 600s attr/entry cache (#779, tuned by #826/#851) is only sound for a mount dobby
+# does NOT rewrite underneath us. The account store is rewritten continuously by dobby's
+# live sessions (atomic temp-file + rename), so a cached inode/size gives rocky a
+# truncated read -> Claude Code calls it corruption -> it writes a DEFAULT config back
+# through the mount. ~1,100 shared-config resets/day from 2026-09-01 (#1005).
+#
+# These execute the real script and read the `-o` the stub sshfs actually received: a
+# profile table that never reaches sshfs would pass a grep.
+
+
+def test_account_store_is_mounted_without_attribute_caching(tmp_path):
+    """THE regression: a file another host rewrites must not be attribute-cached."""
+    store = tmp_path / "claude-accounts"
+    res = _run(tmp_path, fail_times=0, attempts=1, paths=[str(store)],
+               CCSWITCH_MOUNT_COHERENT_PATHS=str(store))
+    assert res.returncode == 0, f"{res.stdout}\n{res.stderr}"
+    opts = _opts_for(tmp_path, str(store))
+    assert "attr_timeout=0" in opts, opts
+    assert "entry_timeout=0" in opts, opts
+    assert "dcache_timeout=0" in opts, opts
+    assert "dir_cache=yes" not in opts, opts
+    # The connection-resilience half of the profile is unchanged — dropping `reconnect`
+    # would trade this bug for the #765 dead-mount outage.
+    assert "reconnect" in opts, opts
+
+
+def test_read_mostly_mounts_keep_the_long_cache(tmp_path):
+    """#826/#851's latency win must survive: only the account store pays for coherence."""
+    store, archive = tmp_path / "claude-accounts", tmp_path / "hdd-storage"
+    res = _run(tmp_path, fail_times=0, attempts=1, paths=[str(store), str(archive)],
+               CCSWITCH_MOUNT_COHERENT_PATHS=str(store))
+    assert res.returncode == 0, f"{res.stdout}\n{res.stderr}"
+    archive_opts = _opts_for(tmp_path, str(archive))
+    assert "attr_timeout=600" in archive_opts, archive_opts
+    assert "entry_timeout=600" in archive_opts, archive_opts
+    assert "dir_cache=yes" in archive_opts, archive_opts
+
+
+def test_the_shipped_default_puts_the_account_store_in_the_coherent_profile(tmp_path):
+    """Defaults matter — rocky runs this with no CCSWITCH_MOUNT_* overrides at all.
+
+    Drives the script's real DEFAULT_COHERENT_PATHS by naming the production account
+    store path in CCSWITCH_MOUNT_PATHS while leaving the coherent list unset.
+    """
+    res = _run(tmp_path, fail_times=0, attempts=1,
+               paths=["/home/tony/.claude-accounts", "/mnt/hdd-storage"])
+    # mkdir/mount of the real paths is stubbed, so this exercises the profile table only.
+    assert "attr_timeout=0" in _opts_for(tmp_path, "/home/tony/.claude-accounts")
+    assert "attr_timeout=600" in _opts_for(tmp_path, "/mnt/hdd-storage")
+
+
+def test_live_mount_is_still_left_alone_unless_a_remount_is_forced(tmp_path):
+    """A cache-profile change must not silently unmount a store sessions are reading.
+
+    Re-mounting drops every in-flight read on the path, so it stays operator-driven.
+    """
+    store = tmp_path / "claude-accounts"
+    store.mkdir()
+    bindir = _make_shims(tmp_path, fail_times=0)
+    marker = tmp_path / "state" / f"mounted_{str(store).replace('/', '_')}"
+    marker.touch()
+    base = dict(os.environ)
+    base["PATH"] = f"{bindir}:{base['PATH']}"
+    base["CCSWITCH_MOUNT_PATHS"] = str(store)
+    base["CCSWITCH_MOUNT_ATTEMPTS"] = "1"
+    base["CCSWITCH_MOUNT_RETRY_DELAY"] = "0"
+
+    res = subprocess.run(["bash", str(SCRIPT)], env=base, capture_output=True,
+                         text=True, timeout=60)
+    assert res.returncode == 0
+    assert not (tmp_path / "state" / "calls").exists(), "must not re-sshfs a healthy mount"
+
+    forced = dict(base, CCSWITCH_MOUNT_FORCE_REMOUNT="1")
+    res = subprocess.run(["bash", str(SCRIPT)], env=forced, capture_output=True,
+                         text=True, timeout=60)
+    assert res.returncode == 0, f"{res.stdout}\n{res.stderr}"
+    assert (tmp_path / "state" / "calls").exists(), "forced remount must re-run sshfs"

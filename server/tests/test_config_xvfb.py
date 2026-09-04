@@ -36,3 +36,22 @@ def test_reauth_virtual_display_env_override(monkeypatch):
     monkeypatch.setenv("CCSWITCH_REAUTH_VIRTUAL_DISPLAY", "false")
     s = _fresh()
     assert s.reauth_virtual_display is False
+
+
+def test_reauth_extensions_unset_means_core_default(monkeypatch):
+    monkeypatch.delenv("CCSWITCH_REAUTH_EXTENSIONS", raising=False)
+    s = _fresh()
+    assert s.reauth_extension_ids is None
+    assert s.reauth_extension_id_items is None
+
+
+def test_reauth_extensions_empty_disables(monkeypatch):
+    monkeypatch.setenv("CCSWITCH_REAUTH_EXTENSIONS", "  ")
+    s = _fresh()
+    assert s.reauth_extension_id_items == []
+
+
+def test_reauth_extensions_comma_list(monkeypatch):
+    monkeypatch.setenv("CCSWITCH_REAUTH_EXTENSIONS", "aaaa, bbbb ,,cccc")
+    s = _fresh()
+    assert s.reauth_extension_id_items == ["aaaa", "bbbb", "cccc"]

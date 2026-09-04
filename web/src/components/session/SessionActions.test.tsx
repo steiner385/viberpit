@@ -7,8 +7,10 @@ import * as hooks from '@/api/hooks'
 vi.mock('@/api/hooks', () => ({
   useCloseSession: vi.fn(),
   usePermanentDeleteSession: vi.fn(),
-  // SessionActions calls this unconditionally; these tests never open Rename
-  // (no canRename), so a stub return is enough.
+  // SessionActions itself no longer calls this — since Task 10 the rename flow
+  // lives once, in SessionHeader, and this component only fires an `onRename`
+  // callback. Kept in the factory because it replaces the whole module for
+  // everything this file pulls in.
   useRenameSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSessionsViewing: vi.fn(),
   useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
@@ -110,5 +112,81 @@ describe('SessionActions', () => {
     expect(close.mutate).not.toHaveBeenCalled()
     expect(perm.mutate).not.toHaveBeenCalled()
     expect(onDone).not.toHaveBeenCalled()
+  })
+})
+
+describe('SessionActions — Rename delegates, it does not implement', () => {
+  // Task 10 moved the rename flow (state + RenameDialog + useRenameSession) out
+  // of here and into `SessionHeader`, which drives it from two triggers. These
+  // two cases are what stops it growing back: a local dialog would show up as a
+  // `role="dialog"` in the second one.
+  it('shows no Rename item when no onRename is given', async () => {
+    const user = userEvent.setup()
+    vi.mocked(hooks.useCloseSession).mockReturnValue(successMutation() as unknown as ReturnType<typeof hooks.useCloseSession>)
+    vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(successMutation() as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
+
+    render(<SessionActions sessionId="s1" sessionName="My Session" onDone={vi.fn()} />)
+    await user.click(screen.getByRole('button', { name: /more session actions/i }))
+    expect(screen.queryByRole('menuitem', { name: /rename/i })).not.toBeInTheDocument()
+    // The lower bound: the menu really opened, so the absence means something.
+    expect(screen.getByRole('menuitem', { name: /delete permanently/i })).toBeInTheDocument()
+  })
+
+  it('calls onRename, closes the menu, and opens no dialog of its own', async () => {
+    const user = userEvent.setup()
+    vi.mocked(hooks.useCloseSession).mockReturnValue(successMutation() as unknown as ReturnType<typeof hooks.useCloseSession>)
+    vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(successMutation() as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
+    const onRename = vi.fn()
+
+    render(<SessionActions sessionId="s1" sessionName="My Session" onDone={vi.fn()} onRename={onRename} />)
+    await user.click(screen.getByRole('button', { name: /more session actions/i }))
+    await user.click(screen.getByRole('menuitem', { name: /rename/i }))
+
+    expect(onRename).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+})
+
+describe('SessionActions — Reload session', () => {
+  it('renders a "Reload session" item only when onReload is given, and calls it', async () => {
+    const user = userEvent.setup()
+    vi.mocked(hooks.useCloseSession).mockReturnValue(successMutation() as unknown as ReturnType<typeof hooks.useCloseSession>)
+    vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(successMutation() as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
+    const onReload = vi.fn()
+
+    const { rerender } = render(
+      <SessionActions sessionId="s1" sessionName="My Session" onDone={vi.fn()} />,
+    )
+    await user.click(screen.getByRole('button', { name: /more session actions/i }))
+    expect(screen.queryByRole('menuitem', { name: /reload session/i })).not.toBeInTheDocument()
+
+    rerender(
+      <SessionActions sessionId="s1" sessionName="My Session" onDone={vi.fn()} onReload={onReload} />,
+    )
+    const item = screen.getByRole('menuitem', { name: /reload session/i })
+    await user.click(item)
+
+    expect(onReload).toHaveBeenCalledTimes(1)
+    // The menu closes on selection, like Rename.
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
+  })
+})
+
+describe('SessionActions — Next best account', () => {
+  it('renders the item only when onRotate is given, and calls it', async () => {
+    const user = userEvent.setup()
+    vi.mocked(hooks.useCloseSession).mockReturnValue(successMutation() as unknown as ReturnType<typeof hooks.useCloseSession>)
+    vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(successMutation() as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
+    const onRotate = vi.fn()
+
+    const { rerender } = render(<SessionActions sessionId="s1" sessionName="My Session" onDone={vi.fn()} />)
+    await user.click(screen.getByRole('button', { name: /more session actions/i }))
+    expect(screen.queryByRole('menuitem', { name: /next best account/i })).not.toBeInTheDocument()
+
+    rerender(<SessionActions sessionId="s1" sessionName="My Session" onDone={vi.fn()} onRotate={onRotate} />)
+    await user.click(screen.getByRole('menuitem', { name: /next best account/i }))
+    expect(onRotate).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
   })
 })

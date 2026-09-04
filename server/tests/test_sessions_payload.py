@@ -61,3 +61,34 @@ def test_cooldown_until_handles_aware_datetime_from_rpc():
     rec = _rec(last_user_interaction_at=_dt.datetime.now(_dt.timezone.utc))
     out = _record_to_dict(rec, defer_seconds=120)   # must not raise
     assert out.get("autopilotCooldownUntil") is not None
+
+
+# ---------------------------------------------------------------------------
+# Restart-interruption fields: interruptedFromStatus / resumable
+#
+# _record_to_dict is an explicit allowlist and is the BROWSER serializer —
+# SessionRecord.to_dict (server/sessions/types.py) is the separate daemon→edge
+# RPC one. Adding a field to only one of them ships a dead feature: the web
+# client's InterruptedAskNotice read interruptedFromStatus and always got
+# undefined, and #938's "Resume interrupted (N)" button always counted 0.
+# ---------------------------------------------------------------------------
+
+def test_record_to_dict_emits_interrupted_from_status_for_a_dropped_ask():
+    rec = _rec(interrupted_by_restart=True, interrupted_from_status="waiting_input")
+    d = _record_to_dict(rec)
+    assert d["interruptedFromStatus"] == "waiting_input"
+    # An awaiting-human status is NOT dropped work, so it must not be resumable.
+    assert d["resumable"] is False
+
+
+def test_record_to_dict_marks_dropped_work_resumable():
+    rec = _rec(interrupted_by_restart=True, interrupted_from_status="in_progress")
+    d = _record_to_dict(rec)
+    assert d["interruptedFromStatus"] == "in_progress"
+    assert d["resumable"] is True
+
+
+def test_record_to_dict_interruption_fields_default_clean():
+    d = _record_to_dict(_rec())
+    assert d["interruptedFromStatus"] is None
+    assert d["resumable"] is False

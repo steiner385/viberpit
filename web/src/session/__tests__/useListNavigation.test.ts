@@ -4,11 +4,14 @@ import { renderHook, act } from '@testing-library/react'
 import { useListNavigation } from '../useListNavigation'
 import type { NavItem } from '../ordering'
 import type { Session } from '@/api/types'
+import { mkSession } from '@/test/factories'
 
-const sess = (id: string): Session => ({
-  id, name: id, accountName: 'a', status: 'idle',
-  createdAt: '2026-06-01T00:00:00Z', updatedAt: '2026-06-01T00:00:00Z',
-})
+const sess = (id: string): Session =>
+  mkSession(id, {
+    accountName: 'a',
+    createdAt: '2026-06-01T00:00:00Z',
+    updatedAt: '2026-06-01T00:00:00Z',
+  })
 // header(h1) · session(a) · header(h2) · session(b)
 const items: NavItem[] = [
   { kind: 'header', key: 'h1', label: 'H1', count: 1, collapsed: false },

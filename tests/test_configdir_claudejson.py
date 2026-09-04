@@ -9,6 +9,8 @@ Tests:
 """
 import json
 import unittest
+from pathlib import Path
+
 from tests.helpers import temp_env
 
 
@@ -165,20 +167,129 @@ class TestComposeClaudioJson(unittest.TestCase):
             self.assertIsInstance(data, dict)
 
     # ------------------------------------------------------------------
-    # backups/ cleanup
+    # backups/ retention (#1005)
     # ------------------------------------------------------------------
-    def test_compose_removes_backups_directory(self):
-        """compose() removes a pre-existing backups/ dir inside the cfg dir."""
+    # compose() used to rmtree backups/ wholesale, on the theory that it was fallout from
+    # an unstable compose. It is not: `.claude.json.corrupted.<ts>` is Claude Code's record
+    # of failing to PARSE the shared config and resetting it to defaults. On rocky that was
+    # happening ~1,100x/day through a stale sshfs attribute cache, and compose() ran often
+    # enough to shred each artifact within seconds — which is why three days of shared-config
+    # resets left no evidence. Recent artifacts now survive; only aged-out ones are pruned.
+
+    def _compose_with_backups(self, entries, retention=None):
+        """Seed alpha with a backups/ dir containing (name, age_seconds) and compose()."""
+        import os
+        import time
+        from ccswitch import configdir, paths
+        self._seed_slot("alpha")
+        self._seed_per_account("alpha", {"userID": "u"})
+        cfg_dir = paths.account_cfg_dir("alpha")
+        backups = cfg_dir / "backups"
+        backups.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        for name, age in entries:
+            f = backups / name
+            f.write_text("{}")
+            os.utime(f, (now - age, now - age))
+        if retention is not None:
+            os.environ["CCSWITCH_CONFIG_BACKUP_RETENTION_S"] = str(retention)
+        try:
+            configdir.compose("alpha")
+        finally:
+            if retention is not None:
+                os.environ.pop("CCSWITCH_CONFIG_BACKUP_RETENTION_S", None)
+        return backups
+
+    def test_compose_keeps_recent_corruption_evidence(self):
+        """THE regression: a fresh corrupted-config artifact must survive compose()."""
+        with temp_env():
+            backups = self._compose_with_backups([
+                (".claude.json.corrupted.1757000000000", 60),
+                (".claude.json.backup.1757000000000", 60),
+            ])
+            self.assertTrue((backups / ".claude.json.corrupted.1757000000000").exists(),
+                            "compose() must not destroy the only record of a config reset")
+            self.assertTrue((backups / ".claude.json.backup.1757000000000").exists())
+
+    def test_compose_prunes_aged_out_backups(self):
+        """Evidence, not a leak: past the retention window the artifacts still go away."""
+        with temp_env():
+            backups = self._compose_with_backups([
+                (".claude.json.corrupted.old", 90000),   # > 24h default
+                (".claude.json.corrupted.new", 60),
+            ])
+            self.assertFalse((backups / ".claude.json.corrupted.old").exists())
+            self.assertTrue((backups / ".claude.json.corrupted.new").exists())
+
+    def test_retention_window_is_configurable(self):
+        with temp_env():
+            backups = self._compose_with_backups(
+                [(".claude.json.corrupted.x", 120)], retention=60)
+            self.assertFalse((backups / ".claude.json.corrupted.x").exists())
+
+    def test_count_recent_corruptions_counts_only_corruption_artifacts_in_window(self):
+        """The number the watchdog alerts on (#1005 ask 3)."""
+        with temp_env():
+            from ccswitch import configdir
+            self._compose_with_backups([
+                (".claude.json.corrupted.a", 60),
+                (".claude.json.corrupted.b", 120),
+                (".claude.json.corrupted.stale", 7200),   # outside the 1h window
+                (".claude.json.backup.c", 60),            # a pre-write backup, not a reset
+            ])
+            self.assertEqual(configdir.count_recent_corruptions("alpha", 3600.0), 2)
+            self.assertEqual(configdir.count_recent_corruptions("nosuchaccount"), 0)
+
+    def test_compose_removes_a_symlinked_backups_path(self):
+        """A symlink there redirects writes out of the cfg dir — remove, never follow."""
         with temp_env():
             from ccswitch import configdir, paths
             self._seed_slot("alpha")
-            # pre-create the cfg dir with a backups/ subdirectory
+            self._seed_per_account("alpha", {"userID": "u"})
             cfg_dir = paths.account_cfg_dir("alpha")
             cfg_dir.mkdir(parents=True, exist_ok=True)
-            backups = cfg_dir / "backups"
-            backups.mkdir()
-            (backups / "old.json").write_text("{}")
+            elsewhere = cfg_dir.parent / "elsewhere"
+            elsewhere.mkdir()
+            (elsewhere / "keep").write_text("{}")
+            (cfg_dir / "backups").symlink_to(elsewhere)
 
-            self._seed_per_account("alpha", {"userID": "u"})
             configdir.compose("alpha")
-            self.assertFalse(backups.exists(), "backups/ must be removed by compose()")
+
+            self.assertFalse((cfg_dir / "backups").exists())
+            self.assertTrue((elsewhere / "keep").exists(), "must not rmtree through the link")
+
+    def test_compose_tolerates_backups_entries_vanishing_midprune(self):
+        """compose() must not propagate a concurrent-deletion error from backups/ pruning.
+
+        The account cfg dir can be a shared (sshfs) mount whose backups/ is rewritten by
+        other live claude processes on the same account: an entry is unlinked between our
+        readdir and our unlink. That pruning is best-effort and MUST NOT abort compose() —
+        a raise here strands every driver launch, resume, and titling pass on the mounted
+        host (the rocky session-stuck incident, #895)."""
+        import os
+        import time
+        with temp_env():
+            from ccswitch import configdir, paths
+            self._seed_slot("alpha")
+            self._seed_per_account("alpha", {"userID": "u"})
+            cfg_dir = paths.account_cfg_dir("alpha")
+            backups = cfg_dir / "backups"
+            backups.mkdir(parents=True, exist_ok=True)
+            victim = backups / ".claude.json.corrupted.racing"
+            victim.write_text("{}")
+            old = time.time() - 90000
+            os.utime(victim, (old, old))
+
+            orig_unlink = Path.unlink
+            def racing_unlink(self, *a, **k):  # noqa: ANN001,ANN002,ANN003
+                if self.name == victim.name:
+                    raise FileNotFoundError(2, "No such file or directory", self.name)
+                return orig_unlink(self, *a, **k)
+            Path.unlink = racing_unlink
+            try:
+                result = configdir.compose("alpha")  # must not raise
+            finally:
+                Path.unlink = orig_unlink
+            self.assertEqual(result, cfg_dir)
+            self.assertTrue((cfg_dir / ".claude.json").exists(),
+                            "compose() must complete despite the backups pruning race")

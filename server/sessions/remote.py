@@ -12,10 +12,12 @@ from typing import TYPE_CHECKING
 from ccswitch.oauth import Usage
 from server.ipc.client import DaemonError, DaemonUnavailable
 from server.sessions.facade import rpc_deadline
+from server.sessions.orchestrator import ModelBlockedError
 from server.sessions.selection import AllAccountsBusy
 
 if TYPE_CHECKING:
     from server.github.pr_status import PipelinePr
+    from server.pm.onboarding import ProjectOnboardingView
 from server.github.pr_status import PullRequestInfo
 from server.sessions.types import SessionRecord, SYSTEM_IDENTITY
 
@@ -277,8 +279,12 @@ class RemoteOrchestrator:
         self._global_subs: set[asyncio.Queue] = set()
         self._global_pump: asyncio.Task | None = None
 
-    async def list_sessions(self) -> list[SessionRecord]:
-        r = await self._client.call("list_sessions")
+    async def list_sessions(self, *, include_assistant: bool = False) -> list[SessionRecord]:
+        # Sent only when True so the wire shape is unchanged for every existing caller
+        # (an older daemon simply ignores an unknown param, but not sending it at all
+        # keeps the default path byte-identical).
+        kw = {"include_assistant": True} if include_assistant else {}
+        r = await self._client.call("list_sessions", **kw)
         return [SessionRecord.from_dict(d) for d in r["sessions"]]
 
     async def pr_for(self, repo, branch) -> "PullRequestInfo | None":
@@ -415,6 +421,12 @@ class RemoteOrchestrator:
         daemon — the single source of truth for which sessions are still not live."""
         return await self._client.call("resume_recovery_status")
 
+    async def startup_report(self) -> "dict":
+        """The daemon's boot outcomes (rehydrate/rearm counts + step errors) for
+        /api/daemon/health — a failed rehydrate must be observable from the edge."""
+        r = await self._client.call("startup_report")
+        return r if isinstance(r, dict) else {}
+
     async def automation_actionable(self, automation_id: str) -> "list[dict]":
         """Actionable items for *automation_id*, via the daemon."""
         r = await self._client.call("automation_actionable", automation_id=automation_id)
@@ -485,8 +497,10 @@ class RemoteOrchestrator:
             raise
         return SessionRecord.from_dict(r["session"])
 
-    async def send_prompt(self, session_id: str, text: str, images=None) -> str | None:
-        r = await self._client.call("send_prompt", session_id=session_id, text=text, images=images)
+    async def send_prompt(self, session_id: str, text: str, images=None, *,
+                          interrupt: bool = False) -> str | None:
+        r = await self._client.call("send_prompt", session_id=session_id, text=text,
+                                    images=images, interrupt=interrupt)
         return (r or {}).get("status")
 
     def daemon_sha(self) -> str | None:
@@ -561,6 +575,30 @@ class RemoteOrchestrator:
     async def archive_session(self, session_id):
         return await self._client.call("archive_session", session_id=session_id)
 
+    async def resume_interrupted(self, session_id: str, identity: str = SYSTEM_IDENTITY) -> str:
+        """Proxy the owning daemon's resume_interrupted (re-attach + nudge a
+        restart-interrupted session). Returns "resumed" / "skipped:<reason>" / "no_driver"."""
+        return await self._client.call(
+            "resume_interrupted", session_id=session_id, identity=identity)
+
+    async def reload_session(self, session_id: str, identity: str = SYSTEM_IDENTITY) -> str:
+        """Proxy the owning daemon's reload_session (rebuild the driver in place).
+        Returns "reloaded" / "skipped:<reason>" / "no_driver"."""
+        return await self._client.call(
+            "reload_session", session_id=session_id, identity=identity)
+
+    async def rotate_to_best(self, session_id: str, identity: str = SYSTEM_IDENTITY) -> str:
+        """Proxy the owning daemon's rotate_to_best (move to the next best account).
+        Returns "rotated" / "skipped:<reason>" / "no_driver"."""
+        return await self._client.call(
+            "rotate_to_best", session_id=session_id, identity=identity)
+
+    async def set_account_pin(self, session_id: str, pinned: bool) -> str:
+        """Proxy the owning daemon's set_account_pin. Returns "pinned" / "unpinned" /
+        "skipped:not-found"."""
+        return await self._client.call(
+            "set_account_pin", session_id=session_id, pinned=pinned)
+
     async def permanent_delete(self, session_id):
         return await self._client.call("permanent_delete", session_id=session_id)
 
@@ -612,6 +650,9 @@ class RemoteOrchestrator:
     async def pending_questions(self, session_id):
         return await self._client.call("pending_questions", session_id=session_id)
 
+    async def orphaned_interaction(self, session_id):
+        return await self._client.call("orphaned_interaction", session_id=session_id)
+
     async def pop_pending_initial_prompt(self, session_id):
         return await self._client.call("pop_pending_initial_prompt", session_id=session_id)
 
@@ -621,7 +662,7 @@ class RemoteOrchestrator:
     async def command_catalog(self, session_id):
         return await self._client.call("command_catalog", session_id=session_id)
 
-    async def run_command(self, session_id, name, args):
+    async def run_command(self, session_id, name, args, identity=SYSTEM_IDENTITY):
         """Proxy run_command, faithfully reconstituting the in-process error contract.
 
         The daemon-side orchestrator.run_command raises ``KeyError(name)`` for an
@@ -632,11 +673,35 @@ class RemoteOrchestrator:
         KeyError so the remote path renders identically to the local one; any other
         DaemonError propagates unchanged (still the generic-failure branch)."""
         try:
-            return await self._client.call("run_command", session_id=session_id, name=name, args=args)
+            return await self._client.call("run_command", session_id=session_id, name=name, args=args,
+                                           identity=identity)
         except DaemonError as exc:
             if exc.err_type == "KeyError":
                 raise KeyError(exc.message) from exc
             raise
+
+    async def resolve_model_approval(self, session_id: str, decision: str, *,
+                                     model: str | None = None,
+                                     identity: str) -> "SessionRecord":
+        """Proxy resolve_model_approval, reconstituting the in-process error contract.
+
+        The orchestrator raises ``KeyError`` (unknown session), ``ValueError``
+        (nothing pending / bad decision), or ``ModelBlockedError`` (the counter-offered
+        model is blocked by policy). All three collapse to a DaemonError at the RPC
+        boundary; re-raise the original types so the API endpoint sees the same
+        exceptions on both code paths."""
+        try:
+            r = await self._client.call("resolve_model_approval", session_id=session_id,
+                                        decision=decision, model=model, identity=identity)
+        except DaemonError as exc:
+            if exc.err_type == "KeyError":
+                raise KeyError(exc.message) from exc
+            if exc.err_type == "ValueError":
+                raise ValueError(exc.message) from exc
+            if exc.err_type == "ModelBlockedError":
+                raise ModelBlockedError(exc.message) from exc
+            raise
+        return SessionRecord.from_dict(r["session"])
 
     @rpc_deadline
     async def latest_suggestions(self, session_id: str, *,
@@ -792,6 +857,46 @@ class RemoteOrchestrator:
 
     async def x11_open_browser(self, session_id: str, url: str | None = None) -> dict:
         return await self._client.call("x11_open_browser", session_id=session_id, url=url)
+
+    # --- pm onboarding seams (phase 2, 2026-08-31) ---
+    async def pm_onboarding_counts(self, project_id: str) -> "ProjectOnboardingView":
+        """Build the onboarding engine's view for a project, via the daemon.
+
+        The daemon returns a flat dict matching ``ProjectOnboardingView``'s fields;
+        reconstruct the dataclass here so all callers (API routes, tests) receive the
+        same type regardless of whether the orchestrator is in-process or remote."""
+        from server.pm.onboarding import ProjectOnboardingView
+        result = await self._client.call("pm_onboarding_counts", project_id=project_id)
+        if result is None:
+            # Daemon error: return a safe zero-state view rather than raising an
+            # AttributeError later — consistent with other remote seams that return
+            # empty collections on None (e.g. backlog_candidates, automation_statuses).
+            return ProjectOnboardingView(
+                state="registered",
+                repo_count=0,
+                backfill_done_count=0,
+                feature_count=0,
+                open_unclassified_count=0,
+                pending_proposal_count=0,
+                map_pr_open=False,
+                map_pr_merged=False,
+            )
+        return ProjectOnboardingView(**result)
+
+    async def pm_onboard_spawn_map(self, slug: str, **kwargs) -> dict | None:
+        """Spawn the archaeology map-synthesis session, via the daemon."""
+        return await self._client.call("pm_onboard_spawn_map", slug=slug, **kwargs,
+                                       timeout=AUTOMATION_RPC_TIMEOUT)
+
+    async def pm_classify_run(self, slug: str, **kwargs) -> int:
+        """Spawn one backlog-classification session, via the daemon."""
+        r = await self._client.call("pm_classify_run", slug=slug, **kwargs,
+                                    timeout=AUTOMATION_RPC_TIMEOUT)
+        return int(r) if r is not None else 0
+
+    async def pm_advance_map_merged(self, slug: str) -> None:
+        """Advance map_proposed → map_merged, via the daemon."""
+        await self._client.call("pm_advance_map_merged", slug=slug)
 
     async def aclose(self) -> None:
         if self._global_pump is not None and not self._global_pump.done():

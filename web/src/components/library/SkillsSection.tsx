@@ -51,14 +51,14 @@ export function SkillsSection() {
           <button
             type="button"
             onClick={() => { setAiOpen(true); setAiError(null) }}
-            className="text-xs px-2 py-1 rounded border border-[var(--border)] hover:bg-gray-50 dark:hover:bg-gray-700"
+            className="text-xs px-2 py-1 rounded border border-edge hover:bg-gray-50 dark:hover:bg-gray-700"
           >
             Create with AI
           </button>
           <button
             type="button"
             onClick={() => setDialog({ id: null })}
-            className="text-xs px-2 py-1 rounded border border-[var(--border)] hover:bg-gray-50 dark:hover:bg-gray-700"
+            className="text-xs px-2 py-1 rounded border border-edge hover:bg-gray-50 dark:hover:bg-gray-700"
           >
             New skill
           </button>
@@ -66,12 +66,12 @@ export function SkillsSection() {
       </div>
 
       {aiOpen && (
-        <div className="border border-[var(--border)] rounded-md p-3 space-y-2 text-sm mb-4">
+        <div className="border border-edge rounded-md p-3 space-y-2 text-sm mb-4">
           <div className="font-medium">Generate skill with AI</div>
           <label className="flex flex-col gap-0.5">
             <span className="text-xs opacity-70">Describe what the skill should do</span>
             <textarea
-              className="border border-[var(--border)] rounded px-2 py-1 text-sm bg-transparent resize-none"
+              className="border border-edge rounded px-2 py-1 text-sm bg-transparent resize-none"
               rows={3}
               placeholder="e.g. A skill that reviews PRs for security vulnerabilities and suggests fixes"
               value={aiDesc}
@@ -83,7 +83,7 @@ export function SkillsSection() {
           <div className="flex gap-2">
             <button
               type="button"
-              className="text-xs px-3 py-1 rounded bg-[var(--accent)] text-[var(--accent-foreground)] disabled:opacity-50"
+              className="text-xs px-3 py-1 rounded bg-accent text-accent-ink disabled:opacity-50"
               disabled={!aiDesc.trim() || aiLoading}
               onClick={handleAiGenerate}
             >
@@ -91,7 +91,7 @@ export function SkillsSection() {
             </button>
             <button
               type="button"
-              className="text-xs px-3 py-1 rounded border border-[var(--border)] hover:bg-[var(--muted)]"
+              className="text-xs px-3 py-1 rounded border border-edge hover:bg-surface-raised"
               onClick={() => { setAiOpen(false); setAiDesc(''); setAiError(null) }}
             >
               Cancel
@@ -149,7 +149,7 @@ function SkillRow({
   onClick: () => void
 }) {
   return (
-    <li className="border border-[var(--border)] rounded-lg p-3">
+    <li className="border border-edge rounded-lg p-3">
       <button
         type="button"
         className="w-full text-left"
@@ -159,7 +159,7 @@ function SkillRow({
         <div className="flex items-baseline gap-2 min-w-0">
           <span className="font-medium">{skill.name}</span>
           {pluginBadge && (
-            <span className="text-xs px-1.5 py-0.5 rounded-full border border-[var(--border)] opacity-70 shrink-0">
+            <span className="text-xs px-1.5 py-0.5 rounded-full border border-edge opacity-70 shrink-0">
               {pluginBadge}
             </span>
           )}

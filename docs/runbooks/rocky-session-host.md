@@ -134,7 +134,10 @@ ssh tony@rocky 'findmnt -t fuse.sshfs'   # confirm both are back
 ```
 
 After remounting, restart the daemon so any process that opened a file handle across the drop picks
-up a fresh view: `ssh tony@rocky 'sudo systemctl restart ccswitch-daemon.service'`.
+up a fresh view: `ssh tony@rocky 'sudo systemctl restart ccswitch-daemon.service'`. The daemon drains
+in-flight turns on SIGTERM before it exits (up to ~3 min, ~10 min if a session is mid-compaction —
+see `deploy/README.md` § "Stopping / restarting the daemon"), so the command blocks while sessions
+finish; that is expected, not a hang.
 
 The `reconnect` sshfs option handles a transient network blip automatically (rocky's daemon unit
 also declares `Requires=tailscaled.service`, so it won't even start before the tailnet is up); the
@@ -143,40 +146,69 @@ or the sshfs process itself died) rather than just stalled.
 
 ## 5. Deploy
 
-`server/deploy/steps.py::restart_units` restarts the daemon over SSH instead of locally when
-`CCSWITCH_DAEMON_SSH_HOST` is set (this mechanism ships on `feat/deploy-remote-daemon-restart`
-(PR #708) — confirm it's merged into the checkout you're deploying from before relying on it).
-When set, it **bypasses the local `daemon_enabled` guard for the remote restart** — dobby's local
-`ccswitch-daemon.service` is deliberately disabled once the daemon has moved to rocky, so gating on
-that flag would silently restart nothing. `daemon_changed` still gates it.
+A deploy fans out to **every** host in the fleet registry (`Settings → Fleet`), local and
+remote, in a `runners` phase that runs before the edge restart (`server/deploy/runners.py`):
 
-**The deploy also updates rocky's checkout, not just its unit.** Restarting alone relaunches the
-same stale commit: rocky has its OWN clone at `/home/tony/GitHub/ccswitch`, and until 2026-08-21
-nothing in the deploy fetched or checked out there. Deploying #715 therefore gave dobby's edge the
-`cloned_repos` RPC *caller* while rocky's daemon stayed on `f310aa6` without the *handler*, and
-every repo listing returned `409 {"detail": "cloned_repos"}` — the New Session dropdown showed
-"— could not load repos —". Rocky reported "0 commits behind" the whole time, because its
-`origin/master` ref was itself stale.
+1. `snapshot_deploy` on the host's daemon (best-effort).
+2. Bring its checkout to the target: `ssh <ssh_host> git -C <repo_path> fetch --quiet origin`,
+   `merge --ff-only <sha>`, pip (`<repo>/.venv/bin/python -m pip install -e '<repo>[server]'`)
+   only if `pyproject.toml`/`uv.lock` changed, then `sync`. dobby's own daemon uses the
+   controller's checkout, already updated.
+3. Only when the diff was daemon-changing: drain (same caps as before), then
+   `sudo -n systemctl restart ccswitch-daemon.service`.
+4. Verify `/info` reports the target (`checkoutSha`, and `sha` after a restart); `restore_deploy`.
 
-`restart_units` now runs, in order:
+At most two runners are in flight at once. A runner the probe could not **reach** is skipped
+(`offline`) and reconciles itself at its next boot (§5.1); one that answered but is *fenced*
+by the version-skew or protocol gate is still deployed to — that is what un-fences it. A
+runner that fails is
+named in the deploy error; the edge still lands, and the failed runner is **fenced from
+dispatch** by the probe's version-skew gate (`Fleet` shows `version skew: …`) until you fix
+it — the Fleet "Update" button re-runs the same sequence at the deployed sha.
 
-```
-ssh <host> git -C <repo> fetch --quiet origin
-ssh <host> git -C <repo> merge --ff-only <deployed-sha>
-ssh <host> sudo systemctl restart ccswitch-daemon.service
-```
+A runner fenced by the skew gate is still a deploy **target** — reachable, just on the wrong
+commit — so the next deploy tries it again. To clear one by hand without a deploy:
 
-Fast-forward only — a diverged remote checkout aborts the deploy rather than losing local commits.
-This requires **`CCSWITCH_DAEMON_SSH_REPO`**, the checkout path on the remote host:
-
-```
-CCSWITCH_DAEMON_SSH_REPO=/home/tony/GitHub/ccswitch
+```bash
+ssh <host> sudo systemctl restart ccswitch-daemon.service   # blocks while turns drain
 ```
 
-If `CCSWITCH_DAEMON_SSH_HOST` is set and this is missing (or is not a safe absolute path), the
-deploy raises `DeployError` **before any command runs**, including the edge restart. That is
-deliberate: a deploy that cannot update the remote daemon must fail loudly rather than restart it
-into staleness, which is the failure this whole section exists to describe.
+The unit's `ExecStartPre` runs `runner_sync` (§5.1), which fast-forwards the checkout to
+`deploy_state.deployed_sha`, and the next probe (≤30 s) clears the `version skew` error. The
+Fleet "Update" button does the same thing over SSH.
+
+**Running the deploy by hand.** `python -m server.deploy --once` from an interactive shell
+must load the service environment first:
+
+```bash
+set -a; source /etc/ccswitch/ccswitch.env; set +a
+python -m server.deploy --once
+```
+
+The `runners` phase reads the fleet registry from `CCSWITCH_DB_URL`. Unset, the lookup lands
+on an empty default database and the deploy **silently fans out to nobody** while reporting
+green — every runner is left on the old code. The tell is the warning
+`runners: no enabled fleet hosts found — nothing was fanned out`; if you see it, you almost
+certainly forgot the `source`.
+
+The deploy records the deployed sha in the `deploy_state` table once the edge is healthy.
+`CCSWITCH_DAEMON_SSH_HOST` / `CCSWITCH_DAEMON_SSH_REPO` are no longer read by the deploy;
+they only seed the matching host's `ssh_host` / `repo_path` once at edge startup. Set those
+two fields in the Fleet UI for every remote runner (the deploy fails loudly with
+`unconfigured` for an online runner without them).
+
+### 5.1 Boot-time reconcile
+
+`ExecStartPre=… -m server.deploy.runner_sync` on the daemon unit fast-forwards the checkout to
+`deploy_state.deployed_sha` when the runner is behind (clean tree, ff-only, pip if the
+lockfile changed, `sync`). It always exits 0: a dirty or diverged checkout is logged at ERROR
+(`journalctl -u ccswitch-daemon | grep runner_sync`) and the daemon starts anyway, fenced by
+the skew gate until you apply the reset recipe below.
+
+**One-time bootstrap on an existing runner:** apply the reset recipe (below), install the
+unit file with the new `ExecStartPre` (`sudo cp deploy/ccswitch-daemon-remote.service
+/etc/systemd/system/ccswitch-daemon.service && sudo systemctl daemon-reload`), and restart
+the daemon when the Sessions page shows nothing mid-turn.
 
 ### A hotfixed remote host cannot fast-forward
 
@@ -199,85 +231,42 @@ Then reset the host and restart it:
 
 ```bash
 ssh tony@rocky 'cd /home/tony/GitHub/ccswitch   && git fetch -q origin && git checkout -q master   && git reset --hard origin/master && git branch -D <hotfix-branch>'
-ssh tony@rocky 'sudo systemctl restart ccswitch-daemon'
+ssh tony@rocky 'sudo systemctl restart ccswitch-daemon'   # blocks while in-flight turns drain
 ```
 
 Check for local work first (`git log --branches --not --remotes`, `git stash list`) —
 `reset --hard` discards it, and the whole point of `--ff-only` in the deploy is that it
 will not make that decision for you.
 
-**Version skew is measured between hosts, not against each host's own upstream.** To check:
-
-```bash
-# edge
-git -C /home/tony/GitHub/cc-account-switcher-deploy rev-parse --short HEAD
-# daemon (authoritative — the RUNNING code, not the checkout)
-curl -s --unix-socket /run/ccswitch/deploy.sock http://localhost/status | jq -r .pending.liveSha
-ssh tony@rocky 'git -C /home/tony/GitHub/ccswitch rev-parse --short HEAD'
-```
-
-```bash
-run(["ssh", daemon_host, "sudo", "systemctl", "restart", "ccswitch-daemon.service"], ...)
-```
-
-`CCSWITCH_DAEMON_SSH_HOST` is validated against `^[A-Za-z0-9][A-Za-z0-9_.-]*(@[A-Za-z0-9][A-Za-z0-9_.-]*)?$`
-before it's used to build the ssh argv — a value starting with `-` (ssh-flag injection) raises
-`DeployError` before any command runs, including the local edge restart. Live value on dobby:
-
-```
-CCSWITCH_DAEMON_SSH_HOST=tony@rocky
-```
-
-This lives in `/etc/ccswitch/ccswitch.env`, which `ccswitch-deploy-controller.service` sources via
-its unit's `EnvironmentFile=`. **A manual `python -m server.deploy --once` invocation from an
-interactive shell does NOT source that file** — systemd's `EnvironmentFile=` is unit-scoped, not a
-shell-sourceable file. For a manual deploy, export it first:
-
-```bash
-set -a; source /etc/ccswitch/ccswitch.env; set +a
-.venv/bin/python -m server.deploy --once
-```
-
-Without that export, a manual deploy silently falls back to `restart_units`'s local-only branch,
-which restarts `ccswitch.service` but skips the daemon entirely (dobby's unit is disabled) — rocky
-keeps running whatever code it was already running.
-
-**Deploy order when doing it by hand:** daemon (rocky) first, then edge (dobby). This mirrors
-`restart_units`'s own ordering (issue #190 — a browser reconnect-flush race) and matters more in the
-cross-host case: a new edge build talking to an old daemon can silently degrade — e.g. an RPC the
-new edge expects but the old daemon doesn't implement yet fails or is ignored rather than
-erroring loudly. Restart the daemon, confirm it's healthy (§3's with-cert curl), *then* restart the
-edge.
-
 ## 6. Certificate renewal
 
-Certs are minted with `scripts/ccswitch-mint-mtls.sh <outdir> <daemon-dns> <daemon-ip>` — server/
-client certs valid **825 days**, the CA **3650 days**. The SAN embedded in the server cert must stay
-the tailnet identity, never `rocky.lan`:
+Server/client certs are valid **825 days**, the CAs **3650 days**. The SAN embedded in the server
+cert must stay the tailnet identity, never `rocky.lan`.
+
+**Do NOT re-run `scripts/ccswitch-mint-mtls.sh` to renew** — it mints a brand-new CA (and since
+issue #841 refuses to run when a fleet CA already exists). Renew by signing a fresh cert with the
+existing signing CA per the onboarding runbook, Step 3 Option A
+(`docs/runbooks/onboarding-a-session-runner.md`) — that runbook's CA table is the source of truth.
+Summary of the fleet CA state (since 2026-08-30, issue #841):
+
+- **Server-cert renewals** (rocky, dobby, any runner): sign with `ca2.key`
+  (`/etc/ccswitch/tls/ca2.key` on dobby, root-only). The edge verifies server certs against
+  `ca-bundle.pem` (original `ca.pem` + `ca2.pem`), so old and new certs coexist.
+- **Client-cert renewal** (`CN=edge`): every daemon verifies it against its
+  `CCSWITCH_SESSIOND_TLS_CA` — currently the ORIGINAL `ca.pem`. Either sign with the original CA
+  key, which is intact at `/mnt/hdd-storage/ccswitch-ca/ca.key` on dobby (a **root-only**
+  directory: a non-root search reports permission denied/nothing — it is NOT lost), or first point
+  every daemon's `CCSWITCH_SESSIOND_TLS_CA` at a ca.pem+ca2.pem bundle and sign with ca2.
+
+Distribute renewed material and clean up:
 
 ```bash
-bash scripts/ccswitch-mint-mtls.sh /tmp/ccswitch-mtls rocky.tail0dd570.ts.net 100.69.70.109
-openssl x509 -in /tmp/ccswitch-mtls/server.pem -noout -text | grep -A1 "Subject Alternative Name"
-# expect: DNS:rocky.tail0dd570.ts.net, IP Address:100.69.70.109
-```
-
-The script needs the **CA key** to sign new certs (`ca.key`). It was deliberately moved off both
-`dobby` and `rocky` after the original mint and lives only at:
-
-```
-/mnt/hdd-storage/ccswitch-ca/ca.key      # root-only, on neither host's TLS directory
-```
-
-To re-mint, copy `ca.key`/`ca.pem` from that path into the script's working dir first (or run the
-script from wherever the CA lives), then redistribute:
-
-```bash
-# server material → rocky
-scp /tmp/ccswitch-mtls/{ca.pem,server.pem,server.key} tony@rocky:/etc/ccswitch/tls/
-# client material → dobby
-sudo cp /tmp/ccswitch-mtls/{ca.pem,client.pem,client.key} /etc/ccswitch/tls/
+# server material → the runner being renewed (e.g. rocky)
+scp /tmp/mtls-rocky/{server.pem,server.key} tony@rocky:/etc/ccswitch/tls/
+# renewed client material → dobby (edge)
+sudo cp /tmp/mtls-edge/{client.pem,client.key} /etc/ccswitch/tls/
 sudo chmod 600 /etc/ccswitch/tls/*.key
-rm -rf /tmp/ccswitch-mtls   # never leave cert material in /tmp
+rm -rf /tmp/mtls-*   # never leave cert material in /tmp
 ```
 
 Then restart both daemons that read TLS material: `ssh tony@rocky 'sudo systemctl restart

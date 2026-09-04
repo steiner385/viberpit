@@ -5,9 +5,6 @@ import type { DaemonHealth } from '@/api/types'
 import { DaemonHealthIndicator } from './DaemonHealthIndicator'
 import { formatUptime, daemonHealthTooltip } from '@/lib/daemonHealth'
 
-const toastWarning = vi.fn()
-vi.mock('sonner', () => ({ toast: { warning: (...a: unknown[]) => toastWarning(...a) } }))
-
 const mockHealth = vi.fn<() => { data: DaemonHealth | undefined }>()
 vi.mock('@/api/hooks', () => ({
   useDaemonHealth: () => mockHealth(),
@@ -25,7 +22,6 @@ function renderIndicator() {
 }
 
 beforeEach(() => {
-  toastWarning.mockClear()
   mockHealth.mockReset()
 })
 

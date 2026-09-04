@@ -1,6 +1,7 @@
 """Compose a per-account CLAUDE_CONFIG_DIR: symlink mirror of ~/.claude + real creds."""
 import os
 import shutil
+import time
 from pathlib import Path
 
 from . import paths
@@ -174,13 +175,83 @@ def compose(name: str) -> Path:
     # Write .claude.json (real file, never a symlink)
     write_json_secure(cfg_dir / CLAUDE_JSON_NAME, compose_claude_json(name))
 
-    # Remove backups/ if present — it's claude's corruption-recovery artifact from an unstable
-    # compose; a clean stable .claude.json makes it unnecessary and it can confuse reloads.
-    backups = cfg_dir / "backups"
-    if backups.exists():
-        if backups.is_symlink():
-            backups.unlink()
-        else:
-            shutil.rmtree(backups)
+    prune_backups(cfg_dir)
 
     return cfg_dir
+
+
+def count_recent_corruptions(name: str, window_s: float = 3600.0) -> int:
+    """How many ``.claude.json.corrupted.*`` artifacts *name*'s cfg dir gained recently.
+
+    Each one is a distinct event where some host's Claude Code failed to parse the shared
+    config and reset it to defaults (#1005). Counted from mtime, so it survives across
+    processes without extra bookkeeping. Fail-open: 0 on any error.
+
+    Not host-attributed — the store is shared, so every host's artifacts land in the same
+    directory. ``server.sessions.scratch_config.recent_torn_reads`` is the per-host signal;
+    this is the fleet-wide one, and the gap between them is corruption seen by spawns that
+    still read the account dir directly (live sessions).
+    """
+    now = time.time()
+    try:
+        backups = paths.account_cfg_dir(name) / "backups"
+        return sum(
+            1 for entry in backups.iterdir()
+            if entry.name.startswith(f"{CLAUDE_JSON_NAME}.corrupted.")
+            and now - entry.stat().st_mtime <= window_s
+        )
+    except (OSError, ValueError):
+        return 0
+
+
+def prune_backups(cfg_dir: Path, retain_s: float | None = None) -> None:
+    """Age out claude's ``backups/`` recovery artifacts, keeping recent ones as evidence.
+
+    ``backups/`` is where Claude Code parks a config it could not parse
+    (``.claude.json.corrupted.<ts>``) plus a pre-write ``.claude.json.backup.<ts>``. compose()
+    used to rmtree the whole directory on every call, on the theory that it was fallout from
+    an unstable compose. #1005 showed otherwise: the artifacts are the ONLY on-disk record of
+    a host reading a torn view of the shared ``.claude.json`` and resetting it to defaults —
+    and compose() ran often enough to destroy each one within seconds of its creation, which
+    is why ~1,100 resets/day went unnoticed for three days. Keep a retention window
+    (``CCSWITCH_CONFIG_BACKUP_RETENTION_S``, default 24h) so a sample survives long enough for
+    ``count_recent_corruptions`` and the watchdog to see it, and drop only what has aged out
+    so the directory still cannot grow without bound.
+
+    Best-effort and race-tolerant: the cfg dir can be a shared (sshfs) mount whose backups/ is
+    concurrently rewritten by live claude processes on other hosts, so an entry can vanish
+    between readdir and unlink. A vanished entry is the desired end-state — ignore it. Letting
+    this cleanup raise strands EVERY driver launch / resume / titling pass on the mounted host
+    (the "session stuck, re-send does nothing" incident, #895). We do NOT extend that swallow
+    to reconcile_links(): those unlinks manage ccswitch's own symlinks and must still surface.
+    """
+    if retain_s is None:
+        try:
+            retain_s = float(os.environ.get("CCSWITCH_CONFIG_BACKUP_RETENTION_S", "86400"))
+        except ValueError:
+            retain_s = 86400.0
+    backups = cfg_dir / "backups"
+    try:
+        if backups.is_symlink():
+            # A symlink here is not claude's doing; it would redirect writes out of the cfg
+            # dir. Remove it (never follow it into an rmtree) and let claude recreate a dir.
+            backups.unlink()
+            return
+        if not backups.is_dir():
+            return
+        cutoff = time.time() - retain_s
+        for entry in backups.iterdir():
+            try:
+                if entry.stat().st_mtime >= cutoff:
+                    continue  # still inside the evidence window
+                if entry.is_dir() and not entry.is_symlink():
+                    shutil.rmtree(entry, ignore_errors=True)
+                else:
+                    entry.unlink()
+            except OSError:
+                continue  # a concurrent writer got there first — that is the end-state
+    except OSError:
+        # Includes the sshfs failure modes (ENOENT mid-readdir, EIO on a flapping mount).
+        # Widened from the original FileNotFoundError deliberately: NOTHING about pruning a
+        # throwaway artifact directory is worth stranding every launch/resume on this host.
+        pass
