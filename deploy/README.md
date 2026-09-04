@@ -350,6 +350,62 @@ Install on the remote session host:
     sudo systemctl daemon-reload
     sudo systemctl enable --now ccswitch-mounts.service
 
+### Cache profiles: the account store must be mounted coherently (#1005)
+
+`bin-ccswitch-mounts.sh` picks one of two `-o` profiles per path:
+
+| profile | paths | options |
+|---|---|---|
+| cached (read-mostly) | `~/.claude`, `/mnt/hdd-storage`, `~/avd-golden` | `dir_cache=yes,dcache_timeout=600,attr_timeout=600,entry_timeout=600` |
+| coherent | `~/.claude-accounts` (`CCSWITCH_MOUNT_COHERENT_PATHS`) | `dir_cache=no,dcache_timeout=0,attr_timeout=0,entry_timeout=0` |
+
+The 600s cache (#779, tuned by #826/#851) is a latency win and stays for everything dobby
+does not rewrite underneath us. It is **wrong for the account store**. Claude Code writes
+`.claude.json` atomically — temp file + `rename(2)` — so both the inode and the size change
+on every write, and dobby's live sessions rewrite it continuously. A reader holding a 10-minute
+attribute cache therefore gets a **truncated body**, which Claude Code's config loader reports
+as corruption:
+
+    Claude configuration file at …/.claude.json is corrupted: JSON Parse error: Unterminated string
+    The corrupted file has been backed up to: …/backups/.claude.json.corrupted.<ts>
+
+…and then starts from a **default** config and writes it back — through the mount, onto
+dobby's disk. From 2026-09-01 rocky did this ~1,100×/day, repeatedly wiping project trust,
+`projects` history, onboarding flags and cached identity for all three accounts while dobby
+logged zero such events. The file was never corrupt; the *view* was stale.
+
+**A cache-profile change does not apply itself.** The script leaves a live mount alone on
+purpose — unmounting drops every in-flight read. After deploying, remount the account store
+when the Sessions page shows nothing mid-turn:
+
+    CCSWITCH_MOUNT_FORCE_REMOUNT=1 CCSWITCH_MOUNT_PATHS=/home/tony/.claude-accounts \
+      /home/tony/bin-ccswitch-mounts.sh
+    grep .claude-accounts /proc/mounts    # expect attr_timeout=0, no dir_cache=yes
+
+Two further layers make this safe even where a host's mount profile is still wrong:
+
+- **One-shot helper spawns never touch the shared config.** `account_auth.helper_env()`
+  points `CLAUDE_CONFIG_DIR` at a host-local mirror under `~/.cache/ccswitch/helper-cfg`
+  (`server/sessions/scratch_config.py`): `.claude.json`/`.credentials.json` are copies, the
+  shared assets are symlinks, and a torn read reuses the last-known-good copy instead of
+  resetting anything. Live sessions still use the real account dir — they must, since their
+  history and token refreshes belong there. Kill switch:
+  `CCSWITCH_HELPER_SCRATCH_CONFIG=false`.
+- **The evidence survives.** `configdir.compose()` used to `rmtree` `backups/` on every call,
+  destroying each `.claude.json.corrupted.*` within seconds of its creation — which is why
+  three days of resets left nothing to diagnose. It now prunes only entries older than
+  `CCSWITCH_CONFIG_BACKUP_RETENTION_S` (default 24h).
+
+**Verifying the fix.** `scripts/ccswitch-health-check.sh` section 6 alerts on either counter
+being non-zero over the last hour:
+
+    ALERT[config-torn-read] shared config coherence: N torn read(s) … and M '.claude.json.corrupted.*' reset(s) …
+
+- `N > 0` — **this** host is still reading a stale view; its account-store mount profile is wrong.
+- `N == 0, M > 0` — some **other** host is; check each host's `/proc/mounts`.
+- Both 0 for a few hours, and `.claude.json`'s size on dobby no longer oscillating
+  (`watch -n5 stat -c '%s %i' ~/.claude-accounts/cfg/<account>/.claude.json`) — fixed.
+
 ## Hardware watchdog load thresholds (`/etc/watchdog.conf`)
 
 Separate knob from the reachability test above, and a sharp one. `watchdog(8)` will
