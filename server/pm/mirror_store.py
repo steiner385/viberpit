@@ -5,12 +5,12 @@ from collections.abc import Collection, Sequence, Set as AbstractSet
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import false, or_
+from sqlalchemy import false, or_, update
 from sqlalchemy.orm import Session
 
 from server.db.models import (
     INITIATIVE_STAGES, GhProject, GhProjectItem, Initiative, Project, ProjectRepo,
-    WorkItem, WorkItemDep)
+    TriageProposal, WorkItem, WorkItemDep)
 
 from .dep_plan import DepRowView, observed_deps, plan_dep_rows
 from .gh_projects import GhProjectItemView, GhProjectView, IssueRelView
@@ -230,3 +230,121 @@ def _resolve_ref(db: Session, ref: str) -> str | None:
     if not number.isdigit():
         return None
     return _work_item_id(db, repo, int(number), "issue")
+
+
+def _rowcount(result: object) -> int:
+    """Rows affected by a bulk ``update()``; typed as ``Result`` by SQLAlchemy's
+    stubs, which don't expose ``rowcount``, so read it defensively."""
+    return int(getattr(result, "rowcount", 0) or 0)
+
+
+def rename_repo(db: Session, old: str, new: str) -> dict[str, int]:
+    """Re-key every mirror row from alias *old* to GitHub's canonical *new*.
+
+    The single data-correction path for issue #999: ``ProjectRepo.repo`` was
+    entered by hand as a pre-rename / differently-cased alias, GitHub kept
+    answering queries for it, and every mirrored key (``WorkItem.repo``, the
+    ``repo#N`` refs on ``WorkItemDep``, the Initiative pointers) followed the
+    alias while GitHub-sourced refs stayed canonical — so no parent linked and no
+    native edge resolved. pm-sync calls this the moment a payload's
+    ``nameWithOwner`` disagrees with the stored name, before writing any row
+    from that payload; it is idempotent (nothing under *old* ⇒ all-zero counts)
+    and a no-op when the names already agree.
+
+    Collisions: a canonical twin that already exists (the repo onboarded under
+    both names) wins — the alias ``WorkItem`` is dropped after everything that
+    pointed at it is re-pointed at the twin, and a dep edge whose rewritten
+    ``(src, dst, source)`` already exists is dropped rather than tripping the
+    unique key. Ends by re-resolving the NULL FKs that only existed because the
+    two halves of the graph disagreed. Caller owns the transaction."""
+    if not old or not new or old == new:
+        return {}
+    counts = {"project_repos": 0, "work_items": 0, "merged": 0, "deps": 0,
+              "deps_dropped": 0, "initiatives": 0, "fks_resolved": 0}
+
+    # 1. ProjectRepo: rename, or drop the alias row when the project already
+    #    carries the canonical name (uq_project_repo).
+    canonical_repo_projects = {r.project_id for r in db.query(ProjectRepo).filter_by(repo=new)}
+    for row in db.query(ProjectRepo).filter_by(repo=old).all():
+        if row.project_id in canonical_repo_projects:
+            db.delete(row)
+        else:
+            row.repo = new
+            counts["project_repos"] += 1
+
+    # 2. WorkItem: bulk rename every alias row without a canonical twin; merge
+    #    the rest into their twin (re-point the FKs, then drop the alias row).
+    twins = {(number, kind): wid for wid, number, kind in
+             db.query(WorkItem.id, WorkItem.number, WorkItem.kind).filter_by(repo=new)}
+    twin_of: dict[str, str] = {}
+    for wid, number, kind in db.query(WorkItem.id, WorkItem.number, WorkItem.kind).filter_by(repo=old):
+        twin = twins.get((number, kind))
+        if twin is not None:
+            twin_of[wid] = twin
+    alias_ids = list(twin_of)
+    if alias_ids:
+        for w in db.query(WorkItem).filter(WorkItem.parent_work_item_id.in_(alias_ids)).all():
+            w.parent_work_item_id = twin_of[w.parent_work_item_id or ""]
+        for it in db.query(GhProjectItem).filter(GhProjectItem.work_item_id.in_(alias_ids)).all():
+            it.work_item_id = twin_of[it.work_item_id or ""]
+        for tp in db.query(TriageProposal).filter(TriageProposal.work_item_id.in_(alias_ids)).all():
+            tp.work_item_id = twin_of[tp.work_item_id]
+        for d in db.query(WorkItemDep).filter(or_(
+                WorkItemDep.src_work_item_id.in_(alias_ids),
+                WorkItemDep.dst_work_item_id.in_(alias_ids))).all():
+            d.src_work_item_id = twin_of.get(d.src_work_item_id or "", d.src_work_item_id)
+            d.dst_work_item_id = twin_of.get(d.dst_work_item_id or "", d.dst_work_item_id)
+        db.flush()
+        for alias_id in alias_ids:
+            db.delete(db.get(WorkItem, alias_id))
+        counts["merged"] = len(alias_ids)
+        db.flush()
+    counts["work_items"] = _rowcount(db.execute(
+        update(WorkItem).where(WorkItem.repo == old).values(repo=new)))
+
+    # 3. WorkItemDep refs: prefix rewrite on either end, deduped against the
+    #    edges that are already canonical (uq_work_item_dep).
+    old_prefix, new_prefix = f"{old}#", f"{new}#"
+
+    def _rekey(ref: str | None) -> str | None:
+        if ref and ref.startswith(old_prefix):
+            return new_prefix + ref[len(old_prefix):]
+        return ref
+
+    seen: set[tuple[str | None, str | None, str | None]] = set()
+    touched: list[WorkItemDep] = []
+    for d in db.query(WorkItemDep).all():
+        if (d.src_ref or "").startswith(old_prefix) or (d.dst_ref or "").startswith(old_prefix):
+            touched.append(d)
+        else:
+            seen.add((d.src_ref, d.dst_ref, d.source))
+    for d in touched:
+        key = (_rekey(d.src_ref), _rekey(d.dst_ref), d.source)
+        if key in seen:
+            db.delete(d)
+            counts["deps_dropped"] += 1
+            continue
+        seen.add(key)
+        d.src_ref, d.dst_ref = key[0], key[1]
+        counts["deps"] += 1
+
+    # 4. Initiative pointers (both the owning repo and the epic pointer).
+    counts["initiatives"] = (
+        _rowcount(db.execute(update(Initiative).where(Initiative.repo == old).values(repo=new)))
+        + _rowcount(db.execute(update(Initiative).where(Initiative.epic_repo == old)
+                               .values(epic_repo=new))))
+    db.flush()
+
+    # 5. The FKs that were NULL only because src was alias and dst canonical (or
+    #    vice versa) resolve now that both halves share one name.
+    for d in db.query(WorkItemDep).filter(or_(
+            WorkItemDep.src_ref.startswith(new_prefix, autoescape=True),
+            WorkItemDep.dst_ref.startswith(new_prefix, autoescape=True))).all():
+        for attr, ref in (("src_work_item_id", d.src_ref), ("dst_work_item_id", d.dst_ref)):
+            if getattr(d, attr) is None:
+                resolved = _resolve_ref(db, ref or "")
+                if resolved is not None:
+                    setattr(d, attr, resolved)
+                    counts["fks_resolved"] += 1
+    db.flush()
+    return counts

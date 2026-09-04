@@ -75,7 +75,8 @@ def _relations_payload():
 # ---- loop wiring (mirrors test_pm_sync_loop._loop, plus the new seams) --------
 
 
-def _loop(ctx, *, products, owner_fetch, repo_fetch, now_fn=None, config=None):
+def _loop(ctx, *, products, owner_fetch, repo_fetch, now_fn=None, config=None,
+          rename_repo=None):
     """Wire a loop with no repos to sync (so tick() goes straight to the mirror
     pass) and canned mirror seams. Every seam call is recorded in ``calls``."""
     calls = {"save_gh_project": [], "save_project_fields": [],
@@ -132,7 +133,8 @@ def _loop(ctx, *, products, owner_fetch, repo_fetch, now_fn=None, config=None):
         now_utc=now_fn or (lambda: datetime(2026, 2, 1, tzinfo=timezone.utc)),
         list_products=list_products, fetch_gh_projects=fetch_gh_projects,
         save_gh_project=save_gh_project, save_project_fields=save_project_fields,
-        save_project_items=save_project_items, save_relations=save_relations)
+        save_project_items=save_project_items, save_relations=save_relations,
+        rename_repo=rename_repo)
     return loop, calls
 
 
@@ -210,6 +212,41 @@ async def test_relations_pass_runs_per_repo_and_saves():
     assert saved_repos == ["steiner385/cc-account-switcher", "steiner385/KinDash"]
     for _, rels in calls["save_relations"]:
         assert all(isinstance(r, IssueRelView) for r in rels)
+
+
+@pytest.mark.asyncio
+async def test_relations_pass_canonicalizes_a_renamed_repo():
+    """The relations payload's repository root says what GitHub calls the repo.
+    When that differs from the product's stored repo, the pass renames the
+    mirror and saves the relations keyed on the canonical name — so parents and
+    native edges (whose refs GitHub already returns canonical) link (#999)."""
+    ctx = Ctx()
+    renamed = []
+
+    async def rename(old, new):
+        renamed.append((old, new))
+        return {"work_items": 1}
+
+    def owner_fetch(owner, query):
+        if "projectsV2" in query:
+            return _owner_projects_payload()
+        if "fields" in query:
+            return _fields_payload()
+        return _items_payload()
+
+    def repo_fetch(query):
+        payload = _relations_payload()
+        payload["data"]["repository"]["nameWithOwner"] = "steiner385/ccswitch"
+        return payload
+
+    loop, calls = _loop(ctx, products=[_product()], owner_fetch=owner_fetch,
+                        repo_fetch=repo_fetch, rename_repo=rename)
+    await loop.tick()
+
+    assert renamed == [("steiner385/cc-account-switcher", "steiner385/ccswitch")]
+    [(repo, rels)] = calls["save_relations"]
+    assert repo == "steiner385/ccswitch"
+    assert [r.repo for r in rels] == ["steiner385/ccswitch"]
 
 
 @pytest.mark.asyncio

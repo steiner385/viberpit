@@ -43,7 +43,13 @@ def _pr_page(numbers, cursor, has_next, updated="2026-01-02T00:00:00Z"):
                   for n in numbers]}}}}
 
 
-def _loop(ctx, views, pages, *, config=None, feature_docs=None):
+def _named(page, name):
+    """Stamp GitHub's canonical ``nameWithOwner`` onto a canned page (issue #999)."""
+    page["data"]["repository"]["nameWithOwner"] = name
+    return page
+
+
+def _loop(ctx, views, pages, *, config=None, feature_docs=None, rename_repo=None):
     """Wire a loop over canned data. `pages` is a list popped per fetch call."""
     saved = []
     upserted = []
@@ -77,8 +83,64 @@ def _loop(ctx, views, pages, *, config=None, feature_docs=None):
         ctx, read_config=read_config, list_repos=list_repos, fetch=fetch,
         upsert_items=upsert, save_sync_state=save, read_feature_docs=read_docs,
         list_feature_rows=list_rows, apply_feature_plan=apply_plan,
-        now_utc=lambda: datetime(2026, 2, 1, tzinfo=timezone.utc))
+        now_utc=lambda: datetime(2026, 2, 1, tzinfo=timezone.utc),
+        rename_repo=rename_repo)
     return loop, saved, upserted, applied
+
+
+# --- canonical repo name (issue #999) ----------------------------------------
+
+@pytest.mark.asyncio
+async def test_incremental_canonicalizes_a_renamed_repo_before_saving():
+    """GitHub answers a query for the stored alias with its canonical
+    ``nameWithOwner``. The loop must rename the mirror FIRST, then key every
+    item and the sync-state save on the canonical name — otherwise the alias
+    keeps splitting the graph (#999)."""
+    ctx = Ctx()
+    renamed = []
+
+    async def rename(old, new):
+        renamed.append((old, new))
+        return {"work_items": 3, "deps": 2}
+
+    pages = [_named(_issue_page([1], None, False), "o/new"), _pr_page([], None, False)]
+    loop, saved, upserted, _ = _loop(
+        ctx, [_view(repo="o/old", backfill_done=True)], pages, rename_repo=rename)
+    await loop.tick()
+    assert renamed == [("o/old", "o/new")]
+    assert {i.repo for i in upserted} == {"o/new"}
+    assert saved and all(repo == "o/new" for repo, _ in saved)
+    assert any(kw.get("kind") == "repo_renamed" and kw.get("target") == "o/new"
+               for _, _, kw in ctx.events)
+
+
+@pytest.mark.asyncio
+async def test_backfill_canonicalizes_on_its_first_page():
+    ctx = Ctx()
+    renamed = []
+
+    async def rename(old, new):
+        renamed.append((old, new))
+        return {}
+
+    pages = [_named(_issue_page([1], None, False), "o/new"), _pr_page([2], None, False)]
+    loop, saved, upserted, _ = _loop(ctx, [_view(repo="o/old")], pages, rename_repo=rename)
+    await loop.tick()
+    assert renamed == [("o/old", "o/new")]
+    assert {i.repo for i in upserted} == {"o/new"}
+    assert saved[-1][0] == "o/new" and saved[-1][1].get("backfill_done") is True
+
+
+@pytest.mark.asyncio
+async def test_sync_without_a_rename_seam_keeps_the_stored_name():
+    """Pre-existing wiring (no seam) must be unaffected: the payload's name is
+    informational only and nothing is renamed."""
+    ctx = Ctx()
+    pages = [_named(_issue_page([1], None, False), "o/new"), _pr_page([], None, False)]
+    loop, saved, upserted, _ = _loop(ctx, [_view(repo="o/old", backfill_done=True)], pages)
+    await loop.tick()
+    assert {i.repo for i in upserted} == {"o/old"}
+    assert all(repo == "o/old" for repo, _ in saved)
 
 
 @pytest.mark.asyncio
