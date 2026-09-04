@@ -9,7 +9,7 @@ repo's failure never stalls the others.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable
 
@@ -23,7 +23,7 @@ from server.pm.gh_projects import (
     parse_issue_relations, parse_project_fields, parse_project_items,
     parse_viewer_projects, project_node_missing)
 from server.pm.github_sync import (
-    WorkItemView, build_issues_query, build_prs_query, parse_page)
+    WorkItemView, build_issues_query, build_prs_query, canonical_repo_name, parse_page)
 from server.pm.mirror_store import ProductSyncView
 
 from .base import AutomationStatus, ConfigField
@@ -115,6 +115,9 @@ SaveGhProject = Callable[[str, GhProjectView], Awaitable[str]]  # -> gh_project 
 SaveProjectFields = Callable[[str, dict], Awaitable[None]]
 SaveProjectItems = Callable[[str, list[GhProjectItemView]], Awaitable[list | None]]
 SaveRelations = Callable[[str, list[IssueRelView]], Awaitable[None]]
+# Rewrite every mirror key from a stored alias to GitHub's canonical
+# ``nameWithOwner`` (args: old, new) and return per-table counts (issue #999).
+RenameRepo = Callable[[str, str], Awaitable[dict]]
 
 
 class PmSyncLoop:
@@ -140,6 +143,7 @@ class PmSyncLoop:
         save_project_fields: SaveProjectFields | None = None,
         save_project_items: SaveProjectItems | None = None,
         save_relations: SaveRelations | None = None,
+        rename_repo: RenameRepo | None = None,
     ) -> None:
         self._ctx = ctx
         self._read_config = read_config
@@ -158,6 +162,8 @@ class PmSyncLoop:
         self._save_project_fields = save_project_fields
         self._save_project_items = save_project_items
         self._save_relations = save_relations
+        # None ⇒ the payload's canonical name is informational only (issue #999).
+        self._rename_repo = rename_repo
         # Projects v2 pass gating (issue #973). In-memory on the long-lived loop:
         # ``_projects_next_run`` is the earliest UTC time the pass may run again;
         # ``_last_gh_projects`` keeps the status count steady across skipped ticks;
@@ -349,12 +355,16 @@ class PmSyncLoop:
                             kind="gh_human_edit", target=e.ref)
         # Relations are repo-scoped (ambient credential): always run per repo,
         # independent of whether the project itself linked.
-        for repo in product.repos:
+        for stored in product.repos:
+            repo = stored
             rels: list[IssueRelView] = []
             cursor = None
             for _ in range(_MAX_PAGES_PER_TICK):
                 payload = await self._fetch(
                     build_issue_relations_query(repo, cursor))
+                # Key the relations on GitHub's canonical name, renaming the
+                # mirror if the stored repo is an alias (issue #999).
+                repo = await self._canonicalize(repo, payload)
                 page_r, cursor, more = parse_issue_relations(payload, repo)
                 rels.extend(page_r)
                 if not more:
@@ -375,6 +385,33 @@ class PmSyncLoop:
         log.error("pm_sync.project_board_deleted project=%s node=%s",
                   product.project_id, node_id)
 
+    async def _canonicalize(self, repo: str, payload: dict) -> str:
+        """The name GitHub uses for *repo*, renaming the mirror when it differs.
+
+        ``repository(owner:, name:)`` resolves through renames and ignores case,
+        so a stale ``ProjectRepo.repo`` keeps syncing — but keyed on the alias,
+        while GitHub-sourced refs are canonical, so parents never link and native
+        edges never resolve (issue #999). The canonical name is taken from the
+        payload the loop already fetched (no extra call) and applied to the
+        mirror through the ``rename_repo`` seam BEFORE any row from this payload
+        is written, so the alias never widens. Returns *repo* unchanged when the
+        payload carries no name or no seam is wired."""
+        canonical = canonical_repo_name(payload)
+        if not canonical or canonical == repo or self._rename_repo is None:
+            return repo
+        counts = await self._rename_repo(repo, canonical)
+        log.info("pm_sync.repo_renamed old=%s new=%s counts=%s", repo, canonical, counts)
+        await self._ctx.emit(
+            "info", f"{repo} is {canonical} on GitHub — mirror re-keyed to the canonical name",
+            kind="repo_renamed", target=canonical, detail=dict(counts or {}))
+        return canonical
+
+    async def _canonical_view(self, view: RepoSyncView, payload: dict) -> RepoSyncView:
+        """*view* re-keyed to the canonical repo name (see ``_canonicalize``), so
+        the sync-state save that follows lands on the renamed ``ProjectRepo`` row."""
+        canonical = await self._canonicalize(view.repo, payload)
+        return view if canonical == view.repo else replace(view, repo=canonical)
+
     async def _backfill(self, view: RepoSyncView, now: datetime) -> bool:
         """Resumable full-history import: issues first, then PRs. Saves the
         cursor after every page; returns True when both phases complete."""
@@ -390,9 +427,11 @@ class PmSyncLoop:
         for _ in range(_MAX_PAGES_PER_TICK):
             if phase == "issues":
                 payload = await self._fetch(build_issues_query(view.repo, cursor, None))
+                view = await self._canonical_view(view, payload)
                 items, cursor, more = parse_page(payload, view.repo, "issue")
             else:
                 payload = await self._fetch(build_prs_query(view.repo, cursor))
+                view = await self._canonical_view(view, payload)
                 items, cursor, more = parse_page(payload, view.repo, "pr")
             if items:
                 await self._upsert_items(items)
@@ -426,6 +465,7 @@ class PmSyncLoop:
         cursor: str | None = None
         while True:  # issues: server-side `since` filter does the bounding
             payload = await self._fetch(build_issues_query(view.repo, cursor, since))
+            view = await self._canonical_view(view, payload)
             items, cursor, more = parse_page(payload, view.repo, "issue")
             if items:
                 await self._upsert_items(items)
@@ -437,6 +477,7 @@ class PmSyncLoop:
         cursor = None
         while True:  # PRs: newest-first, stop once nodes fall behind the watermark
             payload = await self._fetch(build_prs_query(view.repo, cursor))
+            view = await self._canonical_view(view, payload)
             items, cursor, more = parse_page(payload, view.repo, "pr")
             fresh = [i for i in items
                      if view.watermark is None

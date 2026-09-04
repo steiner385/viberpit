@@ -5,8 +5,27 @@ from server.pm.github_sync import (
     WorkItemView,
     build_issues_query,
     build_prs_query,
+    canonical_repo_name,
     parse_page,
 )
+
+
+# --- canonical repo name (issue #999) ----------------------------------------
+
+def test_queries_select_the_canonical_repo_name():
+    """Both repo-scoped queries carry ``nameWithOwner`` at the repository root so
+    the loop can detect that the stored ``ProjectRepo.repo`` is a pre-rename or
+    differently-cased alias of what GitHub actually calls the repo."""
+    assert "nameWithOwner" in build_issues_query("o/r", None, None)
+    assert "nameWithOwner" in build_prs_query("o/r", None)
+
+
+def test_canonical_repo_name_reads_the_root_and_tolerates_absence():
+    assert canonical_repo_name({"data": {"repository": {
+        "nameWithOwner": "steiner385/ccswitch", "issues": {}}}}) == "steiner385/ccswitch"
+    assert canonical_repo_name(_issue_payload()) is None   # canned payloads without it
+    assert canonical_repo_name({}) is None
+    assert canonical_repo_name({"data": {"repository": None}}) is None
 
 
 def _issue_payload():

@@ -45,12 +45,32 @@ def _owner_name(repo: str) -> tuple[str, str]:
     return owner, name
 
 
+def canonical_repo_name(payload: dict) -> str | None:
+    """GitHub's own ``nameWithOwner`` for the repository a repo-scoped query was
+    rooted at, or ``None`` when the payload doesn't carry it.
+
+    GitHub resolves ``repository(owner:, name:)`` through renames and
+    case-insensitively, so a query for a stale or differently-cased alias
+    still succeeds — and every mirrored row would be keyed on the alias while
+    GitHub-sourced refs (``parent``, ``subIssues``, ``blockedBy``, PR closing
+    refs) carry the canonical name, splitting the graph (issue #999). The loop
+    compares this against ``ProjectRepo.repo`` and renames the mirror when they
+    differ, so the canonical name is the single key everywhere downstream."""
+    try:
+        repo = (payload.get("data") or {}).get("repository") or {}
+    except AttributeError:
+        return None
+    name = repo.get("nameWithOwner") if isinstance(repo, dict) else None
+    return name if isinstance(name, str) and "/" in name else None
+
+
 def build_issues_query(repo: str, cursor: str | None, since_iso: str | None) -> str:
     owner, name = _owner_name(repo)
     after = f', after: "{cursor}"' if cursor else ""
     filter_by = f", filterBy: {{since: \"{since_iso}\"}}" if since_iso else ""
     return f"""query {{
   repository(owner: "{owner}", name: "{name}") {{
+    nameWithOwner
     issues(first: {_PAGE_ISSUES}{after}, states: [OPEN, CLOSED],
            orderBy: {{field: UPDATED_AT, direction: ASC}}{filter_by}) {{
       pageInfo {{ endCursor hasNextPage }}
@@ -66,6 +86,7 @@ def build_prs_query(repo: str, cursor: str | None) -> str:
     after = f', after: "{cursor}"' if cursor else ""
     return f"""query {{
   repository(owner: "{owner}", name: "{name}") {{
+    nameWithOwner
     pullRequests(first: {_PAGE_PRS}{after}, states: [OPEN, CLOSED, MERGED],
                  orderBy: {{field: UPDATED_AT, direction: DESC}}) {{
       pageInfo {{ endCursor hasNextPage }}

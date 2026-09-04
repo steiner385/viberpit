@@ -3,6 +3,14 @@
 ## Preconditions
 - `CCSWITCH_GH_PROJECT_TOKEN` in the daemon env (classic PAT, project+repo) — verified 2026-09-03.
 - Boards exist and are linked (`gh_projects` rows): ccswitch #26, KinDash #27.
+- **Mirror keyed on GitHub's canonical `nameWithOwner`** (issue #999). `ProjectRepo.repo` was
+  entered by hand as `steiner385/cc-account-switcher` / `cairnea/kindash`; GitHub answers queries
+  for those aliases, so every mirrored key followed the alias while GitHub-sourced refs stayed
+  canonical — no parent linked, no native edge resolved, and the migrate run would re-issue
+  `addBlockedBy` for edges that already exist. pm-sync now renames the mirror itself on the first
+  pass whose payload disagrees (`repo_renamed` event with per-table counts); confirm before the
+  dry run that `GET /api/pm/projects` shows `steiner385/ccswitch` / `cairnea/KinDash` and that
+  `GET /api/pm/projects/<slug>/deps` has an empty `unresolvedTargets`.
 - Daemon on origin/master (the SHA fence refuses otherwise).
 - **pm-sync automation enabled (mode on).** The reconciler's freshness gate refuses to write
   against a mirror older than the newest decision, and pm-sync is what refreshes it — with pm-sync
