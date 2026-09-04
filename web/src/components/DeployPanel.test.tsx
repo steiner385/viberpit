@@ -177,6 +177,60 @@ describe('DeployPanel', () => {
     expect(screen.getByText(/1 session.*failed to resume/i)).toBeInTheDocument()
   })
 
+  describe('dismissing the failure notice', () => {
+    const gaveUpDeploy: Partial<DeployProgress> = {
+      running: false, phases: { resume: 'done' }, warnings: [],
+      restore: { restored: [], failed: [], gaveUp: ['s9'] },
+    }
+
+    it('offers a Dismiss control only while a failure is showing', () => {
+      mockHooks({ behind: false, commits: [], ci: 'green' }, gaveUpDeploy)
+      render(<DeployPanel />)
+      expect(screen.getByRole('button', { name: /dismiss/i })).toBeInTheDocument()
+    })
+
+    it('does not offer Dismiss on a plain pending-deploy banner', () => {
+      // Pending commits are actionable (Deploy button) and clear on their own once
+      // deployed — hiding them would hide the only way to deploy.
+      mockHooks({ behind: true, commits: [{ sha: 'a', subject: 's', author: 't', iso: 'i' }], ci: 'green' },
+                { running: false, phases: {} })
+      render(<DeployPanel />)
+      expect(screen.queryByRole('button', { name: /dismiss/i })).not.toBeInTheDocument()
+    })
+
+    it('hides a gave-up notice that never clears on its own, and stays hidden across remounts', () => {
+      mockHooks({ behind: false, commits: [], ci: 'green' }, gaveUpDeploy)
+      const first = render(<DeployPanel />)
+      fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
+      expect(first.container).toBeEmptyDOMElement()
+      first.unmount()
+      // A reload re-reads the same live set from the daemon — the dismissal must survive it.
+      const second = render(<DeployPanel />)
+      expect(second.container).toBeEmptyDOMElement()
+    })
+
+    it('comes back when a different failure appears after a dismissal', () => {
+      mockHooks({ behind: false, commits: [], ci: 'green' }, gaveUpDeploy)
+      const first = render(<DeployPanel />)
+      fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
+      first.unmount()
+      mockHooks({ behind: false, commits: [], ci: 'green' },
+                { ...gaveUpDeploy, restore: { restored: [], failed: [], gaveUp: ['s9', 's10'] } })
+      render(<DeployPanel />)
+      expect(screen.getByText(/2 sessions couldn.t be recovered/i)).toBeInTheDocument()
+    })
+
+    it('keeps the pending-deploy row when only the failure part is dismissed', () => {
+      mockHooks({ behind: true, commits: [{ sha: 'a', subject: 's', author: 't', iso: 'i' }], ci: 'green' },
+                gaveUpDeploy)
+      render(<DeployPanel />)
+      fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
+      expect(screen.queryByText(/couldn.t be recovered/i)).not.toBeInTheDocument()
+      expect(screen.getByText(/1 change.*pending/i)).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /deploy now/i })).toBeEnabled()
+    })
+  })
+
   it('auto-dismisses a stale preflight failure once live CI goes green', () => {
     // The last deploy failed at the CI gate (verdict was pending/red at the time);
     // the live poller now reports green, so the frozen failure is superseded.
