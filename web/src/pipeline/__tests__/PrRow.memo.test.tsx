@@ -20,8 +20,7 @@
  *    End-to-end guard: if areEqual wrongly bailed on changed content, "72%"
  *    would remain after changing to 95%.
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import * as PrRowMod from '../PrRow';
 import type { PrView, CheckView } from '../types';

@@ -5,7 +5,7 @@ describe('pendingSessions store', () => {
   beforeEach(() => { __resetPending() })
 
   it('adds a placeholder with a temp id and pending flag', () => {
-    const id = addPendingSession({ name: 'New', accountName: '', status: 'in_progress', createdAt: '2026-06-23T00:00:00Z' })
+    const id = addPendingSession({ name: 'New', accountName: '', status: 'in_progress', createdAt: '2026-06-23T00:00:00Z', prs: [] })
     expect(id).toMatch(/^pending-/)
     const list = getPendingSessions()
     expect(list).toHaveLength(1)
@@ -13,13 +13,13 @@ describe('pendingSessions store', () => {
   })
 
   it('removes by id', () => {
-    const id = addPendingSession({ name: 'A', accountName: '', status: 'in_progress', createdAt: 'x' })
+    const id = addPendingSession({ name: 'A', accountName: '', status: 'in_progress', createdAt: 'x', prs: [] })
     removePendingSession(id)
     expect(getPendingSessions()).toHaveLength(0)
   })
 
   it('keeps a stable snapshot reference between changes', () => {
-    addPendingSession({ name: 'A', accountName: '', status: 'in_progress', createdAt: 'x' })
+    addPendingSession({ name: 'A', accountName: '', status: 'in_progress', createdAt: 'x', prs: [] })
     expect(getPendingSessions()).toBe(getPendingSessions())
   })
 })

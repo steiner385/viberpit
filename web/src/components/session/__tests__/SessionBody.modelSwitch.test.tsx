@@ -19,7 +19,7 @@ vi.mock('@/api/hooks', () => ({
 }))
 
 const textBlock = (id: string): Block => ({
-  kind: 'text', id, text: 'hello', streaming: false, thinkingMs: null,
+  kind: 'text', id, text: 'hello',
 })
 
 function makeRuntime(statusState: string, overrides: Partial<SessionRuntime> = {}): SessionRuntime {

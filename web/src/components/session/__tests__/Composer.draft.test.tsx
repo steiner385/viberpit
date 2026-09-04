@@ -4,8 +4,7 @@ import { Composer } from '../Composer'
 
 beforeEach(() => {
   localStorage.clear()
-  // @ts-expect-error shim
-  URL.createObjectURL = vi.fn(() => 'blob:p'); // @ts-expect-error shim
+  URL.createObjectURL = vi.fn(() => 'blob:p')
   URL.revokeObjectURL = vi.fn()
 })
 

@@ -1,6 +1,5 @@
-// Ported from plotroom@5166b52 frontend/src/__tests__/QueueTrain.test.tsx; edits: import repointing (../QueueTrain, ../types); eslint-disable-line for the unused `beforeEach` import (unused in original source, kept for port fidelity)
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+// Ported from plotroom@5166b52 frontend/src/__tests__/QueueTrain.test.tsx; edits: import repointing (../QueueTrain, ../types); dropped the unused `beforeEach` import.
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { QueueTrain } from '../QueueTrain';
 import type { RepoQueueView, QueueGroupView } from '../types';

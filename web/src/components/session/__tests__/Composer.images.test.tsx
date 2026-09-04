@@ -3,8 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { Composer } from '../Composer'
 
 beforeEach(() => {
-  // @ts-expect-error shim
-  URL.createObjectURL = vi.fn(() => 'blob:p'); // @ts-expect-error shim
+  URL.createObjectURL = vi.fn(() => 'blob:p')
   URL.revokeObjectURL = vi.fn()
   vi.stubGlobal('fetch', vi.fn(async () =>
     ({ ok: true, json: async () => ({ id: 'att-1', mediaType: 'image/png', filename: 'x.png', byteSize: 10, url: '/api/attachments/att-1' }) })))
