@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 
-from .account_auth import oauth_env_for
+from .account_auth import helper_env
 from .claude_bin import cli_path_kwargs as _cli_path_kwargs
 from .completion import COMPLETION_INSTRUCTION, NO_PR_INSTRUCTION
 from .permissions import to_sdk_permission_mode
@@ -75,12 +75,14 @@ def real_suggestion_factory(cwd, config_dir, account=None):
     ``account_auth.oauth_env_for`` — the same auth env session launch uses — so an account
     whose browser-OAuth refresh is dead but which holds a live setup-token can still generate
     suggestions.
+
+    Env comes from ``account_auth.helper_env``, the shared one-shot-helper builder: it adds the
+    same auth AND points CLAUDE_CONFIG_DIR at a host-local scratch copy, so this spawn cannot
+    reset the fleet's shared config after a torn read (#1005).
     """
     from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
     from .suggestions import SUGGEST_SYSTEM_PROMPT
-    env = dict(os.environ, CLAUDE_CONFIG_DIR=config_dir)
-    if account:
-        env.update(oauth_env_for(account))
+    env = helper_env(config_dir, account)
     model = os.environ.get("CCSWITCH_SUGGEST_MODEL", "claude-haiku-4-5") or None
     opts = ClaudeAgentOptions(
         cwd=cwd, env=env, can_use_tool=_deny_all_tools,
@@ -101,12 +103,13 @@ def real_summary_factory(cwd, config_dir, account=None):
     ``account_auth.oauth_env_for`` — the same auth env session launch uses — so an account
     whose browser-OAuth refresh is dead but which holds a live setup-token can still generate
     summaries.
+
+    Env comes from ``account_auth.helper_env`` (see ``real_suggestion_factory``): same auth, plus
+    the host-local scratch CLAUDE_CONFIG_DIR that keeps a torn read off the shared store (#1005).
     """
     from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
     from .summaries import SUMMARY_SYSTEM_PROMPT
-    env = dict(os.environ, CLAUDE_CONFIG_DIR=config_dir)
-    if account:
-        env.update(oauth_env_for(account))
+    env = helper_env(config_dir, account)
     model = os.environ.get("CCSWITCH_SUMMARY_MODEL", "claude-haiku-4-5") or None
     opts = ClaudeAgentOptions(
         cwd=cwd, env=env, can_use_tool=_deny_all_tools,
