@@ -25,6 +25,8 @@ import { loadingQueryResult, queryResult } from '@/test/reactQuery'
 const NOOP = { mutate: vi.fn(), isPending: false, isSuccess: false }
 
 vi.mock('@/api/hooks', () => ({
+  // "Reload session" (MainPaneSession → SessionHeader → SessionActions).
+  useReloadSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useQueueMove: vi.fn(() => ({ mutate: vi.fn() })),
   useQueueCancel: vi.fn(() => ({ mutate: vi.fn() })),
   useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
