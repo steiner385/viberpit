@@ -24,6 +24,17 @@ async def _orch_with_goal_session():
     return orch, client
 
 
+async def _settled(orch) -> None:
+    """Wait until the session's turn has ended (the pump settles a turn over a few
+    loop iterations; a prompt sent before that is queued, not dropped)."""
+    d = orch._drivers["s1"]
+    for _ in range(200):
+        if not d.turn_active and not d.queued():
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError("turn never settled")
+
+
 @pytest.mark.anyio
 async def test_goal_command_captures_and_forwards():
     orch, client = await _orch_with_goal_session()
@@ -37,7 +48,7 @@ async def test_goal_command_captures_and_forwards():
 async def test_goal_clear_resets_active_goal():
     orch, client = await _orch_with_goal_session()
     await orch.run_command("s1", "goal", "ship the PR")
-    await asyncio.sleep(0)  # let drain task finish before second send_prompt
+    await _settled(orch)   # let the first turn settle before the second send_prompt
     res = await orch.run_command("s1", "goal", "clear")
     assert res is None
     assert orch._records["s1"].active_goal is None
@@ -48,7 +59,7 @@ async def test_goal_clear_resets_active_goal():
 async def test_goal_empty_args_clears():
     orch, client = await _orch_with_goal_session()
     await orch.run_command("s1", "goal", "ship the PR")
-    await asyncio.sleep(0)  # let drain task finish before second send_prompt
+    await _settled(orch)   # let the first turn settle before the second send_prompt
     await orch.run_command("s1", "goal", "")
     assert orch._records["s1"].active_goal is None
 

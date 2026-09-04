@@ -41,6 +41,18 @@ class SDKClientProtocol(Protocol):
     async def get_context_usage(self) -> dict: ...
 
 
+async def one_turn(client: SDKClientProtocol) -> AsyncIterator[Any]:
+    """Yield ONE turn from ``client.receive_messages()`` — up to and including its
+    ResultMessage. For the one-shot helper clients (title/summary/suggestion
+    generation), which query once and read a single reply; the session driver has
+    its own cursor and never uses this."""
+    from claude_agent_sdk import ResultMessage
+    async for msg in client.receive_messages():
+        yield msg
+        if isinstance(msg, ResultMessage):
+            return
+
+
 # Message-shape reference (consumed by translator.py). These mirror the SDK's dataclasses;
 # the translator imports the real classes for isinstance checks and uses these field names.
 #

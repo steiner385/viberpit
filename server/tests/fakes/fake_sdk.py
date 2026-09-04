@@ -113,6 +113,10 @@ class FakeSDKClient:
     async def query(self, prompt: str):
         self.sent.append(prompt)
         self._deliver(self._messages)
+        # A script with no ResultMessage (e.g. `[]`) still describes ONE turn that
+        # ends — like the CLI, close it with a result so the driver's pump settles.
+        if not self._messages or not isinstance(self._messages[-1], ResultMessage):
+            self._deliver([result(uuid="script-end")])
     async def receive_messages(self):
         while True:
             m = await self._q().get()
