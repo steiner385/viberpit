@@ -44,7 +44,7 @@ dir is the only lever that removes them — ``setting_sources=[]`` hangs the per
 Its ``projects`` link is kept: that is the session's own transcript store, and the
 orchestrator's config dir must be the one holding it or ``--resume`` finds nothing.
 Every driver-building path (``_spawn_session``, ``ensure_driver``, ``_reassign``) routes
-through ``SessionOrchestrator._session_config_dir``, so a reattach or a rotation cannot
+through ``SessionOrchestrator._isolated_dir_for``, so a reattach or a rotation cannot
 quietly hand the assistant the un-isolated account dir back.
 
 Torn reads are evidence, not noise

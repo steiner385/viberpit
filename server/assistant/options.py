@@ -11,8 +11,9 @@ Two things this must NOT contain, both verified on SDK 0.2.105 + CLI 2.1.259
 
 * ``setting_sources`` — ANY value hangs ``ClaudeSDKClient`` initialisation forever.
   Isolation from the operator's plugins/commands/settings comes instead from the
-  link-less scratch ``CLAUDE_CONFIG_DIR`` built by
-  ``server/sessions/scratch_config.helper_config_dir(..., share_links=False)``.
+  isolated scratch ``CLAUDE_CONFIG_DIR`` built by
+  ``server/sessions/scratch_config.helper_config_dir(..., isolated=True)`` and applied
+  at every driver-building site via ``SessionOrchestrator._isolated_dir_for``.
 * ``cli_path`` — overriding it makes the SDK spawn its own vendored, older CLI
   (2.1.183), the shadowing bug ``claude_bin`` exists to prevent.
 """

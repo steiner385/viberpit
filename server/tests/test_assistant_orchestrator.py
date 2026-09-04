@@ -375,10 +375,9 @@ def test_isolation_survives_reattach_and_rotation(tmp_path):
     orch._suggester = object()
 
     src = _seed_account_dir(tmp_path)
-    with patch("server.sessions.orchestrator.compose", return_value=src), \
-            patch.dict(os.environ, {"CCSWITCH_HELPER_SCRATCH_ROOT": str(tmp_path / "s")}):
-        plain = orch._session_config_dir("alpha", None)
-        asst = orch._session_config_dir("alpha", ASSISTANT_KIND)
+    with patch.dict(os.environ, {"CCSWITCH_HELPER_SCRATCH_ROOT": str(tmp_path / "s")}):
+        plain = orch._isolated_dir_for(src, None)
+        asst = orch._isolated_dir_for(src, ASSISTANT_KIND)
     assert plain == src
     assert asst != src and (asst / "projects").is_symlink()
     assert not (asst / "plugins").exists()
@@ -389,9 +388,157 @@ def test_isolation_survives_reattach_and_rotation(tmp_path):
     # (`_reassign` validates and delegates; `_reassign_locked` builds the driver.)
     for name in ("ensure_driver", "_reassign_locked"):
         src_text = inspect.getsource(getattr(SessionOrchestrator, name))
-        assert "_session_config_dir(" in src_text, name
+        assert "_isolated_dir_for(" in src_text, name
         assert "_suggester_for(" in src_text, name
         assert "suggester=self._suggester," not in src_text, name
+
+
+# --------------------------------------------------------------------------- #
+# Pre-trust ordering — compose() MUST run before trust_project()
+# --------------------------------------------------------------------------- #
+
+def _make_real_configdir_env(*, tmp_path):
+    """Sandbox with `compose` and `trust_project` left REAL.
+
+    Every other orchestrator test stubs both (17+ files do), which is exactly why the
+    ordering regression below was invisible: with `trust_project` a Mock, nothing ever
+    writes the entry that `compose` would clobber.
+    """
+    from ccswitch import paths
+    from ccswitch.creds import write_json_secure
+
+    store_home = tmp_path / "home"
+    store_home.mkdir(exist_ok=True)
+    shared = tmp_path / "dot-claude"
+    (shared / "projects").mkdir(parents=True, exist_ok=True)
+    (shared / "settings.json").write_text("{}")
+
+    env_patch = patch.dict(os.environ, {
+        "CCSWITCH_HOME": str(store_home),
+        "CLAUDE_CONFIG_DIR": str(shared),
+        "CCSWITCH_HELPER_SCRATCH_ROOT": str(tmp_path / "scratch"),
+    })
+    env_patch.start()
+    _seed_account("alpha")
+    # A shared overlay carrying a FOREIGN projects map — this is what
+    # compose_claude_json copies over the account file wholesale, erasing any trust
+    # entry written before it.
+    write_json_secure(paths.shared_claude_json_path(), {"projects": {"/somewhere/else": {}}})
+    return env_patch
+
+
+def _trust_entry(cfg_dir: Path, cwd: Path):
+    import json
+    data = json.loads((cfg_dir / ".claude.json").read_text())
+    return (data.get("projects") or {}).get(str(cwd.resolve()))
+
+
+def test_isolated_dir_keeps_the_pre_trust_entry(tmp_path):
+    """`compose()` rewrites `.claude.json` and replaces `projects` WHOLESALE from the
+    shared store (ccswitch/configdir.py: compose_claude_json), so `trust_project` must
+    run AFTER it. Ordering them the other way silently drops the pre-trust and the
+    interactive CLI shows its trust dialog at startup — the exact thing that call exists
+    to prevent.
+
+    Asserted for a normal session AND for the assistant, whose isolated `.claude.json`
+    is copied from the composed file and so must carry the entry too.
+    """
+    from ccswitch import configdir, paths
+    from server.sessions.orchestrator import SessionOrchestrator
+
+    env_patch = _make_real_configdir_env(tmp_path=tmp_path)
+    try:
+        orch = SessionOrchestrator.__new__(SessionOrchestrator)
+        cwd = tmp_path / "worktree"
+        cwd.mkdir()
+
+        for kind in (None, ASSISTANT_KIND):
+            # The exact sequence the three driver-building sites must run.
+            cfg = configdir.compose("alpha")
+            configdir.trust_project("alpha", str(cwd))
+            cfg = orch._isolated_dir_for(cfg, kind)
+
+            entry = _trust_entry(cfg, cwd)
+            assert entry is not None, f"pre-trust lost for kind={kind}"
+            assert entry["hasTrustDialogAccepted"] is True
+            if kind == ASSISTANT_KIND:
+                assert cfg != paths.account_cfg_dir("alpha")   # really the isolated dir
+    finally:
+        env_patch.stop()
+
+
+def test_the_reverse_order_really_does_lose_the_trust_entry(tmp_path):
+    """Pins WHY the ordering matters, so the test above cannot be "fixed" by loosening
+    it. This is the regression, reproduced deliberately."""
+    from ccswitch import configdir, paths
+
+    env_patch = _make_real_configdir_env(tmp_path=tmp_path)
+    try:
+        cwd = tmp_path / "worktree"
+        cwd.mkdir()
+        configdir.trust_project("alpha", str(cwd))
+        configdir.compose("alpha")
+        assert _trust_entry(paths.account_cfg_dir("alpha"), cwd) is None
+    finally:
+        env_patch.stop()
+
+
+def test_real_spawn_leaves_the_worktree_trusted(tmp_path):
+    """End-to-end at the actual spawn site, with `compose` and `trust_project` REAL:
+    after create_session, the dir the driver was handed still trusts the session cwd."""
+    from server.db import db_session
+    from server.db.models import AppSettings
+
+    env_patch = _make_real_configdir_env(tmp_path=tmp_path)
+    select_patch = patch(
+        "server.sessions.orchestrator.select_account",
+        return_value=__import__("ccswitch.selector", fromlist=["Picked"]).Picked("alpha"))
+    select_patch.start()
+
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'trust-e2e.db'}"
+        os.environ["CCSWITCH_DB_URL"] = db_url
+        await init_db(db_url=db_url)
+        async with db_session() as db:
+            db.add(AppSettings(id="singleton", max_active_sessions=5))
+        repo_root = tmp_path / "reporoot"
+        repo_root.mkdir(exist_ok=True)
+        cwd = tmp_path / "worktree"
+        cwd.mkdir()
+        orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0,
+                                   usage_fn=_fake_usage, repo_root=str(repo_root))
+        await orch.start()
+        try:
+            for name, kind in (("Coder", None), ("Assistant", ASSISTANT_KIND)):
+                rec = await orch.create_session(name=name, cwd=str(cwd), identity="u@x",
+                                                kind=kind, owner_identity="u@x")
+                cfg = Path(orch._drivers[rec.id].config_dir)
+                entry = _trust_entry(cfg, cwd)
+                assert entry is not None, f"{name}: spawn lost the pre-trust in {cfg}"
+                assert entry["hasTrustDialogAccepted"] is True
+        finally:
+            await orch.stop()
+            await dispose_db()
+
+    try:
+        asyncio.run(run())
+    finally:
+        select_patch.stop()
+        env_patch.stop()
+
+
+def test_driver_building_sites_compose_then_trust_then_isolate():
+    """Source-order guard for all three sites, so a later refactor cannot re-order the
+    sequence again (this regression WAS a later refactor)."""
+    from server.sessions.orchestrator import SessionOrchestrator
+
+    for name in ("_spawn_session", "ensure_driver", "_reassign_locked"):
+        src_text = inspect.getsource(getattr(SessionOrchestrator, name))
+        compose_at = src_text.index("compose(")
+        trust_at = src_text.index("configdir.trust_project(")
+        isolate_at = src_text.index("_isolated_dir_for(")
+        assert compose_at < trust_at < isolate_at, (
+            f"{name}: must be compose -> trust_project -> _isolated_dir_for")
 
 
 def test_register_assistant_overlay_reaches_the_sdk_factory(tmp_path):

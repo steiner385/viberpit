@@ -1019,32 +1019,43 @@ class SessionOrchestrator:
             return self._copilot.env_for(rec.account)
         return oauth_env_for(rec.account)
 
-    def _session_config_dir(self, account: str, kind: str | None) -> Path:
-        """The ``CLAUDE_CONFIG_DIR`` a session's driver runs against.
+    def _isolated_dir_for(self, cfg_dir: Path, kind: str | None) -> Path:
+        """Map an ALREADY-composed, ALREADY-trusted config dir to the one this session
+        should actually run against: itself for a coding session, the host-local
+        isolated mirror for the assistant.
 
         THE single place that decision is made, because it is made three times — at
         spawn, at ``ensure_driver`` (every reattach after a daemon restart detaches the
-        fleet) and at ``_reassign`` (every rotation, the product's core loop). An
+        fleet) and at ``_reassign_locked`` (every rotation, the product's core loop). An
         assistant branch in only one of them is isolation that silently expires: the
         first restart or account rotation would hand the assistant the operator's
         plugins, custom commands and shared settings straight back.
 
-        A coding session gets the real account dir (that is where its history and token
-        refreshes belong). An assistant gets the host-local ISOLATED scratch mirror —
-        no plugins/commands/settings, but `projects` still linked so its transcript
-        stays where ``resolve_transcript_path`` and ``--resume`` look for it.
+        Takes the composed dir rather than an account name ON PURPOSE. The caller's
+        order is fixed and load-bearing:
 
-        Fail-open: ``helper_config_dir`` returns the account dir unchanged on any error.
+            cfg = compose(account)               # rewrites .claude.json from the store
+            configdir.trust_project(account, cwd)  # adds projects[cwd] to THAT file
+            cfg = self._isolated_dir_for(cfg, kind)
+
+        ``compose_claude_json`` replaces ``projects`` **wholesale** from
+        ``store/claude.shared.json`` and never reads the file it overwrites, so composing
+        after trusting silently drops the pre-trust and the interactive CLI shows its
+        trust dialog on startup. An account-name-taking helper hides that ordering
+        constraint; this signature makes it impossible to express the wrong one.
+        Isolating last also means the assistant's copied ``.claude.json`` carries the
+        trust decision.
+
+        Fail-open: ``helper_config_dir`` returns *cfg_dir* unchanged on any error.
         """
-        cfg = compose(account)
         if is_assistant_kind(kind):
-            return Path(helper_config_dir(str(cfg), isolated=True))
-        return cfg
+            return Path(helper_config_dir(str(cfg_dir), isolated=True))
+        return cfg_dir
 
     def _suggester_for(self, kind: str | None):
         """The suggestion service a session's driver gets, or None for the assistant.
 
-        Same reasoning as ``_session_config_dir``: set at all three driver-building
+        Same reasoning as ``_isolated_dir_for``: set at all three driver-building
         sites, so it lives in one place. Next-prompt suggestions are written FOR a
         coding session ("run the tests", "open a PR") and the drawer has no UI for them.
         """
@@ -2277,11 +2288,15 @@ class SessionOrchestrator:
             # Verify the given account exists (will raise if cred file missing — acceptable)
             pass
 
+        cfg_dir: Path = compose(account)
+
         # Pre-trust the project directory (now the worktree, if any) so claude
-        # won't prompt for trust on startup. BEFORE _session_config_dir, so an
-        # assistant's scratch copy of .claude.json already carries the trust decision.
+        # won't prompt for trust on startup. MUST follow compose(): compose rewrites
+        # .claude.json and replaces `projects` wholesale from the shared store, so a
+        # trust entry written first is erased (see _isolated_dir_for).
         configdir.trust_project(account, cwd)
-        cfg_dir: Path = self._session_config_dir(account, kind)
+        # …and the isolated mirror is taken last, so its copy carries the trust entry.
+        cfg_dir = self._isolated_dir_for(cfg_dir, kind)
 
         # Allocate a virtual X11 display for this session (if X11Manager wired in).
         if self._x11 is not None:
@@ -7907,9 +7922,7 @@ class SessionOrchestrator:
 
             # Build and start a new driver resuming from the stored claude_session_id
             resume = rec.claude_session_id or None
-            # Same decision as spawn (see _session_config_dir): a reattach after a daemon
-            # restart must not silently hand an assistant the un-isolated account dir.
-            cfg_dir = self._session_config_dir(rec.account, getattr(rec, "kind", None))
+            cfg_dir = compose(rec.account)
             # Ensure the working directory exists. A rehydrated session's cwd (a no-repo
             # scratch dir or a git worktree) may have been removed when the session was
             # previously closed (close_session cleans those up); without recreating it the
@@ -7917,6 +7930,10 @@ class SessionOrchestrator:
             # misleading "account needs re-authentication" error.
             Path(rec.cwd).mkdir(parents=True, exist_ok=True)
             configdir.trust_project(rec.account, rec.cwd)
+            # After compose + trust, never before (see _isolated_dir_for): a reattach
+            # must not hand an assistant the un-isolated account dir back, and must not
+            # cost a coding session its pre-trust.
+            cfg_dir = self._isolated_dir_for(cfg_dir, getattr(rec, "kind", None))
 
             # Allocate a virtual X11 display for this session (if X11Manager wired
             # in). Without this, a resumed/rehydrated session — the common path
@@ -9970,10 +9987,12 @@ class SessionOrchestrator:
                 await bounded_wait(old_driver.interrupt(), timeout=_CLOSE_GRACE_SEC,
                                    phase=f"reassign.interrupt:{record.id}")
                 await old_driver.aclose()
+            cfg = compose(new_account)
             configdir.trust_project(new_account, cwd)
             # Rotation is the product's core loop; without this the assistant's isolated
-            # config dir would last only until its account hit a usage ceiling.
-            cfg = self._session_config_dir(new_account, getattr(record, "kind", None))
+            # config dir would last only until its account hit a usage ceiling. Applied
+            # after compose + trust, for the reasons in _isolated_dir_for.
+            cfg = self._isolated_dir_for(cfg, getattr(record, "kind", None))
             Path(cwd).mkdir(parents=True, exist_ok=True)
             _copilot = getattr(self, "_copilot", None)
             if _copilot is not None and _provider_of(new_account) == _copilot_mod.PROVIDER:
