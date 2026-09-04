@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { transcriptReducer, initialTranscript, buildTurnsFromEvents, findOrderAnomalies } from './reducer'
+import type { LocalAction, TranscriptState } from './reducer'
 import { clientLogger } from '../obs/logger'
 import type { SessionEvent } from './events'
 
@@ -22,9 +23,9 @@ describe('history paging reducer', () => {
   it('prepends older turns ahead of existing turns and lowers earliestTurn', () => {
     // replaying: false — paging only happens on a settled view (a prepend landing
     // mid-replay is the paging/heal race and is dropped, see the test below).
-    let s = { ...initialTranscript, replaying: false, earliestTurn: 5,
+    let s: TranscriptState = { ...initialTranscript, replaying: false, earliestTurn: 5,
       turns: [{ id: 'a-cur', role: 'assistant' as const, blocks: [] }] }
-    s = transcriptReducer(s, { type: '_prependHistory', events: olderTurn, earliestTurn: 4 } as never)
+    s = transcriptReducer(s, { type: '_prependHistory', events: olderTurn, earliestTurn: 4 } as LocalAction)
     expect(s.turns[0].id).toBe('u-old')   // older turn now first
     expect(s.turns[s.turns.length - 1].id).toBe('a-cur')
     expect(s.earliestTurn).toBe(4)
@@ -32,7 +33,7 @@ describe('history paging reducer', () => {
   })
 
   it('replayReset clears extent', () => {
-    let s = { ...initialTranscript, earliestTurn: 5, totalTurns: 25 }
+    let s: TranscriptState = { ...initialTranscript, earliestTurn: 5, totalTurns: 25 }
     s = transcriptReducer(s, { type: 'replayReset' } as SessionEvent)
     expect(s.earliestTurn).toBe(0)
     expect(s.totalTurns).toBe(0)
@@ -47,20 +48,20 @@ describe('history paging reducer', () => {
     // Scroll-up fires a fetch, a gap-heal's replayReset lands before the response:
     // the page was fetched against the pre-heal window and no longer adjoins what
     // the replay is rebuilding — prepending it would splice a silent hole.
-    let s = { ...initialTranscript, replaying: false, earliestTurn: 5, loadingOlder: true,
+    let s: TranscriptState = { ...initialTranscript, replaying: false, earliestTurn: 5, loadingOlder: true,
       turns: [{ id: 'a-cur', role: 'assistant' as const, blocks: [] }] }
     s = transcriptReducer(s, { type: 'replayReset' } as SessionEvent)
     expect(s.replaying).toBe(true)
-    s = transcriptReducer(s, { type: '_prependHistory', events: olderTurn, earliestTurn: 4 } as never)
+    s = transcriptReducer(s, { type: '_prependHistory', events: olderTurn, earliestTurn: 4 } as LocalAction)
     expect(s.turns).toHaveLength(0)      // page dropped — the replay owns the rebuild
     expect(s.loadingOlder).toBe(false)   // spinner cleared so scroll-up can re-fetch
     expect(s.earliestTurn).toBe(0)       // replayReset's cleared extent is preserved
   })
 
   it('still prepends normally when no replay is in flight', () => {
-    let s = { ...initialTranscript, replaying: false, earliestTurn: 5,
+    let s: TranscriptState = { ...initialTranscript, replaying: false, earliestTurn: 5,
       turns: [{ id: 'a-cur', role: 'assistant' as const, blocks: [] }] }
-    s = transcriptReducer(s, { type: '_prependHistory', events: olderTurn, earliestTurn: 4 } as never)
+    s = transcriptReducer(s, { type: '_prependHistory', events: olderTurn, earliestTurn: 4 } as LocalAction)
     expect(s.turns[0].id).toBe('u-old')
     expect(s.earliestTurn).toBe(4)
   })
@@ -90,7 +91,7 @@ describe('history paging reducer', () => {
     ]
     let s = settled(attachWindow)
     expect(s.turns.map((t) => t.id)).toEqual(['U_gh', 'a909'])
-    s = transcriptReducer(s, { type: '_prependHistory', events: page909, earliestTurn: 889 } as never)
+    s = transcriptReducer(s, { type: '_prependHistory', events: page909, earliestTurn: 889 } as LocalAction)
     expect(s.turns.map((t) => t.id)).toEqual(['U_ready', 'a889', 'U_gh', 'a908', 'a909'])
     expect(s.turns.filter((t) => t.id === 'U_gh')).toHaveLength(1)
   })
@@ -106,23 +107,23 @@ describe('history paging reducer', () => {
       { type: 'turnStart', turnId: 'a809' }, { type: 'textDelta', turnId: 'a809', text: 'a', ts: 10 }, { type: 'turnEnd', turnId: 'a809' },
     ]
     let s = settled([{ type: 'turnStart', turnId: 'a849' }, { type: 'turnEnd', turnId: 'a849' }])
-    s = transcriptReducer(s, { type: '_prependHistory', events: page849, earliestTurn: 829 } as never)
+    s = transcriptReducer(s, { type: '_prependHistory', events: page849, earliestTurn: 829 } as LocalAction)
     expect(s.turns.map((t) => t.id)).toEqual(['U_phase', 'a829', 'a849'])
-    s = transcriptReducer(s, { type: '_prependHistory', events: page829, earliestTurn: 809 } as never)
+    s = transcriptReducer(s, { type: '_prependHistory', events: page829, earliestTurn: 809 } as LocalAction)
     // Before the fix this was ['a809', 'U_phase', 'a829', 'a849'] — the prompt pinned at the boundary.
     expect(s.turns.map((t) => t.id)).toEqual(['U_phase', 'a809', 'a829', 'a849'])
   })
 
   it('leaves the existing turns untouched when the page has no overlap', () => {
     let s = settled([{ type: 'turnStart', turnId: 'a-cur' }, { type: 'turnEnd', turnId: 'a-cur' }])
-    s = transcriptReducer(s, { type: '_prependHistory', events: olderTurn, earliestTurn: 4 } as never)
+    s = transcriptReducer(s, { type: '_prependHistory', events: olderTurn, earliestTurn: 4 } as LocalAction)
     expect(s.turns.map((t) => t.id)).toEqual(['u-old', 'a-old', 'a-cur'])
   })
 
   // ── ordinals + order telemetry ────────────────────────────────────────────────
 
   it('turnStart records the server turnIndex as the turn ordinal', () => {
-    let s = { ...initialTranscript, replaying: false }
+    let s: TranscriptState = { ...initialTranscript, replaying: false }
     s = transcriptReducer(s, { type: 'turnStart', turnId: 'a7', turnIndex: 7 } as SessionEvent)
     s = transcriptReducer(s, { type: 'turnStart', turnId: 'live' } as SessionEvent)
     expect(s.turns[0].ordinal).toBe(7)
@@ -172,7 +173,7 @@ describe('history paging reducer', () => {
       turns: [{ id: 'a20', role: 'assistant' as const, blocks: [], ordinal: 20 }] }
     // A page that claims to be older but carries a HIGHER ordinal (server/cursor skew).
     const next = transcriptReducer(s, { type: '_prependHistory', earliestTurn: 10,
-      events: [{ type: 'turnStart', turnId: 'a25', turnIndex: 25 }, { type: 'turnEnd', turnId: 'a25' }] } as never)
+      events: [{ type: 'turnStart', turnId: 'a25', turnIndex: 25 }, { type: 'turnEnd', turnId: 'a25' }] } as LocalAction)
     expect(next.turns.map((t) => t.id)).toEqual(['a25', 'a20'])
     expect(spy).toHaveBeenCalledWith(expect.stringContaining('transcript.order.violation count=1 first=a25>a20 earliestTurn=10 phase=prepend'))
     spy.mockRestore()
@@ -183,7 +184,7 @@ describe('history paging reducer', () => {
     const s = { ...initialTranscript, replaying: false, earliestTurn: 20,
       turns: [{ id: 'a20', role: 'assistant' as const, blocks: [], ordinal: 20 }] }
     transcriptReducer(s, { type: '_prependHistory', earliestTurn: 19,
-      events: [{ type: 'turnStart', turnId: 'a19', turnIndex: 19 }, { type: 'turnEnd', turnId: 'a19' }] } as never)
+      events: [{ type: 'turnStart', turnId: 'a19', turnIndex: 19 }, { type: 'turnEnd', turnId: 'a19' }] } as LocalAction)
     expect(spy).not.toHaveBeenCalled()
     spy.mockRestore()
   })
@@ -195,7 +196,7 @@ describe('history paging reducer', () => {
     // A page that ends at ordinal 10 spliced in front of ordinal 20: turns 11-19 are a
     // hole nothing will re-fetch. Ordinals still ascend, so the inversion check is silent.
     transcriptReducer(s, { type: '_prependHistory', earliestTurn: 10,
-      events: [{ type: 'turnStart', turnId: 'a10', turnIndex: 10 }, { type: 'turnEnd', turnId: 'a10' }] } as never)
+      events: [{ type: 'turnStart', turnId: 'a10', turnIndex: 10 }, { type: 'turnEnd', turnId: 'a10' }] } as LocalAction)
     expect(spy).toHaveBeenCalledWith('transcript.order.gap count=1 first=a10..a20 earliestTurn=10 phase=prepend')
     expect(spy).not.toHaveBeenCalledWith(expect.stringContaining('transcript.order.violation'))
     spy.mockRestore()
@@ -210,7 +211,7 @@ describe('history paging reducer', () => {
     // A non-adjacent older page arrives WITHOUT U_phase (its real position is in the
     // hole between them), leaving the boundary copy pinned below real content.
     const next = transcriptReducer(s, { type: '_prependHistory', earliestTurn: 700,
-      events: [{ type: 'turnStart', turnId: 'a700', turnIndex: 700 }, { type: 'turnEnd', turnId: 'a700' }] } as never)
+      events: [{ type: 'turnStart', turnId: 'a700', turnIndex: 700 }, { type: 'turnEnd', turnId: 'a700' }] } as LocalAction)
     expect(next.turns.map((t) => t.id)).toEqual(['a700', 'U_phase', 'a829'])
     expect(spy).toHaveBeenCalledWith('transcript.order.prefixPinned count=1 first=U_phase earliestTurn=700 phase=prepend')
     spy.mockRestore()
@@ -236,7 +237,7 @@ describe('history paging reducer', () => {
               { id: 'a829', role: 'assistant' as const, blocks: [], ordinal: 829 }] }
     const next = transcriptReducer(s, { type: '_prependHistory', earliestTurn: 700,
       events: [{ type: 'user', turnId: 'U_phase', text: 'Start Phase B', ownerPrefix: true },
-               { type: 'turnStart', turnId: 'a700', turnIndex: 700 }, { type: 'turnEnd', turnId: 'a700' }] } as never)
+               { type: 'turnStart', turnId: 'a700', turnIndex: 700 }, { type: 'turnEnd', turnId: 'a700' }] } as LocalAction)
     // The incoming prefix copy is dropped; the real position survives where it was.
     expect(next.turns.map((t) => t.id)).toEqual(['a700', 'U_phase', 'a829'])
   })
@@ -249,12 +250,12 @@ describe('history paging reducer', () => {
               { id: 'a829', role: 'assistant' as const, blocks: [], ordinal: 829 }] }
     const next = transcriptReducer(s, { type: '_prependHistory', earliestTurn: 809,
       events: [{ type: 'user', turnId: 'U_phase', text: 'Start Phase B' },
-               { type: 'turnStart', turnId: 'a809', turnIndex: 809 }, { type: 'turnEnd', turnId: 'a809' }] } as never)
+               { type: 'turnStart', turnId: 'a809', turnIndex: 809 }, { type: 'turnEnd', turnId: 'a809' }] } as LocalAction)
     expect(next.turns.map((t) => t.id)).toEqual(['U_phase', 'a809', 'a829'])
   })
 
   it('carries the server ownerPrefix mark onto the rebuilt turn, and an unmarked re-emit clears it', () => {
-    let s = { ...initialTranscript, replaying: false }
+    let s: TranscriptState = { ...initialTranscript, replaying: false }
     s = transcriptReducer(s, { type: 'user', turnId: 'U', text: 'hi', ownerPrefix: true } as SessionEvent)
     expect(s.turns[0].ownerPrefix).toBe(true)
     // The page holding its real position finally loads and re-emits it unmarked.

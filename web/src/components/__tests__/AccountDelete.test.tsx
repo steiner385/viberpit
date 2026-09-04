@@ -7,6 +7,7 @@ import { SettingsView } from '../settings/SettingsView'
 import * as hooks from '@/api/hooks'
 import type { Account, Session } from '@/api/types'
 import { appSettings } from '@/test/factories'
+import { session } from '@/test/factories'
 import { queryResult } from '@/test/reactQuery'
 
 vi.mock('@/api/hooks', () => ({
@@ -84,8 +85,8 @@ function makeAccount(overrides: Partial<Account> = {}): Account {
   }
 }
 
-function makeSession(overrides: Partial<Session> = {}): Session {
-  return {
+const makeSession = (overrides: Partial<Session> = {}): Session =>
+  session({
     id: 'sess-1',
     name: 'My Session',
     accountName: 'work',
@@ -93,8 +94,7 @@ function makeSession(overrides: Partial<Session> = {}): Session {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     ...overrides,
-  }
-}
+  })
 
 function wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })

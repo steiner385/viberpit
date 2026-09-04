@@ -49,7 +49,7 @@ expect.extend(toHaveNoViolations)
 import type { ModelOption, Session } from '@/api/types'
 import type { GithubRepo } from '@/api/hooks'
 import type { FleetHost } from '@/api/fleet'
-import { account, fleetHost, session as makeSession } from '@/test/factories'
+import { account, fleetHost, githubRepo, session as makeSession } from '@/test/factories'
 
 // ── typed factories (R10: real values, never `as unknown as T`) ───────────────
 // `session`, `account` and `fleetHost` come from @/test/factories; this suite's
@@ -57,19 +57,7 @@ import { account, fleetHost, session as makeSession } from '@/test/factories'
 
 const session = (over: Partial<Session> = {}): Session => makeSession({ id: 'a', ...over })
 
-function repo(over: Partial<GithubRepo> = {}): GithubRepo {
-  return {
-    nameWithOwner: 'acme/api',
-    name: 'api',
-    owner: 'acme',
-    isPrivate: false,
-    url: 'https://github.com/acme/api',
-    defaultBranch: 'main',
-    pushedAt: null,
-    cloned: true,
-    ...over,
-  }
-}
+const repo = (over: Partial<GithubRepo> = {}): GithubRepo => githubRepo(over)
 
 function model(over: Partial<ModelOption> = {}): ModelOption {
   return { id: 'opus', label: 'Opus', ...over }

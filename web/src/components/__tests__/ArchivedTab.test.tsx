@@ -15,7 +15,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ArchivedManager } from '../ArchivedManager'
 import * as hooks from '@/api/hooks'
 import type { ArchivedSession } from '@/api/types'
-import { appSettings } from '@/test/factories'
+import { appSettings, archivedSession } from '@/test/factories'
 import { queryResult } from '@/test/reactQuery'
 
 vi.mock('@/api/hooks', () => ({
@@ -81,19 +81,17 @@ vi.mock('@/session/useSessionSearch', () => ({
 
 const NOOP_MUTATION = { mutate: vi.fn(), isPending: false, isSuccess: false }
 
-function makeArchived(overrides: Partial<ArchivedSession> = {}): ArchivedSession {
-  return {
+const makeArchived = (overrides: Partial<ArchivedSession> = {}): ArchivedSession =>
+  archivedSession({
     id: 'arc-1',
     name: 'My Archived Session',
     account: 'work',
     cwd: '/home/user/project',
     claudeSessionId: 'claude-abc',
-    permissionMode: 'interactive',
     createdAt: '2026-06-01T10:00:00Z',
     archivedAt: '2026-06-20T12:00:00Z',
     ...overrides,
-  }
-}
+  })
 
 function wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })

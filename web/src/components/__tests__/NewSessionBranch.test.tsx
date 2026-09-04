@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { NewSessionDialog } from '@/features/sessions/NewSessionDialog'
 import * as hooks from '@/api/hooks'
+import { appSettings, githubRepo } from '@/test/factories'
 import { queryResult } from '@/test/reactQuery'
 
 vi.mock('@/api/hooks', () => ({
@@ -84,10 +85,10 @@ function setupMocks() {
   vi.mocked(hooks.useUpdateAccount).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useUpdateAccount>)
   vi.mocked(hooks.useDeleteAccount).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useDeleteAccount>)
   // One repo whose default branch is "main".
-  vi.mocked(hooks.useGithubRepos).mockReturnValue(queryResult([{ nameWithOwner: 'owner/repo', defaultBranch: 'main', isPrivate: false, cloned: true }]))
+  vi.mocked(hooks.useGithubRepos).mockReturnValue(queryResult([githubRepo({ nameWithOwner: 'owner/repo' })]))
   // Branches resolve with "main" as the default.
   vi.mocked(hooks.useGithubBranches).mockReturnValue(queryResult({ default: 'main', branches: ['main', 'dev'] }))
-  vi.mocked(hooks.useSettings).mockReturnValue(queryResult({ defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null }))
+  vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings()))
   vi.mocked(hooks.useUpdateSettings).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useUpdateSettings>)
   vi.mocked(hooks.useReauthAccount).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useReauthAccount>)
   vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult({ state: 'idle', message: null, startedAt: null }))

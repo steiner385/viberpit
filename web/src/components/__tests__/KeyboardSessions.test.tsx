@@ -22,6 +22,7 @@ import { renderApp } from '@/test/renderApp'
 import * as hooks from '@/api/hooks'
 import type { Session } from '@/api/types'
 import { appSettings } from '@/test/factories'
+import { session } from '@/test/factories'
 import { queryResult } from '@/test/reactQuery'
 
 // ── Mock @/api/hooks (same scaffold as DashboardTabs.test.tsx) ────────────────
@@ -92,8 +93,8 @@ vi.mock('@/session/useSessionSearch', () => ({
 
 const NOOP_MUTATION = { mutate: vi.fn(), isPending: false, isSuccess: false }
 
-function makeSession(overrides: Partial<Session> = {}): Session {
-  return {
+const makeSession = (overrides: Partial<Session> = {}): Session =>
+  session({
     id: 'sess-1',
     name: 'My Session',
     accountName: 'work',
@@ -101,8 +102,7 @@ function makeSession(overrides: Partial<Session> = {}): Session {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     ...overrides,
-  }
-}
+  })
 
 const THREE: Session[] = [
   makeSession({ id: 's1', name: 'One' }),

@@ -21,7 +21,7 @@
  * session with recorded activity pass it explicitly.
  */
 import type { FleetHost } from '@/api/fleet'
-import type { AppSettings } from '@/api/hooks'
+import type { AppSettings, GithubRepo } from '@/api/hooks'
 import type { Account, ArchivedSession, PullRequestInfo, Session } from '@/api/types'
 
 /** A `Session` with every required field filled in. */
@@ -134,6 +134,23 @@ export function fleetHost(over: Partial<FleetHost> = {}): FleetHost {
     sshHost: null,
     repoPath: null,
     upgrade: null,
+    ...over,
+  }
+}
+
+/** A `GithubRepo` with every required field filled in. */
+export function githubRepo(over: Partial<GithubRepo> = {}): GithubRepo {
+  const nameWithOwner = over.nameWithOwner ?? 'acme/api'
+  const [owner, name] = nameWithOwner.split('/')
+  return {
+    nameWithOwner,
+    name,
+    owner,
+    isPrivate: false,
+    url: `https://github.com/${nameWithOwner}`,
+    defaultBranch: 'main',
+    pushedAt: null,
+    cloned: true,
     ...over,
   }
 }

@@ -122,6 +122,11 @@ const PROBE_PAGES: Record<string, string> = {
 function probeRoutes(): RouteObject[] {
   const [root] = buildRoutes(<AppShell />)
   const layout = root.children![0]
+  // `RouteObject` is a union and the INDEX branch types `children` as `undefined`,
+  // so `{ ...root/layout, children: … }` is only well-typed once the discriminant
+  // is settled. Both of these are the routes that HAVE children; assert it.
+  if (root.index) throw new Error('probeRoutes: the root route is an index route')
+  if (layout.index) throw new Error('probeRoutes: the layout route is an index route')
   const pages = layout.children!.map((route): RouteObject => {
     const name = route.path ? PROBE_PAGES[route.path] : undefined
     return name ? { path: route.path, element: <Page name={name} /> } : route

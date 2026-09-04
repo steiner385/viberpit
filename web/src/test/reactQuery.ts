@@ -59,7 +59,9 @@ export function queryResult<T>(
  * false }` meant. `queryResult` cannot express it: a settled SUCCESS always
  * carries data.
  */
-export function idleQueryResult<T>(): UseQueryResult<T, Error> {
+export function idleQueryResult<T>(
+  over: Partial<UseQueryResult<T, Error>> = {},
+): UseQueryResult<T, Error> {
   const result: UseQueryResult<T, Error> = {
     data: undefined,
     dataUpdatedAt: 0,
@@ -88,14 +90,29 @@ export function idleQueryResult<T>(): UseQueryResult<T, Error> {
     fetchStatus: 'idle',
     promise: new Promise<T>(() => {}),
   }
-  return result
+  return Object.assign(result, over)
+}
+
+/**
+ * A query fetching for the first time: `isLoading` true, no data yet. `data` is
+ * `undefined` here rather than an empty array because that is what react-query
+ * actually holds before the first response — an `isLoading: true` result that
+ * also carries data is not a state the library can produce.
+ */
+export function loadingQueryResult<T>(): UseQueryResult<T, Error> {
+  return idleQueryResult<T>({
+    isLoading: true,
+    isFetching: true,
+    isEnabled: true,
+    fetchStatus: 'fetching',
+  })
 }
 
 /** An idle `useMutation` result; pass `{ mutate }` to supply the spy under test. */
-export function mutationResult<TData, TError, TVariables>(
-  over: Partial<UseMutationResult<TData, TError, TVariables, unknown>> = {},
-): UseMutationResult<TData, TError, TVariables, unknown> {
-  const result: UseMutationResult<TData, TError, TVariables, unknown> = {
+export function mutationResult<TData, TError, TVariables, TOnMutateResult>(
+  over: Partial<UseMutationResult<TData, TError, TVariables, TOnMutateResult>> = {},
+): UseMutationResult<TData, TError, TVariables, TOnMutateResult> {
+  const result: UseMutationResult<TData, TError, TVariables, TOnMutateResult> = {
     context: undefined,
     data: undefined,
     error: null,

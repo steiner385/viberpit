@@ -18,6 +18,7 @@ import * as React from 'react'
 import { ArchivedManager } from '../ArchivedManager'
 import * as hooks from '@/api/hooks'
 import type { ArchivedSession } from '@/api/types'
+import { archivedSession } from '@/test/factories'
 import { queryResult } from '@/test/reactQuery'
 
 // ── Global mocks ──────────────────────────────────────────────────────────────
@@ -54,19 +55,17 @@ vi.mock('@/session/useSessionSearch', () => ({
 
 const NOOP_MUTATION = { mutate: vi.fn(), isPending: false }
 
-function makeArchived(overrides: Partial<ArchivedSession> = {}): ArchivedSession {
-  return {
+const makeArchived = (overrides: Partial<ArchivedSession> = {}): ArchivedSession =>
+  archivedSession({
     id: 'arc-1',
     name: 'Alpha',
     account: 'tony',
     cwd: '/home/GitHub/KinDash',
-    claudeSessionId: null,
     permissionMode: 'default',
     createdAt: '2026-06-01T00:00:00Z',
     archivedAt: '2026-06-10T00:00:00Z',
     ...overrides,
-  }
-}
+  })
 
 function wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })

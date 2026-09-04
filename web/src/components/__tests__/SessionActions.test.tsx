@@ -3,6 +3,7 @@ import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderApp } from '@/test/renderApp'
 import * as hooks from '@/api/hooks'
+import { appSettings } from '@/test/factories'
 import { queryResult } from '@/test/reactQuery'
 
 vi.mock('@/api/hooks', () => ({
@@ -123,7 +124,7 @@ describe('session-card actions (via AppShell)', () => {
 
     vi.mocked(hooks.useGithubBranches).mockReturnValue(queryResult({ default: null, branches: [] }))
 
-    vi.mocked(hooks.useSettings).mockReturnValue(queryResult({ defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null }))
+    vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings()))
 
     vi.mocked(hooks.useUpdateSettings).mockReturnValue({
       mutate: vi.fn(),

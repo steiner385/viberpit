@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { BacklogGroupsPanel } from './BacklogGroupsPanel'
+import type { BacklogGroup } from '@/api/automations'
 
 const mutate = vi.fn()
-const baseGroup = () => ({
+const baseGroup = (): BacklogGroup => ({
   id: 1,
   repo: 'o/r',
   refs: ['o/r#7', 'o/r#8'],

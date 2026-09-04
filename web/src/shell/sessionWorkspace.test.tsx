@@ -19,7 +19,7 @@ import userEvent from '@testing-library/user-event'
 import { renderApp } from '@/test/renderApp'
 import * as hooks from '@/api/hooks'
 import type { Account, Session } from '@/api/types'
-import { queryResult } from '@/test/reactQuery'
+import { loadingQueryResult, queryResult } from '@/test/reactQuery'
 
 const NOOP = { mutate: vi.fn(), isPending: false, isSuccess: false }
 
@@ -310,9 +310,7 @@ describe('the shell passes the sessions-loading flag to the list state', () => {
 
   it('a stored project filter is NOT sanitized away while the sessions query is loading', async () => {
     localStorage.setItem('ccswitch.sessionOrder', JSON.stringify(STORED))
-    vi.mocked(hooks.useSessions).mockReturnValue(
-      { data: [], isLoading: true } as ReturnType<typeof hooks.useSessions>,
-    )
+    vi.mocked(hooks.useSessions).mockReturnValue(loadingQueryResult<Session[]>())
     renderApp({ path: '/sessions', mode: 'desktop' })
     await act(async () => { await Promise.resolve() })
 
