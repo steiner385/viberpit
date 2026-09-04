@@ -37,6 +37,8 @@ VALID_SESSION_MODES = frozenset({
     "acceptEdits", "bypassPermissions",
 })
 
+ASSISTANT_KIND = "assistant"
+
 
 @dataclass
 class SessionRecord:
@@ -85,6 +87,12 @@ class SessionRecord:
     active_goal: str | None = None    # active /goal condition; None = no goal
     inferred_goal: str | None = None  # LLM-inferred goal (middle effective_goal tier)
     autopilot_paused: bool = False    # per-session autopilot opt-out (True = pinned to manual)
+    kind: str | None = None           # "assistant" for the AI-drawer session; None = coding session
+    owner_identity: str | None = None # identity owning an assistant thread (idempotency key)
+    # Monotonic time of the last prompt or `activity` WS frame. In-memory only — drives
+    # the assistant idle reap; never a DB column (a restart resets it, which is fine:
+    # the reap re-arms from the next interaction).
+    last_activity_at: float | None = None
     # Sticky auto-archive opt-out reason. None = eligible for auto-archive; "manual-unarchive"
     # = a human unarchived this session, so it is never auto-archived again (see orchestrator).
     auto_archive_opt_out_reason: str | None = None
@@ -232,3 +240,11 @@ class SessionRecord:
             context_max_tokens=d.get("contextMaxTokens"),
             command_catalog=d.get("commandCatalog"),
         )
+
+
+def is_assistant(rec) -> bool:
+    """The ONE predicate for 'is this the AI-drawer session' — every loop that
+    iterates sessions (autopilot, titles, summaries, suggestions, goal inference,
+    auto-archive, capacity) routes through it. Duck-typed so fleet mirrors and DB rows
+    qualify too."""
+    return getattr(rec, "kind", None) == ASSISTANT_KIND

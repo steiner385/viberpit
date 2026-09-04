@@ -231,6 +231,14 @@ class Session(Base):
     # composer's command palette instead of an empty autocomplete. NULL until the
     # session has been live once. Nullable so init_db backfills on dev SQLite w/o a migration.
     command_catalog: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    # Session kind. "assistant" = the AI-drawer meta-assistant (spec
+    # docs/superpowers/specs/2026-09-04-ai-assistant-design.md §4.1): hidden from the
+    # session list, capacity-exempt, tool-restricted. NULL = a normal coding session.
+    # Nullable so init_db backfills on both dialects without a migration.
+    kind: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # Identity that owns an assistant thread (the idempotency key for
+    # POST /api/assistant/session). NULL for coding sessions. Nullable for backfill.
+    owner_identity: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
 
 class AppSession(Base):
@@ -273,6 +281,9 @@ class AuditEvent(Base):
     type: Mapped[str] = mapped_column(String, nullable=False)
     identity: Mapped[str] = mapped_column(String, nullable=False)
     detail: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    # Actor channel: "assistant" when the request carried the assistant bearer token
+    # (the AI drawer acting on the user's behalf); NULL = the user directly.
+    via: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
 
 class PushSubscription(Base):
@@ -386,6 +397,10 @@ class AppSettings(Base):
     # Both nullable so init_db backfills them without a migration on both dialects.
     model_approval_action: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     model_approval_denylist: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # AI assistant (spec 2026-09-04-ai-assistant-design §4.11). NULL = fall through to
+    # CCSWITCH_ASSISTANT_ENABLED / CCSWITCH_ASSISTANT_MODEL. Nullable for backfill.
+    assistant_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
+    assistant_model: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
 
 class SessionQueue(Base):
