@@ -795,6 +795,7 @@ class SessionOrchestrator:
             release=self._backlog_release,
             needs_human=self._backlog_needs_human,
             session_ended=self._backlog_session_ended,
+            session_ran=self._backlog_session_ran,
             reconcile=self._backlog_reconcile,
             close_out=self._backlog_close_out,
             heal_orphans=self._backlog_heal_orphans,
@@ -1891,25 +1892,52 @@ class SessionOrchestrator:
 
         raise ValueError(f"session {session_id} has no pending model approval")
 
+    @staticmethod
+    def _spawn_kwargs_from_row(row, *, identity: str) -> dict:
+        """Reconstruct spawn kwargs from the durable ``sessions`` row alone.
+
+        The ONE place that knows how to rebuild a session's launch parameters when the
+        side blob that held them is gone. Two callers, two blobs:
+        ``_rebuild_hold_kwargs`` (the in-memory ``_pending_approvals`` entry a restart
+        lost) and ``_reconcile_orphan_queued`` (the ``session_queue.params`` row an
+        orphan lost, #1100). They differ only in whose ``identity`` owns the replay,
+        so that is the parameter.
+
+        Structurally unrecoverable, identically for both callers — nothing persists
+        them outside the vanished blob, so a replay forgoes them rather than not
+        replaying at all:
+
+        * ``attachment_ids`` — always None.
+        * ``cols``/``rows`` — ``create_session``'s defaults; the client re-sizes the
+          pty on attach anyway.
+        * ``branch`` — a not-yet-spawned row's ``branch`` column is NULL by
+          construction (both ``_enqueue_session`` and ``_hold_for_approval`` insert
+          ``branch=None``; only a real spawn fills it), so a replay starts from the
+          repo's default branch. Automation sessions pass no branch to begin with.
+        """
+        return dict(
+            name=row.name, account=row.account_name or None,
+            initial_prompt=row.initial_prompt, cols=80, rows=24,
+            cwd=row.cwd or None, branch=row.branch, repo=row.repo,
+            identity=identity,
+            permission_mode=row.permission_mode, attachment_ids=None,
+            name_is_auto=row.name_is_auto, origin=row.origin,
+            origin_ref=row.origin_ref,
+            kind=getattr(row, "kind", None),
+            owner_identity=getattr(row, "owner_identity", None))
+
     async def _rebuild_hold_kwargs(self, session_id: str) -> dict:
         """Reconstruct spawn kwargs from the persisted 'pending_approval' row when the
-        in-memory _pending_approvals entry was lost to a daemon restart. Attachment ids
-        are NOT persisted on the row, so they default to None (a re-launched approval
-        forgoes the original attachments — acceptable vs. failing the approve)."""
+        in-memory _pending_approvals entry was lost to a daemon restart. See
+        _spawn_kwargs_from_row for what a row-only rebuild cannot carry (attachments
+        in particular — a re-launched approval forgoes them, which beats failing the
+        approve)."""
         async with db_session() as db:
             row = await db.get(DbSession, session_id)
             if row is None:
                 raise KeyError(session_id)
-            return dict(
-                name=row.name, account=row.account_name or None,
-                initial_prompt=row.initial_prompt, cols=80, rows=24,
-                cwd=row.cwd or None, branch=row.branch, repo=row.repo,
-                identity=row.pending_model_requested_by or SYSTEM_IDENTITY,
-                permission_mode=row.permission_mode, attachment_ids=None,
-                name_is_auto=row.name_is_auto, origin=row.origin,
-                origin_ref=row.origin_ref,
-                kind=getattr(row, "kind", None),
-                owner_identity=getattr(row, "owner_identity", None))
+            return self._spawn_kwargs_from_row(
+                row, identity=row.pending_model_requested_by or SYSTEM_IDENTITY)
 
     async def _restore_hold_after_failed_approve(
             self, session_id: str, *, model, kwargs: dict,
@@ -2061,9 +2089,18 @@ class SessionOrchestrator:
                     await self._spawn_session(sid, preexisting_row=True, **params)
                 except Exception as exc:
                     # A real start failure (as opposed to the process dying): the
-                    # session is about to be marked 'ended', so drop its entry —
-                    # leaving it would wedge the head of the queue forever.
-                    await sq.remove(sid)
+                    # session is about to be marked 'ended', so its entry must go —
+                    # leaving it would wedge the head of the queue forever. The
+                    # removal happens AFTER the status UPDATE below, not here: this
+                    # was a non-atomic two-step in the other order, and a deploy kill
+                    # between the two left a 'queued' row with no entry — precisely
+                    # the orphan _reconcile_orphan_queued exists to clean up after
+                    # (#1100; 9 daemon restarts in one day on the live fleet made the
+                    # window routine). Writing the row first inverts the failure: a
+                    # kill mid-window leaves 'ended' + a stale entry, which the
+                    # stale_entry branch above reaps on the next drain, and a kill
+                    # before it leaves a fully replayable 'queued' row + entry.
+                    #
                     # A queued session can lose a race with branch auto-delete on
                     # merge (#836): its PR lands between enqueue and spawn, the
                     # remote deletes the head branch, and create_worktree finds no
@@ -2123,6 +2160,10 @@ class SessionOrchestrator:
                             .where(DbSession.id == sid)
                             .values(**values)
                         )
+                    # Only now drop the entry: the row is already terminal, so the
+                    # crash window this leaves is a self-healing stale entry rather
+                    # than an unreplayable orphan (see the ordering note above).
+                    await sq.remove(sid)
                 else:
                     # Commit point: the spawn persisted the row as 'idle' and (for an
                     # automation session) already fired turn one, so the entry has
@@ -2180,23 +2221,38 @@ class SessionOrchestrator:
         reaches here is a row whose entry was lost some other way — a row enqueued by a
         daemon predating that fix, or genuine DB-level loss.
 
-        Decision: mark orphans 'ended', never re-enqueue. Re-enqueueing needs the
-        full _enqueue_session params dict, but per SessionQueue's docstring,
-        session_queue.params is the ONLY place cols/rows/identity/attachment_ids
-        are persisted — the sessions row itself never carries them (confirmed
-        against the live schema and the actual stranded row: `sessions` has no
-        such columns). An orphan's queue entry is gone, so those fields cannot be
-        reconstructed without guessing at values that could silently corrupt the
-        replayed session. This mirrors _maybe_start_queued's start-failure
-        handling (see its docstring above): a queued row we cannot honor is
-        marked 'ended' rather than left occupying a phantom slot forever.
-        'ended' is in CAPACITY_EXEMPT_STATUSES / INACTIVE_SESSION_STATUSES, so it
-        drops out of both the capacity count and any future 'queued' query.
+        Decision, in two branches (#1100 narrowed the original blanket reap):
+
+        REPLAY when the row carries a non-null ``initial_prompt`` AND a NULL
+        ``claude_session_id``. That pair is the same durable proof
+        ``_recover_undelivered_prompts`` runs on: the prompt survived, and a NULL
+        claude session id means the SDK never assigned one, i.e. turn ONE never ran,
+        so re-running it duplicates nothing. The entry is rebuilt from the row via
+        ``_spawn_kwargs_from_row`` and the row STAYS 'queued', so the replay still
+        waits its turn behind the capacity cap that queued it in the first place
+        (flipping it to 'idle' and letting the sibling recovery path take it would
+        start a session over the cap). Attachments, cols/rows and the requested
+        branch cannot be reconstructed — see that helper — but a text-only replay
+        beats no replay, which is the precedent the sibling path already set. The
+        loss this closes was not theoretical: 16 backlog dispatches were reaped in
+        one day on the live fleet, each one an issue escalated to needs-human for a
+        session that never ran a turn.
+
+        REAP ('ended') otherwise — no prompt to replay, a turn already ran (replaying
+        would duplicate work), or an assistant thread (whose "initial prompt" is a
+        human's drawer message; ``_recover_undelivered_prompts`` refuses to re-drive
+        those for the same reason). A queued row we cannot honor is marked 'ended'
+        rather than left occupying a phantom slot forever, mirroring
+        _maybe_start_queued's start-failure handling. 'ended' is in
+        CAPACITY_EXEMPT_STATUSES / INACTIVE_SESSION_STATUSES, so it drops out of both
+        the capacity count and any future 'queued' query.
 
         Called from rehydrate(), immediately before the queue-drain-on-rehydrate
-        spawn, so a reconciled slate is what that drain sees in the same pass.
-        Idempotent: once a row is 'ended' it no longer matches the orphan query,
-        so a second call reconciles nothing. Returns the count reconciled.
+        spawn, so a reconciled slate is what that drain sees in the same pass — a
+        row replayed here is startable by that very drain. Idempotent: an 'ended'
+        row no longer matches the orphan query and a replayed row is no longer an
+        orphan (it has an entry again), so a second call reconciles nothing.
+        Returns the count reconciled (replayed + reaped).
 
         ``candidate_rows``: rehydrate() already selects every non-inactive row
         (which includes 'queued') in one query — pass that list in to avoid a
@@ -2218,19 +2274,103 @@ class SessionOrchestrator:
         queued_ids = set((await sq.positions()).keys())
         orphans = [row for row in rows if row.id not in queued_ids]
         for row in orphans:
-            async with db_session() as db:
-                await db.execute(
-                    sa_update(DbSession).where(DbSession.id == row.id)
-                    .values(status="ended")
-                )
-            if row.id in self._records:
-                self._records[row.id].status = "ended"
+            if self._orphan_is_replayable(row):
+                # Enqueued at the TAIL, deliberately: a replay is new work as far as
+                # fairness goes, and re-inserting an oldest-first orphan at the head
+                # would let a row that keeps getting orphaned monopolise the front of
+                # the queue. No ownership gate is needed either — the queue is shared
+                # and _maybe_start_queued is the ownership-gated half (a foreign
+                # entry is skipped and left for the daemon that owns the row).
+                params = self._orphan_queue_params(row)
+                await sq.enqueue(row.id, params)
+                action = "requeued"
+            else:
+                async with db_session() as db:
+                    await db.execute(
+                        sa_update(DbSession).where(DbSession.id == row.id)
+                        .values(status="ended")
+                    )
+                if row.id in self._records:
+                    self._records[row.id].status = "ended"
+                action = "ended"
             log.warning(
-                "session_queue.orphan_reconciled id=%s action=ended "
+                "session_queue.orphan_reconciled id=%s action=%s "
                 "origin=%s origin_ref=%s enqueued_since=%s",
-                row.id, getattr(row, "origin", None),
+                row.id, action, getattr(row, "origin", None),
                 getattr(row, "origin_ref", None), getattr(row, "created_at", None))
+            await self._announce_orphan_reconciled(row, action)
         return len(orphans)
+
+    @staticmethod
+    def _orphan_is_replayable(row) -> bool:
+        """Whether a queue orphan's turn one can be safely re-run from the row (#1100).
+
+        The same two-part durable proof ``_recover_undelivered_prompts`` uses — a
+        surviving ``initial_prompt`` and a NULL ``claude_session_id`` (no SDK session
+        was ever assigned, so no turn ever ran) — plus that method's assistant
+        exclusion: an assistant thread's "initial prompt" is the user's first drawer
+        message, and re-driving it would answer a question asked before the restart.
+        """
+        if is_assistant_kind(getattr(row, "kind", None)):
+            return False
+        if getattr(row, "claude_session_id", None):
+            return False
+        return bool((getattr(row, "initial_prompt", None) or "").strip())
+
+    def _orphan_queue_params(self, row) -> dict:
+        """The ``session_queue.params`` blob to replay a queue orphan with.
+
+        Shaped exactly like ``_enqueue_session``'s, including its mixed-daemon-version
+        rule: ``kind``/``owner_identity`` are written ONLY when they carry information,
+        because ANY fleet daemon may drain this entry and splat it into
+        ``_spawn_session(**params)`` — a daemon whose signature predates a key would
+        raise TypeError, which the drain turns into 'ended', re-losing the very work
+        this replay recovers.
+        """
+        kwargs = self._spawn_kwargs_from_row(
+            row, identity=getattr(row, "owner_identity", None) or SYSTEM_IDENTITY)
+        kind = kwargs.pop("kind", None)
+        owner_identity = kwargs.pop("owner_identity", None)
+        params: dict = {"model": getattr(row, "model", None), **kwargs}
+        if kind is not None:
+            params["kind"] = kind
+        if owner_identity is not None:
+            params["owner_identity"] = owner_identity
+        return params
+
+    async def _announce_orphan_reconciled(self, row, action: str) -> None:
+        """Surface an orphan reconciliation instead of burying it in a log line (#1100).
+
+        A reap is SILENT work loss — the card just goes quiet — so it is announced
+        through the same notification routing every other automation warning uses
+        (``automation_warn``, scoped to the origin so a rule can target it).
+        ``fanout_when_unconfigured=False`` matches the rest of that class: a user with
+        no rules configured is not newly spammed. A replay is announced on the WS
+        instead: the record is still live, so a status frame makes any open dashboard
+        re-render the (still queued) card rather than showing stale state until the
+        next poll. Never raises — reconciliation must complete either way.
+        """
+        try:
+            if action == "requeued":
+                rec = self._records.get(row.id)
+                if rec is not None:
+                    self._publish_event({
+                        "type": "status", "sessionId": row.id, "status": rec.status,
+                        "updatedAt": rec.updated_at_iso, "revAt": rec.rev_at})
+                return
+            from server.sessions import push as push_mod
+            ref = getattr(row, "origin_ref", None) or row.id
+            await push_mod.notify_event(
+                "automation_warn",
+                f"Queued session dropped: {ref}",
+                f"{getattr(row, 'name', None) or row.id} lost its queue entry and "
+                f"could not be replayed — the work was never started.",
+                repo=getattr(row, "repo", None),
+                automation=getattr(row, "origin", None),
+                fanout_when_unconfigured=False)
+        except Exception:  # pragma: no cover — surfacing must never break the reap
+            log.warning("session_queue.orphan_announce_failed id=%s", row.id,
+                        exc_info=True)
 
     async def session_queue_move(self, session_id: str, op: str,
                                  position: int | None = None) -> bool:
@@ -2244,11 +2384,19 @@ class SessionOrchestrator:
         return await sq.positions()
 
     async def session_queue_cancel(self, session_id: str) -> bool:
-        """Remove a session from the queue and mark it ended. Returns True on success."""
+        """Remove a session from the queue and mark it ended. Returns True on success.
+
+        Order matters (#1100): 'ended' is persisted BEFORE the entry is dropped, so a
+        daemon death mid-cancel leaves a terminal row plus a stale entry (self-healing
+        — the drain reaps entries whose row left 'queued') rather than a 'queued' row
+        with no entry, which _reconcile_orphan_queued would replay as a crash orphan
+        and re-run the very session the user just cancelled. The presence check
+        therefore reads the queue instead of using remove()'s rowcount as the claim."""
         from server.sessions import session_queue as sq
-        if not await sq.remove(session_id):
+        if session_id not in await sq.positions():
             return False
         await self._persist_status(session_id, "ended")
+        await sq.remove(session_id)
         rec = self._records.get(session_id)
         if rec is not None:
             rec.status = "ended"
@@ -2567,11 +2715,14 @@ class SessionOrchestrator:
             except Exception:
                 log.exception("session.scratch_cleanup_failed id=%s", session_id)
 
-        # Remove from the session queue BEFORE persisting ended status so the
-        # drain triggered below cannot resurrect a just-closed queued session.
+        # Persist 'ended' BEFORE dropping any queue entry (#1100 ordering rule, see
+        # _maybe_start_queued's failure path). The drain cannot resurrect the session
+        # in that window: it judges staleness against the shared ROW, so a terminal
+        # row makes a leftover entry a stale_entry it reaps instead of spawning. The
+        # other order leaves a 'queued' row with no entry if the daemon dies between
+        # the two — which _reconcile_orphan_queued now REPLAYS, so a deliberately
+        # closed session would come back and run.
         from server.sessions import session_queue as sq
-        await sq.remove(session_id)
-
         async with db_session() as db:
             from sqlalchemy import update as sa_update
             await db.execute(
@@ -2579,6 +2730,7 @@ class SessionOrchestrator:
                 .where(DbSession.id == session_id)
                 .values(status="ended")
             )
+        await sq.remove(session_id)
         log.info("session.close id=%s", session_id)
 
         # Nudge the Backlog Runner when one of its sessions ends so a freed slot
@@ -3380,6 +3532,24 @@ class SessionOrchestrator:
             status = (await db.execute(_select(DbSession.status).where(
                 DbSession.id == session_id))).scalar_one_or_none()
         return status in INACTIVE_SESSION_STATUSES
+
+    async def _backlog_session_ran(self, session_id: str) -> bool:
+        """True if the runner session *session_id* ever started turn one (#1100).
+
+        ``claude_session_id`` is NULL until the SDK assigns one, which happens when
+        turn ONE actually starts (``_persist_claude_session_id``) — the same durable
+        never-ran proof ``_recover_undelivered_prompts`` and the orphan reaper key
+        off. Reads the DB row, so it survives a restart that dropped the record.
+
+        A row that no longer exists reads True: absence is not proof that no turn
+        ran, and the caller must fail safe toward the normal give-up path."""
+        from sqlalchemy import select as _select
+        async with db_session() as db:
+            row = (await db.execute(_select(DbSession.claude_session_id).where(
+                DbSession.id == session_id))).first()
+        if row is None:
+            return True
+        return bool(row[0])
 
     async def _backlog_count_candidates(self) -> "tuple[int, int]":
         """(eligible, blocked) counts of unclaimed OPEN issues in configured repos.
@@ -10373,13 +10543,14 @@ class SessionOrchestrator:
             self._spawn(self._close_archived_driver(driver, session_id),
                         name=f"archive-driver-close-{session_id}")
 
-        # Remove from the session queue BEFORE persisting archived status so the
-        # drain triggered below cannot resurrect a just-archived queued session.
+        # Mark archived in DB, THEN drop any queue entry (#1100 ordering rule — the
+        # same one close_session follows, for the same reason: the other order can
+        # leave a 'queued' row with no entry, which the reaper now replays). The
+        # drain cannot resurrect it in the window: it judges staleness against the
+        # shared row, so a terminal row turns a leftover entry into a stale_entry
+        # reap. archive_root=None also clears a stale root left by a legacy
+        # archive→unarchive round trip, whose files are back at cwd.
         from server.sessions import session_queue as sq
-        await sq.remove(session_id)
-
-        # Mark archived in DB. archive_root=None also clears a stale root left by
-        # a legacy archive→unarchive round trip, whose files are back at cwd.
         async with db_session() as db:
             from datetime import datetime
             from sqlalchemy import update as sa_update
@@ -10389,6 +10560,7 @@ class SessionOrchestrator:
                 .values(status="archived", archived_by=archived_by, archive_context=context,
                         archived_at=datetime.utcnow(), archive_root=None)
             )
+        await sq.remove(session_id)
         prev_status = record.status if record is not None else None
         log_event(log, logging.INFO, "session.terminal",
                   session_id=session_id,

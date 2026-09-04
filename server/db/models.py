@@ -416,6 +416,15 @@ class SessionQueue(Base):
     or fails to start. `params` holds the create_session kwargs that the
     sessions row does not (cols, rows, attachment_ids, identity, requested
     branch/cwd/account) — worktree and account rotation are decided at DEQUEUE.
+
+    Losing this row is NOT fatal to the session (#1100): a `queued` sessions row
+    with no entry here is reconciled by
+    ``SessionOrchestrator._reconcile_orphan_queued``, which rebuilds a params blob
+    from the sessions row via ``_spawn_kwargs_from_row`` and re-enqueues whenever the
+    row still proves its turn one never ran. Only the fields listed above are
+    genuinely lost. Every path that deletes an entry must persist the session's new
+    status FIRST, or a crash in between manufactures an orphan that replay cannot
+    tell apart from a legitimately stranded one.
     """
 
     __tablename__ = "session_queue"
