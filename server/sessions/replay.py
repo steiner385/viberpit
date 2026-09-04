@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, asyncio, logging, os, time
+import dataclasses, json, asyncio, logging, os, time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -481,6 +481,11 @@ def _window(path: str, before: int | None, limit: int | None, drop_incomplete_tu
     slice_lo = 0 if start == 0 else ends[start - 1] + 1
     slice_hi = starts[end] if end < total else len(out)
     window = out[slice_lo:slice_hi]
+    # Stamp each in-window TurnStart with its ordinal in the cursor space. Done on the
+    # slice (not `out`) so a stamped copy never leaks into the un-windowed `_parse`
+    # consumers, and before the owner/meta prepends below shift list positions.
+    for k, si in enumerate(starts[start:end]):
+        window[si - slice_lo] = dataclasses.replace(out[si], turn_index=start + k)
     # A "turn" here is one assistant JSONL entry, so a tool-heavy LOGICAL turn
     # spans many of them — a window whose head lands mid-logical-turn carries the
     # turn's content with NO owning UserMessage at all. Client-side that leaves
