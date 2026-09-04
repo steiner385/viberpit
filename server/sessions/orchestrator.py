@@ -79,6 +79,7 @@ from server.obs.context import log_event, PROC_EPOCH
 from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
 from server.sessions.types import SessionRecord, SYSTEM_IDENTITY, RESUME_ELIGIBLE_STATUSES
+from server.sessions.usage_stall import is_usage_stalled
 from server.config import env_float
 from server.time_iso import iso_utc
 from server.usage.poller import UsagePoller
@@ -110,6 +111,10 @@ _REPLAY_STATUSES = _status_mod.MID_TURN_STATUSES | frozenset({"working"})
 # approval) and a driver rebuild would jump that gate. Everything else — mid-turn,
 # awaiting a human, idle, failed — is exactly the state reload exists to recover.
 _NOT_RELOADABLE_STATUSES = frozenset({"archived", "ended", "queued", "pending_approval"})
+
+# The two parked shapes whose cause paused_reason explains (usage_stall.py). Any other
+# status clears it.
+_STALLED_STATUSES = frozenset({"needs_attention", "limited"})
 
 # Statuses derived purely from the live driver's in-memory registries — a mid-turn
 # turn, or a pending permission / question / plan approval (see status.derive_status
@@ -210,6 +215,17 @@ def _prepend_proposal(proposal: str | None, base: list[str]) -> list[str]:
     if proposal in base:
         return base
     return [proposal, *base]
+
+
+def _naive_utc(dt):
+    """Normalize an optional datetime to naive UTC for the DateTime columns (the
+    selector's earliest_reset is tz-aware; _persist_status writes naive UTC)."""
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        from datetime import timezone
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
 
 
 def _rethread_identity(driver, identity: str) -> None:
@@ -2475,11 +2491,23 @@ class SessionOrchestrator:
             if status != "idle":
                 rec.interrupted_by_restart = False
                 rec.interrupted_from_status = None
+            # Stalled-on-usage bookkeeping (usage_stall.py): a status outside the two
+            # parked shapes means the session is moving again, so the cause is stale.
+            if status not in _STALLED_STATUSES:
+                rec.paused_reason = None
+                rec.paused_until = None
         async with db_session() as db:
             from sqlalchemy import update as sa_update
             values: dict = {"status": status}
             if turn_at is not None:
                 values["last_turn_at"] = turn_at
+            if status in _STALLED_STATUSES:
+                if rec is not None:
+                    values["paused_reason"] = rec.paused_reason
+                    values["paused_until"] = rec.paused_until
+            else:
+                values["paused_reason"] = None
+                values["paused_until"] = None
             # Write pr_resolution to DB when the in-memory record was just set above;
             # rec.pr_resolution == resolution guards idempotency (won't overwrite a
             # pre-existing classifier value that differs from the marker resolution).
@@ -2513,7 +2541,11 @@ class SessionOrchestrator:
                              "updatedAt": rec.updated_at_iso if rec is not None else None,
                              "revAt": rec.rev_at if rec is not None else None,
                              "interruptedByRestart": (
-                                 rec.interrupted_by_restart if rec is not None else False)})
+                                 rec.interrupted_by_restart if rec is not None else False),
+                             "pausedReason": rec.paused_reason if rec is not None else None,
+                             "pausedUntil": iso_utc(rec.paused_until) if rec is not None else None,
+                             "usageStalled": (is_usage_stalled(status, rec.paused_reason)
+                                              if rec is not None else False)})
         await self._maybe_push(session_id, status)
         if completed_turn:
             await self._maybe_apply_auto_name(session_id)
@@ -9096,6 +9128,11 @@ class SessionOrchestrator:
                         # Pinned + usage ceiling: mark limited so the user knows
                         # they need to unpin before the session can auto-rotate.
                         log.info("rotation.skip_pinned session=%s account=%s", record.id, account)
+                        record.paused_reason = "pinned_account_limited"
+                        record.paused_until = _naive_utc(
+                            getattr(usage, "session_resets_at", None)
+                            if getattr(usage, "session_pct", 0.0) >= _ROTATION_CEILING
+                            else getattr(usage, "weekly_resets_at", None))
                         record.status = "limited"
                         self._spawn(
                             self._persist_status(record.id, "limited"),
@@ -9335,7 +9372,11 @@ class SessionOrchestrator:
     async def _pause_session(self, record: SessionRecord, *, reason: str,
                              earliest_reset=None) -> None:
         """No recovery possible (no healthy account / rotation cap). Flag the session
-        for the user and publish a machine-readable paused event."""
+        for the user and publish a machine-readable paused event. The reason and the
+        earliest known reset ride the same _persist_status write as the status so the
+        dashboard can say WHY (usage_stall.py) instead of a bare "Turn failed"."""
+        record.paused_reason = reason
+        record.paused_until = _naive_utc(earliest_reset)
         try:
             await self._persist_status(record.id, "needs_attention")
         except Exception:
@@ -9845,12 +9886,17 @@ class SessionOrchestrator:
             last = self._last_prompt.get(record.id) if replay_last_prompt else None
             if last:
                 await new_driver.send_prompt(last)
+            # A successful swap ends whatever pause parked the session; the replayed
+            # turn's own status persist may not arrive (no prompt to replay), so clear
+            # the cause here too.
+            record.paused_reason = None
+            record.paused_until = None
             async with db_session() as db:
                 from sqlalchemy import update as sa_update
                 await db.execute(
                     sa_update(DbSession)
                     .where(DbSession.id == record.id)
-                    .values(account_name=new_account)
+                    .values(account_name=new_account, paused_reason=None, paused_until=None)
                 )
             # Bump the in-memory rev token BEFORE publishing the event (mirrors
             # _persist_status's "row-write token" bump). Without this the `rotated`
