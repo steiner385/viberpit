@@ -5,6 +5,35 @@ import { Button } from '@/ui/Button'
 import { usePendingDeploy, useDeployStatus } from '@/api/hooks'
 import { useDeployController } from '@/lib/deployController'
 
+// The failure notice is dismissed by CONTENT, not as a boolean: `gaveUp` is the daemon's
+// live set and only changes when a human retries/archives, so a bare "hidden" flag would
+// either mask the next failure or (if session-scoped) reappear on every reload — the
+// original complaint. Persisting the signature of what was dismissed means the same
+// failure stays gone across reloads while any new session id or error text brings the
+// notice back on its own. Guarded like `lib/lastRepo.ts`: a blocked localStorage degrades
+// to "not dismissed", never a crash.
+const DISMISSED_KEY = 'ccswitch.deployFailureDismissed'
+
+function failureSignature(error: string | null, failed: string[], gaveUp: string[]): string {
+  return JSON.stringify({ error, failed: [...failed].sort(), gaveUp: [...gaveUp].sort() })
+}
+
+function readDismissedSignature(): string | null {
+  try {
+    return window.localStorage.getItem(DISMISSED_KEY)
+  } catch {
+    return null
+  }
+}
+
+function writeDismissedSignature(sig: string): void {
+  try {
+    window.localStorage.setItem(DISMISSED_KEY, sig)
+  } catch {
+    /* ignore — persistence is best-effort */
+  }
+}
+
 export function DeployPanel() {
   const { data: pending } = usePendingDeploy()
   const { data: deploy } = useDeployStatus()
@@ -36,7 +65,16 @@ export function DeployPanel() {
   // (behind=false) the error is pure history — hide it. Session-resume failures are independent (a
   // successful daemon deploy leaves behind=false yet may have lost sessions) and always surface.
   const showError = !running && !preflightStale && behind && !!deploy?.error
-  const showFailure = showError || (!running && unresolved > 0)
+  const hasFailure = showError || (!running && unresolved > 0)
+  // Only the failure notice is dismissible. Pending commits are actionable (Deploy button)
+  // and clear on their own once deployed — hiding them would hide the only way to deploy.
+  const [dismissedSig, setDismissedSig] = useState(readDismissedSignature)
+  const failureSig = failureSignature(showError ? deploy?.error ?? null : null, failed, gaveUp)
+  const showFailure = hasFailure && dismissedSig !== failureSig
+  const dismissFailure = () => {
+    writeDismissedSignature(failureSig)
+    setDismissedSig(failureSig)
+  }
 
   if (!behind && !showFailure) return null
   const canDeploy = behind && !running && ci === 'green'
@@ -68,6 +106,7 @@ export function DeployPanel() {
           </Button>
         </>
       ) : undefined}
+      onDismiss={showFailure ? dismissFailure : undefined}
     >
       {open && pending && (
         <ul className="mt-2 space-y-1">
