@@ -154,6 +154,62 @@ Overlay params use `setSearchParams(…, { replace: true })`. Legacy paths redir
 
 ## 6. Sessions workspace (PR 4)
 
+> ### 6.0 Amendments — 2026-09-04
+>
+> §6 was written before PRs 3 and 4 existed. Implementing it found that parts of it
+> describe code and data that do not exist, and PR 3 had already done some of what §6.4
+> asks. These amendments are **binding**: where they conflict with the text below, they
+> win. Each was decided with the human on 2026-09-04.
+>
+> **A1 — §6.4's `Ctrl+Tab` / `Cmd+Shift+[`/`]` cannot be implemented. Next/previous
+> session binds `Alt+↑` / `Alt+↓` instead.**
+> Chrome and Safari do not dispatch keydown at all for chords their own UI reserves
+> (`⌘N`, `⌘W`, `Ctrl+Tab`, `Ctrl+Shift+Tab`, and — on macOS — `⌘⇧[`/`⌘⇧]`, which are the
+> browsers' own tab switching). There is no event to `preventDefault`. §6.4's table comes
+> from Claude Code **Desktop**, an Electron app that owns its window; a web page does not.
+> `Alt+↑`/`Alt+↓` is unreserved and mirrors the list's existing arrow navigation. It is a
+> **ccswitch binding, not Desktop parity**, and the help sheet should not imply otherwise.
+> Ordering must come from `ordering.orderedSessions` — the *filtered* list — so the
+> shortcut can never jump to a session the list is not showing.
+> **Verification note:** CDP-synthesised keys bypass the browser-process handling at
+> issue, so devtools automation reports a **false pass** on reserved chords. Any future
+> binding needs a human at a real Chrome and Safari.
+>
+> **A2 — §6.2 splits. The diff chip is in scope; the CI bar and its toggles are deferred.**
+> `server/github/pr_status.py`'s `PullRequestInfo` is already populated from a GraphQL
+> query that fetches `mergeable`, `checks`, `mergeCommit` and more — and GitHub's PR
+> object exposes `additions`/`deletions` on that same query. The diff chip is therefore a
+> two-field addition, not new infrastructure.
+> The rest of §6.2 is **not** implementable as written: `Session.prs[].checks` is a rollup
+> *string*; the per-check types in `web/src/api/types.ts` (`CheckRow`, `CheckGroup`,
+> `check_groups`, every `eta_*`) are **declared but dead**, zero consumers; real per-check
+> data lives only in the vendored pipeline's SSE feed; and **there is no auto-merge boolean
+> anywhere** to bind a toggle to. `autopilotPaused` / `autopilotCooldownUntil` /
+> `assistedBy` are not auto-fix/auto-merge flags. The CI bar needs its own API spec.
+>
+> **A3 — §6.3's five permission-mode labels are withdrawn. ccswitch keeps its six.**
+> `session/permissionModes.ts` defines six operationally distinct values — `interactive`,
+> `auto`, `allowlist`, `acceptEdits`, `full-auto`, `bypassPermissions` — and **no `plan`
+> key**; plan is a separate binary `role="switch"` in `SessionMeta`. Desktop's five are a
+> *different vocabulary*, not a relabel: mapping onto them would require merging or
+> dropping `allowlist` and `full-auto`, which changes what an existing session's **stored**
+> mode means. `PERMISSION_MODES` stays the single source of truth, labels may be shortened
+> for the menu, no value changes, and the plan toggle stays where it is.
+> This is a deliberate departure from umbrella §2.2 ("defer to Desktop"): the rule assumes
+> both products have an opinion about the *same* thing, and here they do not.
+>
+> **Still deferred, unchanged:** §6.3's `Effort` menu and `Cmd+Shift+E` (no effort field
+> exists on `SessionRuntime`, `ModelOption` or `Session`), and §6.3's transcript-view
+> control (`defaultToolDetail`/`thinkingCollapsed` are server-owned app settings, so a
+> `ccswitch.transcriptView` key would be a second owner of "how much detail", and
+> "Summary" has no third `ToolDetailMode` to map to). §6.1's Views menu and `session.panes`
+> defer with them — Tasks and PR panes do not exist.
+>
+> **Delivered in PR 4** (#1022): §6.4's registry (one `keydown` listener replacing five),
+> §6.5's filters, and §6.1's click-to-rename and `StatusPill`. §6.4's delete list was
+> already stale — PR 3 collapsed the three detach handlers into one and removed
+> `Shift+Tab` (D8) in commit `9b64fff8`.
+
 ### 6.1 `SessionHeader` (`session.header`; replaces `MainPaneSession` header and `SessionView` top bar)
 
 `[Back (phone/tablet)] [‹ ›] [title — click to rename] [StatusPill] [Views ▾] [SessionActions ⋮]`
