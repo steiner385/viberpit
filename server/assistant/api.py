@@ -64,7 +64,13 @@ async def create(body: CreateBody, request: Request,
     if existing is not None and not body.fresh:
         state = "existing"
         if existing.status == "ended":
-            await orch.ensure_driver(existing.id)   # resume path used by detached sessions
+            # Thread the real identity through: `ensure_driver`'s own docstring says a
+            # resumed driver built under the wrong identity (the SYSTEM_IDENTITY
+            # default) rejects every answer it registers. The drawer's WS attach
+            # re-threads the real identity moments later today, which is why this was
+            # silently self-correcting — but the reap-and-reopen flow leans on this
+            # path running with the right identity from the start.
+            await orch.ensure_driver(existing.id, identity=identity)
             state = "resumed"
         return {"id": existing.id, "model": existing.model or model, "state": state}
     if existing is not None:

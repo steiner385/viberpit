@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
+from server.assistant.context import validate_context
 from server.audit import record_audit, redact_event
 from server.auth.identity import verify_identity
 from server.auth.middleware import require_ws_identity
@@ -54,6 +55,7 @@ from server.sessions.commands.catalog import parse_command_line
 from server.sessions.events import ErrorEvent, PermissionRequest, tool_kind
 from server.sessions.facade import call_with_deadline
 from server.sessions.replay import replay_window
+from server.sessions.types import is_assistant
 
 if TYPE_CHECKING:
     from server.sessions.facade import InProcessOrchestratorAdapter
@@ -1076,7 +1078,16 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                         # prompt next instead of queueing it behind the turn. Only
                         # forwarded when set so the plain contract is untouched.
                         interrupt = msg.get("interrupt") is True
-                        extra = {"interrupt": True} if interrupt else {}
+                        extra: dict[str, object] = {"interrupt": True} if interrupt else {}
+                        # Context chip (spec §4.5): coding sessions ignore it — only
+                        # the assistant's composer sends one, and a non-assistant
+                        # session's transcript/tool-result text must never be able to
+                        # ride a client-forged `context` field into the prompt header.
+                        rec = await orchestrator.get_session(session_id)
+                        if is_assistant(rec):
+                            context = validate_context(msg.get("context"))
+                            if context is not None:
+                                extra["context"] = context
                         status = await orchestrator.send_prompt(
                             session_id, text, attachment_ids, **extra)
                         if status == "no_driver":

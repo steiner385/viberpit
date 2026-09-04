@@ -15,6 +15,7 @@ from claude_agent_sdk._errors import CLIConnectionError
 from ccswitch import copilot as _copilot_mod
 from ccswitch.accounts import provider_of as _provider_of
 from server.aio import bounded_wait
+from server.assistant.context import PromptContext, render_context_header
 from . import events as ev
 from .failure import classify, TurnFailure
 from .translator import Translator
@@ -254,6 +255,12 @@ class SessionDriver:
         self._suggester = suggester
         self._suggest_task: asyncio.Task | None = None
         self._last_user_text: str = ""
+        # The last rendered `<ccswitch-context …/>` header sent to the SDK (assistant
+        # sessions only) — deduped on the rendered STRING, not the context dict, so
+        # "did the header change" is exact rather than a dict-equality guess (spec §4.5:
+        # same-route consecutive prompts omit the header to keep the transcript clean
+        # and the prompt-cache prefix stable).
+        self._last_context_header: str | None = None
         self._turn_produced_output: bool = False
         self._last_assistant_parts: list[str] = []
         self._last_turn_id: str = ""
@@ -670,10 +677,19 @@ class SessionDriver:
         self._start_listener()
 
     async def send_prompt(self, text: str, images: list[dict] | None = None, *,
-                          interrupt: bool = False):
+                          interrupt: bool = False, context: PromptContext | None = None,
+                          host: str | None = None):
         """Send a prompt. While a turn is live it joins the FIFO queue — unless
         ``interrupt`` is set, in which case the live turn is stopped and this prompt
-        runs NEXT ("interrupt and post"), ahead of anything already queued."""
+        runs NEXT ("interrupt and post"), ahead of anything already queued.
+
+        ``context`` (assistant sessions only, spec §4.5) is the composer's
+        route/session chip. It is applied only to a turn started immediately from
+        this call (the C3 path below) — a prompt that instead joins the FIFO queue
+        or answers a pending question carries no context, since those paths already
+        collapse a fresh call into an existing turn's plain (text, images) tuple.
+        ``host`` is the orchestrator's ``local_host_stamp()`` reading, threaded down
+        rather than resolved here to keep this module import-cycle-free."""
         if self._client is None:
             raise RuntimeError("SessionDriver.send_prompt called before start()")
         images = images or []
@@ -726,9 +742,10 @@ class SessionDriver:
             self._titled = True
             first_line = text.splitlines()[0] if text else (text or "attachment")
             self._emit(ev.Title(title=first_line[:50], source="prompt"))
-        await self._start_turn(text, images)
+        await self._start_turn(text, images, context=context, host=host)
 
-    async def _start_turn(self, text: str, images: list[dict] | None = None):
+    async def _start_turn(self, text: str, images: list[dict] | None = None, *,
+                          context: PromptContext | None = None, host: str | None = None):
         """Echo the user prompt, emit working status, query the SDK, drain."""
         images = images or []
         # The prompt's pump takes over the SDK cursor: park the idle listener first
@@ -755,12 +772,24 @@ class SessionDriver:
         user_turn = uuid.uuid4().hex
         self._emit(ev.UserMessage(
             turn_id=user_turn, text=text, src_uuid=user_turn,
-            images=wire_images or None))
+            images=wire_images or None, context=context))
+        # Context chip (spec §4.5): prepend the header to the text sent to the SDK
+        # only — the UserMessage event above always carries the ORIGINAL text plus
+        # the structured `context` dict, so the transcript renders a chip instead of
+        # leaking the header into the message body. Same-route consecutive prompts
+        # omit the header (deduped on the rendered string) to keep the transcript
+        # clean and the prompt-cache prefix stable.
+        sdk_text = text
+        if context is not None:
+            header = render_context_header(context, host)
+            if header != self._last_context_header:
+                sdk_text = f"{header}\n{text}" if text else header
+            self._last_context_header = header
         assert self._client is not None  # _start_turn only runs once the client is connected
         if images:
             content: list[dict] = []
-            if text:
-                content.append({"type": "text", "text": text})
+            if sdk_text:
+                content.append({"type": "text", "text": sdk_text})
             for im in images:
                 with open(im["path"], "rb") as fh:
                     raw = fh.read()
@@ -783,7 +812,7 @@ class SessionDriver:
                        "parent_tool_use_id": None, "session_id": "default"}
             await self._client.query(_aiter_one(message))
         else:
-            await self._client.query(text)
+            await self._client.query(sdk_text)
         self._pump = asyncio.create_task(self._drain())
 
     async def _call_sync_back(self) -> None:

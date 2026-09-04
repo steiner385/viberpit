@@ -46,6 +46,7 @@ from ccswitch.configdir import compose
 from ccswitch.paths import account_cfg_dir, shared_base
 from ccswitch.selector import at_ceiling, exhausted
 from server.aio import bounded_wait
+from server.assistant.context import PromptContext
 from server.audit import record_audit
 from server.db import db_session
 from server.db.models import AUTO_ARCHIVE_PROVENANCE, CAPACITY_EXEMPT_STATUSES, INACTIVE_SESSION_STATUSES, Session as DbSession
@@ -8584,9 +8585,14 @@ class SessionOrchestrator:
         return self._pending_initial_attachment_ids.pop(session_id, None)
 
     async def send_prompt(self, session_id, text, attachment_ids=None, *,
-                          interrupt: bool = False) -> str:
+                          interrupt: bool = False,
+                          context: PromptContext | None = None) -> str:
         """Deliver a prompt to a live driver. ``interrupt`` = "interrupt and post":
-        stop the in-flight turn and run this prompt next instead of queueing it."""
+        stop the in-flight turn and run this prompt next instead of queueing it.
+        ``context`` (assistant sessions only, spec §4.5) is the composer's validated
+        route/session chip — resolve the host HERE (the driver stays free of
+        ``local_host_stamp``/orchestrator imports to avoid a circular import) and
+        forward both down to the driver."""
         if self._draining:
             # No new turns during a deploy drain. Tell the browser so it re-queues
             # (promptRejected) and shows the hold banner — never silently swallow it.
@@ -8616,10 +8622,11 @@ class SessionOrchestrator:
                 resolved = await _attachments.resolve_and_bind(
                     db, session_id, turn_id, ids)
         self._last_prompt[session_id] = text
+        host = local_host_stamp() if context is not None else None
         if interrupt:
-            await d.send_prompt(text, resolved, interrupt=True)
+            await d.send_prompt(text, resolved, interrupt=True, context=context, host=host)
         else:
-            await d.send_prompt(text, resolved)
+            await d.send_prompt(text, resolved, context=context, host=host)
         return "sent"
 
     async def interrupt(self, session_id):

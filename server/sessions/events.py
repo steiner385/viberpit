@@ -2,6 +2,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 import time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Typing-only: keeps this module's runtime imports stdlib-only. PromptContext is a
+    # leaf TypedDict (server/assistant/context.py imports nothing from server.sessions),
+    # so this import direction never risks a cycle.
+    from server.assistant.context import PromptContext
 
 
 def _now_ms() -> float:
@@ -47,8 +54,12 @@ class TurnModel:
 @dataclass
 class SessionMeta:
     model: str; session_id: str
+    # "assistant" for the AI-drawer session, None for every coding session (spec §4.8).
+    # Lets the client branch (hide the mode selector, hide "open in Sessions", label the
+    # header) without open-coding a kind comparison of its own.
+    kind: str | None = None
     def to_wire(self): return {"type": "sessionMeta", "model": self.model,
-                               "sessionId": self.session_id}
+                               "sessionId": self.session_id, "kind": self.kind}
 
 @dataclass
 class TurnEnd:
@@ -229,9 +240,13 @@ class UserMessage:
     # mark to drop boundary copies deterministically on merge, and to detect one left
     # pinned mid-transcript (the page-boundary ordering bug, #1000).
     owner_prefix: bool = False
+    # The route/session the user was viewing when they sent this (spec §4.5, assistant
+    # sessions only). Structured — never the raw `<ccswitch-context …>` header text — so
+    # the client renders a chip instead of leaking the header into the message body.
+    context: PromptContext | None = None
     def to_wire(self): return {"type": "user", "turnId": self.turn_id, "text": self.text, "srcUuid": self.src_uuid,
                                "images": self.images or [], "ts": self.ts,
-                               "ownerPrefix": self.owner_prefix}
+                               "ownerPrefix": self.owner_prefix, "context": self.context}
 
 @dataclass
 class QueueUpdate:
