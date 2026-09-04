@@ -31,3 +31,5 @@
 /scripts/check_constitution_amendment.py @steiner385
 /.github/workflows/constitution.yml @steiner385
 /.github/CODEOWNERS                 @steiner385
+
+# probe: verifying code-owner gating at 0 required approvals (branch deleted after)
