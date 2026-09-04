@@ -178,3 +178,16 @@ def test_prepare_unreadable_preferences_skips_extensions(tmp_path, monkeypatch):
     assert not (d / "Preferences").exists()
     assert not (d / "Extensions").exists()
     auth_login.cleanup_reauth_profile(temp)
+
+
+def test_prepare_malformed_preferences_structure_skips_extensions(tmp_path, monkeypatch):
+    """Valid JSON but a non-dict extensions/settings value must not raise (AttributeError)."""
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    src = _make_source(tmp_path, with_extensions=True)
+    (Path(src) / "Preferences").write_text(json.dumps({"extensions": None}))
+    temp = auth_login.prepare_reauth_profile(src)
+    d = Path(temp) / "Default"
+    assert (d / "Cookies").exists()
+    assert not (d / "Preferences").exists()
+    assert not (d / "Extensions").exists()
+    auth_login.cleanup_reauth_profile(temp)

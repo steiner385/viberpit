@@ -86,10 +86,13 @@ def _copy_extensions(src: Path, default: Path, extension_ids: Sequence[str]) -> 
         return
     prefs_path = src / "Preferences"
     try:
-        registered = json.loads(prefs_path.read_text()).get("extensions", {}).get("settings", {})
+        parsed = json.loads(prefs_path.read_text())
     except (OSError, ValueError) as e:
         log.info("reauth profile: source Preferences unreadable (%s); skipping extensions", e)
         return
+    extensions = parsed.get("extensions") if isinstance(parsed, dict) else None
+    settings_obj = extensions.get("settings") if isinstance(extensions, dict) else None
+    registered = settings_obj if isinstance(settings_obj, dict) else {}
     settings: dict[str, object] = {}
     for ext_id in extension_ids:
         ext_dir = src / "Extensions" / ext_id
