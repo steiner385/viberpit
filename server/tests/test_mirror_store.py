@@ -305,3 +305,106 @@ def test_back_sync_stage_updates_linked_initiative():
     assert n == 1 and db.query(Initiative).one().stage == "build"
     assert mirror_store.back_sync_stage(
         db, [mirror_store.HumanEdit(f"{REPO}#945", "Stage", "build", "bogus")]) == 0
+
+
+# --- adopt_epics: GitHub-first epics become Initiative overlays (issue #991) --
+
+ADOPT_NOW = datetime(2026, 9, 4, tzinfo=timezone.utc)
+
+
+def _seed_board_epic(db, project, *, number=945, title="Epic Alpha",
+                     state="open", on_board=True):
+    """A GhProject board with one epic-flagged WorkItem, optionally linked onto
+    the board via a GhProjectItem row."""
+    gid = mirror_store.upsert_gh_project(db, project.id, GhProjectView(
+        node_id="PVT_1", number=7, title="x", updated_at=None))
+    epic = db.query(WorkItem).filter_by(number=number).one()
+    epic.is_epic = True
+    epic.title = title
+    epic.state = state
+    if on_board:
+        db.add(GhProjectItem(gh_project_id=gid, gh_item_node_id=f"PVTI_{number}",
+                             work_item_id=epic.id))
+    db.commit()
+    return gid
+
+
+def test_adopt_epics_creates_initiative_for_onboard_open_epic():
+    db = _db()
+    project = _seed(db)
+    _seed_board_epic(db, project)
+
+    refs = mirror_store.adopt_epics(db, project.id, now=ADOPT_NOW)
+
+    assert refs == [f"{REPO}#945"]
+    ini = db.query(Initiative).one()
+    assert ini.stage == "build" and ini.status == "active"
+    assert ini.repo == REPO and ini.title == "Epic Alpha"
+    assert ini.origin == "epic-adoption" and ini.origin_ref == f"{REPO}#945"
+    assert ini.epic_repo == REPO and ini.epic_number == 945
+    assert ini.project_id == project.id
+    assert ini.slug == "epic-alpha"
+
+
+def test_adopt_epics_second_call_creates_nothing():
+    db = _db()
+    project = _seed(db)
+    _seed_board_epic(db, project)
+
+    first = mirror_store.adopt_epics(db, project.id, now=ADOPT_NOW)
+    assert first == [f"{REPO}#945"]
+    second = mirror_store.adopt_epics(db, project.id, now=ADOPT_NOW)
+    assert second == []
+    assert db.query(Initiative).count() == 1
+
+
+def test_adopt_epics_skips_epic_not_on_board():
+    db = _db()
+    project = _seed(db)
+    _seed_board_epic(db, project, on_board=False)
+
+    refs = mirror_store.adopt_epics(db, project.id, now=ADOPT_NOW)
+
+    assert refs == []
+    assert db.query(Initiative).count() == 0
+
+
+def test_adopt_epics_skips_closed_epic():
+    db = _db()
+    project = _seed(db)
+    _seed_board_epic(db, project, state="closed")
+
+    refs = mirror_store.adopt_epics(db, project.id, now=ADOPT_NOW)
+
+    assert refs == []
+    assert db.query(Initiative).count() == 0
+
+
+def test_adopt_epics_slug_collision_gets_dash2_suffix():
+    db = _db()
+    project = _seed(db)
+    db.add(Initiative(slug="epic-alpha", repo=REPO, title="Epic Alpha (pre-existing)"))
+    _seed_board_epic(db, project, title="Epic Alpha")
+
+    refs = mirror_store.adopt_epics(db, project.id, now=ADOPT_NOW)
+
+    assert refs == [f"{REPO}#945"]
+    adopted = db.query(Initiative).filter_by(epic_repo=REPO, epic_number=945).one()
+    assert adopted.slug == "epic-alpha-2"
+
+
+def test_back_sync_stage_updates_adopted_initiative():
+    """back_sync_stage (Phase B) now has a real target once adopt_epics has run:
+    a human moving Stage on the board updates the adopted overlay (issue #991)."""
+    db = _db()
+    project = _seed(db)
+    _seed_board_epic(db, project)
+    mirror_store.adopt_epics(db, project.id, now=ADOPT_NOW)
+    db.commit()
+
+    n = mirror_store.back_sync_stage(
+        db, [mirror_store.HumanEdit(f"{REPO}#945", "Stage", "build", "deploy")])
+
+    assert n == 1
+    assert db.query(Initiative).filter_by(
+        epic_repo=REPO, epic_number=945).one().stage == "deploy"

@@ -811,6 +811,7 @@ class SessionOrchestrator:
             save_project_items=self._pm_sync_save_project_items,
             save_relations=self._pm_sync_save_relations,
             rename_repo=self._pm_sync_rename_repo,
+            adopt_epics=self._pm_sync_adopt_epics,
         )
         self._pm_sync_task: asyncio.Task | None = None
         # GitHub Reconcile control loop (spec 003 §6): the WRITE half of the mirror —
@@ -3609,6 +3610,16 @@ class SessionOrchestrator:
         from server.pm import mirror_store
         async with db_session() as db:
             return await db.run_sync(lambda s: mirror_store.rename_repo(s, old, new))
+
+    async def _pm_sync_adopt_epics(self, project_id: str) -> list[str]:
+        """Create an Initiative overlay (stage=build) for every open, board-linked
+        epic this product doesn't already have one for (issue #991). Returns the
+        refs adopted this call."""
+        from server.pm import mirror_store
+        now = self._pm_sync_now_utc()
+        async with db_session() as db:
+            return await db.run_sync(
+                lambda s: mirror_store.adopt_epics(s, project_id, now=now))
 
     async def _pm_sync_upsert_items(self, items: list) -> None:
         """Idempotent upsert into work_items keyed by (repo, number, kind)."""

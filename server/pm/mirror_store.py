@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from server.db.models import (
     INITIATIVE_STAGES, GhProject, GhProjectItem, Initiative, Project, ProjectRepo,
     TriageProposal, WorkItem, WorkItemDep)
+from server.sdlc.slug import slugify
 
 from .dep_plan import DepRowView, observed_deps, plan_dep_rows
 from .gh_projects import GhProjectItemView, GhProjectView, IssueRelView
@@ -172,6 +173,60 @@ def back_sync_stage(db: Session, edits: Sequence[HumanEdit]) -> int:
             ini.stage = e.new
             n += 1
     return n
+
+
+def _unique_slug(db: Session, base: str) -> str:
+    """*base* if free, else the first ``base-N`` (N starting at 2) not already
+    taken by an Initiative — mirrors the collision behavior a human hits at
+    ``POST /api/sdlc/initiatives`` (409 slug_conflict), except adoption just
+    picks the next free one instead of failing."""
+    slug = base
+    n = 2
+    while db.query(Initiative).filter_by(slug=slug).first() is not None:
+        slug = f"{base}-{n}"
+        n += 1
+    return slug
+
+
+def adopt_epics(db: Session, project_id: str, *, now: datetime) -> list[str]:
+    """Create an Initiative overlay (``stage="build"``) for every open,
+    board-linked epic this product doesn't already have one for (issue #991).
+
+    "On the board" = a ``GhProjectItem`` whose ``gh_project_id`` belongs to one
+    of this product's ``GhProject`` rows; "epic" = ``WorkItem.is_epic`` on an
+    open (``state == "open"``) item. An epic already covered by an Initiative
+    with the matching ``(epic_repo, epic_number)`` is left alone — idempotent,
+    a second call adopts nothing already covered. Returns the ``repo#number``
+    refs of the epics adopted THIS call, in no particular order."""
+    board_ids = [g.id for g in db.query(GhProject).filter_by(project_id=project_id).all()]
+    if not board_ids:
+        return []
+    work_item_ids = {
+        item.work_item_id for item in db.query(GhProjectItem)
+        .filter(GhProjectItem.gh_project_id.in_(board_ids)).all()
+        if item.work_item_id is not None}
+    if not work_item_ids:
+        return []
+    epics = db.query(WorkItem).filter(
+        WorkItem.id.in_(work_item_ids), WorkItem.is_epic.is_(True),
+        WorkItem.state == "open").all()
+    adopted: list[str] = []
+    for epic in epics:
+        if not epic.repo or epic.number is None:
+            continue
+        already = db.query(Initiative).filter_by(
+            epic_repo=epic.repo, epic_number=epic.number).first()
+        if already is not None:
+            continue
+        ref = f"{epic.repo}#{epic.number}"
+        title = epic.title or ref
+        db.add(Initiative(
+            slug=_unique_slug(db, slugify(title)), repo=epic.repo, title=title,
+            stage="build", status="active", origin="epic-adoption", origin_ref=ref,
+            epic_repo=epic.repo, epic_number=epic.number, project_id=project_id,
+            created_at=now, updated_at=now))
+        adopted.append(ref)
+    return adopted
 
 
 def upsert_relations(db: Session, repo: str, rels: list[IssueRelView]) -> None:

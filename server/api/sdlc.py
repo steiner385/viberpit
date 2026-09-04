@@ -1,8 +1,6 @@
 """SDLC initiative API (#802) + build-stage correlation (#801)."""
 from __future__ import annotations
 
-import re
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -22,13 +20,9 @@ from server.sdlc.engine import (
     advance_stage,
     next_action,
 )
+from server.sdlc.slug import slugify
 
 router = APIRouter(prefix="/api/sdlc", tags=["sdlc"])
-
-
-def _slugify(title: str) -> str:
-    s = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
-    return s or "initiative"
 
 
 def _initiative_to_dict(i: Initiative) -> dict:
@@ -123,7 +117,7 @@ async def create_initiative(
     db=Depends(get_db),
 ) -> dict:
     """Create an initiative. Returns 409 if slug already exists."""
-    slug = body.slug or _slugify(body.title)
+    slug = body.slug or slugify(body.title)
     existing = (
         await db.execute(select(Initiative).where(Initiative.slug == slug))
     ).scalar_one_or_none()
