@@ -482,8 +482,10 @@ def _window(path: str, before: int | None, limit: int | None, drop_incomplete_tu
     slice_hi = starts[end] if end < total else len(out)
     window = out[slice_lo:slice_hi]
     # Stamp each in-window TurnStart with its ordinal in the cursor space. Done on the
-    # slice (not `out`) so a stamped copy never leaks into the un-windowed `_parse`
-    # consumers, and before the owner/meta prepends below shift list positions.
+    # slice (not `out`) so the stamp is applied exactly once per windowed turn and
+    # before the owner/meta prepends below shift list positions. `_parse` shares this
+    # function, so `replay_events` consumers see stamped values too — same untrimmed
+    # cursor space; nothing there reads the field.
     for k, si in enumerate(starts[start:end]):
         window[si - slice_lo] = dataclasses.replace(out[si], turn_index=start + k)
     # A "turn" here is one assistant JSONL entry, so a tool-heavy LOGICAL turn

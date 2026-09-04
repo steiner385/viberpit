@@ -222,3 +222,13 @@ def test_live_turnstart_has_no_turn_index():
     """Live-translated turns are not positioned in the disk turn space."""
     from server.sessions import events as ev
     assert ev.TurnStart("a").to_wire()["turnIndex"] is None
+
+
+@pytest.mark.asyncio
+async def test_replay_events_turn_index_shares_cursor_space(tmp_path):
+    """`_parse` is `_window(before=None, …)`, so replay_events consumers see the
+    same untrimmed ordinals a `?before=` page would — never a different numbering."""
+    from server.sessions import events as ev
+    path = _write_transcript(tmp_path, 5)
+    events = await replay_events(path, max_turns=2)
+    assert [e.turn_index for e in events if isinstance(e, ev.TurnStart)] == [3, 4]

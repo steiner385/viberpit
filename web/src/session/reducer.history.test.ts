@@ -140,8 +140,9 @@ describe('history paging reducer', () => {
     const s = { ...initialTranscript, replaying: false, earliestTurn: 20,
       turns: [{ id: 'a20', role: 'assistant' as const, blocks: [], ordinal: 20 }] }
     // A page that claims to be older but carries a HIGHER ordinal (server/cursor skew).
-    transcriptReducer(s, { type: '_prependHistory', earliestTurn: 10,
+    const next = transcriptReducer(s, { type: '_prependHistory', earliestTurn: 10,
       events: [{ type: 'turnStart', turnId: 'a25', turnIndex: 25 }, { type: 'turnEnd', turnId: 'a25' }] } as never)
+    expect(next.turns.map((t) => t.id)).toEqual(['a25', 'a20'])
     expect(spy).toHaveBeenCalledWith(expect.stringContaining('transcript.order.violation count=1 first=a25>a20 earliestTurn=10 phase=prepend'))
     spy.mockRestore()
   })

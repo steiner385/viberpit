@@ -917,6 +917,9 @@ export function transcriptReducer(
       // page boundary, not where the prompt was sent: drop it and let the incoming page
       // place it. (Keeping the on-screen copy pinned "Start Phase B" hours after its real
       // position — the page-boundary ordering bug, session 888ad2bf, 2026-09-03.)
+      // The incoming copy replaces the on-screen one wholesale — position AND content —
+      // which is safe because overlapping ids are user turns rebuilt from the same
+      // UserMessage record.
       const incoming = new Set(olderTurns.map((t) => t.id))
       const kept = state.turns.filter((t) => !incoming.has(t.id))
       const turns = [...olderTurns, ...kept]
