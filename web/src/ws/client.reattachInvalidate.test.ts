@@ -25,7 +25,8 @@ class FakeWS {
   onerror: ((e: unknown) => void) | null = null
   onclose: ((e: unknown) => void) | null = null
   sent: string[] = []
-  constructor(public url: string) {}
+  url: string
+  constructor(url: string) { this.url = url }
   send(data: string) { this.sent.push(data) }
   close() {}
 }

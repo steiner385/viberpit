@@ -24,7 +24,6 @@
 // assertion below is NOT evidence of adequate contrast. Contrast is checked
 // separately by src/__tests__/contrast.test.ts, which does the WCAG maths on the
 // tokens in index.css.
-import * as React from 'react'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'

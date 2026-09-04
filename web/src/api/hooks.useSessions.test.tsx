@@ -26,7 +26,7 @@ describe('useSessions — merges pending placeholders', () => {
     const { result } = renderHook(() => useSessions(), { wrapper })
     await waitFor(() => expect(result.current.data).toEqual([real]))
 
-    act(() => { addPendingSession({ name: 'Pending', accountName: '', status: 'in_progress', createdAt: 'y' }) })
+    act(() => { addPendingSession({ name: 'Pending', accountName: '', status: 'in_progress', createdAt: 'y', prs: [] }) })
     await waitFor(() => {
       expect(result.current.data).toHaveLength(2)
       expect(result.current.data?.some((s) => s.pending)).toBe(true)

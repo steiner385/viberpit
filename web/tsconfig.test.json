@@ -1,0 +1,90 @@
+// Type-checking for TEST files. Fixes #952.
+//
+// Before this, tsconfig.app.json EXCLUDED every *.test.ts(x), and the root
+// referenced only app + node — so test files were type-checked by nothing.
+// 250 latent errors had accumulated across 80 files, including nine
+// `@ts-expect-error` directives that were already suppressing nothing: guards
+// someone wrote that had silently stopped guarding.
+//
+// This project checks the test files. The `exclude` list below is the DEBT:
+// every file in it is known-bad and is skipped. It only ever shrinks.
+//
+// The point is the asymmetry. A NEW test file is checked immediately — it
+// cannot join the list, so no new debt can be added — while the existing
+// files are burned down a few at a time. When the list is empty, delete it
+// and this whole file, and drop the exclude from tsconfig.app.json.
+//
+// Verified real: adding a new test file with a type error fails
+// `npm --prefix web run typecheck`. A green `tsc -b` here is not vacuous.
+{
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
+    "types": [
+      "vite/client",
+      "vitest/globals",
+      "node",
+      "jest-axe"
+    ]
+  },
+  "include": [
+    "src"
+  ],
+  "exclude": [
+    "src/api/hooks.archive.test.tsx",
+    "src/api/hooks.bulk.test.tsx",
+    "src/api/hooks.createSession.test.tsx",
+    "src/api/hooks.delete.test.tsx",
+    "src/api/hooks.useSessions.test.tsx",
+    "src/App.test.tsx",
+    "src/automations/AutomationsTab.test.tsx",
+    "src/components/BacklogGroupsPanel.test.tsx",
+    "src/components/library/__tests__/McpAuthFlow.test.tsx",
+    "src/components/session/SessionMeta.test.tsx",
+    "src/components/session/__tests__/BashResult.test.tsx",
+    "src/components/session/__tests__/Composer.queue.test.tsx",
+    "src/components/session/__tests__/Composer.test.tsx",
+    "src/components/session/__tests__/SessionBody.test.tsx",
+    "src/components/settings/__tests__/FleetSection.test.tsx",
+    "src/components/__tests__/a11y.test.tsx",
+    "src/components/__tests__/AccountAdd.test.tsx",
+    "src/components/__tests__/AccountDelete.test.tsx",
+    "src/components/__tests__/AccountReauth.test.tsx",
+    "src/components/__tests__/AccountsExtraUsage.test.tsx",
+    "src/components/__tests__/AccountsManager.copilot.test.tsx",
+    "src/components/__tests__/AccountsNickname.test.tsx",
+    "src/components/__tests__/AccountsRank.test.tsx",
+    "src/components/__tests__/AccountsReserve.test.tsx",
+    "src/components/__tests__/ArchivedManager.test.tsx",
+    "src/components/__tests__/ArchivedTab.test.tsx",
+    "src/components/__tests__/DispatchBar.images.test.tsx",
+    "src/components/__tests__/KeyboardSessions.test.tsx",
+    "src/components/__tests__/NewSessionBranch.test.tsx",
+    "src/components/__tests__/ReviewView.test.tsx",
+    "src/components/__tests__/SessionActions.test.tsx",
+    "src/components/__tests__/SessionCard.account.test.tsx",
+    "src/components/__tests__/SessionCard.autoname.test.tsx",
+    "src/components/__tests__/SessionCard.autopilot.test.tsx",
+    "src/components/__tests__/SessionCard.goal.test.tsx",
+    "src/components/__tests__/SessionCard.layout.test.tsx",
+    "src/components/__tests__/SessionCard.meta.test.tsx",
+    "src/components/__tests__/SessionCard.mobileoverflow.test.tsx",
+    "src/components/__tests__/SessionCardPending.test.tsx",
+    "src/components/__tests__/SessionCard.quickresume.test.tsx",
+    "src/components/__tests__/SessionList.test.tsx",
+    "src/features/sessions/MainPaneSession.neighbors.test.tsx",
+    "src/features/sessions/SessionHeader.test.tsx",
+    "src/lib/deployController.test.tsx",
+    "src/session/reducer.history.test.ts",
+    "src/session/__tests__/buildNavItems.test.ts",
+    "src/session/__tests__/ordering.test.ts",
+    "src/session/__tests__/useListNavigation.test.ts",
+    "src/session/__tests__/useSessionNeighbors.test.tsx",
+    "src/session/__tests__/useSessionOrdering.test.ts",
+    "src/shell/AppShell.test.tsx",
+    "src/shell/kiosk.integration.test.tsx",
+    "src/shell/regions/PromptDock.test.tsx",
+    "src/shell/sessionWorkspace.test.tsx",
+    "src/ws/pipeline.fuzz.test.ts"
+  ]
+}

@@ -37,7 +37,6 @@
 // `toHaveNoViolations()` inspects `violations` alone — a green assertion is NOT
 // evidence of adequate contrast. Contrast is checked separately by
 // src/__tests__/contrast.test.ts against the tokens in index.css.
-import * as React from 'react'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
