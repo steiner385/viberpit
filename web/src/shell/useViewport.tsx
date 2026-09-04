@@ -51,6 +51,8 @@ export interface Viewport {
    */
   drawerPushes: boolean
   coarsePointer: boolean
+  /** `(orientation: portrait)`. Settings uses it: tablet-portrait drills like phone (spec §6.1). */
+  portrait: boolean
   kiosk: ViewportKiosk | null
 }
 
@@ -77,6 +79,7 @@ export function ViewportProvider({
   const atDrawerPush = useMediaQuery('(min-width: 1280px)')
   const atWide = useMediaQuery('(min-width: 1440px)')
   const coarsePointer = useMediaQuery('(pointer: coarse)')
+  const portrait = useMediaQuery('(orientation: portrait)')
 
   const value = React.useMemo<Viewport>(() => {
     const width: WidthTier = atWide ? 'wide' : atDesktop ? 'desktop' : atTablet ? 'tablet' : 'phone'
@@ -88,9 +91,10 @@ export function ViewportProvider({
       // collapses to the one query rather than needing both.
       drawerPushes: atDrawerPush,
       coarsePointer,
+      portrait,
       kiosk: kiosk ?? null,
     }
-  }, [atTablet, atDesktop, atDrawerPush, atWide, coarsePointer, kiosk])
+  }, [atTablet, atDesktop, atDrawerPush, atWide, coarsePointer, portrait, kiosk])
 
   return <ViewportContext.Provider value={value}>{children}</ViewportContext.Provider>
 }
