@@ -30,7 +30,6 @@
 // stood up outside the shell would not exercise it. Mounting `PipelineTab`
 // instead would add a dozen data mocks and test the pipeline's fetching, not the
 // shell's read-only contract.
-import * as React from 'react'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider, type RouteObject } from 'react-router-dom'
@@ -373,7 +372,7 @@ describe('kiosk end to end', () => {
     // Positive evidence of a REFUSAL rather than of a dialog that never opened:
     // the primitive logged it, naming the dialog.
     expect(warn).toHaveBeenCalled()
-    expect(warn.mock.calls.some((c) => String(c[0]).includes('Probe dialog'))).toBe(true)
+    expect(warn.mock.calls.some((c: unknown[]) => String(c[0]).includes('Probe dialog'))).toBe(true)
     app.unmount()
 
     // The control: the same `<Dialog open>` in the same page does open at

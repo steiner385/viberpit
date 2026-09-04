@@ -14,7 +14,6 @@ describe('NotificationsToggle', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
   it('shows unsupported when the browser lacks Push', () => {
-    // @ts-expect-error force-unset
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     delete (globalThis as any).PushManager
     render(<NotificationsToggle />)

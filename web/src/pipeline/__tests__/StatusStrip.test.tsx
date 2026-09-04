@@ -1,9 +1,8 @@
-// Ported from plotroom@5166b52 frontend/src/__tests__/StatusStrip.test.tsx; edits: import repointing (../StatusStrip, ../types); eslint-disable @typescript-eslint/no-unused-vars (Bucket type import — kept verbatim from source)
-/* eslint-disable @typescript-eslint/no-unused-vars */
+// Ported from plotroom@5166b52 frontend/src/__tests__/StatusStrip.test.tsx; edits: import repointing (../StatusStrip, ../types); dropped the unused `Bucket` type import.
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
 import { InteractionProvider } from '@/shell/InteractionContext';
-import { StatusStrip, bucketPr, isFailedPr, isActivePr, type Bucket } from '../StatusStrip';
+import { StatusStrip, bucketPr, isFailedPr, isActivePr } from '../StatusStrip';
 import type { PrView } from '../types';
 
 const pr = (stage: string, substate: string | null = null): PrView => ({
