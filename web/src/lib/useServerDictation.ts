@@ -79,7 +79,7 @@ export function useServerDictation({ onResult }: UseDictationOptions): UseDictat
 
     ws.onopen = () => {
       ws.send(JSON.stringify({ type: 'start', sampleRate: PCM_SAMPLE_RATE }))
-      startPcmCapture((chunk) => { if (ws.readyState === WebSocket.OPEN) ws.send(chunk) })
+      startPcmCapture((chunk) => { if (ws.readyState === WebSocket.OPEN) ws.send(chunk.buffer as ArrayBuffer) })
         .then((cap) => {
           if (wsRef.current !== ws || finishingRef.current) { void cap.stop(); return }
           captureRef.current = cap

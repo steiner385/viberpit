@@ -19,7 +19,8 @@ class MockSocket {
   onmessage: ((e: { data: string }) => void) | null = null
   onerror: (() => void) | null = null
   onclose: ((e: { code: number; reason: string }) => void) | null = null
-  constructor(public url: string) { MockSocket.instances.push(this) }
+  url: string
+  constructor(url: string) { this.url = url; MockSocket.instances.push(this) }
   send(d: unknown) { this.sent.push(d) }
   close(code = 1000, reason = '') { this.readyState = 3; this.onclose?.({ code, reason }) }
   open() { this.readyState = 1; this.onopen?.() }
@@ -59,7 +60,7 @@ describe('useServerDictation', () => {
     expect(startPcmCapture).toHaveBeenCalledTimes(1)
     const chunk = new Int16Array([1, 2])
     act(() => { capture.onChunk(chunk) })
-    expect(ws.sent[1]).toBe(chunk)
+    expect(ws.sent[1]).toBe(chunk.buffer)
   })
 
   it('maps interim and final messages to onResult', () => {
