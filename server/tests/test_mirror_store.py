@@ -313,9 +313,10 @@ ADOPT_NOW = datetime(2026, 9, 4, tzinfo=timezone.utc)
 
 
 def _seed_board_epic(db, project, *, number=945, title="Epic Alpha",
-                     state="open", on_board=True):
+                     state="open", on_board=True, stage=None):
     """A GhProject board with one epic-flagged WorkItem, optionally linked onto
-    the board via a GhProjectItem row."""
+    the board via a GhProjectItem row (whose mirrored ``stage`` defaults to
+    unset, matching a board column ccswitch has no Stage vocabulary for)."""
     gid = mirror_store.upsert_gh_project(db, project.id, GhProjectView(
         node_id="PVT_1", number=7, title="x", updated_at=None))
     epic = db.query(WorkItem).filter_by(number=number).one()
@@ -324,7 +325,7 @@ def _seed_board_epic(db, project, *, number=945, title="Epic Alpha",
     epic.state = state
     if on_board:
         db.add(GhProjectItem(gh_project_id=gid, gh_item_node_id=f"PVTI_{number}",
-                             work_item_id=epic.id))
+                             work_item_id=epic.id, stage=stage))
     db.commit()
     return gid
 
@@ -391,6 +392,60 @@ def test_adopt_epics_slug_collision_gets_dash2_suffix():
     assert refs == [f"{REPO}#945"]
     adopted = db.query(Initiative).filter_by(epic_repo=REPO, epic_number=945).one()
     assert adopted.slug == "epic-alpha-2"
+
+
+def test_adopt_epics_seeds_stage_from_board_stage():
+    """R7 (final review): a board item mirrored at Stage="design" adopts the
+    Initiative at "design", not the old hardcoded "build" — otherwise the
+    first gh-reconcile tick after adoption would push Stage back to Build and
+    silently overwrite a human's deliberate Design/Plan choice."""
+    db = _db()
+    project = _seed(db)
+    _seed_board_epic(db, project, stage="design")
+
+    refs = mirror_store.adopt_epics(db, project.id, now=ADOPT_NOW)
+
+    assert refs == [f"{REPO}#945"]
+    assert db.query(Initiative).one().stage == "design"
+
+
+def test_adopt_epics_falls_back_to_build_for_unknown_board_stage():
+    """A board Stage outside ccswitch's INITIATIVE_STAGES vocabulary (or a
+    board that never mirrored a Stage at all) still adopts at "build" —
+    today's behavior, preserved as the fallback."""
+    db = _db()
+    project = _seed(db)
+    _seed_board_epic(db, project, stage="Some Custom Column")
+
+    refs = mirror_store.adopt_epics(db, project.id, now=ADOPT_NOW)
+
+    assert refs == [f"{REPO}#945"]
+    assert db.query(Initiative).one().stage == "build"
+
+
+def test_adopt_epics_two_same_title_epics_in_one_call_get_distinct_slugs():
+    """`_unique_slug` relies on SQLAlchemy `Session.autoflush` seeing the
+    not-yet-committed sibling INSERT from earlier in the SAME `adopt_epics`
+    call (mirror_store.py `_unique_slug`). `Initiative.slug` is unique, so a
+    future refactor that wraps this loop in `no_autoflush` would fail loudly
+    with an IntegrityError on every tick instead of just here."""
+    db = _db()
+    project = _seed(db)
+    gid = mirror_store.upsert_gh_project(db, project.id, GhProjectView(
+        node_id="PVT_1", number=7, title="x", updated_at=None))
+    for number in (950, 951):
+        epic = db.query(WorkItem).filter_by(number=number).one()
+        epic.is_epic = True
+        epic.title = "Epic Alpha"
+        db.add(GhProjectItem(gh_project_id=gid, gh_item_node_id=f"PVTI_{number}",
+                             work_item_id=epic.id))
+    db.commit()
+
+    refs = mirror_store.adopt_epics(db, project.id, now=ADOPT_NOW)
+
+    assert set(refs) == {f"{REPO}#950", f"{REPO}#951"}
+    slugs = {i.slug for i in db.query(Initiative).all()}
+    assert slugs == {"epic-alpha", "epic-alpha-2"}
 
 
 def test_back_sync_stage_updates_adopted_initiative():

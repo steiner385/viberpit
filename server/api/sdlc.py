@@ -43,7 +43,9 @@ def _initiative_to_dict(i: Initiative) -> dict:
     }
 
 
-async def _epic_progress_batch(db, initiatives: list[Initiative]) -> dict[str, dict | None]:
+async def _epic_progress_batch(
+    db, initiatives: list[Initiative], *, include_children: bool = True,
+) -> dict[str, dict | None]:
     """Sub-issue progress for every initiative that points at an epic (spec 003
     §7c), computed in a fixed small number of grouped queries — not one call per
     initiative — so `GET /initiatives` can carry it on every row without an N+1
@@ -56,7 +58,17 @@ async def _epic_progress_batch(db, initiatives: list[Initiative]) -> dict[str, d
     single project board, so an outer join alone can silently double-count a
     child mirrored onto more than one board. When more than one status row
     exists for a child, the most recently updated one wins.
-    """
+
+    ``include_children`` (default ``True``) controls whether the per-child
+    array is serialized into each entry. `list_initiatives` (the LIST
+    endpoint) passes ``False``: `InitiativeTrack` only ever reads
+    `url`/`done`/`total`/`blocked`/`needsHuman`, but that endpoint's query is
+    re-run on every websocket status frame (`InitiativesTab` invalidates it),
+    so an unread one-object-per-sub-issue array would be re-serialized on
+    every fleet status change for no reader. `get_initiative` (the per-slug
+    detail endpoint) keeps the default — the plan's Task 10 shape has
+    `children` there. One helper either way, so the two endpoints can't drift
+    apart on the counts themselves (constitution VI)."""
     result: dict[str, dict | None] = {i.id: None for i in initiatives}
     pointers = [(i.id, i.epic_repo, i.epic_number) for i in initiatives
                 if i.epic_repo and i.epic_number]
@@ -98,19 +110,21 @@ async def _epic_progress_batch(db, initiatives: list[Initiative]) -> dict[str, d
     for init_id, repo, number in pointers:
         epic_wi = epic_by_pointer.get((repo, number))
         children = children_by_parent.get(epic_wi.id, []) if epic_wi is not None else []
-        result[init_id] = {
+        entry = {
             "ref": f"{repo}#{number}",
             "url": f"https://github.com/{repo}/issues/{number}",
             "total": len(children),
             "done": sum(1 for c in children if c.state == "closed"),
             "blocked": sum(1 for c in children if status_by_child.get(c.id) == STATUS_BLOCKED),
             "needsHuman": sum(1 for c in children if status_by_child.get(c.id) == STATUS_NEEDS_HUMAN),
-            "children": [
+        }
+        if include_children:
+            entry["children"] = [
                 {"ref": f"{c.repo}#{c.number}", "title": c.title, "state": c.state,
                  "status": status_by_child.get(c.id)}
                 for c in children
-            ],
-        }
+            ]
+        result[init_id] = entry
     return result
 
 
@@ -179,7 +193,7 @@ async def list_initiatives(
     by_init: dict[str, list[InitiativeArtifact]] = {}
     for a in artifacts:
         by_init.setdefault(a.initiative_id, []).append(a)
-    epics = await _epic_progress_batch(db, rows)
+    epics = await _epic_progress_batch(db, rows, include_children=False)
     result = []
     for i in rows:
         d = _initiative_to_dict(i)

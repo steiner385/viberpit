@@ -32,7 +32,9 @@ export interface InitiativeArtifact {
   createdAt: string | null
 }
 
-/** One child issue of an adopted epic (spec 003 §7c), by `WorkItem.parent_work_item_id`. */
+/** One child issue of an adopted epic (spec 003 §7c), by `WorkItem.parent_work_item_id`.
+ *  Only the detail endpoint (`GET /initiatives/{slug}`) populates the `children`
+ *  array this belongs to — see `InitiativeEpic` below. */
 export interface InitiativeEpicChild {
   ref: string
   title: string | null
@@ -42,7 +44,12 @@ export interface InitiativeEpicChild {
 
 /** Sub-issue progress for an Initiative adopted from a GitHub-first epic
  *  (`epicRepo`/`epicNumber`). ccswitch deep-links to the GitHub epic via `url`
- *  rather than rebuilding a board (spec 003 §7c). */
+ *  rather than rebuilding a board (spec 003 §7c). Both `GET /initiatives` and
+ *  `GET /initiatives/{slug}` compute and emit this object (or `null`) on every
+ *  row — but the list endpoint omits `children`, since `InitiativeTrack` only
+ *  ever reads `url`/`done`/`total`/`blocked`/`needsHuman` and that endpoint's
+ *  query is re-run on every websocket status frame, so `children` is optional
+ *  here rather than a second, list-only type. */
 export interface InitiativeEpic {
   ref: string
   url: string
@@ -50,7 +57,7 @@ export interface InitiativeEpic {
   done: number
   blocked: number
   needsHuman: number
-  children: InitiativeEpicChild[]
+  children?: InitiativeEpicChild[]
 }
 
 export interface Initiative {
@@ -66,9 +73,10 @@ export interface Initiative {
   createdAt: string | null
   updatedAt: string | null
   artifacts: InitiativeArtifact[]
-  // Only the detail endpoint (GET /initiatives/{slug}) computes this; the list
-  // endpoint omits the key entirely, so it's optional here (not just nullable).
-  epic?: InitiativeEpic | null
+  // Both GET /initiatives and GET /initiatives/{slug} always emit this key —
+  // null when the initiative has no epic pointer, an InitiativeEpic (with
+  // `children` present only from the detail route) otherwise.
+  epic: InitiativeEpic | null
 }
 
 export interface CreateInitiativeInput {

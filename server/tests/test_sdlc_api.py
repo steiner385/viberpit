@@ -315,13 +315,18 @@ def test_get_detail_includes_epic_progress():
                 # (InitiativesTab → fetchInitiatives → GET /initiatives, never the
                 # per-slug detail route) — it must carry the *expanded* epic dict
                 # too, computed via one grouped query, not just the epicRepo/
-                # epicNumber pointer (#991 review round 1, CRITICAL 1).
+                # epicNumber pointer (#991 review round 1, CRITICAL 1). It omits
+                # `children` though (#991 final review, R8/Finding 2): nothing on
+                # the board reads the per-child array, and that endpoint's query
+                # re-runs on every websocket status frame, so the list's epic dict
+                # equals the detail one minus that one key.
                 listed = c.get("/api/sdlc/initiatives", headers=IDENTITY_HEADERS)
                 assert listed.status_code == 200
                 item = next(i for i in listed.json() if i["slug"] == "the-epic")
                 assert item["epicRepo"] == "o/r"
                 assert item["epicNumber"] == 997
-                assert item["epic"] == epic
+                assert "children" not in item["epic"]
+                assert item["epic"] == {k: v for k, v in epic.items() if k != "children"}
 
 
 def test_list_epic_progress_dedupes_child_mirrored_onto_two_boards():
@@ -329,7 +334,10 @@ def test_list_epic_progress_dedupes_child_mirrored_onto_two_boards():
     in the schema constrains a work item to one project — GhProjectItem's only
     unique constraint is (gh_project_id, gh_item_node_id)) must still count
     once, not twice: total stays 3, and the most-recently-updated status wins
-    (#991 review round 1, IMPORTANT 3)."""
+    (#991 review round 1, IMPORTANT 3). Asserted through the LIST endpoint,
+    which omits `children` (#991 final review, Finding 2) — the aggregate
+    counts (total/blocked/done) are what dedup affects and what the board
+    reads, so they're checked directly rather than via the per-child array."""
     from datetime import datetime, timedelta, timezone
 
     from server.db import db_session
@@ -383,11 +391,9 @@ def test_list_epic_progress_dedupes_child_mirrored_onto_two_boards():
                 assert r.status_code == 200, r.text
                 epic = next(i for i in r.json() if i["slug"] == "the-epic")["epic"]
                 assert epic["total"] == 3, "duplicate board row must not inflate total"
-                assert epic["blocked"] == 1
+                assert epic["blocked"] == 1, "later-updated status ('Blocked') must win"
                 assert epic["done"] == 1
-                child_refs = {c["ref"]: c for c in epic["children"]}
-                assert len(child_refs) == 3
-                assert child_refs["o/r#2"]["status"] == "Blocked"
+                assert "children" not in epic
 
 
 def test_get_detail_no_epic_is_null():

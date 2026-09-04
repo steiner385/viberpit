@@ -189,26 +189,48 @@ def _unique_slug(db: Session, base: str) -> str:
 
 
 def adopt_epics(db: Session, project_id: str, *, now: datetime) -> list[str]:
-    """Create an Initiative overlay (``stage="build"``) for every open,
-    board-linked epic this product doesn't already have one for (issue #991).
+    """Create an Initiative overlay for every open, board-linked epic this
+    product doesn't already have one for (issue #991). ``stage`` is seeded
+    from the board's own mirrored ``GhProjectItem.stage`` when that value is a
+    valid ``INITIATIVE_STAGES`` entry, else ``"build"`` — GitHub is allowed to
+    drive an Initiative's Stage once one exists (``back_sync_stage`` above), so
+    adoption must not stamp every epic ``"build"`` and have the very next
+    gh-reconcile tick push that value back onto a board Stage a human had
+    deliberately set to e.g. Design or Plan (issue #991 final review, R7).
 
     "On the board" = a ``GhProjectItem`` whose ``gh_project_id`` belongs to one
     of this product's ``GhProject`` rows; "epic" = ``WorkItem.is_epic`` on an
-    open (``state == "open"``) item. An epic already covered by an Initiative
-    with the matching ``(epic_repo, epic_number)`` is left alone — idempotent,
-    a second call adopts nothing already covered. Returns the ``repo#number``
-    refs of the epics adopted THIS call, in no particular order."""
+    open (``state == "open"``) item. A work item can be mirrored by more than
+    one ``GhProjectItem`` row for this product (e.g. two of its boards both
+    carry the same GitHub issue); resolved by loading rows ordered by
+    ``updated_at`` ascending and overwriting a plain dict as we go, so the
+    MOST RECENTLY updated row's Stage wins — the same "last write wins" idiom
+    ``server.api.sdlc._epic_progress_batch`` uses to resolve a child's status
+    across multiple board rows. An epic already covered by an Initiative with
+    the matching ``(epic_repo, epic_number)`` is left alone — idempotent, a
+    second call adopts nothing already covered. That "already adopted" check
+    is keyed globally on ``(epic_repo, epic_number)`` with no ``project_id``
+    filter: if the same epic is mirrored on two different products' boards,
+    whichever product's sync reaches it first owns the adopted row's
+    ``project_id`` — first-writer-wins, not duplicated. Returns the
+    ``repo#number`` refs of the epics adopted THIS call, in no particular
+    order."""
     board_ids = [g.id for g in db.query(GhProject).filter_by(project_id=project_id).all()]
     if not board_ids:
         return []
-    work_item_ids = {
-        item.work_item_id for item in db.query(GhProjectItem)
-        .filter(GhProjectItem.gh_project_id.in_(board_ids)).all()
-        if item.work_item_id is not None}
-    if not work_item_ids:
+    items = (
+        db.query(GhProjectItem.work_item_id, GhProjectItem.stage)
+        .filter(GhProjectItem.gh_project_id.in_(board_ids))
+        .order_by(GhProjectItem.updated_at)
+        .all())
+    stage_by_work_item: dict[str, str | None] = {}
+    for work_item_id, stage in items:
+        if work_item_id is not None:
+            stage_by_work_item[work_item_id] = stage
+    if not stage_by_work_item:
         return []
     epics = db.query(WorkItem).filter(
-        WorkItem.id.in_(work_item_ids), WorkItem.is_epic.is_(True),
+        WorkItem.id.in_(stage_by_work_item), WorkItem.is_epic.is_(True),
         WorkItem.state == "open").all()
     adopted: list[str] = []
     for epic in epics:
@@ -220,9 +242,11 @@ def adopt_epics(db: Session, project_id: str, *, now: datetime) -> list[str]:
             continue
         ref = f"{epic.repo}#{epic.number}"
         title = epic.title or ref
+        board_stage = stage_by_work_item.get(epic.id)
+        stage = board_stage if board_stage in INITIATIVE_STAGES else "build"
         db.add(Initiative(
             slug=_unique_slug(db, slugify(title)), repo=epic.repo, title=title,
-            stage="build", status="active", origin="epic-adoption", origin_ref=ref,
+            stage=stage, status="active", origin="epic-adoption", origin_ref=ref,
             epic_repo=epic.repo, epic_number=epic.number, project_id=project_id,
             created_at=now, updated_at=now))
         adopted.append(ref)

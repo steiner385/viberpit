@@ -37,7 +37,7 @@ function wrapper({ children }: { children: ReactNode }) {
 const INIT: sdlc.Initiative = {
   slug: 'ai-native-sdlc', repo: 'steiner385/ccswitch', title: 'AI-native SDLC',
   stage: 'design', status: 'active', origin: 'human', originRef: null,
-  epicRepo: null, epicNumber: null,
+  epicRepo: null, epicNumber: null, epic: null,
   createdAt: null, updatedAt: null,
   artifacts: [
     {
@@ -77,10 +77,11 @@ describe('InitiativesTab', () => {
     render(<InitiativesTab />, { wrapper })
 
     await waitFor(() => expect(screen.getByText('AI-native SDLC')).toBeInTheDocument())
-    // The deep link lives inside an aria-hidden decorative node (the track's
-    // container already exposes an aria-label summarizing all nodes), so query
-    // the DOM directly rather than by role, matching the other track assertions.
-    const link = document.querySelector('.node.active a.node-label')
+    // The Build node drops aria-hidden when an epic is present (it becomes a
+    // real interactive link), so query it by role — an independent guard on
+    // the accessibility fix alongside InitiativeTrack.test.tsx's own coverage,
+    // rather than a brittle CSS-path selector into the DOM.
+    const link = screen.getByRole('link', { name: /view epic on github/i })
     expect(link).toHaveTextContent('Build 3/10')
     expect(link).toHaveAttribute('href', 'https://github.com/o/r/issues/997')
   })
