@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest'
-import { transcriptReducer, initialTranscript, buildTurnsFromEvents } from './reducer'
+import { describe, it, expect, vi } from 'vitest'
+import { transcriptReducer, initialTranscript, buildTurnsFromEvents, findOrderViolations } from './reducer'
+import { clientLogger } from '../obs/logger'
 import type { SessionEvent } from './events'
 
 const olderTurn: SessionEvent[] = [
@@ -116,5 +117,42 @@ describe('history paging reducer', () => {
     let s = settled([{ type: 'turnStart', turnId: 'a-cur' }, { type: 'turnEnd', turnId: 'a-cur' }])
     s = transcriptReducer(s, { type: '_prependHistory', events: olderTurn, earliestTurn: 4 } as never)
     expect(s.turns.map((t) => t.id)).toEqual(['u-old', 'a-old', 'a-cur'])
+  })
+
+  // ── ordinals + order telemetry ────────────────────────────────────────────────
+
+  it('turnStart records the server turnIndex as the turn ordinal', () => {
+    let s = { ...initialTranscript, replaying: false }
+    s = transcriptReducer(s, { type: 'turnStart', turnId: 'a7', turnIndex: 7 } as SessionEvent)
+    s = transcriptReducer(s, { type: 'turnStart', turnId: 'live' } as SessionEvent)
+    expect(s.turns[0].ordinal).toBe(7)
+    expect(s.turns[1].ordinal).toBeUndefined()
+  })
+
+  it('findOrderViolations reports adjacent ordinal-bearing turns that run backwards', () => {
+    const t = (id: string, ordinal?: number) => ({ id, role: 'assistant' as const, blocks: [], ordinal })
+    expect(findOrderViolations([t('a', 1), t('u'), t('b', 2), t('c', 3)])).toEqual([])
+    expect(findOrderViolations([t('a', 5), t('b', 2), t('c', 9), t('d', 8)])).toEqual([['a', 'b'], ['c', 'd']])
+  })
+
+  it('_prependHistory logs transcript.order.violation when the merge breaks ordinal order', () => {
+    const spy = vi.spyOn(clientLogger, 'warn').mockImplementation(() => {})
+    const s = { ...initialTranscript, replaying: false, earliestTurn: 20,
+      turns: [{ id: 'a20', role: 'assistant' as const, blocks: [], ordinal: 20 }] }
+    // A page that claims to be older but carries a HIGHER ordinal (server/cursor skew).
+    transcriptReducer(s, { type: '_prependHistory', earliestTurn: 10,
+      events: [{ type: 'turnStart', turnId: 'a25', turnIndex: 25 }, { type: 'turnEnd', turnId: 'a25' }] } as never)
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining('transcript.order.violation count=1 first=a25>a20 earliestTurn=10 phase=prepend'))
+    spy.mockRestore()
+  })
+
+  it('_prependHistory stays silent on an ordered merge', () => {
+    const spy = vi.spyOn(clientLogger, 'warn').mockImplementation(() => {})
+    const s = { ...initialTranscript, replaying: false, earliestTurn: 20,
+      turns: [{ id: 'a20', role: 'assistant' as const, blocks: [], ordinal: 20 }] }
+    transcriptReducer(s, { type: '_prependHistory', earliestTurn: 19,
+      events: [{ type: 'turnStart', turnId: 'a19', turnIndex: 19 }, { type: 'turnEnd', turnId: 'a19' }] } as never)
+    expect(spy).not.toHaveBeenCalled()
+    spy.mockRestore()
   })
 })

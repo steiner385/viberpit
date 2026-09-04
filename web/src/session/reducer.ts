@@ -28,7 +28,10 @@ export type Block =
 
 // ── Turn ─────────────────────────────────────────────────────────────────────
 
-export interface Turn { id: string; role: 'user' | 'assistant'; blocks: Block[]; model?: string | null }
+// `ordinal` is the server's turn index in the `?before=` cursor space (disk replay only;
+// live turns have none). It is NOT used to order rendering — arrival order is — only to
+// verify that page merges kept order (transcript.order.violation telemetry).
+export interface Turn { id: string; role: 'user' | 'assistant'; blocks: Block[]; model?: string | null; ordinal?: number }
 
 /** A self-contained conversation thread (the main transcript, or one sub-agent). */
 export interface SubThread { turns: Turn[]; openBlockId: string | null; model?: string | null }
@@ -207,6 +210,28 @@ export type LocalAction =
 /** Return the index of a turn by id, or -1 if not found. */
 function findTurnIdx(turns: Turn[], id: string): number {
   return turns.findIndex((t) => t.id === id)
+}
+
+/**
+ * Pairs [prevId, thisId] of ordinal-bearing turns whose server ordinals run backwards.
+ * Turns without an ordinal (live, user, tool-result-only) are skipped, so a violation
+ * can only come from a merge that placed a disk-replayed turn out of cursor order.
+ */
+export function findOrderViolations(turns: Turn[]): Array<[string, string]> {
+  const out: Array<[string, string]> = []
+  let prev: Turn | null = null
+  for (const t of turns) {
+    if (t.ordinal === undefined) continue
+    if (prev !== null && t.ordinal < (prev.ordinal as number)) out.push([prev.id, t.id])
+    prev = t
+  }
+  return out
+}
+
+function warnIfOutOfOrder(turns: Turn[], earliestTurn: number, phase: 'prepend' | 'replay'): void {
+  const bad = findOrderViolations(turns)
+  if (bad.length === 0) return
+  clientLogger.warn(`transcript.order.violation count=${bad.length} first=${bad[0][0]}>${bad[0][1]} earliestTurn=${earliestTurn} phase=${phase}`)
 }
 
 /**
@@ -530,9 +555,10 @@ export function transcriptReducer(
         if (state.openBlockId === null) return state
         return { ...state, openBlockId: null, latestSuggestions: [] }
       }
+      const ordinal = ev.turnIndex ?? undefined
       return {
         ...state,
-        turns: [...state.turns, { id: turnId, role: 'assistant', blocks: [] }],
+        turns: [...state.turns, { id: turnId, role: 'assistant', blocks: [], ...(ordinal !== undefined ? { ordinal } : {}) }],
         openBlockId: null,
         latestSuggestions: [],
       }
@@ -851,6 +877,7 @@ export function transcriptReducer(
         }))
         turns = [...turns, ...toAppend]
       }
+      warnIfOutOfOrder(turns, ev.earliestTurn ?? state.earliestTurn, 'replay')
       return {
         ...state,
         replaying: false,
@@ -888,8 +915,9 @@ export function transcriptReducer(
       // position — the page-boundary ordering bug, session 888ad2bf, 2026-09-03.)
       const incoming = new Set(olderTurns.map((t) => t.id))
       const kept = state.turns.filter((t) => !incoming.has(t.id))
-      return { ...state, turns: [...olderTurns, ...kept],
-               earliestTurn: ev.earliestTurn, loadingOlder: false }
+      const turns = [...olderTurns, ...kept]
+      warnIfOutOfOrder(turns, ev.earliestTurn, 'prepend')
+      return { ...state, turns, earliestTurn: ev.earliestTurn, loadingOlder: false }
     }
 
     // ── error ─────────────────────────────────────────────────────────────────
