@@ -593,17 +593,42 @@ export class SessionSocket {
   }
 }
 
-// ── Singleton ────────────────────────────────────────────────────────────────
-// One socket per page — shared across all useSessionSocket callers.
+// ── Channel singletons ───────────────────────────────────────────────────────
+// One socket per CHANNEL, shared across all useSessionSocket callers on it.
+//
+// A SessionSocket tracks a single `_activeSessionId`, so two consumers sharing
+// one instance fight over it: attaching the assistant thread would detach the
+// page's session (and detach it again on unmount). The AI drawer therefore gets
+// its own channel. Both connect to the same `/ws` endpoint — the server already
+// accepts several sockets per identity (that is what multi-tab is).
 
-let _singleton: SessionSocket | null = null
+/** 'route' carries the session the page has open; 'assistant' the AI drawer's thread. */
+export type SocketChannel = 'route' | 'assistant'
 
-export function getSessionSocket(): SessionSocket {
-  if (!_singleton) {
-    _singleton = new SessionSocket('/ws')
-    _singleton.connect()
+const _sockets: Partial<Record<SocketChannel, SessionSocket>> = {}
+
+export function getSocket(channel: SocketChannel = 'route'): SessionSocket {
+  let socket = _sockets[channel]
+  if (!socket) {
+    socket = new SessionSocket('/ws')
+    _sockets[channel] = socket
+    // Created lazily, so the assistant socket only opens once the drawer asks for it.
+    socket.connect()
   }
-  return _singleton
+  return socket
+}
+
+/** The page's session socket — the original accessor, now the 'route' channel. */
+export function getSessionSocket(): SessionSocket {
+  return getSocket('route')
+}
+
+/** Test-only: drop every channel's socket so the next getSocket() builds a fresh one. */
+export function __resetSocketsForTest(): void {
+  for (const channel of Object.keys(_sockets) as SocketChannel[]) {
+    _sockets[channel]?.destroy()
+    delete _sockets[channel]
+  }
 }
 
 // ── React hook ───────────────────────────────────────────────────────────────
@@ -611,9 +636,9 @@ export function getSessionSocket(): SessionSocket {
 import { useEffect, useState, useCallback } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 
-export function useSessionSocket() {
+export function useSessionSocket(channel: SocketChannel = 'route') {
   const queryClient = useQueryClient()
-  const socket = getSessionSocket()
+  const socket = getSocket(channel)
 
   // Wire the query client once
   useEffect(() => {

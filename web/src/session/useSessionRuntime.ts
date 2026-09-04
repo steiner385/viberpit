@@ -11,7 +11,7 @@
 
 import { useEffect, useMemo, useReducer, useState, useCallback, useRef } from 'react'
 import { useSessionSocket } from '@/ws/client'
-import type { ConnectionState, WsRotatedMsg, WsErrorMsg } from '@/ws/client'
+import type { ConnectionState, SocketChannel, WsRotatedMsg, WsErrorMsg } from '@/ws/client'
 import { transcriptReducer, initialTranscript } from '@/session/reducer'
 import type { TranscriptState } from '@/session/reducer'
 import type { SessionEvent, Command } from '@/session/events'
@@ -87,7 +87,16 @@ export interface SessionRuntime {
   onLoadOlder: () => void
 }
 
-export function useSessionRuntime(sessionId: string, initialPrompt?: string): SessionRuntime {
+/**
+ * @param channel which WebSocket channel to attach on. 'route' (the default) is the
+ *   page's socket; the AI drawer passes 'assistant' so its attach never displaces
+ *   the session the page has open.
+ */
+export function useSessionRuntime(
+  sessionId: string,
+  initialPrompt?: string,
+  channel: SocketChannel = 'route',
+): SessionRuntime {
   const {
     attach,
     detach,
@@ -103,7 +112,7 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     cancelQueued,
     command,
     activity,
-  } = useSessionSocket()
+  } = useSessionSocket(channel)
 
   const [state, dispatch] = useReducer(transcriptReducer, initialTranscript)
 
