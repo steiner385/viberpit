@@ -134,4 +134,68 @@ describe('useServerDictation', () => {
     expect(capture.stop).toHaveBeenCalled()
     expect(MockSocket.instances[0].readyState).toBe(MockSocket.CLOSED)
   })
+
+  it('a capture that resolves after stop() is released immediately, not kept', async () => {
+    let resolveCapture!: (cap: { stop: ReturnType<typeof vi.fn> }) => void
+    ;(startPcmCapture as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise((resolve) => { resolveCapture = resolve })
+    )
+    const { result } = renderHook(() => useServerDictation({ onResult: vi.fn() }))
+    act(() => { result.current.start() })
+    const ws = MockSocket.instances[0]
+    act(() => { ws.open() })
+    act(() => { result.current.stop() })
+    const lateCapture = { stop: vi.fn(async () => {}) }
+    await act(async () => {
+      resolveCapture(lateCapture)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(lateCapture.stop).toHaveBeenCalled()
+  })
+
+  it('stop() while the socket is still CONNECTING closes it without sending a stop frame', () => {
+    const { result } = renderHook(() => useServerDictation({ onResult: vi.fn() }))
+    act(() => { result.current.start() })
+    const ws = MockSocket.instances[0]
+    expect(ws.readyState).toBe(0) // CONNECTING, never opened
+    act(() => { result.current.stop() })
+    expect(ws.readyState).toBe(MockSocket.CLOSED)
+    expect(result.current.listening).toBe(false)
+    expect(ws.sent.some((s) => s === JSON.stringify({ type: 'stop' }))).toBe(false)
+  })
+
+  it('closes the socket after the stop grace period when done never arrives', async () => {
+    vi.useFakeTimers()
+    try {
+      const { result } = renderHook(() => useServerDictation({ onResult: vi.fn() }))
+      act(() => { result.current.start() })
+      const ws = MockSocket.instances[0]
+      act(() => { ws.open() })
+      await act(async () => { await Promise.resolve(); await Promise.resolve() })
+      act(() => { result.current.stop() })
+      expect(ws.readyState).not.toBe(MockSocket.CLOSED)
+      act(() => { vi.advanceTimersByTime(3000) })
+      expect(ws.readyState).toBe(MockSocket.CLOSED)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not call onResult after unmount even if the old socket would dispatch a buffered message', async () => {
+    const onResult = vi.fn()
+    const { result, unmount } = renderHook(() => useServerDictation({ onResult }))
+    act(() => { result.current.start() })
+    const ws = MockSocket.instances[0]
+    act(() => { ws.open() })
+    await flush()
+    unmount()
+    expect(ws.onmessage).toBeNull()
+    expect(ws.onclose).toBeNull()
+    // Simulate a frame that was already in flight when unmount ran, if a handler
+    // were still attached (it must not be).
+    ws.onmessage?.({ data: JSON.stringify({ type: 'final', text: 'late' }) })
+    ws.onclose?.({ code: 1000, reason: '' })
+    expect(onResult).not.toHaveBeenCalled()
+  })
 })

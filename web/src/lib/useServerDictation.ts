@@ -24,6 +24,7 @@ export function useServerDictation({ onResult }: UseDictationOptions): UseDictat
   const wsRef = useRef<WebSocket | null>(null)
   const captureRef = useRef<PcmCapture | null>(null)
   const finishingRef = useRef(false)
+  const graceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const onResultRef = useRef(onResult)
   useEffect(() => { onResultRef.current = onResult }, [onResult])
 
@@ -33,13 +34,21 @@ export function useServerDictation({ onResult }: UseDictationOptions): UseDictat
     void cap?.stop()
   }, [])
 
+  const clearGraceTimer = useCallback(() => {
+    if (graceTimerRef.current !== null) {
+      clearTimeout(graceTimerRef.current)
+      graceTimerRef.current = null
+    }
+  }, [])
+
   const teardown = useCallback((ws: WebSocket) => {
     if (wsRef.current !== ws) return
     wsRef.current = null
     finishingRef.current = false
+    clearGraceTimer()
     releaseMic()
     setListening(false)
-  }, [releaseMic])
+  }, [releaseMic, clearGraceTimer])
 
   const stop = useCallback(() => {
     const ws = wsRef.current
@@ -50,7 +59,10 @@ export function useServerDictation({ onResult }: UseDictationOptions): UseDictat
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'stop' }))
       // The server closes after `done`; if it never arrives, do not hang forever.
-      setTimeout(() => { if (ws.readyState !== WebSocket.CLOSED) ws.close() }, STOP_GRACE_MS)
+      graceTimerRef.current = setTimeout(() => {
+        graceTimerRef.current = null
+        if (ws.readyState !== WebSocket.CLOSED) ws.close()
+      }, STOP_GRACE_MS)
     } else {
       ws.close()
     }
@@ -73,13 +85,18 @@ export function useServerDictation({ onResult }: UseDictationOptions): UseDictat
           captureRef.current = cap
         })
         .catch((e: unknown) => {
-          setError(e instanceof Error && e.name ? e.name : 'capture-error')
+          const message = e instanceof Error
+            ? (e.name && e.name !== 'Error' ? e.name : e.message || 'capture-error')
+            : 'capture-error'
+          setError(message)
           ws.close()
         })
     }
     ws.onmessage = (ev: MessageEvent) => {
-      let msg: ServerMsg
-      try { msg = JSON.parse(String(ev.data)) as ServerMsg } catch { return }
+      let parsed: unknown
+      try { parsed = JSON.parse(String(ev.data)) } catch { return }
+      if (!parsed || typeof parsed !== 'object') return
+      const msg = parsed as ServerMsg
       switch (msg.type) {
         case 'interim': onResultRef.current(msg.text, false); break
         case 'final': onResultRef.current(msg.text, true); break
@@ -90,7 +107,7 @@ export function useServerDictation({ onResult }: UseDictationOptions): UseDictat
     }
     ws.onerror = () => { setError('socket-error') }
     ws.onclose = (ev: CloseEvent) => {
-      if (ev.code >= 4000) setError(ev.reason || `stt-${ev.code}`)
+      if (wsRef.current === ws && ev.code >= 4000) setError(ev.reason || `stt-${ev.code}`)
       teardown(ws)
     }
   }, [teardown])
@@ -103,9 +120,17 @@ export function useServerDictation({ onResult }: UseDictationOptions): UseDictat
   useEffect(() => () => {
     const ws = wsRef.current
     wsRef.current = null
+    clearGraceTimer()
     releaseMic()
-    ws?.close()
-  }, [releaseMic])
+    if (ws) {
+      // Detach handlers first: `close()` is async in a real browser, so buffered
+      // frames can still dispatch after unmount otherwise.
+      ws.onmessage = null
+      ws.onerror = null
+      ws.onclose = null
+      ws.close()
+    }
+  }, [releaseMic, clearGraceTimer])
 
   return { supported, listening, error, start, stop, toggle }
 }
