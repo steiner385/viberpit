@@ -158,7 +158,7 @@ class ManagedRule:
 
 
 # The non-negotiables a managed (non-overridable) settings file must always deny.
-# These encode constitution Principles I (never fork/patch the Claude binary),
+# These encode constitution Principles I (never fork/patch a native agent binary),
 # IV (security-first) and the git-safety working norm. CI asserts every pattern
 # is present in ``.claude/managed-settings.json`` so a local settings.json can
 # never quietly relax them.
