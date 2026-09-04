@@ -222,8 +222,13 @@ describe('the shell drives the session list controls', () => {
     await user.selectOptions(await screen.findByLabelText('Group by'), 'status')
     // Two sessions from DIFFERENT tiers → both group headers must render
     // (idle → 'your-turn' tier, header "Done"; in_progress → 'busy', "Working").
-    expect(screen.getByText('Done')).toBeInTheDocument()
-    expect(screen.getByText('Working')).toBeInTheDocument()
+    // Scoped to the scrolling list band: the Status FILTER in the controls strip
+    // above it offers the same TIER_LABEL vocabulary as <option> text (one source
+    // of truth for tier names), so a document-wide getByText now matches both the
+    // header and the option. Same assertion, narrowed to the headers it means.
+    const list = within(screen.getByTestId('session-list-scroll'))
+    expect(list.getByText('Done')).toBeInTheDocument()
+    expect(list.getByText('Working')).toBeInTheDocument()
   })
 })
 

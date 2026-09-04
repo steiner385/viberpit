@@ -290,6 +290,72 @@ describe('SessionListColumn — gates and structure', () => {
   })
 })
 
+describe('SessionListColumn — the Status/Project/Environment filters (DEC-8)', () => {
+  it('a Project selection narrows the rendered list', async () => {
+    renderColumn({
+      sessions: [
+        session({ id: 'sess-1', name: 'First', repo: 'o/a' }),
+        session({ id: 'sess-2', name: 'Second', repo: 'o/b' }),
+      ],
+    })
+    expect(screen.getByRole('button', { name: 'Open session Second' })).toBeTruthy()
+    await userEvent.selectOptions(screen.getByLabelText('Project'), 'o/a')
+    expect(screen.getByRole('button', { name: 'Open session First' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Open session Second' })).toBeNull()
+  })
+
+  it('keeps the queued and awaiting-approval sections whole under a filter', async () => {
+    // The rendering half of the decision the hook leaves open. Both pre-spawn
+    // rows carry repo 'o/a'; filtering to 'o/b' is a project NEITHER belongs to,
+    // so if the same predicate ran over these sections they would vanish.
+    renderColumn({
+      sessions: [
+        session({ id: 'sess-1', name: 'First', repo: 'o/a' }),
+        session({ id: 'sess-2', name: 'Second', repo: 'o/b' }),
+        // NB not "Waiting": that is also a status-tier label, and the Status
+        // filter now renders it as an <option>, so getByText would be ambiguous.
+        session({ id: 'sess-3', name: 'InQueue', status: 'queued', queuePosition: 1, repo: 'o/a' }),
+        session({ id: 'sess-4', name: 'Parked', status: 'pending_approval', repo: 'o/a' }),
+      ],
+    })
+    await userEvent.selectOptions(screen.getByLabelText('Project'), 'o/b')
+    expect(screen.queryByRole('button', { name: 'Open session First' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Open session Second' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /queued \(1\)/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /awaiting approval \(1\)/i })).toBeTruthy()
+    expect(screen.getByText('InQueue')).toBeTruthy()
+    expect(screen.getByText('Parked')).toBeTruthy()
+  })
+
+  it('survives a zero-match filter: the controls, the selection and a way out stay', async () => {
+    // 'Needs attention' is the `error` tier and no session is in it, so the list
+    // goes empty by design. The strip is gated on the SESSION count, not the
+    // visible rows, so the control that set the filter is still there to undo it.
+    renderColumn({ sessions: [session({ id: 'sess-1', name: 'First', repo: 'o/a' })] })
+    await userEvent.selectOptions(screen.getByLabelText('Status'), 'error')
+
+    expect(screen.queryByRole('button', { name: 'Open session First' })).toBeNull()
+    // The no-matches state, NOT EmptyState's "No sessions yet" — which would
+    // claim the user has never made a session.
+    expect(screen.getByText(/no sessions match/i)).toBeTruthy()
+    expect(screen.queryByText('No sessions yet')).toBeNull()
+    expect(screen.getByLabelText('Status')).toHaveValue('error')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Clear filters' }))
+    expect(screen.getByLabelText('Status')).toHaveValue('')
+    expect(screen.getByRole('button', { name: 'Open session First' })).toBeTruthy()
+  })
+
+  it('the in-place reset clears the filter, not just the search', async () => {
+    renderColumn({ sessions: [session({ id: 'sess-1', name: 'First', repo: 'o/a' })] })
+    await userEvent.selectOptions(screen.getByLabelText('Status'), 'error')
+    // Clearing only the search would leave this button inert and the list empty.
+    await userEvent.click(screen.getByRole('button', { name: /clear search/i }))
+    expect(screen.getByRole('button', { name: 'Open session First' })).toBeTruthy()
+    expect(screen.getByLabelText('Status')).toHaveValue('')
+  })
+})
+
 describe('SessionListColumn — accessibility', () => {
   it('has no axe violations with every section mounted', async () => {
     const { container } = renderColumn({
