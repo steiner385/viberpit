@@ -50,6 +50,7 @@ def _make_shims(
     https_healthz_ok: bool = False,
     registry_endpoints: str = "",
     unit_main_pid: int = 0,
+    config_counts: str = "0 0",
 ) -> tuple[Path, Path]:
     """Build the shim bin dir + state dir the script runs against.
 
@@ -109,11 +110,17 @@ case "$url" in
   *) exit 7 ;;
 esac
 """)
-    # Stands in for the repo venv python: `-c` reads this build's PROTOCOL_VERSION,
-    # `-` runs the fleet-registry query (prints one enabled endpoint per line).
+    # Stands in for the repo venv python. `-c` reads this build's PROTOCOL_VERSION; a
+    # heredoc on stdin is one of two queries, told apart by what it imports: the fleet
+    # registry (one enabled endpoint per line) or the #1005 config-coherence counters
+    # ("<torn reads> <corruption artifacts>").
     _write_shim(bindir, "health-python", f"""
 if [ "${{1:-}}" = "-c" ]; then echo 3; exit 0; fi
-cat >/dev/null
+stdin=$(cat)
+if [[ "$stdin" == *scratch_config* ]]; then
+  printf '%s' '{config_counts}'
+  exit 0
+fi
 printf '%s' '{registry_endpoints}'
 """)
     return bindir, state
@@ -369,3 +376,64 @@ def test_split_brain_message_still_documented_for_operators() -> None:
     assert "registered" in text and "fleet" in text, (
         "header should explain the registered-fleet-host / endpoint-is-this-host carve-outs"
     )
+
+
+# --- #1005: shared-config coherence alerting ------------------------------------------
+#
+# rocky reset the fleet's shared .claude.json ~1,100x/day for three days and nothing
+# surfaced it: the daemon logged "is corrupted: JSON Parse error" to its own journal, and
+# the only on-disk evidence was rmtree'd by the next compose(). Section 6 turns both
+# counters into an alert, so the next occurrence is loud on the first hour, not the
+# third day.
+
+
+def _quiet_local_daemon_env(tmp_path: Path) -> dict[str, str]:
+    """Script env with sections 1-5 inert, so a test isolates section 6."""
+    return {"CCSWITCH_MEM_WARN_BYTES": "999999999999"}
+
+
+def test_torn_reads_on_this_host_raise_an_alert(tmp_path):
+    bindir, _ = _make_shims(tmp_path, unit_active=True, uds_healthz_ok=True,
+                            config_counts="7 0")
+    proc = _run(tmp_path, bindir, script_env=_quiet_local_daemon_env(tmp_path))
+    assert "ALERT[config-torn-read]" in proc.stdout, proc.stdout
+    assert "7 torn read(s)" in proc.stdout
+
+
+def test_corruption_artifacts_alert_even_when_this_host_saw_no_torn_reads(tmp_path):
+    """The cross-host case: some OTHER host still has the cached mount profile.
+
+    This host's scratch-config layer is clean, but the shared store keeps gaining
+    `.claude.json.corrupted.*` artifacts — the fleet is still resetting the config.
+    """
+    bindir, _ = _make_shims(tmp_path, unit_active=True, uds_healthz_ok=True,
+                            config_counts="0 12")
+    proc = _run(tmp_path, bindir, script_env=_quiet_local_daemon_env(tmp_path))
+    assert "ALERT[config-torn-read]" in proc.stdout, proc.stdout
+    assert "12 '.claude.json.corrupted.*' reset(s)" in proc.stdout
+
+
+def test_a_coherent_fleet_is_silent(tmp_path):
+    """The post-fix steady state — and what `verify` in #1005 asks us to be able to see."""
+    bindir, _ = _make_shims(tmp_path, unit_active=True, uds_healthz_ok=True,
+                            config_counts="0 0")
+    proc = _run(tmp_path, bindir, script_env=_quiet_local_daemon_env(tmp_path))
+    assert "ALERT[config-torn-read]" not in proc.stdout, proc.stdout
+
+
+def test_unreadable_counters_degrade_to_a_log_not_a_false_alert(tmp_path):
+    """A stale checkout / broken import must not page anyone."""
+    bindir, _ = _make_shims(tmp_path, unit_active=True, uds_healthz_ok=True,
+                            config_counts="Traceback (most recent call last)")
+    proc = _run(tmp_path, bindir, script_env=_quiet_local_daemon_env(tmp_path))
+    assert "ALERT[config-torn-read]" not in proc.stdout
+    assert "config coherence counters unavailable" in proc.stdout
+
+
+def test_the_alert_names_the_mount_option_that_fixes_it(tmp_path):
+    """An alert that does not say what to do is a log line. Point at the actual knob."""
+    bindir, _ = _make_shims(tmp_path, unit_active=True, uds_healthz_ok=True,
+                            config_counts="1 1")
+    proc = _run(tmp_path, bindir, script_env=_quiet_local_daemon_env(tmp_path))
+    assert "attr_timeout=0" in proc.stdout
+    assert "bin-ccswitch-mounts.sh" in proc.stdout

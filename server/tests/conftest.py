@@ -109,6 +109,22 @@ _redirect_state_off_production()
 
 
 # --------------------------------------------------------------------------- #
+# Helper scratch config dirs must not land in the developer's real ~/.cache.  #
+#                                                                             #
+# account_auth.helper_env() mirrors an account config dir into                #
+# scratch_config.scratch_root() (#1005). Left at its default that is          #
+# ~/.cache/ccswitch/helper-cfg on the dev box, so any test that builds a      #
+# helper env would litter it (and share torn-read markers across runs).       #
+# Anchor it under the system temp dir; test_helper_scratch_config.py          #
+# monkeypatches its own per-test value on top.                                #
+# --------------------------------------------------------------------------- #
+if not os.environ.get("CCSWITCH_HELPER_SCRATCH_ROOT"):
+    _scratch_root = Path(tempfile.mkdtemp(prefix="ccswitch-tests-scratch-"))
+    atexit.register(shutil.rmtree, _scratch_root, ignore_errors=True)
+    os.environ["CCSWITCH_HELPER_SCRATCH_ROOT"] = str(_scratch_root)
+
+
+# --------------------------------------------------------------------------- #
 # Auth env must not leak from the dev machine into tests.                      #
 #                                                                              #
 # A developer box runs with CCSWITCH_TAILNET_ALLOWLIST set to the owner's own  #
