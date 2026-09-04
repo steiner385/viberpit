@@ -224,7 +224,7 @@ export function NewSessionDialog({ accounts, onClose, onSubmit, isPending, exter
                 ))}
               </Select>
               {isGatedTier(model) && (
-                <p className="text-xs text-amber-600 dark:text-amber-400">
+                <p className="text-xs text-warning">
                   {modelDisplayName(model) || model} requires approval — this session will be held until approved.
                 </p>
               )}

@@ -11,17 +11,19 @@
  * and DesktopShell's MainPaneSession (desktop, light bar). The dropdown mirrors ExportMenu's
  * lightweight role="menu" pattern.
  *
- * Rename is opt-in via `canRename` and shows only on mobile (SessionView): the mobile
- * session card drops its per-row rename button to declutter, so the detail view is rename's
- * only home there. Desktop keeps rename on its always-visible sidebar card, so MainPaneSession
- * leaves `canRename` unset and the menu is delete-only — desktop is unchanged.
+ * Rename is opt-in via an `onRename` CALLBACK, not a `canRename` flag: since Task 10 the
+ * rename flow (state + the shared `features/sessions/RenameDialog` + `useRenameSession`)
+ * lives once, in `SessionHeader`, which drives it from two triggers — the click-to-rename
+ * title and this menu item. Owning a second copy of that dialog here is the
+ * parallel-implementation anti-pattern, so the copy that used to live here is gone.
+ * Callers that pass no `onRename` get a delete-only menu, exactly as before.
  */
 import { useEffect, useRef, useState } from 'react'
 import { Archive, MoreVertical, Pencil, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useCloseSession, usePermanentDeleteSession, useRenameSession } from '@/api/hooks'
+import { useCloseSession, usePermanentDeleteSession } from '@/api/hooks'
 import { PermanentDeleteDialog } from '@/components/PermanentDeleteDialog'
-import { RenameDialog } from '@/features/sessions/RenameDialog'
+import { popOverlay, pushOverlay } from '@/shell/useOverlayState'
 
 interface Props {
   sessionId: string
@@ -30,32 +32,48 @@ interface Props {
   onDone: () => void
   /** Header colour scheme: 'dark' for the mobile bar (gray-900), 'light' for desktop. */
   variant?: 'dark' | 'light'
-  /** Surface a Rename menu item (mobile only — the mobile card has no rename button). */
-  canRename?: boolean
+  /** Surface a Rename menu item that calls this. Omitted → the menu is delete-only. */
+  onRename?: () => void
 }
 
-export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark', canRename = false }: Props) {
+export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark', onRename }: Props) {
   const closeSession = useCloseSession()
   const permanentDelete = usePermanentDeleteSession()
-  const renameSession = useRenameSession()
   const [menuOpen, setMenuOpen] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
-  const [renameOpen, setRenameOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
+  const menuTriggerRef = useRef<HTMLButtonElement>(null)
 
-  // Close the overflow menu on outside-click / Escape (mirrors ExportMenu).
+  // Close the overflow menu on outside-click. Escape is the container's own
+  // `onKeyDown` below (PR 4 removed the `document` keydown that used to be here:
+  // the app has one keydown listener now, in `shell/useShortcuts`).
   useEffect(() => {
     if (!menuOpen) return
     function onDocClick(e: MouseEvent) {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false)
     }
-    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') { e.stopPropagation(); setMenuOpen(false) } }
     document.addEventListener('mousedown', onDocClick)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onDocClick)
-      document.removeEventListener('keydown', onKey)
-    }
+    return () => document.removeEventListener('mousedown', onDocClick)
+  }, [menuOpen])
+
+  // An open menu is an overlay — the shell's shortcuts (← / Esc detach) do not
+  // fire through one. Same registration `Dialog`, `Sheet` and `ui/Menu` make.
+  useEffect(() => {
+    if (!menuOpen) return
+    pushOverlay()
+    return () => popOverlay()
+  }, [menuOpen])
+
+  // Focus the trigger when the menu opens (same fix, same reason, as
+  // `SessionCard`'s ⋯ menu): clicking a `<button>` does not focus it on macOS
+  // Safari or Firefox, and the browser delivers keydown to
+  // `document.activeElement` — so the container's Escape handler below would
+  // never see the key, while the overlay push above keeps every global shortcut
+  // suppressed. The trigger is the node the markup names as the menu's control
+  // (`aria-haspopup` / `aria-expanded`) and it outlives the menu, so closing
+  // needs no focus restoration.
+  useEffect(() => {
+    if (menuOpen) menuTriggerRef.current?.focus()
   }, [menuOpen])
 
   const isDark = variant === 'dark'
@@ -86,7 +104,19 @@ export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark
   const deletePending = closeSession.isPending || permanentDelete.isPending
 
   return (
-    <div className="flex items-center gap-1" ref={menuRef}>
+    // Escape closes the menu from the container that holds the trigger and the
+    // menu both, and stops the key there: dismissing a menu must not also detach
+    // from the session the header belongs to.
+    <div
+      className="flex items-center gap-1"
+      ref={menuRef}
+      onKeyDown={(e) => {
+        if (menuOpen && e.key === 'Escape') {
+          e.stopPropagation()
+          setMenuOpen(false)
+        }
+      }}
+    >
       <button
         type="button"
         onClick={handleArchive}
@@ -100,6 +130,7 @@ export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark
       <div className="relative">
         <button
           type="button"
+          ref={menuTriggerRef}
           onClick={() => setMenuOpen((v) => !v)}
           aria-label="More session actions"
           aria-haspopup="menu"
@@ -119,11 +150,11 @@ export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark
               'bg-white dark:bg-gray-900 shadow-lg py-1',
             )}
           >
-            {canRename && (
+            {onRename && (
               <button
                 type="button"
                 role="menuitem"
-                onClick={() => { setMenuOpen(false); setRenameOpen(true) }}
+                onClick={() => { setMenuOpen(false); onRename() }}
                 className={cn(
                   'flex w-full items-center gap-2 px-3 py-2 text-sm text-left',
                   'text-gray-700 dark:text-gray-200',
@@ -162,19 +193,6 @@ export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark
         />
       )}
 
-      {/* Rename reuses the shared `features/sessions/RenameDialog` — the same
-          one `AppShell` opens from a list row, so there is no parallel rename
-          UI. Unlike archive/delete it stays in place (no onDone), so the header
-          just refreshes its title. */}
-      {renameOpen && (
-        <RenameDialog
-          sessionId={sessionId}
-          currentName={sessionName}
-          onClose={() => setRenameOpen(false)}
-          onSubmit={(id, name) => renameSession.mutate({ id, name }, { onSuccess: () => setRenameOpen(false) })}
-          isPending={renameSession.isPending}
-        />
-      )}
     </div>
   )
 }

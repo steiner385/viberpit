@@ -100,7 +100,7 @@ vi.mock('@/ws/client', async (importOriginal) => {
 import { LAYOUT_MODE_QUERIES, MEDIA, stubMatchMedia } from '@/test/matchMedia'
 // `regionCounts` reads the whole document (the overlay root is outside `#root`)
 // — shared with `kiosk.integration.test.tsx` rather than copied into it.
-import { regionCounts } from '@/test/regions'
+import { APP_REGION_PREFIX, appRegionCounts, presentAppRegions, regionCounts } from '@/test/regions'
 import { ThemeProvider } from '@/shell/theme'
 import { buildRoutes } from '@/shell/routes'
 import { LAYOUT_MODES, type LayoutMode } from './useViewport'
@@ -207,29 +207,52 @@ afterEach(() => {
 
 // ── tests ────────────────────────────────────────────────────────────────────
 
+// The three set-equality cases below are scoped to `app.*` (DEC-1). They compare
+// the document against `REGION_VISIBILITY`, which answers ONLY for the regions
+// the shell places; page-owned namespaces (`session.header`, Task 10) are not in
+// the matrix and never were. Unscoped, the arrival of the first page region
+// would have reddened all three for a reason none of them is about — and the fix
+// would have been to add a row to the matrix for a region the shell cannot show
+// or hide. The scoping is narrow on purpose: it drops a NAMESPACE, not a
+// predicate. Every `app.*` id is still compared by equality in both directions,
+// so a shell region that goes missing, appears when the matrix says it should
+// not, or mounts twice still fails — see the deliberate-break note in
+// `test/regions.ts` and `visibilityMatrix.test.tsx`'s "REGION_IDS is app.* only",
+// which is what stops a shell region from escaping the scope by being renamed.
 describe('AppShell — the regions on screen match the matrix', () => {
   it.each(LAYOUT_MODES)('renders exactly the regions %s calls for', async (mode) => {
     renderShell({ path: '/sessions?drawer=help', mode })
     await screen.findByTestId(landingFor(mode))
 
-    const present = [...regionCounts().keys()].sort()
-    expect(present).toEqual(expectedRegions(mode, ctxFor(mode)).slice().sort())
+    expect(presentAppRegions()).toEqual(expectedRegions(mode, ctxFor(mode)).slice().sort())
   })
 
-  it.each(LAYOUT_MODES)('renders no data-region outside RegionId in %s', async (mode) => {
+  it.each(LAYOUT_MODES)('renders no app.* data-region outside RegionId in %s', async (mode) => {
     renderShell({ path: '/sessions?drawer=help', mode })
     await screen.findByTestId(landingFor(mode))
 
     const known: readonly string[] = REGION_IDS
-    const unknown = [...regionCounts().keys()].filter((id) => !known.includes(id))
-    expect(unknown, `unrecognised regions: ${unknown.join(', ')}`).toEqual([])
+    const unknown = [...appRegionCounts().keys()].filter((id) => !known.includes(id))
+    expect(unknown, `unrecognised shell regions: ${unknown.join(', ')}`).toEqual([])
+  })
+
+  it.each(LAYOUT_MODES)('every data-region is a shell region or a namespaced page one in %s', async (mode) => {
+    // The other half of the scoping: nothing may carry a BARE `data-region`
+    // that is neither the shell's nor a namespaced page region. Without this,
+    // scoping to `app.*` above would let a typo'd or unnamespaced marker
+    // (`app-list`, `main`) sit in the document unnoticed forever.
+    renderShell({ path: '/sessions?drawer=help', mode })
+    await screen.findByTestId(landingFor(mode))
+
+    const stray = [...regionCounts().keys()].filter((id) => !/^[a-z]+\.[a-z]+$/.test(id))
+    expect(stray, `data-region values outside <namespace>.<name>: ${stray.join(', ')}`).toEqual([])
   })
 
   it.each(LAYOUT_MODES)('in %s mode every region mounts at most once', async (mode) => {
     renderShell({ path: '/sessions?drawer=help', mode })
     await screen.findByTestId(landingFor(mode))
 
-    const counts = regionCounts()
+    const counts = appRegionCounts()
     // The lower bound. Without it "at most once" is satisfied by a shell that
     // rendered nothing at all.
     expect([...counts.keys()].sort()).toEqual(expectedRegions(mode, ctxFor(mode)).slice().sort())
@@ -238,6 +261,14 @@ describe('AppShell — the regions on screen match the matrix', () => {
     // and `NavBar` (data-rail="bottom") — see Task 8. Everything else is one.
     const allowed = (id: string) => (mode === 'phone' && id === 'app.rail' ? 2 : 1)
     for (const [id, n] of counts) expect(n, `${id} in ${mode}`).toBeLessThanOrEqual(allowed(id))
+  })
+
+  it('scopes on the shell namespace the matrix is written in', () => {
+    // Pins the scoping's own premise: `REGION_IDS` — the list `expectedRegions`
+    // is derived from — is entirely inside the prefix the assertions filter on.
+    // A shell region renamed out of `app.*` would otherwise vanish from every
+    // comparison above instead of failing.
+    for (const id of REGION_IDS) expect(id.startsWith(APP_REGION_PREFIX), id).toBe(true)
   })
 
   it('renders the phone rail as TopBar + NavBar, one of each', async () => {

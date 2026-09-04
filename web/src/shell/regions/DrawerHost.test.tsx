@@ -30,10 +30,11 @@ import { axe, toHaveNoViolations } from 'jest-axe'
 import { createMemoryRouter, RouterProvider, Outlet, useLocation } from 'react-router-dom'
 import { ViewportProvider } from '@/shell/useViewport'
 import { NAV_DEFS } from '@/shell/navDefs'
-import { SHORTCUTS } from '@/lib/shortcuts'
+import { SHORTCUTS, displayKeys } from '@/shell/shortcuts'
 import { DRAWER_STORAGE_KEY, DRAWER_DEFAULT } from '@/shell/drawerWidth'
 import { MEDIA, stubMatchMedia } from '@/test/matchMedia'
 import { DrawerHost } from './DrawerHost'
+import { GROUPS } from './HelpSheet'
 
 expect.extend(toHaveNoViolations)
 
@@ -134,6 +135,28 @@ describe('DrawerHost', () => {
     }
   })
 
+  /**
+   * The description guard above catches a missing group only as a downstream
+   * symptom — a row in an unlisted group has no section to render into, so its
+   * description simply never appears. This asserts the actual invariant
+   * directly: the set of groups `HelpSheet` renders a section for is exactly
+   * the set of groups `SHORTCUTS` uses, computed from the registry itself
+   * (never a hand-written list of group names, which is precisely the kind of
+   * list that drifted before — see `HelpDrawer`'s `NAV_MAP` in this file's
+   * header comment).
+   */
+  it('renders exactly the shortcut groups present in the registry (no group silently dropped)', () => {
+    const registryGroups = new Set(SHORTCUTS.map((s) => s.group))
+    const sheetGroups = new Set(GROUPS.map((g) => g.group))
+    expect(sheetGroups).toEqual(registryGroups)
+  })
+
+  it('never renders "undefined" for a shortcut row', () => {
+    renderAt(['/sessions?drawer=help'])
+    const dlg = screen.getByRole('dialog', { name: /help/i })
+    expect(dlg.textContent ?? '').not.toMatch(/undefined/)
+  })
+
   // Migrated from `components/__tests__/HelpDrawer.test.tsx` (Task 18); the
   // component it tested was deleted in Task 17 and replaced by `HelpSheet`.
   it("renders each shortcut's KEYS, not only its description", () => {
@@ -141,13 +164,68 @@ describe('DrawerHost', () => {
     // shortcut DOES and never says which key does it. `HelpDrawer.test.tsx`
     // caught that with two literals (`c`, `a / Backspace`); this derives the
     // whole set from the registry, so a binding that renders no key fails here.
+    //
+    // Asserted through `displayKeys(s)`, not the `s.keys` literal: this suite
+    // runs on jsdom's default (non-Apple) `navigator.platform`, where the two
+    // happen to agree for every row, but `displayKeys` is the actual contract
+    // the sheet renders through (`HelpSheet`'s `<Kbd keys={displayKeys(b)} />`)
+    // — asserting the literal would keep passing even if that call were
+    // swapped for `b.keys` on this platform, which the Apple-glyph test below
+    // exists to catch on the platform where the two rows this PR shipped
+    // (`app.help`, `app.assistant`) actually diverge.
     renderAt(['/sessions?drawer=help'])
     const dlg = screen.getByRole('dialog', { name: /help/i })
     for (const s of SHORTCUTS) {
-      expect(within(dlg).getAllByText(s.keys).length, `${s.id} keys`).toBeGreaterThan(0)
+      expect(within(dlg).getAllByText(displayKeys(s)).length, `${s.id} keys`).toBeGreaterThan(0)
     }
     // …and nothing still shows the pre-registry Ctrl bindings.
     expect(dlg.textContent ?? '').not.toMatch(/Ctrl\+X/)
+  })
+
+  /**
+   * The Apple branch of `displayKeys()`, rendered through the real sheet.
+   *
+   * Until Task 5 no row in `SHORTCUTS` carried a `keysMac`, so every assertion
+   * above — including the KEYS drift guard — exercised only the non-Apple side,
+   * and `HelpSheet`'s `displayKeys(b)` would have passed just as well written as
+   * `b.keys`. A Mac user must be shown `⌘/`, never `Ctrl+/`: telling them to
+   * press a modifier their keyboard has in a different place is a shortcut they
+   * will conclude is broken.
+   *
+   * jsdom reports `navigator.platform` as `''`, so it is redefined rather than
+   * cast into place (R10), and restored so the non-Apple assertions elsewhere in
+   * this file keep testing what they say they do.
+   */
+  it('shows the ⌘ glyphs on an Apple platform, and Ctrl elsewhere', () => {
+    const original = window.navigator.platform
+    const setPlatform = (value: string) =>
+      Object.defineProperty(window.navigator, 'platform', { value, configurable: true })
+
+    const withMac = SHORTCUTS.filter((s) => s.keysMac !== undefined)
+    expect(withMac.map((s) => s.id), 'no row carries keysMac').not.toHaveLength(0)
+
+    try {
+      setPlatform('MacIntel')
+      renderAt(['/sessions?drawer=help'])
+      const mac = screen.getByRole('dialog', { name: /help/i })
+      for (const s of withMac) {
+        expect(within(mac).getAllByText(s.keysMac ?? '').length, `${s.id} on MacIntel`)
+          .toBeGreaterThan(0)
+        expect(within(mac).queryByText(s.keys), `${s.id} shows its Ctrl twin on a Mac`).toBeNull()
+      }
+
+      cleanup()
+
+      setPlatform('Win32')
+      renderAt(['/sessions?drawer=help'])
+      const win = screen.getByRole('dialog', { name: /help/i })
+      for (const s of withMac) {
+        expect(within(win).getAllByText(s.keys).length, `${s.id} on Win32`).toBeGreaterThan(0)
+        expect(within(win).queryByText(s.keysMac ?? ''), `${s.id} shows ⌘ on Windows`).toBeNull()
+      }
+    } finally {
+      setPlatform(original)
+    }
   })
 
   it('has Navigation and Tips sections', () => {

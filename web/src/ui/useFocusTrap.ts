@@ -3,6 +3,7 @@
 // an element (default `#root`) so background content is unfocusable/unclickable; a module-level
 // depth counter allows nested traps to stack without the inner trap's close lifting `inert` early.
 import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react';
+import { pushOverlay, popOverlay } from '@/shell/useOverlayState';
 
 /**
  * CSS selector for focusable elements.
@@ -77,6 +78,11 @@ export function useFocusTrap(
 
     const token = Symbol('focus-trap');
     trapStack.push(token);
+    // Registered on the SAME line as the trap stack, and released in the same
+    // cleanup, so "a modal trap is active" and "an overlay is open" cannot
+    // drift. `trapStack` stays as it is — it answers a different question
+    // (which trap is innermost, for Escape) and is read by this file alone.
+    pushOverlay();
 
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -131,6 +137,10 @@ export function useFocusTrap(
       // and popping would hand "innermost" to the wrong trap.
       const at = trapStack.indexOf(token);
       if (at !== -1) trapStack.splice(at, 1);
+      // Unconditional, unlike the splice above: this setup pushed exactly once,
+      // so this cleanup must pop exactly once. Guarding it on anything would
+      // risk a leaked push, which leaves the app permanently "overlay open".
+      popOverlay();
       if (inertId) setRootInert(inertId, false);
       // Return focus: explicit ref takes priority, then previous element.
       const returnTarget =

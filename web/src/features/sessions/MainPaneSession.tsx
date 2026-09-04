@@ -23,22 +23,28 @@
  *   region is dropped once an item is open); on desktop it is what
  *   `DesktopShell`'s ← already did — return to the welcome pane beside the list.
  * - **The prev/next chevrons.** `useSessionNeighbors` ordering, with wraparound.
- * - **`canRename`.** The phone list row has no rename button and the list is not
- *   on screen beside an open session, so the overflow menu is rename's only home
- *   there. Desktop gains a second route to a dialog it already had.
+ * - **Rename.** The phone list row has no rename button and the list is not on
+ *   screen beside an open session, so the header is rename's only home there.
+ *   Desktop gains a second route to a dialog it already had.
  *
- * The keyboard half is `useInSessionKeys`, which is also the surviving copy of
- * `DesktopShell`'s own detach handler.
+ * The keyboard half is NOT here. PR 4 replaced `useInSessionKeys` — the surviving
+ * copy of `DesktopShell`'s and `SessionView`'s detach handlers — with the shell's
+ * one keydown listener, driven by `shell/shortcuts.ts`. This component publishes
+ * `hasOpenAction` and a socket-detaching `onDetach` through
+ * `shell/sessionGestures` and owns no listener of its own.
+ *
+ * The header row itself moved out to `SessionHeader` (Task 10), which carries
+ * `data-region="session.header"` and owns the click-to-rename title and the
+ * status pill. This component keeps what only it can know: the socket-detaching
+ * `leave()` that every exit path runs through.
  */
-import { cn } from '@/lib/utils'
+import type { SessionStatus } from '@/api/types'
 import { useSessionSocket } from '@/ws/client'
-import { useSessionNeighbors } from '@/session/useSessionNeighbors'
-import { SessionGoalText } from '@/components/session/SessionGoalText'
-import { SessionActions } from '@/components/session/SessionActions'
 import { SessionBody } from '@/components/session/SessionBody'
 import { CommandResultOverlay } from '@/components/session/CommandResultOverlay'
-import { useInSessionKeys } from '@/components/session/useInSessionKeys'
+import { useSessionGestures } from '@/shell/sessionGestures'
 import { useSessionRuntimeContext } from '@/components/session/SessionRuntimeProvider'
+import { SessionHeader } from './SessionHeader'
 
 export interface MainPaneSessionProps {
   sessionId: string
@@ -50,19 +56,9 @@ export interface MainPaneSessionProps {
   onOpenSession: (id: string) => void
 }
 
-const NAV_BUTTON = cn(
-  'flex items-center justify-center rounded-md min-h-target min-w-target',
-  'text-sm font-medium text-ink-muted hover:text-ink hover:bg-surface-raised',
-  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-)
-
 export function MainPaneSession({ sessionId, onClosed, onDetach, onOpenSession }: MainPaneSessionProps) {
   const rt = useSessionRuntimeContext()
   const { detach } = useSessionSocket()
-  const { prevId, nextId } = useSessionNeighbors(sessionId)
-  // Both chevrons render as a pair: useSessionNeighbors returns prevId/nextId
-  // both-null (single/unknown session) or both-set (wraparound), never one null.
-  const hasNeighbors = prevId !== null || nextId !== null
 
   // Detaching the socket before navigating is what `SessionView` did. The
   // runtime provider also detaches when `PageHost` unmounts it, so this is
@@ -74,62 +70,32 @@ export function MainPaneSession({ sessionId, onClosed, onDetach, onOpenSession }
     after()
   }
 
-  useInSessionKeys({
+  // The keyboard half is the shell's single listener (`shell/useShortcuts`); this
+  // publishes the two things it cannot see from up there — whether a card is
+  // unanswered, and a detach that drops the socket first. Registering rather than
+  // listening is what makes ← / Esc / Ctrl+Z one implementation with the rest of
+  // the app's keys instead of a sixth window listener.
+  useSessionGestures({
     hasOpenAction: rt.hasOpenAction,
     onDetach: () => leave(onDetach),
   })
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      <div className={cn(
-        'flex items-center gap-2 px-3 py-2 flex-shrink-0',
-        'bg-gray-100 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700',
-      )}>
-        <button
-          type="button"
-          onClick={() => leave(onDetach)}
-          aria-label="Back to session list"
-          className={cn(NAV_BUTTON, 'gap-1.5 px-3')}
-        >
-          ← Back
-        </button>
-
-        {hasNeighbors && (
-          <button
-            type="button"
-            onClick={() => prevId && onOpenSession(prevId)}
-            aria-label="Previous session"
-            className={cn(NAV_BUTTON, 'text-lg leading-none')}
-          >
-            ‹
-          </button>
-        )}
-
-        <span className="flex-1 min-w-0 flex items-baseline gap-2">
-          <span className="min-w-0 text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">{rt.title}</span>
-          <SessionGoalText goal={rt.goal} source={rt.goalSource} title={rt.title} />
-        </span>
-
-        {hasNeighbors && (
-          <button
-            type="button"
-            onClick={() => nextId && onOpenSession(nextId)}
-            aria-label="Next session"
-            className={cn(NAV_BUTTON, 'text-lg leading-none')}
-          >
-            ›
-          </button>
-        )}
-
-        <SessionActions
-          sessionId={sessionId}
-          sessionName={rt.title}
-          onDone={() => leave(onClosed)}
-          variant="light"
-          canRename
-        />
-      </div>
-      <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-white dark:bg-gray-950">
+      <SessionHeader
+        sessionId={sessionId}
+        title={rt.title}
+        goal={rt.goal}
+        goalSource={rt.goalSource}
+        // `state.status.state` is a plain string off the wire (an unknown value
+        // is handled: statusPresentation falls back and warns once), so this is
+        // the same narrowing `isPreSpawnStatus` makes in api/types.ts.
+        status={rt.state.status.state as SessionStatus}
+        onBack={() => leave(onDetach)}
+        onOpenSession={onOpenSession}
+        onClosed={() => leave(onClosed)}
+      />
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-surface">
         <SessionBody rt={rt} />
       </div>
       <CommandResultOverlay
