@@ -27,9 +27,12 @@ def test_gate_pauses_stream_until_released():
         # A continuous consumer (as the driver's drain does) advances the pull-based
         # generator; the gate parks it after the first event.
         async def consume():
-            async for m in client.receive_response():
+            async for m in client.receive_messages():
                 got.append(m)
+                if isinstance(m, ResultMessage):
+                    break
 
+        await client.query("go")
         task = asyncio.create_task(consume())
         await gate.wait_reached()                   # consumer parked at the gate
         assert gate.is_reached is True
@@ -47,9 +50,12 @@ def test_delay_yields_to_loop_without_wall_clock():
                                 f.stream_text("y", uuid="t1"), f.result(uuid="t1")])
 
     async def consume():
-        async for m in client.receive_response():
+        await client.query("go")
+        async for m in client.receive_messages():
             if isinstance(m, StreamEvent):
                 order.append(m.event["delta"]["text"])
+            if isinstance(m, ResultMessage):
+                break
 
     async def other():
         # Runs entirely within the Delay's loop-yields — no real time elapses.
@@ -68,16 +74,18 @@ def test_delay_yields_to_loop_without_wall_clock():
     asyncio.run(run())
 
 
-def test_receive_response_segments_one_turn_per_call():
-    """The cursor persists across calls: each ``receive_response()`` yields exactly one
-    turn (up to and including its ResultMessage), like the real SDK."""
+def test_stream_segments_one_turn_per_query():
+    """One persistent stream: each ``query()`` streams exactly one turn (up to and
+    including its ResultMessage), like the real SDK; the exhausted stream ends."""
     scenario = ([f.sys_init("sess-1")]
                 + turn("t1", say("t1", "one", chunks=1))
                 + turn("t2", say("t2", "two", chunks=1)))
     client = ScriptedSDKClient(scenario)
+    stream = client.receive_messages()
 
     async def drain_once():
-        return [m async for m in client.receive_response()]
+        await client.query("go")
+        return await f.drain_turn(stream)
 
     async def run():
         first = await drain_once()

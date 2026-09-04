@@ -1,6 +1,7 @@
 """Fake SDK client + builders emitting REAL claude_agent_sdk message objects.
 Lets the translator/driver be tested without spawning `claude` or spending quota."""
 from __future__ import annotations
+import asyncio
 from claude_agent_sdk import (SystemMessage, StreamEvent, AssistantMessage, UserMessage,
                               ResultMessage, ToolUseBlock, ToolResultBlock)
 
@@ -53,11 +54,35 @@ def result(session_id: str = "sess-1", usage: dict | None = None, uuid: str = "u
                          total_cost_usd=cost, result=result, errors=errors,
                          api_error_status=api_error_status)
 
+async def drain_turn(stream) -> list:
+    """Pull ONE turn — up to and including its ResultMessage — from a persistent
+    ``receive_messages()`` stream: the segmentation the driver does. Pass the SAME
+    generator object across calls; a stream that ends yields a short/empty list."""
+    out = []
+    async for m in stream:
+        out.append(m)
+        if isinstance(m, ResultMessage):
+            break
+    return out
+
+
 # ---- fake client --------------------------------------------------------------
+_EOF = object()   # inbox sentinel: the subprocess is gone, the stream ends
+
+
 class FakeSDKClient:
-    """Implements server.sessions.sdk_contract.SDKClientProtocol."""
+    """Implements server.sessions.sdk_contract.SDKClientProtocol.
+
+    Mirrors the real client's stream shape: ``receive_messages()`` is ONE persistent
+    stream for the life of the client. Each ``query()`` delivers the scripted
+    ``messages`` (one turn); :meth:`inject` delivers messages with NO query behind
+    them — the CLI continuing on its own after a background-task notification, which
+    is exactly what the driver's idle listener exists to drain. ``interrupt()`` does
+    what the CLI does: drops the rest of the in-flight turn and flushes a synthetic
+    ResultMessage so the turn still closes.
+    """
     def __init__(self, messages, on_can_use_tool=None, server_info=None, context_usage=None):
-        self._messages = messages
+        self._messages = list(messages)
         self.on_can_use_tool = on_can_use_tool
         self.interrupted = False
         self.permission_mode = "default"
@@ -65,16 +90,96 @@ class FakeSDKClient:
         self.sent: list[str] = []
         self._server_info = server_info
         self._context_usage = context_usage or {}
+        self._inbox: "asyncio.Queue | None" = None   # built lazily on the running loop
+        self._turn_open = False
+
+    def _q(self) -> "asyncio.Queue":
+        if self._inbox is None:
+            self._inbox = asyncio.Queue()
+        return self._inbox
+
+    def _deliver(self, messages) -> None:
+        for m in messages:
+            self._q().put_nowait(m)
+
+    def inject(self, messages) -> None:
+        """Deliver an autonomous (CLI-initiated) turn: no ``query()`` behind it."""
+        self._deliver(messages)
 
     async def __aenter__(self): return self
-    async def __aexit__(self, *exc): return False
-    async def query(self, prompt: str): self.sent.append(prompt)
-    async def receive_response(self):
-        for m in self._messages:
-            if self.interrupted: break
+    async def __aexit__(self, *exc):
+        self._q().put_nowait(_EOF)
+        return False
+    async def query(self, prompt: str):
+        self.sent.append(prompt)
+        self._deliver(self._messages)
+        # A script with no ResultMessage (e.g. `[]`) still describes ONE turn that
+        # ends — like the CLI, close it with a result so the driver's pump settles.
+        if not self._messages or not isinstance(self._messages[-1], ResultMessage):
+            self._deliver([result(uuid="script-end")])
+    async def receive_messages(self):
+        while True:
+            m = await self._q().get()
+            if m is _EOF:
+                return
+            # "Mid-turn" = the consumer has seen this turn's first message but not yet
+            # its result; what interrupt() closes with a synthetic result.
+            self._turn_open = not isinstance(m, ResultMessage)
             yield m
-    async def interrupt(self): self.interrupted = True
+    async def interrupt(self):
+        self.interrupted = True
+        q = self._q()
+        rest = []
+        while not q.empty():
+            rest.append(q.get_nowait())
+        if self._turn_open:
+            q.put_nowait(result(uuid="interrupted"))
+            self._turn_open = False
+        if any(m is _EOF for m in rest):
+            q.put_nowait(_EOF)
     async def set_permission_mode(self, mode: str): self.permission_mode = mode
     async def set_model(self, model=None): self.model = model
     async def get_server_info(self): return self._server_info
     async def get_context_usage(self): return self._context_usage
+
+
+class PerQueryScript:
+    """Adapter for inline test fakes that script ONE turn per ``receive_response()``.
+
+    The driver consumes the real client's persistent ``receive_messages()``; a fake
+    written as "``receive_response()`` yields this turn" gets that stream by
+    subclassing this: ``receive_response()`` is replayed once per ``query()`` call
+    (the subclass's own ``query`` is wrapped at class creation, so it keeps whatever
+    bookkeeping it does), and a script that ends without a ResultMessage is closed
+    with a synthetic one — the turn boundary the driver keys on.
+    """
+    def __init_subclass__(cls, **kw):
+        super().__init_subclass__(**kw)
+        orig = getattr(cls, "query", None)   # own or inherited (e.g. from FakeSDKClient)
+        if orig is None or getattr(orig, "_pq_wrapped", False):
+            return
+
+        async def query(self, *a, **k):
+            r = await orig(self, *a, **k)
+            self._pq_signal().set()
+            return r
+        query._pq_wrapped = True   # type: ignore[attr-defined]
+        cls.query = query
+
+    def _pq_signal(self) -> "asyncio.Event":
+        sig = self.__dict__.get("_pq_sig")
+        if sig is None:
+            sig = self.__dict__["_pq_sig"] = asyncio.Event()
+        return sig
+
+    async def receive_messages(self):
+        while True:
+            sig = self._pq_signal()
+            await sig.wait()
+            sig.clear()
+            last = None
+            async for m in self.receive_response():
+                last = m
+                yield m
+            if not isinstance(last, ResultMessage):
+                yield result(uuid="pq-end")

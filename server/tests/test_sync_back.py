@@ -19,6 +19,7 @@ import time
 from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry
 from server.tests.fakes import fake_sdk as f
+from server.tests.fakes.fake_sdk import PerQueryScript
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +154,7 @@ def test_on_sync_back_sdk_rotation_captured_in_slot(tmp_path):
     new_refresh = "rotated-refresh-token"
 
     # Fake SDK that writes a new refresh token into config_dir during receive_response
-    class RotatingSDK:
+    class RotatingSDK(PerQueryScript):
         async def __aenter__(self): return self
         async def __aexit__(self, *_): return False
         async def query(self, prompt: str): pass

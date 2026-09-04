@@ -6,9 +6,10 @@ import server.sessions.events as ev
 from server.tests.fakes.fake_sdk import FakeSDKClient
 from server.tests.fakes import fake_sdk as f
 from claude_agent_sdk import TextBlock
+from server.tests.fakes.fake_sdk import PerQueryScript
 
 
-class _RaisingClient:
+class _RaisingClient(PerQueryScript):
     """SDK client whose stream raises partway through, to exercise _drain's except."""
     def __init__(self, exc):
         self._exc = exc
@@ -177,7 +178,7 @@ def test_concurrent_send_prompt_enqueues():
 
     # Use a slow fake SDK: yield results only after a short delay so the first
     # drain is still running when the second send_prompt fires.
-    class SlowFakeSDK:
+    class SlowFakeSDK(PerQueryScript):
         def __init__(self):
             self.queries: list[str] = []
         async def __aenter__(self): return self
@@ -224,7 +225,7 @@ def test_queued_prompt_runs_after_first_turn():
     import asyncio
 
     # SDK that sends responses immediately (no delay), so both turns can complete.
-    class QuickFakeSDK:
+    class QuickFakeSDK(PerQueryScript):
         def __init__(self):
             self.queries: list[str] = []
             self._call = 0
@@ -265,7 +266,7 @@ def test_interrupt_clears_queue():
     """interrupt() clears the queue and emits an idle status."""
     import asyncio
 
-    class SlowFakeSDK:
+    class SlowFakeSDK(PerQueryScript):
         def __init__(self):
             self.queries: list[str] = []
         async def __aenter__(self): return self
@@ -340,7 +341,7 @@ def test_auto_title_only_fires_once():
 
     call_count = 0
 
-    class MultiCallSDK:
+    class MultiCallSDK(PerQueryScript):
         def __init__(self):
             self.sent: list[str] = []
         async def __aenter__(self): return self
@@ -781,7 +782,7 @@ def test_askuserquestion_options_normalized_from_strings():
 def test_queue_update_emitted_when_enqueuing():
     """Enqueuing two prompts while busy should emit QueueUpdate events with the queue contents."""
 
-    class SlowFakeSDK:
+    class SlowFakeSDK(PerQueryScript):
         def __init__(self):
             self.queries: list[str] = []
         async def __aenter__(self): return self
@@ -827,7 +828,7 @@ def test_queue_update_emitted_when_enqueuing():
 def test_cancel_queued_removes_item_and_emits_queue_update():
     """cancel_queued(0) removes the first queued item and emits a QueueUpdate + Status."""
 
-    class SlowFakeSDK:
+    class SlowFakeSDK(PerQueryScript):
         async def __aenter__(self): return self
         async def __aexit__(self, *_): return False
         async def query(self, prompt: str): pass
@@ -878,7 +879,7 @@ def test_cancel_queued_removes_item_and_emits_queue_update():
 def test_cancel_queued_out_of_range_returns_false():
     """cancel_queued with an out-of-range index returns False without emitting events."""
 
-    class SlowFakeSDK:
+    class SlowFakeSDK(PerQueryScript):
         async def __aenter__(self): return self
         async def __aexit__(self, *_): return False
         async def query(self, prompt: str): pass
@@ -999,7 +1000,7 @@ def test_queue_wire_includes_images_for_queued_prompt():
     """A prompt queued while busy is exposed via queue_wire() with its image refs."""
     import asyncio
 
-    class SlowFakeSDK:
+    class SlowFakeSDK(PerQueryScript):
         def __init__(self): self.queries = []
         async def __aenter__(self): return self
         async def __aexit__(self, *_): return False

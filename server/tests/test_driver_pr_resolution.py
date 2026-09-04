@@ -9,9 +9,10 @@ from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry
 from server.tests.fakes.fake_sdk import FakeSDKClient
 from server.tests.fakes import fake_sdk as f
+from server.tests.fakes.fake_sdk import PerQueryScript
 
 
-class _NoPRTurnClient(FakeSDKClient):
+class _NoPRTurnClient(PerQueryScript, FakeSDKClient):
     """A FakeSDKClient whose single turn includes the no-pr marker in assistant text.
 
     The Translator builds _turn_text from AssistantMessage TextBlock content (not
@@ -26,7 +27,7 @@ class _NoPRTurnClient(FakeSDKClient):
         yield f.result(session_id="sess-1", uuid="t1")
 
 
-class _PlainTurnClient(FakeSDKClient):
+class _PlainTurnClient(PerQueryScript, FakeSDKClient):
     """A FakeSDKClient whose single turn has NO marker."""
     async def receive_response(self):
         yield f.stream_start(uuid="t1")

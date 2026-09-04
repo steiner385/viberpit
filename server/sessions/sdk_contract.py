@@ -20,15 +20,37 @@ class SDKClientProtocol(Protocol):
     async def __aenter__(self) -> "SDKClientProtocol": ...
     async def __aexit__(self, *exc: Any) -> bool | None: ...
     async def query(self, prompt: str) -> None: ...
-    def receive_response(self) -> AsyncIterator[Any]:
-        """Yields, in order: SystemMessage, StreamEvent*, AssistantMessage, UserMessage,
-        ResultMessage (and HookEventMessage/RateLimitEvent, which the translator ignores)."""
+    def receive_messages(self) -> AsyncIterator[Any]:
+        """ONE persistent stream for the life of the client — every message the CLI
+        emits, in order: SystemMessage, StreamEvent*, AssistantMessage, UserMessage,
+        ResultMessage (and HookEventMessage/RateLimitEvent, which the translator
+        ignores). Ends only when the subprocess is gone.
+
+        The driver segments turns on ResultMessage itself and consumes this stream at
+        ALL times (a prompt's drain, or the idle listener between prompts): the CLI
+        also emits whole turns with no ``query()`` behind them — a background task's
+        ``<task-notification>`` it injects as a user message — and the SDK's channel
+        is bounded (100), so an unread stream both blocks the CLI on stdout and
+        replays the stale turn into the next prompt. ``receive_response()`` (stop at
+        the first result) is therefore NOT part of this contract."""
         ...
     async def interrupt(self) -> None: ...
     async def set_permission_mode(self, mode: str) -> None: ...
     async def set_model(self, model: str | None = None) -> None: ...
     async def get_server_info(self) -> dict | None: ...
     async def get_context_usage(self) -> dict: ...
+
+
+async def one_turn(client: SDKClientProtocol) -> AsyncIterator[Any]:
+    """Yield ONE turn from ``client.receive_messages()`` — up to and including its
+    ResultMessage. For the one-shot helper clients (title/summary/suggestion
+    generation), which query once and read a single reply; the session driver has
+    its own cursor and never uses this."""
+    from claude_agent_sdk import ResultMessage
+    async for msg in client.receive_messages():
+        yield msg
+        if isinstance(msg, ResultMessage):
+            return
 
 
 # Message-shape reference (consumed by translator.py). These mirror the SDK's dataclasses;

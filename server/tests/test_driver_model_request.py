@@ -19,11 +19,12 @@ from server.sessions.driver import SessionDriver
 from server.sessions.permissions import PermissionRegistry
 from server.tests.fakes.fake_sdk import FakeSDKClient
 from server.tests.fakes import fake_sdk as f
+from server.tests.fakes.fake_sdk import PerQueryScript
 
 _MARKER = '<!-- ccswitch:model=haiku reason="trivial" -->'
 
 
-class _ModelRequestTurnClient(FakeSDKClient):
+class _ModelRequestTurnClient(PerQueryScript, FakeSDKClient):
     """A FakeSDKClient whose single turn includes a self-directed model request
     marker in the assistant text."""
     async def receive_response(self):
@@ -34,7 +35,7 @@ class _ModelRequestTurnClient(FakeSDKClient):
         yield f.result(session_id="sess-1", uuid="t1")
 
 
-class _PlainTurnClient(FakeSDKClient):
+class _PlainTurnClient(PerQueryScript, FakeSDKClient):
     """A FakeSDKClient whose single turn has NO model-request marker."""
     async def receive_response(self):
         yield f.stream_start(uuid="t1")
