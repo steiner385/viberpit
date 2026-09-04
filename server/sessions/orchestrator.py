@@ -9222,9 +9222,6 @@ class SessionOrchestrator:
                             self._persist_status(record.id, "limited"),
                             name=f"limited-{record.id}",
                         )
-                        self._publish_event({
-                            "type": "status", "sessionId": record.id, "state": "limited",
-                        })
                         continue
                     log.info(
                         "rotation.trigger session=%s account=%s pct=%.1f reason=%s",
