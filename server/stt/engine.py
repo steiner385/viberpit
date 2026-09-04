@@ -81,7 +81,12 @@ class WhisperEngine:
 
     def _vad_timestamps(self, audio: Any) -> list[dict]:  # overridden in tests
         from faster_whisper.vad import VadOptions, get_speech_timestamps
-        return get_speech_timestamps(audio, VadOptions(min_silence_duration_ms=300))
+        # speech_pad_ms extends each segment's end, so it adds directly to the
+        # effective endpoint_silence_s the session waits for (the library default of
+        # 400 ms would push a 0.7 s endpoint out to ~1.1 s).
+        return get_speech_timestamps(
+            audio, VadOptions(min_silence_duration_ms=300, speech_pad_ms=100)
+        )
 
     def speech_segments(self, pcm: bytes) -> list[tuple[float, float]]:
         if not pcm:

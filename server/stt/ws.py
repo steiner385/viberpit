@@ -7,7 +7,7 @@ Protocol (server → client): `{"type":"ready"}` once the model is loaded,
 `{"type":"done"}` after the flush that `stop` (or the session deadline) triggers.
 
 Gated by the same Tailscale identity as `/ws` and `/ws/vnc`. Audio lives only in
-the DictationSession buffer (≤ max_window_s) and is never persisted or logged.
+the DictationSession buffer (≤ max_buffer_s) and is never persisted or logged.
 """
 from __future__ import annotations
 
@@ -29,12 +29,18 @@ log = logging.getLogger(__name__)
 CLOSE_NOT_ENABLED = 4004
 CLOSE_BUSY = 4005
 CLOSE_BAD_PROTOCOL = 1003
+CLOSE_TOO_LARGE = 1009
 CLOSE_INTERNAL = 1011
 
 # A connection that never sends `start` must not hold a max_concurrent slot forever.
 # Read as a module attribute (not a default arg) at call time so tests can monkeypatch
 # `server.stt.ws.HANDSHAKE_TIMEOUT_S` without rebuilding the router.
 HANDSHAKE_TIMEOUT_S = 10.0
+
+# Largest binary frame we will buffer. The client streams ~100 ms chunks (3,200 bytes),
+# so this is ~20x headroom; anything bigger is a misbehaving client trying to make the
+# next tick run VAD+whisper over a huge buffer while holding the process inference lock.
+MAX_FRAME_BYTES = 65536
 
 
 def build_stt_ws_router(
@@ -140,9 +146,11 @@ async def _serve(ws: WebSocket, engine: SttEngine, session: DictationSession,
         return
     warm = getattr(engine, "warm", None)
     if warm is not None:
-        # First use may download/load the model. Not separately time-boxed — it
-        # counts against the same session deadline the receive loop below checks,
-        # so a pathological warm still bounds the connection's lifetime.
+        # First use may download/load the model. This call is deliberately NOT
+        # time-boxed: the HF hub client has its own request timeouts, and the app
+        # lifespan pre-warms the model at startup so this is normally a no-op. The
+        # session deadline is armed before the handshake above but only enforced by
+        # the receive loop below, i.e. once warm has returned.
         await asyncio.to_thread(warm)
     await _send(ws, {"type": "ready"})
 
@@ -160,6 +168,7 @@ async def _serve(ws: WebSocket, engine: SttEngine, session: DictationSession,
 
     tick_task = asyncio.create_task(ticker())
     disconnected = False
+    oversized = False
     try:
         while True:
             remaining = deadline - loop.time()
@@ -184,7 +193,14 @@ async def _serve(ws: WebSocket, engine: SttEngine, session: DictationSession,
                 disconnected = True
                 break
             if (pcm := msg.get("bytes")) is not None:
-                session.feed(pcm)
+                if len(pcm) > MAX_FRAME_BYTES:
+                    oversized = True
+                    break
+                # Int16 samples: an odd-length frame would make numpy raise
+                # "buffer size must be a multiple of element size" on the next tick.
+                pcm = pcm[: len(pcm) & ~1]
+                if pcm:
+                    session.feed(pcm)
                 continue
             text = msg.get("text")
             if text is not None:
@@ -207,6 +223,12 @@ async def _serve(ws: WebSocket, engine: SttEngine, session: DictationSession,
         log.warning("stt: tick loop failed: %s", tick_exc)
         await _send(ws, {"type": "error", "message": str(tick_exc)})
         await _close(ws, CLOSE_INTERNAL)
+        return
+
+    if oversized:
+        # Protocol violation, not a transcription: drop the buffer without flushing.
+        await _send(ws, {"type": "error", "message": "frame too large"})
+        await _close(ws, CLOSE_TOO_LARGE, "frame too large")
         return
 
     if disconnected:

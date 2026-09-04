@@ -75,6 +75,17 @@ def test_max_window_forces_a_final_and_clears():
     assert s.buffered_s == 0.0
 
 
+def test_feed_drops_oldest_beyond_max_buffer():
+    """A client that feeds faster than inference drains must not grow the buffer
+    without bound; the cap keeps the most recent 2 * max_window_s of audio."""
+    eng = FakeEngine(text="capped", track_buffer=True)
+    s = DictationSession(eng, max_window_s=15.0)
+    s.feed(pcm(35.0))
+    assert s.buffered_s == 30.0
+    assert s.tick() == [Event("final", "capped")]
+    assert eng.transcribed == [int(30.0 * RATE) * 2]
+
+
 def test_pure_silence_is_trimmed_and_emits_nothing():
     eng = FakeEngine(segments=[])
     s = DictationSession(eng, silence_trim_s=2.0, keep_tail_s=0.5)

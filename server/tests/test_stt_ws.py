@@ -9,7 +9,13 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from server.auth.middleware import IdentityMiddleware
-from server.stt.ws import CLOSE_BUSY, CLOSE_NOT_ENABLED, build_stt_ws_router
+from server.stt.ws import (
+    CLOSE_BUSY,
+    CLOSE_NOT_ENABLED,
+    CLOSE_TOO_LARGE,
+    MAX_FRAME_BYTES,
+    build_stt_ws_router,
+)
 
 H = {"Tailscale-User-Login": "alice@example.com"}
 
@@ -199,6 +205,55 @@ def test_ticker_failure_reports_error_and_closes_1011():
         with pytest.raises(WebSocketDisconnect) as ei:
             ws.receive_text()
     assert ei.value.code == 1011
+
+
+def test_oversized_frame_closes_1009():
+    """A frame far bigger than the client's ~3.2 kB chunks is a misbehaving client:
+    refuse it outright rather than letting it grow the buffer the next tick runs
+    VAD+whisper over while holding the process-wide inference lock."""
+    client = _app(FakeEngine())
+    with client.websocket_connect("/ws/stt", headers=H) as ws:
+        ws.send_json({"type": "start", "sampleRate": 16000})
+        assert ws.receive_json() == {"type": "ready"}
+        ws.send_bytes(b"\x00" * (MAX_FRAME_BYTES + 2))
+        m = ws.receive_json()
+        assert m["type"] == "error" and m["message"] == "frame too large"
+        with pytest.raises(WebSocketDisconnect) as ei:
+            ws.receive_text()
+    assert ei.value.code == CLOSE_TOO_LARGE
+
+
+def test_odd_length_frame_is_trimmed_not_fatal():
+    """Int16 PCM: an odd byte count would make numpy raise "buffer size must be a
+    multiple of element size" and surface as a 1011 with a raw numpy message."""
+    client = _app(FakeEngine())
+    with client.websocket_connect("/ws/stt", headers=H) as ws:
+        ws.send_json({"type": "start", "sampleRate": 16000})
+        assert ws.receive_json() == {"type": "ready"}
+        ws.send_bytes(b"\x00" * 3)
+        ws.send_json({"type": "stop"})
+        got = _collect_until(ws, "done")
+        assert not any(m["type"] == "error" for m in got)
+
+
+def test_audio_sent_during_warm_is_buffered():
+    """The real client sends `start` and PCM back-to-back on `onopen`, while the
+    server may still be inside warm(). Those pre-`ready` frames must not be lost."""
+    class SlowWarm(FakeEngine):
+        def warm(self):
+            time.sleep(0.2)
+            super().warm()
+
+    eng = SlowWarm()
+    client = _app(eng)
+    with client.websocket_connect("/ws/stt", headers=H) as ws:
+        ws.send_json({"type": "start", "sampleRate": 16000})
+        ws.send_bytes(b"\x00\x00" * 8000)      # 0.5 s, sent before reading `ready`
+        _collect_until(ws, "ready")
+        ws.send_json({"type": "stop"})
+        _collect_until(ws, "done")
+    assert eng.warmed == 1
+    assert eng.fed_total == 16000              # the pre-ready bytes reached the session
 
 
 def test_handshake_timeout_closes_1003_and_releases_slot(monkeypatch):

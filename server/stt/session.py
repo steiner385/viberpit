@@ -31,6 +31,7 @@ class DictationSession:
         silence_trim_s: float = 2.0,
         keep_tail_s: float = 0.5,
         sample_rate: int = SAMPLE_RATE,
+        max_buffer_s: float | None = None,
     ) -> None:
         self.engine = engine
         self.endpoint_silence_s = endpoint_silence_s
@@ -38,6 +39,11 @@ class DictationSession:
         self.silence_trim_s = silence_trim_s
         self.keep_tail_s = keep_tail_s
         self.sample_rate = sample_rate
+        # Hard ceiling on buffered audio. tick() normally drains at max_window_s, but a
+        # client that feeds faster than inference runs (or while a tick is in flight)
+        # must not grow the buffer without bound — every extra second is re-run through
+        # VAD+whisper under the process-wide inference lock.
+        self.max_buffer_s = 2 * max_window_s if max_buffer_s is None else max_buffer_s
         self._buf = bytearray()
         self._lock = threading.Lock()
         self._fed_since_tick = False
@@ -60,6 +66,11 @@ class DictationSession:
         with self._lock:
             self._buf += pcm
             self._fed_since_tick = True
+            cap = self._nbytes(self.max_buffer_s)
+            if len(self._buf) > cap:
+                # Drop the OLDEST bytes: the newest audio is what the speaker is
+                # still saying, so the tail is what we must keep.
+                del self._buf[: len(self._buf) - cap]
 
     # -- policy -------------------------------------------------------------
     def tick(self) -> list[Event]:
