@@ -7,13 +7,19 @@
 
 import { createContext, useContext } from 'react'
 import { useSessionRuntime, type SessionRuntime } from '@/session/useSessionRuntime'
+import type { SocketChannel } from '@/ws/client'
 
 const Ctx = createContext<SessionRuntime | null>(null)
 
+/**
+ * `channel` picks the WebSocket the runtime attaches on. The AI drawer mounts its own
+ * provider with `channel="assistant"` so it can run a second live session alongside the
+ * page's one without the two stealing each other's attachment.
+ */
 export function SessionRuntimeProvider({
-  sessionId, initialPrompt, children,
-}: { sessionId: string; initialPrompt?: string; children: React.ReactNode }) {
-  const rt = useSessionRuntime(sessionId, initialPrompt)
+  sessionId, initialPrompt, channel = 'route', children,
+}: { sessionId: string; initialPrompt?: string; channel?: SocketChannel; children: React.ReactNode }) {
+  const rt = useSessionRuntime(sessionId, initialPrompt, channel)
   return <Ctx.Provider value={rt}>{children}</Ctx.Provider>
 }
 
