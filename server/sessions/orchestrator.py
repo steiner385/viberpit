@@ -106,6 +106,10 @@ _ACTIVE_STATUSES = frozenset({"in_progress", "working", "waiting_input", "conden
 # is the legacy pre-crash spelling of an active turn (see rehydrate()).
 _REPLAY_STATUSES = _status_mod.MID_TURN_STATUSES | frozenset({"working"})
 
+# rotate_to_best replays the last prompt for these. The two parked shapes are the
+# whole point of the action — a stalled session's last prompt is the one that failed.
+_ROTATE_REPLAY_STATUSES = _REPLAY_STATUSES | {"needs_attention", "limited"}
+
 # Statuses where a user-initiated "Reload session" (reload_session) makes no sense:
 # nothing is running (archived / ended), or the session is deliberately parked
 # BEFORE its first turn (queued for a capacity slot, awaiting a human's launch
@@ -7632,6 +7636,73 @@ class SessionOrchestrator:
         log_event(log, logging.INFO, "session.reload", session_id=session_id,
                   identity=identity, replayed=record.status in _REPLAY_STATUSES)
         return "reloaded"
+
+    async def rotate_to_best(self, session_id: str,
+                             identity: str = SYSTEM_IDENTITY) -> str:
+        """User-initiated "move to the next best account" — the per-session menu
+        item and the batch "Rotate stalled" button.
+
+        Selection is the same as automatic rotation (quarantined accounts and the
+        current one excluded, load-aware), the swap is the same ``_reassign``
+        primitive, and the differences are deliberate:
+
+        * it un-pins: an explicit "move me" overrides an earlier explicit "stay";
+        * it does NOT count toward the rotation cap — that cap guards automatic
+          thrash, and a human asking to move is not thrash;
+        * the last prompt is replayed for mid-turn AND parked (needs_attention /
+          limited) sessions — a stalled session's last prompt is the one that
+          failed. A session parked on a question / permission / review resumes
+          and waits, the reload rule.
+
+        Returns "rotated" | "skipped:<reason>" | "no_driver".
+        """
+        record = self._records.get(session_id)
+        if record is None:
+            return "skipped:not-found"
+        if record.status in _NOT_RELOADABLE_STATUSES:
+            return f"skipped:{record.status}"
+        now = self._clock()
+        exclude = self._recovery.quarantined(now=now) | frozenset({record.account})
+        try:
+            new_account = select_account(exclude=exclude, load=self.live_session_load()).name
+        except AllAccountsBusy as e:
+            if is_usage_stalled(record.status, record.paused_reason):
+                # Already parked: honour the move request (drop the pin) and refresh
+                # the earliest-reset the card shows. A healthy session is left as is.
+                if record.account_pinned:
+                    record.account_pinned = False
+                    await self._persist_pin(record.id, False)
+                await self._pause_session(record, reason="all_accounts_busy",
+                                          earliest_reset=e.earliest_reset)
+            return "skipped:all_accounts_busy"
+        if record.account_pinned:
+            record.account_pinned = False
+            await self._persist_pin(record.id, False)
+        replay = record.status in _ROTATE_REPLAY_STATUSES
+        await self._reassign(record, new_account, reason="manual_rotate",
+                             replay_last_prompt=replay)
+        driver = self._drivers.get(session_id)
+        if driver is None:
+            return "no_driver"
+        _rethread_identity(driver, identity)
+        log_event(log, logging.INFO, "session.rotate_to_best", session_id=session_id,
+                  identity=identity, to_account=new_account, replayed=replay)
+        return "rotated"
+
+    async def set_account_pin(self, session_id: str, pinned: bool) -> str:
+        """Pin the session to its CURRENT account (usage-ceiling rotation then marks
+        it `limited` instead of moving it) or clear the pin. Clearing the pin on a
+        `limited` session is the recovery the pin was blocking, so it rotates now.
+        Returns "pinned" | "unpinned" | "skipped:not-found"."""
+        record = self._records.get(session_id)
+        if record is None:
+            return "skipped:not-found"
+        record.account_pinned = pinned
+        await self._persist_pin(session_id, pinned)
+        if not pinned and record.status == "limited":
+            self._spawn(self._rotate_away(record, reason="unpinned"),
+                        name=f"unpin-rotate-{session_id}")
+        return "pinned" if pinned else "unpinned"
 
     @staticmethod
     def _env_truthy(name: str) -> bool:
