@@ -69,8 +69,8 @@ mic ─getUserMedia─▶ AudioContext(16 kHz) ─AudioWorklet─▶ Int16 PCM c
   2. `segments = engine.speech_segments(buf)`; if empty and `len(buf) > 2 s` → trim the
      buffer to its last 0.5 s (silence never accumulates) → `[]`;
   3. if the last segment ends ≥ `endpoint_silence_s` before the buffer end → transcribe
-     `buf[:end]`, emit `final`, drop that prefix; then fall through to step 5 for the
-     remainder if it holds speech;
+     `buf[:end]`, emit `final`, drop that prefix (what remains is trailing silence, so no
+     interim is needed this tick);
   4. elif buffer ≥ `max_window_s` → transcribe everything, emit `final`, clear;
   5. else transcribe the buffer and emit `interim` unless the text equals the last interim.
   `flush() -> list[Event]` transcribes whatever remains and emits a `final` (if non-empty).
