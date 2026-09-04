@@ -187,6 +187,37 @@ def test_blast_cap_halts_loudly_without_partial_apply():
     assert any(lvl == "error" and kind == "gh_reconcile_cap" for lvl, _, kind in ctx.events)
 
 
+def test_cap_halt_notifies_once_per_overshoot_not_once_per_tick():
+    """Same latch as the incomplete-board park, same reason: the halt applies nothing, so
+    the identical oversized set is re-planned every 120 s until a human raises the cap.
+    A *different* overshoot is news and gets through; the count ticks either way."""
+    def over(n):
+        return _facts(items=[_item(i) for i in range(1, n + 1)], mirror={},
+                      open_issue_nodes={f"{REPO}#{i}": f"I_{i}" for i in range(1, n + 1)})
+
+    states = [over(7), over(7), over(7), over(8)]   # ...then one more issue arrives
+    ctx = Ctx(); seen = iter(states)
+    loop, _calls = _loop(ctx, config={"max_mutations_per_cycle": 3},
+                         load_facts_fn=lambda p: next(seen))
+    for _ in states:
+        asyncio.run(loop.tick())
+    # three identical overshoots -> one push; the fourth is a different one -> a second push
+    assert len([e for e in ctx.events if e[2] == "gh_reconcile_cap"]) == 2
+    assert ctx.gh_reconcile_counts["halted_cap"] == 1      # counts tick every cycle
+
+
+def test_cap_halt_latch_resets_once_the_product_fits_again():
+    many = _facts(items=[_item(n) for n in range(1, 8)], mirror={},
+                  open_issue_nodes={f"{REPO}#{n}": f"I_{n}" for n in range(1, 8)})
+    states = [many, _facts(), many]          # over cap -> fits -> over cap again
+    ctx = Ctx(); seen = iter(states)
+    loop, _calls = _loop(ctx, config={"max_mutations_per_cycle": 3},
+                         load_facts_fn=lambda p: next(seen))
+    for _ in states:
+        asyncio.run(loop.tick())
+    assert len([e for e in ctx.events if e[2] == "gh_reconcile_cap"]) == 2
+
+
 def test_migrate_raises_cap():
     many = _facts(items=[_item(n) for n in range(1, 8)], mirror={},
                   open_issue_nodes={f"{REPO}#{n}": f"I_{n}" for n in range(1, 8)})
@@ -269,7 +300,9 @@ def test_ensure_fields_creates_missing_and_extends_status_options():
 def test_status_option_repair_is_a_union_and_never_drops_a_human_column():
     """updateProjectV2Field REPLACES the option set, so the document must carry the
     board's existing options (in their order) plus the missing spec names — a column
-    a human added ("Icebox") must survive the migration."""
+    a human added ("Icebox") must survive the migration, and must survive it with its
+    option **id** intact (#987): without the id GitHub mints a new one and every item
+    sitting in that column loses its Status."""
     human = _facts(field_cache={"Score": {"field_id": "F_sc", "options": {}},
                                 "Stage": {"field_id": "F_st", "options": {}},
                                 "Status": {"field_id": "F_s",
@@ -278,8 +311,10 @@ def test_status_option_repair_is_a_union_and_never_drops_a_human_column():
     ctx = Ctx(); loop, calls = _loop(ctx, facts=human, config={"migrate": True})
     asyncio.run(loop.tick())
     doc = [d for d in _docs(calls) if "updateProjectV2Field" in d][0]
-    assert '{name: "Icebox"' in doc
-    assert all(f'{{name: "{n}"' in doc for n in STATUS_OPTIONS)
+    assert '{id: "O_i", name: "Icebox"' in doc               # id echoed -> id preserved
+    assert '{id: "O_b", name: "Backlog"' in doc
+    # spec names the board doesn't have yet carry no id: they are genuinely new options
+    assert all(f'{{name: "{n}"' in doc for n in STATUS_OPTIONS if n != "Backlog")
     assert doc.index('"Icebox"') < doc.index('"Ready"')      # existing options keep their order
     (m,) = calls["record"][0][0]
     assert m.new_value[:2] == ["Icebox", "Backlog"] and set(STATUS_OPTIONS) <= set(m.new_value)
@@ -386,6 +421,21 @@ def test_dry_run_is_exempt_from_the_post_bootstrap_gap_check():
     assert "create_field" in kinds and "set_field" in kinds
     assert calls["mutate"] == [] and calls["park"] == []
     assert not any("bootstrap did not complete" in s for s in _parked_events(ctx))
+
+
+def test_post_bootstrap_gap_emit_is_latched_too():
+    """Same one-shot rule as the migrate-off park: a board whose bootstrap keeps failing
+    (fail, fail → parked, then skipped as parked) must not push an error every 120 s."""
+    sparse = _facts(field_cache={"Status": {"field_id": "F_s", "options": {"Todo": "O_t"}}})
+
+    def mutate(doc):
+        return RATE_OK if doc.startswith("query { rateLimit") else {"errors": [{"message": "boom"}]}
+
+    ctx = Ctx(); loop, _calls = _loop(ctx, facts=sparse, mutate=mutate, config={"migrate": True})
+    for _ in range(3):
+        asyncio.run(loop.tick())
+        assert ctx.gh_reconcile_counts["parked"] >= 1        # counted every cycle
+    assert len(_parked_events(ctx)) == 1
 
 
 def test_bootstrap_failure_parks_and_is_then_never_replanned():

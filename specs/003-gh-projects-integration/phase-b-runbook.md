@@ -25,20 +25,32 @@
   the defaults in place and the board comes out of the migration with both, plus a dead `Todo`.
   Renaming in the UI first leaves the union with nothing to append.
 
-## Caveat: the Status-option update erases existing Status values
-Probed live on a scratch board (`spike_gh_projects_v2.py optionids`, findings §"Option-id probe"):
-`updateProjectV2Field` **regenerates every option id**, including for names re-sent unchanged, and
-item values pointing at the old ids are **silently blanked** — no error, the value is just gone.
+## Board schema safety (verified live on a scratch board, #987)
+`python scripts/spike_gh_projects_v2.py optionids` creates a throwaway board, runs the migrate
+union update both ways and deletes it (findings §"Option-id probe"). Findings, and what the code
+does about them:
 
-So the union `_ensure_fields` sends preserves a human's extra *columns* but not their *contents*.
-Accept this before running the first apply with `migrate` on:
-- Items the reconciler manages refill on the following cycles — it re-derives Status for every item
-  **in the mirror** and pushes it. Expect the board to look empty-ish for a tick or two.
-- A value the reconciler would never set (a hand-curated `Icebox`, a Status on an item that is not
-  in the mirror) stays blank. If any board holds hand-set Status you care about, screenshot or
-  export it first; there is no undo, and the journal's `old_value` for a `set_field_options` row is
-  the option *name list*, not the per-item values.
-- This cost is paid once per board. Steady state never edits board schema.
+- **`updateProjectV2Field` regenerates option ids unless you echo them back.** An input entry in
+  `singleSelectOptions` with no `id` is a *new* option, even when the name matches. Omitting ids,
+  the scratch board's `Todo` went `f75ad846` → `ac49461c`, and the issue parked on it read back
+  `Status: null` — silent data loss on a human's column, no error. `ProjectV2SingleSelectFieldOptionInput.id`
+  is optional-but-accepted, so `build_update_field_options` sends each preserved option's existing
+  id from `field_cache`; probed that way, ids stayed stable and the item's assignment survived. So
+  the union `_ensure_fields` sends preserves a human's extra columns *and* their contents.
+  **Caveat for anyone hand-rolling a repair from the spike script or the rollback section below:
+  pass the ids**, or every Status on the board is blanked — there is no undo, and the journal's
+  `old_value` for a `set_field_options` row is the option *name list*, not the per-item values.
+  Colors and descriptions are also replaced by whatever the input carries — the reconciler sends
+  `GRAY`/`""` for the spec options it appends, and the probe confirmed preserved entries keep the
+  color/description they were sent.
+- **The spec vocabulary is case-sensitive against GitHub's defaults** (hence the rename step
+  above). Spec `In progress` does not match the built-in `In Progress`, so a stock board that was
+  not renamed comes out of the migrate run with *both* columns. Cosmetic — the reconciler writes
+  only to its own `In progress` — but a case-insensitive union is the wrong fix: `_field_gap` and
+  `build_batch` both look options up by the exact spec name, so folding case would park every
+  differently-cased board. `Done` matches the default exactly and is reused; `Todo` has no spec
+  equivalent and simply survives as an extra human column.
+- Steady state never edits board schema; the union runs only while `migrate` is on.
 
 ## Enable sequence (spec §8 Phase B: dry-run → journal review → enable)
 1. Set `CCSWITCH_GH_RECONCILE_ENABLED=true` in `/etc/ccswitch/daemon.env` and restart at a quiet
@@ -97,6 +109,12 @@ spike script. Removing compiled edges: `removeBlockedBy` with the same ids.
   every `set_field` for the missing field would raise UnknownOption and park a whole 20-row batch,
   burying the one real failure. Fix the failed `create_field`/`set_field_options` row (see
   `?state=failed` / `?state=parked`), delete the parked journal row, and the next tick retries.
+  Latched like the migrate-off form: one push per distinct gap, not one per tick.
+- `gh_reconcile_cap` — the planned set exceeds the cap; nothing was applied. Raise `migrate_cap`
+  only once you have confirmed the planned set is right. Latched per product on the
+  `(planned, cap)` overshoot: the same overshoot pushes once, a *different* one (another issue
+  arrived) pushes again, and a product that fits and later overshoots again is loud again. The
+  `halted_cap` count ticks every cycle regardless.
 - `parked` rows — a mutation failed twice; fix the cause, then delete the parked journal row to re-plan.
 - `would park batch … has no option id` in **dry run** — board vocabulary drift. Emitted once per
   product per distinct error, not once per tick: a dry run parks nothing, so it re-plans the same

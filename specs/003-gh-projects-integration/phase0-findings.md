@@ -226,3 +226,20 @@ matching by exact name, and normalising it in code is the wrong lever (`_field_g
 `build_batch` both look options up by the exact spec name, so folding case would park every board
 whose column is cased differently). Handled as a manual pre-apply step in the runbook: rename the
 board's default options to the spec names first, and the union then has nothing to append.
+
+### Follow-up: the ids are regenerated only because the input omitted them (PR #1006)
+
+The probe above sent names only — exactly what `build_update_field_options` did through PR #986.
+Re-run with the `optionids` mode extended to try the union **both ways** on two scratch boards:
+
+| union update | preserved option ids | item assignment |
+|---|---|---|
+| names only | **regenerated** — `Todo` `f75ad846` → `ac49461c` | **lost** (`Status: null`) |
+| echoing each existing `id` | **preserved** | **survived** |
+
+`ProjectV2SingleSelectFieldOptionInput.id` is optional-but-accepted: an entry *with* an id is an
+update of that option, an entry without one is a new option, name match or not. So the "column-
+preserving, not non-destructive" verdict holds only for a names-only input. `build_update_field_options`
+now takes `option_ids` and `_ensure_fields` passes the board's name → option-id map straight from
+`field_cache`, so the reconciler's own union keeps ids and per-item values. The pre-apply caveat in
+the runbook is kept for hand-rolled repairs (spike script, rollback section) that omit the ids.
