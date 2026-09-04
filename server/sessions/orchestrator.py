@@ -8354,18 +8354,38 @@ class SessionOrchestrator:
                         # No resume to blame — the SDK genuinely can't start (e.g. a
                         # truly dead account token / system problem). Surface it.
                         raise
-                    # Resume failed — almost always because the stored claude_session_id
-                    # can't be resumed from rec.cwd (the original session lived under a
-                    # different project dir, or the claude session was pruned). Fall back
-                    # to a FRESH session so the record stays usable: the prior transcript
-                    # still shows via replay, and new turns get (and persist) a new
-                    # claude_session_id. Only if the fresh start ALSO fails do we error.
-                    log.warning("session.resume id=%s could not resume claude_sid=%s; starting fresh",
-                                session_id, resume, exc_info=True)
-                    try:
+                    # A start() failure is NOT proof that the resume handle is bad, and
+                    # guessing that it is costs the user their conversation: the fresh
+                    # driver below reports a new claude_session_id, _persist_claude_session_id
+                    # overwrites the stored one, and the real transcript is orphaned with
+                    # nothing left pointing at it. That is not hypothetical — on 2026-09-04
+                    # a torn read of the account's `.claude.json` (rocky's account store was
+                    # still mounted with the 600s sshfs attribute cache #1005 replaced) made
+                    # the CLI exit 1 inside the SDK's initialize(), and six sessions were
+                    # permanently detached from transcripts up to 5.8 MB that were intact on
+                    # disk the entire time.
+                    #
+                    # The transcript file is the discriminator, and it is a fact rather than
+                    # a guess about an exception's meaning: if it is STILL THERE the handle
+                    # is fine, so re-raise and let the caller retry once the real fault
+                    # clears (_recover_resume_failures_once already retries and drives the
+                    # "failed to resume" banner). Only when it is genuinely gone — pruned,
+                    # or recorded under a different project dir — is starting fresh the
+                    # right call, and then there is no history left to lose.
+                    transcript = await asyncio.to_thread(
+                        self._find_transcript, str(cfg_dir), resume, rec.cwd)
+                    with contextlib.suppress(Exception):
                         await driver.aclose()
-                    except Exception:
-                        pass
+                    if transcript is not None:
+                        log.warning(
+                            "session.resume id=%s start failed but the transcript for "
+                            "claude_sid=%s is intact at %s — NOT starting fresh (that would "
+                            "orphan it); surfacing the failure instead",
+                            session_id, resume, transcript, exc_info=True)
+                        raise
+                    log.warning("session.resume id=%s could not resume claude_sid=%s "
+                                "(no transcript on disk); starting fresh",
+                                session_id, resume, exc_info=True)
                     driver = _build(None)
                     await driver.start()
                 self._drivers[session_id] = driver
