@@ -98,8 +98,11 @@ def chunk(mutations: Sequence[Mutation], size: int = MAX_ALIASES) -> list[list[M
     return [list(mutations[i:i + size]) for i in range(0, len(mutations), size)]
 
 
-def _options(names: Sequence[str]) -> str:
-    return ", ".join('{name: %s, color: GRAY, description: ""}' % _q(n) for n in names)
+def _options(names: Sequence[str], ids: Mapping[str, str] | None = None) -> str:
+    return ", ".join(
+        '{%sname: %s, color: GRAY, description: ""}'
+        % ("id: %s, " % _q((ids or {}).get(n)) if (ids or {}).get(n) else "", _q(n))
+        for n in names)
 
 
 def build_create_field(project_node_id: str, name: str, data_type: str,
@@ -111,7 +114,18 @@ def build_create_field(project_node_id: str, name: str, data_type: str,
             % (_q(project_node_id), data_type, _q(name), extra))
 
 
-def build_update_field_options(field_id: str, options: Sequence[str]) -> str:
+def build_update_field_options(field_id: str, options: Sequence[str],
+                               *, option_ids: Mapping[str, str] | None = None) -> str:
+    """Replace a single-select's option set with ``options`` (the caller's union, in order).
+
+    ``updateProjectV2Field`` REPLACES the option list wholesale, and an input entry without
+    an ``id`` is a *new* option: verified on a scratch board (#987, ``spike_gh_projects_v2.py
+    optionids``) that omitting ids regenerates every id — ``Todo`` went ``f75ad846`` →
+    ``ac49461c`` — and every item parked on a regenerated option came back with a null
+    value. Passing each preserved option's existing id (``option_ids``, the board's
+    name → option-id map straight out of ``field_cache``) keeps ids stable and the
+    assignments with them. Names absent from the map are created fresh, which is exactly
+    what the appended spec options want."""
     return ("mutation { updateProjectV2Field(input: {fieldId: %s, singleSelectOptions: [%s]}) "
             "{ projectV2Field { ... on ProjectV2SingleSelectField { id name options { id name } } } } }"
-            % (_q(field_id), _options(options)))
+            % (_q(field_id), _options(options, option_ids)))

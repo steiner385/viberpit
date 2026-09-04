@@ -154,6 +154,11 @@ class GhReconcileLoop:
         # journal rows so its emit is self-limiting, but a dry run parks nothing and re-plans
         # the identical drift every tick. Keyed project id → the drift already reported.
         self._dry_drift_warned: dict[str, set[str]] = {}
+        # Same latch for the blast-cap halt: it applies nothing, so the identical oversized set
+        # is re-planned and re-reported every tick until a human raises the cap or the
+        # decisions change. Keyed project id → the (planned, cap) overshoot already reported,
+        # so a *different* overshoot (one more issue arrived) still speaks.
+        self._cap_warned: dict[str, tuple[int, int]] = {}
 
     async def tick(self) -> None:
         try:
@@ -249,13 +254,14 @@ class GhReconcileLoop:
         therefore sent as the UNION of the board's existing options (in their order) and any
         missing spec names appended, so a human's extra COLUMN is never dropped.
 
-        Its VALUES are another matter. Probed live on a scratch board (#987,
-        ``spike_gh_projects_v2.py optionids``): ``updateProjectV2Field`` regenerates every
-        option id even for names that were re-sent unchanged, and item values pointing at the
-        old ids are silently blanked. The union keeps the columns; it cannot keep what was in
-        them. That is survivable here only because the reconciler re-derives and re-pushes
-        Status for every mirrored item afterwards — see the runbook's option-id caveat, which
-        is where the one-time cost is written down for a human to accept before the apply.
+        Its VALUES need one more thing. Probed live on a scratch board (#987,
+        ``spike_gh_projects_v2.py optionids``): an input entry without an ``id`` is a NEW
+        option to ``updateProjectV2Field`` even when the name matches, so a names-only union
+        regenerates every option id and silently blanks the Status of every item parked on
+        those columns. Each preserved option therefore carries its existing id straight out of
+        ``field_cache`` (``option_ids`` on ``build_update_field_options``); the probe confirmed
+        ids and item assignments survive that way. The runbook keeps the caveat for anyone
+        hand-rolling a repair without the ids.
 
         A bootstrap mutation that fails twice PARKS exactly like an item mutation: a board whose
         field creation is broken must not be retried at every tick forever. The caller re-runs
@@ -279,7 +285,8 @@ class GhReconcileLoop:
             union = have + [n for n in STATUS_OPTIONS if n not in have]
             wanted.append((Mutation("set_field_options", status["field_id"], "Status",
                                     have, union, f"fields:{facts.slug}"),
-                           build_update_field_options(status["field_id"], union)))
+                           build_update_field_options(status["field_id"], union,
+                                                      option_ids=status.get("options"))))
         if not wanted:
             return cache
         batch_id = f"fields-{now.strftime('%Y%m%dT%H%M%S')}"
@@ -414,11 +421,17 @@ class GhReconcileLoop:
             return
         if len(planned) > cap:
             counts["halted_cap"] += 1
-            await self._ctx.emit("error", f"reconcile halted for {product.slug}: {len(planned)} "
-                                 f"mutations exceed cap {cap}; nothing applied",
-                                 kind="gh_reconcile_cap", target=product.project_id,
-                                 detail={"planned": len(planned), "cap": cap})
+            # Latched like the incomplete-board park (see ``_cap_warned``): the halt applies
+            # nothing, so the same overshoot is re-planned every tick until a human acts.
+            overshoot = (len(planned), cap)
+            if self._cap_warned.get(product.project_id) != overshoot:
+                self._cap_warned[product.project_id] = overshoot
+                await self._ctx.emit("error", f"reconcile halted for {product.slug}: {len(planned)} "
+                                     f"mutations exceed cap {cap}; nothing applied",
+                                     kind="gh_reconcile_cap", target=product.project_id,
+                                     detail={"planned": len(planned), "cap": cap})
             return
+        self._cap_warned.pop(product.project_id, None)     # fits again -> next overshoot is loud
         # 4. apply, write-ahead journaled per batch
         batch_id = f"{'dry' if dry_run else 'run'}-{now.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
         drift: set[str] = set()          # vocabulary drift seen this cycle; latches the dry-run emit
