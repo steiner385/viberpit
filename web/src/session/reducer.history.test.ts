@@ -63,4 +63,58 @@ describe('history paging reducer', () => {
     expect(s.turns[0].id).toBe('u-old')
     expect(s.earliestTurn).toBe(4)
   })
+
+  // ── page-boundary ordering (session 888ad2bf, 2026-09-03) ────────────────────
+  // The server prepends a window's OWNING prompt to any page whose head lands
+  // mid-logical-turn. The same prompt id therefore arrives once per page until the
+  // page holding its real position loads. The older page must win.
+
+  const settled = (turns: SessionEvent[]) => ({
+    ...initialTranscript, replaying: false, earliestTurn: 909,
+    turns: buildTurnsFromEvents(turns),
+  })
+
+  it('moves a boundary-prefixed prompt to its real position when the older page holding it arrives', () => {
+    // Attach window (turns 909..): owner prefix U_gh (real position is in page 889..908).
+    const attachWindow: SessionEvent[] = [
+      { type: 'user', turnId: 'U_gh', text: 'Set up the GH Projects hierarchy', ts: 3 },
+      { type: 'turnStart', turnId: 'a909' }, { type: 'textDelta', turnId: 'a909', text: 'x', ts: 5 }, { type: 'turnEnd', turnId: 'a909' },
+    ]
+    // Page before=909 (turns 889..908): prefix U_ready, then a889, then U_gh at its REAL position, then a908.
+    const page909: SessionEvent[] = [
+      { type: 'user', turnId: 'U_ready', text: 'are we ready to dogfood this?', ts: 1 },
+      { type: 'turnStart', turnId: 'a889' }, { type: 'textDelta', turnId: 'a889', text: 'y', ts: 2 }, { type: 'turnEnd', turnId: 'a889' },
+      { type: 'user', turnId: 'U_gh', text: 'Set up the GH Projects hierarchy', ts: 3 },
+      { type: 'turnStart', turnId: 'a908' }, { type: 'textDelta', turnId: 'a908', text: 'z', ts: 4 }, { type: 'turnEnd', turnId: 'a908' },
+    ]
+    let s = settled(attachWindow)
+    expect(s.turns.map((t) => t.id)).toEqual(['U_gh', 'a909'])
+    s = transcriptReducer(s, { type: '_prependHistory', events: page909, earliestTurn: 889 } as never)
+    expect(s.turns.map((t) => t.id)).toEqual(['U_ready', 'a889', 'U_gh', 'a908', 'a909'])
+    expect(s.turns.filter((t) => t.id === 'U_gh')).toHaveLength(1)
+  })
+
+  it('keeps a repeated owner prefix at the top of the OLDEST loaded page, not at a page boundary', () => {
+    // Mega-turn: pages 829..848 and 809..828 are both prefixed with U_phase.
+    const page849: SessionEvent[] = [
+      { type: 'user', turnId: 'U_phase', text: 'Start Phase B', ts: 1 },
+      { type: 'turnStart', turnId: 'a829' }, { type: 'textDelta', turnId: 'a829', text: 'b', ts: 20 }, { type: 'turnEnd', turnId: 'a829' },
+    ]
+    const page829: SessionEvent[] = [
+      { type: 'user', turnId: 'U_phase', text: 'Start Phase B', ts: 1 },
+      { type: 'turnStart', turnId: 'a809' }, { type: 'textDelta', turnId: 'a809', text: 'a', ts: 10 }, { type: 'turnEnd', turnId: 'a809' },
+    ]
+    let s = settled([{ type: 'turnStart', turnId: 'a849' }, { type: 'turnEnd', turnId: 'a849' }])
+    s = transcriptReducer(s, { type: '_prependHistory', events: page849, earliestTurn: 829 } as never)
+    expect(s.turns.map((t) => t.id)).toEqual(['U_phase', 'a829', 'a849'])
+    s = transcriptReducer(s, { type: '_prependHistory', events: page829, earliestTurn: 809 } as never)
+    // Before the fix this was ['a809', 'U_phase', 'a829', 'a849'] — the prompt pinned at the boundary.
+    expect(s.turns.map((t) => t.id)).toEqual(['U_phase', 'a809', 'a829', 'a849'])
+  })
+
+  it('leaves the existing turns untouched when the page has no overlap', () => {
+    let s = settled([{ type: 'turnStart', turnId: 'a-cur' }, { type: 'turnEnd', turnId: 'a-cur' }])
+    s = transcriptReducer(s, { type: '_prependHistory', events: olderTurn, earliestTurn: 4 } as never)
+    expect(s.turns.map((t) => t.id)).toEqual(['u-old', 'a-old', 'a-cur'])
+  })
 })
