@@ -2535,6 +2535,26 @@ class SessionOrchestrator:
         spawn_done: asyncio.Future = asyncio.get_running_loop().create_future()
         self._spawning[session_id] = spawn_done
         try:
+            # An assistant-kind session gets its ClaudeAgentOptions overlay (system
+            # prompt, in-process `ccswitch` MCP server, no builtin tools) registered
+            # BEFORE the driver is built: _session_factory picks it up from
+            # self._assistant_overlays the moment the SDK factory closure runs inside
+            # driver.start() below.
+            assistant_api = None
+            if is_assistant_kind(kind):
+                from server.assistant.client import AssistantApi
+                from server.assistant.options import assistant_options
+                from server.assistant.server import build_server
+                from server.assistant.token import mint_token
+                from server.config import get_settings
+                cfg = get_settings()
+                assistant_api = AssistantApi(
+                    base_url=f"http://127.0.0.1:{cfg.port}",
+                    token=mint_token(identity, session_id), session_id=session_id)
+                self.register_assistant_overlay(session_id, assistant_options(
+                    server=build_server(assistant_api), max_turns=cfg.assistant_max_turns,
+                    model=model or cfg.assistant_model))
+
             # Start a SessionDriver backed by the configured SDK factory.
             driver = SessionDriver(
                 session_id, account, cwd, str(cfg_dir),
@@ -2548,13 +2568,19 @@ class SessionOrchestrator:
                 get_condense_estimate=self._condense_estimate,
                 on_recoverable_failure=self._handle_recoverable_failure,
                 suggester=self._suggester_for(kind),
+                assistant_api=assistant_api,
             )
             try:
                 await driver.start()
             except Exception:
                 # driver.start() failed — remove the pre-seeded record so the session
-                # does not appear as a ghost idle card in list_sessions.
+                # does not appear as a ghost idle card in list_sessions, and release
+                # the overlay/loopback client an assistant spawn registered above
+                # (aclose() never runs for a driver that never started).
                 self._records.pop(session_id, None)
+                if assistant_api is not None:
+                    self._assistant_overlays.pop(session_id, None)
+                    await assistant_api.aclose()
                 raise
             # Apply the chosen model before the first prompt runs (initial prompt is
             # deferred until a client attaches, so this always lands on turn one). The
@@ -7073,6 +7099,15 @@ class SessionOrchestrator:
         """
         return [self._sync_detached(r) for r in self._records.values()
                 if include_assistant or not is_assistant(r)]
+
+    async def find_assistant(self, owner_identity: str) -> SessionRecord | None:
+        """Return the live (non-archived) assistant thread owned by *owner_identity*,
+        or None. The idempotency lookup ``POST /api/assistant/session`` uses before
+        deciding whether to create, resume, or (with ``fresh``) archive-and-recreate."""
+        for r in self._records.values():
+            if is_assistant(r) and r.owner_identity == owner_identity and r.status != "archived":
+                return self._sync_detached(r)
+        return None
 
     def get_session(self, session_id: str) -> SessionRecord | None:
         """Return the in-memory SessionRecord for session_id, or None
