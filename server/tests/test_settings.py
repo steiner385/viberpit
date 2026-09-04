@@ -467,14 +467,24 @@ def test_get_settings_exposes_effective_defaults_and_accepted_modes():
 
 
 def test_get_settings_managed_is_an_allowlist_with_no_secrets():
-    with temp_env(), patch.dict(os.environ, {
-        "CCSWITCH_SELF_MODEL_SWITCH_CAP": "7",
-        "CCSWITCH_MASTER_KEY": "sekrit",
-        "CCSWITCH_GIT_SHA": "abc1234",
-        "CCSWITCH_HOST_NAME": "rocky",
-    }):
-        with _client() as client:
-            data = client.get("/api/settings", headers=IDENTITY_HEADERS).json()
+    from server.version import running_git_sha
+
+    # running_git_sha() is resolved once and cached for the process's life
+    # (see server/version.py); clear it so this test's CCSWITCH_GIT_SHA override
+    # is actually observed, and clear it again after so later tests aren't stuck
+    # with this test's value.
+    running_git_sha.cache_clear()
+    try:
+        with temp_env(), patch.dict(os.environ, {
+            "CCSWITCH_SELF_MODEL_SWITCH_CAP": "7",
+            "CCSWITCH_MASTER_KEY": "sekrit",
+            "CCSWITCH_GIT_SHA": "abc1234",
+            "CCSWITCH_HOST_NAME": "rocky",
+        }):
+            with _client() as client:
+                data = client.get("/api/settings", headers=IDENTITY_HEADERS).json()
+    finally:
+        running_git_sha.cache_clear()
     keys = [m["key"] for m in data["managed"]]
     assert "CCSWITCH_MASTER_KEY" not in keys
     assert "CCSWITCH_TAILNET_ALLOWLIST" not in keys
@@ -482,6 +492,28 @@ def test_get_settings_managed_is_an_allowlist_with_no_secrets():
     assert by_key["CCSWITCH_SELF_MODEL_SWITCH_CAP"]["value"] == 7
     assert by_key["CCSWITCH_SELF_MODEL_SWITCH_CAP"]["description"]
     assert data["about"] == {"gitSha": "abc1234", "hostName": "rocky"}
+
+
+def test_get_settings_about_falls_back_to_shared_identity_helpers():
+    """S30: with no operator overrides, about.hostName/gitSha come straight from
+    server.hostname.self_host_name / server.version.running_git_sha — the same
+    functions the deploy controller and /healthz use — not a re-implementation."""
+    from server.hostname import self_host_name
+    from server.version import running_git_sha
+
+    running_git_sha.cache_clear()
+    try:
+        with temp_env(), patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CCSWITCH_HOST_NAME", None)
+            os.environ.pop("CCSWITCH_GIT_SHA", None)
+            with _client() as client:
+                data = client.get("/api/settings", headers=IDENTITY_HEADERS).json()
+            expected_host = self_host_name()
+            expected_sha = running_git_sha()
+    finally:
+        running_git_sha.cache_clear()
+    assert data["about"]["hostName"] == expected_host
+    assert data["about"]["gitSha"] in (None, expected_sha)
 
 
 def test_put_settings_returns_the_same_shape_as_get():

@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
-import socket
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -14,7 +12,9 @@ from server.auth.middleware import current_identity
 from server.config import get_settings
 from server.db import get_db
 from server.db.models import AppSettings, DEFAULT_MAX_ACTIVE_SESSIONS
+from server.hostname import self_host_name
 from server.sessions.types import VALID_SESSION_MODES
+from server.version import running_git_sha
 
 log = logging.getLogger(__name__)
 
@@ -53,6 +53,11 @@ _MANAGED: tuple[tuple[str, str, str], ...] = (
 
 def _server_blocks() -> dict[str, object]:
     cfg = get_settings()
+    # Route through the app's identity sources of truth rather than re-reading env
+    # here: server.hostname.self_host_name is what the deploy controller and
+    # orchestrator use to name this process, and server.version.running_git_sha is
+    # what /healthz reports — About must agree with both (constitution VI).
+    sha = running_git_sha()
     return {
         "acceptedPermissionModes": list(ACCEPTED_PERMISSION_MODES),
         "effectiveDefaults": {
@@ -67,8 +72,10 @@ def _server_blocks() -> dict[str, object]:
             for attr, env, desc in _MANAGED
         ],
         "about": {
-            "gitSha": os.environ.get("CCSWITCH_GIT_SHA") or None,
-            "hostName": os.environ.get("CCSWITCH_HOST_NAME") or socket.gethostname(),
+            # running_git_sha() degrades to the "unknown" sentinel with no .git dir;
+            # the API contract is gitSha: string | null, so that maps to None.
+            "gitSha": None if sha == "unknown" else sha,
+            "hostName": self_host_name(),
         },
     }
 
