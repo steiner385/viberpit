@@ -101,10 +101,16 @@ describe('SettingsPage', () => {
     expect(document.title).toBe('Defaults · Settings — ccswitch')
   })
 
-  // Un-todo in Task 14: `SessionDefaultsSection` is still a `() => null` stub, so
-  // there is no section h2 on a MIGRATED section to assert yet. The hosted
-  // sections' chassis heading IS asserted below (`/settings/fleet`).
-  it.todo('desktop: the migrated Defaults section renders its own h2 (Task 14)')
+  it('desktop: the migrated Defaults section renders its own h2', async () => {
+    // A MIGRATED section is rendered bare (no `HostedSection` wrapper), so the
+    // chassis h2 it mounts itself is the only one on the page — which is what
+    // makes this a check that the section, not the page, owns its heading.
+    renderApp({ path: '/settings/sessions', mode: 'desktop' })
+
+    expect(await screen.findByRole('heading', { level: 2, name: 'Defaults' })).toBeInTheDocument()
+    const section = screen.getByRole('region', { name: 'Defaults' })
+    expect(within(section).getByLabelText('Default tool approvals')).toBeInTheDocument()
+  })
 
   it('desktop: the section body owns the vertical scroll', async () => {
     // `PageHost` is a clipped flex column, so the page must own an
