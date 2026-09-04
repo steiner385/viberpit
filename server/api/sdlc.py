@@ -1,8 +1,6 @@
 """SDLC initiative API (#802) + build-stage correlation (#801)."""
 from __future__ import annotations
 
-import re
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -10,7 +8,8 @@ from sqlalchemy import select
 from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.db import get_db
-from server.db.models import Initiative, InitiativeArtifact, Session as DbSession
+from server.db.models import GhProjectItem, Initiative, InitiativeArtifact, Session as DbSession, WorkItem
+from server.pm.desired_state import STATUS_BLOCKED, STATUS_NEEDS_HUMAN
 from server.sdlc.engine import (
     ArtifactView,
     AwaitApproval,
@@ -22,13 +21,9 @@ from server.sdlc.engine import (
     advance_stage,
     next_action,
 )
+from server.sdlc.slug import slugify
 
 router = APIRouter(prefix="/api/sdlc", tags=["sdlc"])
-
-
-def _slugify(title: str) -> str:
-    s = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
-    return s or "initiative"
 
 
 def _initiative_to_dict(i: Initiative) -> dict:
@@ -41,9 +36,96 @@ def _initiative_to_dict(i: Initiative) -> dict:
         "status": i.status,
         "origin": i.origin,
         "originRef": i.origin_ref,
+        "epicRepo": i.epic_repo,
+        "epicNumber": i.epic_number,
         "createdAt": i.created_at.isoformat() if i.created_at else None,
         "updatedAt": i.updated_at.isoformat() if i.updated_at else None,
     }
+
+
+async def _epic_progress_batch(
+    db, initiatives: list[Initiative], *, include_children: bool = True,
+) -> dict[str, dict | None]:
+    """Sub-issue progress for every initiative that points at an epic (spec 003
+    §7c), computed in a fixed small number of grouped queries — not one call per
+    initiative — so `GET /initiatives` can carry it on every row without an N+1
+    (the same idiom `list_initiatives` already uses to batch artifacts). ccswitch
+    deep-links to the GitHub epic rather than rebuilding a board, so ``url``
+    matters as much as the counts.
+
+    A child WorkItem is counted by ``WorkItem.id`` regardless of how many
+    ``GhProjectItem`` rows reference it — nothing constrains a work item to a
+    single project board, so an outer join alone can silently double-count a
+    child mirrored onto more than one board. When more than one status row
+    exists for a child, the most recently updated one wins.
+
+    ``include_children`` (default ``True``) controls whether the per-child
+    array is serialized into each entry. `list_initiatives` (the LIST
+    endpoint) passes ``False``: `InitiativeTrack` only ever reads
+    `url`/`done`/`total`/`blocked`/`needsHuman`, but that endpoint's query is
+    re-run on every websocket status frame (`InitiativesTab` invalidates it),
+    so an unread one-object-per-sub-issue array would be re-serialized on
+    every fleet status change for no reader. `get_initiative` (the per-slug
+    detail endpoint) keeps the default — the plan's Task 10 shape has
+    `children` there. One helper either way, so the two endpoints can't drift
+    apart on the counts themselves (constitution VI)."""
+    result: dict[str, dict | None] = {i.id: None for i in initiatives}
+    pointers = [(i.id, i.epic_repo, i.epic_number) for i in initiatives
+                if i.epic_repo and i.epic_number]
+    if not pointers:
+        return result
+
+    repos = {r for _, r, _ in pointers}
+    numbers = {n for _, _, n in pointers}
+    epic_rows = (
+        await db.execute(
+            select(WorkItem).where(WorkItem.repo.in_(repos), WorkItem.number.in_(numbers))
+        )
+    ).scalars().all()
+    epic_by_pointer = {(w.repo, w.number): w for w in epic_rows}
+
+    epic_ids = [w.id for w in epic_by_pointer.values()]
+    children_by_parent: dict[str, list[WorkItem]] = {}
+    status_by_child: dict[str, str | None] = {}
+    if epic_ids:
+        children = (
+            await db.execute(
+                select(WorkItem).where(WorkItem.parent_work_item_id.in_(epic_ids))
+            )
+        ).scalars().all()
+        for c in children:
+            children_by_parent.setdefault(c.parent_work_item_id, []).append(c)
+        child_ids = [c.id for c in children]
+        if child_ids:
+            status_rows = (
+                await db.execute(
+                    select(GhProjectItem.work_item_id, GhProjectItem.status)
+                    .where(GhProjectItem.work_item_id.in_(child_ids))
+                    .order_by(GhProjectItem.updated_at)
+                )
+            ).all()
+            for wid, st in status_rows:
+                status_by_child[wid] = st
+
+    for init_id, repo, number in pointers:
+        epic_wi = epic_by_pointer.get((repo, number))
+        children = children_by_parent.get(epic_wi.id, []) if epic_wi is not None else []
+        entry = {
+            "ref": f"{repo}#{number}",
+            "url": f"https://github.com/{repo}/issues/{number}",
+            "total": len(children),
+            "done": sum(1 for c in children if c.state == "closed"),
+            "blocked": sum(1 for c in children if status_by_child.get(c.id) == STATUS_BLOCKED),
+            "needsHuman": sum(1 for c in children if status_by_child.get(c.id) == STATUS_NEEDS_HUMAN),
+        }
+        if include_children:
+            entry["children"] = [
+                {"ref": f"{c.repo}#{c.number}", "title": c.title, "state": c.state,
+                 "status": status_by_child.get(c.id)}
+                for c in children
+            ]
+        result[init_id] = entry
+    return result
 
 
 def _artifact_to_dict(a: InitiativeArtifact) -> dict:
@@ -88,10 +170,13 @@ async def list_initiatives(
     db=Depends(get_db),
 ) -> list[dict]:
     """Return all initiatives ordered by created_at, each with its committed
-    artifact chain. The chain is fetched in one grouped query so the web board
-    renders N tracks (#803) from a single call rather than a detail fetch per
-    row (the detail endpoint additionally computes nextAction + build sessions,
-    which the board doesn't need per row)."""
+    artifact chain and (for those adopted from a GitHub epic) sub-issue
+    progress. Both are fetched in a fixed number of grouped queries so the web
+    board renders N tracks (#803) from a single call rather than a detail fetch
+    per row (the detail endpoint additionally computes nextAction + build
+    sessions, which the board doesn't need per row) — this is the only place
+    the web board reads from, so epic progress has to live here, not only on
+    the per-slug detail endpoint (#991)."""
     rows = (
         await db.execute(select(Initiative).order_by(Initiative.created_at))
     ).scalars().all()
@@ -108,10 +193,12 @@ async def list_initiatives(
     by_init: dict[str, list[InitiativeArtifact]] = {}
     for a in artifacts:
         by_init.setdefault(a.initiative_id, []).append(a)
+    epics = await _epic_progress_batch(db, rows, include_children=False)
     result = []
     for i in rows:
         d = _initiative_to_dict(i)
         d["artifacts"] = [_artifact_to_dict(a) for a in by_init.get(i.id, [])]
+        d["epic"] = epics.get(i.id)
         result.append(d)
     return result
 
@@ -123,7 +210,7 @@ async def create_initiative(
     db=Depends(get_db),
 ) -> dict:
     """Create an initiative. Returns 409 if slug already exists."""
-    slug = body.slug or _slugify(body.title)
+    slug = body.slug or slugify(body.title)
     existing = (
         await db.execute(select(Initiative).where(Initiative.slug == slug))
     ).scalar_one_or_none()
@@ -210,6 +297,7 @@ async def get_initiative(
     result["artifacts"] = [_artifact_to_dict(a) for a in artifacts]
     result["buildSessions"] = build_sessions
     result["nextAction"] = _action_to_dict(action)
+    result["epic"] = (await _epic_progress_batch(db, [ini]))[ini.id]
     return result
 
 

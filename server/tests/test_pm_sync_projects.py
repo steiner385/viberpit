@@ -76,7 +76,7 @@ def _relations_payload():
 
 
 def _loop(ctx, *, products, owner_fetch, repo_fetch, now_fn=None, config=None,
-          rename_repo=None):
+          rename_repo=None, adopt_epics=None):
     """Wire a loop with no repos to sync (so tick() goes straight to the mirror
     pass) and canned mirror seams. Every seam call is recorded in ``calls``."""
     calls = {"save_gh_project": [], "save_project_fields": [],
@@ -134,7 +134,7 @@ def _loop(ctx, *, products, owner_fetch, repo_fetch, now_fn=None, config=None,
         list_products=list_products, fetch_gh_projects=fetch_gh_projects,
         save_gh_project=save_gh_project, save_project_fields=save_project_fields,
         save_project_items=save_project_items, save_relations=save_relations,
-        rename_repo=rename_repo)
+        rename_repo=rename_repo, adopt_epics=adopt_epics)
     return loop, calls
 
 
@@ -451,3 +451,72 @@ async def test_human_edit_returned_by_save_project_items_emits_gh_human_edit():
     assert level == "info"
     assert kw["target"] == "steiner385/cc-account-switcher#950"
     assert "Status" in text and "Backlog" in text and "Ready" in text
+
+
+# ---- Task 9: adopt_epics seam — GitHub-first epics -> Initiative overlays ----
+
+
+@pytest.mark.asyncio
+async def test_adopt_epics_seam_runs_after_relations_and_emits_epic_adopted():
+    """Once a product is linked, the adopt_epics seam runs after the relations
+    loop with the product id, and the loop surfaces one info-level
+    ``epic_adopted`` event per adopted ref (issue #991)."""
+    ctx = Ctx()
+    calls = []
+
+    async def adopt_epics(project_id):
+        calls.append(project_id)
+        return ["steiner385/cc-account-switcher#945",
+                "steiner385/cc-account-switcher#950"]
+
+    def owner_fetch(owner, query):
+        if "projectsV2" in query:
+            return _owner_projects_payload()
+        if "fields" in query:
+            return _fields_payload()
+        return _items_payload()
+
+    def repo_fetch(query):
+        return _relations_payload()
+
+    loop, calls_seams = _loop(ctx, products=[_product()], owner_fetch=owner_fetch,
+                              repo_fetch=repo_fetch, adopt_epics=adopt_epics)
+    await loop.tick()
+
+    # Called once, after the relations pass, with the product id.
+    assert calls == ["p1"]
+    assert len(calls_seams["save_relations"]) == 1
+
+    epic_events = [e for e in ctx.events if e[2].get("kind") == "epic_adopted"]
+    assert len(epic_events) == 2
+    assert {kw["target"] for _, _, kw in epic_events} == {
+        "steiner385/cc-account-switcher#945", "steiner385/cc-account-switcher#950"}
+    assert all(level == "info" for level, _, _ in epic_events)
+
+
+@pytest.mark.asyncio
+async def test_adopt_epics_seam_skipped_when_board_deleted():
+    """R2: adopt_epics must not run during the board-deleted halt — creating
+    new Initiative rows while the mirror is loudly paused would contradict the
+    halt (spec §10, issue #973)."""
+    ctx = Ctx()
+    calls = []
+
+    async def adopt_epics(project_id):
+        calls.append(project_id)
+        return []
+
+    def owner_fetch(owner, query):
+        if "projectsV2" in query:
+            return _owner_projects_payload()
+        return _deleted_node_payload()
+
+    def repo_fetch(query):
+        return _relations_payload()
+
+    loop, _ = _loop(ctx, products=[_product()], owner_fetch=owner_fetch,
+                    repo_fetch=repo_fetch, adopt_epics=adopt_epics)
+    await loop.tick()
+
+    assert calls == []
+    assert [e for e in ctx.events if e[2].get("kind") == "epic_adopted"] == []
