@@ -37,6 +37,7 @@ function wrapper({ children }: { children: ReactNode }) {
 const INIT: sdlc.Initiative = {
   slug: 'ai-native-sdlc', repo: 'steiner385/ccswitch', title: 'AI-native SDLC',
   stage: 'design', status: 'active', origin: 'human', originRef: null,
+  epicRepo: null, epicNumber: null,
   createdAt: null, updatedAt: null,
   artifacts: [
     {
@@ -63,6 +64,25 @@ describe('InitiativesTab', () => {
     const link = screen.getByRole('link', { name: /intent/i })
     expect(link).toHaveAttribute(
       'href', 'https://github.com/steiner385/ccswitch/blob/abc1234/docs/sdlc/x/intent.md')
+  })
+
+  it('passes the epic progress through to the Build node as a deep link', async () => {
+    mocked.fetchInitiatives.mockResolvedValue([{
+      ...INIT, stage: 'build', epicRepo: 'o/r', epicNumber: 997,
+      epic: {
+        ref: 'o/r#997', url: 'https://github.com/o/r/issues/997',
+        total: 10, done: 3, blocked: 1, needsHuman: 0, children: [],
+      },
+    }])
+    render(<InitiativesTab />, { wrapper })
+
+    await waitFor(() => expect(screen.getByText('AI-native SDLC')).toBeInTheDocument())
+    // The deep link lives inside an aria-hidden decorative node (the track's
+    // container already exposes an aria-label summarizing all nodes), so query
+    // the DOM directly rather than by role, matching the other track assertions.
+    const link = document.querySelector('.node.active a.node-label')
+    expect(link).toHaveTextContent('Build 3/10')
+    expect(link).toHaveAttribute('href', 'https://github.com/o/r/issues/997')
   })
 
   it('shows an empty state when there are no initiatives', async () => {

@@ -6,7 +6,7 @@
 // scoped to .prdash-root) rather than re-styling (constitution VI). Unlike
 // MetroTrack it maps the SDLC lifecycle stages, not PR StageResult substates.
 import { Fragment } from 'react'
-import { INITIATIVE_STAGES, type InitiativeStage } from '@/api/sdlc'
+import { INITIATIVE_STAGES, type InitiativeEpic, type InitiativeStage } from '@/api/sdlc'
 import '../pipeline/plotroom.css'
 
 export type NodeStatus = 'done' | 'active' | 'fail' | 'pending' | 'parked'
@@ -59,20 +59,41 @@ function ariaLabel(nodes: TrackNode[]): string {
   return nodes.map((n) => `${n.label}: ${word[n.status]}`).join(', ')
 }
 
-export function InitiativeTrack({ stage, status }: { stage: string | null; status: string | null }) {
+/** Applied at render time only (never inside `trackState`, which stays a pure
+ *  (stage, status) mapper — see #991): the Build node's label picks up the
+ *  epic's sub-issue count ("Build 3/10") and becomes a deep link to the GitHub
+ *  epic, per spec §7c ("ccswitch deep-links to the GitHub Project, ccswitch
+ *  does not rebuild a board"). `tabIndex={-1}` keeps the link out of the tab
+ *  order since it lives inside an `aria-hidden` node (the container's
+ *  `aria-label` is already the accessible summary of the whole track). */
+export function InitiativeTrack(
+  { stage, status, epic }: { stage: string | null; status: string | null; epic?: InitiativeEpic | null },
+) {
   const nodes = trackState(stage, status)
   return (
     <div className="track" aria-label={ariaLabel(nodes)}>
-      {nodes.map((n, i) => (
-        <Fragment key={`${n.label}-${i}`}>
-          {i > 0 && segment(nodes[i - 1]!, `seg-${i}`)}
-          <span className={`node ${n.status}`} title={`${n.label} — ${ariaLabelWord(n.status)}`}
-                aria-hidden="true">
-            <span className="c" aria-hidden="true">{GLYPH[n.status] ?? i + 1}</span>
-            <span className="node-label">{n.label}</span>
-          </span>
-        </Fragment>
-      ))}
+      {nodes.map((n, i) => {
+        const isBuild = epic != null && INITIATIVE_STAGES[i] === 'build'
+        const label = isBuild ? `${n.label} ${epic.done}/${epic.total}` : n.label
+        const title = isBuild
+          ? `${label} — ${ariaLabelWord(n.status)} (${epic.blocked} blocked, ${epic.needsHuman} needs human)`
+          : `${n.label} — ${ariaLabelWord(n.status)}`
+        return (
+          <Fragment key={`${n.label}-${i}`}>
+            {i > 0 && segment(nodes[i - 1]!, `seg-${i}`)}
+            <span className={`node ${n.status}`} title={title} aria-hidden="true">
+              <span className="c" aria-hidden="true">{GLYPH[n.status] ?? i + 1}</span>
+              {isBuild
+                ? (
+                  <a className="node-label" href={epic.url} target="_blank" rel="noreferrer" tabIndex={-1}>
+                    {label}
+                  </a>
+                )
+                : <span className="node-label">{label}</span>}
+            </span>
+          </Fragment>
+        )
+      })}
     </div>
   )
 }

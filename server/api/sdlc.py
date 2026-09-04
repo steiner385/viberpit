@@ -8,7 +8,8 @@ from sqlalchemy import select
 from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.db import get_db
-from server.db.models import Initiative, InitiativeArtifact, Session as DbSession
+from server.db.models import GhProjectItem, Initiative, InitiativeArtifact, Session as DbSession, WorkItem
+from server.pm.desired_state import STATUS_BLOCKED, STATUS_NEEDS_HUMAN
 from server.sdlc.engine import (
     ArtifactView,
     AwaitApproval,
@@ -35,8 +36,47 @@ def _initiative_to_dict(i: Initiative) -> dict:
         "status": i.status,
         "origin": i.origin,
         "originRef": i.origin_ref,
+        "epicRepo": i.epic_repo,
+        "epicNumber": i.epic_number,
         "createdAt": i.created_at.isoformat() if i.created_at else None,
         "updatedAt": i.updated_at.isoformat() if i.updated_at else None,
+    }
+
+
+async def _epic_progress(db, ini: Initiative) -> dict | None:
+    """Sub-issue progress for an adopted epic (spec 003 §7c): count an epic's
+    child WorkItems (linked by parent_work_item_id) by GitHub issue state and by
+    Projects v2 board status. ccswitch deep-links to the GitHub epic rather than
+    rebuilding a board, so ``url`` matters as much as the counts."""
+    if not ini.epic_repo or not ini.epic_number:
+        return None
+    epic_wi = (
+        await db.execute(
+            select(WorkItem).where(
+                WorkItem.repo == ini.epic_repo, WorkItem.number == ini.epic_number
+            )
+        )
+    ).scalar_one_or_none()
+    children: list[tuple[WorkItem, str | None]] = []
+    if epic_wi is not None:
+        children = (
+            await db.execute(
+                select(WorkItem, GhProjectItem.status)
+                .outerjoin(GhProjectItem, GhProjectItem.work_item_id == WorkItem.id)
+                .where(WorkItem.parent_work_item_id == epic_wi.id)
+            )
+        ).all()
+    return {
+        "ref": f"{ini.epic_repo}#{ini.epic_number}",
+        "url": f"https://github.com/{ini.epic_repo}/issues/{ini.epic_number}",
+        "total": len(children),
+        "done": sum(1 for c, _ in children if c.state == "closed"),
+        "blocked": sum(1 for _, st in children if st == STATUS_BLOCKED),
+        "needsHuman": sum(1 for _, st in children if st == STATUS_NEEDS_HUMAN),
+        "children": [
+            {"ref": f"{c.repo}#{c.number}", "title": c.title, "state": c.state, "status": st}
+            for c, st in children
+        ],
     }
 
 
@@ -204,6 +244,7 @@ async def get_initiative(
     result["artifacts"] = [_artifact_to_dict(a) for a in artifacts]
     result["buildSessions"] = build_sessions
     result["nextAction"] = _action_to_dict(action)
+    result["epic"] = await _epic_progress(db, ini)
     return result
 
 

@@ -237,6 +237,102 @@ def test_build_stage_surfaces_backlog_sessions():
                 assert "sess-build-1" in ids
 
 
+def test_get_detail_includes_epic_progress():
+    """Seed Initiative(epic_repo, epic_number) + an epic WorkItem with 3 children
+    (1 closed, 1 'Blocked', 1 'Ready' via GhProjectItem.status); GET detail →
+    epic.total==3, epic.done==1, epic.blocked==1, epic.needsHuman==0 (#991)."""
+    from server.db import db_session
+    from server.db.models import GhProjectItem, Initiative, WorkItem
+
+    async def _seed(db_url: str):
+        from server.db import init_db
+        await init_db(db_url)
+        async with db_session() as db:
+            ini = Initiative(
+                slug="the-epic",
+                repo="o/r",
+                title="The Epic",
+                stage="build",
+                status="active",
+                origin="epic-adoption",
+                origin_ref="o/r#997",
+                epic_repo="o/r",
+                epic_number=997,
+            )
+            db.add(ini)
+
+            epic_wi = WorkItem(repo="o/r", number=997, kind="issue", state="open", is_epic=True)
+            db.add(epic_wi)
+            await db.flush()
+
+            done_child = WorkItem(
+                repo="o/r", number=1, kind="issue", title="Done child",
+                state="closed", parent_work_item_id=epic_wi.id)
+            blocked_child = WorkItem(
+                repo="o/r", number=2, kind="issue", title="Blocked child",
+                state="open", parent_work_item_id=epic_wi.id)
+            ready_child = WorkItem(
+                repo="o/r", number=3, kind="issue", title="Ready child",
+                state="open", parent_work_item_id=epic_wi.id)
+            db.add_all([done_child, blocked_child, ready_child])
+            await db.flush()
+
+            db.add(GhProjectItem(work_item_id=blocked_child.id, status="Blocked"))
+            db.add(GhProjectItem(work_item_id=ready_child.id, status="Ready"))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        asyncio.run(_seed(db_url))
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url,
+                                     "CCSWITCH_DEV": "1",
+                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.tests.fakes.fake_factory import fake_sdk_factory
+            from server.app import create_app
+            from fastapi.testclient import TestClient
+
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            app = create_app(orchestrator=orch)
+            with TestClient(app, raise_server_exceptions=False) as c:
+                r = c.get("/api/sdlc/initiatives/the-epic", headers=IDENTITY_HEADERS)
+                assert r.status_code == 200, r.text
+                body = r.json()
+                assert body["epicRepo"] == "o/r"
+                assert body["epicNumber"] == 997
+                epic = body["epic"]
+                assert epic["ref"] == "o/r#997"
+                assert epic["url"] == "https://github.com/o/r/issues/997"
+                assert epic["total"] == 3
+                assert epic["done"] == 1
+                assert epic["blocked"] == 1
+                assert epic["needsHuman"] == 0
+                child_refs = {c["ref"]: c for c in epic["children"]}
+                assert child_refs["o/r#1"]["state"] == "closed"
+                assert child_refs["o/r#2"]["status"] == "Blocked"
+                assert child_refs["o/r#3"]["status"] == "Ready"
+
+                # list endpoint carries the epic pointer too, but not the expanded epic dict
+                listed = c.get("/api/sdlc/initiatives", headers=IDENTITY_HEADERS)
+                assert listed.status_code == 200
+                item = next(i for i in listed.json() if i["slug"] == "the-epic")
+                assert item["epicRepo"] == "o/r"
+                assert item["epicNumber"] == 997
+
+
+def test_get_detail_no_epic_is_null():
+    """Initiative with no epic_repo/epic_number → detail's epic field is null."""
+    with _client() as c:
+        c.post("/api/sdlc/initiatives",
+               json={"title": "Dark mode", "repo": "steiner385/ccswitch"},
+               headers=IDENTITY_HEADERS)
+        r = c.get("/api/sdlc/initiatives/dark-mode", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["epicRepo"] is None
+        assert body["epicNumber"] is None
+        assert body["epic"] is None
+
+
 def test_unauthenticated_401():
     """Request without identity headers → 401."""
     with _client() as c:

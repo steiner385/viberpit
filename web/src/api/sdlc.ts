@@ -32,6 +32,27 @@ export interface InitiativeArtifact {
   createdAt: string | null
 }
 
+/** One child issue of an adopted epic (spec 003 §7c), by `WorkItem.parent_work_item_id`. */
+export interface InitiativeEpicChild {
+  ref: string
+  title: string | null
+  state: string | null
+  status: string | null
+}
+
+/** Sub-issue progress for an Initiative adopted from a GitHub-first epic
+ *  (`epicRepo`/`epicNumber`). ccswitch deep-links to the GitHub epic via `url`
+ *  rather than rebuilding a board (spec 003 §7c). */
+export interface InitiativeEpic {
+  ref: string
+  url: string
+  total: number
+  done: number
+  blocked: number
+  needsHuman: number
+  children: InitiativeEpicChild[]
+}
+
 export interface Initiative {
   slug: string
   repo: string | null
@@ -40,9 +61,14 @@ export interface Initiative {
   status: InitiativeStatus | string | null
   origin: string | null
   originRef: string | null
+  epicRepo: string | null
+  epicNumber: number | null
   createdAt: string | null
   updatedAt: string | null
   artifacts: InitiativeArtifact[]
+  // Only the detail endpoint (GET /initiatives/{slug}) computes this; the list
+  // endpoint omits the key entirely, so it's optional here (not just nullable).
+  epic?: InitiativeEpic | null
 }
 
 export interface CreateInitiativeInput {

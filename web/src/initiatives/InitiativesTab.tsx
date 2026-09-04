@@ -92,7 +92,7 @@ function InitiativeRow({ init }: { init: Initiative }) {
           {extractMutationErrorMessage(advance.error, 'Could not advance initiative')}
         </p>
       )}
-      <InitiativeTrack stage={init.stage} status={init.status} />
+      <InitiativeTrack stage={init.stage} status={init.status} epic={init.epic} />
       <div className="init-artifacts">
         {init.artifacts.length === 0
           ? <span className="init-artifact-pending">no artifacts committed yet</span>
