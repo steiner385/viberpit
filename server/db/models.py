@@ -1370,7 +1370,9 @@ class GhWriteJournal(Base):
     field: Mapped[str | None] = mapped_column(String, nullable=True)
     old_value: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     new_value: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    mutation_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Indexed: every planned mutation is looked up by key each cycle (parked? failed
+    # before? already dry-run journaled?), so the journal is read far more than written.
+    mutation_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     initiated_by: Mapped[str | None] = mapped_column(String, nullable=True)
     # Groups journal rows written by the same reconciler pass (spec 003 Phase B),
     # so a batch's mutations can be queried/retried/audited together.

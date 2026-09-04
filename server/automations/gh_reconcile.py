@@ -32,6 +32,9 @@ from .base import AutomationStatus, ConfigField
 log = logging.getLogger(__name__)
 
 _INTERRUPTED_AFTER = timedelta(minutes=10)
+#: Dry-run journal rows are a rolling preview, not an audit record: a tick re-plans the
+#: same set every two minutes, so rows are deduped within this window and pruned past it.
+_DRY_RUN_TTL = timedelta(hours=24)
 _COUNT_KEYS = ("products", "planned", "applied", "failed", "parked", "skipped_stale",
                "skipped_rate", "halted_cap", "fenced", "disabled", "dry_run")
 
@@ -46,6 +49,9 @@ JournalPark = Callable[[str, str, datetime], Awaitable[None]]
 JournalFailureCount = Callable[[str], Awaitable[int]]
 JournalParked = Callable[[str], Awaitable[bool]]
 JournalAppliedKeys = Callable[[], Awaitable[set[str]]]
+JournalOwnValues = Callable[[], Awaitable[dict[tuple[str, str], object]]]
+JournalDryRunKeys = Callable[[datetime], Awaitable[set[str]]]
+JournalPruneDryRun = Callable[[datetime], Awaitable[int]]
 JournalRecover = Callable[[datetime], Awaitable[int]]
 RequestSync = Callable[[str], Awaitable[None]]
 ShaFence = Callable[[], Awaitable[bool]]
@@ -68,13 +74,17 @@ class GhReconcile:
     config_schema = [
         ConfigField("max_mutations_per_cycle", "Blast cap (mutations per cycle)", "int", 50,
                     "Exceeding this halts the product's cycle loudly; nothing is applied. Board "
-                    "field bootstrap runs first and is not capped: up to three bounded mutations "
-                    "per product (create Score, create Stage, set Status options) may apply "
-                    "before this cap is evaluated."),
+                    "field bootstrap runs first and is not capped, but only while migrate is on: "
+                    "up to three bounded mutations per product (create Score, create Stage, "
+                    "extend Status options) may apply before this cap is evaluated."),
         ConfigField("migrate_cap", "Blast cap while migrate is on", "int", 500,
                     "Used instead of the normal cap for the one-time migration run."),
         ConfigField("migrate", "One-time migration", "bool", False,
-                    "Raise the cap and bootstrap board fields. Turn off after the first apply."),
+                    "Raise the cap and bootstrap board fields (create Score/Stage, extend the "
+                    "Status options with the spec vocabulary) — the ONLY mode that edits board "
+                    "schema. With it off, a board still missing a field or Status option parks "
+                    "instead of being repaired. Turn off once the status card has shown "
+                    "0 planned for two consecutive ticks."),
         ConfigField("min_rate_remaining", "Minimum GraphQL budget", "int", 500,
                     "Skip the cycle when the GraphQL rateLimit.remaining is below this."),
     ]
@@ -116,7 +126,10 @@ class GhReconcileLoop:
                  journal_parked: JournalParked, journal_applied_keys: JournalAppliedKeys,
                  journal_recover: JournalRecover, request_sync: RequestSync, sha_fence: ShaFence,
                  kill_switch: KillSwitch, save_field_cache: SaveFieldCache,
-                 now_utc: NowUtc) -> None:
+                 now_utc: NowUtc,
+                 journal_own_values: JournalOwnValues | None = None,
+                 journal_dry_run_keys: JournalDryRunKeys | None = None,
+                 journal_prune_dry_run: JournalPruneDryRun | None = None) -> None:
         self._ctx = ctx
         self._read_config, self._list_products, self._load_facts = read_config, list_products, load_facts
         self._mutate = mutate
@@ -124,6 +137,10 @@ class GhReconcileLoop:
             journal_record, journal_applied, journal_failed, journal_park)
         self._j_failure_count, self._j_parked, self._j_applied_keys, self._j_recover = (
             journal_failure_count, journal_parked, journal_applied_keys, journal_recover)
+        # Optional journal seams (a caller that doesn't wire them degrades to the
+        # pre-existing behaviour: no own-write un-sticking, no dry-run bounds).
+        self._j_own_values, self._j_dry_run_keys, self._j_prune_dry_run = (
+            journal_own_values, journal_dry_run_keys, journal_prune_dry_run)
         self._request_sync, self._sha_fence, self._kill_switch = request_sync, sha_fence, kill_switch
         # save_field_cache is the seam Task 9's field bootstrap (_ensure_fields) writes through.
         self._save_field_cache, self._now = save_field_cache, now_utc
@@ -173,7 +190,10 @@ class GhReconcileLoop:
         now = self._now()
         dry_run = mode == "dry_run"
         await self._j_recover(now - _INTERRUPTED_AFTER)
-        cap = int(config.get("migrate_cap", 500)) if config.get("migrate") else \
+        if self._j_prune_dry_run is not None:
+            await self._j_prune_dry_run(now - _DRY_RUN_TTL)
+        migrate = bool(config.get("migrate"))
+        cap = int(config.get("migrate_cap", 500)) if migrate else \
             int(config.get("max_mutations_per_cycle", 50))
         min_rate = int(config.get("min_rate_remaining", 500))
         counts = {k: 0 for k in _COUNT_KEYS}
@@ -186,10 +206,18 @@ class GhReconcileLoop:
             self._stash(**counts)
             return
         applied_keys = await self._j_applied_keys()
+        # Our own applied values, sampled once per cycle beside applied_keys: the diff
+        # engine needs them to tell "a human set this" from "we set this last cycle".
+        own_values = await self._j_own_values() if self._j_own_values is not None else {}
+        # Dry-run dedupe set, also once per cycle — only a dry run can produce dry-run rows.
+        dry_keys: set[str] = set()
+        if dry_run and self._j_dry_run_keys is not None:
+            dry_keys = await self._j_dry_run_keys(now - _DRY_RUN_TTL)
         for product in products:
             counts["products"] += 1
             try:
-                await self._converge(product, now, dry_run, cap, applied_keys, counts)
+                await self._converge(product, now, dry_run, cap, applied_keys, counts,
+                                     migrate=migrate, own_values=own_values, dry_keys=dry_keys)
             except Exception:
                 log.warning("gh_reconcile.product_failed", exc_info=True)
                 await self._ctx.emit("warn", f"reconcile failed for {product.slug}",
@@ -199,12 +227,21 @@ class GhReconcileLoop:
     async def _ensure_fields(self, facts: ProductFacts, now: datetime, dry_run: bool,
                              counts: dict[str, int]) -> dict:
         """Board field bootstrap (spec 003 §4, Task 9): create the custom ``Score``/``Stage``
-        fields when missing, and replace the built-in ``Status`` field's options with the spec
+        fields when missing, and extend the built-in ``Status`` field's options with the spec
         vocabulary when its cached options don't already cover it. Single mutations (not part of
         ``build_batch``'s aliasing), journaled the same write-ahead way as every other mutation.
         A dry run records what it would do and returns the cache unchanged — it neither mutates
         the board nor updates the cache, since predicting drift is the diff engine's job, not
-        this bootstrap's."""
+        this bootstrap's.
+
+        Runs ONLY while ``migrate`` is on (see ``_field_gap``): bootstrapping is a one-time
+        migration step, and ``updateProjectV2Field`` REPLACES a single-select's option set, so
+        an unattended steady-state run of it is a board-editing hazard. The Status update is
+        therefore sent as the UNION of the board's existing options (in their order) and any
+        missing spec names appended — a human's extra column is never dropped.
+
+        A bootstrap mutation that fails twice PARKS exactly like an item mutation: a board whose
+        field creation is broken must not be retried at every tick forever."""
         cache = dict(facts.field_cache)
         wanted: list[tuple[Mutation, str]] = []
         if "Score" not in cache:
@@ -218,15 +255,18 @@ class GhReconcileLoop:
                            build_create_field(facts.project_node_id or "", "Stage", "SINGLE_SELECT",
                                               list(INITIATIVE_STAGES))))
         status = cache.get("Status") or {}
-        have = set((status.get("options") or {}))
-        if status.get("field_id") and not set(STATUS_OPTIONS) <= have:
+        have = list(status.get("options") or {})
+        if status.get("field_id") and not set(STATUS_OPTIONS) <= set(have):
+            union = have + [n for n in STATUS_OPTIONS if n not in have]
             wanted.append((Mutation("set_field_options", status["field_id"], "Status",
-                                    sorted(have), list(STATUS_OPTIONS), f"fields:{facts.slug}"),
-                           build_update_field_options(status["field_id"], list(STATUS_OPTIONS))))
+                                    have, union, f"fields:{facts.slug}"),
+                           build_update_field_options(status["field_id"], union)))
         if not wanted:
             return cache
         batch_id = f"fields-{now.strftime('%Y%m%dT%H%M%S')}"
         for m, doc in wanted:
+            if await self._j_parked(m.key()):
+                continue
             (rid,) = await self._j_record([m], batch_id, now, dry_run)
             counts["planned"] += 1
             if dry_run:
@@ -235,10 +275,18 @@ class GhReconcileLoop:
             parsed = parse_created_field(payload)
             if parsed is None:
                 err = str((payload.get("errors") or [{}])[0].get("message") or "no field returned")
-                await self._j_failed(rid, err, now)
-                counts["failed"] += 1
-                await self._ctx.emit("error", f"field bootstrap failed for {facts.slug}: {err}",
-                                     kind="gh_reconcile_error", target=facts.project_id)
+                if await self._j_failure_count(m.key()) >= 1:
+                    await self._j_park(rid, f"failed twice: {err}", now)
+                    counts["parked"] += 1
+                    await self._ctx.emit(
+                        "error", f"field bootstrap parked for {facts.slug}: {err}",
+                        kind="gh_reconcile_parked", target=facts.project_id,
+                        detail={"field": m.field, "error": err})
+                else:
+                    await self._j_failed(rid, err, now)
+                    counts["failed"] += 1
+                    await self._ctx.emit("error", f"field bootstrap failed for {facts.slug}: {err}",
+                                         kind="gh_reconcile_error", target=facts.project_id)
                 continue
             field_id, name, options = parsed
             cache[name or (m.field or "")] = {"field_id": field_id, "options": options}
@@ -248,8 +296,23 @@ class GhReconcileLoop:
             await self._save_field_cache(facts.gh_project_db_id, cache)
         return cache
 
+    @staticmethod
+    def _field_gap(cache: dict) -> list[str]:
+        """What the board's field cache is missing for item writes to be safe.
+
+        Empty ⇒ Score/Stage exist and Status carries every spec option, so a
+        ``set_field`` mutation can be built for any decision the engine makes."""
+        gap = [name for name in ("Score", "Stage") if name not in cache]
+        options = (cache.get("Status") or {}).get("options") or {}
+        missing = [o for o in STATUS_OPTIONS if o not in options]
+        if missing:
+            gap.append("Status options: " + ", ".join(missing))
+        return gap
+
     async def _converge(self, product: ProductSyncView, now: datetime, dry_run: bool, cap: int,
-                        applied_keys: set[str], counts: dict[str, int]) -> None:
+                        applied_keys: set[str], counts: dict[str, int], *, migrate: bool = False,
+                        own_values: dict[tuple[str, str], object] | None = None,
+                        dry_keys: set[str] | None = None) -> None:
         facts = await self._load_facts(product, now)
         if facts.project_node_id is None:
             return
@@ -264,15 +327,31 @@ class GhReconcileLoop:
             return
         # Task 9 bootstraps missing fields/options into this cache once per product, before
         # anything else — a board can need its Score/Stage fields created (or its built-in
-        # Status options fixed to the spec vocabulary) even on a cycle with zero item-level
-        # mutations, so this runs unconditionally rather than gated behind `planned`.
-        cache = await self._ensure_fields(facts, now, dry_run, counts)
+        # Status options extended to the spec vocabulary) even on a cycle with zero item-level
+        # mutations, so this runs before `planned` rather than gated behind it. It is gated on
+        # `migrate` instead: field *creation* is a one-time migration act (and the Status
+        # option update REPLACES the option set), so steady state never edits board schema.
+        if migrate:
+            cache = await self._ensure_fields(facts, now, dry_run, counts)
+        else:
+            cache = dict(facts.field_cache)
+            gap = self._field_gap(cache)
+            if gap:
+                # Outside migrate we do NOT repair the board — a set_field for a missing
+                # field/option cannot be written safely, so the product parks for a human.
+                counts["parked"] += 1
+                await self._ctx.emit(
+                    "error", f"reconcile parked {product.slug}: board fields incomplete "
+                    f"({'; '.join(gap)}); turn migrate on to bootstrap",
+                    kind="gh_reconcile_parked", target=product.project_id,
+                    detail={"missing": gap, "migrate": False})
+                return
         # 2. desired state + 3. diff
         planned: list[Mutation] = []
         for item in facts.items:
             mirror = facts.mirror.get(item.ref)
             if mirror is not None:
-                planned.extend(diff_fields(derive(item), mirror))
+                planned.extend(diff_fields(derive(item), mirror, own_values or {}))
         planned.extend(membership(facts.open_issue_nodes, set(facts.mirror), facts.project_node_id))
         planned.extend(compile_edges(facts.deps, facts.node_ids, applied_keys))
         keep: list[Mutation] = []
@@ -294,7 +373,11 @@ class GhReconcileLoop:
         # 4. apply, write-ahead journaled per batch
         batch_id = f"{'dry' if dry_run else 'run'}-{now.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
         for batch in chunk(planned):
-            row_ids = await self._j_record(batch, batch_id, now, dry_run)
+            # A dry run re-plans the same set every tick; only journal the mutations that
+            # don't already have a fresh dry-run row (counts["planned"] still counts all).
+            record = [m for m in batch if m.key() not in dry_keys] if (
+                dry_run and dry_keys) else batch
+            row_ids = await self._j_record(record, batch_id, now, dry_run) if record else []
             try:
                 # build_batch is pure, so a dry run runs it too: predicting vocabulary
                 # drift is exactly the job of a dry run. Only the parking of journal
@@ -305,7 +388,7 @@ class GhReconcileLoop:
                 if not dry_run:
                     for rid in row_ids:
                         await self._j_park(rid, f"field vocabulary drift: {exc}", now)
-                counts["parked"] += len(row_ids)
+                counts["parked"] += len(batch)
                 verb = "would park" if dry_run else "parked"
                 await self._ctx.emit(
                     "error", f"reconcile {verb} batch for {product.slug}: {exc}",

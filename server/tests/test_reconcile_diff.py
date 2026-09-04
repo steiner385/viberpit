@@ -59,3 +59,25 @@ def test_compile_edges_prose_without_native_twin():
 
 def test_initial_fill_pushes_even_when_item_updated_after_decision():
     assert should_push(T1, T2, None) is True
+
+
+def test_own_past_write_is_not_sticky_but_a_human_edit_still_is():
+    """The reconciler's own write stamps gh_updated_at with OUR time. If that counted
+    as a human edit the field would freeze forever (we push "In progress" for a live
+    session; the session ends; Status falls back to Ready with the older classified_at
+    and could never be pushed again). A value we last wrote is therefore treated as
+    unset for the ownership check — but the moment a human changes it, it no longer
+    matches what we wrote, and the human wins."""
+    desired = DesiredItem("o/r#5", Decision("Ready", T1), Decision(None, None), Decision(None, None))
+    mirror = _mirror(status="In progress", gh_updated_at=T2)   # T2 = our write, newer than T1
+    assert diff_fields(desired, mirror) == []                  # today's stickiness
+    ours = diff_fields(desired, mirror, {("PVTI_5", "Status"): "In progress"})
+    assert [(m.field, m.old_value, m.new_value) for m in ours] == [
+        ("Status", "In progress", "Ready")]
+    # a human moved it to "In progress" after we wrote "Blocked" -> still suppressed
+    assert diff_fields(desired, mirror, {("PVTI_5", "Status"): "Blocked"}) == []
+    # our own write is matched numerically too (GitHub echoes 480 for our 480.0)
+    scored = DesiredItem("o/r#5", Decision(None, None), Decision(500.0, T1), Decision(None, None))
+    m2 = _mirror(score=480, gh_updated_at=T2)
+    assert diff_fields(scored, m2) == []
+    assert [m.new_value for m in diff_fields(scored, m2, {("PVTI_5", "Score"): 480.0})] == [500.0]

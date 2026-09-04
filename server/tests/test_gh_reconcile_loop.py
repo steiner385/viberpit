@@ -60,11 +60,12 @@ def _facts(**over):
 
 
 def _loop(ctx, *, mode="apply", config=None, facts=None, mutate=None, fence=True, enabled=True,
-          failure_counts=None, parked=None, products=None, load_facts_fn=None):
+          failure_counts=None, parked=None, products=None, load_facts_fn=None,
+          own_values=None, dry_run_keys=None):
     # calls["order"] interleaves the journal and GraphQL seams so the write-ahead
     # ordering guarantee (record BEFORE mutate, every batch) is directly assertable.
     calls = {"record": [], "applied": [], "failed": [], "park": [], "sync": [], "mutate": [],
-             "cache": [], "order": []}
+             "cache": [], "order": [], "prune": [], "dry_keys": []}
 
     async def read_config(): return mode, (config or {})
     async def list_products(): return list(products) if products is not None else [PRODUCT]
@@ -94,6 +95,13 @@ def _loop(ctx, *, mode="apply", config=None, facts=None, mutate=None, fence=True
     async def j_fc(key): return (failure_counts or {}).get(key, 0)
     async def j_parked(key): return key in (parked or set())
     async def j_keys(): return set()
+    async def j_own(): return dict(own_values or {})
+
+    async def j_dry_keys(since):
+        calls["dry_keys"].append(since)
+        return set(dry_run_keys or set())
+
+    async def j_prune(older): calls["prune"].append(older); return 0
     async def j_recover(older): return 0
     async def request_sync(pid): calls["sync"].append(pid)
     async def sha_fence(): return fence
@@ -105,7 +113,8 @@ def _loop(ctx, *, mode="apply", config=None, facts=None, mutate=None, fence=True
         journal_park=j_park, journal_failure_count=j_fc, journal_parked=j_parked,
         journal_applied_keys=j_keys, journal_recover=j_recover, request_sync=request_sync,
         sha_fence=sha_fence, kill_switch=lambda: enabled, save_field_cache=save_cache,
-        now_utc=lambda: T)
+        now_utc=lambda: T, journal_own_values=j_own, journal_dry_run_keys=j_dry_keys,
+        journal_prune_dry_run=j_prune)
     return loop, calls
 
 
@@ -234,7 +243,7 @@ def test_unknown_option_parks_the_batch_and_later_batches_still_apply():
     assert ctx.gh_reconcile_counts["applied"] == 1
 
 
-def test_ensure_fields_creates_missing_and_fixes_status_options():
+def test_ensure_fields_creates_missing_and_extends_status_options():
     sparse = _facts(field_cache={"Status": {"field_id": "F_s", "options": {"Todo": "O_t", "Done": "O_d"}}},
                     items=[], mirror={}, open_issue_nodes={})
 
@@ -249,7 +258,7 @@ def test_ensure_fields_creates_missing_and_fixes_status_options():
         return {"data": {"updateProjectV2Field": {"projectV2Field": {"id": "F_s", "name": "Status",
                 "options": [{"id": f"O_{n}", "name": n} for n in STATUS_OPTIONS]}}}}
 
-    ctx = Ctx(); loop, calls = _loop(ctx, facts=sparse, mutate=mutate)
+    ctx = Ctx(); loop, calls = _loop(ctx, facts=sparse, mutate=mutate, config={"migrate": True})
     asyncio.run(loop.tick())
     kinds = [m.kind for m in sum((r[0] for r in calls["record"]), [])]
     assert kinds == ["create_field", "create_field", "set_field_options"]
@@ -257,24 +266,142 @@ def test_ensure_fields_creates_missing_and_fixes_status_options():
     assert calls["cache"][-1][1]["Score"]["field_id"] == "F_sc"
 
 
+def test_status_option_repair_is_a_union_and_never_drops_a_human_column():
+    """updateProjectV2Field REPLACES the option set, so the document must carry the
+    board's existing options (in their order) plus the missing spec names — a column
+    a human added ("Icebox") must survive the migration."""
+    human = _facts(field_cache={"Score": {"field_id": "F_sc", "options": {}},
+                                "Stage": {"field_id": "F_st", "options": {}},
+                                "Status": {"field_id": "F_s",
+                                           "options": {"Icebox": "O_i", "Backlog": "O_b"}}},
+                   items=[], mirror={}, open_issue_nodes={})
+    ctx = Ctx(); loop, calls = _loop(ctx, facts=human, config={"migrate": True})
+    asyncio.run(loop.tick())
+    doc = [d for d in _docs(calls) if "updateProjectV2Field" in d][0]
+    assert '{name: "Icebox"' in doc
+    assert all(f'{{name: "{n}"' in doc for n in STATUS_OPTIONS)
+    assert doc.index('"Icebox"') < doc.index('"Ready"')      # existing options keep their order
+    (m,) = calls["record"][0][0]
+    assert m.new_value[:2] == ["Icebox", "Backlog"] and set(STATUS_OPTIONS) <= set(m.new_value)
+
+
 def test_ensure_fields_is_noop_when_board_matches_spec():
     full = _facts(field_cache={**CACHE, "Status": {"field_id": "F_s",
                                                     "options": {n: f"O_{n}" for n in STATUS_OPTIONS}}},
                   items=[], mirror={}, open_issue_nodes={})
-    ctx = Ctx(); loop, calls = _loop(ctx, facts=full)
+    ctx = Ctx(); loop, calls = _loop(ctx, facts=full, config={"migrate": True})
     asyncio.run(loop.tick())
     assert calls["record"] == [] and calls["cache"] == []
 
 
+def test_incomplete_board_parks_the_product_when_migrate_is_off():
+    """Bootstrap is a migration act (it REPLACES the Status option set), so it never
+    runs unattended. Outside migrate an incomplete board is not repaired: the product
+    parks loudly and writes nothing, because a set_field for a missing field/option
+    cannot be built safely."""
+    sparse = _facts(field_cache={"Status": {"field_id": "F_s", "options": {"Todo": "O_t"}}})
+    ctx = Ctx(); loop, calls = _loop(ctx, facts=sparse)
+    asyncio.run(loop.tick())
+    assert calls["record"] == [] and _batches(calls) == [] and calls["cache"] == []
+    assert ctx.gh_reconcile_counts["parked"] == 1 and ctx.gh_reconcile_counts["planned"] == 0
+    assert any(lvl == "error" and kind == "gh_reconcile_parked" for lvl, _, kind in ctx.events)
+    missing = [d["missing"] for d in ctx.details if d and "missing" in d][0]
+    assert "Score" in missing and "Stage" in missing
+    assert any(m.startswith("Status options: ") and "Ready" in m for m in missing)
+
+
+def test_bootstrap_failure_parks_and_is_then_never_replanned():
+    """A bootstrap mutation gets the same no-blind-retry treatment as an item one:
+    fail once → journaled failed; fail twice → parked; parked → never planned again."""
+    sparse = _facts(field_cache={"Stage": {"field_id": "F_st", "options": {}},
+                                 "Status": {"field_id": "F_s",
+                                            "options": {n: f"O_{n}" for n in STATUS_OPTIONS}}},
+                    items=[], mirror={}, open_issue_nodes={})
+
+    def mutate(doc):
+        if doc.startswith("query { rateLimit"):
+            return RATE_OK
+        return {"errors": [{"message": "boom"}]}
+
+    key = Mutation("create_field", "PVT_1", "Score", None, {"dataType": "NUMBER"},
+                   "fields:ccswitch").key()
+    fcs, parked = {}, set()
+    ctx = Ctx(); loop, calls = _loop(ctx, facts=sparse, mutate=mutate, config={"migrate": True},
+                                     failure_counts=fcs, parked=parked)
+    asyncio.run(loop.tick())
+    assert calls["failed"] == [("r0", "boom")] and calls["park"] == []
+    fcs[key] = 1                                    # the journal now knows about failure #1
+    asyncio.run(loop.tick())
+    assert calls["park"] == [("r0", "failed twice: boom")]
+    assert any(lvl == "error" and kind == "gh_reconcile_parked" for lvl, _, kind in ctx.events)
+    parked.add(key)
+    before = (len(calls["record"]), len(calls["mutate"]))
+    asyncio.run(loop.tick())
+    # third tick: only the rate-budget query goes out; nothing journaled, nothing mutated
+    assert len(calls["record"]) == before[0] and len(calls["mutate"]) == before[1] + 1
+    assert _docs(calls)[-1].startswith("query { rateLimit")
+
+
 def test_dry_run_surfaces_vocabulary_drift_without_touching_journal_rows():
-    ctx = Ctx(); loop, calls = _loop(ctx, mode="dry_run", facts=_facts(field_cache={}))
+    # #5's Stage decision ("deploy") has no option id in CACHE (which only has "build") ->
+    # unknown-option drift. Status/Score already match the mirror, so the drifted Stage
+    # mutation is the batch.
+    drifted = _facts(items=[_item(5, initiative_stage="deploy", initiative_stage_at=T)],
+                     mirror={f"{REPO}#5": MirrorItem(f"{REPO}#5", "PVTI_5", "Ready", 480.0, None,
+                                                     T - timedelta(days=1))},
+                     open_issue_nodes={})
+    ctx = Ctx(); loop, calls = _loop(ctx, mode="dry_run", facts=drifted)
     asyncio.run(loop.tick())
     assert calls["record"][0][2] is True                 # journaled as a dry-run record
     assert calls["mutate"] == [] and _batches(calls) == []
     assert calls["park"] == []                           # rows keep their dry_run state
-    assert ctx.gh_reconcile_counts["parked"] == 2
+    assert ctx.gh_reconcile_counts["parked"] == 1
     assert any(lvl == "error" and kind == "gh_reconcile_parked" for lvl, _, kind in ctx.events)
     assert any(d and d.get("dry_run") is True and d.get("error") for d in ctx.details)
+
+
+def test_dry_run_dedupes_journal_rows_and_prunes_stale_ones():
+    """A dry run re-plans the same set every tick. Rows already journaled inside the
+    24h window are not re-recorded (though they still count as planned), and rows past
+    that window are pruned at the top of the cycle."""
+    ctx = Ctx(); loop, calls = _loop(ctx, mode="dry_run")
+    asyncio.run(loop.tick())
+    first = calls["record"][0][0]
+    assert [m.field for m in first] == ["Status", "Score"]
+    assert calls["prune"] == [T - timedelta(hours=24)]
+    assert calls["dry_keys"] == [T - timedelta(hours=24)]
+    # second tick: the journal already holds both keys -> nothing new is recorded
+    ctx2 = Ctx(); loop2, calls2 = _loop(ctx2, mode="dry_run",
+                                        dry_run_keys={m.key() for m in first})
+    asyncio.run(loop2.tick())
+    assert calls2["record"] == []
+    assert ctx2.gh_reconcile_counts["planned"] == 2      # still reported as planned
+    assert calls2["prune"] == [T - timedelta(hours=24)]
+
+
+def test_apply_mode_neither_prunes_nor_reads_dry_run_keys_beyond_the_prune():
+    """Only a dry run produces dry-run rows, so the dedupe read is dry-run-only; the
+    prune runs every cycle (an operator who leaves dry run then switches to apply
+    still gets the stale rows cleaned up)."""
+    ctx = Ctx(); loop, calls = _loop(ctx)
+    asyncio.run(loop.tick())
+    assert calls["dry_keys"] == [] and calls["prune"] == [T - timedelta(hours=24)]
+
+
+def test_own_past_write_is_replanned_when_the_decision_falls_back():
+    """The un-sticking rule, end of the seam: the mirror holds "In progress" stamped at
+    OUR write time; the session is over so the decision is Ready with an older
+    classified_at. With own_values wired the push happens; without it the field is stuck."""
+    ended = _facts(items=[_item(5)],
+                   mirror={f"{REPO}#5": MirrorItem(f"{REPO}#5", "PVTI_5", "In progress", 480.0,
+                                                   None, T + timedelta(hours=1))})
+    ctx = Ctx(); loop, calls = _loop(ctx, facts=ended)
+    asyncio.run(loop.tick())
+    assert calls["record"] == []                                  # sticky without the seam
+    ctx = Ctx(); loop, calls = _loop(ctx, facts=ended,
+                                     own_values={("PVTI_5", "Status"): "In progress"})
+    asyncio.run(loop.tick())
+    assert [(m.field, m.new_value) for m in calls["record"][0][0]] == [("Status", "Ready")]
 
 
 def test_one_products_failure_does_not_stop_the_next():

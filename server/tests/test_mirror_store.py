@@ -182,6 +182,25 @@ def test_echo_suppression_distinguishes_own_writes_from_human_edits():
     assert [(e.field, e.old, e.new) for e in edits] == [("Score", None, 480.0)]
 
 
+def test_echo_suppression_matches_a_score_github_rounds_to_an_int():
+    """We write Score 480.0; GitHub can hand it back as 480. Both sides key through
+    journal.own_write_key, which normalizes numbers, so it is still an echo."""
+    from server.pm import journal
+    db = _db()
+    project = _seed(db)
+    gid = mirror_store.upsert_gh_project(db, project.id, GhProjectView(
+        node_id="PVT_1", number=7, title="x", updated_at=None))
+    now = datetime.now(timezone.utc)
+    mirror_store.upsert_project_items(db, gid, [GhProjectItemView(
+        item_node_id="PVTI_1", repo=REPO, number=950, kind="issue", status=None,
+        score=None, stage=None, updated_at=None)], now)
+    echoed = [GhProjectItemView(item_node_id="PVTI_1", repo=REPO, number=950,
+                                kind="issue", status=None, score=480, stage=None,
+                                updated_at=None)]
+    own = {journal.own_write_key("PVTI_1", "Score", 480.0)}   # what the journal produces
+    assert mirror_store.upsert_project_items(db, gid, echoed, now, own_writes=own) == []
+
+
 def test_back_sync_stage_updates_linked_initiative():
     """A human "Stage" edit on a linked epic back-syncs Initiative.stage; an
     unrecognized new value (not in INITIATIVE_STAGES) is rejected — count 0,

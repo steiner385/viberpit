@@ -1,7 +1,6 @@
 """Session-level persistence for the 003 read-only mirror. Callers own the transaction."""
 from __future__ import annotations
 
-import json
 from collections.abc import Sequence, Set as AbstractSet
 from dataclasses import dataclass
 from datetime import datetime
@@ -14,6 +13,7 @@ from server.db.models import (
 
 from .dep_plan import DepRowView, observed_deps, plan_dep_rows
 from .gh_projects import GhProjectItemView, GhProjectView, IssueRelView
+from .journal import own_write_key
 
 
 @dataclass(frozen=True)
@@ -88,9 +88,10 @@ def upsert_project_items(db: Session, gh_project_db_id: str,
                          ) -> list[HumanEdit]:
     """Upsert the project's items (prune stale rows) and classify every changed
     Status/Score/Stage field as a human edit UNLESS it matches an entry in
-    ``own_writes`` — the reconciler's own recent applied writes, keyed exactly
-    like ``journal.recent_own_writes`` — in which case it's an echo of our own
-    write landing back through the GitHub read path, not a human edit.
+    ``own_writes`` — the reconciler's own recent applied writes, keyed with the
+    shared ``journal.own_write_key`` helper (so ``480`` read back for a ``480.0``
+    we wrote still matches) — in which case it's an echo of our own write landing
+    back through the GitHub read path, not a human edit.
 
     A brand-new row (the item wasn't in the preloaded map) produces NO edits:
     there is no prior value to have changed, human or otherwise."""
@@ -116,9 +117,7 @@ def upsert_project_items(db: Session, gh_project_db_id: str,
                 old = getattr(row, field.lower())
                 if old == new:
                     continue
-                key = (view.item_node_id, field,
-                       json.dumps(new, sort_keys=True, default=str))
-                if key not in own_writes:
+                if own_write_key(view.item_node_id, field, new) not in own_writes:
                     edits.append(HumanEdit(f"{view.repo}#{view.number}", field, old, new))
         row.work_item_id = _work_item_id(db, view.repo, view.number, view.kind)
         row.status = view.status
