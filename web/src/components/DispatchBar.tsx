@@ -289,8 +289,11 @@ export function DispatchBar({
       {/* Repo / account / model / runner selector row — 3–4 across on desktop; on mobile a
           single line (repo + "more" toggle) with account/model/runner behind the toggle */}
       <div className={cn('grid grid-cols-1 gap-2', hosts.length > 0 ? 'sm:grid-cols-4' : 'sm:grid-cols-3')}>
-        {/* Repository + mobile-only more-options toggle */}
-        <div className="flex items-end gap-2">
+        {/* Repository + mobile-only more-options toggle. Top-aligned (not items-end): grid
+            cells stretch to the tallest column, and the Model column grows when its approval
+            hint shows — items-end would drop this label+select to the bottom of the row. On
+            mobile the label is hidden and select + toggle are both 44px, so they stay level. */}
+        <div className="flex items-start gap-2">
           <div className="flex min-w-0 flex-1 flex-col gap-1">
           <label htmlFor="dispatch-bar-repo" className={cn(selectLabelClass, 'hidden sm:block')}>
             Repository
