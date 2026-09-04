@@ -28,7 +28,10 @@ from server.db.models import (
     WorkItem,
     WorkItemDep,
 )
+from server.pm.desired_state import STATUS_READY
 from server.pm.mirror_store import deps_in_repos
+from server.pm.queue import MIN_STATUS_OPTIONS, rank
+from server.pm.queue_store import load_queue_rows
 from server.pm.sync_request import request_project_sync
 
 router = APIRouter(prefix="/api/pm", tags=["pm"])
@@ -423,6 +426,54 @@ async def reconcile_journal(
             "updatedAt": r.updated_at.isoformat() if r.updated_at else None,
         } for r in rows],
         "counts": counts,
+    }
+
+
+@router.get("/queue")
+async def queue(
+    min_status: str = STATUS_READY,
+    respect_dependencies: bool = True,
+    _identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """The global priority queue (spec 003 §7a/§7c): one ranking over every onboarded
+    product with a linked board, via the same ``rank(load_queue_rows(...))`` composition
+    the backlog runner uses — "what you see is what agents will do next". ``body`` is
+    deliberately omitted from the payload (large, UI/runner don't need it here).
+
+    This endpoint does NOT yet fully match the backlog runner's composition — PR C1
+    (#990) unifies them. Until then:
+    - No ``claimed_refs`` are passed to ``load_queue_rows``, so issues the runner has
+      already claimed (but not yet assigned/started a session for) still appear here.
+    - ``needs_human_retry_days`` uses ``queue.NEEDS_HUMAN_RETRY_DAYS_DEFAULT`` rather
+      than the backlog runner's stored config.
+    - ``min_status`` and ``respect_dependencies`` come from query params here; in C1
+      they come from the runner's stored config instead.
+    """
+    if min_status not in MIN_STATUS_OPTIONS:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "invalid_min_status",
+                    "message": f"min_status must be one of {MIN_STATUS_OPTIONS}, "
+                               f"got {min_status!r}"})
+
+    now = datetime.now(timezone.utc)
+    rows = await db.run_sync(lambda s: load_queue_rows(s, now=now))
+    entries, skipped = rank(
+        rows, min_status=min_status, respect_dependencies=respect_dependencies, now=now)
+
+    return {
+        "entries": [{
+            "ref": e.ref,
+            "repo": e.repo,
+            "number": e.number,
+            "product": e.product,
+            "title": e.title,
+            "url": e.url,
+            "score": e.score,
+        } for e in entries],
+        "skipped": skipped,
+        "generatedAt": now.isoformat(),
     }
 
 
