@@ -332,6 +332,18 @@ export function useModelApproval() {
   })
 }
 
+// "Reload session": rebuild the driver in place (same account, transcript
+// resumed on a fresh CLI). The caller re-attaches the socket on success so the
+// transcript is rebuilt from the daemon's state rather than the stale one the
+// user was staring at.
+export function useReloadSession() {
+  const qc = useQueryClient()
+  return useMutation<Session, ApiRequestError, { id: string }>({
+    mutationFn: ({ id }) => api.post<Session>(`/sessions/${id}/reload`, {}),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
+  })
+}
+
 export function useFixPr() {
   const qc = useQueryClient()
   return useMutation<Session, ApiRequestError, { id: string; number: number }>({

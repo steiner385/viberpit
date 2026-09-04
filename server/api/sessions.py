@@ -1283,6 +1283,40 @@ async def fix_session_pr(
     return _record_to_dict(updated, repo=await _resolve_repo(updated))
 
 
+@router.post("/{session_id}/reload")
+async def reload_session(
+    session_id: str,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """"Reload session": rebuild the session's driver in place.
+
+    The recovery a human reaches for when the UI can no longer act on a session
+    (answers rejected, a turn that stopped streaming, a driver the daemon lost).
+    Routes through orch.reload_session — the same driver-swap primitive rotation
+    and crash recovery use — with the caller's identity threaded onto the new
+    driver. 404 for an unknown session; 409 (code = the orchestrator's reason)
+    when the session is parked somewhere a rebuild makes no sense (archived,
+    queued, awaiting approval) or the rebuild left it driverless."""
+    orch = _get_orchestrator(request)
+    record = await orch.get_session(session_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
+        )
+    result = await orch.reload_session(session_id, identity)
+    if result != "reloaded":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": result, "message": f"Session could not be reloaded: {result}"},
+        )
+    await record_audit(db, "session.reload", identity, {"sessionId": session_id})
+    updated = await orch.get_session(session_id) or record
+    return _record_to_dict(updated, repo=await _resolve_repo(updated))
+
+
 @router.delete("/{session_id}/permanent", status_code=status.HTTP_204_NO_CONTENT)
 async def permanent_delete_session(
     session_id: str,

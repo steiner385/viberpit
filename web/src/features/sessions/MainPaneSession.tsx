@@ -39,6 +39,7 @@
  * `leave()` that every exit path runs through.
  */
 import type { SessionStatus } from '@/api/types'
+import { useReloadSession } from '@/api/hooks'
 import { useSessionSocket } from '@/ws/client'
 import { SessionBody } from '@/components/session/SessionBody'
 import { CommandResultOverlay } from '@/components/session/CommandResultOverlay'
@@ -59,6 +60,15 @@ export interface MainPaneSessionProps {
 export function MainPaneSession({ sessionId, onClosed, onDetach, onOpenSession }: MainPaneSessionProps) {
   const rt = useSessionRuntimeContext()
   const { detach } = useSessionSocket()
+  const reloadSession = useReloadSession()
+
+  // "Reload session": the daemon rebuilds the driver in place, then this client
+  // re-attaches so the transcript is rebuilt from the daemon's state rather than
+  // the stale one the user was staring at. The re-attach is the same `reattach`
+  // the transcript's own "Retry" uses — one recovery path, two triggers.
+  function reload() {
+    reloadSession.mutate({ id: sessionId }, { onSuccess: () => rt.reattach() })
+  }
 
   // Detaching the socket before navigating is what `SessionView` did. The
   // runtime provider also detaches when `PageHost` unmounts it, so this is
@@ -94,6 +104,7 @@ export function MainPaneSession({ sessionId, onClosed, onDetach, onOpenSession }
         onBack={() => leave(onDetach)}
         onOpenSession={onOpenSession}
         onClosed={() => leave(onClosed)}
+        onReload={reload}
       />
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-surface">
         <SessionBody rt={rt} />

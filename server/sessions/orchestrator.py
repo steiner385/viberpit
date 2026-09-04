@@ -104,6 +104,13 @@ _ACTIVE_STATUSES = frozenset({"in_progress", "working", "waiting_input", "conden
 # is the legacy pre-crash spelling of an active turn (see rehydrate()).
 _REPLAY_STATUSES = _status_mod.MID_TURN_STATUSES | frozenset({"working"})
 
+# Statuses where a user-initiated "Reload session" (reload_session) makes no sense:
+# nothing is running (archived / ended), or the session is deliberately parked
+# BEFORE its first turn (queued for a capacity slot, awaiting a human's launch
+# approval) and a driver rebuild would jump that gate. Everything else — mid-turn,
+# awaiting a human, idle, failed — is exactly the state reload exists to recover.
+_NOT_RELOADABLE_STATUSES = frozenset({"archived", "ended", "queued", "pending_approval"})
+
 # Statuses derived purely from the live driver's in-memory registries — a mid-turn
 # turn, or a pending permission / question / plan approval (see status.derive_status
 # + driver._dash_signals). A daemon restart wipes those registries, so NONE of these
@@ -7543,6 +7550,48 @@ class SessionOrchestrator:
         result = await self.send_prompt(session_id, RESUME_NUDGE)
         return "resumed" if result == "sent" else result
 
+    async def reload_session(self, session_id: str,
+                             identity: str = SYSTEM_IDENTITY) -> str:
+        """User-initiated driver rebuild — the "Reload session" menu action.
+
+        The recovery a human reaches for when the UI can no longer act on a
+        session: a question card whose answers are rejected, a turn that stopped
+        streaming, a driver the daemon lost track of. It goes through the SAME swap
+        primitive rotation and crash recovery use (``_reassign`` on the session's
+        current account: bounded interrupt, close, resume the transcript on a fresh
+        CLI), so it inherits the #1040 single-driver invariant instead of adding a
+        second way to build a driver. Works for a driverless session too.
+
+        Two things differ from a rotation:
+
+        * The interrupted prompt is replayed only if the session was mid-turn
+          (``_REPLAY_STATUSES`` — the #864 rule). A session parked on a question /
+          permission / plan review gets its transcript resumed and then WAITS: the
+          CLI closes the dangling ask out itself, and re-issuing the prompt there
+          would redo the work the user was being asked about — the confusing
+          "I paused since it was rejected" + re-sent prompt that reload is meant
+          to recover FROM, not reproduce.
+        * The rebuilt driver is re-threaded to *identity* so the caller owns
+          whatever it asks next (see ``_rethread_identity``).
+
+        Returns "reloaded" | "skipped:<reason>" | "no_driver".
+        """
+        record = self._records.get(session_id)
+        if record is None:
+            return "skipped:not-found"
+        if record.status in _NOT_RELOADABLE_STATUSES:
+            return f"skipped:{record.status}"
+        await self._reassign(record, record.account, reason="reload",
+                             replay_last_prompt=record.status in _REPLAY_STATUSES)
+        driver = self._drivers.get(session_id)
+        if driver is None:
+            # _reassign never raises: a failed rebuild paused the session and logged.
+            return "no_driver"
+        _rethread_identity(driver, identity)
+        log_event(log, logging.INFO, "session.reload", session_id=session_id,
+                  identity=identity, replayed=record.status in _REPLAY_STATUSES)
+        return "reloaded"
+
     @staticmethod
     def _env_truthy(name: str) -> bool:
         return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
@@ -9672,10 +9721,13 @@ class SessionOrchestrator:
         if cb is not None:
             cb(session_id, driver)
 
-    async def _reassign(self, record: SessionRecord, new_account: str, *, reason: str) -> None:
+    async def _reassign(self, record: SessionRecord, new_account: str, *, reason: str,
+                        replay_last_prompt: bool = True) -> None:
         """Resume the session's claude conversation on *new_account* (may equal the
         current account, for a 401 recompose). Relaunches the driver, replays the last
-        prompt, updates the DB, and emits a rotated event.
+        prompt (unless ``replay_last_prompt`` is False — see reload_session for the one
+        caller that must not redo an awaiting-user turn), updates the DB, and emits a
+        rotated event.
 
         Works for both live sessions (closes the old driver first) and driverless ones
         (e.g. the driver died while the session was idle — in that case params are
@@ -9711,7 +9763,8 @@ class SessionOrchestrator:
         swap_done: asyncio.Future = asyncio.get_running_loop().create_future()
         self._swapping[record.id] = swap_done
         try:
-            await self._reassign_locked(record, new_account, reason=reason)
+            await self._reassign_locked(record, new_account, reason=reason,
+                                        replay_last_prompt=replay_last_prompt)
         finally:
             if self._swapping.get(record.id) is swap_done:
                 del self._swapping[record.id]
@@ -9719,7 +9772,7 @@ class SessionOrchestrator:
                 swap_done.set_result(None)
 
     async def _reassign_locked(self, record: SessionRecord, new_account: str, *,
-                               reason: str) -> None:
+                               reason: str, replay_last_prompt: bool = True) -> None:
         """The actual reassign body, run with an entry in `self._swapping` held for
         `record.id` by the caller (`_reassign`) — see there for why."""
         # Same defer contract as a model swap: the dance below flips the session
@@ -9786,7 +9839,7 @@ class SessionOrchestrator:
             self._install_driver(record.id, new_driver)
             if record.model is not None:
                 await new_driver.set_model(record.model)
-            last = self._last_prompt.get(record.id)
+            last = self._last_prompt.get(record.id) if replay_last_prompt else None
             if last:
                 await new_driver.send_prompt(last)
             async with db_session() as db:

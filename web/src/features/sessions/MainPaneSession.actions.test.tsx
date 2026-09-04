@@ -48,6 +48,8 @@ vi.mock('@/components/session/SessionBody', () => ({
 vi.mock('@/components/session/CommandResultOverlay', () => ({ CommandResultOverlay: () => null }))
 
 vi.mock('@/api/hooks', () => ({
+  // "Reload session" (MainPaneSession → SessionHeader → SessionActions).
+  useReloadSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useCloseSession: vi.fn(),
   usePermanentDeleteSession: vi.fn(),
   // Mobile-only Rename (added when rename was dropped from the mobile session
