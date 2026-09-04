@@ -190,6 +190,13 @@ async def test_x_real_ip_used_for_whois_when_ts_header_absent(monkeypatch):
         return mock
 
     monkeypatch.setattr("server.auth.identity.subprocess.run", fake_whois)
+    # `server.auth.identity` and `ccswitch.crypto` both call the same shared
+    # `subprocess` module object, so the patch above intercepts calls from either.
+    # This request succeeds (200), so IdentityMiddleware signs a session cookie via
+    # `_signing_secret()`, which falls back to `ccswitch.crypto.master_key()`'s
+    # `secret-tool` lookup when no secret is configured — that call would otherwise
+    # also land in `whois_calls`. Configure a session secret so it short-circuits.
+    monkeypatch.setenv("CCSWITCH_SESSION_SECRET", "test-secret")
     app = create_app()
     # Simulate nginx on loopback forwarding the real Tailscale peer IP via X-Real-IP
     transport = ASGITransport(app=app, client=("127.0.0.1", 12345))
