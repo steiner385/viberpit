@@ -202,6 +202,51 @@ class TestSelector(unittest.TestCase):
             select_best(usages, set(), self.cfg, self.now,
                         load={"swamped": 1e9}), "calm")
 
+    def test_at_ceiling_session_dimension(self):
+        from ccswitch.selector import at_ceiling
+        self.assertTrue(at_ceiling(usage(session=100.0, weekly=10.0), 100.0))
+
+    def test_at_ceiling_weekly_dimension(self):
+        from ccswitch.selector import at_ceiling
+        self.assertTrue(at_ceiling(usage(session=0.0, weekly=100.0), 100.0))
+
+    def test_at_ceiling_false_below_both(self):
+        from ccswitch.selector import at_ceiling
+        self.assertFalse(at_ceiling(usage(session=99.0, weekly=99.0), 100.0))
+
+    def test_at_ceiling_respects_lower_ceiling(self):
+        from ccswitch.selector import at_ceiling
+        self.assertTrue(at_ceiling(usage(session=90.0, weekly=10.0), 90.0))
+
+    # --- exhausted(): at_ceiling minus the paid-overflow escape rank_accounts honours ---
+
+    def test_exhausted_below_ceiling_is_false(self):
+        from ccswitch.selector import exhausted
+        self.assertFalse(exhausted(usage(session=50.0, weekly=20.0), 100.0,
+                                   extra_usage_allowed=False))
+
+    def test_exhausted_at_ceiling_without_extra_usage(self):
+        from ccswitch.selector import exhausted
+        self.assertTrue(exhausted(usage(session=100.0, weekly=20.0), 100.0,
+                                  extra_usage_allowed=True))
+
+    def test_exhausted_at_ceiling_with_extra_usage_opted_in_is_false(self):
+        """rank_accounts still hands this account out (extra_paid tier), so the
+        rotation monitor must not call it dead."""
+        from ccswitch.selector import exhausted
+        self.assertFalse(exhausted(usage(session=100.0, weekly=20.0, extra=True), 100.0,
+                                   extra_usage_allowed=True))
+
+    def test_exhausted_extra_usage_enabled_but_not_opted_in(self):
+        from ccswitch.selector import exhausted
+        self.assertTrue(exhausted(usage(session=100.0, weekly=20.0, extra=True), 100.0,
+                                  extra_usage_allowed=False))
+
+    def test_exhausted_weekly_dimension_with_extra_usage_is_false(self):
+        from ccswitch.selector import exhausted
+        self.assertFalse(exhausted(usage(session=10.0, weekly=100.0, extra=True), 100.0,
+                                   extra_usage_allowed=True))
+
 
 # --- rank_accounts() tests ---
 
@@ -219,7 +264,7 @@ def _cfg(**kw):
 
 
 def test_rank_accounts_orders_like_select_best():
-    from ccswitch.selector import rank_accounts, select_best, RankedAccount
+    from ccswitch.selector import rank_accounts, select_best
     usages = {
         "a": Usage(40.0, SOON, 20.0, SOON, False),
         "b": Usage(10.0, SOON, 5.0, SOON, False),

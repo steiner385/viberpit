@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from server.sessions.usage_stall import is_usage_stalled
 from server.time_iso import iso_utc
 
 # Sentinel identity for internal/background callers (rehydrate, dispatch, eager
@@ -123,6 +124,12 @@ class SessionRecord:
     # session is resumable iff it was flagged AND this is in RESUME_ELIGIBLE_STATUSES.
     # Never persisted; cleared with the flag on the next turn.
     interrupted_from_status: str | None = None
+    # Why the session is parked (a _pause_session reason token, or
+    # "pinned_account_limited" for the `limited` overlay) and the earliest known
+    # usage reset (naive UTC). Persisted so a poll/reload keeps the cause; cleared by
+    # _persist_status on any non-stalled status. See server/sessions/usage_stall.py.
+    paused_reason: str | None = None
+    paused_until: datetime | None = None
     authored_branches: list[str] = field(default_factory=list)  # feature branches → multi-PR badges
     # Last EXACT context-window occupancy from the SDK (the `/context` data), refreshed
     # each turn. Persisted + replayed on attach so a reloaded/idle session shows real
@@ -193,6 +200,9 @@ class SessionRecord:
             "interruptedFromStatus": self.interrupted_from_status,
             "resumable": (self.interrupted_by_restart
                           and self.interrupted_from_status in RESUME_ELIGIBLE_STATUSES),
+            "pausedReason": self.paused_reason,
+            "pausedUntil": iso_utc(self.paused_until),
+            "usageStalled": is_usage_stalled(self.status, self.paused_reason),
             "authoredBranches": list(self.authored_branches),
             "contextUsedTokens": self.context_used_tokens,
             "contextMaxTokens": self.context_max_tokens,
@@ -235,6 +245,9 @@ class SessionRecord:
             usage_unverified=d.get("usageUnverified", False),
             interrupted_by_restart=d.get("interruptedByRestart", False),
             interrupted_from_status=d.get("interruptedFromStatus"),
+            paused_reason=d.get("pausedReason"),
+            paused_until=(datetime.fromisoformat(d["pausedUntil"])
+                          if d.get("pausedUntil") else None),
             authored_branches=list(d.get("authoredBranches") or []),
             context_used_tokens=d.get("contextUsedTokens"),
             context_max_tokens=d.get("contextMaxTokens"),

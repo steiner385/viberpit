@@ -14,6 +14,8 @@ vi.mock('@/api/hooks', () => ({
   useSessions: vi.fn(() => ({ data: [] })),
   useSessionsViewing: vi.fn(),
   useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
+  // Unpin account button (SessionBody → SessionMeta).
+  useSetAccountPin: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
   useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),

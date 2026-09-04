@@ -85,6 +85,7 @@ vi.mock('@/api/hooks', () => ({
   },
   useAssessDispatch: vi.fn(() => ({ assess: vi.fn() })),
   useResumeInterrupted: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useRotateStalled: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }))
 
 vi.mock('@/session/useSessionSearch', () => ({

@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react'
-import { Archive, RotateCcw } from 'lucide-react'
+import { Archive, RotateCcw, Shuffle } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useAutomations, useFixPr, useGenerateSuggestions, useSetAutopilotPaused, useBulkArchiveSessions, useResumeInterrupted } from '@/api/hooks'
+import { useAutomations, useFixPr, useGenerateSuggestions, useSetAutopilotPaused, useBulkArchiveSessions, useResumeInterrupted, useRotateStalled } from '@/api/hooks'
 import { SessionCard } from './SessionCard'
 import { GroupedList } from './GroupedList'
 import { EmptyState } from './EmptyState'
@@ -148,6 +148,7 @@ export function SessionList({
   const setAutopilot = useSetAutopilotPaused()
   const bulkArchive = useBulkArchiveSessions()
   const resumeInterrupted = useResumeInterrupted()
+  const rotateStalled = useRotateStalled()
 
   const [selectMode, setSelectMode] = useState(false)
   const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set())
@@ -216,6 +217,10 @@ export function SessionList({
   const resumableIds = sessions.filter((s) => s.resumable).map((s) => s.id)
   const handleResumeInterrupted = () => {
     if (resumableIds.length > 0) resumeInterrupted.mutate(resumableIds)
+  }
+  const stalledIds = sessions.filter((s) => s.usageStalled).map((s) => s.id)
+  const handleRotateStalled = () => {
+    if (stalledIds.length > 0) rotateStalled.mutate(stalledIds)
   }
 
   if (isLoading) {
@@ -315,6 +320,17 @@ export function SessionList({
           >
             <RotateCcw size={12} aria-hidden="true" />
             Resume interrupted ({resumableIds.length})
+          </button>
+        )}
+        {!selectMode && stalledIds.length > 0 && (
+          <button
+            type="button"
+            onClick={handleRotateStalled}
+            disabled={rotateStalled.isPending}
+            className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 py-1"
+          >
+            <Shuffle size={12} aria-hidden="true" />
+            Rotate stalled ({stalledIds.length})
           </button>
         )}
         {!selectMode && archivableDoneCount > 0 && (
