@@ -14,9 +14,12 @@
  */
 
 import { useState } from 'react'
+import { Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { tierLabel } from '@/session/modelName'
 import { useModels } from '@/api/hooks'
+
+type Decision = 'approve' | 'deny'
 
 interface Props {
   /** The model alias or full id requiring approval (e.g. "fable", "claude-opus-4-8"). */
@@ -26,14 +29,34 @@ interface Props {
   /** Identity that requested it; "session:self" means the session asked for itself. */
   requestedBy?: string | null
   /** Second arg is the model to approve AS — omitted for a deny. */
-  onDecision: (decision: 'approve' | 'deny', model?: string) => void
+  onDecision: (decision: Decision, model?: string) => void
+  /**
+   * True while the caller's approval request is in flight. The POST is slow for a
+   * launch-time hold (the server spawns the session inside the request), and the
+   * panel only unmounts once the sessions query refetches afterwards — so without
+   * this the click gave no feedback and the bar vanished seconds later "on its own".
+   * While pending, both buttons and the picker disable and the clicked button
+   * announces progress; a second click would otherwise 409.
+   */
+  pending?: boolean
 }
 
-export function PendingModelApprovalPanel({ model, reason, requestedBy, onDecision }: Props) {
+export function PendingModelApprovalPanel({
+  model, reason, requestedBy, onDecision, pending = false,
+}: Props) {
   const label = tierLabel(model)
   const { data: models } = useModels()
   // Default the picker to the requested model so a plain Approve is unchanged.
   const [choice, setChoice] = useState<string>(model ?? '')
+  // Which button was pressed, so only IT shows the spinner while `pending`. Only
+  // meaningful while pending — once the caller's mutation settles (error path; a
+  // success unmounts the panel) both buttons return to their idle labels.
+  const [clicked, setClicked] = useState<Decision | null>(null)
+  const busy = pending ? clicked : null
+  const decide = (decision: Decision) => {
+    setClicked(decision)
+    onDecision(decision, decision === 'approve' ? choice || undefined : undefined)
+  }
   // The panel stays mounted while a hold is pending, and a standing hold can be
   // overwritten by a DIFFERENT parked model (e.g. fable parks, goes unanswered,
   // then opus parks) — the dedupe upstream only short-circuits on an IDENTICAL
@@ -83,10 +106,11 @@ export function PendingModelApprovalPanel({ model, reason, requestedBy, onDecisi
         <select
           aria-label="Approve as"
           value={choice}
+          disabled={pending}
           onChange={(e) => setChoice(e.target.value)}
           className={cn(
             'rounded border border-gray-300 dark:border-gray-600 px-2 py-1 text-sm',
-            'bg-white dark:bg-gray-900',
+            'bg-white dark:bg-gray-900 disabled:opacity-50',
           )}
         >
           {allOptions.map((m) => (
@@ -102,29 +126,51 @@ export function PendingModelApprovalPanel({ model, reason, requestedBy, onDecisi
       <div className="flex shrink-0 gap-2">
         <button
           type="button"
-          onClick={() => onDecision('approve', choice || undefined)}
+          disabled={pending}
+          aria-busy={busy === 'approve' || undefined}
+          onClick={() => decide('approve')}
           className={cn(
-            'rounded px-3 py-1 text-sm font-medium',
-            'bg-violet-600 text-white hover:bg-violet-700',
+            'inline-flex items-center gap-1.5 rounded px-3 py-1 text-sm font-medium transition-colors',
+            'bg-violet-600 text-white hover:bg-violet-700 active:bg-violet-800',
+            'disabled:pointer-events-none disabled:opacity-60',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500',
           )}
         >
-          Approve
+          {busy === 'approve' && <Spinner />}
+          {busy === 'approve' ? 'Approving…' : 'Approve'}
         </button>
         <button
           type="button"
-          onClick={() => onDecision('deny', undefined)}
+          disabled={pending}
+          aria-busy={busy === 'deny' || undefined}
+          onClick={() => decide('deny')}
           className={cn(
-            'rounded px-3 py-1 text-sm font-medium',
+            'inline-flex items-center gap-1.5 rounded px-3 py-1 text-sm font-medium transition-colors',
             'border border-gray-300 dark:border-gray-600',
             'text-gray-700 dark:text-gray-300',
-            'hover:bg-gray-100 dark:hover:bg-gray-800',
+            'hover:bg-gray-100 dark:hover:bg-gray-800 active:bg-gray-200 dark:active:bg-gray-700',
+            'disabled:pointer-events-none disabled:opacity-60',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500',
           )}
         >
-          Deny
+          {busy === 'deny' && <Spinner />}
+          {busy === 'deny' ? 'Denying…' : 'Deny'}
         </button>
       </div>
     </div>
+  )
+}
+
+// Same spinner glyph as @/ui/Button's `loading` state, kept inline because this
+// panel deliberately uses its own violet buttons (Button's primary is the blue
+// accent token) — see the file header.
+function Spinner() {
+  return (
+    <Loader2
+      size={14}
+      aria-hidden="true"
+      data-spinner
+      className="animate-spin motion-reduce:animate-none"
+    />
   )
 }
