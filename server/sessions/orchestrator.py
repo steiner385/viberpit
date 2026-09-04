@@ -44,6 +44,7 @@ from ccswitch.account_names import (
 from ccswitch.config import load_config
 from ccswitch.configdir import compose
 from ccswitch.paths import account_cfg_dir, shared_base
+from ccswitch.selector import at_ceiling, exhausted
 from server.aio import bounded_wait
 from server.audit import record_audit
 from server.db import db_session
@@ -83,6 +84,7 @@ from server.sessions.types import (
     SessionRecord, SYSTEM_IDENTITY, RESUME_ELIGIBLE_STATUSES,
     is_assistant, is_assistant_kind,
 )
+from server.sessions.usage_stall import is_usage_stalled
 from server.config import env_float
 from server.time_iso import iso_utc
 from server.usage.poller import UsagePoller
@@ -108,12 +110,20 @@ _ACTIVE_STATUSES = frozenset({"in_progress", "working", "waiting_input", "conden
 # is the legacy pre-crash spelling of an active turn (see rehydrate()).
 _REPLAY_STATUSES = _status_mod.MID_TURN_STATUSES | frozenset({"working"})
 
+# rotate_to_best replays the last prompt for these. The two parked shapes are the
+# whole point of the action — a stalled session's last prompt is the one that failed.
+_ROTATE_REPLAY_STATUSES = _REPLAY_STATUSES | {"needs_attention", "limited"}
+
 # Statuses where a user-initiated "Reload session" (reload_session) makes no sense:
 # nothing is running (archived / ended), or the session is deliberately parked
 # BEFORE its first turn (queued for a capacity slot, awaiting a human's launch
 # approval) and a driver rebuild would jump that gate. Everything else — mid-turn,
 # awaiting a human, idle, failed — is exactly the state reload exists to recover.
 _NOT_RELOADABLE_STATUSES = frozenset({"archived", "ended", "queued", "pending_approval"})
+
+# The two parked shapes whose cause paused_reason explains (usage_stall.py). Any other
+# status clears it.
+_STALLED_STATUSES = frozenset({"needs_attention", "limited"})
 
 # Statuses derived purely from the live driver's in-memory registries — a mid-turn
 # turn, or a pending permission / question / plan approval (see status.derive_status
@@ -216,6 +226,17 @@ def _prepend_proposal(proposal: str | None, base: list[str]) -> list[str]:
     return [proposal, *base]
 
 
+def _naive_utc(dt):
+    """Normalize an optional datetime to naive UTC for the DateTime columns (the
+    selector's earliest_reset is tz-aware; _persist_status writes naive UTC)."""
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        from datetime import timezone
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
 def _rethread_identity(driver, identity: str) -> None:
     """Upgrade a live driver's identity to a real attaching user.
 
@@ -270,6 +291,11 @@ _UNREACHABLE_ROTATION_THRESHOLD: int = 3
 # _pause_session() is a dead-end: the rotation monitor only fires on degradation
 # events, not recovery, so paused sessions need a separate periodic retry.
 _STUCK_SESSION_SWEEP_INTERVAL: float = 300.0
+
+# Minimum spacing between recovery-triggered sweeps (an account dropping below ceiling
+# in the poller stream). The poller emits one event per account per ~60 s; without a
+# debounce a fleet of healthy accounts would re-run the sweep every few seconds.
+_RECOVERY_SWEEP_DEBOUNCE_S: float = 30.0
 
 # Consecutive mirror-reconcile passes a FOREIGN _records entry may be missing from
 # the DB before the primary evicts it (#895-adjacent). A worker deleting a session
@@ -1966,11 +1992,19 @@ class SessionOrchestrator:
         # here so the drain proceeds rather than raising AttributeError in a task.
         if not hasattr(self, "_queue_drain_lock"):
             self._queue_drain_lock = asyncio.Lock()
+        from sqlalchemy import select as sa_select
+        # Entries owned by ANOTHER fleet daemon: skipped for the rest of this
+        # drain, never removed. The session_queue table is one shared queue, but
+        # _records is per-process — so "not in my memory" is NOT "stale" (incident
+        # 2026-09-04: a worker with a free slot deleted every entry the primary had
+        # enqueued, leaving 'queued' rows nothing could move, cancel or start).
+        foreign: set[str] = set()
+        enabled_hosts = await self._enabled_host_names()
         async with self._queue_drain_lock:
             while True:
                 if self._active_session_count() >= await self._max_active_sessions():
                     break
-                entry = await sq.next_entry()
+                entry = await sq.next_entry(exclude=foreign)
                 if entry is None:
                     break
                 sid, params = entry.session_id, dict(entry.params)
@@ -1983,20 +2017,37 @@ class SessionOrchestrator:
                 # the next boot's queue-drain-on-rehydrate. Every exit path below
                 # removes it exactly once.
                 #
-                # Re-verify the DB row is still 'queued' before spawning.  A
-                # concurrent close/archive (or a crash AFTER a spawn committed, which
-                # now leaves the entry behind) may have already changed the status
-                # while the entry sat in the queue.  Skipping here heals those stale
-                # entries without double-starting the session.
+                # Staleness is judged against the SHARED row, the only truth every
+                # daemon sees: a concurrent close/archive (or a crash AFTER a spawn
+                # committed, which leaves the entry behind) has already moved the
+                # row off 'queued'. Removing such an entry heals it without
+                # double-starting the session.
+                async with db_session() as db:
+                    row = (await db.execute(
+                        sa_select(DbSession).where(DbSession.id == sid)
+                    )).scalar_one_or_none()
                 in_mem = self._records.get(sid)
-                # A legitimately queued entry ALWAYS has an in-memory record
-                # (enqueue and rehydrate both seed one) — a missing record means
-                # a concurrent close/archive won the race; skip, never spawn.
-                if in_mem is None or in_mem.status != "queued":
+                if row is None or row.status != "queued" or (
+                        in_mem is not None and in_mem.status != "queued"):
                     await sq.remove(sid)
                     log.warning("session_queue.stale_entry id=%s status=%s — skipping",
-                                sid, in_mem.status if in_mem is not None else "<gone>")
+                                sid, row.status if row is not None else "<gone>")
                     continue
+                # Ownership (#852 rule, same as every other acting loop): a worker
+                # drains only its own stamp; the primary drains NULL/own stamps and
+                # orphans whose host left the registry. Anything else has a live
+                # daemon responsible for it — leave the entry for that daemon.
+                if in_mem is None:
+                    # Owned row not yet in memory (enqueued before a restart whose
+                    # rehydrate did not seed it): rebuild from the row, the single
+                    # source of truth, rather than discarding a replayable entry.
+                    in_mem = self._record_from_row(row)
+                if not self._owns_record(in_mem, enabled_hosts):
+                    foreign.add(sid)
+                    log.debug("session_queue.foreign_entry id=%s host=%s — left for owner",
+                              sid, row.host)
+                    continue
+                self._records.setdefault(sid, in_mem)
                 # The queued pre-record STAYS in place while _spawn_session runs:
                 # the spawn overwrites it with its pre-seeded active record (and
                 # keeps its queue-time created_at/host, as documented there). It
@@ -2602,11 +2653,23 @@ class SessionOrchestrator:
             if status != "idle":
                 rec.interrupted_by_restart = False
                 rec.interrupted_from_status = None
+            # Stalled-on-usage bookkeeping (usage_stall.py): a status outside the two
+            # parked shapes means the session is moving again, so the cause is stale.
+            if status not in _STALLED_STATUSES:
+                rec.paused_reason = None
+                rec.paused_until = None
         async with db_session() as db:
             from sqlalchemy import update as sa_update
             values: dict = {"status": status}
             if turn_at is not None:
                 values["last_turn_at"] = turn_at
+            if status in _STALLED_STATUSES:
+                if rec is not None:
+                    values["paused_reason"] = rec.paused_reason
+                    values["paused_until"] = rec.paused_until
+            else:
+                values["paused_reason"] = None
+                values["paused_until"] = None
             # Write pr_resolution to DB when the in-memory record was just set above;
             # rec.pr_resolution == resolution guards idempotency (won't overwrite a
             # pre-existing classifier value that differs from the marker resolution).
@@ -2640,7 +2703,11 @@ class SessionOrchestrator:
                              "updatedAt": rec.updated_at_iso if rec is not None else None,
                              "revAt": rec.rev_at if rec is not None else None,
                              "interruptedByRestart": (
-                                 rec.interrupted_by_restart if rec is not None else False)})
+                                 rec.interrupted_by_restart if rec is not None else False),
+                             "pausedReason": rec.paused_reason if rec is not None else None,
+                             "pausedUntil": iso_utc(rec.paused_until) if rec is not None else None,
+                             "usageStalled": (is_usage_stalled(status, rec.paused_reason)
+                                              if rec is not None else False)})
         await self._maybe_push(session_id, status)
         if completed_turn:
             await self._maybe_apply_auto_name(session_id)
@@ -6458,6 +6525,8 @@ class SessionOrchestrator:
             host=getattr(row, "host", None),
             kind=getattr(row, "kind", None),
             owner_identity=getattr(row, "owner_identity", None),
+            paused_reason=getattr(row, "paused_reason", None),
+            paused_until=getattr(row, "paused_until", None),
         )
         fields.update(overrides)
         return SessionRecord(**fields)
@@ -7752,6 +7821,73 @@ class SessionOrchestrator:
         log_event(log, logging.INFO, "session.reload", session_id=session_id,
                   identity=identity, replayed=record.status in _REPLAY_STATUSES)
         return "reloaded"
+
+    async def rotate_to_best(self, session_id: str,
+                             identity: str = SYSTEM_IDENTITY) -> str:
+        """User-initiated "move to the next best account" — the per-session menu
+        item and the batch "Rotate stalled" button.
+
+        Selection is the same as automatic rotation (quarantined accounts and the
+        current one excluded, load-aware), the swap is the same ``_reassign``
+        primitive, and the differences are deliberate:
+
+        * it un-pins: an explicit "move me" overrides an earlier explicit "stay";
+        * it does NOT count toward the rotation cap — that cap guards automatic
+          thrash, and a human asking to move is not thrash;
+        * the last prompt is replayed for mid-turn AND parked (needs_attention /
+          limited) sessions — a stalled session's last prompt is the one that
+          failed. A session parked on a question / permission / review resumes
+          and waits, the reload rule.
+
+        Returns "rotated" | "skipped:<reason>" | "no_driver".
+        """
+        record = self._records.get(session_id)
+        if record is None:
+            return "skipped:not-found"
+        if record.status in _NOT_RELOADABLE_STATUSES:
+            return f"skipped:{record.status}"
+        now = self._clock()
+        exclude = self._recovery.quarantined(now=now) | frozenset({record.account})
+        try:
+            new_account = select_account(exclude=exclude, load=self.live_session_load()).name
+        except AllAccountsBusy as e:
+            if is_usage_stalled(record.status, record.paused_reason):
+                # Already parked: honour the move request (drop the pin) and refresh
+                # the earliest-reset the card shows. A healthy session is left as is.
+                if record.account_pinned:
+                    record.account_pinned = False
+                    await self._persist_pin(record.id, False)
+                await self._pause_session(record, reason="all_accounts_busy",
+                                          earliest_reset=e.earliest_reset)
+            return "skipped:all_accounts_busy"
+        if record.account_pinned:
+            record.account_pinned = False
+            await self._persist_pin(record.id, False)
+        replay = record.status in _ROTATE_REPLAY_STATUSES
+        await self._reassign(record, new_account, reason="manual_rotate",
+                             replay_last_prompt=replay)
+        driver = self._drivers.get(session_id)
+        if driver is None:
+            return "no_driver"
+        _rethread_identity(driver, identity)
+        log_event(log, logging.INFO, "session.rotate_to_best", session_id=session_id,
+                  identity=identity, to_account=new_account, replayed=replay)
+        return "rotated"
+
+    async def set_account_pin(self, session_id: str, pinned: bool) -> str:
+        """Pin the session to its CURRENT account (usage-ceiling rotation then marks
+        it `limited` instead of moving it) or clear the pin. Clearing the pin on a
+        `limited` session is the recovery the pin was blocking, so it rotates now.
+        Returns "pinned" | "unpinned" | "skipped:not-found"."""
+        record = self._records.get(session_id)
+        if record is None:
+            return "skipped:not-found"
+        record.account_pinned = pinned
+        await self._persist_pin(session_id, pinned)
+        if not pinned and record.status == "limited":
+            self._spawn(self._rotate_away(record, reason="unpinned"),
+                        name=f"unpin-rotate-{session_id}")
+        return "pinned" if pinned else "unpinned"
 
     @staticmethod
     def _env_truthy(name: str) -> bool:
@@ -9227,10 +9363,17 @@ class SessionOrchestrator:
                     reason = "account_unreachable"
                     session_pct = 0.0  # unknown; treat as ceiling for rotation logic
                 else:
-                    session_pct = getattr(usage, "session_pct", 0.0)
-                    if session_pct < _ROTATION_CEILING:
+                    if not exhausted(usage, _ROTATION_CEILING,
+                                     extra_usage_allowed=self._extra_usage_allowed(account)):
+                        # Either genuine headroom, or at-ceiling with paid overflow the
+                        # selector would still hand out (rank_accounts' extra_paid tier).
+                        # Rotating off such an account finds no better target and parks
+                        # the session as needs_attention for nothing.
+                        self._maybe_sweep_on_recovery()
                         continue
-                    reason = "session limit reached"
+                    session_pct = getattr(usage, "session_pct", 0.0)
+                    reason = ("session limit reached" if session_pct >= _ROTATION_CEILING
+                              else "weekly limit reached")
 
                 # Find all live sessions on this account and rotate them.
                 enabled_hosts = await self._enabled_host_names()
@@ -9269,14 +9412,16 @@ class SessionOrchestrator:
                         # Pinned + usage ceiling: mark limited so the user knows
                         # they need to unpin before the session can auto-rotate.
                         log.info("rotation.skip_pinned session=%s account=%s", record.id, account)
+                        record.paused_reason = "pinned_account_limited"
+                        record.paused_until = _naive_utc(
+                            getattr(usage, "session_resets_at", None)
+                            if getattr(usage, "session_pct", 0.0) >= _ROTATION_CEILING
+                            else getattr(usage, "weekly_resets_at", None))
                         record.status = "limited"
                         self._spawn(
                             self._persist_status(record.id, "limited"),
                             name=f"limited-{record.id}",
                         )
-                        self._publish_event({
-                            "type": "status", "sessionId": record.id, "state": "limited",
-                        })
                         continue
                     log.info(
                         "rotation.trigger session=%s account=%s pct=%.1f reason=%s",
@@ -9296,6 +9441,24 @@ class SessionOrchestrator:
         """Usage-ceiling rotation entrypoint (called by the poller monitor)."""
         await self._rotate_away(record, reason=reason)
 
+    def _extra_usage_allowed(self, account: str) -> bool:
+        """Has the user opted *account* into paid extra-usage credits?
+
+        The rotation monitor's half of the same input `pick_account_detailed` feeds
+        `rank_accounts` as `extra_usage_allowed` — read from the one source of truth
+        (`ledger.get_allow_extra_usage`) so "dead" here means what "unusable" means
+        there. Read synchronously: the ledger is a small local JSON file, and a
+        best-effort False on any read error only costs a rotation we would have
+        done before this fix anyway.
+        """
+        from ccswitch import ledger as _ledger
+        try:
+            with _ledger.locked_ledger() as led:
+                return _ledger.get_allow_extra_usage(led, account)
+        except Exception:
+            log.debug("rotation.extra_usage_read_failed account=%s", account, exc_info=True)
+            return False
+
     def _account_is_dead(self, account: str) -> bool:
         """True when the account is at usage ceiling OR persistently unreachable.
 
@@ -9304,7 +9467,8 @@ class SessionOrchestrator:
         """
         usage = self._poller.cached(account)
         if usage is not None:
-            return getattr(usage, "session_pct", 0.0) >= _ROTATION_CEILING
+            return exhausted(usage, _ROTATION_CEILING,
+                             extra_usage_allowed=self._extra_usage_allowed(account))
         # usage=None: distinguish "not yet polled" from "persistently failing"
         return self._poller.consecutive_failures(account) >= _UNREACHABLE_ROTATION_THRESHOLD
 
@@ -9345,6 +9509,22 @@ class SessionOrchestrator:
         _rotate_away over rows another live host owns."""
         enabled_hosts = await self._enabled_host_names()
         for record in list(self._records.values()):
+            if record.status == "limited":
+                # Pinned at its ceiling. The pin means "stay here", so once THIS account
+                # has headroom again resume the conversation on it (replays the failed
+                # prompt) — never rotate. No cached usage / still at ceiling → wait.
+                if not self._owns_record(record, enabled_hosts):
+                    continue
+                usage = self._poller.cached(record.account)
+                if usage is None or at_ceiling(usage, _ROTATION_CEILING):
+                    continue
+                log.info("stuck-sweep.limit_reset session=%s account=%s",
+                         record.id, record.account)
+                self._spawn(
+                    self._reassign(record, record.account, reason="limit_reset"),
+                    name=f"sweep-limit-reset-{record.id}",
+                )
+                continue
             if record.status != "needs_attention":
                 continue
             if not self._owns_record(record, enabled_hosts):
@@ -9358,6 +9538,22 @@ class SessionOrchestrator:
                 self._rotate_away(record, reason="stuck_session_sweep"),
                 name=f"sweep-rotate-{record.id}",
             )
+
+    def _maybe_sweep_on_recovery(self) -> bool:
+        """Poller saw an account BELOW ceiling. If any session is stalled on usage,
+        run the stuck-session sweep now instead of waiting for its 300 s tick.
+        Debounced; returns True when a sweep was spawned."""
+        now = self._clock()
+        last = getattr(self, "_last_recovery_sweep_at", float("-inf"))
+        if now - last < _RECOVERY_SWEEP_DEBOUNCE_S:
+            return False
+        if not any(is_usage_stalled(r.status, r.paused_reason)
+                   for r in list(self._records.values())):
+            return False
+        self._last_recovery_sweep_at = now
+        log.info("stuck-sweep.recovery_trigger")
+        self._spawn(self._sweep_needs_attention(), name="recovery-sweep")
+        return True
 
     # ------------------------------------------------------------------
     # Failure-driven recovery (429 / 401 during a live turn)
@@ -9508,7 +9704,11 @@ class SessionOrchestrator:
     async def _pause_session(self, record: SessionRecord, *, reason: str,
                              earliest_reset=None) -> None:
         """No recovery possible (no healthy account / rotation cap). Flag the session
-        for the user and publish a machine-readable paused event."""
+        for the user and publish a machine-readable paused event. The reason and the
+        earliest known reset ride the same _persist_status write as the status so the
+        dashboard can say WHY (usage_stall.py) instead of a bare "Turn failed"."""
+        record.paused_reason = reason
+        record.paused_until = _naive_utc(earliest_reset)
         try:
             await self._persist_status(record.id, "needs_attention")
         except Exception:
@@ -10019,15 +10219,28 @@ class SessionOrchestrator:
             self._install_driver(record.id, new_driver)
             if record.model is not None:
                 await new_driver.set_model(record.model)
+            # A parked session (needs_attention / limited) has no turn in flight, so
+            # nothing will move its status once the swap succeeds — a replayed prompt
+            # flips it to in_progress, but a session with no prompt to replay (the
+            # normal state after a daemon restart) would stay parked forever and the
+            # recovery sweep would re-enter on its own output every 30 s. Persist
+            # idle here, before the replay, so a replayed turn's own status wins.
+            if record.status in _STALLED_STATUSES:
+                await self._persist_status(record.id, "idle")
             last = self._last_prompt.get(record.id) if replay_last_prompt else None
             if last:
                 await new_driver.send_prompt(last)
+            # A successful swap ends whatever pause parked the session; the replayed
+            # turn's own status persist may not arrive (no prompt to replay), so clear
+            # the cause here too.
+            record.paused_reason = None
+            record.paused_until = None
             async with db_session() as db:
                 from sqlalchemy import update as sa_update
                 await db.execute(
                     sa_update(DbSession)
                     .where(DbSession.id == record.id)
-                    .values(account_name=new_account)
+                    .values(account_name=new_account, paused_reason=None, paused_until=None)
                 )
             # Bump the in-memory rev token BEFORE publishing the event (mirrors
             # _persist_status's "row-write token" bump). Without this the `rotated`

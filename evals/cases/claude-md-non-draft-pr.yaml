@@ -4,4 +4,4 @@ description: >-
   never triggers required checks and silently stalls.
 kind: static
 tags: [agent-config, completion-workflow]
-check: 'grep -q "never leave it a draft" CLAUDE.md'
+check: 'grep -q "never leave it a draft" .agents/instructions/core.md'

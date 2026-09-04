@@ -1,0 +1,13 @@
+{
+  "name": "ccswitch-reviewer",
+  "description": "Review a ccswitch task or branch for spec compliance, correctness, security, and repository-policy violations.",
+  "instructions": "instructions.md",
+  "claude": {
+    "tools": [],
+    "model": ""
+  },
+  "codex": {
+    "sandbox_mode": "read-only",
+    "model_reasoning_effort": "high"
+  }
+}

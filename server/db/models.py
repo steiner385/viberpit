@@ -197,6 +197,12 @@ class Session(Base):
     # the session (it goes 'limited' at the ceiling instead). Hard 401/429 recovery
     # still rotates and clears the pin. Nullable for the same backfill reason.
     account_pinned: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
+    # Why the session is parked + the earliest known usage reset (naive UTC), written
+    # by _persist_status alongside `needs_attention`/`limited` and cleared on any other
+    # status. Lets the dashboard say "waiting for capacity · retries 12:10" instead of
+    # a bare "Turn failed". Nullable so reconcile ALTER-ADDs them on both dialects.
+    paused_reason: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    paused_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
     # Provenance: the automation id that spawned this session (NULL = human-created),
     # and what it was spawned for (e.g. "owner/name#412"). Nullable so init_db backfills
     # on the dev SQLite DB without a migration. See server/automations/.

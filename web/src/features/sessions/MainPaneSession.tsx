@@ -39,7 +39,7 @@
  * `leave()` that every exit path runs through.
  */
 import type { SessionStatus } from '@/api/types'
-import { useReloadSession } from '@/api/hooks'
+import { useReloadSession, useRotateSession } from '@/api/hooks'
 import { useSessionSocket } from '@/ws/client'
 import { SessionBody } from '@/components/session/SessionBody'
 import { CommandResultOverlay } from '@/components/session/CommandResultOverlay'
@@ -61,6 +61,7 @@ export function MainPaneSession({ sessionId, onClosed, onDetach, onOpenSession }
   const rt = useSessionRuntimeContext()
   const { detach } = useSessionSocket()
   const reloadSession = useReloadSession()
+  const rotateSession = useRotateSession()
 
   // "Reload session": the daemon rebuilds the driver in place, then this client
   // re-attaches so the transcript is rebuilt from the daemon's state rather than
@@ -68,6 +69,12 @@ export function MainPaneSession({ sessionId, onClosed, onDetach, onOpenSession }
   // the transcript's own "Retry" uses — one recovery path, two triggers.
   function reload() {
     reloadSession.mutate({ id: sessionId }, { onSuccess: () => rt.reattach() })
+  }
+
+  // "Next best account": same shape as reload — the daemon swaps the driver, then
+  // this client re-attaches so the transcript reflects the daemon's state.
+  function rotate() {
+    rotateSession.mutate({ id: sessionId }, { onSuccess: () => rt.reattach() })
   }
 
   // Detaching the socket before navigating is what `SessionView` did. The
@@ -105,6 +112,7 @@ export function MainPaneSession({ sessionId, onClosed, onDetach, onOpenSession }
         onOpenSession={onOpenSession}
         onClosed={() => leave(onClosed)}
         onReload={reload}
+        onRotate={rotate}
       />
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-surface">
         <SessionBody rt={rt} />

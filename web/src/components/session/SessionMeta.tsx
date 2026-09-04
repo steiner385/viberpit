@@ -59,6 +59,8 @@ interface Props {
   onSelectModel: (id: string) => void
   onSelectAccount: (name: string) => void
   onSetMode: (mode: string) => void
+  /** Clear the account pin; the server rotates a `limited` session immediately. */
+  onUnpin?: () => void
 }
 
 const DASH = '—'
@@ -76,7 +78,7 @@ const DOT_CLASS: Record<SubAgentStatus, string> = {
   failed: 'bg-red-500',
 }
 
-export function SessionMeta({ account, model, liveModel = null, modelPending = false, mode, contextPct, quota, subAgents, statusSlot, exportSlot, actionsSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onSetMode }: Props) {
+export function SessionMeta({ account, model, liveModel = null, modelPending = false, mode, contextPct, quota, subAgents, statusSlot, exportSlot, actionsSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onSetMode, onUnpin }: Props) {
   const [open, setOpen] = useState(false)
   const agentCount = subAgents.length
 
@@ -104,7 +106,15 @@ export function SessionMeta({ account, model, liveModel = null, modelPending = f
             ))}
           </select>
           {accountPinned && (
-            <span aria-label="Account pinned" title="Pinned — auto-rotation off" className="text-amber-500">📌</span>
+            <button
+              type="button"
+              onClick={onUnpin}
+              aria-label="Unpin account"
+              title="Pinned — auto-rotation off. Click to unpin."
+              className="text-amber-500 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+            >
+              📌
+            </button>
           )}
         </span>
 

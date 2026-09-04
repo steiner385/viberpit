@@ -587,6 +587,18 @@ class RemoteOrchestrator:
         return await self._client.call(
             "reload_session", session_id=session_id, identity=identity)
 
+    async def rotate_to_best(self, session_id: str, identity: str = SYSTEM_IDENTITY) -> str:
+        """Proxy the owning daemon's rotate_to_best (move to the next best account).
+        Returns "rotated" / "skipped:<reason>" / "no_driver"."""
+        return await self._client.call(
+            "rotate_to_best", session_id=session_id, identity=identity)
+
+    async def set_account_pin(self, session_id: str, pinned: bool) -> str:
+        """Proxy the owning daemon's set_account_pin. Returns "pinned" / "unpinned" /
+        "skipped:not-found"."""
+        return await self._client.call(
+            "set_account_pin", session_id=session_id, pinned=pinned)
+
     async def permanent_delete(self, session_id):
         return await self._client.call("permanent_delete", session_id=session_id)
 

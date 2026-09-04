@@ -154,15 +154,19 @@ interface StatusPillProps {
   className?: string
   /** Issue #434: relabel a restart-stranded session as "re-send to resume". */
   interruptedByRestart?: boolean
+  /** Server-derived Session.usageStalled — parked for lack of usage headroom. */
+  usageStalled?: boolean
+  /** Session.pausedUntil — earliest known reset, for the pill's time suffix. */
+  pausedUntil?: string | null
 }
 
-export function StatusPill({ status, className, interruptedByRestart }: StatusPillProps) {
+export function StatusPill({ status, className, interruptedByRestart, usageStalled, pausedUntil }: StatusPillProps) {
   // Account statuses have their own vocabulary; session statuses use the shared map.
   const account = (ACCOUNT_STATUS_MAP as Record<string, StatusConfig>)[status]
   if (account) {
     return <Pill label={account.label} Icon={account.Icon} tone={account.tone} className={className} />
   }
-  const p = statusPresentation(status, { interruptedByRestart })
+  const p = statusPresentation(status, { interruptedByRestart, usageStalled, pausedUntil })
   return (
     <Pill
       label={p.label}

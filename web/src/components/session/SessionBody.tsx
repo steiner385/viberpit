@@ -24,7 +24,7 @@ import { SessionAriaLive } from './SessionAriaLive'
 import { statusTier } from '@/session/statusTier'
 import { selectRunningSubAgentCount } from '@/session/selectors'
 import { BrowserTab } from '../BrowserTab'
-import { useModels, useAccounts, useSessions, useModelApproval } from '@/api/hooks'
+import { useModels, useAccounts, useSessions, useModelApproval, useSetAccountPin } from '@/api/hooks'
 import { ExportMenu } from './ExportMenu'
 import { ModelSwitchDialog } from './ModelSwitchDialog'
 
@@ -36,6 +36,7 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
   const sessionRecord = sessions.find((s) => s.id === rt.sessionId)
   const pinned = sessionRecord?.accountPinned ?? false
   const { mutate: modelApproval, isPending: modelApprovalPending } = useModelApproval()
+  const setAccountPin = useSetAccountPin()
 
   // Whether the x11/browser feature is available on this server.
   // Starts as false (unknown); set to true only when /api/x11/metrics returns
@@ -94,6 +95,7 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
           }}
           onSelectAccount={(name) => rt.onCommand('account', name)}
           onSetMode={rt.onSetMode}
+          onUnpin={() => setAccountPin.mutate({ id: rt.sessionId, pinned: false })}
         />
       </div>
 
