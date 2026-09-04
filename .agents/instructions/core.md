@@ -6,10 +6,10 @@ several accounts, with automatic usage-aware account rotation.
 
 **Governance:** all work MUST comply with the project constitution at
 `.specify/memory/constitution.md` (v1.2.0, Principles I–VII). Notably: never fork/patch a native
-agent binary, and gate experimental vendor surfaces (I); account = one engine config dir, strict
-per-process isolation, at most one credential authority (II); verify against the real binary/API,
-not assumptions (III); security-first, exposure-conditional auth (IV); TDD + quality gates (V);
-single source of truth / no dead code (VI); modern vetted deps (VII).
+agent binary, and gate experimental vendor surfaces (I); account = one engine-scoped identity,
+strict per-process isolation, at most one credential authority (II); verify against the real
+binary/API, not assumptions (III); security-first, exposure-conditional auth (IV); TDD + quality
+gates (V); single source of truth / no dead code (VI); modern vetted deps (VII).
 
 Stack: Python FastAPI/Uvicorn + SQLAlchemy (SQLite in dev/tests, Postgres in prod) · React+Vite+TS
 + Tailwind/shadcn frontend · each session is a `claude` CLI driven through `claude-agent-sdk`
