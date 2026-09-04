@@ -69,7 +69,7 @@ _MAX_STR = 2000
 def _scrub(v: Any) -> Any:
     if isinstance(v, str):
         s = v if len(v) <= _MAX_STR else v[:_MAX_STR] + "…"
-        return _TAG.sub("&lt;", s).replace(">", "&gt;") if "<" in s else s
+        return _TAG.sub("&lt;", s).replace(">", "&gt;")
     if isinstance(v, list):
         return [_scrub(x) for x in v]
     if isinstance(v, dict):
@@ -90,13 +90,40 @@ def _err(msg: str) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": msg}], "is_error": True}
 
 
-_SESSION_KEYS = ("id", "name", "status", "repo", "branch", "host", "accountName", "model",
-                 "summary", "prs", "pendingPermissions", "pendingQuestions", "lastTurnAt",
-                 "queuePosition", "pendingModel", "origin")
+# Matches the LIVE-session wire shape from `_record_to_dict`
+# (server/api/sessions.py) — that endpoint never emits `branch`, and pending
+# permission/question state is already carried by `status`
+# (`waiting_input` / `waiting_question`), not separate counters.
+_SESSION_KEYS = ("id", "name", "status", "repo", "host", "accountName", "model",
+                 "summary", "prs", "queuePosition", "pendingModel", "origin")
+
+# Matches the ARCHIVED-session wire shape from `SessionOrchestrator.list_archived`
+# (server/sessions/orchestrator.py) — a DIFFERENT, narrower shape than a live
+# session's; it has no `status`/`host`/`model`/`prs` but does carry `archivedAt`.
+_ARCHIVED_KEYS = ("id", "name", "account", "repo", "createdAt", "archivedAt")
+
+# JSON-Schema type names for the plain python types used in tool argument specs
+# below. `create_sdk_mcp_server` treats a dict-shorthand schema's keys as ALL
+# required (`"required": list(properties.keys())` unconditionally) before a
+# tool's handler ever runs, so any tool with an optional argument must build
+# its schema explicitly rather than rely on the shorthand.
+_JSON_TYPE = {str: "string", int: "integer"}
+
+
+def _schema(required: tuple[str, ...] = (), **fields: type) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {k: {"type": _JSON_TYPE[t]} for k, t in fields.items()},
+        "required": list(required),
+    }
 
 
 def _trim_session(s: dict[str, Any]) -> dict[str, Any]:
     return {k: s[k] for k in _SESSION_KEYS if k in s}
+
+
+def _trim_archived(s: dict[str, Any]) -> dict[str, Any]:
+    return {k: s[k] for k in _ARCHIVED_KEYS if k in s}
 
 
 def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
@@ -106,6 +133,8 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
                 return _ok(await fn(args or {}))
             except AssistantApiError as e:
                 return _err(f"ccswitch API error {e.message}")
+            except Exception as e:  # noqa: BLE001 - never let a tool crash the SDK loop
+                return _err(f"ccswitch tool error: {e.__class__.__name__}")
         return run
 
     def spec_tool(name: str, description: str, schema: dict[str, Any]) -> Any:
@@ -116,7 +145,7 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
                "and whether they are waiting on a permission or question. Filter by status "
                "(waiting_input, in_progress, ready_review, limited, queued…), host or repo. "
                "Prefer search_sessions when looking for one session by topic.",
-               {"status": str, "host": str, "repo": str})
+               _schema(status=str, host=str, repo=str))
     @guarded
     async def list_sessions(args: dict[str, Any]) -> Any:
         rows = await api.get("/api/sessions")
@@ -135,7 +164,7 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
     @spec_tool("get_session_transcript",
                "The last N turns of a session: user prompts, assistant text and tool NAMES. "
                "Tool inputs/outputs are elided. Use to explain what a session is doing or why "
-               "it is stuck.", {"id": str, "last_n": int})
+               "it is stuck.", _schema(("id",), id=str, last_n=int))
     @guarded
     async def get_session_transcript(args: dict[str, Any]) -> Any:
         n = max(1, min(int(args.get("last_n") or 20), 50))
@@ -159,11 +188,12 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
     async def search_sessions(args: dict[str, Any]) -> Any:
         return await api.get("/api/sessions/search", params={"q": args["query"]})
 
-    @spec_tool("list_archived_sessions", "Recently archived sessions (newest first).", {"limit": int})
+    @spec_tool("list_archived_sessions", "Archived sessions, up to limit (no ordering guarantee).",
+               _schema(limit=int))
     @guarded
     async def list_archived_sessions(args: dict[str, Any]) -> Any:
         rows = await api.get("/api/sessions/archived")
-        return [_trim_session(s) for s in rows[: max(1, min(int(args.get("limit") or 50), 200))]]
+        return [_trim_archived(s) for s in rows[: max(1, min(int(args.get("limit") or 50), 200))]]
 
     @spec_tool("list_accounts", "Accounts with provider, enabled flag, auth status, session/weekly "
                "usage percent and reset times, and how many sessions each is running.", {})
@@ -177,14 +207,14 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
         return await api.get("/api/fleet/hosts")
 
     @spec_tool("list_prs", "Open pull requests across repos with check status, merge-queue state "
-               "and the owning session. Optional repo filter 'owner/name'.", {"repo": str})
+               "and the owning session. Optional repo filter 'owner/name'.", _schema(repo=str))
     @guarded
     async def list_prs(args: dict[str, Any]) -> Any:
         rows = await api.get("/api/prs")
         return [p for p in rows if not args.get("repo") or p.get("repo") == args["repo"]]
 
     @spec_tool("get_pipeline_health", "Slowest and flakiest CI checks for a repo over a window "
-               "(24h, 7d, 14d, 30d).", {"repo": str, "window": str})
+               "(24h, 7d, 14d, 30d).", _schema(("repo",), repo=str, window=str))
     @guarded
     async def get_pipeline_health(args: dict[str, Any]) -> Any:
         return await api.get("/api/pipeline/insights/checks",
@@ -197,11 +227,11 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
         return await api.get("/api/automations")
 
     @spec_tool("get_automation_events", "Recent events one automation produced (what it did and "
-               "why).", {"id": str, "limit": int})
+               "why).", _schema(("id",), id=str, limit=int))
     @guarded
     async def get_automation_events(args: dict[str, Any]) -> Any:
-        rows = await api.get(f"/api/automations/{args['id']}/events")
-        return rows[: max(1, min(int(args.get("limit") or 20), 100))]
+        n = max(1, min(int(args.get("limit") or 20), 100))
+        return await api.get(f"/api/automations/{args['id']}/events", params={"limit": n})
 
     @spec_tool("get_deploy_status", "Current deploy-controller status.", {})
     @guarded

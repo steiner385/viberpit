@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 
 import httpx
+import jsonschema
 import pytest
+from mcp.types import ListToolsRequest
 
 from server.assistant.client import AssistantApi, AssistantApiError  # noqa: F401
+from server.assistant.server import build_server
 from server.assistant.tools import (ToolClass, TOOL_SPECS, annotation_for, build_tools,
                                     wrap_untrusted)
 
@@ -87,3 +90,32 @@ def test_specs_and_annotations():
 def test_wrap_untrusted_escapes_only_tags():
     s = wrap_untrusted({"t": "a < b and <tag>"})
     assert "a < b" in s and "&lt;tag&gt;" in s
+
+
+# Tools whose every argument is optional — the SDK's protocol-level input schema for
+# each MUST validate `{}`, or the CLI rejects the call (jsonschema.validate runs in
+# mcp.server.lowlevel.server.Server.call_tool BEFORE the handler ever sees the args).
+_ALL_OPTIONAL_TOOLS = ("list_sessions", "list_prs", "list_accounts", "list_hosts",
+                       "list_automations", "get_deploy_status", "list_archived_sessions")
+
+
+@pytest.mark.asyncio
+async def test_server_schemas_reflect_real_required_fields():
+    api = _api(lambda r: httpx.Response(200, json={}))
+    server_config = build_server(api)
+    server = server_config["instance"]
+    # `_build_schema` (inside claude_agent_sdk.create_sdk_mcp_server) is a private
+    # closure with no public accessor; go through the low-level MCP server's own
+    # registered `list_tools` handler so we validate the SCHEMA THE CLI ACTUALLY SEES
+    # on the wire, not a hand-rolled reimplementation of the SDK's schema-building.
+    result = await server.request_handlers[ListToolsRequest](
+        ListToolsRequest(method="tools/list"))
+    tools_by_name = {t.name: t.inputSchema for t in result.root.tools}
+
+    assert set(tools_by_name) == set(TOOL_SPECS)
+
+    for name in _ALL_OPTIONAL_TOOLS:
+        jsonschema.validate({}, tools_by_name[name])  # must not raise
+
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({}, tools_by_name["get_session"])
