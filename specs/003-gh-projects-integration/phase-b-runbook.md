@@ -18,6 +18,27 @@
 
 ## One-time board setup that the API cannot do
 - Views: create a "Board" view grouped by Status and a "Table" view sorted by Score desc, per board.
+- **Rename the built-in Status options to the spec vocabulary by hand, before the first apply.**
+  GitHub's defaults are `Todo` / `In Progress` / `Done`; the spec's are `Backlog` / `Ready` /
+  `In progress` / `Blocked` / `Needs human` / `Done`. `_ensure_fields` appends missing options
+  by **exact name**, so `In Progress` and `In progress` are two different columns to it — leave
+  the defaults in place and the board comes out of the migration with both, plus a dead `Todo`.
+  Renaming in the UI first leaves the union with nothing to append.
+
+## Caveat: the Status-option update erases existing Status values
+Probed live on a scratch board (`spike_gh_projects_v2.py optionids`, findings §"Option-id probe"):
+`updateProjectV2Field` **regenerates every option id**, including for names re-sent unchanged, and
+item values pointing at the old ids are **silently blanked** — no error, the value is just gone.
+
+So the union `_ensure_fields` sends preserves a human's extra *columns* but not their *contents*.
+Accept this before running the first apply with `migrate` on:
+- Items the reconciler manages refill on the following cycles — it re-derives Status for every item
+  **in the mirror** and pushes it. Expect the board to look empty-ish for a tick or two.
+- A value the reconciler would never set (a hand-curated `Icebox`, a Status on an item that is not
+  in the mirror) stays blank. If any board holds hand-set Status you care about, screenshot or
+  export it first; there is no undo, and the journal's `old_value` for a `set_field_options` row is
+  the option *name list*, not the per-item values.
+- This cost is paid once per board. Steady state never edits board schema.
 
 ## Enable sequence (spec §8 Phase B: dry-run → journal review → enable)
 1. Set `CCSWITCH_GH_RECONCILE_ENABLED=true` in `/etc/ccswitch/daemon.env` and restart at a quiet
@@ -32,17 +53,30 @@
    `add_blocked_by` row, because a closed blocker doesn't block. Dry-run rows are deduped within
    24h and pruned after it, so leaving dry run on does not grow the journal per tick; a second
    review pass shows the same rows, not new copies. Anything unexpected → fix before apply.
+   **Expected on a board that has not been bootstrapped yet:** `would park batch … field 'Score'
+   not in cache`. A dry run writes nothing, so it does not create Score/Stage, so the batch builder
+   genuinely cannot render a `set_field` for them — the row is still journaled and reviewable. This
+   clears after the first apply; it is not a reason to hold off. (Only a real apply gates on the
+   post-bootstrap field gap; the dry run is exempt so the preview survives.)
 3. Mode `apply` (migrate still on). Next tick applies in batches of 20; check `?state=applied`,
    `?state=failed`, `?state=parked`. The status card shows counts; `gh_reconcile_cap` events mean the
    cap was hit — raise `migrate_cap` only if the planned set is right.
 4. Verify on GitHub: fields exist, items present, Status set, blocked-by edges on the prose-dep issues.
 5. **Leave `migrate` on until the status card shows `0 planned` on two consecutive ticks**, then turn
-   it off. Status/Score land on the *second* apply: the first apply creates Score/Stage and extends
-   the Status options, and the item mutations that use those new option ids can only be planned once
-   pm-sync has re-ingested the items against the updated field cache. Turning `migrate` off before
-   that leaves the board half-written — and with it off, a board still missing a field or Status
-   option is no longer repaired: the product emits `gh_reconcile_parked` ("board fields incomplete")
-   and skips its item mutations until migrate is turned back on.
+   it off. Status/Score for *newly added* items land on the **second** apply, and the reason is the
+   mirror, not the field cache: the field cache is updated in the same cycle that creates the fields
+   (`_ensure_fields` returns the new ids and the batch builder uses them immediately), so items the
+   mirror already knows get their Status/Score on the **first** apply. An item that this cycle's
+   `add_item` just put on the board is not in the mirror yet, and the diff engine only plans field
+   mutations for mirrored items — so nothing can be planned for it until pm-sync re-ingests the
+   board. Hence: apply 1 = fields + membership + fields-on-known-items, pm-sync, apply 2 = fields on
+   the newly added items.
+   Turning `migrate` off before that leaves the board half-written — and with it off, a board still
+   missing a field or Status option is no longer repaired: the product emits `gh_reconcile_parked`
+   ("board fields incomplete") and skips its item mutations until migrate is turned back on. That
+   emit is **latched per product**: you get it once, not once per tick, and again only if the gap
+   changes or recurs after clearing. The `parked` count on the status card keeps ticking either way
+   — trust the count, not the notification volume, for "is this still broken".
 6. Steady state uses the 50 cap and never edits board schema.
 
 ## Rollback
@@ -55,6 +89,17 @@ spike script. Removing compiled edges: `removeBlockedBy` with the same ids.
 - `kill switch off` — env var unset (a daemon restart is needed either way; use mode `off` to stop
   the loop without one).
 - `board fields incomplete` (`gh_reconcile_parked`) — `migrate` is off and the board is missing
-  Score/Stage or a Status option. Turn `migrate` on for one apply cycle, then off again.
+  Score/Stage or a Status option. Turn `migrate` on for one apply cycle, then off again. Emitted
+  once per product per distinct gap, not once per tick; the status card's `parked` count is the
+  live signal.
+- `board field bootstrap did not complete` (`gh_reconcile_parked`) — `migrate` IS on but a field
+  mutation failed or is parked, so the board still has a gap. The cycle stops there deliberately:
+  every `set_field` for the missing field would raise UnknownOption and park a whole 20-row batch,
+  burying the one real failure. Fix the failed `create_field`/`set_field_options` row (see
+  `?state=failed` / `?state=parked`), delete the parked journal row, and the next tick retries.
 - `parked` rows — a mutation failed twice; fix the cause, then delete the parked journal row to re-plan.
+- `would park batch … has no option id` in **dry run** — board vocabulary drift. Emitted once per
+  product per distinct error, not once per tick: a dry run parks nothing, so it re-plans the same
+  drift forever and an unlatched emit would never stop. Fix the drift and the latch clears, so a
+  recurrence is reported again. As always, the `parked` count is the live signal.
 - `gh_human_edit` events — someone edited a field on GitHub; the reconciler will not overwrite it.
