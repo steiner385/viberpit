@@ -13,13 +13,14 @@
  * `SessionListColumn.test.tsx` (what the list renders), `PromptDock.test.tsx`
  * (the cursor the prompt and the list share).
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderApp } from '@/test/renderApp'
 import * as hooks from '@/api/hooks'
 import type { Account, Session } from '@/api/types'
 import { loadingQueryResult, queryResult } from '@/test/reactQuery'
+import { getServerSttEnabled, setServerSttEnabled } from '@/lib/sttCapability'
 
 const NOOP = { mutate: vi.fn(), isPending: false, isSuccess: false }
 
@@ -328,5 +329,24 @@ describe('the shell passes the sessions-loading flag to the list state', () => {
     await waitFor(() =>
       expect(readFilters()).toEqual({ status: null, project: null, environment: null }),
     )
+  })
+})
+
+/**
+ * `useDictationField` reads `sttCapability`'s store, not `useConfig()` directly (see
+ * `lib/sttCapability.ts`), because it is rendered by Composer/DispatchBar without a
+ * QueryClientProvider in many tests. The shell — which already reads config here — is
+ * the one place that writes it.
+ */
+describe('the shell publishes stt capability from config', () => {
+  afterEach(() => { setServerSttEnabled(false) })
+
+  it('syncs getServerSttEnabled from config.sttEnabled', async () => {
+    vi.mocked(hooks.useConfig).mockReturnValue(
+      { data: { repoRoot: '/', adoptionEnabled: false, sttEnabled: true } } as ReturnType<typeof hooks.useConfig>,
+    )
+    renderApp({ path: '/sessions', mode: 'desktop' })
+
+    await waitFor(() => expect(getServerSttEnabled()).toBe(true))
   })
 })

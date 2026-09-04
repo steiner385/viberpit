@@ -1,5 +1,7 @@
 import { useCallback, useRef } from 'react'
 import { useDictation, type UseDictation } from './useDictation'
+import { useServerDictation } from './useServerDictation'
+import { useServerSttEnabled } from './sttCapability'
 import { spliceAt } from './dictationInsert'
 import { autoGrow } from './autoGrow'
 
@@ -33,7 +35,10 @@ export function useDictationField({ value, setValue, textareaRef }: UseDictation
     }
   }, [setValue, textareaRef])
 
-  const dictation = useDictation({ onResult })
+  // Both hooks are called unconditionally (rules of hooks); only the selected one is driven.
+  const browser = useDictation({ onResult })
+  const server = useServerDictation({ onResult })
+  const dictation = useServerSttEnabled() && server.supported ? server : browser
 
   const start = useCallback(() => {
     const el = textareaRef.current
