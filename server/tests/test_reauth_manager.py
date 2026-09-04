@@ -92,7 +92,7 @@ async def test_runner_allocates_virtual_display_and_releases(monkeypatch):
         return True
 
     monkeypatch.setattr("ccswitch.auth_login.capture_login", fake_capture_login)
-    monkeypatch.setattr("ccswitch.auth_login.prepare_reauth_profile", lambda p: "/tmp/reauth-tmp-x")
+    monkeypatch.setattr("ccswitch.auth_login.prepare_reauth_profile", lambda p, **kw: "/tmp/reauth-tmp-x")
     monkeypatch.setattr("ccswitch.auth_login.cleanup_reauth_profile", lambda t: None)
     monkeypatch.setattr("ccswitch.accounts.mark_reauthenticated", lambda n: None)
 
@@ -112,7 +112,7 @@ async def test_runner_falls_back_to_host_display_without_x11(monkeypatch):
     captured = {}
     monkeypatch.setattr("ccswitch.auth_login.capture_login",
                         lambda name, env_extra=None: captured.update(env_extra or {}) or True)
-    monkeypatch.setattr("ccswitch.auth_login.prepare_reauth_profile", lambda p: "/tmp/reauth-tmp-y")
+    monkeypatch.setattr("ccswitch.auth_login.prepare_reauth_profile", lambda p, **kw: "/tmp/reauth-tmp-y")
     monkeypatch.setattr("ccswitch.auth_login.cleanup_reauth_profile", lambda t: None)
     monkeypatch.setattr("ccswitch.accounts.mark_reauthenticated", lambda n: None)
 
@@ -121,6 +121,34 @@ async def test_runner_falls_back_to_host_display_without_x11(monkeypatch):
     await asyncio.sleep(0.05)
     assert captured["DISPLAY"] == ":0"          # settings.reauth_display default
     assert "XAUTHORITY" not in captured         # untouched fallback env
+
+
+@pytest.mark.asyncio
+async def test_runner_forwards_configured_extension_ids(monkeypatch):
+    """CCSWITCH_REAUTH_EXTENSIONS reaches prepare_reauth_profile(extension_ids=...);
+    unset → None so the core default (1Password) applies."""
+    seen = []
+
+    def fake_prepare(profile, *, extension_ids=None):
+        seen.append(extension_ids)
+        return "/tmp/reauth-tmp-z"
+
+    monkeypatch.setattr("ccswitch.auth_login.prepare_reauth_profile", fake_prepare)
+    monkeypatch.setattr("ccswitch.auth_login.capture_login", lambda name, env_extra=None: True)
+    monkeypatch.setattr("ccswitch.auth_login.cleanup_reauth_profile", lambda t: None)
+    monkeypatch.setattr("ccswitch.accounts.mark_reauthenticated", lambda n: None)
+
+    monkeypatch.setenv("CCSWITCH_REAUTH_EXTENSIONS", "aaaa,bbbb")
+    mgr = ReauthManager(x11=None, key_available=lambda: True, timeout_s=30)
+    await mgr.start("primary", "me@example.com")
+    await asyncio.sleep(0.05)
+    assert seen == [["aaaa", "bbbb"]]
+
+    monkeypatch.delenv("CCSWITCH_REAUTH_EXTENSIONS")
+    mgr = ReauthManager(x11=None, key_available=lambda: True, timeout_s=30)
+    await mgr.start("primary", "me@example.com")
+    await asyncio.sleep(0.05)
+    assert seen[-1] is None
 
 
 # ---------------------------------------------------------------------------
@@ -611,7 +639,7 @@ async def test_start_mode_login_uses_login_runner(monkeypatch):
     monkeypatch.setattr(_sto, "begin", lambda: setup_token_begin_called.append(True) or (_ for _ in ()).throw(AssertionError("begin() called for login mode")))
     monkeypatch.setattr(auth_login, "capture_login",
                         lambda name, env_extra=None: True)
-    monkeypatch.setattr(auth_login, "prepare_reauth_profile", lambda p: "/tmp/reauth-tmp-mode")
+    monkeypatch.setattr(auth_login, "prepare_reauth_profile", lambda p, **kw: "/tmp/reauth-tmp-mode")
     monkeypatch.setattr(auth_login, "cleanup_reauth_profile", lambda t: None)
     monkeypatch.setattr("ccswitch.accounts.mark_reauthenticated", lambda n: None)
 
@@ -739,7 +767,7 @@ async def test_runner_publishes_progress_for_the_virtual_display(monkeypatch):
         return True
 
     monkeypatch.setattr("ccswitch.auth_login.capture_login", fake_capture_login)
-    monkeypatch.setattr("ccswitch.auth_login.prepare_reauth_profile", lambda p: "/tmp/reauth-tmp-p")
+    monkeypatch.setattr("ccswitch.auth_login.prepare_reauth_profile", lambda p, **kw: "/tmp/reauth-tmp-p")
     monkeypatch.setattr("ccswitch.auth_login.cleanup_reauth_profile", lambda t: None)
     monkeypatch.setattr("ccswitch.accounts.mark_reauthenticated", lambda n: None)
 
@@ -761,7 +789,7 @@ async def test_runner_progress_names_the_host_screen_without_x11(monkeypatch):
     seen = {}
     monkeypatch.setattr("ccswitch.auth_login.capture_login",
                         lambda name, env_extra=None: seen.update(message=mgr._state.message) or True)
-    monkeypatch.setattr("ccswitch.auth_login.prepare_reauth_profile", lambda p: "/tmp/reauth-tmp-q")
+    monkeypatch.setattr("ccswitch.auth_login.prepare_reauth_profile", lambda p, **kw: "/tmp/reauth-tmp-q")
     monkeypatch.setattr("ccswitch.auth_login.cleanup_reauth_profile", lambda t: None)
     monkeypatch.setattr("ccswitch.accounts.mark_reauthenticated", lambda n: None)
 
@@ -779,7 +807,7 @@ async def test_progress_does_not_clobber_a_terminal_message(monkeypatch):
     """A progress label written late must never overwrite a terminal failure message."""
     monkeypatch.setattr("ccswitch.auth_login.capture_login",
                         lambda name, env_extra=None: False)          # login fails
-    monkeypatch.setattr("ccswitch.auth_login.prepare_reauth_profile", lambda p: "/tmp/reauth-tmp-r")
+    monkeypatch.setattr("ccswitch.auth_login.prepare_reauth_profile", lambda p, **kw: "/tmp/reauth-tmp-r")
     monkeypatch.setattr("ccswitch.auth_login.cleanup_reauth_profile", lambda t: None)
 
     mgr = ReauthManager(x11=None, key_available=lambda: True, timeout_s=30)
