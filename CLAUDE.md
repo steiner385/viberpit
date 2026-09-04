@@ -184,6 +184,23 @@ responsible for ensuring their usage complies with applicable terms.
 **Adding a Copilot account:** open the Add Account dialog → toggle to "GitHub Copilot" → enter a
 name → click Add → follow the device-flow code at `github.com/login/device`.
 
+## Server-side dictation (STT)
+
+The mic button streams 16 kHz PCM to `/ws/stt` (`server/stt/`) where `faster-whisper`
+(`base.en`, int8, CPU) transcribes it with Silero VAD endpointing; Web Speech is the fallback
+when the edge does not advertise `sttEnabled` in `GET /api/config`.
+
+- Enable with `CCSWITCH_ENABLE_STT=true` on the **edge** (needs the `stt` extra: the deploy
+  controller installs `.[server,stt]`; CI/runners stay on `[server]`). First start downloads
+  `Systran/faster-whisper-base.en` into the HuggingFace cache; the lifespan warms the model
+  in a background thread.
+- Knobs: `CCSWITCH_STT_MODEL` (`base.en`; `small.en` is ~1 s/tick on CPU — too slow),
+  `CCSWITCH_STT_CPU_THREADS` (4), `CCSWITCH_STT_TICK_S` (1.0), `CCSWITCH_STT_MAX_CONCURRENT`
+  (3), `CCSWITCH_STT_MAX_SESSION_S` (600).
+- Policy lives in `server/stt/session.py` (pure, fake-engine tests); the real engine test is
+  `server/tests/test_stt_whisper_integration.py`, gated on `CCSWITCH_TEST_STT=1`.
+- Audio is never persisted or logged.
+
 ## Self-directed model switching
 
 A running session can ask for a different model by ending a message with
