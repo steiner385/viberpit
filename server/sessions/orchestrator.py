@@ -3636,6 +3636,7 @@ class SessionOrchestrator:
                 existing.author = item.author
                 existing.url = item.url
                 existing.linked_issue_numbers = list(item.linked_issue_numbers)
+                existing.assignees = list(item.assignees)
                 existing.gh_node_id = item.node_id or existing.gh_node_id
                 existing.gh_created_at = item.gh_created_at
                 existing.gh_updated_at = item.gh_updated_at

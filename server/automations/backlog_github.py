@@ -20,15 +20,25 @@ from typing import Callable, Iterable
 
 from ccswitch import gitrepos
 
+from ..pm.queue import (
+    IN_PROGRESS_LABEL,
+    NEEDS_HUMAN_LABEL,
+    NEEDS_HUMAN_RETRY_DAYS_DEFAULT,
+    SKIP_ISSUE_LABELS,
+    SKIP_ISSUE_TITLES,
+)
 from . import backlog_deps
 
 log = logging.getLogger(__name__)
 
 GhRun = Callable[..., "object"]
 
-IN_PROGRESS_LABEL = "in-progress"
-NEEDS_HUMAN_LABEL = "needs-human"
-
+# IN_PROGRESS_LABEL, NEEDS_HUMAN_LABEL, SKIP_ISSUE_LABELS, SKIP_ISSUE_TITLES,
+# NEEDS_HUMAN_RETRY_DAYS_DEFAULT moved to server/pm/queue.py (spec 003 Phase C,
+# §7a) — the pure ranking core is the single source of truth for these bot/meta
+# and cooldown signals now that the queue ranks from the mirror. Re-exported
+# here until Task 8 removes the last reader of this module's copy.
+#
 # Issues the runner must never treat as implementable work (#637). A backlog
 # session writes code and opens a PR — but bot/app accounts open automated
 # meta-tickets (Renovate's "Dependency Dashboard", Dependabot bumps) that have
@@ -37,8 +47,6 @@ NEEDS_HUMAN_LABEL = "needs-human"
 # ``dependabot[bot]``, ``github-actions[bot]``, …), so the suffix is the
 # canonical, future-proof author signal. Labels and title are defense-in-depth
 # for the rare human-authored (or login-less) mirror of the same meta-ticket.
-SKIP_ISSUE_LABELS = frozenset({"dependencies", "renovate"})
-SKIP_ISSUE_TITLES = frozenset({"dependency dashboard"})
 
 # Human-gate signals (#784). Linkage (#642) proves a PR *references* an issue;
 # it does NOT prove the PR *did the work*. Two issue classes a merged PR can
@@ -73,13 +81,9 @@ ACTION_ISSUE_PHRASES = (
 # A PR whose diff touches ONLY these is documentation, not implementation.
 DOC_PATH_SUFFIXES = (".md", ".mdx", ".markdown", ".rst", ".txt")
 
-
-# How long an escalated (``needs-human``) issue must sit untouched before the
-# runner reconsiders it. Escalation itself bumps the issue's ``updatedAt``, so
-# every give-up re-arms the cooldown — a permanently-failing issue is retried at
-# most once per window, never in a tight loop. 0 disables retry entirely
-# (needs-human becomes a permanent handoff again).
-NEEDS_HUMAN_RETRY_DAYS_DEFAULT = 7
+# NEEDS_HUMAN_RETRY_DAYS_DEFAULT (how long an escalated ``needs-human`` issue
+# sits untouched before the runner reconsiders it) also moved to
+# server/pm/queue.py — imported above.
 
 
 # --------------------------------------------------------------------------- #

@@ -174,6 +174,15 @@ def test_issue_page_captures_node_id():
     assert "nodes { id " in build_issues_query("o/r", None, None)
 
 
+def test_parse_page_carries_assignee_logins():
+    payload = _issue_payload()
+    payload["data"]["repository"]["issues"]["nodes"][0]["assignees"] = {
+        "nodes": [{"login": "steiner385"}, {"login": "octocat"}]}
+    items, _, _ = parse_page(payload, "o/r", "issue")
+    assert items[0].assignees == ("steiner385", "octocat")
+    assert "assignees(first: 10) { nodes { login } }" in build_issues_query("o/r", None, None)
+
+
 def test_parse_malformed_label_is_string():
     """A label is a string (truthy) instead of dict — must skip gracefully."""
     payload = {"data": {"repository": {"issues": {

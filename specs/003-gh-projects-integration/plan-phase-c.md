@@ -61,7 +61,9 @@ deferred — see "Deliberately not in Phase C").
   flip merges, every repo in the runner's `enabled_repos` that should keep being served MUST be
   onboarded as a product with a Projects v2 board (spec §7a: the queue spans *products*). Repos not
   onboarded drop out of the runner at the flip — that is the spec, not a bug; onboard or trim
-  `enabled_repos` deliberately.
+  `enabled_repos` deliberately. Also check the live boards for items whose Status is NULL or
+  outside the spec vocabulary (e.g. GitHub's default `Todo`): in `Ready` mode they are invisible to
+  the queue, in `Backlog` mode they are treated as Backlog (decision C-2).
 - **Spec §7a queue definition, verbatim:** `eligible = GhProjectItem where status = Ready ∧ no
   active WorkItemDep edge with an open blocker ∧ not assigned to a live session, ordered by score
   DESC, then epic phase order, then age — across all products`. Retained safety net: re-verify the

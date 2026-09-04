@@ -1253,6 +1253,8 @@ class WorkItem(Base):
     gh_node_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     # PR→issue closing references (list of ints), from closingIssuesReferences.
     linked_issue_numbers: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # GitHub assignee logins; an assigned item is never queue-eligible (spec 003 §7a, C-5).
+    assignees: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # --- spec 003 overlay (epic hierarchy + projects v2 mirror) ---
     parent_work_item_id: Mapped[str | None] = mapped_column(
         String, ForeignKey("work_items.id"), nullable=True, index=True)
