@@ -577,6 +577,12 @@ class RemoteOrchestrator:
         return await self._client.call(
             "resume_interrupted", session_id=session_id, identity=identity)
 
+    async def reload_session(self, session_id: str, identity: str = SYSTEM_IDENTITY) -> str:
+        """Proxy the owning daemon's reload_session (rebuild the driver in place).
+        Returns "reloaded" / "skipped:<reason>" / "no_driver"."""
+        return await self._client.call(
+            "reload_session", session_id=session_id, identity=identity)
+
     async def permanent_delete(self, session_id):
         return await self._client.call("permanent_delete", session_id=session_id)
 

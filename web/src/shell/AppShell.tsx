@@ -17,6 +17,7 @@ import { PermanentDeleteDialog } from '@/components/PermanentDeleteDialog'
 import { useSessionListState } from '@/features/sessions/useSessionListState'
 import type { SessionListColumnProps } from '@/features/sessions/SessionListColumn'
 import { isPendingSessionId } from '@/lib/pendingSessions'
+import { setServerSttEnabled } from '@/lib/sttCapability'
 import { textEntryClaimsKey } from '@/lib/detachKeyGuard'
 import { nextSessionAfterClose } from '@/session/nextAfterArchive'
 import { SESSIONS_PATH, sessionPath } from '@/session/sessionNavState'
@@ -357,6 +358,9 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
   const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
   const { data: accounts = [] } = useAccounts()
   const { data: config } = useConfig()
+
+  // Publish the dictation-engine capability for useDictationField (see lib/sttCapability.ts).
+  React.useEffect(() => { setServerSttEnabled(!!config?.sttEnabled) }, [config?.sttEnabled])
 
   // `sessionsLoading` is passed, not inferred from `sessions.length`: an empty
   // array means "none" and "not loaded yet" alike, and only the first may

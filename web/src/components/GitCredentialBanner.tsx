@@ -20,8 +20,10 @@ import { useCredentialAlerts, useDismissCredentialAlert } from '@/hooks/useCrede
  * Dismiss is client-local (this session) — the underlying pause persists until
  * the credential actually works, so hiding the banner never hides the fix.
  *
- * One `Banner` per alert (each independently role="alert") stacked inside a shared
- * fixed-to-top wrapper — several stale repos each get their own assertive announcement.
+ * One `Banner` per alert (each independently role="alert") stacked in a shared
+ * wrapper — several stale repos each get their own assertive announcement. The
+ * wrapper renders IN FLOW inside the shell's `BannerStack`; it is never `fixed`,
+ * so it cannot cover the page header or collide with the toaster's band.
  */
 export function GitCredentialBanner() {
   const { data: alerts } = useCredentialAlerts()
@@ -34,13 +36,13 @@ export function GitCredentialBanner() {
   if (visible.length === 0) return null
 
   return (
-    <div className="fixed inset-x-0 top-0 z-50 flex flex-col gap-1 px-4 py-2">
+    <div data-testid="git-credential-banners" className="flex flex-col gap-2">
       {visible.map((alert) => (
         <Banner
           key={alert.repo}
           tone="danger"
           icon={<KeyRound size={18} aria-hidden="true" />}
-          className="border-x-0 border-t-0 rounded-none justify-center"
+          className="items-center"
           title={
             <>
               {alert.viaApp ? 'GitHub App access needs attention for' : 'Git credential refresh needed for'}{' '}

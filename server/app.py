@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 import asyncio
 import logging
 import os
+import threading
 from pathlib import Path
 
 from fastapi import Depends, FastAPI
@@ -15,6 +16,8 @@ from server.obs.jsonlog import configure_logging
 from server.obs.middleware import RequestContextMiddleware
 from server.auth.middleware import IdentityMiddleware, current_identity
 from server.bridge.ws import build_ws_router
+from server.stt.engine import WhisperEngine, is_available as stt_available
+from server.stt.ws import build_stt_ws_router
 from server.db import init_db
 from server.ipc.client import DaemonUnavailable, DaemonError
 from server.reauth import REAUTH_DISPLAY_KEY, ReauthManager
@@ -368,6 +371,22 @@ async def _lifespan(app: FastAPI):
         asyncio.create_task(app.state.loop_lag.run(), name="loop-lag-watchdog"),
         name="loop-lag-watchdog",
     )
+
+    # --- dictation model warm-up -------------------------------------------
+    # Off the event loop: WhisperEngine.warm() may download/load a model, which
+    # would otherwise stall the first /ws/stt connection. The WS route also calls
+    # warm() itself (idempotent — WhisperEngine tracks .loaded), so a slow or
+    # failed warm here never blocks startup or a session; the route retries and
+    # reports the error to the UI.
+    _stt = getattr(app.state, "stt_engine", None)
+    if _stt is not None:
+        def _warm_stt() -> None:
+            try:
+                _stt.warm()
+                _logging.getLogger("server").info("stt: model %s ready", _stt.model_name)
+            except Exception as exc:  # the WS path retries and reports the error to the UI
+                _logging.getLogger("server").warning("stt: warm failed: %s", exc)
+        threading.Thread(target=_warm_stt, name="stt-warm", daemon=True).start()
 
     # --- pipeline dashboard populator --------------------------------------
     # Compute the expensive dashboard frame once per cycle into a shared cache,
@@ -800,6 +819,20 @@ def create_app(
         lambda: getattr(app.state, "daemon_endpoint", None),
         lambda: getattr(app.state, "daemon_client_ssl", None),
         _local_vnc_x11,
+    ))
+
+    # Server-side dictation — engine only exists when enabled AND the `stt` extra is
+    # installed; the config endpoint mirrors that predicate so the UI never offers it otherwise.
+    _stt_settings = _gs()
+    app.state.stt_engine = (
+        WhisperEngine(_stt_settings.stt_model, cpu_threads=_stt_settings.stt_cpu_threads)
+        if (_stt_settings.enable_stt and stt_available()) else None
+    )
+    app.include_router(build_stt_ws_router(
+        lambda: getattr(app.state, "stt_engine", None),
+        tick_s=_stt_settings.stt_tick_s,
+        max_concurrent=_stt_settings.stt_max_concurrent,
+        max_session_s=_stt_settings.stt_max_session_s,
     ))
 
     @app.get("/api/x11/metrics")

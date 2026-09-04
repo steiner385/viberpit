@@ -8,7 +8,6 @@ import { Button } from '@/ui/Button'
 import { useSettings, useUpdateSettings, type AppSettings } from '@/api/hooks'
 import { PERMISSION_MODES } from '@/session/permissionModes'
 import { NotificationsToggle } from './NotificationsToggle'
-import { toast } from 'sonner'
 
 export function GeneralSection() {
   const { data: settings } = useSettings()
@@ -55,7 +54,7 @@ function GeneralForm({ settings }: { settings: AppSettings | undefined }) {
       // '' → null means "use server default". Non-empty value is sent as-is.
       modelApprovalAction: modelApprovalAction || null,
       modelApprovalDenylist: modelApprovalDenylist.trim() || null,
-    }, { onSuccess: () => toast('Settings saved') })
+    })
   }
 
   const inputClass = cn(
@@ -312,7 +311,13 @@ function GeneralForm({ settings }: { settings: AppSettings | undefined }) {
         </div>
       </div>
 
-      <div className="flex justify-end pt-2">
+      <div className="flex items-center justify-end gap-3 pt-2">
+        {/* The acknowledgement lives beside the button it answers, not in a
+            toast over the page header. `isSuccess` flips back to false the
+            moment the next save starts, so the note never outlives its save. */}
+        {updateSettings.isSuccess && !updateSettings.isPending && (
+          <p role="status" className="text-sm text-success">Settings saved</p>
+        )}
         <Button type="button" onClick={handleSave} disabled={updateSettings.isPending} className="min-h-[44px]">
           {updateSettings.isPending ? 'Saving…' : 'Save'}
         </Button>

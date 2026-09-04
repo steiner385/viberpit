@@ -31,6 +31,9 @@
 .init-status-done { color: var(--done); border-color: var(--done); }
 
 .init-advance { white-space: nowrap; flex: 0 0 auto; }
+/* Inline mutation failure (advance/create) — replaces the toast; --fail is a
+   plotroom token, matching .pm-error. */
+.init-error { color: var(--fail); font-size: 12px; margin: 0 0 8px; flex-basis: 100%; }
 
 .init-artifacts { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; align-items: center; }
 .init-artifact-pending { color: var(--muted); font-size: 12px; }

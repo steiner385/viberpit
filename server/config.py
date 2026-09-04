@@ -98,6 +98,13 @@ try:
         copilot_port_base: int = Field(default=4142, alias="CCSWITCH_COPILOT_PORT_BASE")
         copilot_port_count: int = Field(default=8, alias="CCSWITCH_COPILOT_PORT_COUNT")
         copilot_idle_grace_s: float = Field(default=300.0, alias="CCSWITCH_COPILOT_IDLE_GRACE_S")
+        # Server-side dictation (server/stt): off by default; needs the `stt` extra.
+        enable_stt: bool = Field(default=False, alias="CCSWITCH_ENABLE_STT")
+        stt_model: str = Field(default="base.en", alias="CCSWITCH_STT_MODEL")
+        stt_cpu_threads: int = Field(default=4, alias="CCSWITCH_STT_CPU_THREADS")
+        stt_tick_s: float = Field(default=1.0, alias="CCSWITCH_STT_TICK_S")
+        stt_max_concurrent: int = Field(default=3, alias="CCSWITCH_STT_MAX_CONCURRENT")
+        stt_max_session_s: float = Field(default=600.0, alias="CCSWITCH_STT_MAX_SESSION_S")
         log_level: str = Field(default="INFO", alias="CCSWITCH_LOG_LEVEL")
         log_dir: str = Field(
             default_factory=lambda: os.environ.get("CCSWITCH_LOG_DIR")
@@ -285,6 +292,24 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         copilot_idle_grace_s: float = dataclasses.field(
             default_factory=lambda: float(os.environ.get("CCSWITCH_COPILOT_IDLE_GRACE_S", "300.0"))
+        )
+        enable_stt: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_ENABLE_STT", "false").lower() in ("1","true","yes","on")
+        )
+        stt_model: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_STT_MODEL", "base.en")
+        )
+        stt_cpu_threads: int = dataclasses.field(
+            default_factory=lambda: int(os.environ.get("CCSWITCH_STT_CPU_THREADS", "4"))
+        )
+        stt_tick_s: float = dataclasses.field(
+            default_factory=lambda: float(os.environ.get("CCSWITCH_STT_TICK_S", "1.0"))
+        )
+        stt_max_concurrent: int = dataclasses.field(
+            default_factory=lambda: int(os.environ.get("CCSWITCH_STT_MAX_CONCURRENT", "3"))
+        )
+        stt_max_session_s: float = dataclasses.field(
+            default_factory=lambda: float(os.environ.get("CCSWITCH_STT_MAX_SESSION_S", "600.0"))
         )
         log_level: str = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_LOG_LEVEL", "INFO")

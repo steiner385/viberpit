@@ -61,6 +61,8 @@ export interface SessionHeaderProps {
   onOpenSession: (id: string) => void
   /** Archive/delete finished — the host advances to the neighbouring session. */
   onClosed: () => void
+  /** "Reload session" menu item — the host rebuilds the driver and re-attaches. */
+  onReload?: () => void
 }
 
 const NAV_BUTTON = cn(
@@ -70,7 +72,7 @@ const NAV_BUTTON = cn(
 )
 
 export function SessionHeader({
-  sessionId, title, goal, goalSource, status, onBack, onOpenSession, onClosed,
+  sessionId, title, goal, goalSource, status, onBack, onOpenSession, onClosed, onReload,
 }: SessionHeaderProps) {
   const { prevId, nextId } = useSessionNeighbors(sessionId)
   const [renameOpen, setRenameOpen] = useState(false)
@@ -147,6 +149,7 @@ export function SessionHeader({
         onDone={onClosed}
         variant="light"
         onRename={() => setRenameOpen(true)}
+        onReload={onReload}
       />
 
       {/* The one rename flow. Both triggers above open THIS dialog; unlike

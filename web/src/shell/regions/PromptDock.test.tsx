@@ -387,10 +387,10 @@ describe('PromptDock — dispatch', () => {
     await waitFor(() => expect(onAllLimited).toHaveBeenCalledWith('2026-09-03T18:00:00Z'))
   })
 
-  it('keeps the draft when creation fails, so the user can retry', async () => {
+  it('keeps the draft when creation fails, and says why inline in the bar', async () => {
     const user = userEvent.setup()
     POST_SESSIONS = async () => {
-      throw new ApiRequestError(500, {})
+      throw new ApiRequestError(500, { detail: { message: 'daemon is draining' } })
     }
     renderAt('/sessions')
 
@@ -400,6 +400,24 @@ describe('PromptDock — dispatch', () => {
 
     await waitFor(() => expect(posted).toHaveLength(1))
     expect(prompt).toHaveValue('retry me')
+    // `useCreateSession` opts out of the global toast — this line is the only
+    // place the failure reaches the user, so it must be in the bar itself.
+    expect(await screen.findByRole('alert')).toHaveTextContent('daemon is draining')
+  })
+
+  it('says "no usable accounts" inline in the bar — not a toast, not the limit banner', async () => {
+    const user = userEvent.setup()
+    const onAllLimited = vi.fn()
+    POST_SESSIONS = async () => {
+      throw new ApiRequestError(409, { error: { code: 'accounts_need_reauth' } })
+    }
+    renderAt('/sessions', { onAllLimited })
+
+    await user.type(await screen.findByLabelText('New session prompt'), 'go')
+    await user.keyboard('{Enter}')
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/re-authenticate/)
+    expect(onAllLimited).not.toHaveBeenCalled()
   })
 })
 

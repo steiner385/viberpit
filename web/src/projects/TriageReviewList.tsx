@@ -5,6 +5,7 @@
  * this component (design §8). No keyboard shortcuts here.
  */
 import { useAcceptProposal, useRejectProposal, useTriage } from '@/api/hooks'
+import { extractMutationErrorMessage } from '@/api/queryClient'
 import type { TriageProposal } from '@/api/triage'
 
 function Scores({ p }: { p: TriageProposal }) {
@@ -22,6 +23,13 @@ function ProposalRow({ p }: { p: TriageProposal }) {
   const accept = useAcceptProposal()
   const reject = useRejectProposal()
   const busy = accept.isPending || reject.isPending
+  // One alert per row: whichever action failed most recently wins (react-query
+  // resets the other's state on the next mutate call, so they rarely overlap).
+  const errorText = accept.isError
+    ? extractMutationErrorMessage(accept.error, 'Could not accept proposal')
+    : reject.isError
+      ? extractMutationErrorMessage(reject.error, 'Could not reject proposal')
+      : null
   return (
     <li className="pm-triage-row">
       <div className="pm-triage-main">
@@ -46,6 +54,7 @@ function ProposalRow({ p }: { p: TriageProposal }) {
         </span>
       </div>
       {p.rationale && <p className="pm-triage-rationale">{p.rationale}</p>}
+      {errorText && <p role="alert" className="pm-error">{errorText}</p>}
       <div className="pm-triage-actions">
         <button disabled={busy} onClick={() => accept.mutate({ id: p.id })}>Accept</button>
         <button disabled={busy} onClick={() => reject.mutate({ id: p.id })}>Reject</button>

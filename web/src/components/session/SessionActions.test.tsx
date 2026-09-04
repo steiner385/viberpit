@@ -147,3 +147,28 @@ describe('SessionActions — Rename delegates, it does not implement', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 })
+
+describe('SessionActions — Reload session', () => {
+  it('renders a "Reload session" item only when onReload is given, and calls it', async () => {
+    const user = userEvent.setup()
+    vi.mocked(hooks.useCloseSession).mockReturnValue(successMutation() as unknown as ReturnType<typeof hooks.useCloseSession>)
+    vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(successMutation() as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
+    const onReload = vi.fn()
+
+    const { rerender } = render(
+      <SessionActions sessionId="s1" sessionName="My Session" onDone={vi.fn()} />,
+    )
+    await user.click(screen.getByRole('button', { name: /more session actions/i }))
+    expect(screen.queryByRole('menuitem', { name: /reload session/i })).not.toBeInTheDocument()
+
+    rerender(
+      <SessionActions sessionId="s1" sessionName="My Session" onDone={vi.fn()} onReload={onReload} />,
+    )
+    const item = screen.getByRole('menuitem', { name: /reload session/i })
+    await user.click(item)
+
+    expect(onReload).toHaveBeenCalledTimes(1)
+    // The menu closes on selection, like Rename.
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
+  })
+})

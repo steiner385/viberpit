@@ -66,6 +66,17 @@ To verify the rule is active:
 tailscale serve status
 ```
 
+## Server-side dictation (optional)
+
+Set `CCSWITCH_ENABLE_STT=true` in `/etc/ccswitch/ccswitch.env` and restart the edge
+(`ccswitch.service` only — the daemon is untouched). The venv needs the `stt` extra
+(`pip install -e '.[server,stt]'`, ~440 MB; the deploy controller does this automatically
+when `pyproject.toml` changes). The `base.en` model (~150 MB) is downloaded into
+`~/.cache/huggingface` at the first edge start after enabling, by the lifespan's warm
+thread — so the mic is normally ready within ~10 s of startup, and a dictation started
+while that download is still running simply waits for `ready`.
+`GET /api/config` shows `sttEnabled: true` when it is live.
+
 ## Operate
 
 ```bash
@@ -78,7 +89,7 @@ PYTHONPATH=<repo>/src <repo>/.venv/bin/python -m server.deploy --once
 
 ## Notes
 
-- **Backend dependency changes** (new Python deps) trigger `pip install -e .[server]`
+- **Backend dependency changes** (new Python deps) trigger `pip install -e '.[server,stt]'`
   automatically when `uv.lock`/`pyproject.toml` changed since the last deploy.
 - **Frontend dependency changes** trigger `npm ci` automatically when
   `web/package-lock.json` changed.

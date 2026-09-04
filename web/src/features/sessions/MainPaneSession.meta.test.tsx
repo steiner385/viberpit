@@ -35,6 +35,8 @@ vi.mock('@/ws/client', async (importOriginal) => {
 })
 
 vi.mock('@/api/hooks', () => ({
+  // "Reload session" (MainPaneSession → SessionHeader → SessionActions).
+  useReloadSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useGenerateSuggestions: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(() => Promise.resolve([])), isPending: false })),
   useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
   useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),

@@ -319,3 +319,44 @@ def test_resolve_unknown_id_without_session_id_still_false():
     assert ok is False
     assert not fut.done()
     reg.deny_all("s1")
+
+
+# ---------------------------------------------------------------------------
+# rethread_identity: a system-built driver's pending asks become answerable by
+# the real user who attaches later (see orchestrator._rethread_identity)
+# ---------------------------------------------------------------------------
+
+def test_rethread_identity_moves_pending_questions_to_new_identity():
+    """A question registered under "system" must be resolvable by the user the
+    driver is re-threaded to — and only for the re-threaded session."""
+    reg = QuestionRegistry()
+    async def run():
+        qid1, fut1 = _req(reg, session_id="s1", identity="system")
+        qid2, fut2 = _req(reg, session_id="s2", identity="system")
+        moved = reg.rethread_identity("s1", "system", "user@example.test")
+        # The old identity no longer owns s1's question…
+        assert reg.resolve(qid1, ["Option A"], "system") is False
+        # …the new one does.
+        assert reg.resolve(qid1, ["Option A"], "user@example.test") is True
+        # s2 was untouched: still owned by "system".
+        assert reg.resolve(qid2, ["Option B"], "user@example.test") is False
+        assert reg.resolve(qid2, ["Option B"], "system") is True
+        return moved, await fut1, await fut2
+    moved, r1, r2 = asyncio.run(run())
+    assert moved == 1
+    assert r1 == (["Option A"], "option")
+    assert r2 == (["Option B"], "option")
+
+
+def test_rethread_identity_leaves_real_identities_alone():
+    """Only records under the *old* identity move — a question already owned by
+    another real user is never handed to the attacher."""
+    reg = QuestionRegistry()
+    async def run():
+        qid, fut = _req(reg, session_id="s1", identity="owner@example.test")
+        moved = reg.rethread_identity("s1", "system", "other@example.test")
+        assert reg.resolve(qid, ["Option A"], "other@example.test") is False
+        assert reg.resolve(qid, ["Option A"], "owner@example.test") is True
+        await fut
+        return moved
+    assert asyncio.run(run()) == 0

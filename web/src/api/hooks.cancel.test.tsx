@@ -14,7 +14,12 @@ import { renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider, MutationCache, useMutation } from '@tanstack/react-query'
 import { ApiRequestError } from '@/api/client'
 import { handleMutationError } from '@/api/queryClient'
-import { useCancelReauth, useCancelAddAccount } from './hooks'
+import {
+  useCancelReauth, useCancelAddAccount,
+  useCreateSession, useDispatchBacklogGroup, useConsolidate,
+  useAdvanceInitiative, useCreateInitiative, useCreateProject, useSyncProject,
+  useProposeMap, useClassify, useAcceptProposal, useRejectProposal,
+} from './hooks'
 
 // Mock sonner so toast.error is a spy we can assert on.
 vi.mock('sonner', () => ({ toast: { error: vi.fn() } }))
@@ -88,6 +93,40 @@ describe('useCancelAddAccount — fire-and-forget cancel', () => {
     const { result } = renderHook(() => useCancelAddAccount(), { wrapper })
 
     result.current.mutate()
+    await waitFor(() => expect(result.current.isError).toBe(true))
+
+    expect(toast.error).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * Mutations whose caller renders the failure INLINE (a dialog, a form, a panel
+ * that stays on screen). Each opts out of the global toast so a failure is said
+ * once, next to the control, instead of also as a toast over the page header.
+ * Before this, every one of the PM hooks toasted twice — its own `onError` plus
+ * the global handler.
+ */
+describe('inline-owned mutations opt out of the global error toast', () => {
+  const cases: [string, () => { mutate: (v: never) => void; isError: boolean }][] = [
+    ['useCreateSession', useCreateSession],
+    ['useDispatchBacklogGroup', useDispatchBacklogGroup],
+    ['useConsolidate', useConsolidate],
+    ['useAdvanceInitiative', useAdvanceInitiative],
+    ['useCreateInitiative', useCreateInitiative],
+    ['useCreateProject', useCreateProject],
+    ['useSyncProject', useSyncProject],
+    ['useProposeMap', useProposeMap],
+    ['useClassify', useClassify],
+    ['useAcceptProposal', () => useAcceptProposal()],
+    ['useRejectProposal', () => useRejectProposal()],
+  ]
+
+  it.each(cases)('%s rejects without toasting', async (_name, useHook) => {
+    const client = makeClient()
+    const wrapper = makeWrapper(client)
+    const { result } = renderHook(() => useHook(), { wrapper })
+
+    result.current.mutate({} as never)
     await waitFor(() => expect(result.current.isError).toBe(true))
 
     expect(toast.error).not.toHaveBeenCalled()

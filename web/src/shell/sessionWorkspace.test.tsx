@@ -13,17 +13,21 @@
  * `SessionListColumn.test.tsx` (what the list renders), `PromptDock.test.tsx`
  * (the cursor the prompt and the list share).
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderApp } from '@/test/renderApp'
 import * as hooks from '@/api/hooks'
+import { ApiRequestError } from '@/api/client'
 import type { Account, Session } from '@/api/types'
 import { loadingQueryResult, queryResult } from '@/test/reactQuery'
+import { getServerSttEnabled, setServerSttEnabled } from '@/lib/sttCapability'
 
 const NOOP = { mutate: vi.fn(), isPending: false, isSuccess: false }
 
 vi.mock('@/api/hooks', () => ({
+  // "Reload session" (MainPaneSession → SessionHeader → SessionActions).
+  useReloadSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useQueueMove: vi.fn(() => ({ mutate: vi.fn() })),
   useQueueCancel: vi.fn(() => ({ mutate: vi.fn() })),
   useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
@@ -241,11 +245,12 @@ describe('the shell drives the session list controls', () => {
 })
 
 describe('the all-limited banner', () => {
-  /** Raise the banner the way the app does: a 409 out of the create flow. */
+  /** Raise the banner the way the app does: a 409 out of the create flow. The
+   *  error is the REAL class — the host's triage narrows on `instanceof`. */
   async function raiseBanner(user: ReturnType<typeof userEvent.setup>) {
-    let onError: ((e: { status: number; body: unknown }) => void) | undefined
+    let onError: ((e: ApiRequestError) => void) | undefined
     vi.mocked(hooks.useCreateSession).mockReturnValue({
-      mutate: vi.fn((_i: unknown, cbs?: { onError?: (e: { status: number; body: unknown }) => void }) => {
+      mutate: vi.fn((_i: unknown, cbs?: { onError?: (e: ApiRequestError) => void }) => {
         onError = cbs?.onError
       }),
       isPending: false,
@@ -253,7 +258,7 @@ describe('the all-limited banner', () => {
 
     const app = renderApp({ path: '/sessions?dialog=new', mode: 'desktop' })
     await user.click(await screen.findByRole('button', { name: /^create$/i }))
-    act(() => onError?.({ status: 409, body: { error: { code: 'all_accounts_limited' }, earliestReset: null } }))
+    act(() => onError?.(new ApiRequestError(409, { error: { code: 'all_accounts_limited' }, earliestReset: null })))
     return app
   }
 
@@ -328,5 +333,24 @@ describe('the shell passes the sessions-loading flag to the list state', () => {
     await waitFor(() =>
       expect(readFilters()).toEqual({ status: null, project: null, environment: null }),
     )
+  })
+})
+
+/**
+ * `useDictationField` reads `sttCapability`'s store, not `useConfig()` directly (see
+ * `lib/sttCapability.ts`), because it is rendered by Composer/DispatchBar without a
+ * QueryClientProvider in many tests. The shell — which already reads config here — is
+ * the one place that writes it.
+ */
+describe('the shell publishes stt capability from config', () => {
+  afterEach(() => { setServerSttEnabled(false) })
+
+  it('syncs getServerSttEnabled from config.sttEnabled', async () => {
+    vi.mocked(hooks.useConfig).mockReturnValue(
+      { data: { repoRoot: '/', adoptionEnabled: false, sttEnabled: true } } as ReturnType<typeof hooks.useConfig>,
+    )
+    renderApp({ path: '/sessions', mode: 'desktop' })
+
+    await waitFor(() => expect(getServerSttEnabled()).toBe(true))
   })
 })

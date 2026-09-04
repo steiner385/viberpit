@@ -18,6 +18,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { SettingsView } from '../settings/SettingsView'
 
 vi.mock('@/api/hooks', () => ({
+  // "Reload session" (MainPaneSession → SessionHeader → SessionActions).
+  useReloadSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useConfig: vi.fn(() => ({ data: { adoptionEnabled: false } })),
   useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
   useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),

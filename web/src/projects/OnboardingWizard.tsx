@@ -6,6 +6,7 @@
  */
 import { useClassify, useOnboarding, useProposeMap } from '@/api/hooks'
 import type { OnboardingAction } from '@/api/pm'
+import { extractMutationErrorMessage } from '@/api/queryClient'
 
 const STATE_LABEL: Record<string, string> = {
   registered: 'Registered', syncing: 'Syncing backlog',
@@ -19,17 +20,31 @@ function ActionButton({ action, slug }: { action: OnboardingAction; slug: string
   switch (action.type) {
     case 'propose_map':
       return (
-        <button className="pm-wizard-action" disabled={proposeMap.isPending}
-                onClick={() => proposeMap.mutate(slug)}>
-          {proposeMap.isPending ? 'Proposing…' : 'Propose feature map'}
-        </button>
+        <>
+          <button className="pm-wizard-action" disabled={proposeMap.isPending}
+                  onClick={() => proposeMap.mutate(slug)}>
+            {proposeMap.isPending ? 'Proposing…' : 'Propose feature map'}
+          </button>
+          {proposeMap.isError && (
+            <p role="alert" className="pm-error">
+              {extractMutationErrorMessage(proposeMap.error, 'Could not propose the map')}
+            </p>
+          )}
+        </>
       )
     case 'classify':
       return (
-        <button className="pm-wizard-action" disabled={classify.isPending}
-                onClick={() => classify.mutate(slug)}>
-          {classify.isPending ? 'Classifying…' : 'Classify backlog'}
-        </button>
+        <>
+          <button className="pm-wizard-action" disabled={classify.isPending}
+                  onClick={() => classify.mutate(slug)}>
+            {classify.isPending ? 'Classifying…' : 'Classify backlog'}
+          </button>
+          {classify.isError && (
+            <p role="alert" className="pm-error">
+              {extractMutationErrorMessage(classify.error, 'Could not start classification')}
+            </p>
+          )}
+        </>
       )
     case 'await_backfill':
       return <span className="pm-muted">Waiting for backlog sync to finish…</span>

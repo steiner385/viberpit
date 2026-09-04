@@ -19,7 +19,7 @@
  * Callers that pass no `onRename` get a delete-only menu, exactly as before.
  */
 import { useEffect, useRef, useState } from 'react'
-import { Archive, MoreVertical, Pencil, Trash2 } from 'lucide-react'
+import { Archive, MoreVertical, Pencil, RefreshCw, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useCloseSession, usePermanentDeleteSession } from '@/api/hooks'
 import { PermanentDeleteDialog } from '@/components/PermanentDeleteDialog'
@@ -34,9 +34,16 @@ interface Props {
   variant?: 'dark' | 'light'
   /** Surface a Rename menu item that calls this. Omitted → the menu is delete-only. */
   onRename?: () => void
+  /**
+   * Surface a "Reload session" menu item that calls this — the quick recovery
+   * for a session the UI can no longer act on (answers rejected, a turn that
+   * stopped streaming). The host owns the mutation + socket re-attach, exactly
+   * as `onRename` owns the rename flow. Omitted → no reload item.
+   */
+  onReload?: () => void
 }
 
-export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark', onRename }: Props) {
+export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark', onRename, onReload }: Props) {
   const closeSession = useCloseSession()
   const permanentDelete = usePermanentDeleteSession()
   const [menuOpen, setMenuOpen] = useState(false)
@@ -164,6 +171,22 @@ export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark
               >
                 <Pencil size={16} aria-hidden="true" />
                 Rename
+              </button>
+            )}
+            {onReload && (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => { setMenuOpen(false); onReload() }}
+                className={cn(
+                  'flex w-full items-center gap-2 px-3 py-2 text-sm text-left',
+                  'text-gray-700 dark:text-gray-200',
+                  'hover:bg-gray-100 dark:hover:bg-gray-800',
+                  'focus-visible:outline-none focus-visible:bg-gray-100 dark:focus-visible:bg-gray-800',
+                )}
+              >
+                <RefreshCw size={16} aria-hidden="true" />
+                Reload session
               </button>
             )}
             <button

@@ -134,6 +134,27 @@ class QuestionRegistry:
             return pend[0]
         return question_id, None
 
+    def rethread_identity(self, session_id: str, old: str, new: str) -> int:
+        """Hand *session_id*'s pending questions registered under *old* to *new*.
+
+        ``request`` snapshots the driver's identity at ask time, and ``resolve`` gates
+        on that snapshot. A driver built by an internal path (rehydrate, deploy
+        restore, dispatch) carries the "system" sentinel, so a question the CLI asks
+        BEFORE a real user attaches is owned by "system" — and when that user then
+        attaches and answers, the gate rejects them even though ``pending`` still
+        lists the question ("That question is no longer pending" over a card that
+        is very much pending). The orchestrator upgrades ``driver.identity`` on
+        attach; this carries the already-registered asks along so the two never
+        disagree. Only records under *old* move — a question a different real user
+        owns is never handed over. Returns the number moved.
+        """
+        moved = 0
+        for rec in self._pending.values():
+            if rec["session_id"] == session_id and rec["identity"] == old:
+                rec["identity"] = new
+                moved += 1
+        return moved
+
     def deny_all(self, session_id: str) -> None:
         """Resolve all pending questions for session_id with None (dismissed sentinel).
 
