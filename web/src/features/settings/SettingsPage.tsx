@@ -45,13 +45,15 @@ function SectionBody({ id }: { id: SettingsSectionId }) {
  * not on this page at all: `SettingsIndexPage` is the list and this is the
  * detail (`useSettingsDrill`).
  *
- * ## Redirects
+ * ## The one redirect
  *
- * Two, and both REPLACE. An unknown `:section` is a stale bookmark and lands on
- * the default section rather than on an empty panel; `automation` is not a
- * Settings section any more (DEC-10) and lands on the top-level Automations
- * page. Pushed, either would leave the bad URL in the history stack for Back to
- * bounce off forever.
+ * An unknown `:section` is a stale bookmark and lands on the default section
+ * rather than on an empty panel. It REPLACES: pushed, it would leave the bad URL
+ * in the history stack for Back to bounce off forever.
+ *
+ * `automation` is NOT special-cased here. DEC-10 said it had moved to the
+ * top-level page; R10 reversed that, because `/automations` monitors
+ * automations and cannot configure them — see the row in `settingsDefs`.
  */
 export function SettingsPage() {
   const { section } = useParams()
@@ -65,7 +67,6 @@ export function SettingsPage() {
     if (isSettingsSectionId(section)) writeLastSection(section)
   }, [section])
 
-  if (section === 'automation') return <Navigate to={NAV_BY_ID.automations.path} replace />
   if (!isSettingsSectionId(section)) return <Navigate to={settingsSectionPath(DEFAULT_SETTINGS_SECTION)} replace />
 
   const def = SETTINGS_BY_ID[section]

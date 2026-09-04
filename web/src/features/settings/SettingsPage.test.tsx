@@ -152,19 +152,21 @@ describe('SettingsPage', () => {
     expect(screen.getByRole('navigation', { name: 'Settings sections' })).toBeInTheDocument()
   })
 
-  it('unknown section → general; /settings/automation → /automations; /automation → /automations', async () => {
+  it('unknown section → general; /settings/automation is a real section; /automation → it', async () => {
     const a = renderApp({ path: '/settings/nope', mode: 'desktop' })
     await waitFor(() => expect(a.path()).toBe('/settings/general'))
     a.unmount()
 
-    // DEC-10: Automation is a top-level section, not a Settings one. Both the
-    // in-Settings spelling and the legacy top-level path land on it.
+    // R10 reversed DEC-10: `/automations` MONITORS automations and has no
+    // enable switch, mode select, config form or schedule editor — those exist
+    // only in this section, so the URL must keep resolving to it (until PR 6).
     const b = renderApp({ path: '/settings/automation', mode: 'desktop' })
-    await waitFor(() => expect(b.path()).toBe('/automations'))
+    expect(await screen.findByRole('region', { name: 'Automations' })).toBeInTheDocument()
+    expect(b.path()).toBe('/settings/automation')
     b.unmount()
 
     const c = renderApp({ path: '/automation', mode: 'desktop' })
-    await waitFor(() => expect(c.path()).toBe('/automations'))
+    await waitFor(() => expect(c.path()).toBe('/settings/automation'))
   })
 
   it('keeps legacy links: /settings?section=hooks, /accounts, /library?section=skills, ?dialog=settings', async () => {

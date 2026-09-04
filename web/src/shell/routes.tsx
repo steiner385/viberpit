@@ -250,9 +250,7 @@ const PAGES: RouteObject[] = [
   { path: '/session/:sessionId/subagent/:agentId', element: <RedirectSubAgent /> },
   { path: '/review/:sessionId', element: <RedirectReview /> },
   { path: '/accounts', element: <Navigate to={settingsSectionPath('accounts')} replace /> },
-  // DEC-10: Automation is a top-level section, not a Settings one — the old
-  // `/automation` bookmark predates both spellings and lands on the page itself.
-  { path: '/automation', element: <Navigate to={NAV_BY_ID.automations.path} replace /> },
+  { path: '/automation', element: <Navigate to={settingsSectionPath('automation')} replace /> },
   { path: '/library', element: <LibraryRedirect /> },
 
   { path: '*', element: <Navigate to={SESSIONS_PATH} replace /> },

@@ -187,8 +187,7 @@ describe('route table — redirects', () => {
     ['/session/abc/subagent/x', '/sessions/abc/agents/x'],
     ['/review/abc', '/archived/abc'],
     ['/accounts', '/settings/accounts'],
-    // DEC-10: Automation is a top-level section, not a Settings one.
-    ['/automation', '/automations'],
+    ['/automation', '/settings/automation'],
     // `/settings` and `/settings?section=X` are NOT redirects any more: they are
     // `SettingsIndexPage`, whose element depends on the layout mode. Their
     // landings are asserted in `features/settings/SettingsPage.test.tsx`.

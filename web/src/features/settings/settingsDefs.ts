@@ -1,6 +1,6 @@
 import type * as React from 'react'
 import {
-  SlidersHorizontal, Palette, Bell, Play, Bookmark, FileText, ShieldCheck,
+  SlidersHorizontal, Palette, Bell, Play, Bookmark, FileText, ShieldCheck, Workflow,
   Users, Server, Puzzle, Sparkles, SquareTerminal, Plug, Webhook, Camera, Info,
   type LucideIcon,
 } from 'lucide-react'
@@ -17,6 +17,7 @@ import { FleetSection } from '@/components/settings/FleetSection'
 import { PresetsSection } from '@/components/settings/PresetsSection'
 import { TemplatesSection } from '@/components/settings/TemplatesSection'
 import { PermissionProfilesSection } from '@/components/settings/PermissionProfilesSection'
+import { AutomationView } from '@/components/AutomationView'
 import { PluginsSection } from '@/components/library/PluginsSection'
 import { SkillsSection } from '@/components/library/SkillsSection'
 import { CommandsSection } from '@/components/library/CommandsSection'
@@ -69,6 +70,13 @@ const DEFS = [
     description: 'Reusable prompt templates with {{variable}} placeholders.' },
   { id: 'profiles',      group: 'sessions',  label: 'Permission profiles', icon: ShieldCheck,       scope: 'server',  component: PermissionProfilesSection,
     description: 'Named tool-permission sets a session can adopt.' },
+  // R10: Automations keeps a Settings section until PR 6. The top-level
+  // `/automations` page is a MONITOR — events, spawned sessions, manual
+  // dispatch — and has no enable switch, mode select, config form or schedule
+  // editor. Those live only here, so this is the one place an automation can be
+  // configured. PR 6 folds them into the page and drops this row.
+  { id: 'automation',    group: 'sessions',  label: 'Automations',         icon: Workflow,          scope: 'server',  component: AutomationView,
+    description: 'Enable, configure and schedule the automations that run against your repos and sessions.' },
   { id: 'accounts',      group: 'accounts',  label: 'Accounts',            icon: Users,             scope: 'server',  component: AccountsManager, badge: 'accountsAttention',
     description: 'Claude Max and Copilot accounts the rotation can pick from.' },
   { id: 'fleet',         group: 'accounts',  label: 'Hosts',               icon: Server,            scope: 'server',  component: FleetSection,
