@@ -1,0 +1,62 @@
+import { describe, it, expect } from 'vitest'
+import { render, screen } from '@testing-library/react'
+import { axe, toHaveNoViolations } from 'jest-axe'
+import { SettingsSection } from './SettingsSection'
+import { SettingsGroup } from './SettingsGroup'
+import { SettingRow } from './SettingRow'
+import { ScopeBadge } from './ScopeBadge'
+import { Input } from '@/ui/Input'
+
+expect.extend(toHaveNoViolations)
+
+describe('settings chassis', () => {
+  it('section is a region named by its h2, with description and scope badge', async () => {
+    const { container } = render(
+      <SettingsSection id="general" title="General" description="Paths and limits." scope="server">
+        <p>body</p>
+      </SettingsSection>,
+    )
+    const region = screen.getByRole('region', { name: 'General' })
+    expect(region).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2, name: 'General' })).toHaveAttribute('id', 'settings-general-title')
+    expect(screen.getByText('Paths and limits.')).toBeInTheDocument()
+    expect(screen.getByText('Server')).toBeInTheDocument()
+    expect(await axe(container)).toHaveNoViolations()
+  })
+
+  it('group is a fieldset with a legend; danger tone marks it', () => {
+    render(
+      <SettingsGroup legend="Danger zone" tone="danger" description="Cannot be undone.">
+        <span>x</span>
+      </SettingsGroup>,
+    )
+    const grp = screen.getByRole('group', { name: 'Danger zone' })
+    expect(grp).toHaveAttribute('data-tone', 'danger')
+    expect(screen.getByText('Cannot be undone.')).toBeInTheDocument()
+  })
+
+  it('row wires label, description and error to the control via aria-describedby', () => {
+    render(
+      <SettingRow label="Repo clone root" htmlFor="repo-root" description="Where repos are cloned." error="Must be absolute.">
+        <Input id="repo-root" />
+      </SettingRow>,
+    )
+    const input = screen.getByLabelText('Repo clone root')
+    expect(input).toHaveAttribute('aria-describedby', 'repo-root-desc repo-root-error')
+    expect(screen.getByRole('alert')).toHaveTextContent('Must be absolute.')
+  })
+
+  it('row status is a polite live region', () => {
+    render(
+      <SettingRow label="Theme" htmlFor="theme" status="Saved">
+        <Input id="theme" />
+      </SettingRow>,
+    )
+    expect(screen.getByRole('status')).toHaveTextContent('Saved')
+  })
+
+  it('ScopeBadge renders nothing for none', () => {
+    const { container } = render(<ScopeBadge scope="none" />)
+    expect(container).toBeEmptyDOMElement()
+  })
+})
