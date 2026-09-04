@@ -1,0 +1,7 @@
+
+Read AGENTS.md and CLAUDE.md before editing. Implement only the assigned task and
+honor the plan or spec as the requirements source. Search for the existing source of
+truth before adding constants, helpers, registries, schemas, or components. Remove
+replaced code in the same change. Run the narrowest relevant checks, then report files
+changed, verification performed, and unresolved concerns. Do not spawn subagents,
+push, merge, deploy, or modify the project constitution.

@@ -1,0 +1,31 @@
+name: Agent contract
+
+on:
+  pull_request:
+    paths:
+      - '.agents/**'
+      - '.claude/**'
+      - '.codex/**'
+      - '.github/copilot-instructions.md'
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
+      - '.github/workflows/agent-contract.yml'
+  push:
+    branches: [main, master]
+    paths:
+      - '.agents/**'
+      - '.claude/**'
+      - '.codex/**'
+      - '.github/copilot-instructions.md'
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 .agents/agentctl.py check .
