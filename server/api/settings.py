@@ -16,8 +16,14 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
-_VALID_MODES = {"interactive", "auto", "allowlist", "full-auto"}
-_VALID_TOOL_DETAIL = {"auto", "all-closed", "all-open"}
+# The modes the client's PERMISSION_MODES offers, in the client's order. A pytest
+# parity test reads web/src/session/permissionModes.ts and asserts equality, so
+# adding a mode on either side without the other fails CI (S20).
+ACCEPTED_PERMISSION_MODES: tuple[str, ...] = (
+    "interactive", "auto", "allowlist", "acceptEdits", "full-auto", "bypassPermissions",
+)
+_VALID_MODES = frozenset(ACCEPTED_PERMISSION_MODES)
+_VALID_TOOL_DETAIL = frozenset({"auto", "all-closed", "all-open"})
 # Sanity ceiling for the archived-session cap — guards against fat-fingered values.
 _MAX_ARCHIVED_CEILING = 100_000
 
@@ -120,13 +126,17 @@ async def put_settings_row(
     db=Depends(get_db),
 ) -> dict:
     row = await _get_or_create(db)
-    if body.defaultPermissionMode is not None and body.defaultPermissionMode in _VALID_MODES:
+    if body.defaultPermissionMode is not None:
+        if body.defaultPermissionMode not in _VALID_MODES:
+            raise HTTPException(status_code=422, detail="invalid defaultPermissionMode")
         row.default_permission_mode = body.defaultPermissionMode
     if body.thinkingCollapsed is not None:
         row.thinking_collapsed = body.thinkingCollapsed
     if body.repoRoot is not None:
         row.repo_root = body.repoRoot
-    if body.defaultToolDetail is not None and body.defaultToolDetail in _VALID_TOOL_DETAIL:
+    if body.defaultToolDetail is not None:
+        if body.defaultToolDetail not in _VALID_TOOL_DETAIL:
+            raise HTTPException(status_code=422, detail="invalid defaultToolDetail")
         row.default_tool_detail = body.defaultToolDetail
     if body.autoArchiveEnabled is not None:
         row.auto_archive_enabled = body.autoArchiveEnabled

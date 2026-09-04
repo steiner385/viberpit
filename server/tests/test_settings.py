@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import tempfile
 from contextlib import contextmanager
@@ -86,15 +87,14 @@ def test_put_settings_round_trips():
 
 
 def test_put_rejects_invalid_mode():
-    """PUT {defaultPermissionMode: 'bogus'} → value silently stays 'interactive'."""
+    """PUT {defaultPermissionMode: 'bogus'} → 422, stored value stays 'interactive'."""
     with _client() as client:
         put_resp = client.put(
             "/api/settings",
             json={"defaultPermissionMode": "bogus"},
             headers=IDENTITY_HEADERS,
         )
-        assert put_resp.status_code == 200
-        assert put_resp.json()["defaultPermissionMode"] == "interactive"
+        assert put_resp.status_code == 422
 
         get_resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
         assert get_resp.status_code == 200
@@ -131,15 +131,18 @@ def test_put_default_tool_detail_round_trips():
 
 
 def test_put_rejects_invalid_tool_detail():
-    """PUT {defaultToolDetail: 'bogus'} → value silently stays 'auto'."""
+    """PUT {defaultToolDetail: 'bogus'} → 422, stored value stays 'auto'."""
     with _client() as client:
         put_resp = client.put(
             "/api/settings",
             json={"defaultToolDetail": "bogus"},
             headers=IDENTITY_HEADERS,
         )
-        assert put_resp.status_code == 200
-        assert put_resp.json()["defaultToolDetail"] == "auto"
+        assert put_resp.status_code == 422
+
+        get_resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
+        assert get_resp.status_code == 200
+        assert get_resp.json()["defaultToolDetail"] == "auto"
 
 # ---------------------------------------------------------------------------
 # maxArchivedSessions
@@ -390,3 +393,49 @@ def test_put_max_active_null_to_default_no_raise():
         # Verify the value persisted
         get_resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
         assert get_resp.json()["maxActiveSessions"] == 3
+
+
+# ---------------------------------------------------------------------------
+# defaultPermissionMode ↔ client parity (S20)
+# ---------------------------------------------------------------------------
+
+
+def _client_mode_values() -> set[str]:
+    """The `value:` strings in web/src/session/permissionModes.ts — the client's list."""
+    src = (REPO_ROOT / "web" / "src" / "session" / "permissionModes.ts").read_text()
+    return set(re.findall(r"value:\s*'([^']+)'", src))
+
+
+def test_accepted_permission_modes_match_client_list():
+    """S20: the server accepts exactly the modes the client offers."""
+    from server.api.settings import ACCEPTED_PERMISSION_MODES
+
+    assert set(ACCEPTED_PERMISSION_MODES) == _client_mode_values()
+    assert len(ACCEPTED_PERMISSION_MODES) == 6
+
+
+def test_put_bypass_permissions_round_trips():
+    """`bypassPermissions` used to be silently dropped; now it persists."""
+    with _client() as client:
+        put = client.put("/api/settings", json={"defaultPermissionMode": "bypassPermissions"},
+                         headers=IDENTITY_HEADERS)
+        assert put.status_code == 200
+        got = client.get("/api/settings", headers=IDENTITY_HEADERS).json()
+    assert got["defaultPermissionMode"] == "bypassPermissions"
+
+
+def test_put_unknown_permission_mode_is_422_not_silent():
+    with _client() as client:
+        resp = client.put("/api/settings", json={"defaultPermissionMode": "yolo"},
+                          headers=IDENTITY_HEADERS)
+        assert resp.status_code == 422
+        assert resp.json()["detail"] == "invalid defaultPermissionMode"
+        got = client.get("/api/settings", headers=IDENTITY_HEADERS).json()
+    assert got["defaultPermissionMode"] == "interactive"
+
+
+def test_put_unknown_tool_detail_is_422():
+    with _client() as client:
+        resp = client.put("/api/settings", json={"defaultToolDetail": "wat"}, headers=IDENTITY_HEADERS)
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "invalid defaultToolDetail"
