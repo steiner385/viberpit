@@ -168,8 +168,10 @@ class ReauthManager:
             )
             launcher_real = os.path.realpath(str(launcher))
 
-            temp = auth_login.prepare_reauth_profile(
-                chrome_profile, extension_ids=settings.reauth_extension_id_items
+            temp = await asyncio.to_thread(
+                auth_login.prepare_reauth_profile,
+                chrome_profile,
+                extension_ids=settings.reauth_extension_id_items,
             )
             # Record immediately so _kill_launcher can find <temp>/launcher.pid
             manager._state._temp_profile = temp

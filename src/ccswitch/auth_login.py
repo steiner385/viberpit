@@ -100,16 +100,43 @@ def _copy_extensions(src: Path, default: Path, extension_ids: Sequence[str]) -> 
         if not ext_dir.is_dir() or entry is None:
             log.info("reauth profile: extension %s not installed in source; skipping", ext_id)
             continue
-        shutil.copytree(ext_dir, default / "Extensions" / ext_id)
+        dst_ext_dir = default / "Extensions" / ext_id
+        try:
+            shutil.copytree(ext_dir, dst_ext_dir, ignore_dangling_symlinks=True)
+        except (OSError, shutil.Error) as e:
+            # A half-copied Extensions/<id> hands Chrome a corrupt extension —
+            # worse than no 1Password at all — so the id must NOT be registered.
+            log.info(
+                "reauth profile: copying extension %s failed (%s); skipping id", ext_id, e
+            )
+            shutil.rmtree(dst_ext_dir, ignore_errors=True)
+            continue
         les = src / "Local Extension Settings" / ext_id
         if les.is_dir():
-            shutil.copytree(les, default / "Local Extension Settings" / ext_id)
+            try:
+                shutil.copytree(
+                    les, default / "Local Extension Settings" / ext_id,
+                    ignore_dangling_symlinks=True,
+                )
+            except (OSError, shutil.Error) as e:
+                # Live LevelDB store the running Chrome compacts continuously —
+                # a failed copy here only loses saved state, not the extension
+                # itself, so the id stays registered (D4: never fatal).
+                log.info(
+                    "reauth profile: copying Local Extension Settings for %s failed (%s); "
+                    "skipping saved state", ext_id, e
+                )
+                shutil.rmtree(default / "Local Extension Settings" / ext_id, ignore_errors=True)
         settings[ext_id] = entry
     if not settings:
         return
     state = src / "Extension State"
     if state.is_dir():
-        shutil.copytree(state, default / "Extension State")
+        try:
+            shutil.copytree(state, default / "Extension State", ignore_dangling_symlinks=True)
+        except (OSError, shutil.Error) as e:
+            log.info("reauth profile: copying Extension State failed (%s); skipping", e)
+            shutil.rmtree(default / "Extension State", ignore_errors=True)
     dst_prefs = default / "Preferences"
     dst_prefs.write_text(json.dumps({"extensions": {"settings": settings}}))
     os.chmod(dst_prefs, 0o600)

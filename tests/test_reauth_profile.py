@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import sqlite3
 import stat
 from pathlib import Path
@@ -190,4 +191,53 @@ def test_prepare_malformed_preferences_structure_skips_extensions(tmp_path, monk
     assert (d / "Cookies").exists()
     assert not (d / "Preferences").exists()
     assert not (d / "Extensions").exists()
+    auth_login.cleanup_reauth_profile(temp)
+
+
+def test_prepare_extensions_dir_copy_failure_excludes_id_from_preferences(tmp_path, monkeypatch):
+    """Finding 1 (D4): a racing Chrome can make Extensions/<id> fail mid-copytree
+    (e.g. a crx file vanishing between scandir and copy2). This must not raise —
+    and since a half-copied Extensions/<id> is worse than no extension at all, the
+    id must NOT be registered in the written Preferences."""
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    src = _make_source(tmp_path, with_extensions=True)
+    real_copytree = shutil.copytree
+    target = str(Path(src) / "Extensions" / ONEP)
+
+    def fake_copytree(s, d, *a, **kw):
+        if str(s) == target:
+            raise shutil.Error([(str(s), str(d), "boom")])
+        return real_copytree(s, d, *a, **kw)
+
+    monkeypatch.setattr(auth_login.shutil, "copytree", fake_copytree)
+    temp = auth_login.prepare_reauth_profile(src)
+    d = Path(temp) / "Default"
+    assert (d / "Cookies").exists()
+    assert not (d / "Extensions" / ONEP).exists()
+    assert not (d / "Preferences").exists(), "half-copied id must not be registered"
+    auth_login.cleanup_reauth_profile(temp)
+
+
+def test_prepare_local_extension_settings_copy_failure_keeps_id_registered(tmp_path, monkeypatch):
+    """Finding 1 (D4): Local Extension Settings/<id> is a live LevelDB store the user's
+    running Chrome compacts continuously; a failing copy here is not fatal to the
+    extension (it still loads, just without saved state) so the id must stay
+    registered and Extensions/<id> must still be present."""
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    src = _make_source(tmp_path, with_extensions=True)
+    real_copytree = shutil.copytree
+    target = str(Path(src) / "Local Extension Settings" / ONEP)
+
+    def fake_copytree(s, d, *a, **kw):
+        if str(s) == target:
+            raise shutil.Error([(str(s), str(d), "boom")])
+        return real_copytree(s, d, *a, **kw)
+
+    monkeypatch.setattr(auth_login.shutil, "copytree", fake_copytree)
+    temp = auth_login.prepare_reauth_profile(src)
+    d = Path(temp) / "Default"
+    assert (d / "Extensions" / ONEP / "8.12.34.34_0" / "manifest.json").exists()
+    assert not (d / "Local Extension Settings" / ONEP).exists()
+    prefs = json.loads((d / "Preferences").read_text())
+    assert ONEP in prefs["extensions"]["settings"], "id must stay registered"
     auth_login.cleanup_reauth_profile(temp)

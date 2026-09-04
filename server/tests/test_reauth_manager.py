@@ -124,6 +124,43 @@ async def test_runner_falls_back_to_host_display_without_x11(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_prepare_reauth_profile_runs_off_the_event_loop(monkeypatch):
+    """Finding 2: the profile copy (now tens of MB with the curated extension set) must
+    run via asyncio.to_thread, not synchronously on the event loop — a synchronous call
+    there stalls every other WebSocket session and API request for its duration."""
+    import threading
+
+    loop_thread_ident = threading.get_ident()
+    seen: dict = {}
+
+    def fake_prepare(profile, *, extension_ids=None):
+        seen["thread_ident"] = threading.get_ident()
+        try:
+            asyncio.get_running_loop()
+            seen["ran_on_loop"] = True
+        except RuntimeError:
+            seen["ran_on_loop"] = False
+        return "/tmp/reauth-tmp-offloop"
+
+    monkeypatch.setattr("ccswitch.auth_login.prepare_reauth_profile", fake_prepare)
+    monkeypatch.setattr("ccswitch.auth_login.capture_login", lambda name, env_extra=None: True)
+    monkeypatch.setattr("ccswitch.auth_login.cleanup_reauth_profile", lambda t: None)
+    monkeypatch.setattr("ccswitch.accounts.mark_reauthenticated", lambda n: None)
+
+    mgr = ReauthManager(x11=None, key_available=lambda: True, timeout_s=30)
+    await mgr.start("primary", "me@example.com")
+    await asyncio.sleep(0.05)
+
+    assert seen.get("thread_ident") is not None, "fake prepare_reauth_profile must have been called"
+    assert seen["thread_ident"] != loop_thread_ident, (
+        "prepare_reauth_profile must not run on the event-loop thread"
+    )
+    assert seen["ran_on_loop"] is False, (
+        "prepare_reauth_profile must not see a running event loop in its own thread"
+    )
+
+
+@pytest.mark.asyncio
 async def test_runner_forwards_configured_extension_ids(monkeypatch):
     """CCSWITCH_REAUTH_EXTENSIONS reaches prepare_reauth_profile(extension_ids=...);
     unset → None so the core default (1Password) applies."""
