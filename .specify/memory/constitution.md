@@ -12,7 +12,8 @@ Modified principles:
   - I. Black-Box Integration (generalized to native agent binaries; surfaces described by role;
     experimental surfaces gated on owner approval plus version pin, startup probe, kill switch,
     and fail-closed behavior)
-  - II. Account = Config Dir (engine-neutral config dir; credential-authority paragraph added)
+  - II. Account = Engine-Scoped Identity (account defined as an engine-scoped identity spanning
+    an authority home and host-local runner homes; credential-authority paragraph added)
   - III. Verify Against Reality (live smoke verification required for any native agent session)
   - IV. Security First (scope stated as native agent tools and paid AI-agent accounts)
 Modified sections:
@@ -52,23 +53,26 @@ Rationale: AI coding platforms typically ship as minified, proprietary, continuo
 artifacts (no public source). Coupling to their internals is a perpetual reverse-engineering
 treadmill; composing around unmodified, supported surfaces is the only maintainable path.
 
-### II. Account = Config Dir; Strict Per-Process Isolation
+### II. Account = Engine-Scoped Identity; Strict Per-Process Isolation
 
-An account is exactly one engine config directory (`CLAUDE_CONFIG_DIR` for Claude Code, `CODEX_HOME`
-for Codex). Account selection MUST be per-process via that environment variable. The shared global
-credential file (e.g. `~/.claude/.credentials.json`) MUST NEVER be mutated in place. Per-account
-identity and runtime state — credentials, client config, `daemon.*`, `sessions/`, `agents/`,
-`tasks/`, history — MUST stay isolated per account; only static configuration and conversation
-transcripts (needed for resume) MAY be shared, via an explicit allowlist. Unknown/new config-dir
-entries default to isolated.
+An account is exactly one logical, engine-scoped identity. Claude Code maps that identity to one
+`CLAUDE_CONFIG_DIR`; Codex maps it to one authority `CODEX_HOME` plus separate host-local runner
+homes. Account selection MUST be per-process via the engine's config-dir environment variable. The
+shared global credential file (e.g. `~/.claude/.credentials.json`) MUST NEVER be mutated in place.
+Per-account identity and runtime state — credentials, client config, `daemon.*`, `sessions/`,
+`agents/`, `tasks/`, history — MUST stay isolated per account; only static configuration and
+conversation transcripts (needed for resume) MAY be shared, via an explicit allowlist. Unknown/new
+config-dir entries default to isolated.
 
 Where an engine's credential refresh cannot be safely performed by independent hosts at once,
 exactly one credential authority MAY own the long-lived credential for an account. That authority
 MUST hold the only canonical copy, outside any runner-mounted or exported path; MUST distribute
 only short-lived access material, kept in process memory and never written to argv, environment,
 or disk; and MUST NEVER transmit a refresh token to a runner. Runner processes MUST use a
-host-local config directory and MUST NEVER share one. If the authority is unavailable, sessions
-MUST stop rather than fall back to shared credentials.
+host-local config directory and MUST NEVER share one. If the authority is unavailable, a session
+holding an accepted token MAY continue until that token is rejected or a refresh is required; new
+authentication and refresh MUST fail closed, and falling back to shared credentials remains
+forbidden.
 
 Rationale: per-process selection is the only concurrency-safe way to run many sessions on different
 accounts at once; sharing identity/daemon state silently collapses sessions onto one account. A
@@ -160,9 +164,10 @@ component kit) are a smaller risk surface than novel, fragile, bespoke implement
 - **Configuration & portability:** all host/port/secrets/feature config via environment; no
   hardcoded paths or secrets. The app MUST run identically on localhost+Tailscale and on a cloud
   host (e.g. Railway) by configuration alone.
-- **Session model:** each session is driven by daemon-owned engine drivers, 
-scoped per-account and emitting normalized events with engine-specific 
-information not leaking upward — and a stable session-id preserved across rotation.
+- **Session model:** each session is driven by daemon-owned engine drivers, scoped per-account and
+  emitting normalized events. Native protocol types, raw frames, and unvalidated payloads MUST NOT
+  leak upward; normalized engine identity, capabilities, model/reasoning/permission settings, and
+  allow-listed `engine_metadata` MAY. A stable session id is preserved across rotation.
 
 ## Development Workflow & Quality Gates
 
