@@ -156,6 +156,29 @@ async def test_window_starting_at_turn_boundary_gains_no_extra_prompt(tmp_path):
     from server.sessions import events as ev
     users = [e.text for e in w.events if isinstance(e, ev.UserMessage)]
     assert users == [f"q{i}" for i in range(30, 50)]     # exactly the window's own
+    # None of them is a boundary copy — every one sits at its real position.
+    assert not any(e.owner_prefix for e in w.events if isinstance(e, ev.UserMessage))
+
+
+@pytest.mark.asyncio
+async def test_owning_prompt_prepend_is_marked_owner_prefix(tmp_path):
+    """The prepended copy is flagged on the wire so the client can tell a page-boundary
+    prompt from one at its real position. Without the mark the client can only guess
+    ("the older page wins"), and the misplaced copy — a user turn, so it carries no
+    ordinal — is invisible to the order telemetry (#1020)."""
+    from server.sessions import events as ev
+    path = _write_megaturn_transcript(tmp_path, 3, 30)
+    w = await replay_window(path, before=23, limit=10)   # mid-mega-turn: gets the prepend
+    users = [e for e in w.events if isinstance(e, ev.UserMessage)]
+    assert [e.text for e in users] == ["big"]
+    assert users[0].owner_prefix is True
+    assert users[0].to_wire()["ownerPrefix"] is True
+    # The mark is on the COPY only: the same record in a window that holds its real
+    # position stays unmarked, which is what makes the client's merge rule decidable.
+    full = await replay_window(path, limit=None)
+    real = [e for e in full.events if isinstance(e, ev.UserMessage) and e.text == "big"]
+    assert len(real) == 1 and real[0].owner_prefix is False
+    assert real[0].to_wire()["ownerPrefix"] is False
 
 
 @pytest.mark.asyncio

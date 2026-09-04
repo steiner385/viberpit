@@ -507,7 +507,12 @@ def _window(path: str, before: int | None, limit: int | None, drop_incomplete_tu
             owner = next((e for e in reversed(out[:slice_lo])
                           if isinstance(e, ev.UserMessage)), None)
             if owner is not None:
-                window = [owner] + window
+                # Mark the copy so the client can tell "this prompt is here because the
+                # page head needed it" from "this prompt is here because that is where
+                # it was sent". Only this prepend sets the flag — the same UserMessage
+                # left unmarked in `out` is the one at its real position, and the page
+                # carrying it wins the client-side merge.
+                window = [dataclasses.replace(owner, owner_prefix=True)] + window
     if include_subagents:
         # Reconstruct sub-agent threads for exactly the Task calls in THIS window
         # (scoping to the window naturally excludes sub-agents of trimmed turns).
