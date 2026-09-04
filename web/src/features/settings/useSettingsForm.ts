@@ -12,7 +12,9 @@ export interface SettingsForm<T extends object> {
   savedAt: number | null
   /** Top-of-section message; the caller renders it in a Banner. */
   error: string | null
-  /** Resolves true on success. */
+  /** Resolves true on success. Re-entrant while an async `beforeSave` gate is
+   *  open: a second call is a no-op, and a call whose gate resolves after the
+   *  draft was discarded saves nothing (R8). */
   save: () => Promise<boolean>
   discard: () => void
   /** The navigation blocker, for SaveBar's "Unsaved changes" dialog. */
@@ -100,21 +102,57 @@ export function useSettingsForm<T extends object>({ initial, save, beforeSave }:
     setError(null)
   }, [])
 
+  // R8. An async `beforeSave` (a ConfirmDialog) leaves the form dirty and NOT
+  // saving for as long as the gate is open, so `saving` guards nothing during
+  // that window: Save stays enabled and so does Discard. Two things follow.
+  //
+  // `inFlight` makes a second Save click while the gate is open a no-op — one
+  // click, one gate, one PUT. It is a ref and not state because it must be
+  // readable and writable synchronously inside one `doSave` call, and because
+  // nothing renders from it (the button's disabled state is still `saving`).
+  //
+  // `draftRef`/`baselineRef` are what the save reads AFTER the gate resolves.
+  // The closed-over `draft` is the value as of the click, and by the time the
+  // user confirms it can be stale — Discard, or a refetch, may have replaced
+  // it. Saving that value would resurrect discarded edits, so the dirty check
+  // is re-run against the live draft and the save aborts if it no longer is.
+  // Synced in a LAYOUT effect (as in pipeline/useDashboard), not during render:
+  // `react-hooks/refs` forbids writing a ref while rendering, and a layout
+  // effect still lands synchronously at commit — so the refs are current before
+  // anything the user does next, which is the only thing that can resolve the
+  // gate.
+  const inFlight = React.useRef(false)
+  const draftRef = React.useRef(draft)
+  const baselineRef = React.useRef(baseline)
+  React.useLayoutEffect(() => {
+    draftRef.current = draft
+    baselineRef.current = baseline
+  }, [draft, baseline])
+
   const doSave = React.useCallback(async () => {
     if (draft === undefined || baseline === undefined || !dirty || saving) return false
-    if (beforeSave && !(await beforeSave(draft, baseline))) return false
-    setSaving(true)
-    setError(null)
+    if (inFlight.current) return false
+    inFlight.current = true
     try {
-      await save(draft)
-      setBaseline(draft)
-      setSavedAt(Date.now())
-      return true
-    } catch (err) {
-      setError(messageOf(err))
-      return false
+      if (beforeSave && !(await beforeSave(draft, baseline))) return false
+      const current = draftRef.current
+      const base = baselineRef.current
+      if (current === undefined || base === undefined || !isDirty(base, current)) return false
+      setSaving(true)
+      setError(null)
+      try {
+        await save(current)
+        setBaseline(current)
+        setSavedAt(Date.now())
+        return true
+      } catch (err) {
+        setError(messageOf(err))
+        return false
+      } finally {
+        setSaving(false)
+      }
     } finally {
-      setSaving(false)
+      inFlight.current = false
     }
   }, [draft, baseline, dirty, saving, beforeSave, save])
 

@@ -8,6 +8,16 @@ export interface SettingRowProps {
   error?: React.ReactNode
   status?: React.ReactNode
   wide?: boolean
+  /**
+   * The control already carries its own visible label — `ui/Checkbox`, which
+   * wraps its input in a `<label>`. The row then renders its text as plain
+   * text instead of a second `<label htmlFor>`: two labels pointing at one
+   * control do not compete, they CONCATENATE ("Auto-archive Auto-archive
+   * completed sessions"), which is axe's `form-field-multiple-labels` and is
+   * what a screen reader reads out. `htmlFor` is still required and still
+   * derives the description/error ids.
+   */
+  selfLabelled?: boolean
   children: React.ReactElement<{ 'aria-describedby'?: string }>
 }
 
@@ -17,7 +27,7 @@ export interface SettingRowProps {
  * `aria-describedby` is appended with the description and error ids, in that
  * order, preserving anything the caller already set (same rule as ui/Field).
  */
-export function SettingRow({ label, htmlFor, description, error, status, wide = false, children }: SettingRowProps) {
+export function SettingRow({ label, htmlFor, description, error, status, wide = false, selfLabelled = false, children }: SettingRowProps) {
   const descId = description ? `${htmlFor}-desc` : undefined
   const errId = error ? `${htmlFor}-error` : undefined
   const own = children.props['aria-describedby']
@@ -27,7 +37,9 @@ export function SettingRow({ label, htmlFor, description, error, status, wide = 
   return (
     <div className={cn('grid gap-3 py-3', wide ? 'grid-cols-1' : 'sm:grid-cols-[minmax(0,1fr)_minmax(200px,42%)] sm:items-center')}>
       <div className="min-w-0">
-        <label htmlFor={htmlFor} className="block text-sm font-medium text-ink">{label}</label>
+        {selfLabelled
+          ? <p className="text-sm font-medium text-ink">{label}</p>
+          : <label htmlFor={htmlFor} className="block text-sm font-medium text-ink">{label}</label>}
         {description && <p id={descId} className="mt-0.5 text-xs text-ink-muted">{description}</p>}
         {error && <p id={errId} role="alert" className="mt-0.5 text-xs text-danger"><span className="sr-only">Error: </span>{error}</p>}
       </div>

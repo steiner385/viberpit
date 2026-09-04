@@ -6,6 +6,7 @@ import { SettingsGroup } from './SettingsGroup'
 import { SettingRow } from './SettingRow'
 import { ScopeBadge } from './ScopeBadge'
 import { Input } from '@/ui/Input'
+import { Checkbox } from '@/ui/Checkbox'
 
 expect.extend(toHaveNoViolations)
 
@@ -44,6 +45,22 @@ describe('settings chassis', () => {
     const input = screen.getByLabelText('Repo clone root')
     expect(input).toHaveAttribute('aria-describedby', 'repo-root-desc repo-root-error')
     expect(screen.getByRole('alert')).toHaveTextContent('Must be absolute.')
+  })
+
+  it('selfLabelled row leaves the control ONE accessible name', async () => {
+    // A `ui/Checkbox` wraps its input in its own <label>. Without the flag the
+    // row adds a second <label htmlFor> and the two concatenate — the control is
+    // then named "Auto-archive Auto-archive completed sessions" and axe reports
+    // form-field-multiple-labels.
+    const { container } = render(
+      <SettingRow label="Auto-archive" htmlFor="auto-archive" description="Archived when the goal is met." selfLabelled>
+        <Checkbox id="auto-archive" label="Auto-archive completed sessions" checked onChange={() => {}} />
+      </SettingRow>,
+    )
+    const box = screen.getByRole('checkbox', { name: 'Auto-archive completed sessions' })
+    expect(box).toHaveAttribute('aria-describedby', 'auto-archive-desc')
+    expect(screen.getByText('Auto-archive')).not.toHaveAttribute('for')
+    expect(await axe(container)).toHaveNoViolations()
   })
 
   it('row status is a polite live region', () => {

@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, Link, RouterProvider } from 'react-router-dom'
 import { useSettingsForm, nextDraft } from './useSettingsForm'
@@ -11,7 +11,7 @@ type Draft = { repoRoot: string; maxActive: number }
 function Harness({ initial, save, beforeSave }: {
   initial: Draft | undefined
   save: (d: Draft) => Promise<unknown>
-  beforeSave?: (d: Draft, i: Draft) => boolean
+  beforeSave?: (d: Draft, i: Draft) => boolean | Promise<boolean>
 }) {
   const form = useSettingsForm<Draft>({ initial, save, beforeSave })
   if (!form.draft) return <p>loading</p>
@@ -119,6 +119,54 @@ describe('useSettingsForm + SaveBar', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Save' }))
     expect(save).not.toHaveBeenCalled()
     expect(screen.getByRole('status')).toHaveTextContent('Unsaved changes')
+  })
+
+  /**
+   * R8: an async `beforeSave` (a ConfirmDialog) leaves the form dirty and NOT
+   * saving while the gate is open, so nothing else stops a second Save click or
+   * a Discard. The in-flight latch and the post-gate dirty re-check do.
+   */
+  it('an async beforeSave latches: a second Save while the gate is open is a no-op (R8)', async () => {
+    const save = vi.fn().mockResolvedValue({})
+    let release: ((ok: boolean) => void) | undefined
+    const beforeSave = vi.fn(() => new Promise<boolean>((resolve) => { release = resolve }))
+    mount(<Harness initial={{ repoRoot: '/a', maxActive: 5 }} save={save} beforeSave={beforeSave} />)
+    await userEvent.type(screen.getByLabelText('Repo'), 'b')
+
+    const saveBtn = screen.getByRole('button', { name: 'Save' })
+    await userEvent.click(saveBtn)
+    await userEvent.click(saveBtn)
+    // The gate is still open, so the form is still dirty and Save is still
+    // enabled — the latch, not `saving`, is what makes the second click inert.
+    expect(saveBtn).toBeEnabled()
+    expect(beforeSave).toHaveBeenCalledTimes(1)
+
+    await act(async () => { release?.(true) })
+    expect(save).toHaveBeenCalledTimes(1)
+    expect(save).toHaveBeenCalledWith({ repoRoot: '/ab', maxActive: 5 })
+  })
+
+  it('Discard while the gate is open cancels the save the gate then approves (R8)', async () => {
+    const save = vi.fn().mockResolvedValue({})
+    let release: ((ok: boolean) => void) | undefined
+    mount(
+      <Harness
+        initial={{ repoRoot: '/a', maxActive: 5 }}
+        save={save}
+        beforeSave={() => new Promise<boolean>((resolve) => { release = resolve })}
+      />,
+    )
+    await userEvent.type(screen.getByLabelText('Repo'), 'b')
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    // Discard is reachable while the gate is open, and it really resets the draft.
+    await userEvent.click(screen.getByRole('button', { name: 'Discard' }))
+    expect(screen.getByLabelText('Repo')).toHaveValue('/a')
+
+    // The gate now says yes — to a draft that no longer exists.
+    await act(async () => { release?.(true) })
+    expect(save).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('Repo')).toHaveValue('/a')
   })
 
   it('seeds the draft when initial arrives', async () => {
