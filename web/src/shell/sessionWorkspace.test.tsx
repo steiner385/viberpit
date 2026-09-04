@@ -28,6 +28,10 @@ const NOOP = { mutate: vi.fn(), isPending: false, isSuccess: false }
 vi.mock('@/api/hooks', () => ({
   // "Reload session" (MainPaneSession → SessionHeader → SessionActions).
   useReloadSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  // "Next best account" (MainPaneSession → SessionHeader → SessionActions).
+  useRotateSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  // Unpin account button (MainPaneSession → SessionBody → SessionMeta).
+  useSetAccountPin: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useQueueMove: vi.fn(() => ({ mutate: vi.fn() })),
   useQueueCancel: vi.fn(() => ({ mutate: vi.fn() })),
   useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
