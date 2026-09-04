@@ -49,6 +49,9 @@ def _make_orch():
     o._reassign = spy_reassign
     o._restart_driverless = spy_restart
     o._session_uses_setup_token = lambda rec: False
+    # Default: not opted into paid extra usage. Stubbed rather than left to the real
+    # ledger so these tests never touch the developer's ~/.ccswitch ledger file.
+    o._extra_usage_allowed = lambda account: False
 
     # _rotation_monitor awaits the fleet-registry read (#852) between q.get()
     # and _spawn. The real read suspends on DB I/O only when a previously run
@@ -363,3 +366,78 @@ async def test_rotation_monitor_triggers_recovery_sweep_below_ceiling():
 
     assert fired == [True]
     assert not any(c[0] in ("rotate", "restart_driverless") for c in o.calls)
+
+
+# ---------------------------------------------------------------------------
+# The paid extra-usage escape: at-ceiling is NOT dead when rank_accounts would
+# still hand the account out (its final "extra_paid" tier).
+# ---------------------------------------------------------------------------
+
+def _at_ceiling_usage(extra_enabled: bool) -> Usage:
+    return Usage(session_pct=_ROTATION_CEILING, session_resets_at=None,
+                 weekly_pct=20.0, weekly_resets_at=None,
+                 extra_usage_enabled=extra_enabled)
+
+
+@pytest.mark.asyncio
+async def test_rotation_monitor_skips_at_ceiling_account_with_extra_usage():
+    """Opted in + enabled upstream → the selector still ranks it usable, so rotating
+    off it only finds no target and parks the session as needs_attention."""
+    o = _make_orch()
+    _rec(o, account="copilot_acct")
+    o._poller = _poller_with_failures(0)
+    o._extra_usage_allowed = lambda account: True
+    fired = []
+    o._maybe_sweep_on_recovery = lambda: fired.append(True) or True
+
+    await _run_monitor_one_event(
+        o, {"account": "copilot_acct", "usage": _at_ceiling_usage(True)})
+
+    assert not any(c[0] in ("rotate", "restart_driverless") for c in o.calls)
+    assert fired == [True]
+
+
+@pytest.mark.asyncio
+async def test_rotation_monitor_rotates_at_ceiling_when_not_opted_in():
+    """Extra usage enabled upstream but the user never opted in → still dead."""
+    o = _make_orch()
+    _rec(o, account="copilot_acct")
+    o._poller = _poller_with_failures(0)
+    o._extra_usage_allowed = lambda account: False
+
+    await _run_monitor_one_event(
+        o, {"account": "copilot_acct", "usage": _at_ceiling_usage(True)})
+
+    assert ("rotate", "s1", "session limit reached") in o.calls
+
+
+@pytest.mark.asyncio
+async def test_rotation_monitor_rotates_at_ceiling_when_provider_disabled_extra():
+    """Opted in but Anthropic reports extra usage OFF → opting in conjures nothing."""
+    o = _make_orch()
+    _rec(o, account="copilot_acct")
+    o._poller = _poller_with_failures(0)
+    o._extra_usage_allowed = lambda account: True
+
+    await _run_monitor_one_event(
+        o, {"account": "copilot_acct", "usage": _at_ceiling_usage(False)})
+
+    assert ("rotate", "s1", "session limit reached") in o.calls
+
+
+def test_account_is_dead_false_at_ceiling_with_extra_usage():
+    o = _orch_with_poller(cached_usage=_at_ceiling_usage(True))
+    o._extra_usage_allowed = lambda account: True
+    assert o._account_is_dead("copilot_acct") is False
+
+
+def test_account_is_dead_true_at_ceiling_extra_usage_not_opted_in():
+    o = _orch_with_poller(cached_usage=_at_ceiling_usage(True))
+    o._extra_usage_allowed = lambda account: False
+    assert o._account_is_dead("copilot_acct") is True
+
+
+def test_account_is_dead_true_at_ceiling_extra_usage_provider_disabled():
+    o = _orch_with_poller(cached_usage=_at_ceiling_usage(False))
+    o._extra_usage_allowed = lambda account: True
+    assert o._account_is_dead("copilot_acct") is True

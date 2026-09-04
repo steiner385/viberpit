@@ -44,7 +44,7 @@ from ccswitch.account_names import (
 from ccswitch.config import load_config
 from ccswitch.configdir import compose
 from ccswitch.paths import account_cfg_dir, shared_base
-from ccswitch.selector import at_ceiling
+from ccswitch.selector import at_ceiling, exhausted
 from server.aio import bounded_wait
 from server.audit import record_audit
 from server.db import db_session
@@ -9163,7 +9163,12 @@ class SessionOrchestrator:
                     reason = "account_unreachable"
                     session_pct = 0.0  # unknown; treat as ceiling for rotation logic
                 else:
-                    if not at_ceiling(usage, _ROTATION_CEILING):
+                    if not exhausted(usage, _ROTATION_CEILING,
+                                     extra_usage_allowed=self._extra_usage_allowed(account)):
+                        # Either genuine headroom, or at-ceiling with paid overflow the
+                        # selector would still hand out (rank_accounts' extra_paid tier).
+                        # Rotating off such an account finds no better target and parks
+                        # the session as needs_attention for nothing.
                         self._maybe_sweep_on_recovery()
                         continue
                     session_pct = getattr(usage, "session_pct", 0.0)
@@ -9239,6 +9244,24 @@ class SessionOrchestrator:
         """Usage-ceiling rotation entrypoint (called by the poller monitor)."""
         await self._rotate_away(record, reason=reason)
 
+    def _extra_usage_allowed(self, account: str) -> bool:
+        """Has the user opted *account* into paid extra-usage credits?
+
+        The rotation monitor's half of the same input `pick_account_detailed` feeds
+        `rank_accounts` as `extra_usage_allowed` — read from the one source of truth
+        (`ledger.get_allow_extra_usage`) so "dead" here means what "unusable" means
+        there. Read synchronously: the ledger is a small local JSON file, and a
+        best-effort False on any read error only costs a rotation we would have
+        done before this fix anyway.
+        """
+        from ccswitch import ledger as _ledger
+        try:
+            with _ledger.locked_ledger() as led:
+                return _ledger.get_allow_extra_usage(led, account)
+        except Exception:
+            log.debug("rotation.extra_usage_read_failed account=%s", account, exc_info=True)
+            return False
+
     def _account_is_dead(self, account: str) -> bool:
         """True when the account is at usage ceiling OR persistently unreachable.
 
@@ -9247,7 +9270,8 @@ class SessionOrchestrator:
         """
         usage = self._poller.cached(account)
         if usage is not None:
-            return at_ceiling(usage, _ROTATION_CEILING)
+            return exhausted(usage, _ROTATION_CEILING,
+                             extra_usage_allowed=self._extra_usage_allowed(account))
         # usage=None: distinguish "not yet polled" from "persistently failing"
         return self._poller.consecutive_failures(account) >= _UNREACHABLE_ROTATION_THRESHOLD
 

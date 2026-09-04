@@ -77,6 +77,12 @@ def at_ceiling(u: Usage, ceiling: float) -> bool:
     return u.session_pct >= ceiling or u.weekly_pct >= ceiling
 
 
+def exhausted(u: Usage, ceiling: float, *, extra_usage_allowed: bool) -> bool:
+    """at_ceiling AND no paid overflow to fall back on. The rotation monitor's
+    definition of a dead account; mirrors rank_accounts' extra_paid tier."""
+    return at_ceiling(u, ceiling) and not (extra_usage_allowed and u.extra_usage_enabled)
+
+
 @dataclass
 class RankedAccount:
     name: str
