@@ -27,7 +27,12 @@ GUARDED_ORCH_METHODS = (
     "latest_suggestions",           # next-prompt suggestions
     "latest_summary",               # one-line status summaries
     "_maybe_autoarchive_completed",  # auto-archive
+    # The three restart-recovery paths. All re-drive a turn nobody asked for again:
+    # an assistant "turn" answers a question the user asked BEFORE the restart, and
+    # nothing is watching the drawer at daemon boot to read the answer.
     "_recover_undelivered_prompts",  # rehydrate's initial-prompt re-send
+    "auto_resume_interrupted",      # CCSWITCH_AUTO_RESUME_ON_RESTART sweep
+    "_rearm_session",               # pending_rearm / pending_prompt replay (both callers)
     "list_sessions",                # the dashboard list
 )
 

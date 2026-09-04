@@ -29,10 +29,23 @@ holding:
   (which are themselves symlinks to the shared base), so plugins/commands/settings stay
   a single source of truth rather than being duplicated per host.
 
-Sessions are deliberately NOT routed through here: an interactive session must read and
-write the real account dir (that is where its history and token refreshes belong). Only
-the stateless, tool-denied one-shot helpers — the nine ``account_auth.helper_env`` call
-sites plus the suggestion/summary factories — are isolated.
+Who is routed through here
+--------------------------
+CODING sessions are deliberately NOT: an interactive session must read and write the real
+account dir (that is where its history and token refreshes belong). The stateless,
+tool-denied one-shot helpers — the nine ``account_auth.helper_env`` call sites plus the
+suggestion/summary factories — take the default mirror, for the torn-read reason above.
+
+The ASSISTANT session (spec §4.1) is the one long-lived session that DOES, via
+``isolated=True``, and for a different reason: not torn reads but isolation. It must not
+inherit the operator's plugins, custom commands or shared settings/hooks, and a scratch
+dir is the only lever that removes them — ``setting_sources=[]`` hangs the persistent
+``ClaudeSDKClient`` (see docs/superpowers/spikes/2026-09-04-assistant-sdk-findings.md).
+Its ``projects`` link is kept: that is the session's own transcript store, and the
+orchestrator's config dir must be the one holding it or ``--resume`` finds nothing.
+Every driver-building path (``_spawn_session``, ``ensure_driver``, ``_reassign``) routes
+through ``SessionOrchestrator._session_config_dir``, so a reattach or a rotation cannot
+quietly hand the assistant the un-isolated account dir back.
 
 Torn reads are evidence, not noise
 ----------------------------------
@@ -66,6 +79,20 @@ log = logging.getLogger(__name__)
 # Real files copied into the scratch dir (never symlinked): these are the two the config
 # loader rewrites, and a symlink would let a "repair" write straight back to the store.
 _COPIED = (CLAUDE_JSON_NAME, CREDENTIALS_NAME)
+
+# The share-allowlist entries an ISOLATED (assistant) scratch dir must NOT inherit:
+# third-party plugins, the operator's custom commands, and the settings files that carry
+# shared hooks/permissions. This is what removes the coding-agent customisation surface
+# from an assistant session (spec §4.1).
+#
+# `projects` is deliberately NOT in this set even though it is share-allowlisted. It is
+# not a shared asset — it is where the CLI writes each session's own transcript
+# (`<config_dir>/projects/<slug>/<claude_session_id>.jsonl`). Dropping the link would put
+# the assistant's history somewhere `resolve_transcript_path` never looks, so a resume
+# after an idle reap or a daemon restart would silently start a blank conversation.
+ISOLATED_EXCLUDED_SHARED = frozenset({
+    "plugins", "commands", "settings.json", "settings.local.json",
+})
 
 _TORN_READS_DIRNAME = "torn-reads"
 # Cap the marker directory so an unfixed mount cannot fill the disk. The watchdog only
@@ -155,21 +182,20 @@ def _sync_file(src_file: Path, dst: Path, name: str) -> bool:
     return False
 
 
-def _sync_links(src: Path, dst: Path, *, share_links: bool = True) -> None:
+def _sync_links(src: Path, dst: Path, *, exclude: frozenset[str] = frozenset()) -> None:
     """Point the share-allowlist names at the account dir's own entries.
 
     Symlinks, not copies: plugins/commands/settings are read-only shared assets and
     duplicating them per host is exactly the parallel-copy problem SHARE_ALLOWLIST exists
     to avoid. Stale links (source removed) are pruned.
 
-    ``share_links=False`` prunes them ALL instead: an assistant session (spec §4.1) must
-    not inherit the operator's plugins, custom commands, hooks or settings. Pruning
-    rather than merely not-creating keeps the directory correct when a dir built by an
-    earlier (or a differently-parameterised) call is reused.
+    Names in *exclude* are pruned instead of linked — see ``ISOLATED_EXCLUDED_SHARED``.
+    Pruning rather than merely not-creating keeps the directory correct when a dir built
+    by an earlier (or a differently-parameterised) call is reused.
     """
     for name in SHARE_ALLOWLIST:
         link, source = dst / name, src / name
-        if not share_links or not source.exists():
+        if name in exclude or not source.exists():
             if link.is_symlink():
                 link.unlink()
             continue
@@ -209,7 +235,7 @@ def recent_torn_reads(window_s: float = 3600.0, *, _now: float | None = None) ->
         return 0
 
 
-def helper_config_dir(config_dir: str, *, share_links: bool = True) -> str:
+def helper_config_dir(config_dir: str, *, isolated: bool = False) -> str:
     """Return a host-local scratch mirror of *config_dir*, or *config_dir* unchanged.
 
     Unchanged when the kill switch is off, when *config_dir* is empty or missing, when
@@ -217,10 +243,12 @@ def helper_config_dir(config_dir: str, *, share_links: bool = True) -> str:
     torn source read with no last-known-good copy to fall back on, where reading the
     shared file directly is no worse than today.
 
-    ``share_links=False`` returns a variant that OMITS the ``SHARE_ALLOWLIST`` symlinks
-    (plugins, commands, settings.json, settings.local.json, projects) — the assistant
-    session's config dir (spec §4.1). It is a separate directory from the shared-link
-    mirror, so the two variants of one account never overwrite each other's links.
+    ``isolated=True`` returns the ASSISTANT variant: same copies, but the
+    ``ISOLATED_EXCLUDED_SHARED`` links (plugins, commands, settings.json,
+    settings.local.json) are omitted, while ``projects`` — the session's own transcript
+    store, not a shared asset — stays linked. It is a separate directory from the
+    ordinary mirror, so the two variants of one account never overwrite each other's
+    links.
 
     Note what a config dir CANNOT isolate: ``$HOME/.claude/CLAUDE.md`` is resolved from
     HOME, not from ``CLAUDE_CONFIG_DIR``, so user memory still loads. The assistant's
@@ -238,7 +266,7 @@ def helper_config_dir(config_dir: str, *, share_links: bool = True) -> str:
             log.debug("scratch_config: root %s is inside the account store — not isolating", root)
             return config_dir
 
-        dst = _scratch_dir_for(src, root, suffix="" if share_links else "-nolinks")
+        dst = _scratch_dir_for(src, root, suffix="-isolated" if isolated else "")
         dst.mkdir(parents=True, exist_ok=True)
         os.chmod(root, 0o700)
         os.chmod(dst, 0o700)
@@ -254,7 +282,7 @@ def helper_config_dir(config_dir: str, *, share_links: bool = True) -> str:
             # First-ever sync and the source did not parse: no last-known-good to serve.
             # Degrade to the shared dir rather than handing the helper an empty config.
             return config_dir
-        _sync_links(src, dst, share_links=share_links)
+        _sync_links(src, dst, exclude=ISOLATED_EXCLUDED_SHARED if isolated else frozenset())
         return str(dst)
     except Exception as exc:  # noqa: BLE001 — best-effort isolation, never a helper's problem
         log.debug("scratch_config: falling back to %s: %s", config_dir, exc)

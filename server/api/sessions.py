@@ -27,7 +27,7 @@ from ccswitch import accounts as _accounts
 from ccswitch import gitrepos
 from server.auth.middleware import current_identity
 from server.sessions.search import parse_terms, session_matches
-from server.sessions.types import ASSISTANT_KIND, RESUME_ELIGIBLE_STATUSES
+from server.sessions.types import ASSISTANT_KIND, RESUME_ELIGIBLE_STATUSES, is_assistant
 from server.audit import record_audit
 from server.config import get_settings
 from server.db import db_session, get_db
@@ -485,15 +485,18 @@ async def list_sessions(
 ) -> list[dict]:
     """Return all in-memory session records.
 
-    Assistant threads are excluded unless `?kind=assistant` asks for them — they are a
-    UI surface, not dashboard cards. The kwarg is passed ONLY when asked for, so the
-    default call is byte-identical for every orchestrator flavour (in-process, remote,
-    fleet) and for test doubles.
+    Assistant threads are a UI surface, not dashboard cards, so they are excluded by
+    default. `?kind=assistant` SELECTS them — it returns assistant threads only, not
+    everything-plus-assistants; the orchestrator flag merely stops them being filtered
+    out upstream, and the narrowing happens here. The kwarg is passed ONLY when asked
+    for, so the default call is byte-identical for every orchestrator flavour
+    (in-process, remote, fleet) and for test doubles.
     """
     orch = _get_orchestrator(request)
-    kw = ({"include_assistant": True}
-          if request.query_params.get("kind") == ASSISTANT_KIND else {})
-    records = await orch.list_sessions(**kw)
+    want_assistant = request.query_params.get("kind") == ASSISTANT_KIND
+    records = await orch.list_sessions(**({"include_assistant": True} if want_assistant else {}))
+    if want_assistant:
+        records = [r for r in records if is_assistant(r)]
     viewing = request.query_params.get("viewing") in ("1", "true", "yes")
     # Enrich the whole page in three batched RPCs (one per field) rather than three per
     # session: 21 sessions cost 3 daemon round trips, not 63 (#742). Each is bounded by

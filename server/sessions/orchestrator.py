@@ -1019,6 +1019,37 @@ class SessionOrchestrator:
             return self._copilot.env_for(rec.account)
         return oauth_env_for(rec.account)
 
+    def _session_config_dir(self, account: str, kind: str | None) -> Path:
+        """The ``CLAUDE_CONFIG_DIR`` a session's driver runs against.
+
+        THE single place that decision is made, because it is made three times — at
+        spawn, at ``ensure_driver`` (every reattach after a daemon restart detaches the
+        fleet) and at ``_reassign`` (every rotation, the product's core loop). An
+        assistant branch in only one of them is isolation that silently expires: the
+        first restart or account rotation would hand the assistant the operator's
+        plugins, custom commands and shared settings straight back.
+
+        A coding session gets the real account dir (that is where its history and token
+        refreshes belong). An assistant gets the host-local ISOLATED scratch mirror —
+        no plugins/commands/settings, but `projects` still linked so its transcript
+        stays where ``resolve_transcript_path`` and ``--resume`` look for it.
+
+        Fail-open: ``helper_config_dir`` returns the account dir unchanged on any error.
+        """
+        cfg = compose(account)
+        if is_assistant_kind(kind):
+            return Path(helper_config_dir(str(cfg), isolated=True))
+        return cfg
+
+    def _suggester_for(self, kind: str | None):
+        """The suggestion service a session's driver gets, or None for the assistant.
+
+        Same reasoning as ``_session_config_dir``: set at all three driver-building
+        sites, so it lives in one place. Next-prompt suggestions are written FOR a
+        coding session ("run the tests", "open a PR") and the drawer has no UI for them.
+        """
+        return None if is_assistant_kind(kind) else self._suggester
+
     def register_assistant_overlay(self, session_id: str, overlay: dict) -> None:
         """Register the ``ClaudeAgentOptions`` overlay an assistant session spawns with.
 
@@ -1569,15 +1600,28 @@ class SessionOrchestrator:
                 origin=origin, origin_ref=origin_ref, model=model,
                 initial_prompt=initial_prompt, host=host,
                 kind=kind, owner_identity=owner_identity))
-        priority = await sq.enqueue(session_id, {
+        params: dict = {
             "name": name, "account": account, "initial_prompt": initial_prompt,
             "cols": cols, "rows": rows, "cwd": cwd, "branch": branch,
             "repo": repo, "identity": identity,
             "permission_mode": permission_mode,
             "attachment_ids": attachment_ids, "name_is_auto": name_is_auto,
             "origin": origin, "origin_ref": origin_ref, "model": model,
-            "kind": kind, "owner_identity": owner_identity,
-        })
+        }
+        # `params` is a JSON column in the SHARED fleet DB and _maybe_start_queued is NOT
+        # ownership-gated — ANY daemon may drain this entry and splat it into
+        # _spawn_session(**params). Hosts run mixed versions on purpose (rocky lags), and
+        # a daemon whose _spawn_session predates these two parameters would raise
+        # TypeError, which the drain's except turns into sq.remove() + status 'ended' —
+        # destroying a normal user's queued session rather than retrying it. So write the
+        # keys ONLY when they carry information; an assistant never enqueues anyway
+        # (create_session exempts it from the cap), so this branch is effectively dead
+        # for the assistant and pure protection for everyone else.
+        if kind is not None:
+            params["kind"] = kind
+        if owner_identity is not None:
+            params["owner_identity"] = owner_identity
+        priority = await sq.enqueue(session_id, params)
         rec = SessionRecord(
             id=session_id, name=name, account=account or "", claude_session_id="",
             cols=cols, rows=rows, cwd=cwd or "", repo=repo, branch=None,
@@ -2233,19 +2277,11 @@ class SessionOrchestrator:
             # Verify the given account exists (will raise if cred file missing — acceptable)
             pass
 
-        cfg_dir: Path = compose(account)
-
         # Pre-trust the project directory (now the worktree, if any) so claude
-        # won't prompt for trust on startup.
+        # won't prompt for trust on startup. BEFORE _session_config_dir, so an
+        # assistant's scratch copy of .claude.json already carries the trust decision.
         configdir.trust_project(account, cwd)
-
-        # The assistant runs against a LINK-LESS host-local scratch copy of the account
-        # config dir (spec §4.1): no plugins, custom commands, hooks or shared settings.
-        # Built AFTER trust_project so the trust decision is in the copied .claude.json.
-        # Fail-open (scratch_config returns the account dir unchanged on any error) —
-        # a degraded assistant beats no assistant.
-        if is_assistant_kind(kind):
-            cfg_dir = Path(helper_config_dir(str(cfg_dir), share_links=False))
+        cfg_dir: Path = self._session_config_dir(account, kind)
 
         # Allocate a virtual X11 display for this session (if X11Manager wired in).
         if self._x11 is not None:
@@ -2296,10 +2332,7 @@ class SessionOrchestrator:
                 on_record_condense_ms=self._record_condense_ms,
                 get_condense_estimate=self._condense_estimate,
                 on_recoverable_failure=self._handle_recoverable_failure,
-                # No next-prompt suggestions for the assistant: they are written FOR a
-                # coding session ("run the tests", "open a PR") and the drawer has no
-                # UI for them. Same reasoning as the Copilot skip in latest_suggestions.
-                suggester=None if is_assistant_kind(kind) else self._suggester,
+                suggester=self._suggester_for(kind),
             )
             try:
                 await driver.start()
@@ -6704,6 +6737,15 @@ class SessionOrchestrator:
         tasks = [OpenBgTask.from_dict(d) for d in (snap or []) if isinstance(d, dict)]
         if not tasks and not prompt:
             return False
+        # The chokepoint both re-arm callers (rearm_background_tasks on boot,
+        # _maybe_rearm_on_attach on attach) go through. Replaying a drain-time
+        # pending_prompt into an assistant thread re-asks the user's own last question
+        # of a conversation they may have closed — same shape as the undelivered
+        # initial-prompt recovery, guarded there for the same reason. Returning False
+        # leaves the snapshot columns set (harmless: this guard re-fires) rather than
+        # writing DB state from a read path.
+        if is_assistant(self._records.get(sid)):
+            return False
         driver = await self.ensure_driver(sid)
         if driver is None:
             return False
@@ -7707,8 +7749,11 @@ class SessionOrchestrator:
         sessions are already un-interrupted and skip naturally."""
         if not self._env_truthy("CCSWITCH_AUTO_RESUME_ON_RESTART"):
             return 0
+        # Assistants excluded for the same reason as _recover_undelivered_prompts: an
+        # assistant "turn" is an answer to something the user asked before the restart,
+        # and nobody is watching the drawer at daemon boot to read it.
         eligible = [sid for sid, rec in list(self._records.items())
-                    if self._resume_eligible(rec) is None]
+                    if not is_assistant(rec) and self._resume_eligible(rec) is None]
         if not eligible:
             return 0
         sem = asyncio.Semaphore(int(os.environ.get("CCSWITCH_REARM_CONCURRENCY", "3")))
@@ -7862,7 +7907,9 @@ class SessionOrchestrator:
 
             # Build and start a new driver resuming from the stored claude_session_id
             resume = rec.claude_session_id or None
-            cfg_dir = compose(rec.account)
+            # Same decision as spawn (see _session_config_dir): a reattach after a daemon
+            # restart must not silently hand an assistant the un-isolated account dir.
+            cfg_dir = self._session_config_dir(rec.account, getattr(rec, "kind", None))
             # Ensure the working directory exists. A rehydrated session's cwd (a no-repo
             # scratch dir or a git worktree) may have been removed when the session was
             # previously closed (close_session cleans those up); without recreating it the
@@ -7919,7 +7966,7 @@ class SessionOrchestrator:
                     on_record_condense_ms=self._record_condense_ms,
                     get_condense_estimate=self._condense_estimate,
                     on_recoverable_failure=self._handle_recoverable_failure,
-                    suggester=self._suggester,
+                    suggester=self._suggester_for(getattr(rec, "kind", None)),
                 )
 
             # Publish this build as an in-flight swap (#1040) so a concurrent
@@ -9923,8 +9970,10 @@ class SessionOrchestrator:
                 await bounded_wait(old_driver.interrupt(), timeout=_CLOSE_GRACE_SEC,
                                    phase=f"reassign.interrupt:{record.id}")
                 await old_driver.aclose()
-            cfg = compose(new_account)
             configdir.trust_project(new_account, cwd)
+            # Rotation is the product's core loop; without this the assistant's isolated
+            # config dir would last only until its account hit a usage ceiling.
+            cfg = self._session_config_dir(new_account, getattr(record, "kind", None))
             Path(cwd).mkdir(parents=True, exist_ok=True)
             _copilot = getattr(self, "_copilot", None)
             if _copilot is not None and _provider_of(new_account) == _copilot_mod.PROVIDER:
@@ -9941,7 +9990,7 @@ class SessionOrchestrator:
                 on_record_condense_ms=self._record_condense_ms,
                 get_condense_estimate=self._condense_estimate,
                 on_recoverable_failure=self._handle_recoverable_failure,
-                suggester=self._suggester,
+                suggester=self._suggester_for(getattr(record, "kind", None)),
             )
             # Set the record's account BEFORE start(): start() triggers the SDK factory →
             # _oat_env, which reads record.account to pick the setup-token. If left stale, a

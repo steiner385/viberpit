@@ -28,9 +28,14 @@ from .prompt import ASSISTANT_SYSTEM_PROMPT
 #
 # "MultiEdit" is deliberately absent — it is not a tool on CLI 2.1.259, and naming it
 # makes the CLI log `Permission deny rule "MultiEdit" matches no known tool`.
+#
+# SlashCommand / Skill / ExitPlanMode are here for the same reason: each is a lever back
+# into the coding-agent surface (a project command, a skill's instructions, a plan-mode
+# approval card) that the assistant has no business reaching.
 DISALLOWED_BUILTINS: tuple[str, ...] = (
     "Bash", "Edit", "Write", "NotebookEdit", "Read", "Glob", "Grep",
     "WebFetch", "WebSearch", "Task", "Agent", "TodoWrite", "KillShell", "BashOutput",
+    "SlashCommand", "Skill", "ExitPlanMode",
 )
 
 

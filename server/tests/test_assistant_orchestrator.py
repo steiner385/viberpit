@@ -5,6 +5,7 @@ session from the operator's plugins/commands/settings.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import time
 from pathlib import Path
@@ -124,20 +125,33 @@ def test_normal_helper_config_dir_keeps_shared_entries(tmp_path, monkeypatch):
         assert (dst / name).is_symlink(), f"{name} link missing for a normal helper"
 
 
-def test_assistant_scratch_config_dir_has_no_shared_entries(tmp_path, monkeypatch):
-    """share_links=False drops plugins/commands/settings.json/settings.local.json/projects,
-    which is what removes third-party plugins, shared hooks and shared settings from an
-    assistant session (spec §4.1, minus the CLAUDE.md clause — see the prompt module)."""
+def test_assistant_scratch_config_dir_drops_customisation_but_keeps_projects(
+        tmp_path, monkeypatch):
+    """isolated=True drops plugins/commands/settings.json/settings.local.json — the
+    operator's customisation surface (spec §4.1, minus the CLAUDE.md clause; see the
+    prompt module).
+
+    `projects` MUST stay: it is not a shared asset but the CLI's own transcript store
+    (<config_dir>/projects/<slug>/<claude_session_id>.jsonl). Without the link a resume
+    after an idle reap or a daemon restart runs against a config dir that has never seen
+    that session id — a silently blank conversation.
+    """
     from ccswitch.configdir import SHARE_ALLOWLIST
-    from server.sessions.scratch_config import helper_config_dir
+    from server.sessions.scratch_config import ISOLATED_EXCLUDED_SHARED, helper_config_dir
 
     monkeypatch.setenv("CCSWITCH_HELPER_SCRATCH_ROOT", str(tmp_path / "scratch"))
     src = _seed_account_dir(tmp_path)
-    dst = Path(helper_config_dir(str(src), share_links=False))
+    dst = Path(helper_config_dir(str(src), isolated=True))
     assert dst != src
     assert (dst / ".claude.json").exists()          # auth/config still copied
-    for name in SHARE_ALLOWLIST:
+    assert ISOLATED_EXCLUDED_SHARED == {"plugins", "commands",
+                                        "settings.json", "settings.local.json"}
+    for name in ISOLATED_EXCLUDED_SHARED:
         assert not (dst / name).exists() and not (dst / name).is_symlink(), name
+    assert (dst / "projects").is_symlink()
+    # Nothing outside the named four is dropped.
+    for name in SHARE_ALLOWLIST - ISOLATED_EXCLUDED_SHARED:
+        assert (dst / name).is_symlink(), name
 
 
 def test_assistant_scratch_dir_is_distinct_from_the_shared_one(tmp_path, monkeypatch):
@@ -146,22 +160,24 @@ def test_assistant_scratch_dir_is_distinct_from_the_shared_one(tmp_path, monkeyp
 
     monkeypatch.setenv("CCSWITCH_HELPER_SCRATCH_ROOT", str(tmp_path / "scratch"))
     src = _seed_account_dir(tmp_path)
-    assert helper_config_dir(str(src)) != helper_config_dir(str(src), share_links=False)
+    assert helper_config_dir(str(src)) != helper_config_dir(str(src), isolated=True)
 
 
 def test_assistant_scratch_dir_prunes_links_left_by_an_earlier_build(tmp_path, monkeypatch):
     from ccswitch.configdir import SHARE_ALLOWLIST
-    from server.sessions.scratch_config import helper_config_dir
+    from server.sessions.scratch_config import ISOLATED_EXCLUDED_SHARED, helper_config_dir
 
     monkeypatch.setenv("CCSWITCH_HELPER_SCRATCH_ROOT", str(tmp_path / "scratch"))
     src = _seed_account_dir(tmp_path)
-    dst = Path(helper_config_dir(str(src), share_links=False))
+    dst = Path(helper_config_dir(str(src), isolated=True))
     for name in SHARE_ALLOWLIST:                     # simulate a stale build
-        (dst / name).symlink_to(src / name)
-    dst2 = Path(helper_config_dir(str(src), share_links=False))
+        if not (dst / name).is_symlink():
+            (dst / name).symlink_to(src / name)
+    dst2 = Path(helper_config_dir(str(src), isolated=True))
     assert dst2 == dst
-    for name in SHARE_ALLOWLIST:
+    for name in ISOLATED_EXCLUDED_SHARED:
         assert not (dst / name).is_symlink(), name
+    assert (dst / "projects").is_symlink()
 
 
 # --------------------------------------------------------------------------- #
@@ -303,9 +319,34 @@ def test_assistant_session_never_queues_even_at_the_cap(tmp_path):
     asyncio.run(run())
 
 
-def test_assistant_spawn_gets_a_link_less_config_dir(tmp_path):
-    """The driver for an assistant session must be handed the scratch dir, not the
-    account dir (which carries the SHARE_ALLOWLIST symlinks)."""
+def test_queue_params_omit_assistant_keys_for_a_normal_session(tmp_path):
+    """`params` is a JSON column in the SHARED fleet DB and the queue drain is not
+    ownership-gated, so a deliberately-lagging host may splat it into an older
+    `_spawn_session(**params)`. An unconditional `kind` key would raise TypeError
+    there, and the drain's except turns that into sq.remove() + 'ended' — destroying a
+    user's queued session instead of retrying it."""
+    async def run():
+        orch = await _make_orch(db_url=f"sqlite+aiosqlite:///{tmp_path / 'q.db'}",
+                                tmp_path=tmp_path, max_active_sessions=1)
+        try:
+            await orch.create_session(name="one", cwd=str(tmp_path))
+            queued = await orch.create_session(name="two", cwd=str(tmp_path))
+            assert queued.status == "queued"
+            from server.sessions import session_queue as sq
+            entry = await sq.next_entry()
+            assert "kind" not in entry.params and "owner_identity" not in entry.params
+            # And the params still spawn cleanly through the real signature.
+            assert set(entry.params) <= set(
+                inspect.signature(orch._spawn_session).parameters)
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
+def test_assistant_spawn_gets_an_isolated_config_dir(tmp_path):
+    """The driver for an assistant session must be handed the isolated scratch dir, not
+    the account dir (which carries the operator's plugins/commands/settings)."""
     async def run():
         orch = await _make_orch(db_url=f"sqlite+aiosqlite:///{tmp_path / 'd.db'}",
                                 tmp_path=tmp_path)
@@ -315,12 +356,42 @@ def test_assistant_spawn_gets_a_link_less_config_dir(tmp_path):
                                           owner_identity="u@x")
             cfg = Path(orch._drivers[a.id].config_dir)
             assert str(tmp_path / "scratch") in str(cfg)
+            assert orch._drivers[a.id]._suggester is None
             b = await orch.create_session(name="Coder", cwd=str(tmp_path))
             assert Path(orch._drivers[b.id].config_dir) == tmp_path / "cfg" / "alpha"
         finally:
             await _stop_orch(orch)
 
     asyncio.run(run())
+
+
+def test_isolation_survives_reattach_and_rotation(tmp_path):
+    """Spawn-only isolation expires at the first daemon restart (ensure_driver) or the
+    first usage-ceiling rotation (_reassign) — both rebuild the driver. All three sites
+    must resolve the config dir and the suggester the same way."""
+    from server.sessions.orchestrator import SessionOrchestrator
+
+    orch = SessionOrchestrator.__new__(SessionOrchestrator)
+    orch._suggester = object()
+
+    src = _seed_account_dir(tmp_path)
+    with patch("server.sessions.orchestrator.compose", return_value=src), \
+            patch.dict(os.environ, {"CCSWITCH_HELPER_SCRATCH_ROOT": str(tmp_path / "s")}):
+        plain = orch._session_config_dir("alpha", None)
+        asst = orch._session_config_dir("alpha", ASSISTANT_KIND)
+    assert plain == src
+    assert asst != src and (asst / "projects").is_symlink()
+    assert not (asst / "plugins").exists()
+    assert orch._suggester_for(None) is orch._suggester
+    assert orch._suggester_for(ASSISTANT_KIND) is None
+
+    # The two rebuild sites must call the helpers, not re-derive the decision.
+    # (`_reassign` validates and delegates; `_reassign_locked` builds the driver.)
+    for name in ("ensure_driver", "_reassign_locked"):
+        src_text = inspect.getsource(getattr(SessionOrchestrator, name))
+        assert "_session_config_dir(" in src_text, name
+        assert "_suggester_for(" in src_text, name
+        assert "suggester=self._suggester," not in src_text, name
 
 
 def test_register_assistant_overlay_reaches_the_sdk_factory(tmp_path):
