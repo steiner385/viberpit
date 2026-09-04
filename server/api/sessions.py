@@ -959,6 +959,35 @@ async def batch_resume_sessions(
     return {"succeeded": succeeded, "failed": failed}
 
 
+@router.post("/batch/rotate")
+async def batch_rotate_sessions(
+    body: BatchSessionIdsRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Move each session to the next best account and continue its conversation —
+    the "Rotate stalled (N)" button. Best-effort: "rotated" lands in `succeeded`;
+    any skip / no_driver lands in `failed` with the reason as `error`."""
+    orch = _get_orchestrator(request)
+    succeeded: list[str] = []
+    failed: list[dict] = []
+    for session_id in dict.fromkeys(body.ids):  # dedupe, preserve order
+        try:
+            result = await orch.rotate_to_best(session_id, identity)
+        except Exception as exc:  # noqa: BLE001 — best-effort batch must not abort
+            log.warning("batch rotate failed for %s: %s", session_id, exc)
+            failed.append({"id": session_id, "error": str(exc)})
+            continue
+        if result == "rotated":
+            succeeded.append(session_id)
+            await record_audit(db=db, type="session.rotate", identity=identity,
+                               detail={"session_id": session_id, "batch": True})
+        else:
+            failed.append({"id": session_id, "error": result})
+    return {"succeeded": succeeded, "failed": failed}
+
+
 @router.get("/{session_id}")
 async def get_session(
     session_id: str,
@@ -1321,6 +1350,63 @@ async def reload_session(
             detail={"code": result, "message": f"Session could not be reloaded: {result}"},
         )
     await record_audit(db, "session.reload", identity, {"sessionId": session_id})
+    updated = await orch.get_session(session_id) or record
+    return _record_to_dict(updated, repo=await _resolve_repo(updated))
+
+
+@router.post("/{session_id}/rotate")
+async def rotate_session(
+    session_id: str,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """"Next best account": move the session to the account the selector ranks
+    best and continue the conversation (orch.rotate_to_best — the same driver-swap
+    primitive rotation uses). 404 unknown; 409 (code = the orchestrator's reason)
+    when nothing has headroom or the session is parked where a move makes no sense."""
+    orch = _get_orchestrator(request)
+    record = await orch.get_session(session_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
+        )
+    result = await orch.rotate_to_best(session_id, identity)
+    if result != "rotated":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": result, "message": f"Session could not be rotated: {result}"},
+        )
+    await record_audit(db, "session.rotate", identity, {"sessionId": session_id})
+    updated = await orch.get_session(session_id) or record
+    return _record_to_dict(updated, repo=await _resolve_repo(updated))
+
+
+class AccountPinRequest(BaseModel):
+    pinned: bool
+
+
+@router.post("/{session_id}/account-pin")
+async def set_account_pin(
+    session_id: str,
+    body: AccountPinRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Pin the session to its current account, or clear the pin (the 📌 button).
+    Unpinning a `limited` session rotates it immediately."""
+    orch = _get_orchestrator(request)
+    record = await orch.get_session(session_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
+        )
+    await orch.set_account_pin(session_id, body.pinned)
+    await record_audit(db, "session.account_pin", identity,
+                       {"sessionId": session_id, "pinned": body.pinned})
     updated = await orch.get_session(session_id) or record
     return _record_to_dict(updated, repo=await _resolve_repo(updated))
 
