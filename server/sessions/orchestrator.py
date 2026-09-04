@@ -324,6 +324,12 @@ TRANSCRIPT_EXPORT_CEILING_S = env_float("CCSWITCH_TRANSCRIPT_EXPORT_CEILING_S", 
 # minimum=0.1: a 0/negative override would fire the timeout instantly and defeat the
 # race protection entirely — fall back to the default instead.
 DRIVER_RELEASE_WAIT_S = env_float("CCSWITCH_DRIVER_RELEASE_WAIT_S", 20.0, minimum=0.1)
+# How long ensure_driver waits for an IN-FLIGHT spawn of the same session before
+# giving up (asyncio.TimeoutError → the bridge's SESSION_RESUME_TIMEOUT hint). A
+# spawn is driver.start() — the SDK subprocess plus its MCP fleet — normally a few
+# seconds; on a saturated box it can be far longer, and building a second driver
+# meanwhile is never the right answer. Stays under the bridge's 90 s attach deadline.
+SPAWN_WAIT_S = env_float("CCSWITCH_SPAWN_WAIT_S", 60.0, minimum=1.0)
 
 # ---------------------------------------------------------------------------
 # Daemon identity + host-partitioned session ownership (#852)
@@ -471,6 +477,17 @@ class SessionOrchestrator:
         self._title_fn: Callable = title_fn or self._default_title_fn
         self._registry = PermissionRegistry()
         self._drivers: dict[str, SessionDriver] = {}
+        # In-flight spawns, keyed by session_id: a future resolved when
+        # _spawn_session exits (registered driver or raised). _spawn_session
+        # pre-seeds the record with status="idle" BEFORE driver.start() — seconds
+        # before the driver lands in `_drivers` — so without this a mid-spawn
+        # session was indistinguishable from a finished one: `detached` derived
+        # True, the WS bridge took its read-only attach path and never popped the
+        # deferred initial prompt, and ensure_driver raced the spawn with a second
+        # driver (incident 2026-09-04: every approved/dequeued session sat idle
+        # until the user navigated away and back). Consumers: _sync_detached (a
+        # spawning session is NOT detached) and ensure_driver (waits for it).
+        self._spawning: dict[str, asyncio.Future] = {}
         # In-flight completion-driver-release tasks (see _persist_status), keyed by
         # session_id. The driver is already out of `_drivers` by the time an entry
         # lands here — a fast reopen (ensure_driver) must await this before building
@@ -1612,10 +1629,17 @@ class SessionOrchestrator:
                 rec.pending_model_reason = None
                 log.info("session.model_approval_denied id=%s (launch)", session_id)
                 return rec
-            # approve: drop the placeholder row + record, then run the normal
-            # spawn/enqueue tail with the parked model, reusing the same session_id.
+            # approve: drop the placeholder ROW, then run the normal spawn/enqueue
+            # tail with the parked model, reusing the same session_id.
             # _spawn_session/_enqueue_session INSERT their own row, so the placeholder
-            # must go first to avoid a duplicate-PK insert. If the spawn then raises
+            # must go first to avoid a duplicate-PK insert. The in-memory RECORD stays:
+            # both tails overwrite it, and popping it here opened a gap (worktree
+            # checkout, config compose, X display — hundreds of ms) in which the
+            # session VANISHED from get_session/list_sessions. A session-list poll in
+            # that gap dropped it, and the view's status-transition re-attach keys off
+            # a transition it then never observed (incident 2026-09-04). The hold is
+            # capacity-exempt, so keeping it does not skew the cap check below, and
+            # _spawn_session keeps its created_at/host. If the spawn then raises
             # (BranchSwitchError from worktree checkout, driver.start() failure, a
             # credential error, …) the session would otherwise vanish completely —
             # deleted row, popped record, popped kwargs. Mirror _maybe_start_queued's
@@ -1630,7 +1654,6 @@ class SessionOrchestrator:
                     requested_by = row.pending_model_requested_by
                     requested_at = row.pending_model_requested_at
                     await db.delete(row)
-            self._records.pop(session_id, None)
             spawn_kwargs = dict(kwargs)
             spawn_kwargs.pop("model", None)
             log.info("session.model_approval_approved id=%s model=%s (launch)",
@@ -1821,9 +1844,14 @@ class SessionOrchestrator:
                     log.warning("session_queue.stale_entry id=%s status=%s — skipping",
                                 sid, in_mem.status if in_mem is not None else "<gone>")
                     continue
-                # Remove the queued pre-record so it doesn't double-count while
-                # _spawn_session re-inserts it as an active record.
-                self._records.pop(sid, None)
+                # The queued pre-record STAYS in place while _spawn_session runs:
+                # the spawn overwrites it with its pre-seeded active record (and
+                # keeps its queue-time created_at/host, as documented there). It
+                # used to be popped first, which made the session vanish from
+                # get_session/list_sessions for the spawn's setup phase — a list
+                # poll in that gap lost the record and the session view never saw
+                # the queued→active transition it re-attaches on (incident
+                # 2026-09-04). 'queued' is capacity-exempt, so nothing double-counts.
                 try:
                     await self._spawn_session(sid, preexisting_row=True, **params)
                 except Exception as exc:
@@ -2137,98 +2165,109 @@ class SessionOrchestrator:
             origin=origin, origin_ref=origin_ref, model=None, host=_host,
         )
         self._records[session_id] = _pre_record
-
-        # Start a SessionDriver backed by the configured SDK factory.
-        driver = SessionDriver(
-            session_id, account, cwd, str(cfg_dir),
-            mode=permission_mode, sdk_factory=self._session_factory(session_id),
-            registry=self._registry, identity=identity,
-            on_session_id=self._persist_claude_session_id,
-            on_sync_back=functools.partial(ccswitch_accounts.sync_back, account),
-            on_status=self._persist_status,
-            on_context_usage=self._persist_context_usage,
-            on_record_condense_ms=self._record_condense_ms,
-            get_condense_estimate=self._condense_estimate,
-            on_recoverable_failure=self._handle_recoverable_failure,
-            suggester=self._suggester,
-        )
+        # Track the spawn from the pre-seed until the driver is registered (or the
+        # spawn raises) — see `_spawning` in __init__: during this window the record
+        # reads "idle" with no driver, and both _sync_detached and ensure_driver
+        # must treat it as live-in-progress, not detached.
+        spawn_done: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._spawning[session_id] = spawn_done
         try:
-            await driver.start()
-        except Exception:
-            # driver.start() failed — remove the pre-seeded record so the session
-            # does not appear as a ghost idle card in list_sessions.
-            self._records.pop(session_id, None)
-            raise
-        # Apply the chosen model before the first prompt runs (initial prompt is
-        # deferred until a client attaches, so this always lands on turn one). The
-        # "default" alias / empty means "account default" → leave the driver as-is.
-        model = (model or "").strip() or None
-        if model and model != "default":
-            await driver.set_model(model)
-        else:
-            model = None
-        self._drivers[session_id] = driver
-        # Human-created sessions (origin is None) DEFER the initial prompt until the
-        # first WebSocket client attaches. Sending it before any subscriber exists
-        # risks the turn's events being lost: control events broadcast to zero
-        # subscribers are dropped, and the transcript file may not be flushed yet.
-        # Deferring means the client is already watching when the turn runs.
-        #
-        # Automation-spawned sessions (origin set) have NO human who will ever
-        # attach, so a deferred prompt would never be sent and the session would sit
-        # idle forever. Those send immediately, below — the driver persists its
-        # transcript and fires status callbacks with no live subscriber, and a later
-        # human attach replays the turn.
-        if initial_prompt and origin is None:
-            self._pending_initial_prompt[session_id] = initial_prompt
-        if attachment_ids and origin is None:
-            self._pending_initial_attachment_ids[session_id] = list(attachment_ids)
+            # Start a SessionDriver backed by the configured SDK factory.
+            driver = SessionDriver(
+                session_id, account, cwd, str(cfg_dir),
+                mode=permission_mode, sdk_factory=self._session_factory(session_id),
+                registry=self._registry, identity=identity,
+                on_session_id=self._persist_claude_session_id,
+                on_sync_back=functools.partial(ccswitch_accounts.sync_back, account),
+                on_status=self._persist_status,
+                on_context_usage=self._persist_context_usage,
+                on_record_condense_ms=self._record_condense_ms,
+                get_condense_estimate=self._condense_estimate,
+                on_recoverable_failure=self._handle_recoverable_failure,
+                suggester=self._suggester,
+            )
+            try:
+                await driver.start()
+            except Exception:
+                # driver.start() failed — remove the pre-seeded record so the session
+                # does not appear as a ghost idle card in list_sessions.
+                self._records.pop(session_id, None)
+                raise
+            # Apply the chosen model before the first prompt runs (initial prompt is
+            # deferred until a client attaches, so this always lands on turn one). The
+            # "default" alias / empty means "account default" → leave the driver as-is.
+            model = (model or "").strip() or None
+            if model and model != "default":
+                await driver.set_model(model)
+            else:
+                model = None
+            self._drivers[session_id] = driver
+            # Human-created sessions (origin is None) DEFER the initial prompt until the
+            # first WebSocket client attaches. Sending it before any subscriber exists
+            # risks the turn's events being lost: control events broadcast to zero
+            # subscribers are dropped, and the transcript file may not be flushed yet.
+            # Deferring means the client is already watching when the turn runs.
+            #
+            # Automation-spawned sessions (origin set) have NO human who will ever
+            # attach, so a deferred prompt would never be sent and the session would sit
+            # idle forever. Those send immediately, below — the driver persists its
+            # transcript and fires status callbacks with no live subscriber, and a later
+            # human attach replays the turn.
+            if initial_prompt and origin is None:
+                self._pending_initial_prompt[session_id] = initial_prompt
+            if attachment_ids and origin is None:
+                self._pending_initial_attachment_ids[session_id] = list(attachment_ids)
 
-        if preexisting_row:
-            # UPDATE the existing queued row → idle with resolved account/cwd/branch/model
-            async with db_session() as db:
-                from sqlalchemy import update as sa_update
-                await db.execute(
-                    sa_update(DbSession)
-                    .where(DbSession.id == session_id)
-                    .values(status="idle", account_name=account,
-                            cwd=cwd, branch=branch_name, model=model)
-                )
-        else:
-            # Persist DB row (fresh session, not previously queued)
-            async with db_session() as db:
-                row = DbSession(
-                    id=session_id,
-                    name=name,
-                    account_name=account,
-                    claude_session_id=None,
-                    status="idle",
-                    pid=None,
-                    cwd=cwd,
-                    repo=repo,
-                    branch=branch_name,
-                    permission_mode=permission_mode,
-                    name_is_auto=name_is_auto,
-                    origin=origin,
-                    origin_ref=origin_ref,
-                    model=model,
-                    initial_prompt=initial_prompt,
-                    host=_host,
-                )
-                db.add(row)
+            if preexisting_row:
+                # UPDATE the existing queued row → idle with resolved account/cwd/branch/model
+                async with db_session() as db:
+                    from sqlalchemy import update as sa_update
+                    await db.execute(
+                        sa_update(DbSession)
+                        .where(DbSession.id == session_id)
+                        .values(status="idle", account_name=account,
+                                cwd=cwd, branch=branch_name, model=model)
+                    )
+            else:
+                # Persist DB row (fresh session, not previously queued)
+                async with db_session() as db:
+                    row = DbSession(
+                        id=session_id,
+                        name=name,
+                        account_name=account,
+                        claude_session_id=None,
+                        status="idle",
+                        pid=None,
+                        cwd=cwd,
+                        repo=repo,
+                        branch=branch_name,
+                        permission_mode=permission_mode,
+                        name_is_auto=name_is_auto,
+                        origin=origin,
+                        origin_ref=origin_ref,
+                        model=model,
+                        initial_prompt=initial_prompt,
+                        host=_host,
+                    )
+                    db.add(row)
 
-        # Patch the model on the pre-seeded record (resolved by driver.set_model above).
-        _pre_record.model = model
-        record = _pre_record
-        log_event(log, logging.INFO, "session.start",
-                  session_id=session_id, **{"from": None, "to": "idle", "reason": "create"})
-        log.info("session.create id=%s account=%s", session_id, account)
-        # Autonomous kick-off for automation-spawned sessions: no human will attach
-        # to trigger the deferred prompt, so run turn one now (after the DB row +
-        # record exist, so status/claude-session callbacks land on a persisted row).
-        if initial_prompt and origin is not None:
-            await self.send_prompt(session_id, initial_prompt, attachment_ids)
-        return record
+            # Patch the model on the pre-seeded record (resolved by driver.set_model above).
+            _pre_record.model = model
+            record = _pre_record
+            log_event(log, logging.INFO, "session.start",
+                      session_id=session_id, **{"from": None, "to": "idle", "reason": "create"})
+            log.info("session.create id=%s account=%s", session_id, account)
+            # Autonomous kick-off for automation-spawned sessions: no human will attach
+            # to trigger the deferred prompt, so run turn one now (after the DB row +
+            # record exist, so status/claude-session callbacks land on a persisted row).
+            if initial_prompt and origin is not None:
+                await self.send_prompt(session_id, initial_prompt, attachment_ids)
+            return record
+        finally:
+            if self._spawning.get(session_id) is spawn_done:
+                del self._spawning[session_id]
+            if not spawn_done.done():
+                spawn_done.set_result(None)
 
     async def close_session(self, session_id: str) -> None:
         """Stop the driver, clean up the session worktree, mark the row ended."""
@@ -6535,8 +6574,14 @@ class SessionOrchestrator:
         then took the read-only "detached" attach forever (no pending-question
         re-emit, no live status) for a session that was live and blocked on
         AskUserQuestion — the frozen "Answer needed" failure mode (2026-09-02).
-        Deriving it here makes it exactly the condition ``ensure_driver`` branches on."""
-        rec.detached = rec.id not in self._drivers
+        Deriving it here makes it exactly the condition ``ensure_driver`` branches on.
+
+        A session whose spawn is IN FLIGHT (pre-seeded record, driver.start() still
+        running) is not detached either: ``ensure_driver`` waits for that spawn and
+        returns its driver, so an attach that lands mid-spawn must take the live
+        path — the read-only one never pops the deferred initial prompt, and nothing
+        re-attaches once the driver lands (incident 2026-09-04)."""
+        rec.detached = rec.id not in self._drivers and rec.id not in self._spawning
         return rec
 
     def list_sessions(self) -> list[SessionRecord]:
@@ -7480,6 +7525,29 @@ class SessionOrchestrator:
         if existing is not None:
             _rethread_identity(existing, identity)
             return existing
+
+        # A spawn of THIS session is in flight (approval / queue promotion / create):
+        # its record is already pre-seeded as "idle" but the driver is not registered
+        # until driver.start() returns. Wait for that spawn and hand back ITS driver.
+        # Before this wait, the "no driver + idle record" shape below built a
+        # replacement with resume=None — a second SDK process on a brand-new
+        # conversation, then silently overwritten by the spawn's own registration.
+        # Outside `_ensure_lock` on purpose: the spawn does not hold it, and one slow
+        # spawn must not block every other attach in the process.
+        spawning = self._spawning.get(session_id)
+        if spawning is not None:
+            try:
+                await asyncio.wait_for(asyncio.shield(spawning), timeout=SPAWN_WAIT_S)
+            except asyncio.TimeoutError:
+                log.warning("ensure_driver: spawn of %s still in flight after %.0fs",
+                            session_id, SPAWN_WAIT_S)
+                raise
+            existing = self._drivers.get(session_id)
+            if existing is not None:
+                _rethread_identity(existing, identity)
+                return existing
+            # The spawn failed: it popped its pre-seeded record, so the lookup
+            # below yields None (unknown session) — never a replacement driver.
 
         # Look up the in-memory record (populated by rehydrate())
         rec = self._records.get(session_id)
