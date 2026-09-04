@@ -102,16 +102,12 @@ class SettingsBody(BaseModel):
     modelApprovalDenylist: str | None = None
 
 
-async def _migrate_archive_home(orch, db, old_home: str | None, new_home: str | None) -> None:
-    """Move all archived session directories from old_home to new_home.
+async def _migrate_archive_home(orch, db, old_home: str | None, new_home: str | None) -> tuple[int, int, int]:
+    """Move every archived session dir from old_home to new_home on the daemon host.
 
-    The archived dirs live under the daemon's CCSWITCH_HOME, so the actual moves
-    run on the daemon host via orchestrator.migrate_archive_home — an edge-side
-    shutil.move silently no-ops once daemon and edge are split across hosts
-    (#709 finding 5). The archived-id set is read from the (shared) DB here; only
-    the filesystem move is host-specific. Path defaults and the old==new no-op
-    check resolve daemon-side. Failures are logged there, never raised, so the DB
-    row is always written.
+    Returns (moved, failures, total). The caller decides whether to persist the
+    new path — a partial move is a 409, not a warning, because a DB row pointing
+    at a directory the files are not in is worse than the old path (S16).
     """
     from server.db.models import Session as DbSession
 
@@ -119,15 +115,16 @@ async def _migrate_archive_home(orch, db, old_home: str | None, new_home: str | 
         select(DbSession.id).where(DbSession.status == "archived")
     )).scalars().all())
     if not archived_ids:
-        return
+        return (0, 0, 0)
 
     result = await orch.migrate_archive_home(old_home, new_home, archived_ids)
-    moved, failures = result.get("moved", 0), result.get("failures", 0)
+    moved, failures = int(result.get("moved", 0)), int(result.get("failures", 0))
     if failures:
         log.warning("archive_home migrate: %d/%d moves failed", failures, len(archived_ids))
     else:
         log.info("archive_home migrate: moved %d/%d sessions %s → %s",
                  moved, len(archived_ids), old_home, new_home)
+    return (moved, failures, len(archived_ids))
 
 
 def _cap_raised(old_cap: int | None, new_cap: int) -> bool:
@@ -202,7 +199,12 @@ async def put_settings_row(
     if body.archiveHome is not None:
         new_home = body.archiveHome.strip() or None
         if new_home != row.archive_home:
-            await _migrate_archive_home(request.app.state.sessions, db, row.archive_home, new_home)
+            moved, failed, total = await _migrate_archive_home(
+                request.app.state.sessions, db, row.archive_home, new_home)
+            if failed:
+                raise HTTPException(status_code=409, detail={
+                    "code": "archive_move_failed", "moved": moved, "failed": failed, "total": total,
+                })
         row.archive_home = new_home
     if body.maxActiveSessions is not None:
         old_cap = row.max_active_sessions

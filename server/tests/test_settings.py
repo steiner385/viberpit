@@ -313,6 +313,22 @@ def test_put_archive_home_unchanged_when_omitted():
         assert get_resp.json()["archiveHome"] == "/stored/path"
 
 
+def test_put_archive_home_is_409_and_unchanged_when_moves_fail(monkeypatch):
+    """S16: a partial move must not leave the DB pointing at a path the files are not in."""
+    import server.api.settings as settings_api
+
+    async def fake_migrate(orch, db, old_home, new_home):
+        return (2, 1, 3)
+
+    monkeypatch.setattr(settings_api, "_migrate_archive_home", fake_migrate)
+    with _client() as client:
+        resp = client.put("/api/settings", json={"archiveHome": "/mnt/nowhere"}, headers=IDENTITY_HEADERS)
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == {"code": "archive_move_failed", "moved": 2, "failed": 1, "total": 3}
+        got = client.get("/api/settings", headers=IDENTITY_HEADERS).json()
+    assert got["archiveHome"] is None
+
+
 # ---------------------------------------------------------------------------
 # maxActiveSessions
 # ---------------------------------------------------------------------------
