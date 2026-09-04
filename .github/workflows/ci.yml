@@ -155,7 +155,11 @@ jobs:
         run: npm run build
       - name: No web changes
         if: needs.changes.outputs.web != 'true'
-        run: echo "No web/ files changed — frontend checks skipped." 
+        # web/ was never checked out in this branch, so the job's default
+        # working-directory doesn't exist yet — run this one step at the
+        # workspace root instead.
+        working-directory: ${{ github.workspace }}
+        run: echo "No web/ files changed — frontend checks skipped."
 
   e2e:
     # ADVISORY: intentionally NOT in branch-protection required checks. All 3
