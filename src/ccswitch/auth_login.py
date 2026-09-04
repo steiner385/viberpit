@@ -143,6 +143,7 @@ def capture_login(
     Args:
         name: Account slot name to store credentials under.
         env_extra: Additional environment variables to merge (e.g. BROWSER, DISPLAY).
+            Applied last, so they override the injected session-bus variables.
         claude_bin: Override the claude command argv list (default: ["claude"]).
 
     Returns:
@@ -165,7 +166,15 @@ def capture_login(
     capture_dir = tempfile.mkdtemp(prefix="capture-", dir=str(_reauth_root()))
     os.chmod(capture_dir, 0o700)
     try:
-        env = {**os.environ, "CLAUDE_CONFIG_DIR": capture_dir, **(env_extra or {})}
+        # Service-launched (no session bus) → Chrome can't reach gnome-keyring and drops
+        # every v11 cookie copied from the real profile. Inject the user's bus so the
+        # copied Google session survives; explicit env_extra always wins.
+        env = {
+            **os.environ,
+            **session_bus_env(),
+            "CLAUDE_CONFIG_DIR": capture_dir,
+            **(env_extra or {}),
+        }
         subprocess.run(claude_cmd + login_args, env=env, shell=False)
 
         cred_path = os.path.join(capture_dir, ".credentials.json")
