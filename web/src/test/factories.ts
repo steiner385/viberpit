@@ -109,6 +109,13 @@ export function appSettings(over: Partial<AppSettings> = {}): AppSettings {
     autoArchiveEnabled: true,
     modelApprovalAction: null,
     modelApprovalDenylist: null,
+    acceptedPermissionModes: ['interactive', 'auto', 'allowlist', 'acceptEdits', 'full-auto', 'bypassPermissions'],
+    effectiveDefaults: {
+      repoRoot: '/home/user/GitHub', archiveHome: null,
+      modelApprovalAction: 'require_approval', modelApprovalDenylist: 'fable', maxActiveSessions: 5,
+    },
+    managed: [],
+    about: { gitSha: null, hostName: 'test-host' },
     ...over,
   }
 }

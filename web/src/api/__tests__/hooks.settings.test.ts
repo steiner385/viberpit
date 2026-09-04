@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import * as React from 'react'
 import { useSettings, useUpdateSettings } from '../hooks'
 import { api } from '../client'
+import { appSettings } from '@/test/factories'
 
 vi.mock('../client', () => ({
   api: {
@@ -61,6 +62,29 @@ describe('useSettings', () => {
     expect(result.current.data?.thinkingCollapsed).toBe(false)
     expect(result.current.data?.repoRoot).toBe('/home/user/repos')
     expect(result.current.data?.defaultToolDetail).toBe('auto')
+  })
+
+  it('exposes the server blocks added for Settings (spec §9)', async () => {
+    const payload = appSettings({
+      acceptedPermissionModes: ['interactive'],
+      effectiveDefaults: {
+        repoRoot: '/r',
+        archiveHome: null,
+        modelApprovalAction: 'block',
+        modelApprovalDenylist: 'fable',
+        maxActiveSessions: 5,
+      },
+      managed: [{ key: 'CCSWITCH_ENABLE_COPILOT', value: false, description: 'Enable GitHub Copilot accounts' }],
+      about: { gitSha: 'abc1234', hostName: 'dobby' },
+    })
+    vi.mocked(api.get).mockResolvedValueOnce(payload)
+
+    const { result } = renderHook(() => useSettings(), { wrapper: makeWrapper() })
+
+    await waitFor(() => expect(result.current.data).toBeDefined())
+
+    expect(result.current.data?.effectiveDefaults.modelApprovalAction).toBe('block')
+    expect(result.current.data?.about.hostName).toBe('dobby')
   })
 })
 
