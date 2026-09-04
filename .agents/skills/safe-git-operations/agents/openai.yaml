@@ -1,0 +1,4 @@
+interface:
+  display_name: "Safe Git Operations"
+  short_description: "Guard history rewrites and shared branch changes"
+  default_prompt: "Use $safe-git-operations before this history-changing Git operation."

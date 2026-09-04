@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""PreToolUse approval gate — block a **prod deploy** unless it is authorized.
+"""Cross-agent PreToolUse gate for protected edits and production deploys.
 
 Phase 3 governance (issue #805, design §7). Wired in ``.claude/settings.json`` as
-a ``PreToolUse`` hook on ``Bash``. It reads the standard hook event JSON on stdin
+a ``PreToolUse`` hook on ``Bash`` and in ``.codex/config.toml`` for ``Bash`` and
+``apply_patch``. It reads the shared hook event JSON on stdin
 (``{tool_name, tool_input:{command}, ...}``); when the command looks like a
 production deploy it consults the SDLC governance core:
 
@@ -11,8 +12,8 @@ production deploy it consults the SDLC governance core:
 
 If the release is not approved it emits a ``deny`` decision with a clear reason and
 the approval route (separation of duties: the agent that wrote the change cannot
-set its own ``RELEASE_APPROVAL``). Any non-deploy command, or a deploy to a
-non-prod environment, is allowed untouched.
+set its own ``RELEASE_APPROVAL``). Codex patch calls are also denied when they
+target constitution or managed-policy files protected by ``MANAGED_DENY``.
 
 **Fail-closed:** if the governance package can't be imported (e.g. a bare
 worktree), a self-contained fallback still blocks a prod deploy that has no
@@ -31,6 +32,12 @@ from pathlib import Path
 # don't trip the gate.
 _DEPLOY_VERB = re.compile(r"\b(deploy|release|rollout|promote)\b", re.IGNORECASE)
 _PROD_TARGET = re.compile(r"(--?prod(uction)?\b|\bprod\b|\bproduction\b|ENV=prod)", re.IGNORECASE)
+_PATCH_PATH = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$", re.MULTILINE)
+_PATCH_MOVE_PATH = re.compile(r"^\*\*\* Move to: (.+)$", re.MULTILINE)
+_PROTECTED_EDIT_PATHS = {
+    ".specify/memory/constitution.md",
+    ".claude/managed-settings.json",
+}
 
 
 def _is_prod_deploy(command: str) -> bool:
@@ -38,6 +45,20 @@ def _is_prod_deploy(command: str) -> bool:
         # An explicit deploy-env marker on a deploy command is authoritative.
         return bool(_DEPLOY_VERB.search(command))
     return bool(_DEPLOY_VERB.search(command) and _PROD_TARGET.search(command))
+
+
+def _protected_patch_target(command: str) -> str | None:
+    repo_root = Path(__file__).resolve().parents[2]
+    for raw_path in (*_PATCH_PATH.findall(command), *_PATCH_MOVE_PATH.findall(command)):
+        candidate = Path(raw_path.strip())
+        resolved = candidate.resolve() if candidate.is_absolute() else (Path.cwd() / candidate).resolve()
+        try:
+            relative = resolved.relative_to(repo_root).as_posix()
+        except ValueError:
+            continue
+        if relative in _PROTECTED_EDIT_PATHS:
+            return relative
+    return None
 
 
 def _deny(reason: str, route: str) -> None:
@@ -87,10 +108,20 @@ def main() -> None:
     except Exception:
         _allow()  # unpar-seable event: don't wedge the session
         return
-    if event.get("tool_name") != "Bash":
+    tool_name = event.get("tool_name")
+    command = (event.get("tool_input") or {}).get("command") or ""
+    if tool_name in ("apply_patch", "Edit", "Write"):
+        protected_path = _protected_patch_target(command)
+        if protected_path:
+            _deny(
+                f"agent edits to {protected_path} are forbidden by managed governance policy",
+                "Ask a human maintainer to make the policy change through the deliberate governance process.",
+            )
         _allow()
         return
-    command = (event.get("tool_input") or {}).get("command") or ""
+    if tool_name != "Bash":
+        _allow()
+        return
     if not _is_prod_deploy(command):
         _allow()
         return

@@ -2,7 +2,7 @@
 
 The CI regression harness for **agent-configuration** changes (AI-Native SDLC
 design §7, issue #805). The playbook's rule: *a change to how the agent behaves —
-`CLAUDE.md`, skills, hooks, `.claude/**` — must not regress a corpus of real
+`CLAUDE.md`, `AGENTS.md`, skills, hooks, `.claude/**`, or `.codex/**` — must not regress a corpus of real
 ccswitch tasks, and a pass-rate threshold gates the merge.*
 
 `.github/workflows/evals.yml` runs `scripts/run_evals.py` on every PR that touches
@@ -15,8 +15,8 @@ One YAML file per case under `evals/cases/` (and `evals/regressions/` for
 incident-derived cases):
 
 ```yaml
-id: claude-md-documents-four-step-gate      # unique, kebab-case
-description: CLAUDE.md documents the four-step lint-and-test gate.
+id: agent-context-documents-four-step-gate  # unique, kebab-case
+description: The canonical agent context documents the four-step lint-and-test gate.
 kind: static                                # "static" | "agent"
 tags: [agent-config, ci-gate]
 check: grep -q "ruff check src/ server/" CLAUDE.md   # static only; exit 0 == pass

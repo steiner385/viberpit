@@ -1,15 +1,18 @@
 name: Evals
 
 # Gate agent-configuration changes on the eval corpus (AI-Native SDLC §7, #805).
-# Runs ONLY when a change touches how the agent behaves — CLAUDE.md, the .claude/
-# control plane, the eval corpus itself, or the workflow. A pass-rate threshold
+# Runs ONLY when a change touches how an agent behaves — instruction files,
+# Claude/Codex control planes, repo skills, the eval corpus, or this workflow.
 # gates the merge; the static evals are deterministic (no LLM / API key needed).
 on:
   push:
     branches: [master]
     paths:
       - "CLAUDE.md"
+      - "AGENTS.md"
       - ".claude/**"
+      - ".codex/**"
+      - ".agents/skills/**"
       - "evals/**"
       - "scripts/run_evals.py"
       - "server/sdlc/evals.py"
@@ -17,7 +20,10 @@ on:
   pull_request:
     paths:
       - "CLAUDE.md"
+      - "AGENTS.md"
       - ".claude/**"
+      - ".codex/**"
+      - ".agents/skills/**"
       - "evals/**"
       - "scripts/run_evals.py"
       - "server/sdlc/evals.py"

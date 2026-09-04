@@ -1,0 +1,5 @@
+id: codex-repo-skills-present
+description: Every workflow named by the canonical context is available as a repo Codex skill.
+kind: static
+tags: [agent-config, codex, skills]
+check: 'for skill in subagent-driven-development eliminating-parallel-implementations capturing-fix-patterns safe-git-operations github-via-graphql; do test -f ".agents/skills/$skill/SKILL.md" || exit 1; done'
