@@ -2,7 +2,13 @@ import * as React from 'react'
 import { cn } from '@/lib/utils'
 
 export interface SettingRowProps {
-  label: string
+  /**
+   * The row's visible label. Omit it only together with `selfLabelled` and a
+   * control whose own label is already visible — a `RadioGroup` with a visible
+   * `legend` (R14b). The legend IS the row's label there, so a row label as
+   * well would print the same words twice.
+   */
+  label?: string
   htmlFor: string
   description?: React.ReactNode
   error?: React.ReactNode
@@ -16,6 +22,11 @@ export interface SettingRowProps {
    * completed sessions"), which is axe's `form-field-multiple-labels` and is
    * what a screen reader reads out. `htmlFor` is still required and still
    * derives the description/error ids.
+   *
+   * R14b: also required for a control that is a GROUP rather than one field —
+   * a `RadioGroup` (named by its own `legend`) or a read-only value with a
+   * reset button. `htmlFor` cannot name a group, so a `<label htmlFor>` would
+   * dangle at an id no element carries and focus nothing when clicked.
    */
   selfLabelled?: boolean
   children: React.ReactElement<{ 'aria-describedby'?: string }>
@@ -37,9 +48,9 @@ export function SettingRow({ label, htmlFor, description, error, status, wide = 
   return (
     <div className={cn('grid gap-3 py-3', wide ? 'grid-cols-1' : 'sm:grid-cols-[minmax(0,1fr)_minmax(200px,42%)] sm:items-center')}>
       <div className="min-w-0">
-        {selfLabelled
+        {label && (selfLabelled
           ? <p className="text-sm font-medium text-ink">{label}</p>
-          : <label htmlFor={htmlFor} className="block text-sm font-medium text-ink">{label}</label>}
+          : <label htmlFor={htmlFor} className="block text-sm font-medium text-ink">{label}</label>)}
         {description && <p id={descId} className="mt-0.5 text-xs text-ink-muted">{description}</p>}
         {error && <p id={errId} role="alert" className="mt-0.5 text-xs text-danger"><span className="sr-only">Error: </span>{error}</p>}
       </div>

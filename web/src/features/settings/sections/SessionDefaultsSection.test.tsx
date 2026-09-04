@@ -45,6 +45,19 @@ describe('SessionDefaultsSection', () => {
     expect(screen.getByRole('radio', { name: /Server default/ })).toHaveAccessibleName(/require approval/i)
   })
 
+  it('with no gated tiers configured the denylist placeholder is just "Server default" (R14a)', () => {
+    // Same reason as R13 in GeneralSection: there is no tier to name, and the
+    // suffix form would read "Server default · server default".
+    vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({
+      effectiveDefaults: {
+        repoRoot: '/home/tony/GitHub', archiveHome: null, modelApprovalAction: 'require_approval',
+        modelApprovalDenylist: '', maxActiveSessions: 5,
+      },
+    })))
+    mount()
+    expect(screen.getByLabelText('Gated models')).toHaveAttribute('placeholder', 'Server default')
+  })
+
   it('disables, with a reason, any mode the server does not accept (DEC-4)', () => {
     mount()
     const opt = screen.getByRole('option', { name: /Bypass all permissions/ })

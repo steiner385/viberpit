@@ -7,6 +7,7 @@ import { SettingRow } from './SettingRow'
 import { ScopeBadge } from './ScopeBadge'
 import { Input } from '@/ui/Input'
 import { Checkbox } from '@/ui/Checkbox'
+import { RadioGroup } from '@/ui/RadioGroup'
 
 expect.extend(toHaveNoViolations)
 
@@ -60,6 +61,26 @@ describe('settings chassis', () => {
     const box = screen.getByRole('checkbox', { name: 'Auto-archive completed sessions' })
     expect(box).toHaveAttribute('aria-describedby', 'auto-archive-desc')
     expect(screen.getByText('Auto-archive')).not.toHaveAttribute('for')
+    expect(await axe(container)).toHaveNoViolations()
+  })
+
+  it('row with a group control has no row label and no dangling htmlFor (R14b)', async () => {
+    // A RadioGroup is named by its own legend and `htmlFor` cannot name a group,
+    // so the row emits no <label>: one would point at an id no element carries
+    // and focus nothing when clicked. The legend is the row's visible label.
+    const { container } = render(
+      <SettingRow htmlFor="tool-detail" description="How groups open." selfLabelled>
+        <RadioGroup
+          name="tool-detail"
+          legend="Tool calls"
+          value="auto"
+          onChange={() => {}}
+          options={[{ value: 'auto', label: 'Auto' }, { value: 'all-open', label: 'Expand all' }]}
+        />
+      </SettingRow>,
+    )
+    expect(container.querySelector('label[for="tool-detail"]')).toBeNull()
+    expect(screen.getByRole('group', { name: 'Tool calls' })).toHaveAttribute('aria-describedby', 'tool-detail-desc')
     expect(await axe(container)).toHaveNoViolations()
   })
 

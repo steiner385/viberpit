@@ -155,16 +155,19 @@ export function SessionDefaultsSection() {
       </SettingsGroup>
 
       <SettingsGroup legend="Model approval">
+        {/* R14b: a radio group is named by its own legend, and `htmlFor` can only
+            name one labelable control — so the row passes `selfLabelled` (no
+            `<label htmlFor>` dangling at an id no element carries) and the legend
+            is the row's one visible label. */}
         <SettingRow
-          label="When a session asks for a gated model"
           htmlFor="defaults-model-action"
           wide
           description={<>Server default is <code>{eff.modelApprovalAction}</code> from <code>CCSWITCH_MODEL_APPROVAL_ACTION</code>.</>}
+          selfLabelled
         >
           <RadioGroup
             name="defaults-model-action"
             legend="When a session asks for a gated model"
-            hideLegend
             value={draft.modelApprovalAction}
             onChange={(v) => set('modelApprovalAction', v)}
             options={[
@@ -183,7 +186,10 @@ export function SessionDefaultsSection() {
           <Input
             id="defaults-denylist"
             value={draft.denylist}
-            placeholder={`${eff.modelApprovalDenylist} · server default`}
+            // R14a, mirroring R13 in GeneralSection: with no gated tiers configured
+            // there is nothing to name, and the literal-plus-suffix form would read
+            // "Server default · server default".
+            placeholder={eff.modelApprovalDenylist.trim() ? `${eff.modelApprovalDenylist} · server default` : 'Server default'}
             onChange={(e) => set('denylist', e.target.value)}
           />
         </SettingRow>
@@ -191,15 +197,14 @@ export function SessionDefaultsSection() {
 
       <SettingsGroup legend="Transcript">
         <SettingRow
-          label="Tool calls"
           htmlFor="defaults-tool-detail"
           wide
           description="How tool-call groups open when a transcript loads."
+          selfLabelled
         >
           <RadioGroup
             name="defaults-tool-detail"
             legend="Tool calls"
-            hideLegend
             value={draft.toolDetail}
             onChange={(v) => set('toolDetail', v)}
             options={[
