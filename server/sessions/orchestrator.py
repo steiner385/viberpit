@@ -7866,21 +7866,27 @@ class SessionOrchestrator:
     async def cloned_repos(self, names: list[str]) -> list[str]:
         """Return the subset of nameWithOwner values whose clone exists on the DAEMON.
 
-        The repo picker's "cloned" badge checks for <clones_base>/<owner>/<name>/.git;
-        clones live on the daemon host, so an edge-side check is always false and
-        may prompt a redundant clone (issue #709, finding 6). Resolves clones_base
-        from the daemon's own settings.repo_root.
+        The repo picker's "cloned" badge checks for the clone's ``.git``; clones
+        live on the daemon host, so an edge-side check is always false and may
+        prompt a redundant clone (issue #709, finding 6). Resolves the path
+        through ``gitrepos.clone_path`` against the daemon's own
+        ``settings.repo_root`` — the same resolver ``ensure_clone`` uses, so a
+        case-variant repo name badges the clone that actually exists (#1003)
+        instead of a path nothing will ever write to.
         """
         from ccswitch import gitrepos
         from server.config import get_settings
 
-        base = gitrepos.clones_base(get_settings().repo_root)
+        repo_root = get_settings().repo_root
 
         def _present() -> list[str]:
             out: list[str] = []
             for nwo in names:
-                owner, _, name = nwo.partition("/")
-                if owner and name and (base / owner / name / ".git").exists():
+                try:
+                    path = gitrepos.clone_path(repo_root, nwo)
+                except ValueError:
+                    continue  # malformed name from the picker — never a clone
+                if (path / ".git").exists():
                     out.append(nwo)
             return out
 
@@ -10030,11 +10036,12 @@ class SessionOrchestrator:
         counts = sweep_orphaned_worktrees(self._repo_root, live_cwds)
         log.info(
             "worktree-janitor: scanned=%d removed=%d kept_live=%d "
-            "kept_young=%d kept_dirty=%d kept_unpushed=%d kept_error=%d evicted_dirty=%d",
+            "kept_young=%d kept_dirty=%d kept_unpushed=%d kept_error=%d "
+            "evicted_dirty=%d orphaned=%d",
             counts["scanned"], counts["removed"], counts["kept_live"],
             counts["kept_young"], counts["kept_dirty"],
             counts["kept_unpushed"], counts["kept_error"],
-            counts.get("evicted_dirty", 0),
+            counts.get("evicted_dirty", 0), counts.get("orphaned", 0),
         )
 
     async def list_archived(self) -> list[dict]:
