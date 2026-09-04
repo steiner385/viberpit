@@ -69,21 +69,25 @@ export function BacklogGroupsPanel({
   const { data } = useBacklogGroups(enabled)
   const dispatch = useDispatchBacklogGroup()
   const [dispatchingId, setDispatchingId] = useState<number | null>(null)
+  const [error, setError] = useState<string | null>(null)
   const groups = data?.groups ?? []
   if (!groups.length) return null
 
   async function handleDispatch(group: BacklogGroup) {
     setDispatchingId(group.id)
+    setError(null)
     try {
       const r = await dispatch.mutateAsync(group.refs)
       if (r.status === 'spawned') {
+        // The new session may open on another page, so success has no
+        // reliable inline owner here — keep the toast for it.
         toast.success(r.session_name ? `Session spawned: ${r.session_name}` : 'Session spawned')
         if (r.session_id) onOpenSession?.(r.session_id)
       } else {
-        toast.error(`Dispatch failed: ${r.status}`)
+        setError(`Dispatch failed: ${r.status}`)
       }
     } catch {
-      toast.error('Failed to dispatch group')
+      setError('Failed to dispatch group')
     } finally {
       setDispatchingId(null)
     }
@@ -99,6 +103,7 @@ export function BacklogGroupsPanel({
           </span>
         )}
       </h4>
+      {error && <p role="alert" className="text-sm text-danger mb-2">{error}</p>}
       <ul className="space-y-2">
         {groups.map((g) => (
           <GroupRow

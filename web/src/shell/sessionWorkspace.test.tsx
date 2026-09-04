@@ -18,6 +18,7 @@ import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderApp } from '@/test/renderApp'
 import * as hooks from '@/api/hooks'
+import { ApiRequestError } from '@/api/client'
 import type { Account, Session } from '@/api/types'
 import { loadingQueryResult, queryResult } from '@/test/reactQuery'
 
@@ -241,11 +242,12 @@ describe('the shell drives the session list controls', () => {
 })
 
 describe('the all-limited banner', () => {
-  /** Raise the banner the way the app does: a 409 out of the create flow. */
+  /** Raise the banner the way the app does: a 409 out of the create flow. The
+   *  error is the REAL class — the host's triage narrows on `instanceof`. */
   async function raiseBanner(user: ReturnType<typeof userEvent.setup>) {
-    let onError: ((e: { status: number; body: unknown }) => void) | undefined
+    let onError: ((e: ApiRequestError) => void) | undefined
     vi.mocked(hooks.useCreateSession).mockReturnValue({
-      mutate: vi.fn((_i: unknown, cbs?: { onError?: (e: { status: number; body: unknown }) => void }) => {
+      mutate: vi.fn((_i: unknown, cbs?: { onError?: (e: ApiRequestError) => void }) => {
         onError = cbs?.onError
       }),
       isPending: false,
@@ -253,7 +255,7 @@ describe('the all-limited banner', () => {
 
     const app = renderApp({ path: '/sessions?dialog=new', mode: 'desktop' })
     await user.click(await screen.findByRole('button', { name: /^create$/i }))
-    act(() => onError?.({ status: 409, body: { error: { code: 'all_accounts_limited' }, earliestReset: null } }))
+    act(() => onError?.(new ApiRequestError(409, { error: { code: 'all_accounts_limited' }, earliestReset: null })))
     return app
   }
 

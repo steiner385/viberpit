@@ -105,7 +105,15 @@
 
 .pm-card-actions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Inline sync failure sits to the left of the button, replacing the toast. */
+.pm-card-actions .pm-error {
+  margin: 0;
+  margin-right: auto;
 }
 
 /* New-project modal form */

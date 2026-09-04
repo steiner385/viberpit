@@ -19,6 +19,7 @@ export function ManualDispatchDialog({
   const dispatch = useDispatchBacklogGroup()
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState('')
+  const [error, setError] = useState<string | null>(null)
 
   const candidates = useMemo(() => data?.candidates ?? [], [data?.candidates])
 
@@ -49,25 +50,33 @@ export function ManualDispatchDialog({
     })
   }
 
+  function close() {
+    setError(null)
+    onClose()
+  }
+
   async function run() {
     const refs = Array.from(selected)
+    setError(null)
     try {
       const r = await dispatch.mutateAsync(refs)
       if (r.status === 'spawned') {
+        // The dialog closes and navigates away, so there is no inline owner
+        // left for a success message — a toast is the only surface.
         toast.success(r.session_name ? `Session spawned: ${r.session_name}` : 'Session spawned')
         if (r.session_id) onOpenSession?.(r.session_id)
         setSelected(new Set())
-        onClose()
+        close()
       } else {
-        toast.error(`Dispatch failed: ${r.status}`)
+        setError(`Dispatch failed: ${r.status}`)
       }
     } catch {
-      toast.error('Failed to dispatch')
+      setError('Failed to dispatch')
     }
   }
 
   return (
-    <Dialog open={open} onClose={onClose} title="Custom dispatch" size="lg" bodyClassName="flex flex-col gap-3 max-h-[80vh]">
+    <Dialog open={open} onClose={close} title="Custom dispatch" size="lg" bodyClassName="flex flex-col gap-3 max-h-[80vh]">
       <Input
         type="search"
         placeholder="Filter issues…"
@@ -101,8 +110,9 @@ export function ManualDispatchDialog({
           </div>
         ))}
       </div>
+      {error && <p role="alert" className="text-sm text-danger">{error}</p>}
       <div className="flex justify-end gap-3">
-        <Button type="button" variant="ghost" onClick={onClose}>
+        <Button type="button" variant="ghost" onClick={close}>
           Close
         </Button>
         <Button type="button" variant="primary" size="lg" onClick={run} disabled={selected.size === 0} loading={dispatch.isPending}>

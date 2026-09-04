@@ -111,7 +111,6 @@ describe('GeneralSection — model approval controls', () => {
     await user.click(screen.getByRole('button', { name: /save/i }))
     expect(mutate).toHaveBeenCalledWith(
       expect.objectContaining({ modelApprovalAction: 'block' }),
-      expect.anything(),
     )
   })
 
@@ -123,7 +122,6 @@ describe('GeneralSection — model approval controls', () => {
     await user.click(screen.getByRole('button', { name: /save/i }))
     expect(mutate).toHaveBeenCalledWith(
       expect.objectContaining({ modelApprovalAction: null }),
-      expect.anything(),
     )
   })
 
@@ -136,7 +134,6 @@ describe('GeneralSection — model approval controls', () => {
     await user.click(screen.getByRole('button', { name: /save/i }))
     expect(mutate).toHaveBeenCalledWith(
       expect.objectContaining({ modelApprovalDenylist: 'fable,claude-opus-5' }),
-      expect.anything(),
     )
   })
 })

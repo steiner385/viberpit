@@ -2,9 +2,10 @@
  * queryClient — the app's single TanStack Query client, wired with a global
  * MutationCache.onError so any failed mutation surfaces a sonner error toast.
  *
- * A mutation can opt out of the global toast (e.g. when it renders its own inline
- * error) by setting `meta: { suppressErrorToast: true }`. No mutation does so today;
- * it is a documented extension point.
+ * A mutation can opt out of the global toast by setting
+ * `meta: { suppressErrorToast: true }`. It should do so whenever its caller renders
+ * the failure inline (a dialog, a form, a panel that stays on screen) — the toast
+ * exists for failures that have no visible owner, not as a second copy of one.
  */
 import { QueryClient, MutationCache, type Mutation } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -13,8 +14,14 @@ import { clientLogger } from '@/obs/logger'
 
 export const MUTATION_ERROR_FALLBACK = 'Something went wrong. Please try again.'
 
-/** Derive a human-readable message from a mutation error. */
-export function extractMutationErrorMessage(error: unknown): string {
+/** Derive a human-readable message from a mutation error. Unwraps the server's
+ *  `{detail: {message}}`, `{detail: "…"}` and `{message}` body shapes; `fallback`
+ *  lets an inline caller say what failed ("Could not advance initiative") when
+ *  the body carries nothing usable. */
+export function extractMutationErrorMessage(
+  error: unknown,
+  fallback: string = MUTATION_ERROR_FALLBACK,
+): string {
   if (error instanceof ApiRequestError) {
     const detail = error.body?.detail
     if (detail && typeof detail === 'object' && 'message' in detail) {
@@ -25,7 +32,7 @@ export function extractMutationErrorMessage(error: unknown): string {
     const top = error.body?.message
     if (typeof top === 'string' && top.trim() !== '') return top
   }
-  return MUTATION_ERROR_FALLBACK
+  return fallback
 }
 
 /** Global MutationCache.onError handler: log to clientLogger, then toast unless the mutation opts out. */

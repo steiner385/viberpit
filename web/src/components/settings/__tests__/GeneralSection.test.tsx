@@ -80,8 +80,20 @@ describe('GeneralSection', () => {
     await user.click(screen.getByRole('button', { name: /save/i }))
     expect(mutate).toHaveBeenCalledWith(
       expect.objectContaining({ defaultPermissionMode: 'full-auto', repoRoot: '/home/user/repos' }),
-      expect.anything(),
     )
+  })
+
+  it('acknowledges a save inline, beside the button, once the mutation succeeds', () => {
+    vi.mocked(hooks.useUpdateSettings).mockReturnValue(
+      { ...NOOP_MUTATION, isSuccess: true } as unknown as ReturnType<typeof hooks.useUpdateSettings>,
+    )
+    render(<GeneralSection />, { wrapper })
+    expect(screen.getByRole('status')).toHaveTextContent(/settings saved/i)
+  })
+
+  it('shows no acknowledgement before a save has succeeded', () => {
+    render(<GeneralSection />, { wrapper })
+    expect(screen.queryByText(/settings saved/i)).not.toBeInTheDocument()
   })
 
   it('pre-fills max archived from settings (blank when null)', () => {
@@ -97,7 +109,6 @@ describe('GeneralSection', () => {
     await user.click(screen.getByRole('button', { name: /save/i }))
     expect(mutate).toHaveBeenCalledWith(
       expect.objectContaining({ maxArchivedSessions: 0 }),
-      expect.anything(),
     )
   })
 
@@ -110,7 +121,6 @@ describe('GeneralSection', () => {
     await user.click(screen.getByRole('button', { name: /save/i }))
     expect(mutate).toHaveBeenCalledWith(
       expect.objectContaining({ maxArchivedSessions: 150 }),
-      expect.anything(),
     )
   })
 
@@ -128,7 +138,6 @@ describe('GeneralSection', () => {
     await user.click(screen.getByRole('button', { name: /save/i }))
     expect(mutate).toHaveBeenCalledWith(
       expect.objectContaining({ autoArchiveEnabled: false }),
-      expect.anything(),
     )
   })
 
@@ -141,7 +150,6 @@ describe('GeneralSection', () => {
     await user.click(screen.getByRole('button', { name: /save/i }))
     expect(mutate).toHaveBeenCalledWith(
       expect.objectContaining({ maxActiveSessions: 7 }),
-      expect.anything(),
     )
   })
 })

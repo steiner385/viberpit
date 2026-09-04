@@ -7,6 +7,7 @@ import { useState } from 'react'
 
 import { useCreateProject, useProjects, useSyncProject } from '@/api/hooks'
 import type { Project } from '@/api/pm'
+import { extractMutationErrorMessage } from '@/api/queryClient'
 
 import { DependencyPanel } from './DependencyPanel'
 import { OnboardingWizard } from './OnboardingWizard'
@@ -40,6 +41,11 @@ function NewProjectForm({ onClose }: { onClose: () => void }) {
         <input value={repo} onChange={(e) => setRepo(e.target.value)}
                placeholder="owner/repo" />
       </label>
+      {create.isError && (
+        <p role="alert" className="pm-error">
+          {extractMutationErrorMessage(create.error, 'Could not create project')}
+        </p>
+      )}
       <div className="pm-form-actions">
         <button type="button" onClick={onClose}>Cancel</button>
         <button type="submit" disabled={!canSubmit || create.isPending}>
@@ -76,6 +82,11 @@ function ProjectCard({ project }: { project: Project }) {
       {project.slug && <OnboardingWizard slug={project.slug} />}
       {project.slug && <DependencyPanel slug={project.slug} />}
       <div className="pm-card-actions">
+        {sync.isError && (
+          <p role="alert" className="pm-error">
+            {extractMutationErrorMessage(sync.error, 'Could not request sync')}
+          </p>
+        )}
         <button
           onClick={() => project.slug && sync.mutate(project.slug)}
           disabled={sync.isPending || !project.slug}

@@ -58,9 +58,9 @@ let marks = 0
  *
  * ## What this region does NOT render
  *
- * **`Toaster` stays in `main.tsx`.** It sits at `main.tsx:25`, inside
- * `<BrowserRouter>` and — verified — OUTSIDE `<ErrorBoundary>`, which closes on
- * line 24. Pulling it in here would move it inside the boundary, so a crash
+ * **The toaster stays in `main.tsx`.** `AppToaster` (`shell/AppToaster.tsx`)
+ * is mounted there OUTSIDE `<ErrorBoundary>` — `AppToaster.test.tsx` pins the
+ * ordering. Pulling it in here would move it inside the boundary, so a crash
  * anywhere in the app tree would unmount the toaster along with the app: the
  * one surface left to report the failure would be taken down by it. It stays
  * where it is; being outside the boundary is the point of where it is.

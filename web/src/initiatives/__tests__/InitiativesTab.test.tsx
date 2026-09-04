@@ -20,6 +20,7 @@ vi.mock('@/api/sdlc', async (importOriginal) => {
 })
 
 import { InitiativesTab } from '../InitiativesTab'
+import { ApiRequestError } from '@/api/client'
 import * as sdlc from '@/api/sdlc'
 
 const mocked = sdlc as unknown as {
@@ -81,5 +82,35 @@ describe('InitiativesTab', () => {
     fireEvent.click(btn)
     await waitFor(() =>
       expect(mocked.advanceInitiative).toHaveBeenCalledWith('ai-native-sdlc'))
+  })
+
+  it('renders the server error inline next to the Advance button when /advance fails', async () => {
+    mocked.fetchInitiatives.mockResolvedValue([INIT])
+    mocked.advanceInitiative.mockRejectedValue(
+      new ApiRequestError(409, { detail: { message: 'nope' } }))
+    render(<InitiativesTab />, { wrapper })
+
+    fireEvent.click(await screen.findByRole('button', { name: /Advance/ }))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('nope')
+    expect(alert).toHaveClass('init-error')
+  })
+
+  it('renders the server error inline in the New initiative form when create fails', async () => {
+    mocked.fetchInitiatives.mockResolvedValue([])
+    mocked.createInitiative.mockRejectedValue(
+      new ApiRequestError(409, { detail: { message: 'nope' } }))
+    render(<InitiativesTab />, { wrapper })
+
+    fireEvent.click(await screen.findByRole('button', { name: /New initiative/ }))
+    fireEvent.change(screen.getByLabelText('slug'), { target: { value: 'x' } })
+    fireEvent.change(screen.getByLabelText('title'), { target: { value: 'X' } })
+    fireEvent.change(screen.getByLabelText('repo'), { target: { value: 'o/r' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('nope')
+    // The form stays open so the user can fix and retry.
+    expect(screen.getByLabelText('slug')).toBeInTheDocument()
   })
 })

@@ -5,6 +5,7 @@
 import { useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useInitiatives, useAdvanceInitiative, useCreateInitiative, QK } from '@/api/hooks'
+import { extractMutationErrorMessage } from '@/api/queryClient'
 import { useSessionSocket } from '@/ws/client'
 import { INITIATIVE_STAGES, type Initiative, type InitiativeArtifact } from '@/api/sdlc'
 import { fileUrl, commitUrl, prUrl } from '@/lib/githubUrl'
@@ -86,6 +87,11 @@ function InitiativeRow({ init }: { init: Initiative }) {
           {nxt ? `Advance → ${nxt}` : 'Complete'}
         </button>
       </header>
+      {advance.isError && (
+        <p role="alert" className="init-error">
+          {extractMutationErrorMessage(advance.error, 'Could not advance initiative')}
+        </p>
+      )}
       <InitiativeTrack stage={init.stage} status={init.status} />
       <div className="init-artifacts">
         {init.artifacts.length === 0
@@ -139,6 +145,11 @@ function NewInitiativeForm() {
              value={repo} onChange={(e) => setRepo(e.target.value)} />
       <button type="submit" className="btn-ghost" disabled={!canSubmit}>Create</button>
       <button type="button" className="btn-ghost" onClick={() => setOpen(false)}>Cancel</button>
+      {create.isError && (
+        <p role="alert" className="init-error">
+          {extractMutationErrorMessage(create.error, 'Could not create initiative')}
+        </p>
+      )}
     </form>
   )
 }
