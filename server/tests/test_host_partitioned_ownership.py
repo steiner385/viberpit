@@ -6,13 +6,16 @@ A fleet daemon must only ACT on sessions it owns:
   host name (NULL-host legacy rows belong to the primary);
 - the primary still loads every row (the fleet dashboard is served from its
   ``_records``), but its acting loops — stuck-session sweep, rotation monitor,
-  disabled-account sweep — check per-row ownership via ``_owns_record`` so two
-  daemons never race duplicate ``_rotate_away`` spawns over the same shared row;
+  disabled-account sweep, and the titling / inferred-goal sweeps (#1033) — check
+  per-row ownership via ``_owns_record`` so two daemons never race duplicate
+  ``_rotate_away`` spawns over the same shared row, and so the primary never runs a
+  cwd-bound Claude query for a directory that lives on another host;
 - a worker's usage poller never refreshes shared tokens (``allow_refresh=False``
   unconditionally): the poll signal feeds its rotation monitor and
   ``_account_is_dead`` without racing the primary over the refresh-token files.
 """
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -241,6 +244,76 @@ def test_disabled_account_sweep_skips_foreign_owned_rows(tmp_path, monkeypatch):
 
     rotated = asyncio.run(run())
     assert rotated == ["own"]
+
+
+def test_titling_sweep_skips_foreign_owned_rows(tmp_path, monkeypatch):
+    """#1033: titling reads the transcript and runs a Claude query IN THE SESSION'S
+    cwd — a path that exists only on the OWNING host. On the primary's mirror of a
+    worker session every pass hit the vanished-cwd branch, logging
+    `session.titling_skipped … cwd missing` on a session that is perfectly healthy
+    where it actually runs (and whose own daemon titles it)."""
+    monkeypatch.delenv("CCSWITCH_DAEMON_ROLE", raising=False)
+    monkeypatch.setenv("CCSWITCH_HOST_NAME", "dobby")
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'c.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_hosts([
+            dict(name="dobby", endpoint="https://dobby.example:9443", enabled=True),
+            dict(name="rocky", endpoint="https://rocky.example:9443", enabled=True),
+        ])
+        orch = _new_orch()
+        orch._records = {
+            "own": _record("own", "dobby", status="idle"),
+            "null": _record("null", None, status="idle"),
+            "foreign": _record("foreign", "rocky", status="idle"),
+        }
+        titled: list[str] = []
+
+        async def _fake_apply(sid):
+            titled.append(sid)
+
+        orch._maybe_apply_auto_name = _fake_apply
+        await orch._titling_sweep()
+        return titled
+
+    assert sorted(asyncio.run(run())) == ["null", "own"]
+
+
+def test_goal_sweep_skips_foreign_owned_rows(tmp_path, monkeypatch):
+    """Same shape as the titling sweep (#1033): infer_goal runs a Claude query in the
+    session's cwd, so on a foreign mirror it can only fail with "Working directory
+    does not exist" — repeatedly, on a 2-minute timer."""
+    monkeypatch.delenv("CCSWITCH_DAEMON_ROLE", raising=False)
+    monkeypatch.setenv("CCSWITCH_HOST_NAME", "dobby")
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'c.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_hosts([
+            dict(name="dobby", endpoint="https://dobby.example:9443", enabled=True),
+            dict(name="rocky", endpoint="https://rocky.example:9443", enabled=True),
+        ])
+        orch = _new_orch()
+        orch._records = {
+            "own": _record("own", "dobby", status="idle"),
+            "foreign": _record("foreign", "rocky", status="idle"),
+        }
+        inferred: list[str] = []
+
+        async def _fake_window(sid, limit=1):
+            return SimpleNamespace(total_turns=3)
+
+        async def _fake_infer(sid):
+            inferred.append(sid)
+            return None
+
+        orch.transcript_window = _fake_window
+        orch._infer_goal_for = _fake_infer
+        await orch._goal_sweep()
+        return inferred
+
+    assert asyncio.run(run()) == ["own"]
 
 
 # ---------------------------------------------------------------------------

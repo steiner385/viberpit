@@ -269,6 +269,14 @@ _STUCK_SESSION_SWEEP_INTERVAL: float = 300.0
 # on a single-tick race.
 _MIRROR_EVICT_STRIKES: int = 2
 
+# Cadence of the mirror reconcile loop. This used to ride the head of
+# _autopilot_tick_loop, whose body is sequential (reconcile → tick() → sleep 20s), so the
+# effective eviction latency was _MIRROR_EVICT_STRIKES × (tick duration + 20s) — and
+# tick() makes LLM calls. A zombie card survived ~110s in the field (#1033) instead of the
+# ≤40s the strike cap implies. Reconcile is a single indexed SELECT, so it gets its own
+# task and its own (faster) cadence, independent of how slow any automation tick is.
+_MIRROR_RECONCILE_INTERVAL_S: float = 10.0
+
 # Periodic re-check of the archived-session cap, so a limit LOWERED via settings takes
 # effect even with no new archive event (the on-archive path covers the fresh-archive case).
 _ARCHIVE_LIMIT_SWEEP_INTERVAL: float = 300.0
@@ -375,7 +383,7 @@ _PRIMARY_ONLY_LOOP_ATTRS: frozenset[str] = frozenset({
     "_backlog_task", "_sdlc_intake_task", "_pm_sync_task", "_gh_reconcile_task",
     "_sdlc_synth_task",
     "_autopilot_task", "_cicd_task", "_archaudit_task", "_sweep_task",
-    "_archive_limit_task", "_recurring_task",
+    "_archive_limit_task", "_recurring_task", "_mirror_task",
 })
 
 
@@ -503,9 +511,11 @@ class SessionOrchestrator:
         # in-memory by design — a fresh deploy rebuilds it; a crash loses it exactly
         # as the deploy controller loses its own frozen 'failed' list.
         self._resume_recovery: dict[str, int] = {}
-        # session_id -> consecutive mirror-reconcile passes its DB row was missing.
+        # session_id -> consecutive mirror-reconcile passes its DB row was MISSING.
         # Drives _reconcile_mirror_once's two-strike eviction of ghosts left behind
-        # when a session is deleted on another fleet host (#895-adjacent).
+        # when a session is deleted on another fleet host (#895-adjacent). Only the
+        # missing case debounces: a present-but-archived row evicts on the first pass
+        # and never lands here (#1033).
         self._mirror_missing_strikes: dict[str, int] = {}
         # Startup health report (2026-08-29): a failed rehydrate() used to vanish into
         # a log line while the daemon looked healthy with zero sessions. Boot steps
@@ -866,6 +876,7 @@ class SessionOrchestrator:
             refresh_facts=self._autopilot_refresh_pr_facts,
         )
         self._autopilot_task: asyncio.Task | None = None
+        self._mirror_task: asyncio.Task | None = None
         # Per-tick fleet snapshot cache: (built_at, (active, archived)). One snapshot
         # serves every governed session's get_context within the TTL, so an N-session
         # tick runs the archived-session query once, not N times.
@@ -1127,6 +1138,13 @@ class SessionOrchestrator:
             self._autopilot_task = asyncio.create_task(
                 self._autopilot_tick_loop(interval=20.0), name="autopilot-loop"
             )
+            # Fleet-mirror reconcile: its OWN task, deliberately not folded into the
+            # autopilot loop — a slow (LLM-bound) tick there used to stretch eviction
+            # latency to ~110s and keep a zombie card clickable (#1033).
+            self._mirror_task = asyncio.create_task(
+                self._mirror_reconcile_loop(interval=_MIRROR_RECONCILE_INTERVAL_S),
+                name="mirror-reconcile-loop",
+            )
             # CI/CD Doctor: slow cadence — CI history moves in minutes, not seconds,
             # and each tick costs several REST calls per repo.
             self._cicd_task = asyncio.create_task(
@@ -1308,7 +1326,8 @@ class SessionOrchestrator:
                      "_token_refresh_task", "_backlog_task", "_sdlc_intake_task",
                      "_pm_sync_task", "_gh_reconcile_task",
                      "_sdlc_synth_task",
-                     "_autopilot_task", "_cicd_task", "_archaudit_task", "_sweep_task",
+                     "_autopilot_task", "_mirror_task",
+                     "_cicd_task", "_archaudit_task", "_sweep_task",
                      "_archive_limit_task", "_janitor_task", "_recurring_task",
                      "_lease_task", "_hb_task", "_drain_timer"):
             # Default None: stop() must be safe on an orchestrator that never
@@ -5240,16 +5259,27 @@ class SessionOrchestrator:
             except Exception:  # pragma: no cover — recovery must never stall the loop
                 log.warning("deploy.resume.recover_failed", exc_info=True)
             try:
-                # Also always-on (not mode-gated): evict mirror records for sessions
-                # deleted on another fleet host, so autopilot never proposes for a
-                # ghost row (FK-violation insert spam) — see _reconcile_mirror_once.
-                await self._reconcile_mirror_once()
-            except Exception:  # pragma: no cover — reconcile must never stall the loop
-                log.warning("mirror.reconcile_failed", exc_info=True)
-            try:
                 await self._autopilot_loop.tick()
             except Exception:  # pragma: no cover — tick() already swallows; belt+braces
                 log.warning("autopilot.tick_loop_error", exc_info=True)
+            await asyncio.sleep(interval)
+
+    async def _mirror_reconcile_loop(self, interval: float) -> None:
+        """Periodic driver for the fleet-mirror reconcile — its own task on purpose.
+
+        Evicts mirror records for sessions deleted or archived on another fleet host, so
+        autopilot never proposes for a ghost row (FK-violation insert spam) and the
+        dashboard never shows a card whose every action 404s. This ran at the head of
+        ``_autopilot_tick_loop`` until #1033: that body is sequential, so a tick() that
+        spent tens of seconds in LLM calls stretched the two-strike eviction from the
+        ≤40s the strike cap implies to the ~110s seen in the field. Reconcile is one
+        indexed SELECT — it must not be paced by anything that isn't.
+        """
+        while True:
+            try:
+                await self._reconcile_mirror_once()
+            except Exception:  # pragma: no cover — reconcile must never stall the loop
+                log.warning("mirror.reconcile_failed", exc_info=True)
             await asyncio.sleep(interval)
 
     async def _pr_doctor_config(self) -> dict:
@@ -6112,13 +6142,24 @@ class SessionOrchestrator:
         log.info("session.auto_name id=%s title=%r source=%s", session_id, title, source)
 
     async def _titling_sweep(self) -> None:
-        """One titling pass: refresh the auto-name of every active, still-auto session.
+        """One titling pass: refresh the auto-name of every active, still-auto session
+        THIS daemon owns.
 
         The turn-boundary trigger ("done") handles the common case; this catches titles
         Claude writes after the final turn or slowly mid-turn. Never raises.
+
+        Ownership-gated (#1033), like the stuck-session sweep and rotation monitor: the
+        primary mirrors every fleet row, but titling reads the transcript and runs a
+        Claude query IN THE SESSION'S cwd — a path that only exists on the OWNING host.
+        Ungated, every pass over a worker's session hit the vanished-cwd branch, logging
+        `session.titling_skipped … cwd missing` and burning a sweep slot on work the
+        owner's own titling loop is already doing correctly.
         """
+        enabled_hosts = await self._enabled_host_names()
         for sid, rec in list(self._records.items()):
             if rec.status == "ended" or not rec.name_is_auto:
+                continue
+            if not self._owns_record(rec, enabled_hosts):
                 continue
             try:
                 await self._maybe_apply_auto_name(sid)
@@ -6148,10 +6189,18 @@ class SessionOrchestrator:
         Skips sessions with an explicit /goal (explicit wins — inferring is wasted)
         and never clobbers a prior inferred goal with a failed inference. Peer of
         _titling_sweep; the goal is the middle tier of effective_goal(), which the
-        session header and autopilot's completion judgement read."""
+        session header and autopilot's completion judgement read.
+
+        Ownership-gated for the same reason as _titling_sweep (#1033): infer_goal runs a
+        Claude query in the session's cwd, which on the primary's mirror of a worker's
+        session is a directory that exists only on the worker — every pass failed with
+        "Working directory does not exist"."""
         from sqlalchemy import update as sa_update
+        enabled_hosts = await self._enabled_host_names()
         for sid, rec in list(self._records.items()):
             if rec.status in ("ended", "archived") or (rec.active_goal or "").strip():
+                continue
+            if not self._owns_record(rec, enabled_hosts):
                 continue
             try:
                 window = await self.transcript_window(sid, limit=1)
@@ -10603,25 +10652,26 @@ class SessionOrchestrator:
             else:
                 self._resume_recovery[sid] = attempts + 1
 
-    async def _existing_session_ids(self, ids: list[str]) -> set[str]:
-        """Which of *ids* have an ACTIVE (non-archived, non-ended) row in sessions.
+    async def _session_row_liveness(self, ids: list[str]) -> tuple[set[str], set[str]]:
+        """Partition *ids* into (ACTIVE rows, INACTIVE rows) by their sessions row.
 
-        Archived/ended rows are treated as absent for mirror-eviction purposes: once
-        the owning daemon archives a session, the primary should drop its mirror copy
-        so the session no longer appears in list_sessions (#898). Permanently deleted
-        rows (no row at all) are also absent, as before.
+        "Inactive" = the row EXISTS but its status is archived/ended; ids in neither
+        set have no row at all (permanently deleted, or not yet committed). Both are
+        evictable for mirror purposes (#898), but they carry different evidence and
+        _reconcile_mirror_once debounces them differently — hence one query returning
+        both rather than a bare "which are alive".
 
         Split out as a seam so _reconcile_mirror_once's eviction logic is unit-
         testable without a live DB."""
         if not ids:
-            return set()
+            return set(), set()
         from sqlalchemy import select as sa_select
         async with db_session() as db:
-            return set((await db.execute(
-                sa_select(DbSession.id)
-                .where(DbSession.id.in_(ids))
-                .where(DbSession.status.notin_(INACTIVE_SESSION_STATUSES))
-            )).scalars().all())
+            rows = (await db.execute(
+                sa_select(DbSession.id, DbSession.status).where(DbSession.id.in_(ids))
+            )).all()
+        active = {i for i, status in rows if status not in INACTIVE_SESSION_STATUSES}
+        return active, {i for i, _ in rows} - active
 
     async def _reconcile_mirror_once(self) -> None:
         """Evict _records entries for sessions deleted or archived on another fleet host.
@@ -10633,31 +10683,37 @@ class SessionOrchestrator:
         session is archived on the owning host (status='archived'), the primary's
         in-memory record stays stale, keeping the session visible in list_sessions (#898).
 
-        _existing_session_ids now returns only ACTIVE (non-archived, non-ended) IDs, so
-        both deleted and archived foreign sessions fall through to the two-strike eviction.
-
         Only FOREIGN entries (not owned by this daemon per _owns_record) are
         candidates: this daemon's own delete path pops _records synchronously, so an
         owned entry missing a row is a mid-creation race, never a real delete. A live
         driver here also means it's ours (ensure_driver adopted it) — _owns_record
-        already treats that as owned. Two-strike (see _MIRROR_EVICT_STRIKES) so a
-        session a worker is mid-creating (row not yet committed) is never dropped."""
+        already treats that as owned.
+
+        The debounce is evidence-shaped (#1033). A row that is present-but-INACTIVE is
+        proof the owner archived/ended the session: the row committed, so this cannot be
+        the mid-creation window the strike cap exists to protect — evict on the first
+        pass. Only a MISSING row is ambiguous (deleted vs. a worker mid-create whose row
+        has not committed yet), and that keeps the two-strike wait (_MIRROR_EVICT_STRIKES).
+        """
         enabled_hosts = await self._enabled_host_names()
         foreign = [sid for sid, rec in list(self._records.items())
                    if not self._owns_record(rec, enabled_hosts)]
         if not foreign:
             self._mirror_missing_strikes.clear()
             return
-        present = await self._existing_session_ids(foreign)
+        present, inactive = await self._session_row_liveness(foreign)
         for sid in foreign:
             if sid in present:
                 self._mirror_missing_strikes.pop(sid, None)
                 continue
-            strikes = self._mirror_missing_strikes.get(sid, 0) + 1
+            archived = sid in inactive
+            strikes = (_MIRROR_EVICT_STRIKES if archived
+                       else self._mirror_missing_strikes.get(sid, 0) + 1)
             if strikes >= _MIRROR_EVICT_STRIKES:
                 self._records.pop(sid, None)
                 self._mirror_missing_strikes.pop(sid, None)
-                log_event(log, logging.INFO, "mirror.evict_deleted", session_id=sid)
+                log_event(log, logging.INFO, "mirror.evict_deleted", session_id=sid,
+                          reason="inactive_row" if archived else "row_missing")
             else:
                 self._mirror_missing_strikes[sid] = strikes
         # Drop strike bookkeeping for ids that are no longer tracked foreign records

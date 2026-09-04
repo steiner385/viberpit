@@ -95,6 +95,27 @@ async def test_list_sessions_drops_primary_mirror_the_owning_host_no_longer_list
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("primary_first", [True, False])
+async def test_list_sessions_unarchive_on_owner_yields_one_live_record(primary_first):
+    # #1033 Q3: a zombie card can be UNARCHIVED through the per-session route while
+    # the primary still holds its stale mirror. The owner then lists a fresh, live
+    # record for the same id while the primary lists an archived one — and the merge
+    # must collapse them to exactly one record, the owner's, in either fan-out order
+    # (the mirror is neither dropped as stale nor allowed to shadow the live row).
+    dobby = _ListOrch("dobby", [_LRec("s-r1", host="rocky",
+                                      status="archived", detached=True)])
+    rocky = _ListOrch("rocky", [_LRec("s-r1", host="rocky",
+                                      status="in_progress", detached=False)])
+    hosts = ({"dobby": dobby, "rocky": rocky} if primary_first
+             else {"rocky": rocky, "dobby": dobby})
+    fo = FleetOrchestrator(_FakeRouter(hosts), primary="dobby")
+    got = await fo.list_sessions()
+    assert len(got) == 1, "the mirror and the owner's row must collapse to one record"
+    assert got[0].status == "in_progress"
+    assert fo._host_cache["s-r1"] == "rocky"  # actions route to the owner, not the mirror
+
+
+@pytest.mark.asyncio
 async def test_list_sessions_keeps_primary_mirror_when_owning_host_is_unreachable():
     # The mirror is the only view we have of a session on a dead worker — keep it
     # (the existing "dead worker must not blank the dashboard" contract).
