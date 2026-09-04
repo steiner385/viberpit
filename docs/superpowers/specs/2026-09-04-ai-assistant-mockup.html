@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ccswitch AI assistant — design mockup (spec 2026-09-04)</title>
+<style>
+  /* Tokens copied from web/src/index.css (dark theme) so the mockup reads as the real app. */
+  :root {
+    --canvas:#14171c; --surface:#1d2128; --raised:#262b34; --edge:#323843; --edge-strong:#46505e;
+    --ink:#e8eaee; --muted:#98a0ac; --faint:#6f7886;
+    --accent:#5c9bff; --accent-ink:#0b1416; --accent-wash:#1c2a44;
+    --success:#3dbb66; --success-wash:#17301f; --warning:#e0a23b; --warning-wash:#3a2d16;
+    --danger:#ef6262; --danger-wash:#3a1d1b; --info:#8aa4c8; --info-wash:#1f2836;
+    --r-sm:4px; --r-md:6px; --r-lg:10px; --r-pill:999px;
+    --font-sans: system-ui, 'Segoe UI', Roboto, sans-serif;
+    --font-mono: ui-monospace, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin:0; background:var(--canvas); color:var(--ink); font:14px/1.5 var(--font-sans); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .page { width: 1440px; margin: 0 auto; padding: 32px 40px 64px; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); margin: 0 0 28px; max-width: 78ch; }
+  .sub code, .legend code, .note code { font: 12px var(--font-mono); background: var(--raised); padding: 1px 5px; border-radius: var(--r-sm); }
+  h2 { font-size: 15px; font-weight: 600; margin: 40px 0 10px; color: var(--ink); }
+  h2 small { color: var(--faint); font-weight: 400; margin-left: 8px; }
+
+  /* Callouts: a letter badge in the mockup, a legend beside it. Letters key to spec sections. */
+  .co { position:absolute; width:20px; height:20px; border-radius:50%; background:var(--warning); color:#1a1200;
+        font: 600 11px/20px var(--font-mono); text-align:center; box-shadow: 0 0 0 2px var(--canvas); z-index: 5; }
+  .legend { display:grid; grid-template-columns: repeat(2, 1fr); gap: 6px 24px; margin: 12px 0 0; padding: 0; list-style:none; color: var(--muted); }
+  .legend li { display:flex; gap:10px; align-items:flex-start; }
+  .legend b { flex:none; width:20px; height:20px; border-radius:50%; background:var(--warning); color:#1a1200; font: 600 11px/20px var(--font-mono); text-align:center; }
+  .legend span { color: var(--ink); }
+
+  /* ---------- Board 1: desktop app frame at ≥1280 with the drawer as a push column ---------- */
+  .frame { position: relative; display:grid; grid-template-columns: 56px 300px 1fr 440px; height: 900px;
+           border: 1px solid var(--edge); border-radius: var(--r-lg); overflow: hidden; background: var(--canvas); }
+  .rail { background: var(--surface); border-right: 1px solid var(--edge); display:flex; flex-direction:column; align-items:center; padding: 12px 0; gap: 14px; }
+  .rail .brand { width: 28px; height: 28px; border-radius: 8px; background: var(--accent); }
+  .rail .ic { width: 24px; height: 24px; border-radius: 6px; background: var(--raised); }
+  .rail .ic.on { background: var(--accent-wash); outline: 1px solid var(--accent); }
+  .rail .spacer { flex: 1; }
+  .list { background: var(--surface); border-right: 1px solid var(--edge); padding: 12px; }
+  .list .hdr { color: var(--muted); font-size: 12px; margin: 4px 4px 8px; }
+  .row { padding: 8px 10px; border-radius: var(--r-md); display:flex; gap:8px; align-items:center; }
+  .row.on { background: var(--raised); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex:none; }
+  .dot.wait { background: var(--warning); } .dot.work { background: var(--accent); } .dot.done { background: var(--success); } .dot.lim { background: var(--danger); }
+  .row .t { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .row .m { color: var(--faint); font-size: 12px; }
+  .main { padding: 16px 20px; }
+  .main .title { font-size: 16px; font-weight: 600; }
+  .main .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .main .ghost { margin-top: 18px; height: 12px; border-radius: 6px; background: var(--raised); }
+  .main .ghost.w60 { width: 60%; } .main .ghost.w80 { width: 80%; } .main .ghost.w45 { width: 45%; }
+
+  /* The drawer (spec §4.9) */
+  .drawer { background: var(--surface); border-left: 1px solid var(--edge); display:flex; flex-direction:column; min-height:0; position:relative; }
+  .d-hdr { display:flex; align-items:center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--edge); }
+  .d-hdr .name { font-weight: 600; flex: 1; }
+  .pill { font-size: 12px; padding: 3px 9px; border-radius: var(--r-pill); border: 1px solid var(--edge-strong); color: var(--ink); background: var(--raised); }
+  .pill.ghost { background: transparent; color: var(--muted); }
+  .d-body { flex:1; min-height:0; overflow:hidden; padding: 12px; display:flex; flex-direction:column; gap: 12px; }
+  .bubble { max-width: 92%; padding: 8px 12px; border-radius: var(--r-lg); background: var(--raised); align-self: flex-end; position:relative; }
+  .bubble .ctx { display:inline-flex; align-items:center; gap:6px; font-size: 11px; color: var(--muted); background: var(--info-wash); border: 1px solid var(--edge);
+                 padding: 1px 7px; border-radius: var(--r-pill); margin-bottom: 4px; }
+  .bubble .ctx i { width: 6px; height: 6px; border-radius: 50%; background: var(--warning); display:inline-block; }
+  .toolrow { display:flex; align-items:center; gap: 8px; color: var(--muted); font-size: 12px; padding: 4px 8px; border-left: 2px solid var(--edge-strong); white-space:nowrap; overflow:hidden; }
+  .toolrow .k { overflow:hidden; text-overflow:ellipsis; }
+  .toolrow .k { font: 11px var(--font-mono); color: var(--faint); }
+  .answer { line-height: 1.55; }
+  .answer ul { margin: 6px 0 0; padding-left: 18px; }
+  .answer li { margin: 2px 0; }
+  .card { border: 1px solid var(--edge-strong); border-radius: var(--r-lg); background: var(--canvas); padding: 10px 12px; position: relative; }
+  .card .ttl { font-weight: 600; }
+  .card .ttl .tag { margin-left: 6px; vertical-align: 1px; }
+  .card .ttl .tag { font-size: 11px; padding: 1px 7px; border-radius: var(--r-pill); background: var(--warning-wash); color: var(--warning); border: 1px solid transparent; }
+  .card .ttl .tag.danger { background: var(--danger-wash); color: var(--danger); }
+  .card .args { font: 12px var(--font-mono); color: var(--muted); margin: 6px 0 8px; }
+  .btns { display:flex; gap: 8px; }
+  .btn { padding: 6px 12px; border-radius: var(--r-md); border: 1px solid var(--edge-strong); background: var(--raised); color: var(--ink); font-size: 13px; }
+  .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .btn.deny { color: var(--danger); }
+  .btn.gone { opacity: .28; text-decoration: line-through; }
+  .stream { color: var(--ink); }
+  .stream .cursor { display:inline-block; width: 7px; height: 14px; background: var(--accent); vertical-align: -2px; margin-left: 2px; }
+  .composer { border-top: 1px solid var(--edge); padding: 10px 12px 8px; }
+  .composer .box { border: 1px solid var(--edge-strong); border-radius: var(--r-lg); background: var(--canvas); padding: 8px 10px; color: var(--faint); min-height: 40px; }
+  .composer .tools { display:flex; gap: 8px; align-items:center; margin-top: 8px; }
+  .composer .tools .sp { flex: 1; }
+  .composer .send { padding: 5px 12px; border-radius: var(--r-md); background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  .composer .stop { padding: 5px 12px; border-radius: var(--r-md); border: 1px solid var(--danger); color: var(--danger); }
+  .disclosure { border-top: 1px solid var(--edge); padding: 6px 12px; font-size: 11px; color: var(--faint); }
+
+  /* ---------- Board 2/3: side-by-side panels ---------- */
+  .grid { display:grid; grid-template-columns: repeat(3, 1fr); gap: 20px; position: relative; }
+  .grid.two { grid-template-columns: repeat(2, 1fr); }
+  .panel { border: 1px solid var(--edge); border-radius: var(--r-lg); background: var(--surface); overflow:hidden; position:relative; display:flex; flex-direction:column; min-height: 320px; }
+  .panel .cap { padding: 8px 12px; border-bottom: 1px solid var(--edge); color: var(--muted); font-size: 12px; }
+  .panel .inner { padding: 12px; display:flex; flex-direction:column; gap: 10px; flex:1; }
+  .chips { display:flex; flex-wrap: wrap; gap: 8px; }
+  .chip { font-size: 13px; padding: 6px 12px; border-radius: var(--r-pill); border: 1px solid var(--edge-strong); background: var(--raised); }
+  .empty { color: var(--muted); }
+  .empty b { color: var(--ink); font-weight: 600; display:block; margin-bottom: 4px; }
+  .banner { border-radius: var(--r-md); padding: 8px 10px; font-size: 13px; border: 1px solid transparent; }
+  .banner.warn { background: var(--warning-wash); color: var(--warning); }
+  .banner.danger { background: var(--danger-wash); color: var(--danger); }
+  .banner.info { background: var(--info-wash); color: var(--info); }
+  .menu { border: 1px solid var(--edge-strong); border-radius: var(--r-md); background: var(--canvas); width: 220px; overflow:hidden; }
+  .menu div { padding: 7px 10px; display:flex; justify-content:space-between; }
+  .menu div.on { background: var(--accent-wash); }
+  .menu div.off { color: var(--faint); }
+  .menu div.off small { color: var(--danger); }
+
+  /* ---------- Board 4: architecture strip ---------- */
+  .arch { display:grid; grid-template-columns: 1fr 24px 1fr 24px 1fr 24px 1fr; align-items:stretch; gap: 0; position:relative; }
+  .node { border: 1px solid var(--edge-strong); border-radius: var(--r-lg); background: var(--surface); padding: 12px 14px; }
+  .node h3 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+  .node p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+  .node code { font: 11px var(--font-mono); color: var(--ink); }
+  .arrow { display:flex; align-items:center; justify-content:center; color: var(--faint); font-size: 18px; }
+  .node.edge { border-color: var(--accent); }
+  .lanes { display:grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 16px; }
+  .lane { border-radius: var(--r-lg); padding: 12px 14px; border: 1px solid var(--edge); }
+  .lane h4 { margin: 0 0 6px; font-size: 13px; display:flex; align-items:center; gap: 8px; }
+  .lane .sw { width: 10px; height: 10px; border-radius: 3px; }
+  .lane ul { margin: 0; padding-left: 16px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+  .lane.read { border-color: var(--success); } .lane.mut { border-color: var(--warning); } .lane.des { border-color: var(--danger); }
+  .lane.read .sw { background: var(--success); } .lane.mut .sw { background: var(--warning); } .lane.des .sw { background: var(--danger); }
+  .note { color: var(--muted); font-size: 12px; margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>ccswitch AI assistant — what the spec looks like on screen</h1>
+  <p class="sub">Mockup for <code>2026-09-04-ai-assistant-design.md</code>. Letters point at the spec section that defines each element. Colors, radii and type are the app's own tokens from <code>web/src/index.css</code> (dark theme); nothing here is a new visual language — the drawer reuses <code>TranscriptView</code>, <code>SessionComposer</code> and <code>PermissionCard</code>.</p>
+
+  <!-- ================= Board 1 ================= -->
+  <h2>1 · Desktop ≥ 1280 px: the drawer pushes in as a fourth column <small>flows F2, F3, F4 mid-conversation</small></h2>
+  <div class="frame">
+    <span class="co" style="left:16px; top:800px">A</span>
+    <span class="co" style="left:974px; top:10px">B</span>
+    <span class="co" style="left:974px; top:62px">C</span>
+    <span class="co" style="left:974px; top:140px">D</span>
+    <span class="co" style="left:974px; top:396px">E</span>
+    <span class="co" style="left:974px; top:520px">F</span>
+    <span class="co" style="left:974px; top:786px">G</span>
+    <span class="co" style="left:974px; top:868px">H</span>
+
+    <div class="rail">
+      <div class="brand"></div>
+      <div class="ic on"></div><div class="ic"></div><div class="ic"></div><div class="ic"></div><div class="ic"></div>
+      <div class="spacer"></div>
+      <div class="ic" title="New session"></div>
+      <div class="ic on" title="Assistant (Cmd+;)"></div>
+      <div class="ic" title="Help"></div>
+      <div class="ic" title="Settings"></div>
+    </div>
+
+    <div class="list">
+      <div class="hdr">Sessions · 14</div>
+      <div class="row on"><span class="dot wait"></span><span class="t">Refactor auth middleware</span><span class="m">perm</span></div>
+      <div class="row"><span class="dot work"></span><span class="t">KinDash calendar sync #212</span><span class="m">2m</span></div>
+      <div class="row"><span class="dot lim"></span><span class="t">Fleet deploy fan-out</span><span class="m">limited</span></div>
+      <div class="row"><span class="dot done"></span><span class="t">Fix flaky e2e in CI</span><span class="m">PR #1040</span></div>
+      <div class="row"><span class="dot done"></span><span class="t">Archive overhaul docs</span><span class="m">PR #1038</span></div>
+      <div class="row"><span class="dot work"></span><span class="t">infra: rotate edge certs</span><span class="m">11m</span></div>
+      <div class="row"><span class="dot wait"></span><span class="t">Backlog: #1031 send-now</span><span class="m">question</span></div>
+    </div>
+
+    <div class="main">
+      <div class="title">Refactor auth middleware</div>
+      <div class="meta">dobby · steiner385/ccswitch · ccswitch/auth-mw-3f2a · opus · account tony-2</div>
+      <div class="ghost w80"></div><div class="ghost w60"></div><div class="ghost w45"></div><div class="ghost w80"></div><div class="ghost w60"></div>
+      <div class="ghost w45"></div><div class="ghost w80"></div>
+    </div>
+
+    <aside class="drawer" aria-label="Assistant">
+      <div class="d-hdr">
+        <span class="name">Assistant</span>
+        <span class="pill">sonnet ▾</span>
+        <span class="pill ghost">New chat</span>
+        <span class="pill ghost">✕</span>
+      </div>
+      <div class="d-body">
+        <div class="bubble">
+          <div class="ctx"><i></i> on Refactor auth middleware</div>
+          <div>Why is this session stuck, and what do the two done ones need?</div>
+        </div>
+        <div class="toolrow">▸ Read session <span class="k">get_session · get_session_transcript · list_sessions</span></div>
+        <div class="answer">
+          <a href="#">Refactor auth middleware</a> is waiting on a permission: it wants to run <code style="font:12px var(--font-mono)">pytest server/tests/</code> and has been parked for 9 minutes. Answer it here or in the session.
+          <ul>
+            <li><a href="#">Fix flaky e2e in CI</a> — PR #1040 is green with auto-merge armed; nothing to do.</li>
+            <li><a href="#">Archive overhaul docs</a> — PR #1038 merged 40 min ago; safe to archive.</li>
+          </ul>
+        </div>
+        <div class="bubble"><div>Approve the pytest run and archive the docs one.</div></div>
+        <div class="card">
+          <div class="ttl">Allow the pytest run on <em>Refactor auth middleware</em>? <span class="tag">mutation</span></div>
+          <div class="args">resolve_permission · session 3f2a… · decision: allow</div>
+          <div class="btns"><span class="btn primary">Allow once</span><span class="btn">Always allow</span><span class="btn deny">Deny</span></div>
+        </div>
+        <div class="card">
+          <div class="ttl">Archive <em>Archive overhaul docs</em>? <span class="tag">mutation</span></div>
+          <div class="args">archive_session · session 91c0…</div>
+          <div class="btns"><span class="btn primary">Allow once</span><span class="btn">Always allow</span><span class="btn deny">Deny</span></div>
+        </div>
+        <div class="stream">Waiting for your answer on both<span class="cursor"></span></div>
+      </div>
+      <div class="composer">
+        <div class="box">Ask about your sessions, or tell me what to do…</div>
+        <div class="tools"><span class="pill ghost">＋</span><span class="pill ghost">sonnet</span><span class="sp"></span><span class="stop">Stop · Esc</span><span class="send">Send</span></div>
+      </div>
+      <div class="disclosure">AI-generated. Actions ask for confirmation.</div>
+    </aside>
+  </div>
+  <ul class="legend">
+    <li><b>A</b><span>Assistant entry in the rail; <code>Cmd+;</code> and <code>?drawer=assistant</code> open it from every section (§2, existing shell).</span></li>
+    <li><b>B</b><span>Header: per-thread model menu (gated tiers greyed, §4.6) and "New chat" which archives the thread and starts fresh (F6, §4.7).</span></li>
+    <li><b>C</b><span>Context chip on the user bubble: <code>{route, sessionId}</code> sent with the prompt, rendered as "on <em>title</em>", hidden header line (§4.5, F4).</span></li>
+    <li><b>D</b><span>Collapsed tool row with human titles from the tool table; read tools never ask (§4.2, §4.4). Answer leads with the result and links entities as app routes.</span></li>
+    <li><b>E</b><span>Mutation card = the existing <code>PermissionCard</code>; title comes from the tool annotation + arguments, not the raw <code>mcp__ccswitch__…</code> name (§4.4). "Always allow" is honoured per thread.</span></li>
+    <li><b>F</b><span>One card per mutation — the model asked for two actions, so two cards; a denied card returns a tool error the model relays (F3, F5).</span></li>
+    <li><b>G</b><span>Composer is the session composer with the mode selector hidden (mode is fixed to interactive); <code>Esc</code> stops the running turn before it closes the drawer (§4.9, D8).</span></li>
+    <li><b>H</b><span>Persistent disclosure footer — the Art. 50-style label the research calls table stakes (§4.9, research §4).</span></li>
+  </ul>
+
+  <!-- ================= Board 2 ================= -->
+  <h2>2 · Permission classes decide what the user sees <small>§4.4 — the one branch added to PermissionRegistry</small></h2>
+  <div class="lanes">
+    <div class="lane read"><h4><span class="sw"></span>Read · never asks</h4>
+      <ul><li>list_sessions, get_session, get_session_transcript, search_sessions</li><li>list_accounts, list_hosts, list_prs, get_pipeline_health</li><li>list_automations, get_automation_events, get_deploy_status</li><li>shown as a collapsed tool row only</li></ul></div>
+    <div class="lane mut"><h4><span class="sw"></span>Mutation · card, "Always allow" honoured</h4>
+      <ul><li>create_session, send_prompt, interrupt_session</li><li>answer_question, resolve_permission (allow/deny only), set_model, set_permission_mode, resolve_model_approval</li><li>archive / unarchive, set_autopilot_paused, fix_pr, set_automation_enabled</li></ul></div>
+    <div class="lane des"><h4><span class="sw"></span>Destructive · card, never grantable</h4>
+      <ul><li>delete_session (permanent), cancel_queued_session, ready_merge_pr</li><li>asks in every mode, even full-auto</li><li>"Always allow" is not offered and is ignored if sent</li></ul></div>
+  </div>
+  <div class="grid two" style="margin-top:16px">
+    <span class="co" style="left:636px; top:8px">I</span>
+    <span class="co" style="left:1326px; top:8px">J</span>
+    <div class="panel"><div class="cap">Mutation card (interactive mode)</div><div class="inner">
+      <div class="bubble"><div>Send "run the full suite, then push" to the KinDash session.</div></div>
+      <div class="card">
+        <div class="ttl">Message <em>KinDash calendar sync #212</em>? <span class="tag">mutation</span></div>
+        <div class="args">send_prompt · session 7be1… · interrupt: false<br>"run the full suite, then push"</div>
+        <div class="btns"><span class="btn primary">Allow once</span><span class="btn">Always allow</span><span class="btn deny">Deny</span></div>
+      </div>
+      <div class="note">Allowed → <code>POST /api/sessions/7be1…/prompt</code> with <code>via: assistant</code>; audit row carries the assistant session id (§4.3, §4.10).</div>
+    </div></div>
+    <div class="panel"><div class="cap">Destructive card — same component, one button fewer</div><div class="inner">
+      <div class="bubble"><div>Delete the Fleet deploy fan-out session permanently.</div></div>
+      <div class="card">
+        <div class="ttl">Permanently delete <em>Fleet deploy fan-out</em>? <span class="tag danger">destructive</span></div>
+        <div class="args">delete_session · session c44d… · removes the archive folder and the row</div>
+        <div class="btns"><span class="btn primary">Allow once</span><span class="btn gone">Always allow</span><span class="btn deny">Deny</span></div>
+      </div>
+      <div class="answer" style="color:var(--muted)">On Deny: "Not deleted — you declined. The session is still archived."</div>
+      <div class="note"><code>PermissionRequest.always_allowed = false</code> hides the button; the registry ignores "always" for this class (§4.4, §4.8).</div>
+    </div></div>
+  </div>
+  <ul class="legend">
+    <li><b>I</b><span>Card copy names the target by title and states the consequence in one line — HAX G16 (research §5).</span></li>
+    <li><b>J</b><span>Destructive tools get a red tag and lose "Always allow" — the only visual difference, so users learn one card.</span></li>
+  </ul>
+
+  <!-- ================= Board 3 ================= -->
+  <h2>3 · Empty and edge states <small>flows F1, F7, F8, F9</small></h2>
+  <div class="grid">
+    <span class="co" style="left:406px; top:8px">K</span>
+    <span class="co" style="left:866px; top:8px">L</span>
+    <span class="co" style="left:1326px; top:8px">M</span>
+    <div class="panel"><div class="cap">First open on /pipeline — thread empty (F1)</div><div class="inner">
+      <div class="empty"><b>Ask about the fleet, or tell me what to do.</b>Answers come from live data. Actions ask first.</div>
+      <div class="chips"><span class="chip">Which PRs are blocked, and why?</span><span class="chip">Which checks are flakiest this week?</span><span class="chip">What needs my attention?</span></div>
+      <div style="flex:1"></div>
+      <div class="composer" style="margin:0 -12px -12px"><div class="box">Ask about your sessions, or tell me what to do…</div><div class="tools"><span class="pill ghost">＋</span><span class="pill ghost">sonnet</span><span class="sp"></span><span class="send">Send</span></div></div>
+    </div></div>
+    <div class="panel"><div class="cap">Disabled (F7) · all accounts limited (F8)</div><div class="inner">
+      <div class="empty"><b>Assistant is off.</b>Turn it on in Settings → General. Nothing else to configure.</div>
+      <div class="banner danger">Every account is at its limit. The assistant resumes when the first one resets at 14:30.</div>
+      <div class="banner warn">fable needs approval and can't run the assistant. Model reverted to sonnet.</div>
+      <div class="menu"><div>sonnet <span>✓</span></div><div>opus</div><div>haiku</div><div class="off">fable <small>needs approval</small></div></div>
+    </div></div>
+    <div class="panel"><div class="cap">Reopened after 15 min idle (F9)</div><div class="inner">
+      <div class="banner info">Resumed your thread from 22 minutes ago.</div>
+      <div class="bubble"><div class="ctx"><i></i> on Pipeline</div><div>Which PRs are blocked, and why?</div></div>
+      <div class="toolrow">▸ Listed pull requests <span class="k">list_prs</span></div>
+      <div class="answer">Two of nine are blocked:<ul><li><a href="#">#1042 settings audit</a> — draft; needs "ready for review".</li><li><a href="#">#1039 fleet eviction</a> — <code style="font:12px var(--font-mono)">frontend</code> check failed on the last push.</li></ul></div>
+      <div class="chips"><span class="chip">Mark #1042 ready</span><span class="chip">Fix #1039 in its session</span></div>
+    </div></div>
+  </div>
+  <ul class="legend">
+    <li><b>K</b><span>Starter chips are route-keyed (<code>startersFor(route, openSessionId)</code>) and disappear after the first turn (§4.9).</span></li>
+    <li><b>L</b><span>Disabled shows the placeholder copy with a settings pointer; limited reuses <code>AllLimitedBanner</code> copy; a gated model is a 400 that reverts the menu, never a parked session (A6, §4.6).</span></li>
+    <li><b>M</b><span>Idle reap ends the process but keeps the row; reopening resumes the same CLI transcript (§4.1, §4.7). Follow-up chips are the model's own suggestions rendered as chips.</span></li>
+  </ul>
+
+  <!-- ================= Board 4 ================= -->
+  <h2>4 · Where a prompt goes <small>§4 architecture, one round trip</small></h2>
+  <div class="arch">
+    <div class="node"><h3>Browser · AssistantSheet</h3><p>Second socket channel <code>getSocket('assistant')</code>; sends <code>prompt + context</code>; renders with the existing transcript, composer and cards.</p></div>
+    <div class="arrow">→</div>
+    <div class="node edge"><h3>Edge · FastAPI</h3><p><code>POST /api/assistant/session</code> (one per identity) mints the <code>ccas1:</code> token; the session WebSocket streams events; identity from the tailnet as today.</p></div>
+    <div class="arrow">→</div>
+    <div class="node"><h3>Daemon · SessionDriver (kind = assistant)</h3><p>Real <code>claude</code> process, built-ins disabled, <code>mcp_servers={"ccswitch": in-process}</code>, custom system prompt, <code>max_turns</code>, <code>effort=low</code>.</p></div>
+    <div class="arrow">↺</div>
+    <div class="node edge"><h3>Tools → loopback API</h3><p>Each tool = one endpoint call with <code>Authorization: Bearer ccas1:…</code>, <code>X-CCSwitch-Via: assistant</code>; loopback-only, route-allowlisted, audited with <code>via</code>.</p></div>
+  </div>
+  <p class="note">Structural defences that do not rely on the model behaving: no shell/file/web tools · only the <code>ccswitch</code> MCP server · route allowlist on the token · cards for every mutation · destructive never auto-allowed · tool and prompt rate limits · idle reap · kill switch <code>CCSWITCH_ASSISTANT_ENABLED</code> (§8).</p>
+</div>
+</body>
+</html>
