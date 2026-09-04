@@ -1,0 +1,32 @@
+name: Constitution
+
+# Enforces the Governance section's amendment requirements on the resulting diff,
+# rather than on which tool produced it. Method-based controls (MANAGED_DENY, the
+# PreToolUse hook) cannot see a human's editor or a github.com web commit; this can.
+
+on:
+  pull_request:
+    paths:
+      - '.specify/memory/constitution.md'
+      - 'server/sdlc/constitution_gate.py'
+      - 'scripts/check_constitution_amendment.py'
+      - '.github/workflows/constitution.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  amendment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The gate diffs against the base branch, so it needs real history.
+          fetch-depth: 0
+      - name: Check amendment record
+        # PR_BODY is passed through the environment, never interpolated into the
+        # run command — a title or body is attacker-controlled text.
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_REF: ${{ github.base_ref }}
+        run: python3 scripts/check_constitution_amendment.py --base-ref "origin/${BASE_REF}"
