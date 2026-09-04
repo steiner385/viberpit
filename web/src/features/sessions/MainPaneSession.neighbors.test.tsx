@@ -21,6 +21,7 @@ import { MainPaneSession } from './MainPaneSession'
 import { SessionRuntimeProvider } from '@/components/session/SessionRuntimeProvider'
 import { QK } from '@/api/hooks'
 import type { Session } from '@/api/types'
+import { mkSession } from '@/test/factories'
 
 vi.mock('@/ws/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/ws/client')>()
@@ -35,12 +36,12 @@ vi.mock('@/ws/client', async (importOriginal) => {
   }
 })
 
-function mk(id: string): Session {
-  return {
-    id, name: id, accountName: 'a', status: 'idle',
-    createdAt: '2026-06-01T00:00:00Z', updatedAt: '2026-06-01T00:00:00Z',
-  }
-}
+const mk = (id: string): Session =>
+  mkSession(id, {
+    accountName: 'a',
+    createdAt: '2026-06-01T00:00:00Z',
+    updatedAt: '2026-06-01T00:00:00Z',
+  })
 
 /**
  * The pane inside the runtime provider `PageHost` mounts for it in the app. The

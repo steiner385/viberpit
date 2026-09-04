@@ -18,6 +18,7 @@ import * as React from 'react'
 import { ArchivedManager } from '../ArchivedManager'
 import * as hooks from '@/api/hooks'
 import type { ArchivedSession } from '@/api/types'
+import { queryResult } from '@/test/reactQuery'
 
 // ── Global mocks ──────────────────────────────────────────────────────────────
 
@@ -73,7 +74,7 @@ function wrapper({ children }: { children: React.ReactNode }) {
 }
 
 function setupMocks(sessions: ArchivedSession[]) {
-  vi.mocked(hooks.useArchivedSessions).mockReturnValue({ data: sessions, isLoading: false } as ReturnType<typeof hooks.useArchivedSessions>)
+  vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult(sessions))
   vi.mocked(hooks.useUnarchiveSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUnarchiveSession>)
   vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
   vi.mocked(hooks.useBulkUnarchiveSessions).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useBulkUnarchiveSessions>)
@@ -349,7 +350,7 @@ describe('ArchivedManager — bulk delete progress', () => {
     expect(screen.getByText('Permanently delete 4 sessions')).toBeInTheDocument()
 
     // Simulate the optimistic cache emptying out from under the open dialog.
-    vi.mocked(hooks.useArchivedSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useArchivedSessions>)
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult([]))
     rerender(<ArchivedManager onReviewSession={vi.fn()} />)
 
     expect(screen.getByText('Permanently delete 4 sessions')).toBeInTheDocument()

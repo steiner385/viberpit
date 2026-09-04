@@ -19,6 +19,7 @@ import {
   useSubmitMcpRedirect,
   useCancelMcpAuth,
 } from '@/api/hooks'
+import { queryResult } from '@/test/reactQuery'
 
 function makeWrapper() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -31,7 +32,7 @@ const mutate = vi.fn()
 
 function mockIdleHooks() {
   vi.mocked(useStartMcpAuth).mockReturnValue({ mutate, isPending: false } as ReturnType<typeof useStartMcpAuth>)
-  vi.mocked(useMcpAuthStatus).mockReturnValue({ data: undefined, isLoading: false } as ReturnType<typeof useMcpAuthStatus>)
+  vi.mocked(useMcpAuthStatus).mockReturnValue(queryResult(undefined))
   vi.mocked(useSubmitMcpRedirect).mockReturnValue({ mutate: noop, isPending: false } as ReturnType<typeof useSubmitMcpRedirect>)
   vi.mocked(useCancelMcpAuth).mockReturnValue({ mutate: noop, isPending: false } as ReturnType<typeof useCancelMcpAuth>)
 }

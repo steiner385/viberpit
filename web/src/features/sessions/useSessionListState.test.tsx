@@ -17,19 +17,20 @@ import { renderHook, act, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import type { Session } from '@/api/types'
+import { mkSession } from '@/test/factories'
 import { FLEET_HOSTS_KEY, type FleetHost } from '@/api/fleet'
 import { NO_FILTERS, type ListFilters } from '@/session/listFilters'
 import { nextSessionAfterClose } from '@/session/nextAfterArchive'
 
 // ── typed factories (R10: real values, never `as unknown as T`) ───────────────
 
-function mk(id: string, over: Partial<Session> = {}): Session {
-  return {
-    id, name: id, accountName: 'acct', status: 'idle',
-    createdAt: '2026-06-01T00:00:00Z', updatedAt: '2026-06-01T00:00:00Z', prs: [],
+const mk = (id: string, over: Partial<Session> = {}): Session =>
+  mkSession(id, {
+    accountName: 'acct',
+    createdAt: '2026-06-01T00:00:00Z',
+    updatedAt: '2026-06-01T00:00:00Z',
     ...over,
-  }
-}
+  })
 
 function fleetHost(name: string, over: Partial<FleetHost> = {}): FleetHost {
   return {

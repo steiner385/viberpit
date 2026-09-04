@@ -2,13 +2,14 @@
 import { describe, it, expect } from 'vitest'
 import { buildNavItems, type SessionGroup } from '../ordering'
 import type { Session } from '@/api/types'
+import { mkSession } from '@/test/factories'
 
-function mk(id: string): Session {
-  return {
-    id, name: id, accountName: 'a', status: 'idle',
-    createdAt: '2026-06-01T00:00:00Z', updatedAt: '2026-06-01T00:00:00Z',
-  }
-}
+const mk = (id: string): Session =>
+  mkSession(id, {
+    accountName: 'a',
+    createdAt: '2026-06-01T00:00:00Z',
+    updatedAt: '2026-06-01T00:00:00Z',
+  })
 const grp = (key: string, label: string | null, sessions: Session[]): SessionGroup =>
   ({ key, label, count: sessions.length, sessions })
 

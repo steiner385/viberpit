@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { NewSessionDialog } from '@/features/sessions/NewSessionDialog'
 import * as hooks from '@/api/hooks'
+import { queryResult } from '@/test/reactQuery'
 
 vi.mock('@/api/hooks', () => ({
   useQueueMove: vi.fn(() => ({ mutate: vi.fn() })),
@@ -74,8 +75,8 @@ function wrapper({ children }: { children: React.ReactNode }) {
 }
 
 function setupMocks() {
-  vi.mocked(hooks.useAccounts).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useAccounts>)
-  vi.mocked(hooks.useSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useSessions>)
+  vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([]))
+  vi.mocked(hooks.useSessions).mockReturnValue(queryResult([]))
   vi.mocked(hooks.useCreateSession).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useCreateSession>)
   vi.mocked(hooks.useRenameSession).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useRenameSession>)
   vi.mocked(hooks.useCloseSession).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useCloseSession>)
@@ -99,9 +100,9 @@ function setupMocks() {
   } as ReturnType<typeof hooks.useSettings>)
   vi.mocked(hooks.useUpdateSettings).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useUpdateSettings>)
   vi.mocked(hooks.useReauthAccount).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useReauthAccount>)
-  vi.mocked(hooks.useReauthStatus).mockReturnValue({ data: { state: 'idle', message: null, startedAt: null }, isLoading: false } as ReturnType<typeof hooks.useReauthStatus>)
+  vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult({ state: 'idle', message: null, startedAt: null }))
   vi.mocked(hooks.useCancelReauth).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useCancelReauth>)
-  vi.mocked(hooks.useArchivedSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useArchivedSessions>)
+  vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult([]))
   vi.mocked(hooks.useUnarchiveSession).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useUnarchiveSession>)
   vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
   vi.mocked(hooks.useBulkUnarchiveSessions).mockReturnValue(NOOP as unknown as ReturnType<typeof hooks.useBulkUnarchiveSessions>)

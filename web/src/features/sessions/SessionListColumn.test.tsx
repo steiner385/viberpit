@@ -23,7 +23,8 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { axe, toHaveNoViolations } from 'jest-axe'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import type { Account, DaemonHealth, Session } from '@/api/types'
+import type { DaemonHealth, Session } from '@/api/types'
+import { account, session } from '@/test/factories'
 
 expect.extend(toHaveNoViolations)
 
@@ -40,30 +41,7 @@ import { SessionListColumn, type SessionListColumnProps } from './SessionListCol
 import { useSessionListState } from './useSessionListState'
 
 // ── typed factories (R10: real values, never `as unknown as T`) ───────────────
-
-function session(over: Partial<Session> = {}): Session {
-  return {
-    id: 'sess-1',
-    name: 'First',
-    accountName: 'alice',
-    status: 'idle',
-    createdAt: '2026-06-19T10:00:00Z',
-    prs: [],
-    ...over,
-  }
-}
-
-function account(over: Partial<Account> = {}): Account {
-  return {
-    name: 'alice',
-    status: 'ok',
-    usage: { session: { pct: 10, resetsAt: null }, weekly: { pct: 20, resetsAt: null } },
-    liveSessions: { active: 0, idle: 0 },
-    rank: 1,
-    rankReason: null,
-    ...over,
-  }
-}
+// `session` and `account` come from @/test/factories — one definition each.
 
 function daemonHealth(over: Partial<DaemonHealth> = {}): DaemonHealth {
   return {

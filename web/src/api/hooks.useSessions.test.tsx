@@ -9,7 +9,7 @@ import { addPendingSession, __resetPending } from '@/lib/pendingSessions'
 
 vi.mock('./client', () => ({ api: { get: vi.fn() }, ApiRequestError: class extends Error {} }))
 
-const real: Session = { id: 'sess-1', name: 'Real', accountName: 'a', status: 'idle', createdAt: 'x' }
+const real: Session = { id: 'sess-1', name: 'Real', accountName: 'a', status: 'idle', createdAt: 'x', prs: [] }
 
 describe('useSessions — merges pending placeholders', () => {
   let qc: QueryClient

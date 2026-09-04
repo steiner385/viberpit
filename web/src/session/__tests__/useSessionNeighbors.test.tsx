@@ -6,13 +6,15 @@ import type { ReactNode } from 'react'
 import { QK } from '@/api/hooks'
 import { useSessionNeighbors } from '../useSessionNeighbors'
 import type { Session } from '@/api/types'
+import { mkSession } from '@/test/factories'
 
-function mk(id: string, over: Partial<Session> = {}): Session {
-  return {
-    id, name: id, accountName: 'a', status: 'idle',
-    createdAt: '2026-06-01T00:00:00Z', updatedAt: '2026-06-01T00:00:00Z', ...over,
-  }
-}
+const mk = (id: string, over: Partial<Session> = {}): Session =>
+  mkSession(id, {
+    accountName: 'a',
+    createdAt: '2026-06-01T00:00:00Z',
+    updatedAt: '2026-06-01T00:00:00Z',
+    ...over,
+  })
 
 // Seed the react-query cache directly so useSessions resolves synchronously to
 // our fixture list (no network, no act warnings).

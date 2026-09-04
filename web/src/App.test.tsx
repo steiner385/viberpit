@@ -27,6 +27,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { Session, Account } from './api/types'
+import { session } from '@/test/factories'
 import { api } from './api/client'
 import { renderApp } from './test/renderApp'
 
@@ -52,22 +53,22 @@ vi.mock('./ws/client', async (importOriginal) => {
 })
 
 const MOCK_SESSIONS: Session[] = [
-  {
+  session({
     id: 'sess-1',
     name: 'Work',
     accountName: 'alice',
     status: 'idle',
     createdAt: '2026-06-19T10:00:00Z',
     updatedAt: '2026-06-19T10:00:00Z',
-  },
-  {
+  }),
+  session({
     id: 'sess-2',
     name: 'Research',
     accountName: 'alice',
     status: 'idle',
     createdAt: '2026-06-19T11:00:00Z',
     updatedAt: '2026-06-19T11:00:00Z',
-  },
+  }),
 ]
 
 const MOCK_ACCOUNTS: Account[] = [

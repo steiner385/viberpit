@@ -21,6 +21,8 @@ import userEvent from '@testing-library/user-event'
 import { renderApp } from '@/test/renderApp'
 import * as hooks from '@/api/hooks'
 import type { Session } from '@/api/types'
+import { appSettings } from '@/test/factories'
+import { queryResult } from '@/test/reactQuery'
 
 // ── Mock @/api/hooks (same scaffold as DashboardTabs.test.tsx) ────────────────
 
@@ -110,7 +112,7 @@ const THREE: Session[] = [
 
 /** The shell at /sessions, desktop mode, with three sessions in the list. */
 function renderDashboard() {
-  vi.mocked(hooks.useSessions).mockReturnValue({ data: THREE, isLoading: false } as ReturnType<typeof hooks.useSessions>)
+  vi.mocked(hooks.useSessions).mockReturnValue(queryResult(THREE))
   return renderApp({ path: '/sessions', mode: 'desktop' })
 }
 
@@ -120,22 +122,22 @@ function renderShell() {
 }
 
 function setupDefaultMocks() {
-  vi.mocked(hooks.useAccounts).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useAccounts>)
-  vi.mocked(hooks.useSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useSessions>)
+  vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([]))
+  vi.mocked(hooks.useSessions).mockReturnValue(queryResult([]))
   vi.mocked(hooks.useCreateSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCreateSession>)
   vi.mocked(hooks.useRenameSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useRenameSession>)
   vi.mocked(hooks.useCloseSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCloseSession>)
   vi.mocked(hooks.useRefreshAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useRefreshAccount>)
   vi.mocked(hooks.useUpdateAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUpdateAccount>)
   vi.mocked(hooks.useDeleteAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useDeleteAccount>)
-  vi.mocked(hooks.useGithubRepos).mockReturnValue({ data: [], isLoading: false, isError: false } as ReturnType<typeof hooks.useGithubRepos>)
-  vi.mocked(hooks.useGithubBranches).mockReturnValue({ data: { default: null, branches: [] }, isLoading: false } as ReturnType<typeof hooks.useGithubBranches>)
-  vi.mocked(hooks.useSettings).mockReturnValue({ data: { defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null }, isLoading: false } as ReturnType<typeof hooks.useSettings>)
+  vi.mocked(hooks.useGithubRepos).mockReturnValue(queryResult([]))
+  vi.mocked(hooks.useGithubBranches).mockReturnValue(queryResult({ default: null, branches: [] }))
+  vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings()))
   vi.mocked(hooks.useUpdateSettings).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUpdateSettings>)
   vi.mocked(hooks.useReauthAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useReauthAccount>)
-  vi.mocked(hooks.useReauthStatus).mockReturnValue({ data: { state: 'idle', message: null, startedAt: null }, isLoading: false } as ReturnType<typeof hooks.useReauthStatus>)
+  vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult({ state: 'idle', message: null, startedAt: null }))
   vi.mocked(hooks.useCancelReauth).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCancelReauth>)
-  vi.mocked(hooks.useArchivedSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useArchivedSessions>)
+  vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult([]))
   vi.mocked(hooks.useUnarchiveSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUnarchiveSession>)
   vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
   vi.mocked(hooks.useBulkUnarchiveSessions).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useBulkUnarchiveSessions>)
@@ -154,7 +156,7 @@ describe('Task 3 — session-list selection + keyboard nav', () => {
 
   it('ArrowDown highlights the first session, ArrowDown again the second', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useSessions).mockReturnValue({ data: THREE, isLoading: false } as ReturnType<typeof hooks.useSessions>)
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult(THREE))
     renderShell()
     const box = screen.getByRole('textbox', { name: /new session prompt/i })
     await user.click(box)
@@ -166,7 +168,7 @@ describe('Task 3 — session-list selection + keyboard nav', () => {
 
   it('ArrowUp clamps at index 0 (does not go to -1)', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useSessions).mockReturnValue({ data: THREE, isLoading: false } as ReturnType<typeof hooks.useSessions>)
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult(THREE))
     renderShell()
     await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
     await user.keyboard('{ArrowDown}') // index 0
@@ -176,7 +178,7 @@ describe('Task 3 — session-list selection + keyboard nav', () => {
 
   it('Enter on empty prompt opens the highlighted session', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useSessions).mockReturnValue({ data: THREE, isLoading: false } as ReturnType<typeof hooks.useSessions>)
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult(THREE))
     const app = renderShell()
     await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
     await user.keyboard('{ArrowDown}{Enter}')
@@ -185,7 +187,7 @@ describe('Task 3 — session-list selection + keyboard nav', () => {
 
   it('Escape clears the highlight (selectedIndex → -1)', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useSessions).mockReturnValue({ data: THREE, isLoading: false } as ReturnType<typeof hooks.useSessions>)
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult(THREE))
     renderShell()
     await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
     await user.keyboard('{ArrowDown}') // index 0 selected
@@ -199,7 +201,7 @@ describe('Task 3 — session-list selection + keyboard nav', () => {
 
   it('dispatch textarea has aria-activedescendant pointing at the selected row', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useSessions).mockReturnValue({ data: THREE, isLoading: false } as ReturnType<typeof hooks.useSessions>)
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult(THREE))
     renderShell()
     const box = screen.getByRole('textbox', { name: /new session prompt/i })
     await user.click(box)
@@ -209,7 +211,7 @@ describe('Task 3 — session-list selection + keyboard nav', () => {
 
   it('nav is a no-op when the session list is empty', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useSessions>)
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult([]))
     const app = renderShell()
     await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
     await user.keyboard('{ArrowDown}{Enter}')
@@ -218,7 +220,7 @@ describe('Task 3 — session-list selection + keyboard nav', () => {
 
   it('ArrowDown navigates the list even when focus is on the Sessions rail item (not the prompt)', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useSessions).mockReturnValue({ data: THREE, isLoading: false } as ReturnType<typeof hooks.useSessions>)
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult(THREE))
     renderShell()
     // Reach the list the way a keyboard user does: focus somewhere in the shell
     // chrome that is NOT the prompt textarea — the rail's Sessions link, which
@@ -235,7 +237,7 @@ describe('Task 3 — session-list selection + keyboard nav', () => {
 
   it('ArrowDown while focused in the Repository select is NOT hijacked by list nav', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useSessions).mockReturnValue({ data: THREE, isLoading: false } as ReturnType<typeof hooks.useSessions>)
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult(THREE))
     renderShell()
     // Arrow keys inside a form control (the repo <select>) must drive that control,
     // not the session list — otherwise picking a repo by keyboard is impossible.
@@ -297,7 +299,7 @@ describe('Task 4 — row actions on highlighted session', () => {
 
   it('Alt+3 opens the third session directly', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useSessions).mockReturnValue({ data: THREE, isLoading: false } as ReturnType<typeof hooks.useSessions>)
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult(THREE))
     const app = renderShell()
     await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
     await user.keyboard('{Alt>}3{/Alt}')
@@ -306,7 +308,7 @@ describe('Task 4 — row actions on highlighted session', () => {
 
   it('Alt+9 is a no-op when fewer than 9 sessions', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useSessions).mockReturnValue({ data: THREE, isLoading: false } as ReturnType<typeof hooks.useSessions>)
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult(THREE))
     const app = renderShell()
     await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
     await user.keyboard('{Alt>}9{/Alt}')
@@ -316,7 +318,7 @@ describe('Task 4 — row actions on highlighted session', () => {
   it('selectedIndex clamps when sessions list shrinks', async () => {
     const user = userEvent.setup()
     // Start with 3 sessions, select the last one (index 2).
-    vi.mocked(hooks.useSessions).mockReturnValue({ data: THREE, isLoading: false } as ReturnType<typeof hooks.useSessions>)
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult(THREE))
     const app = renderShell()
     await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
     await user.keyboard('{ArrowDown}{ArrowDown}{ArrowDown}')
@@ -328,7 +330,7 @@ describe('Task 4 — row actions on highlighted session', () => {
     // A location change reaches it through context instead, which is how the app
     // itself re-renders on every navigation.
     const TWO = THREE.slice(0, 2)
-    vi.mocked(hooks.useSessions).mockReturnValue({ data: TWO, isLoading: false } as ReturnType<typeof hooks.useSessions>)
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult(TWO))
     await act(async () => { await app.router.navigate('/sessions?tick=1') })
 
     // After clamp, index should be 1 (last item in TWO)
@@ -350,7 +352,7 @@ describe('Pending placeholder — keyboard open is a no-op', () => {
   it('Enter on a highlighted pending session does not call onOpenSession', async () => {
     const user = userEvent.setup()
     const pending = makeSession({ id: 'pending-1', name: 'Starting…', status: 'in_progress', pending: true })
-    vi.mocked(hooks.useSessions).mockReturnValue({ data: [pending], isLoading: false } as ReturnType<typeof hooks.useSessions>)
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult([pending]))
     const app = renderShell()
     await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
     await user.keyboard('{ArrowDown}{Enter}')
@@ -360,7 +362,7 @@ describe('Pending placeholder — keyboard open is a no-op', () => {
   it('Alt+1 jump to a pending session does not call onOpenSession', async () => {
     const user = userEvent.setup()
     const pending = makeSession({ id: 'pending-1', name: 'Starting…', status: 'in_progress', pending: true })
-    vi.mocked(hooks.useSessions).mockReturnValue({ data: [pending], isLoading: false } as ReturnType<typeof hooks.useSessions>)
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult([pending]))
     const app = renderShell()
     await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
     await user.keyboard('{Alt>}1{/Alt}')
@@ -379,7 +381,7 @@ describe('Task 5 — ? shortcuts help overlay', () => {
 
   it('? opens the help dialog', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useSessions>)
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult([]))
     renderShell()
     await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
     await user.keyboard('{Shift>}/{/Shift}')
@@ -388,7 +390,7 @@ describe('Task 5 — ? shortcuts help overlay', () => {
 
   it('Esc closes the help dialog', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useSessions>)
+    vi.mocked(hooks.useSessions).mockReturnValue(queryResult([]))
     renderShell()
     await user.click(screen.getByRole('textbox', { name: /new session prompt/i }))
     await user.keyboard('{Shift>}/{/Shift}')

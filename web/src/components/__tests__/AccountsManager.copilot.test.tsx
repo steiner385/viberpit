@@ -11,6 +11,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AccountsManager } from '../AccountsManager'
 import * as hooks from '@/api/hooks'
 import type { Account, ReauthState } from '@/api/types'
+import { queryResult } from '@/test/reactQuery'
 
 vi.mock('@/api/hooks', () => ({
   useAccounts: vi.fn(),
@@ -65,22 +66,13 @@ function wrapper({ children }: { children: React.ReactNode }) {
 }
 
 function setupDefaultMocks() {
-  vi.mocked(hooks.useAccounts).mockReturnValue({
-    data: [],
-    isLoading: false,
-  } as ReturnType<typeof hooks.useAccounts>)
-  vi.mocked(hooks.useSessions).mockReturnValue({
-    data: [],
-    isLoading: false,
-  } as ReturnType<typeof hooks.useSessions>)
+  vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([]))
+  vi.mocked(hooks.useSessions).mockReturnValue(queryResult([]))
   vi.mocked(hooks.useRefreshAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useRefreshAccount>)
   vi.mocked(hooks.useUpdateAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUpdateAccount>)
   vi.mocked(hooks.useDeleteAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useDeleteAccount>)
   vi.mocked(hooks.useReauthAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useReauthAccount>)
-  vi.mocked(hooks.useReauthStatus).mockReturnValue({
-    data: makeReauthState(),
-    isLoading: false,
-  } as ReturnType<typeof hooks.useReauthStatus>)
+  vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult(makeReauthState()))
   vi.mocked(hooks.useCancelReauth).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCancelReauth>)
   vi.mocked(hooks.useSubmitReauthCode).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useSubmitReauthCode>)
 }

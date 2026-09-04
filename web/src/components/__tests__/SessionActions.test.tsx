@@ -3,6 +3,7 @@ import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderApp } from '@/test/renderApp'
 import * as hooks from '@/api/hooks'
+import { queryResult } from '@/test/reactQuery'
 
 vi.mock('@/api/hooks', () => ({
   useQueueMove: vi.fn(() => ({ mutate: vi.fn() })),
@@ -144,9 +145,9 @@ describe('session-card actions (via AppShell)', () => {
     } as unknown as ReturnType<typeof hooks.useUpdateSettings>)
 
     vi.mocked(hooks.useReauthAccount).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useReauthAccount>)
-    vi.mocked(hooks.useReauthStatus).mockReturnValue({ data: { state: 'idle', message: null, startedAt: null }, isLoading: false } as ReturnType<typeof hooks.useReauthStatus>)
+    vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult({ state: 'idle', message: null, startedAt: null }))
     vi.mocked(hooks.useCancelReauth).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useCancelReauth>)
-    vi.mocked(hooks.useArchivedSessions).mockReturnValue({ data: [], isLoading: false } as ReturnType<typeof hooks.useArchivedSessions>)
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult([]))
     vi.mocked(hooks.useUnarchiveSession).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useUnarchiveSession>)
     vi.mocked(hooks.usePermanentDeleteSession).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.usePermanentDeleteSession>)
     vi.mocked(hooks.useBulkUnarchiveSessions).mockReturnValue({ mutate: vi.fn(), isPending: false } as unknown as ReturnType<typeof hooks.useBulkUnarchiveSessions>)

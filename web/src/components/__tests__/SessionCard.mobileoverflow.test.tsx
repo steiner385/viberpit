@@ -8,11 +8,12 @@ import { describe, it, expect, vi } from 'vitest'
 import { SessionCard } from '../SessionCard'
 import { overlayIsOpen, resetOverlayState } from '@/shell/useOverlayState'
 import type { Session } from '@/api/types'
+import { session } from '@/test/factories'
 
 const noop = () => {}
 
-function mkSession(overrides: Partial<Session> = {}): Session {
-  return {
+const mkSession = (overrides: Partial<Session> = {}): Session =>
+  session({
     id: 's1',
     name: 'Fix login bug',
     accountName: 'work',
@@ -20,8 +21,7 @@ function mkSession(overrides: Partial<Session> = {}): Session {
     createdAt: '2026-06-22T11:00:00Z',
     updatedAt: '2026-06-22T11:58:00Z',
     ...overrides,
-  }
-}
+  })
 
 function renderCard(
   overrides: Partial<Session> = {},
