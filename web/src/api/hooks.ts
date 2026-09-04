@@ -344,6 +344,32 @@ export function useReloadSession() {
   })
 }
 
+// "Next best account": the daemon moves the session to the account the selector
+// ranks best and continues the conversation (replays a stalled prompt). The caller
+// re-attaches the socket on success, exactly as reload does.
+export function useRotateSession() {
+  const qc = useQueryClient()
+  return useMutation<Session, ApiRequestError, { id: string }>({
+    mutationFn: ({ id }) => api.post<Session>(`/sessions/${id}/rotate`, {}),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
+    onError: (e) => {
+      const code = (e.body.detail as { code?: string } | null)?.code
+      toast.error(code === 'skipped:all_accounts_busy' ? 'No account has headroom right now' : `Couldn't rotate session`)
+    },
+  })
+}
+
+// Pin the session to its current account (usage-ceiling rotation then parks it as
+// `limited` instead of moving it) or clear the pin; unpinning a limited session
+// rotates it immediately on the server.
+export function useSetAccountPin() {
+  const qc = useQueryClient()
+  return useMutation<Session, ApiRequestError, { id: string; pinned: boolean }>({
+    mutationFn: ({ id, pinned }) => api.post<Session>(`/sessions/${id}/account-pin`, { pinned }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
+  })
+}
+
 export function useFixPr() {
   const qc = useQueryClient()
   return useMutation<Session, ApiRequestError, { id: string; number: number }>({
@@ -716,6 +742,20 @@ export function useResumeInterrupted() {
       const f = result.failed.length
       if (f > 0) toast.error(`Resumed ${n} · ${f} skipped`)
       else toast.success(`Resumed ${n}`)
+    },
+    onSettled: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
+  })
+}
+
+export function useRotateStalled() {
+  const qc = useQueryClient()
+  return useMutation<BatchResult, ApiRequestError, string[]>({
+    mutationFn: (ids) => api.post<BatchResult>('/sessions/batch/rotate', { ids }),
+    onSuccess: (result) => {
+      const n = result.succeeded.length
+      const f = result.failed.length
+      if (f > 0) toast.error(`Rotated ${n} · ${f} skipped`)
+      else toast.success(`Rotated ${n}`)
     },
     onSettled: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
   })

@@ -799,3 +799,27 @@ describe('SessionList — Resume interrupted button', () => {
     expect(screen.queryByRole('button', { name: /resume interrupted/i })).not.toBeInTheDocument()
   })
 })
+
+describe('SessionList — Rotate stalled button', () => {
+  const sharedProps = {
+    accounts: ACCOUNTS, onNew: vi.fn(), onOpen: vi.fn(), onRename: vi.fn(),
+    onClose: vi.fn(), onDelete: vi.fn(), onQuickResume: vi.fn(),
+  }
+  beforeEach(() => vi.clearAllMocks())
+
+  it('renders "Rotate stalled (2)" when two sessions are usageStalled', () => {
+    const sessions: Session[] = [
+      { ...SESSIONS[0], status: 'needs_attention', usageStalled: true },
+      { ...SESSIONS[1], status: 'limited', usageStalled: true },
+      session({ id: 'sess-3', name: 'Healthy', accountName: 'alice', status: 'idle',
+                createdAt: '2026-06-19T12:00:00Z', updatedAt: '2026-06-19T12:00:00Z' }),
+    ]
+    render(<SessionList {...sharedProps} sessions={sessions} />, { wrapper })
+    expect(screen.getByRole('button', { name: /rotate stalled \(2\)/i })).toBeInTheDocument()
+  })
+
+  it('does not render the button when nothing is stalled', () => {
+    render(<SessionList {...sharedProps} sessions={SESSIONS} />, { wrapper })
+    expect(screen.queryByRole('button', { name: /rotate stalled/i })).not.toBeInTheDocument()
+  })
+})

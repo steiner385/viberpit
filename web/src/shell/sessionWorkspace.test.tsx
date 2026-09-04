@@ -72,6 +72,7 @@ vi.mock('@/api/hooks', () => ({
   useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
   useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useResumeInterrupted: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useRotateStalled: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAssessDispatch: vi.fn(() => ({ assess: vi.fn() })),
   QK: {
     accounts: ['accounts'], sessions: ['sessions'], archived: ['archived-sessions'],
