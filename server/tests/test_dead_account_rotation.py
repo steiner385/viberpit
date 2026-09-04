@@ -341,3 +341,25 @@ def test_account_is_alive_below_both_ceilings():
                   weekly_pct=99.0, weekly_resets_at=None, extra_usage_enabled=False)
     o = _orch_with_poller(cached_usage=usage)
     assert o._account_is_dead("copilot_acct") is False
+
+
+# ---------------------------------------------------------------------------
+# Rotation monitor triggers a recovery sweep on below-ceiling events (Task 5)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_rotation_monitor_triggers_recovery_sweep_below_ceiling():
+    """An account dropping below ceiling is the recovery signal the periodic sweep
+    otherwise waits up to 300 s for."""
+    o = _make_orch()
+    _rec(o, account="copilot_acct")
+    o._poller = _poller_with_failures(0)
+    fired = []
+    o._maybe_sweep_on_recovery = lambda: fired.append(True) or True
+    usage = Usage(session_pct=20.0, session_resets_at=None,
+                  weekly_pct=20.0, weekly_resets_at=None, extra_usage_enabled=False)
+
+    await _run_monitor_one_event(o, {"account": "copilot_acct", "usage": usage})
+
+    assert fired == [True]
+    assert not any(c[0] in ("rotate", "restart_driverless") for c in o.calls)

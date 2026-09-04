@@ -284,6 +284,11 @@ _UNREACHABLE_ROTATION_THRESHOLD: int = 3
 # events, not recovery, so paused sessions need a separate periodic retry.
 _STUCK_SESSION_SWEEP_INTERVAL: float = 300.0
 
+# Minimum spacing between recovery-triggered sweeps (an account dropping below ceiling
+# in the poller stream). The poller emits one event per account per ~60 s; without a
+# debounce a fleet of healthy accounts would re-run the sweep every few seconds.
+_RECOVERY_SWEEP_DEBOUNCE_S: float = 30.0
+
 # Consecutive mirror-reconcile passes a FOREIGN _records entry may be missing from
 # the DB before the primary evicts it (#895-adjacent). A worker deleting a session
 # pops its own _records + the shared DB row, but nothing pops the primary's mirror
@@ -9088,6 +9093,7 @@ class SessionOrchestrator:
                     session_pct = 0.0  # unknown; treat as ceiling for rotation logic
                 else:
                     if not at_ceiling(usage, _ROTATION_CEILING):
+                        self._maybe_sweep_on_recovery()
                         continue
                     session_pct = getattr(usage, "session_pct", 0.0)
                     reason = ("session limit reached" if session_pct >= _ROTATION_CEILING
@@ -9211,6 +9217,22 @@ class SessionOrchestrator:
         _rotate_away over rows another live host owns."""
         enabled_hosts = await self._enabled_host_names()
         for record in list(self._records.values()):
+            if record.status == "limited":
+                # Pinned at its ceiling. The pin means "stay here", so once THIS account
+                # has headroom again resume the conversation on it (replays the failed
+                # prompt) — never rotate. No cached usage / still at ceiling → wait.
+                if not self._owns_record(record, enabled_hosts):
+                    continue
+                usage = self._poller.cached(record.account)
+                if usage is None or at_ceiling(usage, _ROTATION_CEILING):
+                    continue
+                log.info("stuck-sweep.limit_reset session=%s account=%s",
+                         record.id, record.account)
+                self._spawn(
+                    self._reassign(record, record.account, reason="limit_reset"),
+                    name=f"sweep-limit-reset-{record.id}",
+                )
+                continue
             if record.status != "needs_attention":
                 continue
             if not self._owns_record(record, enabled_hosts):
@@ -9224,6 +9246,23 @@ class SessionOrchestrator:
                 self._rotate_away(record, reason="stuck_session_sweep"),
                 name=f"sweep-rotate-{record.id}",
             )
+
+    def _maybe_sweep_on_recovery(self) -> bool:
+        """Poller saw an account BELOW ceiling. If any session is stalled on usage,
+        run the stuck-session sweep now instead of waiting for its 300 s tick.
+        Debounced; returns True when a sweep was spawned."""
+        now = self._clock()
+        last = getattr(self, "_last_recovery_sweep_at", float("-inf"))
+        if now - last < _RECOVERY_SWEEP_DEBOUNCE_S:
+            return False
+        if not any(is_usage_stalled(r.status, r.paused_reason)
+                   for r in list(self._records.values())):
+            return False
+        self._last_recovery_sweep_at = now
+        log.info("stuck-sweep.recovery_trigger")
+        with contextlib.suppress(RuntimeError):  # no running loop in some sync callers/tests
+            self._spawn(self._sweep_needs_attention(), name="recovery-sweep")
+        return True
 
     # ------------------------------------------------------------------
     # Failure-driven recovery (429 / 401 during a live turn)
