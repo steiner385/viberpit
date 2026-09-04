@@ -30,8 +30,13 @@ export type Block =
 
 // `ordinal` is the server's turn index in the `?before=` cursor space (disk replay only;
 // live turns have none). It is NOT used to order rendering — arrival order is — only to
-// verify that page merges kept order (transcript.order.violation telemetry).
-export interface Turn { id: string; role: 'user' | 'assistant'; blocks: Block[]; model?: string | null; ordinal?: number }
+// verify that page merges kept order (transcript.order.* telemetry).
+//
+// `ownerPrefix` marks a user turn the server prepended to a page whose head lands
+// mid-logical-turn (see EvUser.ownerPrefix). It is the ONLY order signal a user turn
+// carries: user turns have no ordinal, so a misplaced prompt — the actual #1000 bug —
+// is invisible to the ordinal scan and detectable only through this mark.
+export interface Turn { id: string; role: 'user' | 'assistant'; blocks: Block[]; model?: string | null; ordinal?: number; ownerPrefix?: boolean }
 
 /** A self-contained conversation thread (the main transcript, or one sub-agent). */
 export interface SubThread { turns: Turn[]; openBlockId: string | null; model?: string | null }
@@ -213,25 +218,80 @@ function findTurnIdx(turns: Turn[], id: string): number {
 }
 
 /**
- * Pairs [prevId, thisId] of ordinal-bearing turns whose server ordinals run backwards.
- * Turns without an ordinal (live, user, tool-result-only) are skipped, so a violation
- * can only come from a merge that placed a disk-replayed turn out of cursor order.
+ * Every way a merged transcript can be out of order, from one pass.
+ *
+ * The three ordinal classes compare ADJACENT ordinal-bearing turns (turns without an
+ * ordinal — live, user, tool-result-only — are skipped), so they can only be produced by
+ * a merge that placed a disk-replayed turn wrong relative to another. They are disjoint
+ * and exhaustive: any adjacency that is not `prev.ordinal + 1 === this` is exactly one of
+ * them.
+ *
+ * `pinned` is the fourth class and the only one that sees USER turns. It exists because
+ * the ordinal scan is structurally blind to the bug it was built for: the element
+ * misplaced by the pre-#1000 merge rule was always the server's owning-prompt prefix, a
+ * user turn, which carries no ordinal — replaying the production shape through the old
+ * and new merge rules yields identical ordinal sequences either way.
  */
-export function findOrderViolations(turns: Turn[]): Array<[string, string]> {
-  const out: Array<[string, string]> = []
+export interface OrderAnomalies {
+  /** Adjacent ordinals running BACKWARDS — server/cursor skew, or a bad splice. */
+  violations: Array<[string, string]>
+  /** A HOLE: ordinals ascend but skip. A page resolving after a heal's replayComplete
+   *  splices a non-adjacent older page; order looks fine and the gap is never re-fetched. */
+  gaps: Array<[string, string]>
+  /** Two turns claiming the SAME ordinal — the transcript was rewritten under a loaded
+   *  page (compaction/resume), so the cursor space the page was fetched in no longer holds. */
+  dupes: Array<[string, string]>
+  /** Ids of owner-prefix user turns pinned AFTER loaded content. A prefix is the head of
+   *  the window it prefixes; with disk content already above it, its real position is
+   *  either above (so this copy is a stale boundary duplicate) or in an unloaded hole.
+   *  This is the check that fires on the #1000 production shape. */
+  pinned: string[]
+}
+
+export function findOrderAnomalies(turns: Turn[]): OrderAnomalies {
+  const out: OrderAnomalies = { violations: [], gaps: [], dupes: [], pinned: [] }
   let prev: Turn | null = null
+  let sawOrdinal = false
   for (const t of turns) {
+    if (t.role === 'user' && t.ownerPrefix && sawOrdinal) out.pinned.push(t.id)
     if (t.ordinal === undefined) continue
-    if (prev !== null && t.ordinal < (prev.ordinal as number)) out.push([prev.id, t.id])
+    sawOrdinal = true
+    if (prev !== null) {
+      const p = prev.ordinal as number
+      if (t.ordinal < p) out.violations.push([prev.id, t.id])
+      else if (t.ordinal === p) out.dupes.push([prev.id, t.id])
+      else if (t.ordinal > p + 1) out.gaps.push([prev.id, t.id])
+    }
     prev = t
   }
   return out
 }
 
+/**
+ * Log each anomaly class a merge produced, one line per class, uniform shape:
+ * `transcript.order.<kind> count=<n> first=<ids> earliestTurn=<n> phase=<prepend|replay>`
+ * so `transcript.order.` greps them all while each class stays independently countable.
+ *
+ * Counts are an UPPER BOUND, not an incidence count: this runs inside
+ * `transcriptReducer`, which React may invoke more than once per action (StrictMode
+ * double-invoke, concurrent-render replay), so one merge can log the same anomaly twice.
+ * Read them as "this class occurred", not as "it occurred N times".
+ */
 function warnIfOutOfOrder(turns: Turn[], earliestTurn: number, phase: 'prepend' | 'replay'): void {
-  const bad = findOrderViolations(turns)
-  if (bad.length === 0) return
-  clientLogger.warn(`transcript.order.violation count=${bad.length} first=${bad[0][0]}>${bad[0][1]} earliestTurn=${earliestTurn} phase=${phase}`)
+  const { violations, gaps, dupes, pinned } = findOrderAnomalies(turns)
+  const tail = `earliestTurn=${earliestTurn} phase=${phase}`
+  const warn = (kind: string, count: number, first: string): void => {
+    if (count === 0) return
+    clientLogger.warn(`transcript.order.${kind} count=${count} first=${first} ${tail}`)
+  }
+  // `first` names the offending adjacency with a glyph for its relation, so the sample
+  // in the log line is self-describing: a>b backwards, a..b hole, a=b same ordinal.
+  const pair = (pairs: Array<[string, string]>, sep: string): string =>
+    pairs.length === 0 ? '' : `${pairs[0][0]}${sep}${pairs[0][1]}`
+  warn('violation', violations.length, pair(violations, '>'))
+  warn('gap', gaps.length, pair(gaps, '..'))
+  warn('dupe', dupes.length, pair(dupes, '='))
+  warn('prefixPinned', pinned.length, pinned[0] ?? '')
 }
 
 /**
@@ -324,6 +384,16 @@ function userTurnBlocks(turnId: string, text: string, images?: EvUser['images'],
   return blocks
 }
 
+/**
+ * Build a user turn. Every user-turn path (append, upsert, optimistic-seed adoption,
+ * pending adoption, sub-thread) goes through here so the server's boundary-prefix mark
+ * travels with the turn from exactly one place — and so an upsert that re-emits the SAME
+ * prompt without the mark (the page holding its real position finally loaded) clears it.
+ */
+function userTurn(turnId: string, blocks: Block[], ownerPrefix?: boolean): Turn {
+  return { id: turnId, role: 'user', blocks, ...(ownerPrefix ? { ownerPrefix: true } : {}) }
+}
+
 // ── Thread-scoped reducer ─────────────────────────────────────────────────────
 
 type BlockEvent = EvUser | EvTurnStart | EvTextDelta | EvThinkingDelta | EvToolCall | EvToolResult
@@ -341,8 +411,8 @@ function applyToThread(thread: SubThread, ev: BlockEvent): SubThread {
       const idx = findTurnIdx(thread.turns, turnId)
       const turns =
         idx === -1
-          ? [...thread.turns, { id: turnId, role: 'user' as const, blocks }]
-          : replaceTurn(thread.turns, idx, (t) => ({ ...t, blocks }))
+          ? [...thread.turns, userTurn(turnId, blocks, ev.ownerPrefix)]
+          : replaceTurn(thread.turns, idx, () => userTurn(turnId, blocks, ev.ownerPrefix))
       return { turns, openBlockId: null }
     }
 
@@ -510,11 +580,7 @@ export function transcriptReducer(
       // user event is always the seeded prompt — and only one optimistic turn exists.
       const optIdx = findTurnIdx(state.turns, OPTIMISTIC_USER_ID)
       if (optIdx !== -1) {
-        const nextTurns = replaceTurn(state.turns, optIdx, () => ({
-          id: turnId,
-          role: 'user' as const,
-          blocks,
-        }))
+        const nextTurns = replaceTurn(state.turns, optIdx, () => userTurn(turnId, blocks, ev.ownerPrefix))
         return { ...state, turns: nextTurns, openBlockId: null, latestSuggestions: [], pendingSent }
       }
 
@@ -530,22 +596,27 @@ export function transcriptReducer(
           && t.blocks.some((b) => b.kind === 'text' && b.text === text),
       )
       if (pendIdx !== -1) {
-        const nextTurns = replaceTurn(state.turns, pendIdx, () => ({
-          id: turnId,
-          role: 'user' as const,
-          blocks,
-        }))
+        const nextTurns = replaceTurn(state.turns, pendIdx, () => userTurn(turnId, blocks, ev.ownerPrefix))
         return { ...state, turns: nextTurns, openBlockId: null, latestSuggestions: [], pendingSent }
       }
 
       const idx = findTurnIdx(state.turns, turnId)
       let nextTurns: Turn[]
       if (idx === -1) {
-        // Append new user turn
-        nextTurns = [...state.turns, { id: turnId, role: 'user', blocks }]
+        // Append new user turn at the TAIL. For an owner-PREFIX copy that is a
+        // FABRICATED position, the third site of the shape ensureAssistantTurn reports
+        // for assistant turns: a prefix belongs at the head of the window it prefixes,
+        // so with content already loaded its real position is either above (making this
+        // a stale boundary copy) or in a hole this page never covered. Reached by a
+        // reattach's ring resupply, not by a replay — a replayReset empties `turns`
+        // first, so the prefix legitimately lands on an empty transcript.
+        if (ev.ownerPrefix && state.turns.length > 0) {
+          clientLogger.warn(`transcript.turn.fabricated type=${ev.type} turnId=${turnId}`)
+        }
+        nextTurns = [...state.turns, userTurn(turnId, blocks, ev.ownerPrefix)]
       } else {
-        // Upsert: rebuild the existing turn's blocks (text + any attachments)
-        nextTurns = replaceTurn(state.turns, idx, (t) => ({ ...t, blocks }))
+        // Upsert: rebuild the turn (blocks + prefix mark) from the newer event.
+        nextTurns = replaceTurn(state.turns, idx, () => userTurn(turnId, blocks, ev.ownerPrefix))
       }
       return { ...state, turns: nextTurns, openBlockId: null, latestSuggestions: [], pendingSent }
     }
@@ -876,9 +947,8 @@ export function transcriptReducer(
       // reset the turns array was wiped, so `pending:N` ids cannot already be present.
       let turns = state.turns
       if (state.hadReset && state.pendingSent.length > 0) {
-        const toAppend: Turn[] = state.pendingSent.map((p) => ({
-          id: p.id, role: 'user' as const, blocks: userTurnBlocks(p.id, p.text),
-        }))
+        const toAppend: Turn[] = state.pendingSent.map((p) =>
+          userTurn(p.id, userTurnBlocks(p.id, p.text)))
         turns = [...turns, ...toAppend]
       }
       warnIfOutOfOrder(turns, ev.earliestTurn ?? state.earliestTurn, 'replay')
@@ -910,19 +980,31 @@ export function transcriptReducer(
       // transcript once the replay settles.
       if (state.replaying) return { ...state, loadingOlder: false }
       const olderTurns = buildTurnsFromEvents(ev.events)
-      // The OLDER page is authoritative for position. The server prepends a window's
-      // owning UserMessage to any page (and to the attach window) whose head lands
-      // mid-logical-turn, so the same prompt id arrives once per page until the page
-      // holding its real position loads. A copy already on screen therefore sits at a
-      // page boundary, not where the prompt was sent: drop it and let the incoming page
-      // place it. (Keeping the on-screen copy pinned "Start Phase B" hours after its real
-      // position — the page-boundary ordering bug, session 888ad2bf, 2026-09-03.)
-      // The incoming copy replaces the on-screen one wholesale — position AND content —
-      // which is safe because overlapping ids are user turns rebuilt from the same
-      // UserMessage record.
-      const incoming = new Set(olderTurns.map((t) => t.id))
-      const kept = state.turns.filter((t) => !incoming.has(t.id))
-      const turns = [...olderTurns, ...kept]
+      // The BOUNDARY COPY loses. The server prepends a window's owning UserMessage to any
+      // page (and to the attach window) whose head lands mid-logical-turn, so the same
+      // prompt id arrives once per page until the page holding its real position loads;
+      // that copy is marked `ownerPrefix`. Overlapping ids are always user turns rebuilt
+      // from the same UserMessage record, so replacing one wholesale — position AND
+      // content — is safe; the only question is which position is real, and the mark
+      // answers it outright.
+      //
+      // Normally the incoming older page wins: an on-screen copy that overlaps an older
+      // page is that page's boundary prefix. (Keeping it pinned "Start Phase B" hours
+      // after its real position was the page-boundary ordering bug, session 888ad2bf,
+      // 2026-09-03.) But when the INCOMING copy is the prefix and the on-screen one is
+      // not, the on-screen copy is the real position and must survive — with adjacent
+      // pages that cannot happen, so #1000 shipped "older page always wins" as a
+      // heuristic that was correct by construction. The mark makes the rule explicit,
+      // and holds for the non-adjacent pages a heal race can splice.
+      const incoming = new Map(olderTurns.map((t) => [t.id, t]))
+      const superseded = new Set<string>()   // incoming ids that lose to an on-screen copy
+      const kept = state.turns.filter((t) => {
+        const inc = incoming.get(t.id)
+        if (inc === undefined) return true
+        if (inc.ownerPrefix && !t.ownerPrefix) { superseded.add(t.id); return true }
+        return false
+      })
+      const turns = [...olderTurns.filter((t) => !superseded.has(t.id)), ...kept]
       warnIfOutOfOrder(turns, ev.earliestTurn, 'prepend')
       return { ...state, turns, earliestTurn: ev.earliestTurn, loadingOlder: false }
     }
@@ -1018,7 +1100,7 @@ export function transcriptReducer(
       const block: Block = { kind: 'text', id: `${OPTIMISTIC_USER_ID}:u`, text: ev.text }
       return {
         ...state,
-        turns: [...state.turns, { id: OPTIMISTIC_USER_ID, role: 'user', blocks: [block] }],
+        turns: [...state.turns, userTurn(OPTIMISTIC_USER_ID, [block])],
         openBlockId: null,
       }
     }
