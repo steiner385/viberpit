@@ -1,5 +1,6 @@
 import pytest
 from unittest import mock
+from server.sessions.engine import AgentEngine
 from server.sessions.fleet_orchestrator import FleetOrchestrator
 from server.sessions.facade import _DEADLINE_ATTR
 
@@ -19,7 +20,8 @@ class _FakeRouter:
     def __init__(self, orchs): self._orchs = orchs
     def get(self, name): return self._orchs[name]
     def names(self): return sorted(self._orchs)
-    async def pick(self, *, prefer=None): return sorted(self._orchs)
+    async def pick(self, *, prefer=None, engine=None,
+                   expected_contract_sha256=None): return sorted(self._orchs)
 
 
 @pytest.mark.asyncio
@@ -240,7 +242,8 @@ async def test_create_picks_top_host_and_stamps(monkeypatch):
     async def create_session(self, **kw): return _Rec(f"sess-{self.name}")
     _FakeOrch.create_session = create_session
     router = _FakeRouter({"rocky": rocky, "dobby": dobby})
-    async def pick(*, prefer=None): return ["dobby", "rocky"]  # dobby ranked first
+    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None):
+        return ["dobby", "rocky"]  # dobby ranked first
     router.pick = pick
     fo = FleetOrchestrator(router, primary="rocky")
     stamped = {}
@@ -260,7 +263,8 @@ async def test_create_cascades_on_spawn_failure(monkeypatch):
     async def boom(self, **kw): raise RuntimeError("spawn failed")
     bad.create_session = boom.__get__(bad); good.create_session = ok.__get__(good)
     router = _FakeRouter({"rocky": good, "dobby": bad})
-    async def pick(*, prefer=None): return ["dobby", "rocky"]
+    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None):
+        return ["dobby", "rocky"]
     router.pick = pick
     fo = FleetOrchestrator(router, primary="rocky")
     monkeypatch.setattr(fo, "_stamp_host", lambda sid, host: _acoro(None))
@@ -273,7 +277,9 @@ async def test_prefer_is_forwarded_not_passed_to_daemon(monkeypatch):
     async def create_session(self, **kw): seen.update(kw); return _Rec("s1")
     _FakeOrch.create_session = create_session
     router = _FakeRouter({"rocky": rocky}); got = {}
-    async def pick(*, prefer=None): got["prefer"] = prefer; return ["rocky"]
+    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None):
+        got["prefer"] = prefer
+        return ["rocky"]
     router.pick = pick
     fo = FleetOrchestrator(router, primary="rocky")
     monkeypatch.setattr(fo, "_stamp_host", lambda sid, host: _acoro(None))
@@ -299,18 +305,64 @@ async def test_create_rejects_invalid_engine_before_host_ranking(monkeypatch, en
 
 
 @pytest.mark.asyncio
-async def test_create_rejects_codex_before_host_ranking_until_capabilities_exist():
-    from server.sessions.engine import AgentEngineUnavailable
+async def test_codex_launch_filters_candidates_by_engine_and_forwards_the_key(monkeypatch):
+    """A Codex request reaches host ranking, carrying the engine and the edge's pin.
 
-    router = _FakeRouter({"rocky": _FakeOrch("rocky")})
+    Before capability advertisement existed this raised AgentEngineUnavailable
+    unconditionally. Now the router does the excluding, so what must be asserted is
+    that `pick` is TOLD which engine to filter for — a create that ranked hosts
+    without the engine would happily pick a Claude-only runner.
+    """
+    from server.codex.schema import PINNED_CONTRACT_SHA256
+
+    rocky = _FakeOrch("rocky")
+    seen: dict = {}
+
+    async def create_session(self, **kw):
+        seen.update(kw)
+        return _Rec("s1")
+
+    _FakeOrch.create_session = create_session
+    router = _FakeRouter({"rocky": rocky})
     pick = mock.AsyncMock(return_value=["rocky"])
     router.pick = pick
     fleet = FleetOrchestrator(router, primary="rocky")
+    monkeypatch.setattr(fleet, "_stamp_host", lambda sid, host: _acoro(None))
 
-    with pytest.raises(AgentEngineUnavailable):
-        await fleet.create_session(engine="codex")
+    await fleet.create_session(engine="codex")
 
-    pick.assert_not_awaited()
+    assert pick.await_args.kwargs["engine"] is AgentEngine.CODEX
+    assert pick.await_args.kwargs["expected_contract_sha256"] == PINNED_CONTRACT_SHA256
+    # The engine key must still reach the daemon: the host was chosen FOR codex, and
+    # dropping it here would silently spawn a Claude session on it.
+    assert seen["engine"] is AgentEngine.CODEX
+
+
+@pytest.mark.asyncio
+async def test_claude_launch_omits_the_engine_key_for_legacy_daemons(monkeypatch):
+    """Claude is the legacy default, so the additive key is not sent at all.
+
+    A protocol-v1 daemon rejects an unknown kwarg; omitting it is what keeps a
+    mixed-version fleet dispatchable during the upgrade window.
+    """
+    rocky = _FakeOrch("rocky")
+    seen: dict = {}
+
+    async def create_session(self, **kw):
+        seen.update(kw)
+        return _Rec("s1")
+
+    _FakeOrch.create_session = create_session
+    router = _FakeRouter({"rocky": rocky})
+    pick = mock.AsyncMock(return_value=["rocky"])
+    router.pick = pick
+    fleet = FleetOrchestrator(router, primary="rocky")
+    monkeypatch.setattr(fleet, "_stamp_host", lambda sid, host: _acoro(None))
+
+    await fleet.create_session(engine="claude_code")
+
+    assert pick.await_args.kwargs["engine"] is None
+    assert "engine" not in seen
 
 
 @pytest.mark.asyncio

@@ -80,7 +80,7 @@ describe('DispatchBar', () => {
     await user.click(box)
     await user.type(box, 'fix the bug')
     await user.keyboard('{Enter}')
-    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, account: null, model: null, host: null, attachmentIds: [] })
+    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, account: null, model: null, host: null, attachmentIds: [], engine: 'claude_code', reasoningEffort: null })
     await waitFor(() => expect(box).toHaveValue(''))
   })
 
@@ -144,7 +144,7 @@ describe('DispatchBar', () => {
     await user.type(box, 'fix the bug')
     expect(create).toBeEnabled()
     await user.click(create)
-    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, account: null, model: null, host: null, attachmentIds: [] })
+    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, account: null, model: null, host: null, attachmentIds: [], engine: 'claude_code', reasoningEffort: null })
     await waitFor(() => expect(box).toHaveValue(''))
   })
 
@@ -169,7 +169,7 @@ describe('DispatchBar', () => {
     await user.type(box, 'ship it')
     await user.keyboard('{Enter}')
 
-    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'ship it', repo: null, account: 'work', model: 'opus', host: null, attachmentIds: [] })
+    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'ship it', repo: null, account: 'work', model: 'opus', host: null, attachmentIds: [], engine: 'claude_code', reasoningEffort: null })
   })
 
   it('normalizes the "Default" model to null so the backend keeps the account default', async () => {
@@ -183,7 +183,7 @@ describe('DispatchBar', () => {
     await user.type(box, 'go')
     await user.keyboard('{Enter}')
 
-    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'go', repo: null, account: 'personal', model: null, host: null, attachmentIds: [] })
+    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'go', repo: null, account: 'personal', model: null, host: null, attachmentIds: [], engine: 'claude_code', reasoningEffort: null })
   })
 
   it('Create button never opens the highlighted session (stays disabled when empty)', async () => {
@@ -374,7 +374,7 @@ describe('DispatchBar mobile collapse (More options)', () => {
   it('shows an indicator only when collapsed with a non-default account or model', async () => {
     const user = userEvent.setup()
     render(<DispatchBar {...makeProps()} />)
-    const indicator = () => screen.queryByText(/non-default account, model, or runner selected/i)
+    const indicator = () => screen.queryByText(/non-default agent, account, model, reasoning, or runner selected/i)
     // Collapsed but everything default → no indicator.
     expect(indicator()).not.toBeInTheDocument()
     await user.click(moreBtn())
@@ -392,7 +392,7 @@ describe('DispatchBar mobile collapse (More options)', () => {
     await user.click(moreBtn())
     await user.selectOptions(screen.getByRole('combobox', { name: /model/i }), 'opus')
     await user.click(moreBtn())
-    expect(screen.getByText(/non-default account, model, or runner selected/i)).toBeInTheDocument()
+    expect(screen.getByText(/non-default agent, account, model, reasoning, or runner selected/i)).toBeInTheDocument()
   })
 })
 

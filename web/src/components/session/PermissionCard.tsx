@@ -1,6 +1,7 @@
 import type { Block } from '@/session/reducer'
 import { cn } from '@/lib/utils'
 import { useCardKeyboard } from './useCardKeyboard'
+import { toolSummary } from '@/session/toolSummary'
 
 type PermBlock = Extract<Block, { kind: 'permission' }>
 type Decision = 'allow' | 'deny' | 'always'
@@ -10,13 +11,6 @@ interface Props {
   /** The session permission mode (e.g. 'interactive', 'auto', 'plan'). */
   mode?: string
   onDecision: (permId: string, decision: Decision) => void
-}
-
-function keyArgSummary(block: PermBlock): string {
-  const { toolKind, input } = block
-  if (toolKind === 'bash' && typeof input.command === 'string') return input.command.slice(0, 60)
-  if ((toolKind === 'edit' || toolKind === 'write' || toolKind === 'read') && typeof input.file_path === 'string') return input.file_path
-  return ''
 }
 
 const primaryBtn = cn(
@@ -37,7 +31,7 @@ const secondaryBtn = cn(
 )
 
 export function PermissionCard({ block, mode, onDecision }: Props) {
-  const summary = keyArgSummary(block)
+  const summary = toolSummary(block.toolKind, block.input)
   const toolLabel = summary ? `${block.tool}: ${summary}` : block.tool
   const isInteractive = mode === 'interactive'
   // Destructive app-action tools (spec §4.4) never offer "Always allow", in

@@ -30,7 +30,7 @@ from enum import StrEnum
 from typing import Any, Final
 
 from server.codex import redaction, schema
-from server.sessions.engine import AgentCapabilities, AgentEngine
+from server.sessions.engine import AgentCapabilities, AgentEngine, capabilities_to_wire
 
 CODEX_ENGINE: Final = AgentEngine.CODEX
 
@@ -103,6 +103,14 @@ class CodexAvailability:
     #: to admit a version that does not match the pin. Availability is granted, but
     #: the drift is carried so it can be logged and surfaced rather than forgotten.
     accepted_drift: schema.ContractDrift | None = None
+    #: The app-server schema contract this runner actually observed. Carried so the
+    #: EDGE can compare it against its own pin instead of trusting a runner's
+    #: verdict — a runner upgraded past the edge is the mixed-version rollout the
+    #: fleet gate exists to catch. ``None`` when the probe never got that far.
+    contract_sha256: str | None = None
+    #: Whether the runner's external-token auth plane is enabled. ``None`` when the
+    #: question was not reached (the probe short-circuits on ``DISABLED``).
+    external_auth: bool | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "detail", redaction.scrub_text(self.detail))
@@ -119,6 +127,8 @@ class CodexAvailability:
         *,
         binary_path: str | None = None,
         cli_version: str | None = None,
+        contract_sha256: str | None = None,
+        external_auth: bool | None = None,
     ) -> CodexAvailability:
         return cls(
             available=False,
@@ -126,6 +136,8 @@ class CodexAvailability:
             detail=detail,
             binary_path=binary_path,
             cli_version=cli_version,
+            contract_sha256=contract_sha256,
+            external_auth=external_auth,
         )
 
     @classmethod
@@ -135,12 +147,16 @@ class CodexAvailability:
         binary_path: str,
         cli_version: str,
         accepted_drift: schema.ContractDrift | None = None,
+        contract_sha256: str | None = None,
     ) -> CodexAvailability:
         return cls(
             available=True,
             binary_path=binary_path,
             cli_version=cli_version,
             accepted_drift=accepted_drift,
+            contract_sha256=contract_sha256,
+            # Reaching `ready` means the external-auth gate was passed.
+            external_auth=True,
         )
 
     @property
@@ -161,18 +177,5 @@ class CodexAvailability:
                 if self.accepted_drift is not None
                 else None
             ),
-            "capabilities": {
-                "models": self.capabilities.models,
-                "reasoningEffort": self.capabilities.reasoning_effort,
-                "steer": self.capabilities.steer,
-                "interrupt": self.capabilities.interrupt,
-                "approvals": self.capabilities.approvals,
-                "questions": self.capabilities.questions,
-                "fork": self.capabilities.fork,
-                "adopt": self.capabilities.adopt,
-                "selfModelSwitch": self.capabilities.self_model_switch,
-                "subagents": self.capabilities.subagents,
-                "attachments": self.capabilities.attachments,
-                "accountRotation": self.capabilities.account_rotation,
-            },
+            "capabilities": capabilities_to_wire(self.capabilities),
         }

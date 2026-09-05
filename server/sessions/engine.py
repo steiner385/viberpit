@@ -45,6 +45,26 @@ class AgentCapabilities:
     account_rotation: bool = False
 
 
+def capabilities_to_wire(caps: AgentCapabilities) -> dict[str, bool]:
+    """The browser shape of one capability set.
+
+    THE serializer — the plan makes capabilities (not ``if engine === ...``) decide
+    which controls a session surface renders, so every payload that carries them
+    (``/api/config``, a Codex availability report) must speak the same camelCase
+    keys. Derived from the dataclass fields rather than restated, so adding a
+    capability cannot leave one payload a field short.
+    """
+    return {
+        _to_camel(field): bool(getattr(caps, field))
+        for field in AgentCapabilities.__dataclass_fields__
+    }
+
+
+def _to_camel(name: str) -> str:
+    head, *rest = name.split("_")
+    return head + "".join(part.title() for part in rest)
+
+
 @runtime_checkable
 class AgentDriverStream(Protocol):
     turn_active: bool

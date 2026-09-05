@@ -87,6 +87,11 @@ def build_daemon(orchestrator=None):
     from server.github import app_auth as _app_auth
     _app_auth.register_git_providers()
     register_orchestrator_rpc(app, orchestrator)
+    # `/info` reads the live orchestrator for its capacity and engine advertisement.
+    # Nothing set this before, so `activeSessions` was hard-wired to 0 on every
+    # daemon and the ranker's headroom term was dead weight — and there was no
+    # handle through which to publish `engines` at all.
+    app.state.orchestrator = orchestrator
     app.state.x11 = orchestrator._x11
     register_x11(app, app.state.x11)
     app.state.reauth = ReauthManager(

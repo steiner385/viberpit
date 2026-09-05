@@ -57,6 +57,11 @@ vi.mock('@/api/hooks', () => ({
   // Mobile-only Rename (added when rename was dropped from the mobile session
   // card — the detail view is its new home so the action isn't stranded).
   useRenameSession: vi.fn(),
+  // Engine capabilities (SessionBody gates Claude-only surfaces on them).
+  useEngineOffers: vi.fn(() => []),
+  // Capability gate for engine-conditional controls; undefined = "unknown",
+  // which every gate reads as "capability present".
+  useEngineCapabilities: vi.fn(() => undefined),
   useSessionsViewing: vi.fn(),
   // useSessionNeighbors (added in mobile nav feature) calls useSessions internally.
   // Return an empty list so the chevrons stay hidden in these header-focused tests.

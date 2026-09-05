@@ -26,6 +26,18 @@
  * callback instead of a `canRename` flag) rather than adding a second copy of
  * it beside the title.
  *
+ * ## Session identity (Task 5.3)
+ *
+ * The bar names WHAT is running the session — agent (engine), account alias,
+ * runner host, model and reasoning effort — because with more than one engine
+ * in the fleet "which agent am I talking to?" is no longer a constant. The
+ * record comes from the SESSIONS QUERY keyed by this header's own `sessionId`
+ * (the same query `useSessionNeighbors` already walks for the chevrons), not
+ * from a global and not from a prop: `MainPaneSession` passes only the runtime's
+ * derived title/goal/status, and the runtime carries no engine, host or effort.
+ * The cluster is desktop-only (`hidden md:`) and every value truncates, so a
+ * long alias cannot starve the title.
+ *
  * ## Why the pill is here as well as in the meta strip
  *
  * `SessionBody`'s meta strip carries a `StatusBar` — the live, `aria-live`
@@ -39,11 +51,13 @@
 import { useState } from 'react'
 import { cn } from '@/lib/utils'
 import type { SessionStatus } from '@/api/types'
-import { useRenameSession } from '@/api/hooks'
+import { useRenameSession, useSessions, useEngineCapabilities } from '@/api/hooks'
+import { canUseEngine } from '@/session/engineCapabilities'
 import { StatusPill } from '@/components/UsageBadge'
 import { SessionGoalText } from '@/components/session/SessionGoalText'
 import { SessionActions } from '@/components/session/SessionActions'
 import { useSessionNeighbors } from '@/session/useSessionNeighbors'
+import { engineBadge, tierLabel } from '@/session/modelName'
 import { RenameDialog } from './RenameDialog'
 
 export interface SessionHeaderProps {
@@ -67,6 +81,19 @@ export interface SessionHeaderProps {
   onRotate?: () => void
 }
 
+/** One identity readout: muted, capped and truncating so it can never grow. */
+function IdentityValue({ label, value, className }: { label: string; value: string; className?: string }) {
+  return (
+    <span
+      aria-label={label}
+      title={`${label}: ${value}`}
+      className={cn('truncate max-w-[8rem] text-xs text-ink-muted', className)}
+    >
+      {value}
+    </span>
+  )
+}
+
 const NAV_BUTTON = cn(
   'flex items-center justify-center rounded-md min-h-target min-w-target',
   'text-sm font-medium text-ink-muted hover:text-ink hover:bg-surface',
@@ -79,6 +106,15 @@ export function SessionHeader({
   const { prevId, nextId } = useSessionNeighbors(sessionId)
   const [renameOpen, setRenameOpen] = useState(false)
   const renameSession = useRenameSession()
+  const { data: sessions = [] } = useSessions()
+  const record = sessions.find((s) => s.id === sessionId)
+  const agent = engineBadge(record?.engine)
+  // "Next best account" recomposes the target account's config dir and syncs
+  // credentials back — machinery that only exists for engines declaring
+  // `accountRotation`. An engine without it is REFUSED by the rotation path
+  // server-side, so offering the action would offer a guaranteed error.
+  const caps = useEngineCapabilities(record?.engine)
+  const canRotate = canUseEngine(caps, 'accountRotation')
 
   // Both chevrons render as a pair: useSessionNeighbors returns prevId/nextId
   // both-null (single/unknown session) or both-set (wraparound), never one null.
@@ -132,6 +168,33 @@ export function SessionHeader({
         <SessionGoalText goal={goal} source={goalSource} title={title} />
       </span>
 
+      {/* Session identity — agent · account · runner · model · effort. Desktop
+          only: on a narrow pane the title, pill and actions own the row. */}
+      {record && (
+        <span
+          data-testid="session-identity"
+          className="hidden md:flex items-center gap-2 min-w-0 flex-shrink"
+        >
+          {agent && (
+            <span
+              aria-label="Agent"
+              title={`Agent: ${agent}`}
+              className="truncate max-w-[8rem] rounded bg-surface px-1.5 py-0.5 text-xs font-medium text-ink"
+            >
+              {agent}
+            </span>
+          )}
+          <IdentityValue label="Account" value={record.accountName} />
+          {record.host && <IdentityValue label="Runner host" value={record.host} />}
+          {record.model && (
+            <IdentityValue label="Model" value={tierLabel(record.model, record.engine)} />
+          )}
+          {record.reasoningEffort && (
+            <IdentityValue label="Reasoning effort" value={record.reasoningEffort} />
+          )}
+        </span>
+      )}
+
       <StatusPill status={status} />
 
       {hasNeighbors && (
@@ -152,7 +215,7 @@ export function SessionHeader({
         variant="light"
         onRename={() => setRenameOpen(true)}
         onReload={onReload}
-        onRotate={onRotate}
+        onRotate={canRotate ? onRotate : undefined}
       />
 
       {/* The one rename flow. Both triggers above open THIS dialog; unlike

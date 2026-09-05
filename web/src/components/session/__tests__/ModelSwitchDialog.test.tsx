@@ -29,4 +29,34 @@ describe('ModelSwitchDialog', () => {
     expect(screen.getByText(/Opus 4\.8/)).toBeInTheDocument()
     expect(screen.getAllByRole('button')).toHaveLength(3)
   })
+
+  // The non-interrupting choice sends the same `after_turn` command for both
+  // engines, but the two engines DO different things with it: without the
+  // `steer` capability the SDK applies the model to the NEXT turn, while an
+  // engine that can steer retargets the turn already running
+  // (server/codex/driver.py `set_model` → `turn/settings/update`). The label has
+  // to say which, and it is gated on the capability, never on the engine name.
+  describe('an engine that can steer a running turn', () => {
+    it('says the running turn is retargeted rather than left to finish', () => {
+      render(<ModelSwitchDialog {...props} canSteer />)
+      expect(screen.getByRole('button', { name: /switch without stopping/i })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /switch after this turn/i })).toBeNull()
+    })
+
+    it('still sends the same after_turn decision', () => {
+      const onConfirm = vi.fn()
+      render(<ModelSwitchDialog {...props} onConfirm={onConfirm} canSteer />)
+      screen.getByRole('button', { name: /switch without stopping/i }).click()
+      expect(onConfirm).toHaveBeenCalledWith('after_turn')
+    })
+
+    it('keeps every button at the 44px touch target', () => {
+      render(<ModelSwitchDialog {...props} canSteer />)
+      for (const btn of screen.getAllByRole('button')) {
+        for (const cls of LG_CLASSES) {
+          expect(btn.className, `"${btn.textContent}" is missing ${cls}`).toContain(cls)
+        }
+      }
+    })
+  })
 })

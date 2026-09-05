@@ -1,10 +1,15 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Sparkles } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { GithubRepo } from '@/api/hooks'
 import { useAssessDispatch } from '@/api/hooks'
-import type { Account, ModelOption } from '@/api/types'
+import type { AgentEngine, Account, EngineOffer, ModelOption } from '@/api/types'
+import {
+  AGENT_ENGINE_LABELS, DEFAULT_AGENT_ENGINE, accountEngine,
+} from '@/api/types'
+import { engineReasonLabel, hostDispatchable, type HostEngineState } from '@/api/fleet'
 import { getLastRepo, setLastRepo } from '@/lib/lastRepo'
+import { getPreferredEngine, setPreferredEngine } from '@/lib/enginePreference'
 import { caretLineEdges } from '@/lib/caretLineEdges'
 import { isGatedTier, modelName } from '@/session/modelName'
 import { useImageAttachments } from './session/useImageAttachments'
@@ -17,16 +22,25 @@ export interface DispatchBarProps {
   repos: GithubRepo[]
   reposLoading: boolean
   reposError: boolean
-  /** Accounts offered in the Account dropdown; empty ⇒ only "Auto-select". */
+  /** Accounts offered in the Account dropdown; empty ⇒ only "Auto-select".
+   *  Filtered here by the selected engine — an account belongs to exactly one. */
   accounts?: Account[]
-  /** Curated model list (server source of truth); empty ⇒ only "Default". */
+  /** Model list for the CURRENT engine/account (the dock fetches it; see
+   *  `onEngineContextChange`); empty ⇒ only "Default". */
   models?: ModelOption[]
-  /** Fleet hosts for the Runner dropdown; absent or empty ⇒ no dropdown shown. */
-  hosts?: { name: string }[]
+  /** Fleet hosts for the Runner dropdown; absent, empty, or none able to run the
+   *  selected engine ⇒ no dropdown shown. */
+  hosts?: { name: string; engines?: HostEngineState[] }[]
+  /**
+   * What engines this deployment offers, from `GET /api/config`. Fewer than two
+   * ⇒ no Agent selector at all, which is what every pre-Codex edge reports.
+   */
+  engines?: EngineOffer[]
   /**
    * Fired on Enter when the prompt has text or images are attached.
-   * `account`/`model`/`host` are already normalized: null means "let the backend
-   * decide" (Auto-select account / account-default model / auto-rank runner).
+   * `account`/`model`/`host`/`reasoningEffort` are already normalized: null means
+   * "let the backend decide" (Auto-select account / account-default model /
+   * auto-rank runner / model-default effort). `engine` is always concrete.
    * Reject with a `DispatchError` to have the bar show its message inline.
    */
   onDispatch: (input: {
@@ -36,7 +50,18 @@ export interface DispatchBarProps {
     model: string | null
     host: string | null
     attachmentIds: string[]
+    engine: AgentEngine
+    reasoningEffort: string | null
   }) => Promise<void>
+  /**
+   * The engine/account the model list must be fetched for.
+   *
+   * The bar owns those two picks, but `GET /api/models` is engine- AND
+   * account-scoped for Codex, so the dock cannot know what to fetch without
+   * being told. Reported upward rather than queried here so the bar stays a
+   * presentational component with no data hooks of its own.
+   */
+  onEngineContextChange?: (context: { engine: AgentEngine; account: string | null }) => void
   /** ↑/↓ at a line boundary (or empty prompt). */
   onNavigate: (dir: 'up' | 'down') => void
   /** Enter on an EMPTY prompt, or →. */
@@ -71,7 +96,9 @@ export function DispatchBar({
   accounts = [],
   models = [],
   hosts = [],
+  engines = [],
   onDispatch,
+  onEngineContextChange,
   onNavigate,
   onOpenHighlighted,
   onEnterList,
@@ -93,6 +120,13 @@ export function DispatchBar({
   const [model, setModel] = useState('default')
   // '' = Auto (let FleetOrchestrator rank); a name = prefer that host.
   const [host, setHost] = useState('')
+  // '' = the model's own default effort; a value pins it.
+  const [reasoning, setReasoning] = useState('')
+  // null until the user has explicitly picked an agent. NOT seeded to
+  // 'claude_code': the resolution below must be able to tell "never chose" from
+  // "chose Claude", and an unoffered persisted choice must fall back rather than
+  // be honoured.
+  const [engineChoice, setEngineChoice] = useState<AgentEngine | null>(() => getPreferredEngine())
   // Mobile-only disclosure for the Account/Model selects; desktop always shows all three.
   const [showMore, setShowMore] = useState(false)
   const [assessing, setAssessing] = useState(false)
@@ -108,6 +142,39 @@ export function DispatchBar({
   useEffect(() => {
     textareaRef.current?.focus()
   }, [autoFocusKey])
+
+  // ── which agent is selected ────────────────────────────────────────────────
+  //
+  // Derived, not stored, so a persisted choice the server has since withdrawn
+  // (Codex uninstalled, credential authority removed) can never be honoured —
+  // an `available: false` engine falls back to Claude Code every render rather
+  // than only on the mount that happened to notice.
+  const engine: AgentEngine =
+    engineChoice && engines.some((e) => e.engine === engineChoice && e.available)
+      ? engineChoice
+      : DEFAULT_AGENT_ENGINE
+  const engineOffer = engines.find((e) => e.engine === engine)
+  const capabilities = engineOffer?.capabilities
+
+  // Changing the agent invalidates every downstream pick: a Claude account
+  // cannot run Codex, and the model/effort catalogues do not overlap at all.
+  // Reset to the visible sentinels ('' / 'default'), never merely filter them
+  // out of the list — a hidden-but-still-set account would be sent to the
+  // backend for the wrong engine.
+  const lastEngineRef = useRef(engine)
+  useEffect(() => {
+    if (lastEngineRef.current === engine) return
+    lastEngineRef.current = engine
+    setAccount('')
+    setModel('default')
+    setReasoning('')
+    setHost('')
+  }, [engine])
+
+  // The dock fetches the model list, and for Codex it needs BOTH of these.
+  useEffect(() => {
+    onEngineContextChange?.({ engine, account: account || null })
+  }, [engine, account, onEngineContextChange])
 
   // Auto-grow textarea: reset height then set to scrollHeight (capped at ~192px / 8 rows)
   function handleChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
@@ -129,13 +196,20 @@ export function DispatchBar({
     if (files.length) { e.preventDefault(); void att.addFiles(files) }
   }
 
+  /** The one way the model changes — it also re-seeds the reasoning effort to
+   *  whatever the newly-selected model advertises as its default. */
+  function selectModel(id: string) {
+    setModel(id)
+    setReasoning(models.find((m) => m.id === id)?.defaultReasoningEffort ?? '')
+  }
+
   async function handleAssess() {
     setAssessing(true)
     try {
       const result = await assess(text.trim())
       if (result) {
         // Never auto-select a gated tier from assess — leave it for the user to pick explicitly.
-        if (result.model && model === 'default' && !isGatedTier(result.model)) setModel(result.model)
+        if (result.model && model === 'default' && !isGatedTier(result.model)) selectModel(result.model)
         setRefinedPrompt(result.refined_prompt)
       }
     } catch {
@@ -163,6 +237,9 @@ export function DispatchBar({
         // '' ⇒ null so the backend auto-ranks; a name pins the runner.
         host: host || null,
         attachmentIds: refs,
+        engine,
+        // '' ⇒ null so the engine keeps the model's own default effort.
+        reasoningEffort: reasoning || null,
       })
       setText('')
       setRefinedPrompt(null)
@@ -278,9 +355,79 @@ export function DispatchBar({
   )
   const selectLabelClass = 'text-xs text-gray-500 dark:text-gray-400'
 
-  // Account/Model/Host are worth flagging when collapsed on mobile — a hidden
-  // non-default pick would otherwise silently steer the dispatch.
-  const hasNonDefaultPick = account !== '' || model !== 'default' || host !== ''
+  // ── what the selected engine leaves on offer ───────────────────────────────
+
+  /** Accounts that can run THIS engine. An account is scoped to exactly one
+   *  (constitution II), and an engine-less row is a pre-Codex Claude account. */
+  const engineAccounts = useMemo(
+    () => accounts.filter((a) => a.enabled !== false && accountEngine(a) === engine),
+    [accounts, engine],
+  )
+
+  /** Runners this engine may actually be dispatched to. Shrinking the list is
+   *  the honest answer: pinning a Codex launch to a host that cannot start it
+   *  is a 409 the user could not have predicted. */
+  const engineHosts = useMemo(
+    () => hosts.filter((h) => hostDispatchable(h, engine)),
+    [hosts, engine],
+  )
+
+  // Codex model lists come from the selected ACCOUNT's own app-server, so with
+  // no account there is nothing to show — and asking anyway is a 400.
+  const needsAccountForModels = engine !== DEFAULT_AGENT_ENGINE && !account
+
+  const selectedModel = models.find((m) => m.id === model)
+  // Capabilities — not `if (engine === 'codex')` — decide whether the control
+  // exists at all; the MODEL then decides whether it has anything to offer.
+  // An edge that reports no capabilities (pre-Codex `/api/config`) does not
+  // suppress a model that explicitly advertises efforts.
+  const reasoningEfforts =
+    (capabilities?.reasoningEffort ?? true) ? selectedModel?.reasoningEfforts ?? [] : []
+  const showReasoning = reasoningEfforts.length > 0
+  const showRunner = engineHosts.length > 0
+  // Two known engines is the trigger, not two AVAILABLE ones: an unavailable
+  // engine still renders (disabled, with its reason) so "why can't I pick
+  // Codex?" is answerable without opening Settings.
+  const showEngine = engines.length > 1
+
+  // Everything behind the mobile disclosure is worth flagging when collapsed —
+  // a hidden non-default pick would otherwise silently steer the dispatch.
+  const hasNonDefaultPick =
+    engine !== DEFAULT_AGENT_ENGINE ||
+    account !== '' ||
+    model !== 'default' ||
+    host !== '' ||
+    (reasoning !== '' && reasoning !== (selectedModel?.defaultReasoningEffort ?? ''))
+
+  // Built from the ids actually rendered: a dangling `aria-controls` target is
+  // an a11y violation, and the Reasoning/Runner selects are conditional.
+  const disclosedIds = [
+    showEngine && 'dispatch-bar-engine',
+    'dispatch-bar-account',
+    'dispatch-bar-model',
+    showReasoning && 'dispatch-bar-reasoning',
+    showRunner && 'dispatch-bar-runner',
+  ].filter((id): id is string => typeof id === 'string')
+
+  // One column per rendered select (plus the repo cell). Literal class names so
+  // Tailwind's scanner emits them.
+  const columnClass = {
+    2: 'sm:grid-cols-2',
+    3: 'sm:grid-cols-3',
+    4: 'sm:grid-cols-4',
+    5: 'sm:grid-cols-5',
+    6: 'sm:grid-cols-6',
+  }[Math.min(6, 1 + disclosedIds.length)] ?? 'sm:grid-cols-4'
+
+  /** Why an engine cannot be picked. An edge-side blocker wins: when the EDGE
+   *  is the problem no runner is at fault, and naming one would send the
+   *  operator to the wrong machine. */
+  function engineUnavailableText(o: EngineOffer): string {
+    if (o.blockedReason) return engineReasonLabel(o.blockedReason)
+    const names = Object.keys(o.unavailableReasons)
+    if (names.length === 0) return 'unavailable'
+    return `no runner can run it (${names.map((n) => `${n}: ${engineReasonLabel(o.unavailableReasons[n])}`).join(', ')})`
+  }
 
   return (
     <div
@@ -294,9 +441,10 @@ export function DispatchBar({
       onDrop={handleDrop}
       onDragOver={(e) => e.preventDefault()}
     >
-      {/* Repo / account / model / runner selector row — 3–4 across on desktop; on mobile a
-          single line (repo + "more" toggle) with account/model/runner behind the toggle */}
-      <div className={cn('grid grid-cols-1 gap-2', hosts.length > 0 ? 'sm:grid-cols-4' : 'sm:grid-cols-3')}>
+      {/* Repo / agent / account / model / reasoning / runner selector row — one column
+          per rendered select on desktop; on mobile a single line (repo + "more" toggle)
+          with everything else behind the toggle */}
+      <div className={cn('grid grid-cols-1 gap-2', columnClass)}>
         {/* Repository + mobile-only more-options toggle. Top-aligned (not items-end): grid
             cells stretch to the tallest column, and the Model column grows when its approval
             hint shows — items-end would drop this label+select to the bottom of the row. On
@@ -342,7 +490,7 @@ export function DispatchBar({
             type="button"
             aria-label="More options"
             aria-expanded={showMore}
-            aria-controls="dispatch-bar-account dispatch-bar-model dispatch-bar-runner"
+            aria-controls={disclosedIds.join(' ')}
             onClick={() => setShowMore((v) => !v)}
             className={cn(
               'sm:hidden relative flex-shrink-0 rounded-md px-3 py-2 text-sm min-h-[44px]',
@@ -359,13 +507,45 @@ export function DispatchBar({
                   aria-hidden="true"
                   className="absolute top-1 right-1 h-2 w-2 rounded-full bg-blue-500"
                 />
-                <span className="sr-only">Non-default account, model, or runner selected</span>
+                <span className="sr-only">
+                  Non-default agent, account, model, reasoning, or runner selected
+                </span>
               </>
             )}
           </button>
         </div>
 
-        {/* Account — "" = Auto-select (usage-aware rotation picks one). */}
+        {/* Agent — which engine runs the session. Rendered only when the server
+            knows about more than one; an engine it cannot currently offer is
+            listed but disabled, with the reason, rather than silently missing. */}
+        {showEngine && (
+          <div className={cn('flex-col gap-1', showMore ? 'flex' : 'hidden sm:flex')}>
+            <label htmlFor="dispatch-bar-engine" className={selectLabelClass}>
+              Agent
+            </label>
+            <select
+              id="dispatch-bar-engine"
+              aria-label="Agent"
+              value={engine}
+              onChange={(e) => {
+                const next = e.target.value as AgentEngine
+                setEngineChoice(next)
+                setPreferredEngine(next)
+              }}
+              className={selectClass}
+            >
+              {engines.map((o) => (
+                <option key={o.engine} value={o.engine} disabled={!o.available}>
+                  {AGENT_ENGINE_LABELS[o.engine] ?? o.engine}
+                  {o.available ? '' : ` — ${engineUnavailableText(o)}`}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {/* Account — "" = Auto-select (usage-aware rotation picks one). Only the
+            accounts that belong to the selected engine. */}
         <div className={cn('flex-col gap-1', showMore ? 'flex' : 'hidden sm:flex')}>
           <label htmlFor="dispatch-bar-account" className={selectLabelClass}>
             Account
@@ -378,7 +558,7 @@ export function DispatchBar({
             className={selectClass}
           >
             <option value="">Auto-select</option>
-            {accounts.filter((a) => a.enabled !== false).map((a) => (
+            {engineAccounts.map((a) => (
               <option key={a.name} value={a.name}>{a.nickname || a.name}</option>
             ))}
           </select>
@@ -392,13 +572,17 @@ export function DispatchBar({
           <select
             id="dispatch-bar-model"
             aria-label="Model"
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
+            value={needsAccountForModels ? '' : model}
+            onChange={(e) => selectModel(e.target.value)}
+            disabled={needsAccountForModels}
             className={selectClass}
           >
+            {/* This engine's catalogue is a property of the ACCOUNT, so say so
+                rather than firing a request the server answers with a 400. */}
+            {needsAccountForModels && <option value="">Select an account first</option>}
             {/* Fallback so the "default" value always has a matching option before the list loads. */}
-            {models.length === 0 && <option value="default">Default</option>}
-            {models.map((m) => (
+            {!needsAccountForModels && models.length === 0 && <option value="default">Default</option>}
+            {!needsAccountForModels && models.map((m) => (
               <option key={m.id} value={m.id}>{m.label}</option>
             ))}
           </select>
@@ -409,8 +593,29 @@ export function DispatchBar({
           )}
         </div>
 
+        {/* Reasoning effort — only when the engine advertises the capability AND
+            the selected model offers choices; seeded to the model's own default. */}
+        {showReasoning && (
+          <div className={cn('flex-col gap-1', showMore ? 'flex' : 'hidden sm:flex')}>
+            <label htmlFor="dispatch-bar-reasoning" className={selectLabelClass}>
+              Reasoning
+            </label>
+            <select
+              id="dispatch-bar-reasoning"
+              aria-label="Reasoning effort"
+              value={reasoning}
+              onChange={(e) => setReasoning(e.target.value)}
+              className={selectClass}
+            >
+              {reasoningEfforts.map((effort) => (
+                <option key={effort} value={effort}>{effort}</option>
+              ))}
+            </select>
+          </div>
+        )}
+
         {/* Runner — '' = Auto (fleet auto-ranks); a name pins the session to that host. */}
-        {hosts.length > 0 && (
+        {showRunner && (
           <div className={cn('flex-col gap-1', showMore ? 'flex' : 'hidden sm:flex')}>
             <label htmlFor="dispatch-bar-runner" className={selectLabelClass}>
               Runner
@@ -423,7 +628,7 @@ export function DispatchBar({
               className={selectClass}
             >
               <option value="">Auto</option>
-              {hosts.map((h) => (
+              {engineHosts.map((h) => (
                 <option key={h.name} value={h.name}>{h.name}</option>
               ))}
             </select>

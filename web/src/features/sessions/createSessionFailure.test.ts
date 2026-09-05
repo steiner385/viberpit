@@ -3,6 +3,7 @@ import { ApiRequestError } from '@/api/client'
 import { MUTATION_ERROR_FALLBACK } from '@/api/queryClient'
 import {
   describeCreateSessionFailure, REAUTH_MESSAGE, CREATE_SESSION_FALLBACK,
+  ENGINE_UNAVAILABLE_FALLBACK, MODEL_EFFORT_MISMATCH_FALLBACK, MODELS_UNAVAILABLE_MESSAGE,
 } from './createSessionFailure'
 
 describe('describeCreateSessionFailure — the 409 triage', () => {
@@ -50,5 +51,82 @@ describe('describeCreateSessionFailure — everything else', () => {
   it('a non-API error (network) also lands on the fallback', () => {
     expect(describeCreateSessionFailure(new TypeError('Failed to fetch')))
       .toEqual({ kind: 'other', message: CREATE_SESSION_FALLBACK })
+  })
+})
+
+describe('describeCreateSessionFailure — the engine-aware failures', () => {
+  it('engine_unavailable says so, and keeps the server line naming the engine', () => {
+    const err = new ApiRequestError(409, {
+      error: { code: 'engine_unavailable', message: 'agent engine is not available: codex', engine: 'codex' },
+    })
+    expect(describeCreateSessionFailure(err)).toEqual({
+      kind: 'engine', message: 'agent engine is not available: codex', hostReasons: {},
+    })
+  })
+
+  it('no_engine_host_available is an ENGINE failure, not "all accounts limited"', () => {
+    // Same 409 status as the usage ceiling, and `NoEngineHostAvailable` even
+    // subclasses `NoHostAvailable` — so without its own branch this lands in the
+    // all-limited banner and sends the operator to look at account quotas
+    // instead of at a missing Codex binary. `hostReasons` names which to fix.
+    const err = new ApiRequestError(409, {
+      error: {
+        code: 'no_engine_host_available',
+        message: 'no healthy host can run engine codex (rocky: binary_not_found)',
+        engine: 'codex',
+        hostReasons: { rocky: 'binary_not_found', edge: 'contract_hash_mismatch' },
+      },
+    })
+    expect(describeCreateSessionFailure(err)).toEqual({
+      kind: 'engine',
+      message: 'no healthy host can run engine codex (rocky: binary_not_found)',
+      hostReasons: { rocky: 'binary_not_found', edge: 'contract_hash_mismatch' },
+    })
+  })
+
+  it('a plain "no host available" 409 stays the all-limited banner', () => {
+    // Unchanged behaviour: an ordinary capacity shortfall is the shell banner's.
+    const err = new ApiRequestError(409, {
+      error: { code: 'no_host_available', message: 'no host available' },
+    })
+    expect(describeCreateSessionFailure(err)).toEqual({ kind: 'all-limited', earliestReset: null })
+  })
+
+  it('codex_models_unavailable (502 from the app-server) is an engine failure', () => {
+    const err = new ApiRequestError(502, {
+      detail: { error: 'codex_models_unavailable', message: 'model/list failed' },
+    })
+    expect(describeCreateSessionFailure(err)).toEqual({
+      kind: 'engine', message: MODELS_UNAVAILABLE_MESSAGE, hostReasons: {},
+    })
+  })
+
+  it('model_effort_mismatch is its own kind and keeps the rejected pair', () => {
+    const err = new ApiRequestError(409, {
+      error: {
+        error: 'model_effort_mismatch', model: 'gpt-5-codex', effort: 'ultra',
+        choices: [{ id: 'gpt-5-codex', reasoningEfforts: ['low', 'high'] }],
+      },
+    })
+    expect(describeCreateSessionFailure(err)).toEqual({
+      kind: 'model',
+      message: MODEL_EFFORT_MISMATCH_FALLBACK,
+      model: 'gpt-5-codex',
+      effort: 'ultra',
+    })
+  })
+
+  it('model_effort_mismatch without the pair still reads as a model failure', () => {
+    const err = new ApiRequestError(409, { error: { code: 'model_effort_mismatch' } })
+    expect(describeCreateSessionFailure(err)).toEqual({
+      kind: 'model', message: MODEL_EFFORT_MISMATCH_FALLBACK, model: null, effort: null,
+    })
+  })
+
+  it('engine_unavailable with no message falls back to a fixed line', () => {
+    const err = new ApiRequestError(409, { error: { code: 'engine_unavailable' } })
+    expect(describeCreateSessionFailure(err)).toEqual({
+      kind: 'engine', message: ENGINE_UNAVAILABLE_FALLBACK, hostReasons: {},
+    })
   })
 })

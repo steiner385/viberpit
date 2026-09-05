@@ -63,10 +63,18 @@ async def probe_host(name: str, endpoint: str, *, fetch: Fetch,
     try:
         info = await fetch(endpoint)
         daemon_proto = info.get("protocol")
+        # The engine advertisement is recorded on EVERY outcome below, including a
+        # fenced one: it describes what the runner can run, not whether the edge may
+        # dispatch to it today, and a stale capability outlives a skew fence. It is
+        # deliberately NOT an input to `healthy` — a runner with no Codex binary is a
+        # perfectly good Claude runner, and letting Codex touch host health would
+        # take Claude dispatch and deploy targeting down with it.
+        engines = _engines_snapshot(info)
         metrics = dict(sha=info.get("sha"), checkout_sha=info.get("checkoutSha"),
                        protocol=daemon_proto, load_avg=info.get("loadAvg"),
                        mem_available_mb=info.get("memAvailableMb"),
-                       active_sessions=info.get("activeSessions"))
+                       active_sessions=info.get("activeSessions"),
+                       engines=engines)
         # Gate 1 — protocol: a daemon speaking another RPC protocol is never dispatchable.
         if daemon_proto is not None and daemon_proto != PROTOCOL_VERSION:
             values.update(healthy=False, last_error=(
@@ -85,6 +93,20 @@ async def probe_host(name: str, endpoint: str, *, fetch: Fetch,
     async with db_session() as db:
         await db.execute(sa_update(Host).where(Host.name == name).values(**values))
     return values
+
+
+def _engines_snapshot(info: dict) -> dict | None:
+    """The `/info.engines` sub-dict to persist, or None for a legacy daemon.
+
+    None is meaningful and must not be normalized away here: the reader
+    (``host_engines.parse_engines_info``) is the one place that turns "not
+    advertised" into the Claude-only compatibility default, and persisting that
+    default would make an upgraded daemon indistinguishable from an old one.
+    """
+    from server.sessions.host_engines import ENGINES_INFO_KEY
+
+    raw = info.get(ENGINES_INFO_KEY)
+    return raw if isinstance(raw, dict) else None
 
 
 async def probe_all(*, fetch: Fetch | None = None,

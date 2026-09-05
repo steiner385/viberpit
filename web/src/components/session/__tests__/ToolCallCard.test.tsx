@@ -79,6 +79,30 @@ describe('ToolCallCard', () => {
     expect(screen.getByText('/src/foo.ts')).toBeInTheDocument()
   })
 
+  // A Codex fileChange item is normalised to the SAME Edit/edit tool card, but
+  // its input carries `changes: [{path, kind}]` instead of `file_path`
+  // (server/codex/translator.py `_tool_shape`). Reading only `file_path` left
+  // every Codex edit summarised as an empty string.
+  it('shows key arg for a codex edit (changes[].path)', () => {
+    render(<ToolCallCard density="card" block={{
+      ...editBlock,
+      input: { changes: [{ path: 'server/codex/driver.py', kind: 'update' }] },
+    }} />)
+    expect(screen.getByText('server/codex/driver.py')).toBeInTheDocument()
+  })
+
+  it('summarises a multi-file codex edit as the first path plus a count', () => {
+    render(<ToolCallCard density="card" block={{
+      ...editBlock,
+      input: { changes: [
+        { path: 'a.py', kind: 'update' },
+        { path: 'b.py', kind: 'add' },
+        { path: 'c.py', kind: 'delete' },
+      ] },
+    }} />)
+    expect(screen.getByText('a.py +2 more')).toBeInTheDocument()
+  })
+
   it('is collapsed by default', () => {
     render(<ToolCallCard block={bashBlock} density="card" />)
     const toggle = screen.getByRole('button', { name: /args/i })

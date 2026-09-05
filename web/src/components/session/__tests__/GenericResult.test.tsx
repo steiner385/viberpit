@@ -36,4 +36,46 @@ describe('GenericResult', () => {
     const { container } = render(<GenericResult ok={false} payload={{ content: 'boom' }} />)
     expect(container.querySelector('pre')).toHaveClass('bg-red-50')
   })
+
+  // Codex result payloads are single-key status dicts — `{status}` for a file
+  // change / MCP / dynamic tool call, `{kind}` for sub-agent activity, `{}` for
+  // web search, plan, image view (server/codex/translator.py `_tool_result`).
+  // A 1x1 table with a "raw" disclosure for the word "completed" is noise.
+  describe('compact tier for small flat payloads', () => {
+    it('renders a single-key status payload as one compact line', () => {
+      render(<GenericResult payload={{ status: 'completed' }} />)
+      const compact = screen.getByTestId('result-compact')
+      expect(compact).toHaveTextContent('status')
+      expect(compact).toHaveTextContent('completed')
+      // No table, and no raw-JSON disclosure for a single word.
+      expect(screen.queryByRole('table')).toBeNull()
+      expect(screen.queryByText('raw')).toBeNull()
+    })
+
+    it('renders a sub-agent activity kind payload compactly', () => {
+      render(<GenericResult payload={{ kind: 'completed' }} />)
+      expect(screen.getByTestId('result-compact')).toHaveTextContent('kind')
+    })
+
+    it('says plainly that a payload-free result carried no details', () => {
+      render(<GenericResult payload={{}} />)
+      expect(screen.getByTestId('result-compact')).toHaveTextContent(/no details/i)
+    })
+
+    it('tints the compact line when the result failed', () => {
+      render(<GenericResult ok={false} payload={{ status: 'failed' }} />)
+      expect(screen.getByTestId('result-compact').className).toMatch(/red/)
+    })
+
+    it('still uses the structured view for anything bigger or nested', () => {
+      render(<GenericResult payload={{ a: 1, b: 2, c: 3, d: 4 }} />)
+      expect(screen.queryByTestId('result-compact')).toBeNull()
+      expect(screen.getByText('raw')).toBeInTheDocument()
+    })
+
+    it('still uses the structured view when a value is not a scalar', () => {
+      render(<GenericResult payload={{ changes: [{ path: 'a.py' }] }} />)
+      expect(screen.queryByTestId('result-compact')).toBeNull()
+    })
+  })
 })

@@ -21,6 +21,38 @@
 // component that happened to render it first.
 import { useQuery } from '@tanstack/react-query'
 import { api } from './client'
+import type { AgentEngine } from './types'
+
+/**
+ * One engine's state on one runner (`server/api/fleet.py:_engines_wire`).
+ *
+ * TWO verdicts, and they genuinely differ: `available` is what the RUNNER says
+ * about itself, `dispatchable` is what THIS edge is willing to do about it.
+ * `available: true` with `dispatchable: false` is a real state — a runner
+ * happily running Codex against an app-server schema contract this edge is not
+ * pinned to — and an operator needs both halves to know which side to upgrade.
+ *
+ * `reason` / `dispatchReason` are typed tokens, not prose
+ * (`binary_not_found`, `contract_hash_mismatch`, `engine_not_advertised`, …);
+ * the UI maps them to plain language. There is deliberately no free-text detail
+ * field: the server scrubs Codex detail strings wholesale, so shipping one
+ * would render "[REDACTED]" to an operator.
+ */
+export interface HostEngineState {
+  engine: AgentEngine
+  /** The runner's own verdict. */
+  available: boolean
+  /** Why not available (or `engine_not_advertised` for a legacy runner). */
+  reason: string | null
+  cliVersion: string | null
+  contractSha256: string | null
+  /** Whether the runner has the external-token auth plane on. Null = unknown. */
+  externalAuth: boolean | null
+  /** The EDGE's verdict: may a launch for this engine be sent here? */
+  dispatchable: boolean
+  /** Why the edge would refuse; null when it would not. */
+  dispatchReason: string | null
+}
 
 export interface HostUpgrade {
   state: 'idle' | 'running' | 'failed' | 'done'
@@ -48,6 +80,65 @@ export interface FleetHost {
   sshHost: string | null
   repoPath: string | null
   upgrade: HostUpgrade | null
+  /**
+   * Per-engine state, one entry per engine the EDGE knows about (never only the
+   * ones the runner mentioned). Optional because an edge that predates the
+   * engine registry omits the key entirely — which is the same tri-state
+   * `healthy` uses: absent means "not advertised", never "unavailable".
+   */
+  engines?: HostEngineState[]
+}
+
+/** One engine's row for a host, or null when the host never advertised it.
+ *  The ONE reader of `FleetHost.engines`, so "absent" cannot come to mean
+ *  different things in the fleet table and in the Runner picker. */
+export function hostEngine(
+  host: Pick<FleetHost, 'engines'>,
+  engine: AgentEngine,
+): HostEngineState | null {
+  return host.engines?.find((e) => e.engine === engine) ?? null
+}
+
+/** Whether a launch for `engine` may be sent to this host.
+ *
+ *  A host with NO engine information at all is treated as Claude-only — the same
+ *  rolling-upgrade default the server applies to a daemon that predates
+ *  `/info.engines` (`server/sessions/host_engines.py:LEGACY_ENGINES`). */
+export function hostDispatchable(
+  host: Pick<FleetHost, 'engines'>,
+  engine: AgentEngine,
+): boolean {
+  const state = hostEngine(host, engine)
+  if (state) return state.dispatchable
+  return !host.engines?.length && engine === 'claude_code'
+}
+
+/**
+ * Plain language for the engine reason tokens — the ONE map.
+ *
+ * The same vocabulary appears in three places on the wire: a runner's own
+ * `reason`, the edge's `dispatchReason` (those two plus `contract_hash_mismatch`),
+ * and `/api/config`'s edge-wide `blockedReason`. They are one vocabulary, so
+ * they get one translation: a second copy in the launch bar would drift from
+ * the fleet table's the first time a token is added.
+ */
+export const ENGINE_REASON_LABELS: Record<string, string> = {
+  disabled: 'not enabled on this runner',
+  external_auth_disabled: 'external token auth is off',
+  binary_not_found: 'agent binary not installed',
+  version_probe_failed: 'version probe failed',
+  unsupported_version: 'unsupported agent version',
+  runtime_home_refused: 'runtime home refused',
+  engine_not_advertised: 'not advertised (older runner)',
+  contract_hash_mismatch: 'app-server contract differs from this edge',
+  authority_unconfigured: 'no credential authority is configured',
+}
+
+/** Human text for a reason token, falling back to the token so an unknown one
+ *  is still SHOWN rather than swallowed into a blank cell. */
+export function engineReasonLabel(token: string | null | undefined): string {
+  if (!token) return 'unavailable'
+  return ENGINE_REASON_LABELS[token] ?? token
 }
 
 /** The query key, exported so invalidations cannot misspell it. */

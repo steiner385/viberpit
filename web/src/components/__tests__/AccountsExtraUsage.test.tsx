@@ -50,6 +50,15 @@ vi.mock('@/api/hooks', () => ({
   useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
   useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  // Task 5.2: the engine-aware launch path (`useEngineOffers`) and the OpenAI
+  // device flow. An empty offer list is the pre-Codex answer — no Agent selector.
+  useEngineOffers: vi.fn(() => []),
+  useAddOpenAIAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useOpenAIAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
+  useCancelOpenAIAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useOpenAIReauth: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useOpenAIReauthStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
+  useCancelOpenAIReauth: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   QK: {
     accounts: ['accounts'],
     sessions: ['sessions'],

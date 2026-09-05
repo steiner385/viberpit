@@ -939,6 +939,14 @@ class Host(Base):
     # /info.checkoutSha). Differs from `sha` (the PROCESS's start-time HEAD) after an
     # edge-only deploy updated the checkout without a restart. Nullable: reconcile adds it.
     checkout_sha: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # Last-seen `/info.engines` — per-engine availability as this runner advertised it
+    # (see server/sessions/host_engines.py for the shape and the one parser). NULL is
+    # "never probed, or probed a daemon that predates the advertisement", which the
+    # parser resolves to the legacy Claude-only default for one upgrade window. Stored
+    # rather than re-probed at dispatch time so ranking can FILTER candidates without an
+    # RPC per host; the chosen host is still re-checked live before a non-Claude launch.
+    engines: Mapped[dict | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True, default=None)
 
 
 class DeployStateRow(Base):

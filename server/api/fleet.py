@@ -11,11 +11,18 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, field_validator
 from sqlalchemy import delete as sa_delete, select as sa_select, update as sa_update
 
+from ccswitch.engines import AgentEngine
 from server.auth.middleware import current_identity
 from server.db import db_session
 from server.db.models import Host
 from server.deploy.steps import SSH_HOST_RE, SSH_REPO_RE
 from server.sessions import host_upgrade
+from server.sessions.host_engines import (
+    EngineAvailability,
+    engine_dispatchable,
+    expected_contract_sha256,
+    parse_engines_info,
+)
 
 router = APIRouter(prefix="/api/fleet", tags=["fleet"])
 
@@ -59,6 +66,29 @@ class UpgradeBody(BaseModel):
     force: bool = False
 
 
+def _engines_wire(h: Host) -> list[dict]:
+    """Every known engine's state on *h*, ordered so the list is stable to render.
+
+    Always includes an entry per engine the edge knows about, never only the ones a
+    runner mentioned: "Codex: not advertised (legacy daemon)" is the answer an
+    operator staring at a mixed-version fleet actually needs, and omitting the row
+    would look like the page failed to load rather than like an old runner.
+    """
+    advertised = parse_engines_info(h.engines)
+    out: list[dict] = []
+    for engine in AgentEngine:
+        state = advertised.get(engine)
+        ok, reason = engine_dispatchable(
+            advertised, engine,
+            expected_contract_sha256=expected_contract_sha256(engine))
+        wire = (state or EngineAvailability(
+            engine=engine, available=False, reason="engine_not_advertised")).to_wire()
+        wire["dispatchable"] = ok
+        wire["dispatchReason"] = reason
+        out.append(wire)
+    return out
+
+
 def host_to_wire(h: Host) -> dict:
     """Serialize a Host row for the API.
 
@@ -82,6 +112,11 @@ def host_to_wire(h: Host) -> dict:
         "lastError": h.last_error,
         "sshHost": h.ssh_host,
         "repoPath": h.repo_path,
+        # Per-engine availability as the runner advertised it, plus the edge's own
+        # verdict on whether it would DISPATCH there. The two differ when a runner
+        # is happily running Codex against a contract this edge is not pinned to —
+        # the operator needs to see both halves to know which side to upgrade.
+        "engines": _engines_wire(h),
         # Live in-process upgrade progress, so the UI can poll it off the same
         # list it already refreshes ({"state": "idle", ...} when never run).
         "upgrade": host_upgrade.upgrade_wire(h.name),

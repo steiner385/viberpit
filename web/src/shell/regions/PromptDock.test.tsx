@@ -46,7 +46,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 expect.extend(toHaveNoViolations)
 
-import type { ModelOption, Session } from '@/api/types'
+import type { EngineOffer, ModelOption, Session } from '@/api/types'
 import type { GithubRepo } from '@/api/hooks'
 import type { FleetHost } from '@/api/fleet'
 import { account, fleetHost, githubRepo, session as makeSession } from '@/test/factories'
@@ -71,17 +71,29 @@ let SESSIONS: Session[] = []
 let HOSTS: FleetHost[] = []
 let REPOS: GithubRepo[] = []
 let MODELS: ModelOption[] = []
+/** Keyed by the exact `/models…` URL, so an engine/account-scoped fetch can be
+ *  told apart from the legacy Claude one. */
+let MODELS_BY_URL: Record<string, ModelOption[]> = {}
+let ENGINES: EngineOffer[] = []
+/** The accounts the shell hands the dock (it already holds them for the list). */
+let ACCOUNTS = [account()]
 /** Resolves the next `POST /sessions`; a test may swap in a rejection. */
 let POST_SESSIONS: (body: unknown) => Promise<unknown> = async () => session({ id: 'new-1' })
 
 const posted: { path: string; body: unknown }[] = []
+const fetched: string[] = []
 
 const fakeGet = vi.fn(async (path: string): Promise<unknown> => {
+  fetched.push(path)
   if (path === '/sessions') return SESSIONS
   if (path === '/fleet/hosts') return { hosts: HOSTS }
   if (path === '/github/repos') return REPOS
   if (path === '/models') return MODELS
+  if (path.startsWith('/models?')) return MODELS_BY_URL[path] ?? []
   if (path === '/accounts') return [account()]
+  if (path === '/config') {
+    return { repoRoot: '/repos', adoptionEnabled: false, engines: ENGINES }
+  }
   return {}
 })
 
@@ -155,7 +167,7 @@ function Layout(opts: HarnessOpts) {
         dock={
           <PromptDock
             list={list}
-            accounts={[account()]}
+            accounts={ACCOUNTS}
             onEnterList={opts.onEnterList ?? noop}
             onShowHelp={opts.onShowHelp ?? noop}
             onAllLimited={opts.onAllLimited ?? noop}
@@ -219,10 +231,97 @@ beforeEach(() => {
   HOSTS = [fleetHost({ name: 'edge' }), fleetHost({ name: 'rocky' })]
   REPOS = [repo()]
   MODELS = [model()]
+  MODELS_BY_URL = {}
+  ENGINES = []
+  ACCOUNTS = [account()]
   POST_SESSIONS = async () => session({ id: 'new-1' })
   posted.length = 0
+  fetched.length = 0
   localStorage.clear()
   vi.clearAllMocks()
+})
+
+// ── the Agent selector, end to end ───────────────────────────────────────────
+
+/** `/api/config`'s per-engine offer, as `_engine_offers` builds it. */
+function engineOffer(over: Partial<EngineOffer> = {}): EngineOffer {
+  return {
+    engine: 'claude_code',
+    available: true,
+    hosts: ['edge'],
+    unavailableReasons: {},
+    blockedReason: null,
+    capabilities: {
+      models: true, reasoningEffort: false, steer: true, interrupt: true,
+      approvals: true, questions: true, fork: true, adopt: true,
+      selfModelSwitch: true, subagents: true, attachments: true, accountRotation: true,
+    },
+    ...over,
+  }
+}
+
+describe('PromptDock — the engine-aware launch path', () => {
+  it('shows no Agent selector on an edge that offers one engine', async () => {
+    renderAt('/sessions')
+    await screen.findByLabelText('Repository')
+    expect(screen.queryByLabelText('Agent')).not.toBeInTheDocument()
+  })
+
+  it('offers the engines /api/config reports, and threads the pick into POST /sessions', async () => {
+    const user = userEvent.setup()
+    ENGINES = [
+      engineOffer(),
+      engineOffer({ engine: 'codex', capabilities: { ...engineOffer().capabilities, reasoningEffort: true } }),
+    ]
+    ACCOUNTS = [account(), account({ name: 'chatgpt', engine: 'codex', provider: 'openai' })]
+    MODELS_BY_URL['/models?engine=codex&account=chatgpt'] = [{
+      id: 'gpt-5-codex', label: 'GPT-5 Codex',
+      reasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'high',
+    }]
+    renderAt('/sessions')
+
+    const agent = await screen.findByLabelText('Agent')
+    await user.selectOptions(agent, 'codex')
+    // The dock only fetches the Codex list once an account narrows it — the
+    // account-less request is the server's 400.
+    expect(fetched).not.toContain('/models?engine=codex&account=')
+
+    await user.selectOptions(screen.getByLabelText('Account'), 'chatgpt')
+    await waitFor(() =>
+      expect(fetched).toContain('/models?engine=codex&account=chatgpt'))
+    await screen.findByRole('option', { name: 'GPT-5 Codex' })
+    await user.selectOptions(screen.getByLabelText('Model'), 'gpt-5-codex')
+
+    await user.type(screen.getByLabelText('New session prompt'), 'ship it')
+    await user.keyboard('{Enter}')
+
+    await waitFor(() => expect(posted).toHaveLength(1))
+    expect(posted[0].body).toMatchObject({
+      engine: 'codex', account: 'chatgpt', model: 'gpt-5-codex', reasoningEffort: 'high',
+    })
+  })
+
+  it('says why a Codex launch had no runner, instead of the usage banner', async () => {
+    const user = userEvent.setup()
+    const onAllLimited = vi.fn()
+    POST_SESSIONS = async () => {
+      throw new ApiRequestError(409, {
+        error: {
+          code: 'no_engine_host_available',
+          message: 'no healthy host can run engine codex (rocky: binary_not_found)',
+          engine: 'codex',
+          hostReasons: { rocky: 'binary_not_found' },
+        },
+      })
+    }
+    renderAt('/sessions', { onAllLimited })
+
+    await user.type(await screen.findByLabelText('New session prompt'), 'go')
+    await user.keyboard('{Enter}')
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/no healthy host can run engine codex/)
+    expect(onAllLimited).not.toHaveBeenCalled()
+  })
 })
 
 // ── the region marker ────────────────────────────────────────────────────────

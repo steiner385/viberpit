@@ -24,10 +24,14 @@ import {
   useReauthStatus,
   useCancelReauth,
   useSubmitReauthCode,
+  useOpenAIReauth,
+  useOpenAIReauthStatus,
+  useCancelOpenAIReauth,
   QK,
 } from '@/api/hooks'
 import type { AccountUpdate } from '@/api/hooks'
 import { AddAccountDialog } from './AddAccountDialog'
+import { DeviceCodePanel } from './DeviceCodePanel'
 import type { Account, LiveSessionCounts, Session } from '@/api/types'
 import { reserveWindow, usageWindows } from '@/lib/usageWindows'
 
@@ -129,6 +133,75 @@ function CopilotChip() {
   )
 }
 
+function OpenAIChip() {
+  return (
+    <span
+      className={cn(
+        'text-xs font-medium rounded px-1.5 py-0.5 whitespace-nowrap',
+        'bg-teal-100 text-teal-800 dark:bg-teal-900/40 dark:text-teal-200',
+      )}
+      aria-label="OpenAI (ChatGPT) account"
+    >
+      OpenAI
+    </span>
+  )
+}
+
+/**
+ * Codex-only health: is the credential authority reachable, how many runners
+ * hold this account's credential, and why it is degraded.
+ *
+ * Quota is NOT rendered here — an OpenAI account's windows already arrive in
+ * `account.usage` and are drawn by the generic `usageWindows` badge row above,
+ * which is the whole point of the provider-neutral window list. Re-deriving a
+ * "premium requests" number here would be the parallel implementation that
+ * shape exists to prevent.
+ *
+ * `authority: null` is tri-state like host health: not configured, or the probe
+ * itself failed. Saying "unreachable" for it would accuse a service the edge
+ * never asked.
+ */
+function CodexHealthLine({ account }: { account: Account }) {
+  const codex = account.codex
+  if (!codex) return null
+  const runners = codex.activeRunners ?? 0
+  const authority = codex.authority
+  const authorityText = authority == null
+    ? 'Authority status unknown'
+    : authority.reachable ? 'Authority reachable' : 'Authority unreachable'
+  return (
+    <div className="flex items-center flex-wrap gap-x-2 gap-y-1 text-xs">
+      <span
+        className={cn(
+          'whitespace-nowrap',
+          authority == null
+            ? 'text-gray-500 dark:text-gray-400'
+            : authority.reachable
+              ? 'text-green-600 dark:text-green-400'
+              : 'text-red-600 dark:text-red-400',
+        )}
+        title={authority?.detail ?? undefined}
+      >
+        {authorityText}
+      </span>
+      <span className="text-gray-600 dark:text-gray-300 whitespace-nowrap">
+        {runners === 1 ? '1 active runner' : `${runners} active runners`}
+      </span>
+      {codex.degradedReason && (
+        <span
+          className={cn(
+            'rounded px-1.5 py-0.5 font-medium whitespace-nowrap',
+            'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+          )}
+          role="status"
+        >
+          {codex.degradedReason}
+        </span>
+      )}
+    </div>
+  )
+}
+
 function OverReserveChip() {
   return (
     <span
@@ -211,11 +284,49 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
   // Absent `enabled` (older payloads) means enabled — only an explicit false disables.
   const isDisabled = account.enabled === false
 
+  // ── OpenAI re-auth is a DEVICE FLOW, not the browser OAuth ────────────────
+  //
+  // An OpenAI account has no local credential slot to re-encrypt: it
+  // re-authenticates by re-running its device login at the credential
+  // authority. Same `/accounts/{name}/reauth` URLs, different payload — hence
+  // its own typed hooks and its own poll key.
+  const isOpenAI = account.provider === 'openai'
+  const [deviceReauthStarted, setDeviceReauthStarted] = useState(false)
+  const openaiReauth = useOpenAIReauth()
+  const cancelOpenAIReauth = useCancelOpenAIReauth()
+  const deviceStatusQuery = useOpenAIReauthStatus(account.name, isOpenAI && deviceReauthStarted)
+  const deviceStatus = deviceReauthStarted ? deviceStatusQuery.data : undefined
+
   // Poll status while reauth is running (enabled when started and not optimistically idled)
-  const reauthStatusQuery = useReauthStatus(account.name, reauthStarted && !reauthOptimisticIdle)
+  const reauthStatusQuery = useReauthStatus(
+    account.name, !isOpenAI && reauthStarted && !reauthOptimisticIdle)
   const reauthStatus = reauthOptimisticIdle ? undefined : reauthStatusQuery.data
 
   const needsReauth = account.status === 'needs-reauth' || account.status === 'needs-relogin'
+
+  // A finished device login is a new credential: refresh the row, and stop
+  // polling by clearing the flag (the query stops on its own at terminal states).
+  const prevDeviceStateRef = useRef<string | undefined>(undefined)
+  React.useEffect(() => {
+    const state = deviceStatus?.state
+    if (state === 'authorized' && prevDeviceStateRef.current !== 'authorized') {
+      qc.invalidateQueries({ queryKey: QK.accounts })
+      setDeviceReauthStarted(false)
+    }
+    prevDeviceStateRef.current = state
+  }, [deviceStatus?.state, qc])
+
+  function handleOpenAIReauth() {
+    setDeviceReauthStarted(true)
+    openaiReauth.mutate(account.name, {
+      onError: () => setDeviceReauthStarted(false),
+    })
+  }
+
+  function handleOpenAICancel() {
+    setDeviceReauthStarted(false)
+    cancelOpenAIReauth.mutate(account.name)
+  }
 
   function handleReauth() {
     setReauthOptimisticIdle(false)
@@ -397,6 +508,7 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
                 {displayLabel}
               </span>
               {account.provider === 'copilot' && <CopilotChip />}
+              {isOpenAI && <OpenAIChip />}
             </div>
             {/* Action icon buttons — always icon-only so they don't crowd the name */}
             <div className="flex items-center gap-1 flex-shrink-0">
@@ -507,6 +619,11 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
               }
             />
           ))}
+          {/* Both device-flow providers get the same control and the same label
+              — it IS the same action. Copilot re-runs it through the add dialog
+              (its add route tolerates an existing slot); OpenAI runs it in place
+              on the per-account reauth routes, since `/accounts/add/openai`
+              409s on a name that already exists. */}
           {account.provider === 'copilot' ? (
             !isReauthRunning && !isAwaitingCode && (
               <button
@@ -519,6 +636,22 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
                 )}
                 aria-label={`Re-run device flow for ${account.name}`}
                 onClick={() => onCopilotReauth?.(account)}
+              >
+                {needsReauth ? 'Re-authenticate' : <KeyRound size={14} aria-hidden="true" />}
+              </button>
+            )
+          ) : isOpenAI ? (
+            !deviceReauthStarted && (
+              <button
+                type="button"
+                className={cn(
+                  'rounded min-h-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500',
+                  needsReauth
+                    ? 'px-2 py-1 text-xs font-medium bg-amber-500 text-white hover:bg-amber-600 dark:bg-amber-600 dark:hover:bg-amber-500'
+                    : 'min-w-[44px] flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-amber-500 dark:hover:text-amber-400 hover:bg-gray-100 dark:hover:bg-gray-700',
+                )}
+                aria-label={`Re-run device flow for ${account.name}`}
+                onClick={handleOpenAIReauth}
               >
                 {needsReauth ? 'Re-authenticate' : <KeyRound size={14} aria-hidden="true" />}
               </button>
@@ -540,7 +673,7 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
               </button>
             )
           )}
-          {(isReauthRunning || isAwaitingCode) && (
+          {(isReauthRunning || isAwaitingCode || deviceReauthStarted) && (
             <button
               type="button"
               className={cn(
@@ -551,12 +684,24 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
               )}
               aria-label="Cancel reauth"
-              onClick={handleCancel}
+              onClick={deviceReauthStarted ? handleOpenAICancel : handleCancel}
             >
               Cancel
             </button>
           )}
         </div>
+      )}
+
+      {/* Codex authority health + live runner count — OpenAI accounts only. */}
+      {!editing && isOpenAI && <CodexHealthLine account={account} />}
+
+      {/* The device code itself, in the SAME panel the add dialog uses. */}
+      {!editing && isOpenAI && (
+        <DeviceCodePanel
+          state={deviceStatus}
+          started={deviceReauthStarted}
+          providerLabel="ChatGPT"
+        />
       )}
 
       {/* Reauth status line */}

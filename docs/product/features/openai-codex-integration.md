@@ -79,7 +79,7 @@ compatibility audit; API-key authentication in v1.
   mandatory compatibility, redaction, live-test, kill-switch, and fail-closed safeguards.
 - PR #1088 configures Codex as a repository development agent; it does not implement this feature.
 
-**Evidence** — current engine and normalized stream in `server/sessions/driver.py` and
+**Evidence** — current engine and normalized stream in `server/sessions/claude_driver.py` and
 `server/sessions/events.py`; orchestration/fleet routing in `server/sessions/orchestrator.py` and
 `server/sessions/fleet_orchestrator.py`; account discovery/selection in `src/ccswitch/accounts.py`;
 current Copilot translating-proxy behavior in `server/sessions/copilot_proxy.py`; official Codex

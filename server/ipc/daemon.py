@@ -410,11 +410,18 @@ def create_daemon_app() -> FastAPI:
 
     @app.get("/info")
     async def info() -> dict:
+        from server.sessions.host_engines import ENGINES_INFO_KEY, build_engines_info
         from server.version import checkout_git_sha, running_git_sha
         orch = getattr(app.state, "orchestrator", None)
         active = len(getattr(orch, "_records", {}) or {})
+        # The engine advertisement the edge's dispatch gate reads. Derived from the
+        # Codex manager's own availability verdict rather than re-probed here, so
+        # "may I run Codex?" has exactly one answer per runner. Absent on a daemon
+        # older than this change — the edge reads that as legacy Claude-only.
+        engines = build_engines_info(
+            getattr(getattr(orch, "_codex", None), "availability", None))
         return {"sha": running_git_sha(), "checkoutSha": checkout_git_sha(),
-                "protocol": proto.PROTOCOL_VERSION,
+                "protocol": proto.PROTOCOL_VERSION, ENGINES_INFO_KEY: engines,
                 "epoch": _app_epoch, **_capacity_snapshot(active)}
 
     @app.get("/healthz")

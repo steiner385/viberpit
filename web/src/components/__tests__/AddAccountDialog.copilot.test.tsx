@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AddAccountDialog } from '../AddAccountDialog'
 import * as hooks from '@/api/hooks'
-import type { CopilotAddState } from '@/api/types'
+import type { DeviceCodeState } from '@/api/types'
 
 vi.mock('@/api/hooks', () => ({
   useAddAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
@@ -13,6 +13,9 @@ vi.mock('@/api/hooks', () => ({
   useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
   useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useAddOpenAIAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useOpenAIAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
+  useCancelOpenAIAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   QK: { accounts: ['accounts'] },
   useAssessDispatch: vi.fn(() => ({ assess: vi.fn() })),
 }))
@@ -22,7 +25,7 @@ vi.mock('../ReauthBrowserPanel', () => ({
   ReauthBrowserPanel: () => <div data-testid="reauth-panel" />,
 }))
 
-function makeCopilotState(overrides: Partial<CopilotAddState> = {}): CopilotAddState {
+function makeCopilotState(overrides: Partial<DeviceCodeState> = {}): DeviceCodeState {
   return { state: 'pending', userCode: null, verificationUri: null, ...overrides }
 }
 

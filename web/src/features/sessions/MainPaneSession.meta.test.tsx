@@ -52,6 +52,11 @@ vi.mock('@/api/hooks', () => ({
   useCloseSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   usePermanentDeleteSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useRenameSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  // Engine capabilities (SessionBody gates Claude-only surfaces on them).
+  useEngineOffers: vi.fn(() => []),
+  // Capability gate for engine-conditional controls; undefined = "unknown",
+  // which every gate reads as "capability present".
+  useEngineCapabilities: vi.fn(() => undefined),
   useSessionsViewing: vi.fn(),
   useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
   useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),

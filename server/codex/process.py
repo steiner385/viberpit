@@ -505,6 +505,7 @@ async def probe_availability(
         return CodexAvailability.unavailable(
             CodexUnavailableReason.EXTERNAL_AUTH_DISABLED,
             "CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED is false",
+            external_auth=False,
         )
     resolve = resolver or resolve_codex_bin
     try:
@@ -513,16 +514,22 @@ async def probe_availability(
         return CodexAvailability.unavailable(
             CodexUnavailableReason.BINARY_NOT_FOUND,
             f"resolving {binary!r} failed: {redaction.scrub_exception(exc)}",
+            external_auth=True,
         )
     if not path:
         return CodexAvailability.unavailable(
-            CodexUnavailableReason.BINARY_NOT_FOUND, f"{binary!r} is not installed"
+            CodexUnavailableReason.BINARY_NOT_FOUND,
+            f"{binary!r} is not installed",
+            external_auth=True,
         )
     try:
         version = await probe_cli_version(path, runner=runner, timeout_s=timeout_s)
     except CodexVersionProbeFailed as exc:
         return CodexAvailability.unavailable(
-            CodexUnavailableReason.VERSION_PROBE_FAILED, str(exc), binary_path=path
+            CodexUnavailableReason.VERSION_PROBE_FAILED,
+            str(exc),
+            binary_path=path,
+            external_auth=True,
         )
 
     inspect_contract = contract_probe
@@ -546,7 +553,11 @@ async def probe_availability(
         cli_version=version, contract_sha256=observed_contract_sha256
     )
     if drift is None:
-        return CodexAvailability.ready(binary_path=path, cli_version=version)
+        return CodexAvailability.ready(
+            binary_path=path,
+            cli_version=version,
+            contract_sha256=observed_contract_sha256,
+        )
     allowed = {v.strip() for v in supported_versions if v and v.strip()}
     allowed.add(schema.PINNED_CLI_VERSION)
     if (
@@ -558,6 +569,8 @@ async def probe_availability(
             str(drift),
             binary_path=path,
             cli_version=version,
+            contract_sha256=observed_contract_sha256,
+            external_auth=True,
         )
     log_event(
         logger,
@@ -568,7 +581,10 @@ async def probe_availability(
         reasons=list(drift.reason_codes()),
     )
     return CodexAvailability.ready(
-        binary_path=path, cli_version=version, accepted_drift=drift
+        binary_path=path,
+        cli_version=version,
+        accepted_drift=drift,
+        contract_sha256=observed_contract_sha256,
     )
 
 

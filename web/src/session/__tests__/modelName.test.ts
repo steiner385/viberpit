@@ -1,6 +1,8 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
-import { modelName, modelTier, isGatedTier } from '../modelName'
+import {
+  modelName, modelTier, isGatedTier, tierLabel, modelFamily, engineLabel, engineBadge,
+} from '../modelName'
 
 describe('modelName', () => {
   it('maps known claude ids to friendly names', () => {
@@ -71,5 +73,73 @@ describe('isGatedTier', () => {
     expect(isGatedTier('default')).toBe(false)
     expect(isGatedTier(null)).toBe(false)
     expect(isGatedTier(undefined)).toBe(false)
+  })
+
+  it('is false for a codex session — tier gating is a Claude model policy', () => {
+    // The gate is `resolve_model_policy`'s tier match, which no OpenAI id can
+    // hit; saying otherwise would tint a Codex card as "expensive tier".
+    expect(isGatedTier('gpt-5.1-codex', 'codex')).toBe(false)
+    expect(isGatedTier('fable', 'codex')).toBe(false)
+  })
+})
+
+// ── engine awareness (Codex) ─────────────────────────────────────────────────
+
+describe('modelFamily', () => {
+  it('recognises the two engine families from the id shape', () => {
+    expect(modelFamily('claude-opus-4-8')).toBe('claude')
+    expect(modelFamily('opus')).toBe('claude')
+    expect(modelFamily('gpt-5')).toBe('openai')
+    expect(modelFamily('gpt-5.1-codex-mini')).toBe('openai')
+  })
+
+  it('is unknown for ids it cannot place', () => {
+    expect(modelFamily('some-future-model')).toBe('unknown')
+    expect(modelFamily(null)).toBe('unknown')
+    expect(modelFamily('')).toBe('unknown')
+  })
+})
+
+describe('modelName — codex models', () => {
+  it('renders OpenAI ids the way the Codex catalog labels them', () => {
+    // Server evidence: server/codex/catalog.py options label "gpt-5.1-codex"
+    // as "GPT-5.1 Codex" (server/tests/test_codex_model_dispatch.py).
+    expect(modelName('gpt-5')).toBe('GPT-5')
+    expect(modelName('gpt-5-codex')).toBe('GPT-5 Codex')
+    expect(modelName('gpt-5.1-codex')).toBe('GPT-5.1 Codex')
+    expect(modelName('gpt-5.1-codex-mini')).toBe('GPT-5.1 Codex Mini')
+  })
+
+  it('takes the session engine as a hint without changing a Claude id', () => {
+    expect(modelName('gpt-5-codex', 'codex')).toBe('GPT-5 Codex')
+    expect(modelName('claude-opus-4-8', 'claude_code')).toBe('Opus 4.8')
+    // An engine hint never invents a label for an id it cannot parse.
+    expect(modelName('o3', 'codex')).toBe('o3')
+  })
+})
+
+describe('tierLabel — codex models', () => {
+  it('labels a codex model instead of falling through to the raw id', () => {
+    expect(tierLabel('gpt-5.1-codex', 'codex')).toBe('GPT-5.1 Codex')
+  })
+
+  it('keeps the Claude behaviour', () => {
+    expect(tierLabel('claude-opus-5')).toBe('Opus 5')
+    expect(tierLabel('fable')).toBe('Fable')
+    expect(tierLabel(null)).toBe('this model')
+  })
+})
+
+describe('engineLabel / engineBadge', () => {
+  it('labels every engine', () => {
+    expect(engineLabel('claude_code')).toBe('Claude Code')
+    expect(engineLabel('codex')).toBe('Codex')
+    expect(engineLabel(undefined)).toBe('Claude Code')
+  })
+
+  it('badges only a non-default engine, so a Claude-only fleet gains no chip', () => {
+    expect(engineBadge('codex')).toBe('Codex')
+    expect(engineBadge('claude_code')).toBeNull()
+    expect(engineBadge(undefined)).toBeNull()
   })
 })

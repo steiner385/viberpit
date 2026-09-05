@@ -13,9 +13,11 @@ import logging
 
 from sqlalchemy import func, select as sa_select
 
+from ccswitch.engines import AgentEngine
 from server.db import db_session
 from server.db.models import Host
-from server.sessions.fleet import HostCandidate, rank_hosts
+from server.sessions.fleet import HostCandidate, engine_rejection, rank_hosts
+from server.sessions.host_engines import parse_engines_info
 
 log = logging.getLogger(__name__)
 
@@ -23,7 +25,7 @@ log = logging.getLogger(__name__)
 # HTTPS-endpoint seeds derive their name from the hostname instead.
 DEFAULT_HOST_NAME = "local"
 
-__all__ = ["FleetRouter", "UnknownHost", "NoHostAvailable",
+__all__ = ["FleetRouter", "UnknownHost", "NoHostAvailable", "NoEngineHostAvailable",
            "ensure_default_host", "DEFAULT_HOST_NAME"]
 
 
@@ -33,6 +35,25 @@ class UnknownHost(Exception):
 
 class NoHostAvailable(Exception):
     """Raised when no host is enabled, healthy and under capacity."""
+
+
+class NoEngineHostAvailable(NoHostAvailable):
+    """No otherwise-dispatchable host advertises the requested engine.
+
+    A subclass, not a sibling: every existing ``except NoHostAvailable`` still
+    catches it, but a caller that wants to say *why* (the API's 503 body, the
+    launch UI's inline error) can name the engine and the per-host reasons instead
+    of "no host available", which sends an operator looking at host health when the
+    real answer is "install the Codex binary".
+    """
+
+    def __init__(self, engine: AgentEngine, reasons: dict[str, str]) -> None:
+        self.engine = engine
+        self.reasons = dict(reasons)
+        detail = ", ".join(f"{host}: {why}" for host, why in sorted(reasons.items()))
+        super().__init__(
+            f"no healthy host can run engine {engine.value}"
+            + (f" ({detail})" if detail else ""))
 
 
 class FleetRouter:
@@ -73,24 +94,56 @@ class FleetRouter:
                 max_sessions=r.max_sessions,
                 load_avg=r.load_avg,
                 mem_available_mb=r.mem_available_mb,
+                engines=parse_engines_info(r.engines),
             )
             for r in rows
             if r.name in self._orchs
         ]
 
-    async def pick(self, *, prefer: str | None = None) -> list[str]:
+    async def pick(
+        self,
+        *,
+        prefer: str | None = None,
+        engine: AgentEngine | None = None,
+        expected_contract_sha256: str | None = None,
+    ) -> list[str]:
         """Return hosts to try, best first.
 
         *prefer* moves an explicitly chosen host to the front but does not drop
-        the others: a manual choice should still fail over rather than fail.
+        the others: a manual choice should still fail over rather than fail. It is
+        a preference, never permission — a preferred host that cannot run *engine*
+        is filtered out with the rest rather than promoted into a dispatch that
+        would fail at the daemon.
         """
         if prefer and prefer not in self._orchs:
             raise UnknownHost(
                 f"no orchestrator for host {prefer!r}; known hosts: {self.names()}")
-        order = rank_hosts(await self.candidates())
-        if prefer:
+        candidates = await self.candidates()
+        order = rank_hosts(
+            candidates, engine=engine, expected_contract_sha256=expected_contract_sha256)
+        if prefer and prefer in order:
             order = [prefer] + [h for h in order if h != prefer]
+        elif prefer:
+            log.info("fleet: preferred host %r is not a candidate for engine %s",
+                     prefer, engine.value if engine else "any")
         if not order:
+            if engine is not None:
+                # Distinguish "your fleet is down" from "your fleet cannot run this
+                # engine". Only hosts that WOULD have been dispatchable can be
+                # excluded *for the engine*; an unhealthy host is a health problem,
+                # and reporting it as "codex not advertised" would send an operator
+                # to install a binary on a box that is simply unreachable.
+                healthy = set(rank_hosts(candidates))
+                incompatible = {
+                    c.name: why
+                    for c in candidates
+                    if c.name in healthy
+                    and (why := engine_rejection(
+                        c, engine,
+                        expected_contract_sha256=expected_contract_sha256)) is not None
+                }
+                if incompatible:
+                    raise NoEngineHostAvailable(engine, incompatible)
             raise NoHostAvailable(
                 "no enabled, healthy host with capacity; refusing to run in-process "
                 "to avoid a split-brain over the shared database")

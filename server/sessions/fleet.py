@@ -15,7 +15,15 @@ hosts as a separate, composable step.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Mapping
+
+from ccswitch.engines import AgentEngine
+from server.sessions.host_engines import (
+    EngineAvailability,
+    LEGACY_ENGINES,
+    engine_dispatchable,
+)
 
 # Free memory at or above this is "plenty" — more does not score higher.
 _MEM_SATURATION_MB = 4096
@@ -25,7 +33,7 @@ _W_HEADROOM, _W_MEM, _W_LOAD = 0.5, 0.3, 0.2
 # unmeasured host should neither win outright nor be effectively excluded.
 _UNKNOWN_METRIC = 0.5
 
-__all__ = ["HostCandidate", "rank_hosts", "score_host"]
+__all__ = ["HostCandidate", "rank_hosts", "score_host", "engine_rejection"]
 
 
 @dataclass(frozen=True)
@@ -40,6 +48,28 @@ class HostCandidate:
     max_sessions: int | None
     load_avg: float | None
     mem_available_mb: int | None
+    #: What this runner last advertised it can run. Defaults to the Claude-only
+    #: compatibility map so every existing construction site — and every legacy
+    #: runner — keeps its current meaning without restating it.
+    engines: Mapping[AgentEngine, EngineAvailability] = field(
+        default_factory=lambda: dict(LEGACY_ENGINES))
+
+
+def engine_rejection(
+    c: HostCandidate,
+    engine: AgentEngine,
+    *,
+    expected_contract_sha256: str | None = None,
+) -> str | None:
+    """Why *c* cannot run *engine*, or None when it can.
+
+    A thin, named wrapper over the one verdict function so callers that must
+    EXPLAIN the exclusion (the dispatch error, the fleet page) and the ranker that
+    merely applies it read the same answer.
+    """
+    ok, reason = engine_dispatchable(
+        c.engines, engine, expected_contract_sha256=expected_contract_sha256)
+    return None if ok else (reason or "unavailable")
 
 
 def _dispatchable(c: HostCandidate) -> bool:
@@ -71,11 +101,26 @@ def score_host(c: HostCandidate) -> float:
     return c.weight * (_W_HEADROOM * headroom + _W_MEM * mem + _W_LOAD * load)
 
 
-def rank_hosts(candidates: list[HostCandidate]) -> list[str]:
+def rank_hosts(
+    candidates: list[HostCandidate],
+    *,
+    engine: AgentEngine | None = None,
+    expected_contract_sha256: str | None = None,
+) -> list[str]:
     """Return dispatchable host names, best first.
 
     Ties break by name so dispatch is deterministic and reproducible in tests.
+
+    ``engine`` filters BEFORE scoring, not after: a host that cannot run the
+    requested engine is not a lower-ranked candidate, it is not a candidate. The
+    default (None) preserves the pre-engine behavior for every existing caller.
     """
     usable = [c for c in candidates if _dispatchable(c)]
+    if engine is not None:
+        usable = [
+            c for c in usable
+            if engine_rejection(
+                c, engine, expected_contract_sha256=expected_contract_sha256) is None
+        ]
     usable.sort(key=lambda c: (-score_host(c), c.name))
     return [c.name for c in usable]

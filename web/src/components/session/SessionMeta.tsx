@@ -1,20 +1,22 @@
 /**
  * SessionMeta — the second-tier session status strip.
  *
- * Shows, glanceably: current account, current model, remaining context,
+ * Shows, glanceably: the agent (engine) when it is not the default one, current
+ * account, current model, reasoning effort, runner host, remaining context,
  * account quota (one readout per provider window), and a toggle for the
  * sub-agent list.
  * All values are pre-derived by the caller (SessionView); this component is
- * pure presentation.
+ * pure presentation — including the capability flags, which the caller reads
+ * from the server's per-engine capability report rather than inferring here.
  */
 import { Fragment, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { formatResetTime } from '@/lib/formatReset'
 import { contextSeverity } from '@/lib/contextWindow'
 import type { SubAgent, SubAgentStatus } from '@/session/selectors'
-import { modelName } from '@/session/modelName'
+import { engineBadge, modelName } from '@/session/modelName'
 import { SubAgentList } from './SubAgentList'
-import type { UsageWindow } from '@/api/types'
+import type { AgentEngine, UsageWindow } from '@/api/types'
 
 /** Compact labels for the strip, which is tight on horizontal space. Falls back
  *  to the provider's own window key when it is not one we abbreviate. */
@@ -32,6 +34,17 @@ function quotaTitle(window: string, resetsAt: string | null): string {
 
 interface Props {
   account: string
+  /** Engine the session runs on. Rendered only when it is not the default one. */
+  engine?: AgentEngine | null
+  /** Fleet host executing the session; null/absent = no host registry entry. */
+  host?: string | null
+  /** Engine-native reasoning choice (Codex); null = the model's own default. */
+  reasoningEffort?: string | null
+  /** Server-advertised `subagents` capability for this session's engine. False
+   *  hides the sub-agent surface entirely — an engine that never spawns one must
+   *  not offer a control for it. Defaults to true so an unanswered capability
+   *  report never removes a control that works today. */
+  subAgentsSupported?: boolean
   /** The CHOSEN model alias (session record); null = account default. Drives the picker. */
   model: string | null
   /** The model actually producing (SDK id, e.g. "claude-opus-4-8"); shown as a read-only
@@ -81,9 +94,10 @@ const DOT_CLASS: Record<SubAgentStatus, string> = {
   failed: 'bg-red-500',
 }
 
-export function SessionMeta({ account, model, liveModel = null, modelPending = false, mode, contextPct, quota, subAgents, statusSlot, exportSlot, actionsSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onSetMode, onUnpin }: Props) {
+export function SessionMeta({ account, engine = null, host = null, reasoningEffort = null, subAgentsSupported = true, model, liveModel = null, modelPending = false, mode, contextPct, quota, subAgents, statusSlot, exportSlot, actionsSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onSetMode, onUnpin }: Props) {
   const [open, setOpen] = useState(false)
-  const agentCount = subAgents.length
+  const agentCount = subAgentsSupported ? subAgents.length : 0
+  const agentBadge = engineBadge(engine)
 
   return (
     <div className="relative">
@@ -94,6 +108,17 @@ export function SessionMeta({ account, model, liveModel = null, modelPending = f
           'text-xs text-gray-600 dark:text-gray-300',
         )}
       >
+        {/* Agent (engine). Shown only when it is not the default Claude Code
+            engine — `engineBadge` owns that rule for every identity surface. */}
+        {agentBadge && (
+          <span className="inline-flex items-center gap-1" aria-label="Agent">
+            <span className="text-gray-400 dark:text-gray-500">agent</span>
+            <span className="font-medium text-gray-900 dark:text-gray-100 truncate max-w-[10rem]">
+              {agentBadge}
+            </span>
+          </span>
+        )}
+
         {/* Account switcher */}
         <span className="inline-flex items-center gap-1">
           <span className="text-gray-400 dark:text-gray-500">acct</span>
@@ -126,7 +151,7 @@ export function SessionMeta({ account, model, liveModel = null, modelPending = f
             the new model, so binding to it made the picker snap back on every switch. */}
         {(() => {
           const chosen = model ?? 'default'
-          const live = liveModel ? modelName(liveModel) : ''
+          const live = liveModel ? modelName(liveModel, engine) : ''
           return (
             <span className="inline-flex items-center gap-1">
               <span className="text-gray-400 dark:text-gray-500">model</span>
@@ -164,6 +189,29 @@ export function SessionMeta({ account, model, liveModel = null, modelPending = f
             </span>
           )
         })()}
+
+        {/* Reasoning effort — the engine-native depth choice (Codex). Absent
+            means "the model's own default", which is not worth a readout. It is
+            data-gated, not capability-gated: an engine without the capability
+            never reports one. */}
+        {reasoningEffort && (
+          <span className="inline-flex items-center gap-1" aria-label="Reasoning effort">
+            <span className="text-gray-400 dark:text-gray-500">effort</span>
+            <span className="font-medium text-gray-900 dark:text-gray-100 truncate max-w-[8rem]">
+              {reasoningEffort}
+            </span>
+          </span>
+        )}
+
+        {/* Runner host — which fleet member is actually executing this session. */}
+        {host && (
+          <span className="inline-flex items-center gap-1" aria-label="Runner host">
+            <span className="text-gray-400 dark:text-gray-500">host</span>
+            <span className="font-medium text-gray-900 dark:text-gray-100 truncate max-w-[10rem]">
+              {host}
+            </span>
+          </span>
+        )}
 
         {/* Remaining context */}
         {(() => {
