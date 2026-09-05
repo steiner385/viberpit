@@ -247,6 +247,38 @@ async def _run_replay_and_complete(orchestrator, enqueue: "Callable[[dict], None
             events = window.events
             earliest_turn = window.earliest_turn
             total_turns = window.total_turns
+        else:
+            # No transcript FILE. That is either a Claude session that has not written
+            # one yet (the orchestrator answers None and nothing changes) or an engine
+            # that has none at all — a Codex thread's history lives in the app-server
+            # and is read back over `thread/read`. The Claude branch above stays byte
+            # identical on purpose: in remote mode the edge reads the shared transcript
+            # file directly, and turning that into an RPC would change both its latency
+            # and the ring/gap behaviour. Everything AFTER this — replayReset, the
+            # per-frame sessionId tagging, replayComplete — is shared and unchanged.
+            #
+            # Failure here is CONTAINED rather than left to the outer handler, and
+            # that is the whole point of the inner try. This branch also runs on the
+            # most ordinary path there is — a brand-new Claude session whose
+            # transcript does not exist yet — and the call can legitimately fail on a
+            # mixed-version fleet, where a newer edge attaches to a session owned by
+            # an older daemon that never registered this RPC. Letting it reach the
+            # outer `except` would skip the `replayReset` below, and an attach with no
+            # reset is exactly the #390 regression: the reducer keeps its stale
+            # transcript and double-appends the live turn on every reconnect. Losing
+            # history is recoverable; losing the reset corrupts what the user sees.
+            try:
+                window = await orchestrator.engine_replay_window(
+                    session_id, drop_incomplete_turn=drop_incomplete,
+                    turn_started_at=turn_started_at)
+            except Exception:
+                log.warning("ws.attach: engine replay failed for %s — attaching with "
+                            "no history", session_id, exc_info=True)
+                window = None
+            if window is not None:
+                events = window.events
+                earliest_turn = window.earliest_turn
+                total_turns = window.total_turns
         # Lead the replay with a reset so a reconnect re-attach rebuilds the
         # transcript cleanly instead of re-appending a duplicate copy (see the
         # reducer's replayReset case). Send it whenever there is history to replay
@@ -267,7 +299,13 @@ async def _run_replay_and_complete(orchestrator, enqueue: "Callable[[dict], None
             # for a session it is no longer viewing.
             enqueue({"type": "replayReset", "sessionId": session_id})
             for e in events:
-                enqueue({**e.to_wire(), "sessionId": session_id})
+                # The local disk path yields real ev.* objects; the engine-replay
+                # fallback yields those in-process and already-serialized wire dicts
+                # over the daemon RPC (the same `hasattr` shape api/sessions.py and the
+                # transcript_window RPC handler use). Normalizing here keeps ONE
+                # enqueue loop rather than a second, drift-prone copy per source.
+                wire = e.to_wire() if hasattr(e, "to_wire") else e
+                enqueue({**wire, "sessionId": session_id})
     except asyncio.TimeoutError:
         log.warning("ws.attach: transcript replay for %s exceeded the replay ceiling — "
                     "attaching with no history", session_id)

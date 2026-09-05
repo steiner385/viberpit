@@ -823,6 +823,25 @@ class RemoteOrchestrator:
         return ReplayWindow(events=r["events"], earliest_turn=r["earliestTurn"],
                             total_turns=r["totalTurns"])
 
+    async def engine_replay_window(self, session_id, *, drop_incomplete_turn: bool = False,
+                                   turn_started_at: float | None = None):
+        """Attach-path replay for an engine with no transcript file, via the daemon.
+
+        Same response shape and same None-means-no-history contract as
+        ``transcript_window``; the extra arguments are the two the attach needs and
+        that ``transcript_window`` deliberately does not carry (see the orchestrator
+        method). The daemon owns the engine adapter — a Codex thread can only be read
+        by the app-server that holds it, which is on the daemon host, never the edge.
+        """
+        from server.sessions.replay import ReplayWindow
+        r = await self._client.call("engine_replay_window", session_id=session_id,
+                                    drop_incomplete_turn=drop_incomplete_turn,
+                                    turn_started_at=turn_started_at)
+        if r is None:
+            return None
+        return ReplayWindow(events=r["events"], earliest_turn=r["earliestTurn"],
+                            total_turns=r["totalTurns"])
+
     async def transcript_search_text(self, session_id: str) -> str:
         """Return transcript text for search matching, via the daemon RPC — the
         edge never reads the transcript file itself (cross-host safe)."""

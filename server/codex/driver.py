@@ -58,6 +58,7 @@ from typing import Any, Final
 from server.aio import cancel_and_reap
 from server.assistant.context import PromptContext
 from server.codex import schema
+from server.codex.capabilities import CODEX_CAPABILITIES
 from server.codex.manager import (
     RECOVER_VIA_THREAD_READ,
     CodexRunnerManager,
@@ -79,7 +80,6 @@ from server.sessions import events as ev
 from server.sessions.completion import marker_instructions
 from server.sessions.driver_stream import _STREAM_DONE, DriverStream
 from server.sessions.engine import (
-    AgentCapabilities,
     AgentDriverConfig,
     AgentDriverFactory,
     AgentEngine,
@@ -238,14 +238,11 @@ class CodexAgentDriver:
     """Drives one Codex thread, exposing the normalized ccswitch event stream."""
 
     engine = AgentEngine.CODEX
-    capabilities = AgentCapabilities(
-        models=True,
-        reasoning_effort=True,
-        steer=True,
-        interrupt=True,
-        approvals=True,
-        attachments=True,
-    )
+    #: Bound, not restated. ``server/codex/capabilities.py`` already declares this
+    #: engine's control surface for the availability report; a second literal here
+    #: is how the two drifted (it advertised ``questions=True`` while this driver
+    #: could only ever answer "no longer pending").
+    capabilities = CODEX_CAPABILITIES
 
     def __init__(
         self,
@@ -1392,12 +1389,18 @@ def _decline(method: str) -> schema.ApprovalResponse:
 class CodexAgentDriverFactory(AgentDriverFactory):
     """Build Codex drivers while keeping the runner manager below the engine seam.
 
+    ``capabilities`` is republished from the driver class (never restated) so
+    orchestration can ask what this engine supports before a driver exists — see
+    ``AgentDriverRegistry.capabilities_for``.
+
     ``model_for_session`` mirrors ``ClaudeAgentDriverFactory``'s
     ``sdk_factory_for_session``: the launch model is per-session data that
     ``AgentDriverConfig`` does not carry (the Claude path bakes it into its SDK
     factory), so it is resolved by the same kind of callable rather than by
     widening the shared config for one engine.
     """
+
+    capabilities = CodexAgentDriver.capabilities
 
     def __init__(
         self,

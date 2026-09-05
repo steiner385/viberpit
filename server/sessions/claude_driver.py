@@ -138,6 +138,7 @@ class ClaudeAgentDriver:
         self_model_switch=True,
         subagents=True,
         attachments=True,
+        account_rotation=True,
     )
 
     def __init__(self, session_id, account, cwd, config_dir, *, mode, sdk_factory, registry,
@@ -1451,6 +1452,11 @@ class ClaudeAgentDriver:
 
 class ClaudeAgentDriverFactory(AgentDriverFactory):
     """Construct Claude drivers while keeping the SDK factory below the engine seam."""
+
+    #: Republished from the driver class (never restated) so orchestration can ask
+    #: what this engine supports before a driver exists — see
+    #: ``AgentDriverRegistry.capabilities_for``.
+    capabilities = ClaudeAgentDriver.capabilities
 
     def __init__(self, sdk_factory_for_session: Callable[[str], object],
                  permission_registry: PermissionRegistry) -> None:

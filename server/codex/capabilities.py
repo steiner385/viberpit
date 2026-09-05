@@ -34,31 +34,40 @@ from server.sessions.engine import AgentCapabilities, AgentEngine
 
 CODEX_ENGINE: Final = AgentEngine.CODEX
 
-#: The Codex engine's control surface.
+#: The Codex engine's control surface — THE declaration, consumed both by the
+#: availability report below and by ``CodexAgentDriver.capabilities`` (which binds
+#: this value rather than restating it, so the "may I offer Codex?" answer and the
+#: running driver can never disagree; they briefly did, on ``questions``).
 #:
 #: Every ``True`` here is a commitment made by the accepted plan, not a guess:
 #: model and reasoning effort are named as the only Codex launch controls beside
 #: the permission profile (spec D-series), and Phase 4's exit criterion is
 #: "create/send/steer/interrupt/approve/replay/recover works through normalized
-#: events" — which is exactly ``steer``, ``interrupt``, ``approvals`` and
-#: ``questions``. ``attachments`` follows the app-server model contract, whose
-#: input modalities include images (``schema.DEFAULT_INPUT_MODALITIES``).
+#: events" — which is exactly ``steer``, ``interrupt`` and ``approvals``.
+#: ``attachments`` follows the app-server model contract, whose input modalities
+#: include images (``schema.DEFAULT_INPUT_MODALITIES``).
 #:
 #: The ``False`` entries are equally deliberate: ccswitch's fork, adopt,
 #: self-directed model switching and subagent surfaces are all implemented against
 #: the Claude CLI's private state and have no app-server equivalent in v1.
+#: ``questions`` joins them — the app-server has no interactive-question channel, so
+#: ``CodexAgentDriver.answer_question`` can only ever report "no longer pending".
+#: ``account_rotation`` is False because rotation composes the target account's
+#: Claude config dir and syncs Claude credentials back; a Codex session is refused
+#: by that path rather than rebuilt as some other engine's driver.
 CODEX_CAPABILITIES: Final[AgentCapabilities] = AgentCapabilities(
     models=True,
     reasoning_effort=True,
     steer=True,
     interrupt=True,
     approvals=True,
-    questions=True,
+    questions=False,
     fork=False,
     adopt=False,
     self_model_switch=False,
     subagents=False,
     attachments=True,
+    account_rotation=False,
 )
 
 #: What an unavailable engine advertises. Not "unknown" — *nothing*.
@@ -164,5 +173,6 @@ class CodexAvailability:
                 "selfModelSwitch": self.capabilities.self_model_switch,
                 "subagents": self.capabilities.subagents,
                 "attachments": self.capabilities.attachments,
+                "accountRotation": self.capabilities.account_rotation,
             },
         }

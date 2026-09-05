@@ -65,6 +65,12 @@ class _BaseOrch:
     async def ensure_driver(self, session_id, identity): return self._driver
     async def get_session(self, session_id): return None
     async def transcript_path(self, session_id): return self._path
+    # The attach's fallback when there is no transcript FILE (an engine whose
+    # history lives behind the daemon). None here = "no history to replay", which
+    # is what these frame-ordering tests want: they assert on the reset/permission
+    # ordering, not on history.
+    async def engine_replay_window(self, session_id, *, drop_incomplete_turn=False,
+                                   turn_started_at=None): return None
     async def command_catalog(self, session_id): return []
     def pending_questions(self, session_id): return []
     def pop_pending_initial_prompt(self, session_id): return None
