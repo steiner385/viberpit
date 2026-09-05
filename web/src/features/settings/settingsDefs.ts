@@ -47,6 +47,14 @@ interface SettingsDefShape {
   description: string
   keywords?: readonly string[]
   badge?: SettingsBadgeKey
+  /**
+   * The component instantiates `SettingsSection` itself, so `SettingsPage`
+   * renders it BARE. Everything else is wrapped in `HostedSection`, which builds
+   * the chassis from this row. Set it on a section in the same change that
+   * migrates it (PRs 5b–5e); when the last one is set, `HostedSection` and this
+   * flag both go.
+   */
+  ownsChassis?: true
   component: React.ComponentType
 }
 
@@ -56,14 +64,16 @@ interface SettingsDefShape {
  * segments and are stable: every id that existed before this file did is kept.
  */
 const DEFS = [
-  { id: 'general',       group: 'workspace', label: 'General',             icon: SlidersHorizontal, scope: 'server',  component: GeneralSection,
+  { id: 'general',       group: 'workspace', label: 'General',             icon: SlidersHorizontal, scope: 'server',  component: GeneralSection, ownsChassis: true,
     description: 'Where repos are cloned and archives are stored, and how many sessions run and are kept.' },
-  { id: 'appearance',    group: 'workspace', label: 'Appearance',          icon: Palette,           scope: 'browser', component: AppearanceSection,
+  { id: 'appearance',    group: 'workspace', label: 'Appearance',          icon: Palette,           scope: 'browser', component: AppearanceSection, ownsChassis: true,
     description: 'Theme, navigation and layout for this browser only.', keywords: ['theme', 'dark', 'light'] },
   { id: 'notifications', group: 'workspace', label: 'Notifications',       icon: Bell,              scope: 'device',  component: NotificationsSection,
     description: 'Push to this device, quiet hours, webhook channels and routing rules.' },
-  { id: 'sessions',      group: 'sessions',  label: 'Defaults',            icon: Play,              scope: 'server',  component: SessionDefaultsSection,
-    description: 'What every new session starts with: tool approvals, model gating and transcript display.', keywords: ['permission', 'model', 'transcript'] },
+  { id: 'sessions',      group: 'sessions',  label: 'Defaults',            icon: Play,              scope: 'server',  component: SessionDefaultsSection, ownsChassis: true,
+    // Names the three groups AND keeps the section's own "these are defaults, not
+    // locks" caveat, which the registry sentence had dropped.
+    description: 'What every new session starts with — tool approvals, model gating and transcript display — and a session can change any of them for itself once it is running.', keywords: ['permission', 'model', 'transcript'] },
   { id: 'presets',       group: 'sessions',  label: 'Presets',             icon: Bookmark,          scope: 'server',  component: PresetsSection,
     description: 'Saved launch configurations for the New session dialog.' },
   { id: 'templates',     group: 'sessions',  label: 'Templates',           icon: FileText,          scope: 'server',  component: TemplatesSection,
@@ -93,7 +103,7 @@ const DEFS = [
     description: 'Shell commands Claude Code runs on lifecycle events. They run on this host.' },
   { id: 'snapshots',     group: 'claude',    label: 'Snapshots',           icon: Camera,            scope: 'server',  component: SnapshotsSection,
     description: 'Point-in-time copies of the shared Claude config, with diff, restore, export and import.' },
-  { id: 'about',         group: 'about',     label: 'About',               icon: Info,              scope: 'none',    component: AboutSection,
+  { id: 'about',         group: 'about',     label: 'About',               icon: Info,              scope: 'none',    component: AboutSection, ownsChassis: true,
     description: 'Version, host, and the server settings managed by environment variables.' },
 ] as const satisfies readonly SettingsDefShape[]
 

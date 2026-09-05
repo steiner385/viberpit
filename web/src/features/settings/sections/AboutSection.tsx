@@ -1,5 +1,6 @@
 import { useSettings, type ManagedFlag } from '@/api/hooks'
 import { Skeleton } from '@/ui/Skeleton'
+import { SETTINGS_BY_ID } from '../settingsDefs'
 import { SettingsSection } from '../chassis/SettingsSection'
 import { SettingsGroup } from '../chassis/SettingsGroup'
 
@@ -14,7 +15,7 @@ export function AboutSection() {
   const { data: settings, isLoading } = useSettings()
   return (
     <SettingsSection id="about" title="About" scope="none"
-      description="Version, host, and the server settings managed by environment variables.">
+      description={SETTINGS_BY_ID.about.description}>
       {isLoading || !settings ? <Skeleton lines={4} /> : (
         <>
           <SettingsGroup legend="This server">

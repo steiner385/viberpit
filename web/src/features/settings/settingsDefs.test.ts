@@ -30,6 +30,14 @@ describe('settingsDefs', () => {
     expect(DEFAULT_SETTINGS_SECTION).toBe('general')
   })
 
+  it('ownsChassis marks exactly the four sections that mount their own chassis', () => {
+    // The flag is what `SettingsPage` branches on, so it is also the list of
+    // sections NOT wrapped in `HostedSection`. PRs 5b–5e each add an id here in
+    // the same change that migrates the section.
+    expect(SETTINGS_DEFS.filter((d) => d.ownsChassis).map((d) => d.id))
+      .toEqual(['general', 'appearance', 'sessions', 'about'])
+  })
+
   it('groups sections in nav order; Accounts carries the attention badge', () => {
     expect(sectionsInGroup('workspace').map((d) => d.id)).toEqual(['general', 'appearance', 'notifications'])
     expect(sectionsInGroup('sessions').map((d) => d.id)).toEqual(['sessions', 'presets', 'templates', 'profiles', 'automation'])

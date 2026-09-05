@@ -16,18 +16,22 @@ import { writeLastSection } from './lastSection'
 import { SettingsNav } from './SettingsNav'
 import { HostedSection } from './HostedSection'
 
-/** Sections that render their own SettingsSection (spec §8). Everything else is hosted. */
-const MIGRATED: ReadonlySet<SettingsSectionId> = new Set(['general', 'sessions', 'appearance', 'about'])
-
 /** Phone, or tablet held portrait, gets list-then-detail (spec §6.1, DEC-3). */
 export function useSettingsDrill(): boolean {
   const { mode, portrait } = useViewport()
   return mode === 'phone' || (mode === 'tablet' && portrait)
 }
 
+/**
+ * A section that renders its own `SettingsSection` is mounted BARE; everything
+ * else is wrapped (spec §8, DEC-12). The answer lives on the registry row
+ * (`ownsChassis`), not in a second set here: a set beside the page is one more
+ * place to forget when PRs 5b–5e migrate a section, and forgetting it means two
+ * nested h2s with no test naming the page as the culprit.
+ */
 function SectionBody({ id }: { id: SettingsSectionId }) {
   const def = SETTINGS_BY_ID[id]
-  if (MIGRATED.has(id)) {
+  if (def.ownsChassis) {
     const Section = def.component
     return <Section />
   }

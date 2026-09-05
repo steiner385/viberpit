@@ -10,12 +10,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { axe, toHaveNoViolations } from 'jest-axe'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import * as hooks from '@/api/hooks'
+import type { AppSettings } from '@/api/hooks'
 import { appSettings } from '@/test/factories'
-import { queryResult, mutationResult } from '@/test/reactQuery'
+import { queryResult, loadingQueryResult, mutationResult } from '@/test/reactQuery'
 import { GeneralSection } from './GeneralSection'
+
+expect.extend(toHaveNoViolations)
 
 vi.mock('@/api/hooks', () => ({
   useSettings: vi.fn(),
@@ -42,7 +46,7 @@ describe('GeneralSection', () => {
   })
 
   it('shows effective defaults as placeholders and a Reset that clears to default', async () => {
-    mount()
+    const { container } = mount()
     expect(screen.getByRole('heading', { level: 2, name: 'General' })).toBeInTheDocument()
     const repo = screen.getByLabelText('Repo clone root')
     expect(repo).toHaveAttribute('placeholder', '/home/tony/GitHub · server default')
@@ -50,6 +54,29 @@ describe('GeneralSection', () => {
     await userEvent.type(repo, '/srv/x')
     await userEvent.click(screen.getByRole('button', { name: 'Reset repo clone root to default' }))
     expect(repo).toHaveValue('')
+    expect(await axe(container)).toHaveNoViolations()
+  })
+
+  it('while /settings is in flight it shows the chassis and a skeleton, not nothing', () => {
+    // A `return null` here would leave the routed page with no h2 and no landmark
+    // for as long as the request takes — the section is the only thing under the
+    // page's h1.
+    vi.mocked(hooks.useSettings).mockReturnValue(loadingQueryResult<AppSettings>())
+    const { container } = mount()
+    expect(screen.getByRole('heading', { level: 2, name: 'General' })).toBeInTheDocument()
+    expect(container.querySelector('.animate-pulse')).not.toBeNull()
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
+  })
+
+  it('a failed /settings shows an alert naming the failure, not an empty panel', () => {
+    vi.mocked(hooks.useSettings).mockReturnValue(
+      queryResult(appSettings(), { isError: true, error: new Error('boom') }),
+    )
+    mount()
+    expect(screen.getByRole('heading', { level: 2, name: 'General' })).toBeInTheDocument()
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent('Settings could not be loaded')
+    expect(alert).toHaveTextContent('boom')
   })
 
   it('with no configured archive home the placeholder is just "Server default" (R13)', () => {
@@ -92,7 +119,9 @@ describe('GeneralSection', () => {
     mount()
     await userEvent.type(screen.getByLabelText('Max active sessions'), '9')
     await userEvent.click(screen.getByRole('button', { name: 'Save' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('Request failed (409)')
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '2 of 3 archived sessions were moved before the copy failed; the path was not changed.',
+    )
     expect(screen.getByLabelText('Max active sessions')).toHaveValue(9)
   })
 })

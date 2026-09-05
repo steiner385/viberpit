@@ -8,6 +8,7 @@ import { DRAWER_DEFAULT, useDrawerWidth } from '@/shell/drawerWidth'
 import { RadioGroup } from '@/ui/RadioGroup'
 import { Switch } from '@/ui/Switch'
 import { Button } from '@/ui/Button'
+import { SETTINGS_BY_ID } from '../settingsDefs'
 import { SettingsSection } from '../chassis/SettingsSection'
 import { SettingsGroup } from '../chassis/SettingsGroup'
 import { SettingRow } from '../chassis/SettingRow'
@@ -64,7 +65,7 @@ export function AppearanceSection() {
       id="appearance"
       title="Appearance"
       scope="browser"
-      description="Stored in this browser only. Other devices keep their own."
+      description={SETTINGS_BY_ID.appearance.description}
     >
       {/* The card's legend is not a second "Theme": the row's own label is the
           radio group's legend, and one visible word per row is the rule (R14b). */}

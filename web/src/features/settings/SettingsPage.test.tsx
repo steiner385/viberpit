@@ -80,6 +80,7 @@ import { renderApp } from '@/test/renderApp'
 import { MEDIA } from '@/test/matchMedia'
 import { resetDocumentTitle } from '@/shell/documentTitle'
 import { LAST_SECTION_KEY } from './lastSection'
+import { SETTINGS_DEFS } from './settingsDefs'
 
 describe('SettingsPage', () => {
   beforeEach(() => {
@@ -102,12 +103,16 @@ describe('SettingsPage', () => {
   })
 
   it('desktop: the migrated Defaults section renders its own h2', async () => {
-    // A MIGRATED section is rendered bare (no `HostedSection` wrapper), so the
+    // An `ownsChassis` section is rendered bare (no `HostedSection` wrapper), so the
     // chassis h2 it mounts itself is the only one on the page — which is what
     // makes this a check that the section, not the page, owns its heading.
     renderApp({ path: '/settings/sessions', mode: 'desktop' })
 
-    expect(await screen.findByRole('heading', { level: 2, name: 'Defaults' })).toBeInTheDocument()
+    // Waited on the CONTROL, not the heading: the section now renders its chassis
+    // (heading included) while `/settings` is still in flight, so a heading query
+    // resolves against the loading state and the form is not there yet.
+    expect(await screen.findByLabelText('Default tool approvals')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2, name: 'Defaults' })).toBeInTheDocument()
     const section = screen.getByRole('region', { name: 'Defaults' })
     expect(within(section).getByLabelText('Default tool approvals')).toBeInTheDocument()
   })
@@ -212,6 +217,29 @@ describe('SettingsPage', () => {
     expect(await screen.findByRole('list', { name: 'Settings sections' })).toBeInTheDocument()
     expect(r.path()).toBe('/settings')
   })
+
+  it('every section is one chassis region; ownsChassis sections own exactly one h2', async () => {
+    // The table version of "the page wraps what it must and nothing else"
+    // (DEC-12): an `ownsChassis` section mounts its own chassis and so must show
+    // exactly ONE level-2 heading inside its region — a section that keeps a
+    // literal heading after migrating would nest two — and a hosted section must
+    // still be wrapped, i.e. have a region named by its nav label at all.
+    for (const def of SETTINGS_DEFS) {
+      const r = renderApp({ path: `/settings/${def.id}`, mode: 'desktop' })
+      const region = (await screen.findAllByRole('region', { name: def.label }))[0]
+      const h2s = within(region).getAllByRole('heading', { level: 2 })
+      expect(h2s[0]).toHaveTextContent(def.label)
+      if (def.ownsChassis) {
+        expect(h2s).toHaveLength(1)
+      } else {
+        // Hosted sections keep whatever headings their legacy body has —
+        // `AccountsManager` carries its own `<h2>Accounts</h2>` inside the chassis
+        // one until PR 5b — so here the claim is only that the wrapper exists.
+        expect(h2s.length).toBeGreaterThanOrEqual(1)
+      }
+      r.unmount()
+    }
+  }, 60_000)
 
   it('remembers the visited section and shows the accounts attention count', async () => {
     renderApp({ path: '/settings/accounts', mode: 'desktop' })

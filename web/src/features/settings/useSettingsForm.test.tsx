@@ -3,7 +3,8 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, Link, RouterProvider } from 'react-router-dom'
-import { useSettingsForm, nextDraft } from './useSettingsForm'
+import { ApiRequestError } from '@/api/client'
+import { useSettingsForm, nextDraft, messageOf } from './useSettingsForm'
 import { SaveBar } from './chassis/SaveBar'
 
 type Draft = { repoRoot: string; maxActive: number }
@@ -210,4 +211,33 @@ describe('nextDraft', () => {
     expect(nextDraft({ a: 1 }, { a: 1 }, { a: 2 })).toEqual({ a: 2 })      // clean → re-seed
     expect(nextDraft({ a: 1 }, { a: 9 }, { a: 2 })).toEqual({ a: 9 })      // dirty → keep
   })
+})
+
+describe('messageOf', () => {
+  // The whole point of this function is that a save failure reads as a sentence
+  // the operator can act on, so every branch is named here rather than being
+  // reachable only through whichever section happens to provoke it.
+  const CASES: [name: string, err: unknown, expected: string][] = [
+    ['a string detail is the message',
+      new ApiRequestError(400, { detail: 'repoRoot must be absolute' }),
+      'repoRoot must be absolute'],
+    ['an object detail with a message uses it',
+      new ApiRequestError(422, { detail: { message: 'archiveHome is not writable' } }),
+      'archiveHome is not writable'],
+    ['the archive-move 409 says what moved and what to do',
+      new ApiRequestError(409, { detail: { code: 'archive_move_failed', moved: 2, failed: 1, total: 3 } }),
+      '2 of 3 archived sessions were moved before the copy failed; the path was not changed. '
+        + 'Move the remaining files by hand or try again.'],
+    ['an unrecognised object detail falls back to the status',
+      new ApiRequestError(500, { detail: { code: 'boom' } }),
+      'Request failed (500)'],
+    ['a plain Error is its own message', new Error('network down'), 'network down'],
+    ['anything else is the generic sentence', 'not an error', 'Save failed'],
+  ]
+
+  for (const [name, err, expected] of CASES) {
+    it(name, () => {
+      expect(messageOf(err)).toBe(expected)
+    })
+  }
 })

@@ -4,7 +4,9 @@ import { Input } from '@/ui/Input'
 import { Banner } from '@/ui/Banner'
 import { Button } from '@/ui/Button'
 import { Checkbox } from '@/ui/Checkbox'
+import { Skeleton } from '@/ui/Skeleton'
 import { ConfirmDialog } from '@/ui/ConfirmDialog'
+import { SETTINGS_BY_ID } from '../settingsDefs'
 import { SettingsSection } from '../chassis/SettingsSection'
 import { SettingsGroup } from '../chassis/SettingsGroup'
 import { SettingRow } from '../chassis/SettingRow'
@@ -121,7 +123,7 @@ function archiveCount(n: number): string {
  * recoverable and expected one, so it drops to the Confirm tier.
  */
 export function GeneralSection() {
-  const { data: settings } = useSettings()
+  const { data: settings, isLoading, isError, error } = useSettings()
   const update = useUpdateSettings()
   const { data: archived = [] } = useArchivedSessions()
   // The gate is a PROMISE handed to `useSettingsForm`: the dialog is what
@@ -141,6 +143,24 @@ export function GeneralSection() {
     ),
   })
 
+  // The chassis is rendered in EVERY state, never `return null`: a section that
+  // renders nothing while `/settings` is in flight leaves the routed page with no
+  // h2 and no landmark, and a section that renders nothing when the request FAILS
+  // is indistinguishable from one that has no settings — the user sees an empty
+  // panel and no reason. Same shape as `AboutSection`.
+  if (isError || isLoading) {
+    return (
+      <SettingsSection id="general" title="General" scope="server" description={SETTINGS_BY_ID.general.description}>
+        {isError
+          ? (
+            <Banner tone="danger" role="alert" title="Settings could not be loaded">
+              {error?.message ?? 'The server did not answer.'}
+            </Banner>
+          )
+          : <Skeleton lines={4} />}
+      </SettingsSection>
+    )
+  }
   if (!form.draft || !settings) return null
   const { draft, set } = form
   const eff = settings.effectiveDefaults
@@ -151,7 +171,10 @@ export function GeneralSection() {
       id="general"
       title="General"
       scope="server"
-      description="Where repos are cloned and archives are stored, and how many sessions run and are kept."
+      // One sentence, one place: the registry row is what the nav, the phone list
+      // and `HostedSection` already read, so a literal here is a second copy that
+      // drifts (and had).
+      description={SETTINGS_BY_ID.general.description}
       footer={<SaveBar form={form} />}
     >
       {form.error && <Banner tone="danger" role="alert" title="Not saved">{form.error}</Banner>}

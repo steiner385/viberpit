@@ -9,6 +9,7 @@ import type { ReactNode } from 'react'
 import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { axe, toHaveNoViolations } from 'jest-axe'
 import { ThemeProvider, THEME_STORAGE_KEY } from '@/shell/theme'
 import { RAIL_EXPANDED_KEY } from '@/shell/railExpanded'
 import { NOTIFY_PREF_KEY } from '@/pipeline/notifyPref'
@@ -16,6 +17,8 @@ import { SIDEBAR_STORAGE_KEY, SIDEBAR_DEFAULT } from '@/lib/sidebarWidth'
 import { useSidebarWidth } from '@/lib/useSidebarWidth'
 import { stubMatchMedia } from '@/test/matchMedia'
 import { AppearanceSection } from './AppearanceSection'
+
+expect.extend(toHaveNoViolations)
 
 /**
  * Stands in for the live list column (`shell/regions/ContextList`), which holds
@@ -36,7 +39,7 @@ function mount(extra?: ReactNode) {
 
 describe('AppearanceSection', () => {
   it('theme radio writes ccswitch.theme and reports Saved; system removes the key', async () => {
-    mount()
+    const { container } = mount()
     expect(screen.getByRole('heading', { level: 2, name: 'Appearance' })).toBeInTheDocument()
     expect(screen.getByText('This browser')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('radio', { name: 'Dark' }))
@@ -45,6 +48,7 @@ describe('AppearanceSection', () => {
     expect(screen.getAllByRole('status')[0]).toHaveTextContent('Saved')
     await userEvent.click(screen.getByRole('radio', { name: 'Use system setting' }))
     expect(localStorage.getItem(THEME_STORAGE_KEY)).toBeNull()
+    expect(await axe(container)).toHaveNoViolations()
   })
 
   it('switches apply immediately to their stores', async () => {

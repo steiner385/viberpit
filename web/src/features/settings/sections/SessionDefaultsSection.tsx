@@ -5,8 +5,10 @@ import { Select } from '@/ui/Select'
 import { Input } from '@/ui/Input'
 import { Banner } from '@/ui/Banner'
 import { Checkbox } from '@/ui/Checkbox'
+import { Skeleton } from '@/ui/Skeleton'
 import { RadioGroup } from '@/ui/RadioGroup'
 import { ConfirmDialog } from '@/ui/ConfirmDialog'
+import { SETTINGS_BY_ID } from '../settingsDefs'
 import { SettingsSection } from '../chassis/SettingsSection'
 import { SettingsGroup } from '../chassis/SettingsGroup'
 import { SettingRow } from '../chassis/SettingRow'
@@ -93,7 +95,7 @@ function toPayload(d: DefaultsDraft): Partial<AppSettings> {
  * mistyped one.
  */
 export function SessionDefaultsSection() {
-  const { data: settings } = useSettings()
+  const { data: settings, isLoading, isError, error } = useSettings()
   const update = useUpdateSettings()
   // The gate is a PROMISE handed to `useSettingsForm`, resolved by the dialog, so
   // Save is genuinely suspended until the user answers (same shape as
@@ -111,6 +113,21 @@ export function SessionDefaultsSection() {
     ),
   })
 
+  // Loading and error are STATES OF THIS SECTION, not nothing at all — see the
+  // same block in `GeneralSection`.
+  if (isError || isLoading) {
+    return (
+      <SettingsSection id="sessions" title="Defaults" scope="server" description={SETTINGS_BY_ID.sessions.description}>
+        {isError
+          ? (
+            <Banner tone="danger" role="alert" title="Settings could not be loaded">
+              {error?.message ?? 'The server did not answer.'}
+            </Banner>
+          )
+          : <Skeleton lines={4} />}
+      </SettingsSection>
+    )
+  }
   if (!form.draft || !settings) return null
   const { draft, set } = form
   const accepted = new Set(settings.acceptedPermissionModes)
@@ -124,7 +141,7 @@ export function SessionDefaultsSection() {
       id="sessions"
       title="Defaults"
       scope="server"
-      description="What every new session starts with. A session can change these for itself once it is running."
+      description={SETTINGS_BY_ID.sessions.description}
       footer={<SaveBar form={form} />}
     >
       {form.error && <Banner tone="danger" role="alert" title="Not saved">{form.error}</Banner>}

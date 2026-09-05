@@ -11,12 +11,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { axe, toHaveNoViolations } from 'jest-axe'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import * as hooks from '@/api/hooks'
+import type { AppSettings } from '@/api/hooks'
 import { appSettings } from '@/test/factories'
-import { queryResult, mutationResult } from '@/test/reactQuery'
+import { queryResult, loadingQueryResult, mutationResult } from '@/test/reactQuery'
 import { SessionDefaultsSection } from './SessionDefaultsSection'
+
+expect.extend(toHaveNoViolations)
 
 vi.mock('@/api/hooks', () => ({ useSettings: vi.fn(), useUpdateSettings: vi.fn() }))
 
@@ -38,11 +42,31 @@ describe('SessionDefaultsSection', () => {
     vi.mocked(hooks.useUpdateSettings).mockReturnValue(mutationResult({ mutateAsync }))
   })
 
-  it('initialises from the server (thinkingCollapsed true, not a hard-coded false) (S21)', () => {
-    mount()
+  it('initialises from the server (thinkingCollapsed true, not a hard-coded false) (S21)', async () => {
+    const { container } = mount()
     expect(screen.getByRole('checkbox', { name: 'Collapse thinking by default' })).toBeChecked()
     expect(screen.getByRole('radio', { name: /Server default/ })).toBeChecked()
     expect(screen.getByRole('radio', { name: /Server default/ })).toHaveAccessibleName(/require approval/i)
+    expect(await axe(container)).toHaveNoViolations()
+  })
+
+  it('while /settings is in flight it shows the chassis and a skeleton, not nothing', () => {
+    vi.mocked(hooks.useSettings).mockReturnValue(loadingQueryResult<AppSettings>())
+    const { container } = mount()
+    expect(screen.getByRole('heading', { level: 2, name: 'Defaults' })).toBeInTheDocument()
+    expect(container.querySelector('.animate-pulse')).not.toBeNull()
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
+  })
+
+  it('a failed /settings shows an alert naming the failure, not an empty panel', () => {
+    vi.mocked(hooks.useSettings).mockReturnValue(
+      queryResult(appSettings(), { isError: true, error: new Error('boom') }),
+    )
+    mount()
+    expect(screen.getByRole('heading', { level: 2, name: 'Defaults' })).toBeInTheDocument()
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent('Settings could not be loaded')
+    expect(alert).toHaveTextContent('boom')
   })
 
   it('with no gated tiers configured the denylist placeholder is just "Server default" (R14a)', () => {

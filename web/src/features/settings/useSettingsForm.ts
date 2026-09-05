@@ -31,10 +31,39 @@ export function nextDraft<T extends object>(prevInitial: T, draft: T, newInitial
   return isDirty(prevInitial, draft) ? draft : newInitial
 }
 
-function messageOf(err: unknown): string {
+/**
+ * The 409 the server returns when an archive-path change copied some files and
+ * then failed (`server/api/settings.py`). Its `detail` is a machine-readable
+ * object with no `message`, so the generic fallback below turned the one error
+ * that needs the operator to DO something into "Request failed (409)".
+ */
+interface ArchiveMoveFailed {
+  code: 'archive_move_failed'
+  moved: number
+  failed: number
+  total: number
+}
+
+function isArchiveMoveFailed(d: unknown): d is ArchiveMoveFailed {
+  return (
+    !!d && typeof d === 'object'
+    && (d as { code?: unknown }).code === 'archive_move_failed'
+    && typeof (d as { moved?: unknown }).moved === 'number'
+    && typeof (d as { total?: unknown }).total === 'number'
+  )
+}
+
+/** The one place a save failure becomes a sentence. Exported for its own table test. */
+export function messageOf(err: unknown): string {
   if (err instanceof ApiRequestError) {
     const d = err.body.detail
     if (typeof d === 'string') return d
+    // Specific before generic: a coded detail gets its own sentence, and only a
+    // detail nobody here recognises falls through to `message` / the status.
+    if (isArchiveMoveFailed(d)) {
+      return `${d.moved} of ${d.total} archived sessions were moved before the copy failed; `
+        + 'the path was not changed. Move the remaining files by hand or try again.'
+    }
     if (d && typeof d === 'object' && 'message' in d && typeof (d as { message: unknown }).message === 'string') {
       return (d as { message: string }).message
     }
