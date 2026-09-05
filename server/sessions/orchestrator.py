@@ -506,6 +506,7 @@ class SessionOrchestrator:
         x11=None,
         copilot=None,
         copilot_auth=None,
+        codex=None,
         title_fn: Callable | None = None,
         summary_factory=None,
         driver_registry: AgentDriverRegistry | None = None,
@@ -532,6 +533,11 @@ class SessionOrchestrator:
         self._x11 = x11  # X11Manager | None — per-session virtual displays
         self._copilot = copilot  # CopilotProxyManager | None — per-account translating proxy
         self._copilot_auth = copilot_auth  # CopilotAuthManager | None — device-flow auth manager
+        # CodexRunnerManager | None — per-account `codex app-server` supervision.
+        # None whenever Codex is disabled, unsupported, or not installed, which is
+        # what keeps the feature fail-closed: the two lifecycle hooks below become
+        # no-ops and no other engine's behaviour changes.
+        self._codex = codex
         if os.environ.get("CCSWITCH_SUGGESTIONS", "1") == "0":
             self._suggester = None
         else:
@@ -2694,6 +2700,9 @@ class SessionOrchestrator:
         if self._copilot is not None and _provider_of(account) == _copilot_mod.PROVIDER:
             await self._copilot.ensure(account)
 
+        # …and the per-account Codex app-server for codex-engine sessions.
+        await self._ensure_codex_runner(selected_engine, account)
+
         # Pre-seed the in-memory record so _session_factory's _oat_env closure can
         # look up the account (needed for copilot env injection during driver.start()).
         # The model field is patched below once the driver resolves the actual alias.
@@ -2784,6 +2793,14 @@ class SessionOrchestrator:
             else:
                 model = None
             self._drivers[session_id] = driver
+            # Claim the account's Codex app-server for this session. Deliberately
+            # paired with the driver registration above, which is the exact moment
+            # "this session has a running driver" becomes true — and whose mirror
+            # image, _teardown_driver_state, releases the claim. Attaching earlier
+            # would leak a runner whenever driver.start() failed; a runner nobody
+            # attached to is idle-reaped by the manager either way.
+            if self._codex is not None and selected_engine == AgentEngine.CODEX:
+                self._codex.attach(account, session_id)
             # Human-created sessions (origin is None) DEFER the initial prompt until the
             # first WebSocket client attaches. Sending it before any subscriber exists
             # risks the turn's events being lost: control events broadcast to zero
@@ -2857,6 +2874,20 @@ class SessionOrchestrator:
             if not spawn_done.done():
                 spawn_done.set_result(None)
 
+    async def _ensure_codex_runner(self, engine: AgentEngine, account: str) -> None:
+        """Start the account's `codex app-server` — for codex-engine sessions only.
+
+        Gated on the engine, so a Claude or Copilot spawn never touches the Codex
+        boundary at all, and on the manager being wired (it is None whenever Codex
+        is disabled or unavailable). A failure here is NOT swallowed: for a session
+        that is about to run on Codex, no app-server means no session, and failing
+        the spawn is the fail-closed answer. It cannot reach another engine's spawn
+        because the gate above never lets it run there.
+        """
+        if self._codex is None or engine != AgentEngine.CODEX:
+            return
+        await self._codex.ensure(account)
+
     async def _teardown_driver_state(self, session_id: str) -> AgentDriver | None:
         """Unregister a session's live driver plus every per-session dict keyed off it,
         stop its virtual X11 display, and RETURN the popped driver (None if none was
@@ -2890,6 +2921,17 @@ class SessionOrchestrator:
         self._self_model_state.pop(session_id, None)
         self._handled_model_requests.pop(session_id, None)
         self._pending_initial_prompt.pop(session_id, None)
+
+        # Release this session's claim on its account's Codex app-server (a no-op
+        # for every other engine: the manager only knows sessions that attached).
+        # Runs unconditionally, like the display teardown below, so a ref-count is
+        # never stranded — and is guarded, because a wedged Codex manager must not
+        # be able to stop a Claude session from being torn down.
+        if self._codex is not None:
+            try:
+                self._codex.detach(session_id)
+            except Exception:
+                log.exception("session.codex_detach_failed id=%s", session_id)
 
         # Teardown the virtual X11 display — runs unconditionally so orphaned
         # displays are never leaked even when the driver was never registered.
