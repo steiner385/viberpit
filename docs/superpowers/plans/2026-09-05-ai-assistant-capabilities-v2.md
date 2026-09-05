@@ -1082,11 +1082,11 @@ async def test_create_session_expands_preset(app_client, isolated_db):
 **Files:**
 - Modify: `server/db/models.py` (`NotificationRule`: `once`, `owner_session_id`, `expires_at`; `NotificationChannel.kind` docstring lists `assistant`), `server/sessions/notify_rules.py` (`RuleView` gains `once: bool = False`, `owner_session_id: str | None = None`, `expires_at: datetime | None = None`; `select_rule` skips expired)
 - Create: `server/db/migrations/versions/0026_assistant_watches.py` (chained off `0025_host_engines`)
-- Test: `server/tests/test_notify_rules.py` (extend), `server/tests/test_schema_drift.py` runs
+- Test: `server/tests/test_notify_rules.py` (extend), `server/tests/test_db_schema_reconcile.py` runs
 
 - [ ] **Step 1: Failing test** — `select_rule` ignores a rule whose `expires_at < now`; model columns exist and are nullable.
 - [ ] **Step 2: Run** → FAIL. **Step 3: Implement** columns (all nullable), revision (record-only, same docstring pattern as 0022), `RuleView` fields, `select_rule(rules, ev, now)` — add `now` as a keyword with default `None` so existing callers are unchanged; `plan()` passes its `now`.
-- [ ] **Step 4: Run** `PYT server/tests/test_notify_rules.py server/tests/test_schema_drift.py server/tests/test_schema_reconcile_coverage.py` → PASS. **Step 5: Commit** — `"feat(notifications): once/owner/expiry on rules for assistant watches"`.
+- [ ] **Step 4: Run** `PYT server/tests/test_notify_rules.py server/tests/test_db_schema_reconcile.py server/tests/test_schema_reconcile_coverage.py` → PASS. **Step 5: Commit** — `"feat(notifications): once/owner/expiry on rules for assistant watches"`.
 
 ### Task 8.3: Watches API and tools
 
@@ -1181,7 +1181,7 @@ def test_operator_routes_need_the_flag(method, path):
 ### Task 9.4: Engine-neutrality spike — Codex + in-process MCP
 
 **Files:**
-- Create: `scripts/spike_assistant_codex.py`, `docs/superpowers/spikes/2026-09-XX-assistant-codex-findings.md`
+- Create: `scripts/spike_assistant_codex.py`, `docs/superpowers/spikes/<run-date>-assistant-codex-findings.md` (dated the day the spike runs, like `2026-09-04-assistant-sdk-findings.md`)
 - Modify (outcome-dependent): `server/assistant/api.py` (`status.engineUnavailable`), `web/src/features/assistant/AssistantSheet.tsx` (explain state), **or** `server/assistant/options.py` + `server/automations/engine_policy.py` (overlay behind engine)
 
 - [ ] **Step 1:** Write the spike (mirrors `scripts/spike_assistant_sdk.py`): using the Codex driver's SDK/CLI, attempt to (a) register an in-process or stdio MCP server named `ccswitch` with two fake tools, (b) restrict built-ins to none, (c) ask "list my sessions" and observe whether the tool is called and whether `can_use_tool`-equivalent gating exists. Run against a real Codex account; tee to `/tmp/spike-assistant-codex.log`.
