@@ -322,6 +322,10 @@ _install_real_store_write_guard()
 # substrate is gone regardless of which phase overruns its budget. The file     #
 # backing keeps the schema durable, and WAL keeps COMMITTED writes visible      #
 # across the now-separate connections (db_session/get_db always commit).        #
+#                                                                               #
+# NullPool has no pool to return an ABANDONED checked-out connection to, so it  #
+# survives to GC after its loop is gone; the loop-safe worker installed by      #
+# server/db/aiosqlite_guard.py is what keeps that harmless (issue #1134).       #
 # --------------------------------------------------------------------------- #
 def _cleanup_sqlite_file(path: str) -> None:
     for suffix in ("", "-wal", "-shm"):
