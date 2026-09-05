@@ -2,7 +2,7 @@ import asyncio
 import types
 from unittest.mock import AsyncMock
 
-from server.sessions.driver import SessionDriver
+from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.orchestrator import SessionOrchestrator
 
 
@@ -13,7 +13,7 @@ async def _run_caches():
         _emit=lambda e: None, _last_suggestions=[], _last_turn_id="",
         _last_suggest_sig=None,
     )
-    await SessionDriver._run_suggestions(fake, "User: hi\n\nAssistant: done", "t1")
+    await ClaudeAgentDriver._run_suggestions(fake, "User: hi\n\nAssistant: done", "t1")
     return fake._last_suggestions
 
 

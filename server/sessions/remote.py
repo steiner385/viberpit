@@ -13,6 +13,11 @@ from ccswitch.oauth import Usage
 from server.assistant.context import PromptContext
 from server.ipc.client import DaemonError, DaemonUnavailable
 from server.sessions.facade import rpc_deadline
+from server.sessions.engine import (
+    AgentEngine,
+    AgentEngineUnavailable,
+    parse_agent_engine,
+)
 from server.sessions.orchestrator import ModelBlockedError
 from server.sessions.selection import AllAccountsBusy
 
@@ -104,7 +109,7 @@ class RemoteDriver:
         # Epoch seconds of the open turn's start (None when idle), from the daemon's
         # ensure_driver snapshot. ws.py hands it to replay_window so the incomplete-
         # turn drop only trims the turn that actually IS in progress — mirrors the
-        # local SessionDriver.turn_started_at property.
+        # local ClaudeAgentDriver.turn_started_at property.
         self.turn_started_at = turn_started_at
         self._bg_tasks: set[asyncio.Task] = set()
         # Wave-3 cursor catch-up (audit W2.3), FINDING-1 atomic commitment. When
@@ -128,7 +133,7 @@ class RemoteDriver:
         return self._queued
 
     def queue_wire(self) -> list[dict]:
-        """Structured queue snapshot, mirroring local SessionDriver.queue_wire so
+        """Structured queue snapshot, mirroring local ClaudeAgentDriver.queue_wire so
         ws.py can re-emit queued-prompt chips on reattach in remote mode too.
 
         Without this, ws.py's `driver.queue_wire()` raised AttributeError on every
@@ -239,7 +244,7 @@ class RemoteDriver:
         return True
 
     def open_stream(self) -> RemoteDriverStream:
-        """Uniform attach interface with the local SessionDriver.open_stream()."""
+        """Uniform attach interface with the local ClaudeAgentDriver.open_stream()."""
         return RemoteDriverStream(self)
 
     async def events(self):
@@ -483,6 +488,16 @@ class RemoteOrchestrator:
         # AllAccountsBusy these carry no structured ``error_data`` payload —
         # the message alone is the whole contract — so reconstruction only
         # needs the type name.
+        if "engine" in kwargs:
+            engine = parse_agent_engine(kwargs["engine"])
+            if engine is AgentEngine.CLAUDE_CODE:
+                # Old protocol-v1 daemons do not accept this additive key. Claude is
+                # the legacy default, so omission preserves rolling compatibility.
+                kwargs.pop("engine")
+            else:
+                # Protocol v1 cannot prove that the selected daemon has a Codex
+                # driver. Capability-gated dispatch arrives with fleet support.
+                raise AgentEngineUnavailable(engine)
         try:
             r = await self._client.call("create_session", **kwargs)
         except DaemonError as exc:

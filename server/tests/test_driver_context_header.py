@@ -3,12 +3,16 @@
 The header decorates ONLY the copy of the text handed to `client.query(...)` — never
 the `UserMessage` the transcript bubble renders — and only on a page CHANGE, so a
 follow-up in the same view does not repeat it.
+
+`test_driver.py` covers the once-per-change dedupe against the *route* attribute only
+(`startswith('<ccswitch-context route=…')`). What lives here is the rendering of the
+whole header — `session=` and especially `host=`, which no other test asserts.
 """
 from __future__ import annotations
 
 import asyncio
 
-from server.sessions.driver import SessionDriver
+from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.permissions import PermissionRegistry
 from server.tests.fakes.fake_sdk import FakeSDKClient
 
@@ -17,12 +21,13 @@ def _factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None
     return FakeSDKClient([], on_can_use_tool=can_use_tool)
 
 
-def _driver(sid: str) -> SessionDriver:
-    return SessionDriver(sid, "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
-                         sdk_factory=_factory, registry=PermissionRegistry(), identity="me")
+def _driver(sid: str) -> ClaudeAgentDriver:
+    return ClaudeAgentDriver(sid, "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                             sdk_factory=_factory, registry=PermissionRegistry(),
+                             identity="me")
 
 
-def _sent(d: SessionDriver) -> list[str]:
+def _sent(d: ClaudeAgentDriver) -> list[str]:
     client = d._client
     assert isinstance(client, FakeSDKClient)
     return list(client.sent)

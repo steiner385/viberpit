@@ -112,14 +112,14 @@ class _NullCtx:
 class _NewDriver:
     def __init__(self, *a, **k):
         self.cwd = "/tmp"; self.mode = "interactive"; self.identity = k.get("identity")
-        self.claude_session_id = "c1"; self.sent = []
+        self.engine_session_id = "c1"; self.sent = []
     async def start(self): pass
     async def send_prompt(self, p): self.sent.append(p)
     async def set_model(self, m): pass
 
 
 class _OldDriver:
-    cwd = "/tmp"; mode = "interactive"; identity = SYSTEM_IDENTITY; claude_session_id = "c1"
+    cwd = "/tmp"; mode = "interactive"; identity = SYSTEM_IDENTITY; engine_session_id = "c1"
     async def interrupt(self): pass
     async def aclose(self): pass
 
@@ -127,7 +127,7 @@ class _OldDriver:
 @pytest.mark.asyncio
 async def test_reassign_clears_pause_fields(monkeypatch):
     stmts = []
-    monkeypatch.setattr(orch_mod, "SessionDriver", _NewDriver)
+    monkeypatch.setattr(orch_mod.SessionOrchestrator, "_create_driver", lambda self, **kw: _NewDriver(resume=kw.get("resume"), identity=kw.get("identity")))
     monkeypatch.setattr(orch_mod, "compose", lambda a: "/cfg")
     monkeypatch.setattr(orch_mod.configdir, "trust_project", lambda *a, **k: None)
     monkeypatch.setattr(orch_mod, "db_session", lambda: _NullCtx(stmts))

@@ -8,6 +8,7 @@ import logging
 from server.ipc.daemon import register_rpc
 from server.obs.tasks import supervise
 from server.sessions.types import SYSTEM_IDENTITY
+from server.sessions.engine import AgentEngine, parse_agent_engine
 
 log = logging.getLogger(__name__)
 
@@ -158,7 +159,17 @@ def register_orchestrator_rpc(app, orch) -> None:
         return {"session": rec.to_dict() if rec is not None else None}
 
     async def create_session(params: dict) -> dict:
-        rec = await orch.create_session(**params)
+        launch = dict(params)
+        if "engine" in launch:
+            engine = parse_agent_engine(launch["engine"])
+        else:
+            engine = parse_agent_engine(None, legacy_default=True)
+        if engine is not AgentEngine.CLAUDE_CODE:
+            launch["engine"] = engine
+        else:
+            # Missing/Claude stays byte-compatible with the protocol-v1 request.
+            launch.pop("engine", None)
+        rec = await orch.create_session(**launch)
         return {"session": rec.to_dict()}
 
     async def send_prompt(params: dict) -> dict:

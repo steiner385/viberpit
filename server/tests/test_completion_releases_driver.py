@@ -38,12 +38,12 @@ from server.tests.fakes.fake_factory import fake_sdk_factory
 class _FakeDriver:
     """Minimal driver stub exposing an awaitable ``aclose()``.
 
-    ``claude_session_id``/``last_pr_resolution`` are attributes ``_persist_status``
+    ``engine_session_id``/``last_pr_resolution`` are attributes ``_persist_status``
     and ``transcript_path`` read via ``getattr``/truthiness checks on any live
     driver — None makes both fall through to their detached-session fallback.
     """
 
-    claude_session_id = None
+    engine_session_id = None
     last_pr_resolution = None
 
     def __init__(self, *, raise_on_close: bool = False):

@@ -128,7 +128,7 @@ async def test_persist_context_usage_updates_record(monkeypatch):
 
 def test_driver_calls_on_context_usage_callback():
     from claude_agent_sdk import TextBlock
-    from server.sessions.driver import SessionDriver
+    from server.sessions.claude_driver import ClaudeAgentDriver
     from server.sessions.permissions import PermissionRegistry
     from server.sessions import events as ev
     from server.tests.fakes.fake_sdk import FakeSDKClient
@@ -149,7 +149,7 @@ def test_driver_calls_on_context_usage_callback():
         captured.append((sid, used, mx))
 
     async def run():
-        d = SessionDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=make, registry=PermissionRegistry(),
                           identity="me", on_context_usage=on_ctx)
         await d.start()

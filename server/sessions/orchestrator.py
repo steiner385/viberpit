@@ -1,4 +1,4 @@
-"""SessionOrchestrator — ties SessionDriver, UsagePoller, and rotation together.
+"""SessionOrchestrator — ties agent drivers, UsagePoller, and rotation together.
 
 The API and WS layers call this.  One instance lives on app.state.
 
@@ -65,10 +65,19 @@ from server.sessions import primary_lease
 from server.sessions import push as push_mod
 from server.sessions.commands import catalog as cmd_catalog
 from server.sessions.commands import dispatcher as cmd_dispatcher
-from server.sessions.driver import SessionDriver, _CLOSE_GRACE_SEC
+from server.sessions.claude_driver import ClaudeAgentDriverFactory
+from server.sessions.engine import (
+    AgentDriver,
+    AgentDriverConfig,
+    AgentDriverRegistry,
+    AgentEngine,
+    AsyncCloser,
+    SuggestionProvider,
+    parse_agent_engine,
+)
 from server.sessions.orphaned_asks import orphaned_answer_prompt, orphaned_ask_kind
 from server.sessions.permissions import PermissionRegistry, resolve_permission_mode
-from server.sessions.sdk_factory import real_sdk_factory, real_suggestion_factory, real_summary_factory
+from server.sessions.claude_sdk_factory import real_sdk_factory, real_suggestion_factory, real_summary_factory
 from server.sessions.replay import replay_events
 from server.sessions import status as _status_mod
 from server.sessions.suggestions import SuggestionService, last_turn_context
@@ -95,6 +104,8 @@ from server.hostname import self_host_name  # noqa: F401 — re-exported; the fl
 from server.sessions.pr_fix import build_conflict_fix_prompt, build_pr_fix_prompt
 
 log = logging.getLogger(__name__)
+
+_DRIVER_CONTROL_TIMEOUT_S = 5.0
 
 
 # Statuses that mean a session is mid-turn or awaiting user input — restarting now
@@ -365,7 +376,7 @@ TRANSCRIPT_EXPORT_CEILING_S = env_float("CCSWITCH_TRANSCRIPT_EXPORT_CEILING_S", 
 # Ceiling on how long ensure_driver waits for an in-flight completion-driver release
 # before it gives up and builds the replacement driver anyway. That wait exists to
 # avoid racing the old process's session-file flush, but it runs under the
-# orchestrator-wide `_ensure_lock` and `SessionDriver.aclose()` is only partly
+# orchestrator-wide `_ensure_lock` and `AgentDriver.aclose()` is only partly
 # bounded (the SDK client's __aexit__ and the account sync-back are not), so an
 # unbounded wait would let one stuck teardown wedge every attach in the process.
 # minimum=0.1: a 0/negative override would fire the timeout instantly and defeat the
@@ -446,7 +457,7 @@ class SessionOrchestrator:
 
     Args:
         sdk_factory: ``(cwd, config_dir, can_use_tool, mode, resume) -> SDKClientProtocol``
-            builds the SDK client backing each SessionDriver.  Defaults to
+            builds the SDK client backing each AgentDriver.  Defaults to
             ``real_sdk_factory`` (a real ClaudeSDKClient); override in tests with a
             fake-SDK factory.
         work_dir: Default cwd for new sessions.  Defaults to the process cwd.
@@ -455,11 +466,11 @@ class SessionOrchestrator:
     """
 
     # Optional listener fired whenever a session's live driver is SWAPPED for a new
-    # SessionDriver by a recovery path (see _install_driver / _reassign). The daemon RPC
+    # AgentDriver by a recovery path (see _install_driver / _reassign). The daemon RPC
     # layer registers it to restart the per-session event pump; a recovery swap carries
     # no RPC, so without this the pump keeps forwarding the dead driver and every
     # attached viewer's transcript freezes. None in edge/in-process mode (no daemon pump).
-    on_driver_replaced = None   # Callable[[str, SessionDriver], None] | None
+    on_driver_replaced = None   # Callable[[str, AgentDriver], None] | None
 
     # Statuses a stranded initial prompt may be recovered from on rehydrate (see
     # _recover_undelivered_prompts). Narrow on purpose: a session that has never run
@@ -482,6 +493,7 @@ class SessionOrchestrator:
         copilot_auth=None,
         title_fn: Callable | None = None,
         summary_factory=None,
+        driver_registry: AgentDriverRegistry | None = None,
     ) -> None:
         # work_dir param is accepted for back-compat (used in tests to keep
         # the orchestrator anchored to the repo root), but is no longer stored
@@ -523,7 +535,11 @@ class SessionOrchestrator:
         # Injectable so tests can stub it without a live SDK call.
         self._title_fn: Callable = title_fn or self._default_title_fn
         self._registry = PermissionRegistry()
-        self._drivers: dict[str, SessionDriver] = {}
+        self._engine_registry = driver_registry or AgentDriverRegistry({
+            AgentEngine.CLAUDE_CODE: ClaudeAgentDriverFactory(
+                self._session_factory, self._registry),
+        })
+        self._drivers: dict[str, AgentDriver] = {}
         # In-flight spawns, keyed by session_id: a future resolved when
         # _spawn_session exits (registered driver or raised). _spawn_session
         # pre-seeds the record with status="idle" BEFORE driver.start() — seconds
@@ -545,7 +561,7 @@ class SessionOrchestrator:
         # never make a session permanently unopenable.
         self._releasing: dict[str, asyncio.Task] = {}
         # In-flight driver SWAP for this session_id — generalises `_spawning`
-        # (#1036) to every path that builds+starts a replacement SessionDriver for
+        # (#1036) to every path that builds+starts a replacement AgentDriver for
         # an EXISTING session: ensure_driver's resume-build and _reassign (manual
         # switch, rate-limit rotation, 401 recompose, crash recovery). Each used to
         # race independently — two recoverable-failure callbacks firing back to
@@ -732,7 +748,7 @@ class SessionOrchestrator:
         # spam "Working directory does not exist" every interval (see _generate_fallback_title).
         self._missing_cwd_warned: set[str] = set()
         # session_id → sha1 of the user prompts last sent to the fallback title
-        # generator. Mirrors SessionDriver._last_suggest_sig: skips the Haiku
+        # generator. Mirrors AgentDriver._last_suggest_sig: skips the Haiku
         # round-trip (and the `claude -p` helper it spawns) when _titling_sweep's
         # 15s interval re-checks a session whose transcript hasn't grown since the
         # last attempt (see _generate_fallback_title).
@@ -1110,8 +1126,8 @@ class SessionOrchestrator:
         """Everything that makes one session an ASSISTANT rather than a coding agent:
         mint its loopback bearer token, build the in-process ``ccswitch`` MCP server on
         top of it, and register the resulting ``ClaudeAgentOptions`` overlay. Returns
-        the ``AssistantApi`` to hand to ``SessionDriver(assistant_api=...)``, which owns
-        closing it.
+        the ``AssistantApi`` to hand to ``_create_driver(assistant_api=...)``, which the
+        built ``AgentDriver`` then owns closing.
 
         Called from the spawn in ``_spawn_session`` and the resume in ``ensure_driver``.
         It has to be called on resume, not just spawn: the overlay is the ONLY thing
@@ -1122,7 +1138,7 @@ class SessionOrchestrator:
         restrictions at all, while simultaneously losing its ``mcp__ccswitch__*`` tools.
 
         NOT yet universal: ``_reassign`` (account rotation / 401 recompose / crash
-        recovery) is a THIRD site that builds a SessionDriver and does not go through
+        recovery) is a THIRD site that builds an AgentDriver and does not go through
         here, so a rotated assistant carries the closed ``AssistantApi`` of the driver it
         replaced. That is pre-existing at this branch's merge base and is tracked
         separately — do not read this helper as covering every driver build.
@@ -1170,6 +1186,41 @@ class SessionOrchestrator:
                             extra_env=extra, **kw)
             return base(cwd, config_dir, can_use_tool, mode, resume, **kw)
         return _factory
+
+    def _create_driver(
+        self,
+        *,
+        engine: AgentEngine,
+        session_id: str,
+        account: str,
+        cwd: str,
+        config_dir: str,
+        mode: str,
+        identity: str,
+        resume: str | None,
+        on_sync_back: Callable[[], None],
+        suggester: SuggestionProvider | None = None,
+        assistant_api: AsyncCloser | None = None,
+    ) -> AgentDriver:
+        """Build one driver through the canonical engine registry."""
+        return self._engine_registry.create(engine, AgentDriverConfig(
+            session_id=session_id,
+            account=account,
+            cwd=cwd,
+            config_dir=config_dir,
+            mode=mode,
+            identity=identity,
+            resume=resume,
+            on_engine_session_id=self._persist_claude_session_id,
+            on_sync_back=on_sync_back,
+            on_status=self._persist_status,
+            on_context_usage=self._persist_context_usage,
+            on_record_condense_ms=self._record_condense_ms,
+            get_condense_estimate=self._condense_estimate,
+            on_recoverable_failure=self._handle_recoverable_failure,
+            suggester=suggester,
+            assistant_api=assistant_api,
+        ))
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -1576,8 +1627,9 @@ class SessionOrchestrator:
         model: str | None = None,
         kind: str | None = None,
         owner_identity: str | None = None,
+        engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
     ) -> SessionRecord:
-        """Pick an account, start a SessionDriver, persist a DB row, return a SessionRecord.
+        """Pick an account, start an AgentDriver, persist a DB row, return a SessionRecord.
 
         *kind* is ``ASSISTANT_KIND`` for the AI-drawer meta-assistant and None for every
         coding session; *owner_identity* is the identity that owns an assistant thread
@@ -1593,6 +1645,12 @@ class SessionOrchestrator:
             gitrepos.CloneError / gitrepos.GhError: when repo is given (no cwd)
                 and resolving it into a ccswitch-owned clone fails.
         """
+        # Validate engine availability before filesystem, database, queue, account,
+        # or model-policy work. The default preserves existing in-process callers
+        # during the rolling-upgrade window; wire deserializers apply the same legacy
+        # default explicitly.
+        selected_engine = self._engine_registry.require(parse_agent_engine(engine))
+
         # Resolve cwd: if given, it MUST be an existing directory
         if cwd is not None:
             if not os.path.isdir(cwd):
@@ -1655,7 +1713,7 @@ class SessionOrchestrator:
             identity=identity, permission_mode=permission_mode,
             attachment_ids=attachment_ids, name_is_auto=name_is_auto,
             origin=origin, origin_ref=origin_ref, model=model,
-            kind=kind, owner_identity=owner_identity)
+            kind=kind, owner_identity=owner_identity, engine=selected_engine)
 
     def _active_session_count(self) -> int:
         """Sessions consuming a runtime capacity slot (see CAPACITY_EXEMPT_STATUSES).
@@ -2484,8 +2542,9 @@ class SessionOrchestrator:
         owner_identity: str | None = None,
         preexisting_row: bool = False,
         resume: str | None = None,
+        engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
     ) -> SessionRecord:
-        """Start a SessionDriver, persist/update a DB row, return a SessionRecord.
+        """Start an AgentDriver, persist/update a DB row, return a SessionRecord.
 
         When preexisting_row=True the session already has a DB row (status='queued')
         from _enqueue_session; this method UPDATEs that row (status→'idle',
@@ -2499,6 +2558,7 @@ class SessionOrchestrator:
         persisted before the assistant existed still replays cleanly (its
         params dict has neither key).
         """
+        selected_engine = self._engine_registry.require(parse_agent_engine(engine))
         repo_root = await self._effective_repo_root()
 
         # Per-session isolation: EVERY repo session runs in its OWN git worktree, never
@@ -2623,18 +2683,16 @@ class SessionOrchestrator:
                 assistant_api = self._setup_assistant_overlay(
                     session_id, identity=identity, model=model)
 
-            # Start a SessionDriver backed by the configured SDK factory.
-            driver = SessionDriver(
-                session_id, account, cwd, str(cfg_dir),
-                mode=permission_mode, sdk_factory=self._session_factory(session_id),
-                registry=self._registry, identity=identity, resume=resume,
-                on_session_id=self._persist_claude_session_id,
+            driver = self._create_driver(
+                engine=selected_engine,
+                session_id=session_id,
+                account=account,
+                cwd=cwd,
+                config_dir=str(cfg_dir),
+                mode=permission_mode,
+                identity=identity,
+                resume=resume,
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, account),
-                on_status=self._persist_status,
-                on_context_usage=self._persist_context_usage,
-                on_record_condense_ms=self._record_condense_ms,
-                get_condense_estimate=self._condense_estimate,
-                on_recoverable_failure=self._handle_recoverable_failure,
                 suggester=self._suggester_for(kind),
                 assistant_api=assistant_api,
             )
@@ -2728,7 +2786,7 @@ class SessionOrchestrator:
             if not spawn_done.done():
                 spawn_done.set_result(None)
 
-    async def _teardown_driver_state(self, session_id: str) -> SessionDriver | None:
+    async def _teardown_driver_state(self, session_id: str) -> AgentDriver | None:
         """Unregister a session's live driver plus every per-session dict keyed off it,
         stop its virtual X11 display, and RETURN the popped driver (None if none was
         registered) so the caller owns the ``aclose()``.
@@ -2869,7 +2927,12 @@ class SessionOrchestrator:
             if not is_assistant(rec) or rec.id not in self._drivers:
                 continue
             driver = self._drivers[rec.id]
-            if driver._turn_live():
+            # "A turn is in flight" off the provider-neutral AgentDriver surface, the
+            # same composition the stall watchdog uses below: `turn_active` covers a
+            # prompt or CLI-initiated turn, `drain_alive` the tail where the turn has
+            # been flagged done but its pump is still unwinding. Reaping in that tail
+            # would aclose() a driver mid-drain.
+            if driver.turn_active or driver.drain_alive:
                 continue
             last = rec.last_activity_at or now
             if now - last < idle:
@@ -2944,7 +3007,7 @@ class SessionOrchestrator:
                 # tools=[] so it never uses the display, but _spawn_session/ensure_driver
                 # allocate one for every session kind regardless and the pool is finite;
                 # start_display is idempotent, so a later resume re-leasing it is a no-op.
-                # (`driver` above is the same object: nothing between the _turn_live()
+                # (`driver` above is the same object: nothing between the turn-in-flight
                 # check and here awaits, so no other coroutine can have swapped it.)
                 await self._teardown_driver_state(rec.id)
                 async with db_session() as db:
@@ -6737,7 +6800,7 @@ class SessionOrchestrator:
         grow between _titling_sweep passes, so without this every 15s sweep re-ran
         a full Haiku query (and its `claude -p` helper subprocess, which rewrites
         the account's `.claude.json`) for no reason. Mirrors
-        ``SessionDriver._run_suggestions``'s ``_last_suggest_sig`` gate. Best-effort:
+        ``AgentDriver._run_suggestions``'s ``_last_suggest_sig`` gate. Best-effort:
         any miss leaves the name unchanged.
         """
         if self._account_limited(rec.account):
@@ -8159,7 +8222,7 @@ class SessionOrchestrator:
         return self._poller
 
     def has_live_session(self, account: str) -> bool:
-        """Return True if any live SessionDriver is currently running on *account*.
+        """Return True if any live AgentDriver is currently running on *account*.
 
         Used by the poller's usage_fn to decide whether it is safe to call
         oauth.refresh_access_token: while the SDK subprocess owns the token
@@ -8233,8 +8296,8 @@ class SessionOrchestrator:
         """Return the proxy /usage payload for a copilot account, or None."""
         return self._copilot.usage(account) if self._copilot is not None else None
 
-    def driver(self, session_id: str) -> SessionDriver | None:
-        """Return the live SessionDriver for session_id, or None."""
+    def driver(self, session_id: str) -> AgentDriver | None:
+        """Return the live AgentDriver for session_id, or None."""
         return self._drivers.get(session_id)
 
     def seed_idle_suggestions(self, session_id: str, user_text: str, assistant_text: str) -> None:
@@ -8415,11 +8478,11 @@ class SessionOrchestrator:
         log.info("auto-resume: resumed %d/%d interrupted session(s)", n, len(eligible))
         return n
 
-    async def ensure_driver(self, session_id: str, identity: str = SYSTEM_IDENTITY) -> SessionDriver | None:
-        """Return the live SessionDriver for session_id, resuming from DB if detached.
+    async def ensure_driver(self, session_id: str, identity: str = SYSTEM_IDENTITY) -> AgentDriver | None:
+        """Return the live AgentDriver for session_id, resuming from DB if detached.
 
         - If a live driver already exists, return it (idempotent).
-        - If the SessionRecord exists but is detached, build a new SessionDriver with
+        - If the SessionRecord exists but is detached, build a new AgentDriver with
           resume=<claude_session_id>, start it, store it, and mark the record as live.
         - If the session_id is unknown, return None.
 
@@ -8606,33 +8669,28 @@ class SessionOrchestrator:
             def _build(resume_arg):
                 assistant_api = None
                 if is_assistant(rec):
+                    # Must run before _create_driver: the SDK factory reads
+                    # self._assistant_overlays[session_id] when it builds the client.
                     assistant_api = self._setup_assistant_overlay(
                         session_id, identity=identity, model=rec.model)
                     built_assistant_apis.append(assistant_api)
-                return SessionDriver(
-                    session_id,
-                    rec.account,
-                    rec.cwd,
-                    str(cfg_dir),
+                return self._create_driver(
+                    engine=AgentEngine.CLAUDE_CODE,
+                    session_id=session_id,
+                    account=rec.account,
+                    cwd=rec.cwd,
+                    config_dir=str(cfg_dir),
                     mode=getattr(rec, "permission_mode", "interactive"),
-                    sdk_factory=self._session_factory(session_id),
-                    registry=self._registry,
                     identity=identity,
                     resume=resume_arg,
-                    on_session_id=self._persist_claude_session_id,
                     on_sync_back=functools.partial(ccswitch_accounts.sync_back, rec.account),
-                    on_status=self._persist_status,
-                    on_context_usage=self._persist_context_usage,
-                    on_record_condense_ms=self._record_condense_ms,
-                    get_condense_estimate=self._condense_estimate,
-                    on_recoverable_failure=self._handle_recoverable_failure,
                     suggester=self._suggester_for(getattr(rec, "kind", None)),
                     assistant_api=assistant_api,
                 )
 
             # Publish this build as an in-flight swap (#1040) so a concurrent
             # _reassign for this session — triggered from outside `_ensure_lock` —
-            # waits for it instead of starting its own SessionDriver in parallel.
+            # waits for it instead of starting its own AgentDriver in parallel.
             # Cleared in `finally` no matter how the build ends, so a failed
             # resume can never wedge every later attach/reassign for this session.
             swap_done: asyncio.Future = asyncio.get_running_loop().create_future()
@@ -8935,17 +8993,16 @@ class SessionOrchestrator:
             permission_mode = await resolve_permission_mode(db, account=cand.account)
 
         def _build(resume_arg):
-            return SessionDriver(
-                session_id, cand.account, cand.cwd, str(cfg_dir),
-                mode=permission_mode, sdk_factory=self._session_factory(session_id), registry=self._registry,
-                identity=identity, resume=resume_arg,
-                on_session_id=self._persist_claude_session_id,
+            return self._create_driver(
+                engine=AgentEngine.CLAUDE_CODE,
+                session_id=session_id,
+                account=cand.account,
+                cwd=cand.cwd,
+                config_dir=str(cfg_dir),
+                mode=permission_mode,
+                identity=identity,
+                resume=resume_arg,
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, cand.account),
-                on_status=self._persist_status,
-                on_context_usage=self._persist_context_usage,
-                on_record_condense_ms=self._record_condense_ms,
-                get_condense_estimate=self._condense_estimate,
-                on_recoverable_failure=self._handle_recoverable_failure,
                 suggester=self._suggester,
             )
 
@@ -9651,8 +9708,8 @@ class SessionOrchestrator:
         replay survives a broken per-account symlink.
         """
         d = self._drivers.get(session_id)
-        if d and d.claude_session_id:
-            config_dir, csid = d.config_dir, d.claude_session_id
+        if d and d.engine_session_id:
+            config_dir, csid = d.config_dir, d.engine_session_id
             rec0 = self._records.get(session_id)
             cwd = getattr(rec0, "cwd", None) if rec0 is not None else None
         else:
@@ -9727,13 +9784,13 @@ class SessionOrchestrator:
         # no SDK progress for STALL_TIMEOUT; do not chase IPC drops for that symptom.
         quarantined = self._recovery.quarantined(now=now)
         for sid, driver in list(self._drivers.items()):
-            # A live turn (`_turn_active`) is the obvious wedge candidate. But an
+            # A live turn (`turn_active`) is the obvious wedge candidate. But an
             # interrupt that the SDK ignored leaves a ZOMBIE: `interrupt()` flips
-            # `_turn_active` False, yet the drain never completes (`drain_alive`) because
+            # `turn_active` False, yet the drain never completes (`drain_alive`) because
             # the subprocess is genuinely hung mid-compaction. Both need watching; only a
             # turn that is neither active nor still draining is truly idle.
-            active = getattr(driver, "_turn_active", False)
-            zombie = (not active) and getattr(driver, "drain_alive", False)
+            active = driver.turn_active
+            zombie = (not active) and driver.drain_alive
             if not active and not zombie:
                 continue
             # A turn whose silence is attributable to API throttling — the driver is
@@ -9741,12 +9798,11 @@ class SessionOrchestrator:
             # is alive, not wedged. Give it the extended timeout before treating the
             # gap as a hang; past that longer window a genuine hang is still caught.
             # Issue #185: throttled turns were interrupted as "Turn failed" under load.
-            throttled = getattr(driver, "in_api_backoff", False) or \
-                getattr(driver, "account", None) in quarantined
+            throttled = driver.in_api_backoff or driver.account in quarantined
             timeout = STALL_TIMEOUT_THROTTLED if throttled else STALL_TIMEOUT
             if now - driver.last_progress_at <= timeout:
                 continue
-            if getattr(driver, "awaiting_user_input", False):
+            if driver.awaiting_user_input:
                 # Blocked on a permission / plan / question — waiting on the human,
                 # not wedged. Interrupting here is the spurious "[Request interrupted
                 # by user]" users see when they take a while to answer.
@@ -9775,7 +9831,7 @@ class SessionOrchestrator:
             # tick for the SDK's 60 s and skips every later driver's stall check (and
             # the disabled-account sweep). If it doesn't land, the stall cap above
             # escalates to a recompose on a later tick.
-            await bounded_wait(driver.interrupt(), timeout=_CLOSE_GRACE_SEC,
+            await bounded_wait(driver.interrupt(), timeout=_DRIVER_CONTROL_TIMEOUT_S,
                                phase=f"stall.interrupt:{sid}")
 
     async def _check_disabled_account_sessions(self) -> None:
@@ -10634,7 +10690,7 @@ class SessionOrchestrator:
                 .values(autopilot_paused=paused)
             )
 
-    def _install_driver(self, session_id: str, driver: SessionDriver) -> None:
+    def _install_driver(self, session_id: str, driver: AgentDriver) -> None:
         """Register *driver* as the live driver for *session_id* and notify the
         driver-replaced listener. Recovery swaps the driver with no RPC (see _reassign),
         yet the daemon's per-session pump is (re)started only inside the ensure_driver
@@ -10675,7 +10731,7 @@ class SessionOrchestrator:
         # two recoverable-failure callbacks firing back to back (e.g. two
         # `turn_dropped` events escalating to rotation), or a manual account
         # switch landing while ensure_driver is mid-resume-build. Each used to
-        # build+start its own SessionDriver against the same claude_session_id —
+        # build+start its own AgentDriver against the same claude_session_id —
         # both processes came up live, only one was ever registered in
         # `_drivers`, and the loser ran on as an invisible twin CLI. A caller that
         # finds an entry here waits for it, then re-derives its own driver/record
@@ -10709,7 +10765,7 @@ class SessionOrchestrator:
 
         # Derive driver construction params from whichever source is available.
         if old_driver is not None:
-            claude_sid = old_driver.claude_session_id
+            claude_sid = old_driver.engine_session_id
             cwd = old_driver.cwd
             mode = old_driver.mode
             identity = old_driver.identity
@@ -10734,7 +10790,7 @@ class SessionOrchestrator:
                 # until a human intervened (2026-09-03). The old driver is being
                 # replaced regardless; aclose() does its own bounded interrupt + reap
                 # (#846), so a failed courtesy interrupt must never block the swap.
-                await bounded_wait(old_driver.interrupt(), timeout=_CLOSE_GRACE_SEC,
+                await bounded_wait(old_driver.interrupt(), timeout=_DRIVER_CONTROL_TIMEOUT_S,
                                    phase=f"reassign.interrupt:{record.id}")
                 await old_driver.aclose()
             cfg = compose(new_account)
@@ -10752,7 +10808,7 @@ class SessionOrchestrator:
             # above already closed that client (it belonged to old_driver), so every
             # mcp__ccswitch__* call on the rebuilt driver would raise against a dead
             # connection unless a FRESH AssistantApi is minted here and re-registered
-            # under record.id before the new SessionDriver is built — mirroring the
+            # under record.id before the new AgentDriver is built — mirroring the
             # rebuild _spawn_session does on the initial spawn (#1125).
             assistant_api = None
             if is_assistant_kind(getattr(record, "kind", None)):
@@ -10768,18 +10824,16 @@ class SessionOrchestrator:
                 self.register_assistant_overlay(record.id, assistant_options(
                     server=build_server(assistant_api), max_turns=settings.assistant_max_turns,
                     model=record.model or settings.assistant_model))
-            new_driver = SessionDriver(
-                record.id, new_account, cwd, str(cfg),
-                mode=mode, sdk_factory=self._session_factory(record.id),
-                registry=self._registry, identity=identity,
+            new_driver = self._create_driver(
+                engine=AgentEngine.CLAUDE_CODE,
+                session_id=record.id,
+                account=new_account,
+                cwd=cwd,
+                config_dir=str(cfg),
+                mode=mode,
+                identity=identity,
                 resume=claude_sid,
-                on_session_id=self._persist_claude_session_id,
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, new_account),
-                on_status=self._persist_status,
-                on_context_usage=self._persist_context_usage,
-                on_record_condense_ms=self._record_condense_ms,
-                get_condense_estimate=self._condense_estimate,
-                on_recoverable_failure=self._handle_recoverable_failure,
                 suggester=self._suggester_for(getattr(record, "kind", None)),
                 assistant_api=assistant_api,
             )
@@ -10888,7 +10942,7 @@ class SessionOrchestrator:
         self._worktrees.pop(session_id, None)
 
         # Close the driver in the background: aclose() takes up to
-        # _CLOSE_GRACE_SEC (5 s) for live sessions and nothing below depends on
+        # _DRIVER_CONTROL_TIMEOUT_S (5 s) for live sessions and nothing below depends on
         # it, so the archive request must not wait on it.
         if driver is not None:
             self._spawn(self._close_archived_driver(driver, session_id),
@@ -10927,7 +10981,7 @@ class SessionOrchestrator:
         # session can start. Tracked via _spawn — mirrors close_session.
         self._spawn(self._maybe_start_queued(), name="queue-drain-on-archive")
 
-    async def _close_archived_driver(self, driver: "SessionDriver", session_id: str) -> None:
+    async def _close_archived_driver(self, driver: "AgentDriver", session_id: str) -> None:
         """Background half of archive_session: graceful driver shutdown (5 s grace)."""
         try:
             await driver.aclose()

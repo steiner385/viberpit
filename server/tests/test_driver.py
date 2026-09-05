@@ -1,5 +1,5 @@
 import asyncio
-from server.sessions.driver import SessionDriver
+from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.permissions import PermissionRegistry
 from server.sessions.events import TurnEnd, Status, Title, QueueUpdate, UserMessage, ErrorEvent
 import server.sessions.events as ev
@@ -30,7 +30,7 @@ def test_drain_exception_emits_error_event_with_detail():
         return _RaisingClient(ValueError("token expired mid-stream"))
 
     async def run():
-        d = SessionDriver("se", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("se", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me")
         await d.start()
         await d.send_prompt("go")
@@ -63,7 +63,7 @@ def test_exiting_plan_restores_pre_plan_permission_mode():
     "prompt on every dangerous tool", silently breaking a full-auto session."""
     async def run():
         rec = _ModeRecorder()
-        d = SessionDriver("sp-plan", "primary", "/tmp/r", "/tmp/cfg", mode="full-auto",
+        d = ClaudeAgentDriver("sp-plan", "primary", "/tmp/r", "/tmp/cfg", mode="full-auto",
                           sdk_factory=lambda *a, **k: None, registry=PermissionRegistry(),
                           identity="me")
         d._client = rec
@@ -82,7 +82,7 @@ def test_default_outside_plan_is_not_hijacked():
     unchanged — the restore only fires when actually exiting plan."""
     async def run():
         rec = _ModeRecorder()
-        d = SessionDriver("sp-nodef", "primary", "/tmp/r", "/tmp/cfg", mode="full-auto",
+        d = ClaudeAgentDriver("sp-nodef", "primary", "/tmp/r", "/tmp/cfg", mode="full-auto",
                           sdk_factory=lambda *a, **k: None, registry=PermissionRegistry(),
                           identity="me")
         d._client = rec
@@ -102,7 +102,7 @@ def test_driver_streams_turn_and_sets_session_id():
             f.stream_text("Hello ", uuid="t1"), f.stream_text("there", uuid="t1"),
             f.assistant(TextBlock(text="Hello there"), uuid="t1"), f.result(session_id="sess-1", uuid="t1")]
     async def run():
-        d = SessionDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory(msgs), registry=PermissionRegistry(), identity="me")
         await d.start()
         # Subscribe BEFORE send_prompt so control events (Title, Status) emitted at
@@ -138,7 +138,7 @@ def test_interrupt_denies_pending_and_stops():
     msgs = [f.stream_start(uuid="t1"), f.stream_text("a", uuid="t1"), f.result(uuid="t1")]
     async def run():
         reg = PermissionRegistry()
-        d = SessionDriver("s2", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s2", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory(msgs), registry=reg, identity="me")
         await d.start()
         await d.send_prompt("go")
@@ -154,7 +154,7 @@ def test_interrupt_denies_pending_and_stops():
 def test_events_terminates_after_aclose():
     msgs = [f.result(uuid="t1")]
     async def run():
-        d = SessionDriver("s3", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s3", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory(msgs), registry=PermissionRegistry(), identity="me")
         await d.start(); await d.send_prompt("x")
         got = []
@@ -196,7 +196,7 @@ def test_concurrent_send_prompt_enqueues():
         return sdk
 
     async def run():
-        d = SessionDriver("s4", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s4", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me")
         await d.start()
         await d.send_prompt("first")
@@ -244,7 +244,7 @@ def test_queued_prompt_runs_after_first_turn():
         return sdk
 
     async def run():
-        d = SessionDriver("sq1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("sq1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me")
         await d.start()
         # Send both prompts back-to-back; the first starts immediately, the second queues.
@@ -288,7 +288,7 @@ def test_send_prompt_context_header_prepended_once_per_change():
         return sdk
 
     async def run():
-        d = SessionDriver("sctx1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("sctx1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me")
         await d.start()
         events = []
@@ -356,7 +356,7 @@ def test_queued_prompt_keeps_its_context_header():
         return sdk
 
     async def run():
-        d = SessionDriver("sqctx", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("sqctx", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me")
         await d.start()
         msgs = []
@@ -408,7 +408,7 @@ def test_interrupt_and_post_keeps_its_context_header():
         return sdk
 
     async def run():
-        d = SessionDriver("sictx", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("sictx", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me")
         await d.start()
         await d.send_prompt("slow-one", context={"route": "/pipeline"})
@@ -455,7 +455,7 @@ def test_context_dedupe_only_advances_when_the_header_is_actually_sent():
         return sdk
 
     async def run():
-        d = SessionDriver("sdctx", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("sdctx", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me")
         await d.start()
         await d.send_prompt("one", context={"route": "/pipeline"})
@@ -488,7 +488,7 @@ def test_fresh_session_resends_the_context_header_after_clear():
         return sdk
 
     async def run():
-        d = SessionDriver("scctx", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("scctx", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me")
         await d.start()
 
@@ -522,7 +522,7 @@ def test_compaction_resends_the_context_header():
         return sdk
 
     async def run():
-        d = SessionDriver("spctx", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("spctx", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me")
         await d.start()
 
@@ -568,7 +568,7 @@ def test_interrupt_clears_queue():
         return sdk
 
     async def run():
-        d = SessionDriver("sq2", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("sq2", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me")
         await d.start()
         await d.send_prompt("first")
@@ -591,7 +591,7 @@ def test_auto_title_emitted_on_first_prompt():
     msgs = [f.result(uuid="t1")]
 
     async def run():
-        d = SessionDriver("s5", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s5", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory(msgs), registry=PermissionRegistry(), identity="me")
         await d.start()
         out_q: asyncio.Queue = asyncio.Queue()
@@ -642,7 +642,7 @@ def test_auto_title_only_fires_once():
         return sdk
 
     async def run():
-        d = SessionDriver("s6", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s6", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me")
         await d.start()
         out_q: asyncio.Queue = asyncio.Queue()
@@ -672,7 +672,7 @@ def test_auto_title_first_line_only():
     msgs = [f.result(uuid="t1")]
 
     async def run():
-        d = SessionDriver("s7", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s7", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory(msgs), registry=PermissionRegistry(), identity="me")
         await d.start()
         out_q: asyncio.Queue = asyncio.Queue()
@@ -702,7 +702,7 @@ def test_askuserquestion_blocks_emits_question_and_returns_deny_with_answer():
     from server.sessions.events import Question
 
     async def run():
-        d = SessionDriver("sq", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("sq", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
         out_q: asyncio.Queue = asyncio.Queue()
         d._subscribers.add(out_q)
@@ -747,7 +747,7 @@ def test_askuserquestion_dismiss_returns_deny_with_dismissed_text():
     import asyncio
 
     async def run():
-        d = SessionDriver("sq-dismiss", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("sq-dismiss", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
         tool_input = {"questions": [{"header": "H", "question": "Q?",
                                      "options": [{"label": "Yes"}], "multiSelect": False}]}
@@ -776,7 +776,7 @@ def test_permission_decision_emits_permission_resolved():
     from server.sessions.events import PermissionRequest, PermissionResolved
 
     async def run():
-        d = SessionDriver("sp-resolved", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("sp-resolved", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
         out_q: asyncio.Queue = asyncio.Queue()
         d._subscribers.add(out_q)
@@ -817,7 +817,7 @@ def test_permission_dismiss_emits_permission_resolved_denied():
     from server.sessions.events import PermissionResolved
 
     async def run():
-        d = SessionDriver("sp-resolved-dismiss", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("sp-resolved-dismiss", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
         out_q: asyncio.Queue = asyncio.Queue()
         d._subscribers.add(out_q)
@@ -846,7 +846,7 @@ def test_auto_allowed_permission_emits_no_permission_resolved():
     from server.sessions.events import PermissionRequest, PermissionResolved
 
     async def run():
-        d = SessionDriver("sp-auto", "primary", "/tmp/r", "/tmp/cfg", mode="auto",
+        d = ClaudeAgentDriver("sp-auto", "primary", "/tmp/r", "/tmp/cfg", mode="auto",
                           sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
         out_q: asyncio.Queue = asyncio.Queue()
         d._subscribers.add(out_q)
@@ -871,7 +871,7 @@ def test_askuserquestion_answer_emits_question_resolved():
     from server.sessions.events import Question, QuestionResolved
 
     async def run():
-        d = SessionDriver("sq-resolved", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("sq-resolved", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
         out_q: asyncio.Queue = asyncio.Queue()
         d._subscribers.add(out_q)
@@ -911,7 +911,7 @@ def test_askuserquestion_dismiss_emits_question_resolved_dismissed():
     from server.sessions.events import QuestionResolved
 
     async def run():
-        d = SessionDriver("sq-resolved-dismiss", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("sq-resolved-dismiss", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
         out_q: asyncio.Queue = asyncio.Queue()
         d._subscribers.add(out_q)
@@ -943,7 +943,7 @@ def test_askuserquestion_multi_question_each_answer_emits_resolved_immediately()
     from server.sessions.events import Question, QuestionResolved
 
     async def run():
-        d = SessionDriver("sq-resolved-multi", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("sq-resolved-multi", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
         out_q: asyncio.Queue = asyncio.Queue()
         d._subscribers.add(out_q)
@@ -989,7 +989,7 @@ def test_askuserquestion_multi_question_single_call():
     from server.sessions.events import Question
 
     async def run():
-        d = SessionDriver("sq-multi", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("sq-multi", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
         out_q: asyncio.Queue = asyncio.Queue()
         d._subscribers.add(out_q)
@@ -1037,7 +1037,7 @@ def test_askuserquestion_options_normalized_from_strings():
     from server.sessions.events import Question
 
     async def run():
-        d = SessionDriver("sq-str-opts", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("sq-str-opts", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
         out_q: asyncio.Queue = asyncio.Queue()
         d._subscribers.add(out_q)
@@ -1084,7 +1084,7 @@ def test_queue_update_emitted_when_enqueuing():
         return sdk
 
     async def run():
-        d = SessionDriver("qu1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("qu1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me")
         out_q: asyncio.Queue = asyncio.Queue()
         d._subscribers.add(out_q)
@@ -1126,7 +1126,7 @@ def test_cancel_queued_removes_item_and_emits_queue_update():
         return SlowFakeSDK()
 
     async def run():
-        d = SessionDriver("qc1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("qc1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me")
         out_q: asyncio.Queue = asyncio.Queue()
         d._subscribers.add(out_q)
@@ -1177,7 +1177,7 @@ def test_cancel_queued_out_of_range_returns_false():
         return SlowFakeSDK()
 
     async def run():
-        d = SessionDriver("qc2", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("qc2", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me")
         out_q: asyncio.Queue = asyncio.Queue()
         d._subscribers.add(out_q)
@@ -1210,7 +1210,7 @@ def test_on_status_fires_in_progress_then_done():
     async def on_status(session_id, status):
         seen.append(status)
     async def run():
-        d = SessionDriver("sx", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("sx", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory(msgs), registry=PermissionRegistry(),
                           identity="me", on_status=on_status)
         await d.start()
@@ -1232,7 +1232,7 @@ def test_askuserquestion_freeform_framing():
     from server.sessions.events import Question
 
     async def run():
-        d = SessionDriver("sq-ff", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("sq-ff", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
         out_q: asyncio.Queue = asyncio.Queue()
         d._subscribers.add(out_q)
@@ -1259,7 +1259,7 @@ def test_askuserquestion_chat_framing():
     from server.sessions.events import Question
 
     async def run():
-        d = SessionDriver("sq-chat", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("sq-chat", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory([]), registry=PermissionRegistry(), identity="me")
         out_q: asyncio.Queue = asyncio.Queue()
         d._subscribers.add(out_q)
@@ -1301,7 +1301,7 @@ def test_queue_wire_includes_images_for_queued_prompt():
                "path": "/tmp/x", "url": "/api/attachments/a"}]
 
     async def run():
-        d = SessionDriver("sq", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("sq", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me")
         await d.start()
         await d.send_prompt("first")            # starts the (slow) turn
@@ -1337,7 +1337,7 @@ def test_dropped_turn_emits_recovering_not_error():
     ]
 
     async def run():
-        d = SessionDriver("rec1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("rec1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory(msgs), registry=PermissionRegistry(), identity="me")
         await d.start()
         await d.send_prompt("go")
@@ -1362,7 +1362,7 @@ def test_emit_error_puts_errorevent():
     msgs = [f.result(uuid="t1")]  # minimal: just enough for the driver to init
 
     async def run_with_last_turn_id():
-        d = SessionDriver("ee1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("ee1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory(msgs), registry=PermissionRegistry(), identity="me")
         out_q: asyncio.Queue = asyncio.Queue()
         d._subscribers.add(out_q)
@@ -1377,7 +1377,7 @@ def test_emit_error_puts_errorevent():
     assert err.turn_id == "t7", f"expected turn_id='t7', got {err.turn_id!r}"
 
     async def run_without_last_turn_id():
-        d = SessionDriver("ee2", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("ee2", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory(msgs), registry=PermissionRegistry(), identity="me")
         out_q: asyncio.Queue = asyncio.Queue()
         d._subscribers.add(out_q)

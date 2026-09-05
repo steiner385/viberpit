@@ -15,7 +15,7 @@ async def test_reassign_sets_account_before_driver_start(monkeypatch):
         def __init__(self, sid, account, *a, **k):
             self._sid = sid
             self.cwd = "/tmp"; self.mode = "interactive"; self.identity = None
-            self.claude_session_id = "c1"
+            self.engine_session_id = "c1"
 
         async def start(self):
             # _oat_env reads orch._records[sid].account at this point in production.
@@ -26,13 +26,19 @@ async def test_reassign_sets_account_before_driver_start(monkeypatch):
         async def set_model(self, m): pass
 
     class _OldDriver:
-        cwd = "/tmp"; mode = "interactive"; identity = None; claude_session_id = "c1"
+        cwd = "/tmp"; mode = "interactive"; identity = None; engine_session_id = "c1"
 
         async def interrupt(self): pass
 
         async def aclose(self): pass
 
-    monkeypatch.setattr(orch_mod, "SessionDriver", _NewDriver)
+    monkeypatch.setattr(
+        orch_mod.SessionOrchestrator,
+        "_create_driver",
+        lambda self, **kw: _NewDriver(
+            kw["session_id"], kw["account"],
+            resume=kw.get("resume"), identity=kw.get("identity")),
+    )
     monkeypatch.setattr(orch_mod, "compose", lambda a: "/cfg")
     monkeypatch.setattr(orch_mod.configdir, "trust_project", lambda *a, **k: None)
 

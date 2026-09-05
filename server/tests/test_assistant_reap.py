@@ -116,11 +116,13 @@ async def test_reap_after_idle_keeps_row_and_resume_id(isolated_db, tmp_path, mo
         await orch.send_prompt(a.id, "hi")
         # Wait for BOTH the id capture and the turn to actually finish draining —
         # on_session_id fires from inside the pump's own drain loop, so there is a
-        # brief window where the id is already set but drain_alive/_turn_live() has
+        # brief window where the id is already set but drain_alive/turn_active have
         # not flipped False yet; reaping while it's still true would (correctly) be
         # skipped by the turn-live guard, which is not what this test is checking.
         for _ in range(200):
-            if orch.get_session(a.id).claude_session_id and not orch._drivers[a.id]._turn_live():
+            d = orch._drivers[a.id]
+            if (orch.get_session(a.id).claude_session_id
+                    and not (d.turn_active or d.drain_alive)):
                 break
             await asyncio.sleep(0.01)
         else:
@@ -145,7 +147,7 @@ async def test_reap_after_idle_keeps_row_and_resume_id(isolated_db, tmp_path, mo
 @pytest.mark.asyncio
 async def test_reap_skips_assistant_with_a_live_turn(isolated_db, tmp_path, monkeypatch):
     """A turn still in flight must never be torn down, no matter how idle the record
-    looks — this is exactly what ``driver._turn_live()`` guards in
+    looks — this is exactly what the ``turn_active or drain_alive`` guard covers in
     ``_reap_idle_assistants_once``. A regression that flipped that check's polarity
     (or dropped it) would pass every other test in this file, since none of them ever
     put the driver into a live-turn state."""
@@ -163,16 +165,16 @@ async def test_reap_skips_assistant_with_a_live_turn(isolated_db, tmp_path, monk
         # keeps working on, with no query() behind it (see
         # test_driver_autonomous_turn.py). `.inject()` delivers it with no closing
         # ResultMessage, so the driver's idle listener opens an autonomous turn
-        # (driver.py:1003-1017, `_open_autonomous_turn`) and it never ends —
-        # `_turn_live()` stays True indefinitely, exactly the state under test.
+        # (claude_driver.py, `_open_autonomous_turn`) and it never ends —
+        # `turn_active` stays True indefinitely, exactly the state under test.
         client = clients[-1]
         client.inject([f.assistant(TextBlock(text="still working..."), uuid="bg1")])
         for _ in range(200):
-            if orch._drivers[a.id]._turn_live():
+            if orch._drivers[a.id].turn_active or orch._drivers[a.id].drain_alive:
                 break
             await asyncio.sleep(0.01)
         else:
-            raise AssertionError("autonomous turn never opened — _turn_live() stayed False")
+            raise AssertionError("autonomous turn never opened — turn_active stayed False")
 
         # Far past the idle threshold — but the live turn must still win.
         assert await orch._reap_idle_assistants_once(now=t0 + 10_000) == []
