@@ -63,7 +63,7 @@ function openaiAccount(over: Partial<Account> = {}): Account {
     codex: {
       authority: {
         reachable: true, protocolVersion: 1, syncRevision: 7,
-        syncExpiresInS: 600, accounts: ['chatgpt'], detail: null,
+        syncExpiresInS: 600, accounts: 1, detail: null,
       },
       quota: codexUsage(40),
       activeRunners: 2,

@@ -184,10 +184,14 @@ export function AddAccountDialog({ onClose, initialProvider, initialName }: AddA
     else handleOpenAISubmit()
   }
 
-  /** Switching provider abandons whatever the previous tab had running — the
-   *  cancel routes are per-provider, so leaving a flag set would keep polling a
-   *  flow the user can no longer see. */
+  /** Switching provider cancels whatever the previous tab had running. Merely
+   *  stopping its poll would leave a hidden browser/device-login process alive
+   *  (and, for a new OpenAI account, a disabled placeholder in the manifest). */
   function pickProvider(next: AddProvider) {
+    if (next === provider) return
+    if (provider === 'anthropic' && started && !optimisticIdle) cancelAdd.mutate()
+    if (provider === 'copilot' && copilotStarted) cancelCopilotAdd.mutate(trimmed)
+    if (provider === 'openai' && openaiStarted) cancelOpenAIAdd.mutate(trimmed)
     setProvider(next)
     if (next !== 'anthropic') { setStarted(false); setOptimisticIdle(false) }
     if (next !== 'copilot') setCopilotStarted(false)

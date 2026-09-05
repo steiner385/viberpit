@@ -518,6 +518,15 @@ class RemoteOrchestrator:
         r = await self._client.call("get_session", session_id=session_id)
         return SessionRecord.from_dict(r["session"]) if r["session"] is not None else None
 
+    async def find_assistant(self, owner_identity: str) -> SessionRecord | None:
+        """The live assistant thread owned by *owner_identity*, or None.
+
+        `None` is a load-bearing answer, not an empty result: POST /api/assistant/session
+        branches on it to choose resume-vs-create, so it must survive the RPC as None
+        rather than as a falsy record (mirrors get_session)."""
+        r = await self._client.call("find_assistant", owner_identity=owner_identity)
+        return SessionRecord.from_dict(r["session"]) if r["session"] is not None else None
+
     async def create_session(self, **kwargs) -> SessionRecord:
         # Faithfully reconstruct the in-process error contract across the RPC
         # boundary: the edge's create handler renders a clear "all accounts at
@@ -644,8 +653,18 @@ class RemoteOrchestrator:
                             turn_active=r.get("turn_active", False),
                             turn_started_at=r.get("turn_started_at"))
 
-    async def archive_session(self, session_id):
-        return await self._client.call("archive_session", session_id=session_id)
+    async def archive_session(self, session_id, *, archived_by: str = "user",
+                              context: dict | None = None):
+        # Mirrors SessionOrchestrator.archive_session's keyword-only audit pair. Both are
+        # forwarded only when they differ from that signature's defaults, so the dashboard's
+        # plain archive keeps its exact pre-existing wire shape and a rolling deploy where
+        # the daemon is older than the edge cannot TypeError on an unexpected **params key.
+        extra: dict[str, object] = {}
+        if archived_by != "user":
+            extra["archived_by"] = archived_by
+        if context is not None:
+            extra["context"] = context
+        return await self._client.call("archive_session", session_id=session_id, **extra)
 
     async def resume_interrupted(self, session_id: str, identity: str = SYSTEM_IDENTITY) -> str:
         """Proxy the owning daemon's resume_interrupted (re-attach + nudge a

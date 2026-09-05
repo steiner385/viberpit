@@ -93,4 +93,21 @@ describe('AddAccountDialog — GitHub Copilot flow', () => {
       expect(onClose).toHaveBeenCalled()
     })
   })
+
+  it('cancels the in-flight Copilot flow when switching provider', async () => {
+    const user = userEvent.setup()
+    const cancelMutate = vi.fn()
+    vi.mocked(hooks.useCancelCopilotAdd).mockReturnValue({
+      mutate: cancelMutate,
+      isPending: false,
+    } as unknown as ReturnType<typeof hooks.useCancelCopilotAdd>)
+    const onClose = vi.fn()
+    render(<AddAccountDialog onClose={onClose} initialProvider="copilot" />, { wrapper })
+
+    await user.type(screen.getByLabelText(/account name/i), 'mycopilot')
+    await user.click(screen.getByRole('button', { name: /^add$/i }))
+    await user.click(screen.getByRole('button', { name: /anthropic \(oauth\)/i }))
+
+    expect(cancelMutate).toHaveBeenCalledWith('mycopilot')
+  })
 })
