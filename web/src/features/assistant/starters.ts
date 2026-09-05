@@ -20,13 +20,18 @@ export const STARTERS: Record<NavId, readonly string[]> = {
     'What did autopilot do in the last hour?',
     'Which automations are failing?',
   ],
+  // INTERIM (audit gap G1). Initiatives and projects had chips no tool could serve —
+  // the assistant has no SDLC-initiative or PM-product tools yet, so tapping one bought
+  // an apology. These stand in until plan Task 6.5 restores section-specific chips on
+  // top of Pack P; the conformance tests (server + web) hold the line that every chip
+  // is backed by a tool and an eval case.
   initiatives: [
-    'Which initiatives have no active session?',
-    'Summarize initiative progress',
+    'What needs my attention?',
+    'Which PRs are blocked, and why?',
   ],
   projects: [
-    'Which project has the most open work?',
-    'What is blocked by a dependency?',
+    'What needs my attention?',
+    'Which sessions are limited or queued?',
   ],
   archived: [
     'Which archived sessions never opened a PR?',

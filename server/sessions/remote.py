@@ -771,6 +771,25 @@ class RemoteOrchestrator:
                 raise KeyError(exc.message) from exc
             raise
 
+    async def set_model_for_session(self, session_id: str, model: str | None, *,
+                                    when: str = "now",
+                                    identity: str = SYSTEM_IDENTITY) -> bool:
+        """Proxy set_model_for_session, reconstituting the in-process error contract.
+
+        ``ModelBlockedError`` is the whole point of the round trip: `session_actions`
+        turns it into the 409 MODEL_BLOCKED response, and a bare DaemonError would
+        surface as a 500 instead."""
+        try:
+            return bool(await self._client.call(
+                "set_model_for_session", session_id=session_id, model=model,
+                when=when, identity=identity))
+        except DaemonError as exc:
+            if exc.err_type == "ModelBlockedError":
+                raise ModelBlockedError(exc.message) from exc
+            if exc.err_type == "KeyError":
+                raise KeyError(exc.message) from exc
+            raise
+
     async def resolve_model_approval(self, session_id: str, decision: str, *,
                                      model: str | None = None,
                                      identity: str) -> "SessionRecord":

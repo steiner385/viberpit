@@ -196,3 +196,37 @@ async def test_note_user_interaction_delegates():
     f = InProcessOrchestratorAdapter(orch)
     await f.note_user_interaction("s1")
     orch.note_user_interaction.assert_called_once_with("s1")
+
+
+def test_every_orchestrator_method_session_actions_calls_is_proxied():
+    """`server/sessions/session_actions.py` is reached with `app.state.sessions` —
+    the FACADE in-process, `RemoteOrchestrator` in remote mode — never the bare
+    `SessionOrchestrator`. A method missing from either proxy is an AttributeError
+    → 500 at runtime, and every route test that drives session_actions through a
+    *fake* orchestrator stays green while it happens (the #1199 failure shape).
+
+    `set_model_for_session` was exactly that: absent from both proxies, so
+    `POST /api/sessions/{id}/model` 500'd against the real app while
+    test_sessions_actions_api.py passed on its fake.
+    """
+    import ast
+    import inspect as _inspect
+    from pathlib import Path
+
+    from server.sessions.remote import RemoteOrchestrator
+
+    src = Path(_inspect.getfile(InProcessOrchestratorAdapter)).parent / "session_actions.py"
+    tree = ast.parse(src.read_text())
+    called = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "orch"
+    }
+    assert called, "found no orch.* calls — the AST scan broke, not the code"
+
+    for proxy in (InProcessOrchestratorAdapter, RemoteOrchestrator):
+        missing = sorted(m for m in called if not hasattr(proxy, m))
+        assert not missing, f"{proxy.__name__} does not proxy: {missing}"

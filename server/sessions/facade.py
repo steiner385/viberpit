@@ -139,6 +139,7 @@ class InProcessOrchestratorAdapter:
     async def engine_replay_window(self, *a, **k): return await _maybe_await(self._orch.engine_replay_window(*a, **k))
     async def interrupt(self, *a, **k): return await _maybe_await(self._orch.interrupt(*a, **k))
     async def set_permission_mode(self, *a, **k): return await _maybe_await(self._orch.set_permission_mode(*a, **k))
+    async def set_model_for_session(self, *a, **k): return await _maybe_await(self._orch.set_model_for_session(*a, **k))
     async def cancel_queued(self, *a, **k): return await _maybe_await(self._orch.cancel_queued(*a, **k))
     async def session_queue_move(self, *a, **k): return await _maybe_await(self._orch.session_queue_move(*a, **k))
     async def session_queue_cancel(self, *a, **k): return await _maybe_await(self._orch.session_queue_cancel(*a, **k))

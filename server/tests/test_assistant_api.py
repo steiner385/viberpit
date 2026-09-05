@@ -149,3 +149,26 @@ def test_gated_model_is_400(tmp_path):
     with _client(tmp_path, {"CCSWITCH_MODEL_APPROVAL_DENYLIST": "fable"}) as c:
         r = c.post("/api/assistant/session", json={"model": "fable"}, headers=_H)
         assert r.status_code == 400 and r.json()["error"]["code"] == "MODEL_GATED"
+
+
+def test_switching_the_assistant_to_a_gated_model_is_400_not_a_parked_hold(tmp_path):
+    """The drawer's model picker posts to the ordinary session model route. For the
+    assistant kind a gated tier must be REFUSED, not parked: the approval card that
+    clears a hold renders inside the drawer that the hold just silenced."""
+    with _client(tmp_path, {"CCSWITCH_MODEL_APPROVAL_DENYLIST": "fable"}) as c:
+        sid = c.post("/api/assistant/session", json={}, headers=_H).json()["id"]
+        r = c.post(f"/api/sessions/{sid}/model", json={"model": "fable"}, headers=_H)
+        assert r.status_code == 400
+        # This route wraps ActionError as {"detail": {...}} (_action_error_response),
+        # whereas POST /api/assistant/session uses {"error": {...}}. The web decoder
+        # (apiErrorCode in @/api/client) reads both spellings for exactly this reason.
+        assert r.json()["detail"]["code"] == "MODEL_GATED"
+        # And the refusal left no hold behind for a human to clear.
+        assert c.app.state.sessions._orch._records[sid].pending_model is None
+
+
+def test_switching_the_assistant_to_an_allowed_model_still_works(tmp_path):
+    with _client(tmp_path, {"CCSWITCH_MODEL_APPROVAL_DENYLIST": "fable"}) as c:
+        sid = c.post("/api/assistant/session", json={}, headers=_H).json()["id"]
+        r = c.post(f"/api/sessions/{sid}/model", json={"model": "opus"}, headers=_H)
+        assert r.status_code == 200, r.text
