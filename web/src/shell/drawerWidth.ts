@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useSyncExternalStore } from 'react'
 
 /**
  * Persisted width for the shell's drawer column (`app.drawer`), sub-spec B §4.2.
@@ -10,12 +10,13 @@ import { useCallback, useEffect, useState } from 'react'
  * every other right-hand sheet in the app.
  *
  * `web/src/lib/` has four bespoke persisted values and no generic
- * persisted-value helper to route through; `NavRail` reached the same conclusion
- * for `ccswitch.railExpanded` and kept its pair local rather than inventing a
- * shared abstraction on one caller's behalf. This module follows that decision,
- * and mirrors `lib/sidebarWidth.ts` clause for clause so the two read alike.
+ * persisted-value helper to route through, so this module keeps its own pair
+ * and mirrors `lib/sidebarWidth.ts` clause for clause, the two reading alike.
  * All access is wrapped: a blocked or unavailable localStorage degrades to the
  * default, never a crash.
+ *
+ * `useDrawerWidth` below is the shared-store shape `shell/railExpanded.ts` uses
+ * (R15) — the value has two holders, so it cannot be per-component state.
  */
 export const DRAWER_MIN = 320
 export const DRAWER_MAX = 640
@@ -48,13 +49,27 @@ export function saveDrawerWidth(px: number): void {
   }
 }
 
-/** Drawer width state, restored from and persisted to localStorage. The setter
- *  always clamps, so no caller can write a width outside the band. */
+const listeners = new Set<() => void>()
+
+/** Persist a width and tell every subscriber. Always clamps (`saveDrawerWidth` does). */
+export function writeDrawerWidth(px: number): void {
+  saveDrawerWidth(px)
+  listeners.forEach((l) => l())
+}
+
+function subscribe(cb: () => void) { listeners.add(cb); return () => { listeners.delete(cb) } }
+
+/**
+ * Drawer width as a [value, setter] pair; the setter clamps and persists.
+ *
+ * R15: ONE store shared by every subscriber (`useSyncExternalStore` over a
+ * listener set, as in `railExpanded.ts`), not per-component `useState` — the
+ * drawer (`shell/regions/DrawerHost`) and Settings › Appearance both hold it,
+ * and with local copies a Reset in Settings left the open drawer at its old
+ * width until a reload. The snapshot reads storage rather than caching, for the
+ * same reason as `lib/useSidebarWidth.ts`.
+ */
 export function useDrawerWidth() {
-  const [width, setWidthRaw] = useState(loadDrawerWidth)
-  const setWidth = useCallback((px: number) => setWidthRaw(clampDrawerWidth(px)), [])
-  useEffect(() => {
-    saveDrawerWidth(width)
-  }, [width])
-  return [width, setWidth] as const
+  const width = useSyncExternalStore(subscribe, loadDrawerWidth, () => DRAWER_DEFAULT)
+  return [width, writeDrawerWidth] as const
 }

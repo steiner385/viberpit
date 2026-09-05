@@ -80,7 +80,33 @@ async function interceptApi(page: Page) {
     } else if (path === '/api/models') {
       route.fulfill({ json: [] })
     } else if (path === '/api/settings') {
-      route.fulfill({ json: { defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null, defaultToolDetail: 'condensed' } })
+      // The FULL payload, mirroring `web/src/test/factories.ts::appSettings` — the
+      // Settings sections read `effectiveDefaults`, `acceptedPermissionModes`,
+      // `managed` and `about`, and a four-field stub renders them against
+      // `undefined`. `defaultToolDetail` is one of auto | all-open | all-closed;
+      // the old 'condensed' was never a value the app accepts.
+      route.fulfill({ json: {
+        defaultPermissionMode: 'interactive',
+        thinkingCollapsed: false,
+        repoRoot: null,
+        defaultToolDetail: 'auto',
+        maxArchivedSessions: null,
+        archiveHome: null,
+        maxActiveSessions: null,
+        autoArchiveEnabled: true,
+        modelApprovalAction: null,
+        modelApprovalDenylist: null,
+        acceptedPermissionModes: ['interactive', 'auto', 'allowlist', 'acceptEdits', 'full-auto', 'bypassPermissions'],
+        effectiveDefaults: {
+          repoRoot: '/home/user/GitHub',
+          archiveHome: null,
+          modelApprovalAction: 'require_approval',
+          modelApprovalDenylist: 'fable',
+          maxActiveSessions: 5,
+        },
+        managed: [],
+        about: { gitSha: null, hostName: 'test-host' },
+      } })
     } else if (path === '/api/config') {
       route.fulfill({ json: { repoRoot: '', adoptionEnabled: false } })
     } else if (path === '/api/daemon/health') {
