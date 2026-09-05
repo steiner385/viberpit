@@ -71,7 +71,8 @@ lands the PR from that tested state, whereas `--auto` re-tests against a master 
 a busy cadence (master advancing faster than a CI cycle) a PR goes `BEHIND`, is rebased by
 `allow_update_branch`, and may need several rebase-and-recheck cycles — each a fresh flaky-check
 exposure — before it lands.
-Admins may push directly in emergencies.
+Admins may push directly in emergencies. If a possible blocker prompts substantive review of an
+auto-merge-armed PR, disable auto-merge first and immediately re-read merged state; the stop can race.
 
 ## Dev / testing
 
