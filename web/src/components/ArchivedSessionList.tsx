@@ -188,8 +188,12 @@ export function ArchivedSessionList({ state, onReviewSession }: ArchivedSessionL
   }
 
   // ── Per-row renderer ──────────────────────────────────────────────────────────
-  // Returns a keyed <div> (not <li>) because GroupedList panels are <div role="group">
-  // and bare <li> elements inside a <div> are invalid HTML.
+  // Returns a keyed <div role="listitem"> (not <li>) because GroupedList panels
+  // are <div role="group"> and bare <li> elements inside a <div> are invalid
+  // HTML — the ARIA role is what the outer `role="list"` wrapper (below) needs
+  // its owned elements to carry; a role-less div is transparent to the
+  // accessibility tree, so without this the list's real children were the
+  // checkbox `input` and the card's `article` (axe `aria-required-children`).
   function renderArchivedRow(s: ArchivedSession) {
     const card = (
       <ArchivedSessionCard
@@ -201,15 +205,16 @@ export function ArchivedSessionList({ state, onReviewSession }: ArchivedSessionL
       />
     )
     return (
-      <SelectableRow
-        key={s.id}
-        id={s.id}
-        name={displayNameOf(s)}
-        checked={selection.isSelected(s.id)}
-        onToggle={selection.toggleOne}
-      >
-        {card}
-      </SelectableRow>
+      <div key={s.id} role="listitem">
+        <SelectableRow
+          id={s.id}
+          name={displayNameOf(s)}
+          checked={selection.isSelected(s.id)}
+          onToggle={selection.toggleOne}
+        >
+          {card}
+        </SelectableRow>
+      </div>
     )
   }
 

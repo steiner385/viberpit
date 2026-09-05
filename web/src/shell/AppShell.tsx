@@ -444,8 +444,12 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
   const nameOf = (id: string) =>
     sessions.find((s) => s.id === id)?.name ?? id.slice(0, 8)
 
+  // Scope, derived exactly once — `listProps.scope` and the dock's `drivesList`
+  // must never disagree about which half of the list is on screen.
+  const scope = listScopeForPath(pathname)
+
   const listProps: SessionListColumnProps = {
-    scope: listScopeForPath(pathname),
+    scope,
     state: list,
     accounts,
     isLoading: sessionsLoading,
@@ -485,6 +489,10 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
     onShowHelp: () => openDrawer('help'),
     onAllLimited: (earliestReset: string | null) => setAllLimitedReset(earliestReset),
     autoFocusKey: promptFocusKey,
+    // The archived scope renders `ArchivedScopeBody`, not `SessionList` — the
+    // dock must stop pretending it owns `#session-listbox` and its rows there.
+    // See `DispatchBar`'s `drivesList` doc.
+    drivesList: scope === 'live',
   }
 
   const dialogs = (

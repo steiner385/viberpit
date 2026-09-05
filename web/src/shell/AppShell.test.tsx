@@ -415,6 +415,68 @@ describe('AppShell — the conditional regions', () => {
   })
 })
 
+/**
+ * `app.dock` renders in BOTH scopes of the Sessions section — `/sessions/archived`
+ * resolves to `sessions`, which is what brings the list column along, and the
+ * dock is the only way to start a session without switching scope first. What it
+ * must NOT do there is act as though the live list were under it: the column
+ * renders `ArchivedScopeBody` in that scope, so `SessionList` — the owner of
+ * `#session-listbox` and of every `row-<id>` — is not mounted.
+ *
+ * Before the `drivesList` gate the dock pointed `aria-controls` at that absent
+ * id permanently, one ArrowDown left `aria-activedescendant="row-a"` naming a
+ * node that does not exist, and Tab was a keyboard trap: `DispatchBar`
+ * `preventDefault`s it on an empty prompt and calls `onEnterList()`, which sets
+ * a `listMode` only `SessionList`'s `onExit` can clear — and `SessionList` is
+ * unmounted here, so the flag stuck and came back on the next scope switch.
+ */
+describe('AppShell — the dock does not drive a list that is not on screen', () => {
+  it('names no list and no row in the archived scope', async () => {
+    const user = userEvent.setup()
+    renderShell({ path: '/sessions/archived', mode: 'desktop' })
+    const prompt = await screen.findByRole('textbox', { name: 'New session prompt' })
+    // The live list really is absent — this is the state the attributes lied about.
+    expect(document.getElementById('session-listbox')).toBeNull()
+    expect(prompt).not.toHaveAttribute('aria-controls')
+
+    await user.click(prompt)
+    await user.keyboard('{ArrowDown}')
+    expect(prompt).not.toHaveAttribute('aria-activedescendant')
+  })
+
+  it('lets Tab out of the prompt, and never leaks list-focus mode into the live scope', async () => {
+    const user = userEvent.setup()
+    renderShell({ path: '/sessions/archived', mode: 'desktop' })
+    const prompt = await screen.findByRole('textbox', { name: 'New session prompt' })
+    await user.click(prompt)
+    expect(document.activeElement).toBe(prompt)
+
+    // With no list to enter, Tab keeps its native job rather than being
+    // swallowed by a mode nothing on screen can leave.
+    await user.tab()
+    expect(document.activeElement).not.toBe(prompt)
+
+    // …and switching back to the live scope does not find it in list-focus
+    // mode: `listMode` + a highlighted row is what pulls focus onto the row.
+    await user.click(screen.getByRole('link', { name: /^Active/ }))
+    const row = await screen.findByRole('button', { name: 'Open session First' })
+    expect(document.activeElement).not.toBe(row)
+  })
+
+  it('still drives the list in the live scope', async () => {
+    const user = userEvent.setup()
+    renderShell({ path: '/sessions', mode: 'desktop' })
+    const prompt = await screen.findByRole('textbox', { name: 'New session prompt' })
+    await waitFor(() => expect(document.getElementById('session-listbox')).not.toBeNull())
+    expect(prompt).toHaveAttribute('aria-controls', 'session-listbox')
+
+    await user.click(prompt)
+    await user.keyboard('{ArrowDown}')
+    expect(prompt).toHaveAttribute('aria-activedescendant', 'row-a')
+    expect(document.getElementById('row-a')).not.toBeNull()
+  })
+})
+
 describe('AppShell — an open drawer survives a section change (§4.2)', () => {
   it('carries ?drawer= onto every nav target and keeps the drawer open', async () => {
     const user = userEvent.setup()
@@ -534,6 +596,41 @@ describe('AppShell — accessibility', () => {
     // slower than a dev box) into a red accessibility test that says nothing
     // about accessibility.
   }, 20_000)
+
+  /**
+   * The ARCHIVED scope, which the four cases above never reach.
+   *
+   * `/sessions/archived` resolves to the `sessions` section (D2 — that is what
+   * brings the list column along), so `inSessions` is true and `app.dock`
+   * renders there too. But the column renders `ArchivedScopeBody` in that scope,
+   * so the live `SessionList` — the owner of `#session-listbox` — is never
+   * mounted. The dock's `aria-controls` therefore named an element that does not
+   * exist (`aria-valid-attr-value`), and the archived list's own
+   * `role="list"` owned an `input` and an `article`
+   * (`aria-required-children`). Neither is transient: `withSessionRows` above
+   * waits a one-frame version of the first defect out on the LIVE route, and
+   * there was nothing to wait for here — it was the steady state.
+   *
+   * Kiosk is excluded because `KioskPageGuard` redirects it off Sessions
+   * entirely, so the case would re-run the `/pipeline` pass above.
+   */
+  it.each(LAYOUT_MODES.filter((m) => m !== 'kiosk'))(
+    'has no axe violations in the archived scope in %s',
+    async (mode) => {
+      renderShell({ path: '/sessions/archived', mode })
+      // Lower bounds, so a clean pass cannot be a pass over an empty document:
+      // the archived rows really rendered, the dock really mounted beside them,
+      // and the live listbox really is absent (which is the whole hazard).
+      expect(await screen.findByText('Old work')).toBeInTheDocument()
+      expect(regionCounts().get('app.dock')).toBe(1)
+      expect(document.getElementById('session-listbox')).toBeNull()
+
+      expect(await axe(document.body, AXE_OPTIONS)).toHaveNoViolations()
+      // Same whole-body pass as the cases above, so the same case timeout and
+      // the same reasoning for it.
+    },
+    20_000,
+  )
 
   /**
    * Push mode is the ordinary desktop (≥1280px) shape of the drawer, and it was
