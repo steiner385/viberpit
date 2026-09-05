@@ -22,6 +22,7 @@
 import { SessionListControls } from '@/components/SessionListControls'
 import { ArchivedSessionList } from '@/components/ArchivedSessionList'
 import { ARCHIVED_GROUP_OPTIONS, ARCHIVED_SORT_OPTIONS } from '@/session/archivedOrdering'
+import { ScopeBody } from './ScopeBody'
 import { useArchivedListState } from './useArchivedListState'
 
 export interface ArchivedScopeBodyProps {
@@ -34,12 +35,11 @@ export function ArchivedScopeBody({ onReviewSession }: ArchivedScopeBodyProps) {
   const { sessions, search, ordering } = state
 
   return (
-    <>
-      {/* Gated on the whole archived list, exactly as the live strip is gated on
-          the whole live one: an empty toolbar reads as broken, and `empty:hidden`
-          keeps a session-less list from painting a bare strip. */}
-      <div className="shrink-0 space-y-2 px-2 pb-2 empty:hidden">
-        {sessions.length > 0 && (
+    <ScopeBody
+      controls={
+        // Gated on the whole archived list, exactly as the live strip is gated
+        // on the whole live one: an empty toolbar reads as broken.
+        sessions.length > 0 && (
           <SessionListControls
             groupBy={ordering.groupBy}
             sortBy={ordering.sortBy}
@@ -52,17 +52,10 @@ export function ArchivedScopeBody({ onReviewSession }: ArchivedScopeBodyProps) {
             searchPlaceholder="Search archived…"
             searchAriaLabel="Search archived sessions"
           />
-        )}
-      </div>
-
-      {/* Same testid as the live band: one scroll owner per column, whichever
-          scope is showing. */}
-      <div
-        data-testid="session-list-scroll"
-        className="min-h-0 flex-1 space-y-2 overflow-y-auto px-2 pb-2"
-      >
-        <ArchivedSessionList state={state} onReviewSession={onReviewSession} />
-      </div>
-    </>
+        )
+      }
+    >
+      <ArchivedSessionList state={state} onReviewSession={onReviewSession} />
+    </ScopeBody>
   )
 }

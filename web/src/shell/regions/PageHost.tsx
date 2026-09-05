@@ -69,7 +69,8 @@ export interface PageHostProps {
  * the full contract (an archived transcript at `/sessions/archived/:archivedId`
  * must not attach a live runtime, and any future detail route would silently do
  * the same). That module is the one place the derivation lives; `PageHost`,
- * `PromptDock` and `AppShell` all read it rather than restating it here.
+ * `PromptDock`, `AppShell` and `AssistantSheet` all read it rather than
+ * restating it here.
  *
  * ## Landmark
  *

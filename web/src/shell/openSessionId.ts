@@ -2,7 +2,7 @@
 //
 // "What does the current route have open?" — asked in exactly one place.
 //
-// Three consumers need the answer and they must never disagree:
+// Four consumers need the answer and they must never disagree:
 //
 //   · `PageHost` uses it to decide whether to mount `SessionRuntimeProvider`.
 //   · `PromptDock` uses it to decide between `SessionComposer` (which reads that
@@ -10,6 +10,8 @@
 //   · `AppShell` uses it to decide whether SOMETHING is open, for the region
 //     matrix's `itemOpen` — a phone gives its one content band to either the
 //     list or the page.
+//   · `AssistantSheet` uses `useOpenSessionId` to include the open session in
+//     the assistant's context chip.
 //
 // If the first two ever computed it differently, the failure is not cosmetic:
 // the dock would render `SessionComposer` with no provider above it and
@@ -47,6 +49,12 @@ export type OpenItem =
 export function useOpenItem(): OpenItem | null {
   const { id, archivedId } = useParams()
   const { pathname } = useLocation()
+  // Deliberately asymmetric: `archivedId` returns before the section check,
+  // while `id` is gated on `navDefForPath(pathname)?.id === 'sessions'`. Only
+  // the Sessions section's route table declares an `archivedId` param today,
+  // so this is a known hazard rather than an oversight — a future route
+  // outside Sessions that happened to name a param `archivedId` would report
+  // `kind: 'archived'` here with no section check to catch it.
   if (archivedId) return { kind: 'archived', id: archivedId }
   if (id && navDefForPath(pathname)?.id === 'sessions') return { kind: 'session', id }
   return null

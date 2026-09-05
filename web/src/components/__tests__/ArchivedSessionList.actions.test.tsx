@@ -176,11 +176,13 @@ describe('ArchivedSessionList', () => {
   })
 
   // "shows count badge when archived sessions exist" lived here because the
-  // badge was on `Dashboard`'s Archived TAB. The badge is now the nav rail's,
-  // fed by `useNavBadges`, and is pinned by `useNavBadges.test.tsx` ("pipeline
-  // counts in-flight PRs; archived and automations count their own data") plus
-  // `NavRail.test.tsx`'s badge cases. It is not an `ArchivedSessionList` behaviour
-  // and there is nothing here to assert it against.
+  // badge was on `Dashboard`'s Archived TAB. That tab is gone — Archived is a
+  // scope of the Sessions list now, not a nav section, so it has no nav badge
+  // to pin: `NavBadgeKey` no longer has an `archived` member, and
+  // `useNavBadges.test.tsx`'s surviving badge case is "pipeline counts
+  // in-flight PRs; automations counts its own data". It is not an
+  // `ArchivedSessionList` behaviour and there is nothing here to assert it
+  // against.
 
   // ── Review button ─────────────────────────────────────────────────────────────
 

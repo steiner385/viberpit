@@ -44,6 +44,7 @@ import { NO_FILTERS, isFiltered as hasActiveFilters } from '@/session/listFilter
 import type { ListScope } from '@/session/sessionNavState'
 import type { Account } from '@/api/types'
 import { ArchivedScopeBody } from './ArchivedScopeBody'
+import { ScopeBody } from './ScopeBody'
 import { ScopeSegment } from './ScopeSegment'
 import type { SessionListState } from './useSessionListState'
 
@@ -200,15 +201,11 @@ function LiveScopeBody({
   const filtered = hasActiveFilters(filters)
 
   return (
-    <>
-      {/* The list controls stay above the scroll band. `empty:hidden` because
-          the controls are conditional and they are this band's only child —
-          without it a session-less list paints a bare strip above the scroll
-          area, which reads as a control that failed to render. */}
-      <div className="shrink-0 space-y-2 px-2 pb-2 empty:hidden">
-        {/* Gated on the whole list, pre-spawn rows included: a lone queued
-            session is still a session, and an empty toolbar reads as broken. */}
-        {sessions.length > 0 && (
+    <ScopeBody
+      controls={
+        // Gated on the whole list, pre-spawn rows included: a lone queued
+        // session is still a session, and an empty toolbar reads as broken.
+        sessions.length > 0 && (
           <SessionListControls
             groupBy={ordering.groupBy}
             sortBy={ordering.sortBy}
@@ -218,57 +215,50 @@ function LiveScopeBody({
             onSearchChange={search.setQuery}
             filters={{ value: filters, options: filterOptions, onChange: setFilters }}
           />
-        )}
-      </div>
-
-      {/* The only scrolling band. Task 18 re-pins the scroll-preservation
-          assertions against this testid — keep it. */}
-      <div
-        data-testid="session-list-scroll"
-        className="min-h-0 flex-1 space-y-2 overflow-y-auto px-2 pb-2"
-      >
-        {/* Deliberately NOT hidden while a filter is active (the rendering half
-            of the decision `useSessionListState` leaves open). A pre-spawn row
-            has no tier and no host, so two of the three filters cannot describe
-            it at all — hiding these sections would mean an unrelated selection
-            silently swallowing an approval gate, which is blocking work someone
-            is waiting on. Both sections are separately headed and counted, so a
-            reader can see they are outside the filtered list. */}
-        <PendingApprovalSection sessions={pendingApproval} onOpen={onOpen} />
-        <QueuedSection sessions={queued} onOpen={onOpen} />
-        {/* A filter can empty the list just as a search can; without this the
-            zero-match case falls through to EmptyState's "create your first
-            session", which is a lie about why the list is empty. The reset
-            clears whatever caused it — clearing only the search would leave the
-            button inert. The labelled "Clear filters" control in the strip
-            above is the primary path; this is the in-place one. */}
-        <SessionList
-          sessions={ordering.orderedSessions}
-          groups={ordering.groups}
-          accounts={accounts}
-          isLoading={isLoading}
-          selectedId={selectedId ?? nav.highlightedSession?.id}
-          selectedGroupKey={nav.highlightedGroupKey ?? null}
-          onOpen={onOpen}
-          onRename={onRename}
-          onClose={onClose}
-          onDelete={onDelete}
-          isFiltered={search.isFiltered || filtered}
-          onClearSearch={() => {
-            search.setQuery('')
-            if (filtered) setFilters(NO_FILTERS)
-          }}
-          onQuickResume={onQuickResume}
-          listMode={listMode}
-          onNavigate={nav.navigate}
-          onExit={onExitList}
-          collapsedKeys={ordering.collapsedKeys}
-          onToggleCollapse={ordering.toggleCollapse}
-          onExpand={ordering.expandGroup}
-          onCollapse={ordering.collapseGroup}
-        />
-        {adoptionEnabled && <AdoptPanel />}
-      </div>
-    </>
+        )
+      }
+    >
+      {/* Deliberately NOT hidden while a filter is active (the rendering half
+          of the decision `useSessionListState` leaves open). A pre-spawn row
+          has no tier and no host, so two of the three filters cannot describe
+          it at all — hiding these sections would mean an unrelated selection
+          silently swallowing an approval gate, which is blocking work someone
+          is waiting on. Both sections are separately headed and counted, so a
+          reader can see they are outside the filtered list. */}
+      <PendingApprovalSection sessions={pendingApproval} onOpen={onOpen} />
+      <QueuedSection sessions={queued} onOpen={onOpen} />
+      {/* A filter can empty the list just as a search can; without this the
+          zero-match case falls through to EmptyState's "create your first
+          session", which is a lie about why the list is empty. The reset
+          clears whatever caused it — clearing only the search would leave the
+          button inert. The labelled "Clear filters" control in the strip
+          above is the primary path; this is the in-place one. */}
+      <SessionList
+        sessions={ordering.orderedSessions}
+        groups={ordering.groups}
+        accounts={accounts}
+        isLoading={isLoading}
+        selectedId={selectedId ?? nav.highlightedSession?.id}
+        selectedGroupKey={nav.highlightedGroupKey ?? null}
+        onOpen={onOpen}
+        onRename={onRename}
+        onClose={onClose}
+        onDelete={onDelete}
+        isFiltered={search.isFiltered || filtered}
+        onClearSearch={() => {
+          search.setQuery('')
+          if (filtered) setFilters(NO_FILTERS)
+        }}
+        onQuickResume={onQuickResume}
+        listMode={listMode}
+        onNavigate={nav.navigate}
+        onExit={onExitList}
+        collapsedKeys={ordering.collapsedKeys}
+        onToggleCollapse={ordering.toggleCollapse}
+        onExpand={ordering.expandGroup}
+        onCollapse={ordering.collapseGroup}
+      />
+      {adoptionEnabled && <AdoptPanel />}
+    </ScopeBody>
   )
 }

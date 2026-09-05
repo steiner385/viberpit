@@ -58,8 +58,17 @@ def test_validate_context_rejects_injection_attempts():
 
 def test_validate_context_accepts_every_known_route_root():
     for root in ("sessions", "pipeline", "automations", "initiatives",
-                 "projects", "archived", "insights", "settings"):
+                 "projects", "insights", "settings"):
         assert validate_context({"route": f"/{root}"}) == {"route": f"/{root}"}
+
+
+def test_validate_context_accepts_archived_as_a_sessions_subroute():
+    """`archived` left NavId (it's a scope of the Sessions list now, not a route
+    root of its own — `web/src/shell/navDefs.ts`), so `/sessions/archived`
+    validates via the `sessions` branch's subpath tail, not a dedicated
+    alternative."""
+    assert validate_context({"route": "/sessions/archived"}) == {"route": "/sessions/archived"}
+    assert validate_context({"route": "/archived"}) is None
 
 
 def test_header_escapes_a_crafted_value_so_it_cannot_break_out():
