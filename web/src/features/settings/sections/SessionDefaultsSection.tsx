@@ -95,7 +95,7 @@ function toPayload(d: DefaultsDraft): Partial<AppSettings> {
  * mistyped one.
  */
 export function SessionDefaultsSection() {
-  const { data: settings, isLoading, isError, error } = useSettings()
+  const { data: settings, isError, error } = useSettings()
   const update = useUpdateSettings()
   // The gate is a PROMISE handed to `useSettingsForm`, resolved by the dialog, so
   // Save is genuinely suspended until the user answers (same shape as
@@ -113,9 +113,10 @@ export function SessionDefaultsSection() {
     ),
   })
 
-  // Loading and error are STATES OF THIS SECTION, not nothing at all — see the
-  // same block in `GeneralSection`.
-  if (isError || isLoading) {
+  // Loading and error are STATES OF THIS SECTION, not nothing at all — and the
+  // condition is `!settings`, so a failed REFETCH never takes a populated form
+  // away from the user (R17). See the same block in `GeneralSection`.
+  if (!settings) {
     return (
       <SettingsSection id="sessions" title="Defaults" scope="server" description={SETTINGS_BY_ID.sessions.description}>
         {isError
@@ -128,7 +129,7 @@ export function SessionDefaultsSection() {
       </SettingsSection>
     )
   }
-  if (!form.draft || !settings) return null
+  if (!form.draft) return null
   const { draft, set } = form
   const accepted = new Set(settings.acceptedPermissionModes)
   const rejected = PERMISSION_MODES.filter((m) => !accepted.has(m.value))
@@ -145,6 +146,13 @@ export function SessionDefaultsSection() {
       footer={<SaveBar form={form} />}
     >
       {form.error && <Banner tone="danger" role="alert" title="Not saved">{form.error}</Banner>}
+      {/* Stale data, not missing data (R17) — a `status` notice above the form
+          rather than an `alert` in place of it. */}
+      {isError && (
+        <Banner tone="warning" role="status" title="Could not refresh settings">
+          {error?.message ?? 'The server did not answer.'} The values shown may be out of date.
+        </Banner>
+      )}
 
       <SettingsGroup legend="Tool approvals">
         <SettingRow

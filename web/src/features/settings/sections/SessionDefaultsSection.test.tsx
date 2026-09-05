@@ -17,7 +17,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import * as hooks from '@/api/hooks'
 import type { AppSettings } from '@/api/hooks'
 import { appSettings } from '@/test/factories'
-import { queryResult, loadingQueryResult, mutationResult } from '@/test/reactQuery'
+import { queryResult, idleQueryResult, loadingQueryResult, mutationResult } from '@/test/reactQuery'
 import { SessionDefaultsSection } from './SessionDefaultsSection'
 
 expect.extend(toHaveNoViolations)
@@ -58,15 +58,31 @@ describe('SessionDefaultsSection', () => {
     expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
   })
 
-  it('a failed /settings shows an alert naming the failure, not an empty panel', () => {
-    vi.mocked(hooks.useSettings).mockReturnValue(
-      queryResult(appSettings(), { isError: true, error: new Error('boom') }),
-    )
+  it('a failed FIRST load shows an alert naming the failure, not an empty panel', () => {
+    vi.mocked(hooks.useSettings).mockReturnValue(idleQueryResult<AppSettings>({
+      isError: true, error: new Error('boom'), status: 'error', isPending: false,
+    }))
     mount()
     expect(screen.getByRole('heading', { level: 2, name: 'Defaults' })).toBeInTheDocument()
     const alert = screen.getByRole('alert')
     expect(alert).toHaveTextContent('Settings could not be loaded')
     expect(alert).toHaveTextContent('boom')
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
+  })
+
+  it('a failed REFETCH keeps the form and warns beside it (R17)', () => {
+    vi.mocked(hooks.useSettings).mockReturnValue(
+      queryResult(appSettings(), { isError: true, error: new Error('boom') }),
+    )
+    mount()
+    expect(screen.getByRole('button', { name: 'Save' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Default tool approvals')).toBeInTheDocument()
+    // Scoped through the banner's own title: SaveBar owns a `role="status"` region
+    // too, so a bare role query matches both live regions.
+    const notice = screen.getByText('Could not refresh settings').closest('[role="status"]')
+    expect(notice).not.toBeNull()
+    expect(notice).toHaveTextContent('boom')
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 
   it('with no gated tiers configured the denylist placeholder is just "Server default" (R14a)', () => {

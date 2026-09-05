@@ -123,7 +123,7 @@ function archiveCount(n: number): string {
  * recoverable and expected one, so it drops to the Confirm tier.
  */
 export function GeneralSection() {
-  const { data: settings, isLoading, isError, error } = useSettings()
+  const { data: settings, isError, error } = useSettings()
   const update = useUpdateSettings()
   const { data: archived = [] } = useArchivedSessions()
   // The gate is a PROMISE handed to `useSettingsForm`: the dialog is what
@@ -148,7 +148,14 @@ export function GeneralSection() {
   // h2 and no landmark, and a section that renders nothing when the request FAILS
   // is indistinguishable from one that has no settings — the user sees an empty
   // panel and no reason. Same shape as `AboutSection`.
-  if (isError || isLoading) {
+  //
+  // The condition is `!settings`, NOT `isError || isLoading` (R17). react-query
+  // keeps `data` when a REFETCH fails, and only 502/503/504 are retried, so a
+  // post-save invalidate that 401s or 500s would otherwise replace a populated —
+  // possibly dirty — form and its SaveBar with an error page, taking the user's
+  // unsaved edits off screen. With data in hand the form keeps rendering and the
+  // failure is reported above it instead (`staleWarning` below).
+  if (!settings) {
     return (
       <SettingsSection id="general" title="General" scope="server" description={SETTINGS_BY_ID.general.description}>
         {isError
@@ -161,7 +168,7 @@ export function GeneralSection() {
       </SettingsSection>
     )
   }
-  if (!form.draft || !settings) return null
+  if (!form.draft) return null
   const { draft, set } = form
   const eff = settings.effectiveDefaults
   const target = confirmPath?.path || 'the server default location'
@@ -178,6 +185,14 @@ export function GeneralSection() {
       footer={<SaveBar form={form} />}
     >
       {form.error && <Banner tone="danger" role="alert" title="Not saved">{form.error}</Banner>}
+      {/* A refetch failed while we still hold data (R17): the values below may be
+          stale, but they are the user's — so this is a non-blocking `status`
+          notice, not the `alert` that replaces the form. */}
+      {isError && (
+        <Banner tone="warning" role="status" title="Could not refresh settings">
+          {error?.message ?? 'The server did not answer.'} The values shown may be out of date.
+        </Banner>
+      )}
 
       <SettingsGroup legend="Paths">
         <SettingRow

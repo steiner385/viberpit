@@ -229,13 +229,14 @@ describe('SettingsPage', () => {
       const region = (await screen.findAllByRole('region', { name: def.label }))[0]
       const h2s = within(region).getAllByRole('heading', { level: 2 })
       expect(h2s[0]).toHaveTextContent(def.label)
-      if (def.ownsChassis) {
-        expect(h2s).toHaveLength(1)
-      } else {
-        // Hosted sections keep whatever headings their legacy body has —
-        // `AccountsManager` carries its own `<h2>Accounts</h2>` inside the chassis
-        // one until PR 5b — so here the claim is only that the wrapper exists.
+      if (def.id === 'accounts') {
+        // The one exception, and it is temporary: `AccountsManager` carries its own
+        // `<h2>Accounts</h2>` inside the chassis one until PR 5c migrates Accounts
+        // (spec §11). Every other hosted section is held to exactly one, so a body
+        // that grows a second heading is caught here rather than at 5c.
         expect(h2s.length).toBeGreaterThanOrEqual(1)
+      } else {
+        expect(h2s).toHaveLength(1)
       }
       r.unmount()
     }
@@ -247,7 +248,7 @@ describe('SettingsPage', () => {
     // The chassis heading, named through the section landmark rather than by
     // `getByRole('heading', …)`: the UNMIGRATED `AccountsManager` still carries
     // its own legacy `<h2>Accounts</h2>` inside the chassis one, so a bare
-    // role+name query matches two nodes. PR 5b's migrated Accounts section drops
+    // role+name query matches two nodes. PR 5c's migrated Accounts section drops
     // the inner heading and this can go back to a plain heading query.
     const section = await screen.findByRole('region', { name: 'Accounts' })
     expect(within(section).getAllByRole('heading', { level: 2 })[0]).toHaveTextContent('Accounts')

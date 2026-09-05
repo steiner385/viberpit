@@ -16,7 +16,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import * as hooks from '@/api/hooks'
 import type { AppSettings } from '@/api/hooks'
 import { appSettings } from '@/test/factories'
-import { queryResult, loadingQueryResult, mutationResult } from '@/test/reactQuery'
+import { queryResult, idleQueryResult, loadingQueryResult, mutationResult } from '@/test/reactQuery'
 import { GeneralSection } from './GeneralSection'
 
 expect.extend(toHaveNoViolations)
@@ -68,15 +68,36 @@ describe('GeneralSection', () => {
     expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
   })
 
-  it('a failed /settings shows an alert naming the failure, not an empty panel', () => {
-    vi.mocked(hooks.useSettings).mockReturnValue(
-      queryResult(appSettings(), { isError: true, error: new Error('boom') }),
-    )
+  it('a failed FIRST load shows an alert naming the failure, not an empty panel', () => {
+    // No data at all: `isLoading` is false, so without the `!settings` guard this
+    // state renders neither the skeleton nor the form.
+    vi.mocked(hooks.useSettings).mockReturnValue(idleQueryResult<AppSettings>({
+      isError: true, error: new Error('boom'), status: 'error', isPending: false,
+    }))
     mount()
     expect(screen.getByRole('heading', { level: 2, name: 'General' })).toBeInTheDocument()
     const alert = screen.getByRole('alert')
     expect(alert).toHaveTextContent('Settings could not be loaded')
     expect(alert).toHaveTextContent('boom')
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
+  })
+
+  it('a failed REFETCH keeps the form and warns beside it (R17)', () => {
+    // react-query keeps `data` when a refetch fails, and only 502/503/504 are
+    // retried — so a post-save invalidate that 401s must NOT take the form (and
+    // any unsaved edits in it) off screen.
+    vi.mocked(hooks.useSettings).mockReturnValue(
+      queryResult(appSettings(), { isError: true, error: new Error('boom') }),
+    )
+    mount()
+    expect(screen.getByRole('button', { name: 'Save' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Repo clone root')).toBeInTheDocument()
+    // Scoped through the banner's own title: SaveBar owns a `role="status"` region
+    // too, so a bare role query matches both live regions.
+    const notice = screen.getByText('Could not refresh settings').closest('[role="status"]')
+    expect(notice).not.toBeNull()
+    expect(notice).toHaveTextContent('boom')
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 
   it('with no configured archive home the placeholder is just "Server default" (R13)', () => {
