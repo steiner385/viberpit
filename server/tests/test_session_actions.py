@@ -258,3 +258,29 @@ async def test_set_model_leaves_an_ordinary_session_to_the_normal_park_path(orch
                                     identity="u@example.com")
     orch.set_model_for_session.assert_awaited_once()
     assert result == {"ok": True, "restarted": False}
+
+
+@pytest.mark.asyncio
+async def test_set_model_accepts_a_sync_get_session_orchestrator():
+    """`orch` is two different objects depending on the caller.
+
+    The HTTP route passes the facade / RemoteOrchestrator, whose `get_session` is
+    async. The WS `/model` slash command reaches this helper from inside
+    `orchestrator.run_command`, which passes the RAW SessionOrchestrator — whose
+    `get_session` is a plain sync method. Awaiting that raises
+    "object SessionRecord can't be used in 'await' expression", which is exactly how
+    the assistant gate broke every /model command test when it was first written.
+    """
+    class SyncGetSessionOrch:
+        def __init__(self):
+            self.set_model_for_session = AsyncMock(return_value=False)
+
+        def get_session(self, session_id):        # sync, like SessionOrchestrator's
+            return SimpleNamespace(kind=None)
+
+    orch = SyncGetSessionOrch()
+    with patch("server.sessions.session_actions.record_audit", new_callable=AsyncMock):
+        result = await sa.set_model(orch, db=object(), session_id="s1", model="opus",
+                                    identity="u@example.com")
+    assert result == {"ok": True, "restarted": False}
+    orch.set_model_for_session.assert_awaited_once()

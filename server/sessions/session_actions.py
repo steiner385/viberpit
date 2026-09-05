@@ -133,7 +133,15 @@ async def set_model(
     # never pays a policy read this function does not use — `set_model_for_session`
     # re-runs `resolve_model_policy` itself, and doing it here first would just be the
     # same query twice on every model switch.
-    rec = await orch.get_session(session_id)
+    #
+    # `_maybe_await` because `orch` is TWO different things here: the HTTP route hands
+    # in the facade / RemoteOrchestrator, whose `get_session` is async, while the WS
+    # `/model` slash command reaches this from inside `orchestrator.run_command` and
+    # hands in the raw SessionOrchestrator, whose `get_session` is sync. Awaiting the
+    # raw one raises "object SessionRecord can't be used in 'await' expression".
+    from server.sessions.facade import _maybe_await  # noqa: PLC0415
+
+    rec = await _maybe_await(orch.get_session(session_id))
     if rec is not None and is_assistant(rec):
         from server.sessions.model_policy import resolve_model_policy  # noqa: PLC0415
         if await resolve_model_policy(db, model=model) != "allow":
