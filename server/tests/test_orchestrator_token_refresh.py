@@ -28,7 +28,7 @@ async def test_refresh_idle_tokens_skips_needs_reauth_and_live_sessions():
     with mock.patch("server.sessions.orchestrator.ccswitch_accounts") as ca:
         ca.list_accounts.return_value = accts
         await orch._refresh_idle_tokens_once()
-    refreshed = [c.args[0] for c in ca.ensure_valid_token.call_args_list]
+    refreshed = [c.args[0] for c in ca.acquire_valid_token.call_args_list]
     assert refreshed == ["idle_ok"], f"only the idle healthy account should refresh: {refreshed}"
 
 
@@ -40,9 +40,9 @@ async def test_refresh_idle_tokens_is_best_effort():
     orch.has_live_session = lambda name: False
     with mock.patch("server.sessions.orchestrator.ccswitch_accounts") as ca:
         ca.list_accounts.return_value = [{"name": "a", "status": "ok"}, {"name": "b", "status": "ok"}]
-        ca.ensure_valid_token.side_effect = [RuntimeError("boom"), None]
+        ca.acquire_valid_token.side_effect = [RuntimeError("boom"), None]
         await orch._refresh_idle_tokens_once()  # must not raise
-    assert [c.args[0] for c in ca.ensure_valid_token.call_args_list] == ["a", "b"]
+    assert [c.args[0] for c in ca.acquire_valid_token.call_args_list] == ["a", "b"]
 
 
 @pytest.mark.asyncio

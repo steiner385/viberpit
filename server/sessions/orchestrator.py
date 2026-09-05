@@ -1441,9 +1441,21 @@ class SessionOrchestrator:
         can't starve *token* refresh. Skips accounts that are already needs-reauth
         (a dead single-use token can't be refreshed — don't hammer the endpoint)
         and accounts with a live session (the SDK owns that token family and
-        ccswitch must not refresh it out from under the running process). Reuses
-        ensure_valid_token as the single source of truth; per-account errors are
-        swallowed — status transitions stay owned by the usage_for path.
+        ccswitch must not refresh it out from under the running process).
+
+        Refreshes via ``acquire_valid_token``, NOT ``ensure_valid_token``: only the
+        former recovers a rotation the SDK already performed (on AuthError it runs
+        sync_back to pull the live cfg dir's token into the slot, then retries). This
+        sweep runs against accounts whose session just ENDED, which is precisely when
+        ccswitch's store slot holds a token the SDK has already superseded — so
+        refreshing straight from the slot got 400 invalid_grant, which
+        ``oauth.refresh_access_token`` treats as proof the grant is dead, and flipped
+        healthy accounts to needs-reauth (2026-09-04: two accounts lost OAuth this
+        way within seconds of their session ending). Every other caller in the tree
+        already uses acquire_valid_token.
+
+        Per-account errors are swallowed — status transitions stay owned by the
+        usage_for path.
         """
         try:
             accounts = ccswitch_accounts.list_accounts()
@@ -1457,9 +1469,9 @@ class SessionOrchestrator:
             if acct.get("status") == "needs-reauth" or self.has_live_session(name):
                 continue
             try:
-                await asyncio.to_thread(ccswitch_accounts.ensure_valid_token, name)
+                await asyncio.to_thread(ccswitch_accounts.acquire_valid_token, name)
             except Exception:
-                log.debug("token-refresh: ensure_valid_token failed for %s", name, exc_info=True)
+                log.debug("token-refresh: acquire_valid_token failed for %s", name, exc_info=True)
 
     async def _token_refresh_monitor(self) -> None:
         """Run an idle-token refresh immediately (restart recovery), then every
@@ -8018,19 +8030,53 @@ class SessionOrchestrator:
         return self._poller
 
     def has_live_session(self, account: str) -> bool:
-        """Return True if any live AgentDriver is currently running on *account*.
+        """Return True if a live AgentDriver anywhere IN THE FLEET is running on *account*.
 
-        Used by the poller's usage_fn to decide whether it is safe to call
-        oauth.refresh_access_token: while the SDK subprocess owns the token
-        family (live session), only the SDK must refresh so we avoid
+        Used by the poller's usage_fn and the idle-token sweep to decide whether it is
+        safe to call oauth.refresh_access_token: while the SDK subprocess owns the
+        token family (live session), only the SDK must refresh so we avoid
         single-use-token reuse-detection.
+
+        Ownership is FLEET-WIDE, not host-local. Checking only ``_drivers`` — this
+        process's own drivers — made a session running on a worker read as "not live"
+        on the primary, so the primary refreshed and rotated a token family the
+        worker's running SDK still held (2026-09-04). The primary deliberately holds
+        every fleet row in ``_records`` (see ``_owns_record``), so the fleet-wide
+        answer is available synchronously here; that matters because this is called
+        from a threadpool thread and so — unlike its sibling accessors
+        ``live_session_load`` / ``live_session_counts``, which fan out over async RPC
+        via ``_MERGE_ALL_HOSTS`` — it cannot await a round trip.
+
+        Errs toward "live": a false True only delays a proactive refresh (the
+        on-demand acquire_valid_token path still runs), while a false False rotates
+        the token out from under a running process and kills the account.
         """
         # Snapshot values() before iterating: _drivers is mutated by the event
         # loop (create_session / close_session / _do_rotate) while this method
         # can be called from a threadpool thread (the poller's usage_fn closure).
         # Iterating the live dict while the event loop mutates it raises
         # RuntimeError: dictionary changed size during iteration.
-        return any(d.account == account for d in list(self._drivers.values()))
+        if any(d.account == account for d in list(self._drivers.values())):
+            return True
+        # Only REMOTE rows are consulted. For this host _drivers above is authoritative
+        # and never stale, so falling back to _records locally could only add false
+        # positives (a lingering row whose process is gone would suppress proactive
+        # refresh forever). A row we cannot see a driver for — another fleet host's —
+        # is the gap this closes.
+        #
+        # CAPACITY_EXEMPT_STATUSES is the documented single source of truth for "holds
+        # no live driver"; its stated invariant is that a session holding a live driver
+        # is never capacity-exempt, which is exactly the token-ownership question. Note
+        # `done` and `idle` are NOT exempt: they are live sessions between turns that
+        # keep a warm driver, and so still own the token family.
+        #
+        # Unlike _active_session_count, assistant sessions are NOT excluded: the
+        # assistant is a real `claude` process holding a real token family.
+        me = self_host_name()
+        return any(r.account == account
+                   and r.host is not None and r.host != me
+                   and r.status not in CAPACITY_EXEMPT_STATUSES
+                   for r in list(self._records.values()))
 
     def live_session_load(self) -> dict[str, float]:
         """Weighted count of live sessions per account, for load-aware selection.
