@@ -14,6 +14,18 @@ export default defineConfig({
     },
   },
   test: {
+    // jsdom is the DEFAULT, not the only option. Constructing it costs ~1.1s per test
+    // FILE, charged whether the file renders a component or tests a pure reducer — over
+    // the full suite that was `environment: 409s` against `tests: 181s`, i.e. more time
+    // spent building DOMs than running every assertion in the project.
+    //
+    // Files that touch no DOM opt out with `// @vitest-environment node` on line 1. That
+    // set was derived empirically (run the suite under `--environment=node`; whatever
+    // passes needs no DOM), NOT by grepping for `document`/`window` — a regex misses
+    // things like `CloseEvent` in src/ws/client.test.ts, which reads as pure but is not.
+    //
+    // The default stays jsdom so a NEW test file is correct-but-slower rather than
+    // mysteriously broken; opting in is a deliberate, per-file act.
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
     globals: true,

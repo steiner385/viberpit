@@ -23,29 +23,114 @@
 // `incomplete` and `toHaveNoViolations()` inspects `violations` alone — a green
 // assertion here is NOT evidence of adequate contrast. Contrast is checked
 // separately by src/__tests__/contrast.test.ts against the tokens in index.css.
+import type { ReactNode } from 'react'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { cleanup, render, screen, within, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { axe, toHaveNoViolations } from 'jest-axe'
 import { createMemoryRouter, RouterProvider, Outlet, useLocation } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ViewportProvider } from '@/shell/useViewport'
 import { NAV_DEFS } from '@/shell/navDefs'
 import { SHORTCUTS, displayKeys } from '@/shell/shortcuts'
 import { DRAWER_STORAGE_KEY, DRAWER_DEFAULT } from '@/shell/drawerWidth'
 import { MEDIA, stubMatchMedia } from '@/test/matchMedia'
+
+// AssistantSheet (rendered for `?drawer=assistant`) owns a real WebSocket
+// attach/detach cycle via SessionRuntimeProvider — mocked here the same way
+// `AssistantSheet.test.tsx` does, so this file can render the REAL DrawerHost →
+// REAL AssistantSheet without a live socket.
+vi.mock('@/api/assistant', () => ({
+  useAssistantStatus: vi.fn(),
+  useAssistantSession: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, isError: false, error: null })),
+  useResetAssistant: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+}))
+vi.mock('@/components/session/SessionRuntimeProvider', () => ({
+  SessionRuntimeProvider: ({ children }: { children: ReactNode }) => <div data-testid="runtime">{children}</div>,
+  useSessionRuntimeContext: vi.fn(),
+}))
+
+import { useAssistantStatus } from '@/api/assistant'
+import { useSessionRuntimeContext } from '@/components/session/SessionRuntimeProvider'
 import { DrawerHost } from './DrawerHost'
 import { GROUPS } from './HelpSheet'
 
 expect.extend(toHaveNoViolations)
 
+/** A fully-formed (fake) SessionRuntime for the mocked `useSessionRuntimeContext` —
+ *  see AssistantSheet.test.tsx, which this mirrors. */
+function fakeRuntime() {
+  return {
+    sessionId: 'a1',
+    state: {
+      turns: [], openBlockId: null, status: { state: 'idle', count: 0 }, title: null, model: null,
+      usage: null, contextUsage: null, replaying: false, earliestTurn: 0, totalTurns: 0,
+      loadingOlder: false, error: null, queued: [], rotations: [], subAgents: {},
+      latestSuggestions: [], condense: null, pendingSent: [], pendingSentSeq: 0, hadReset: false,
+      orphanToolResults: {}, staleTurns: [], staleSubAgents: {},
+    },
+    mode: 'interactive',
+    toolDetailMode: 'auto',
+    thinkingCollapsed: true,
+    connectionState: 'connected',
+    reattach: vi.fn(),
+    title: 'Assistant',
+    goal: null,
+    goalSource: null,
+    account: '—',
+    model: null,
+    modelPending: false,
+    liveModel: null,
+    quota: null,
+    contextPct: null,
+    subAgents: {},
+    hasOpenAction: false,
+    hasOpenPermission: false,
+    armedQuestionId: null,
+    chatArmed: false,
+    onDecision: vi.fn(),
+    onAnswer: vi.fn(),
+    onChat: vi.fn(),
+    onPrompt: vi.fn(),
+    onActivity: vi.fn(),
+    onInterrupt: vi.fn(),
+    onInterruptAndPrompt: vi.fn(() => true),
+    onSetMode: vi.fn(),
+    onCancelQueued: vi.fn(),
+    commands: [],
+    commandResult: null,
+    onCommand: vi.fn(),
+    onSetModel: vi.fn(),
+    dismissCommandResult: vi.fn(),
+    onLoadOlder: vi.fn(),
+  }
+}
+
+/** Arms the assistant drawer's mocked hooks for the enabled+live-session state. */
+function enableAssistant() {
+  vi.mocked(useAssistantStatus).mockReturnValue(
+    { data: { enabled: true, sessionId: 'a1', model: 'sonnet' }, isLoading: false } as never,
+  )
+  vi.mocked(useSessionRuntimeContext).mockReturnValue(fakeRuntime() as never)
+}
+
+// AssistantHeader (rendered inside AssistantSheet) reads the real `useModels()`
+// (deliberately NOT mocked — the assistant's own status/session hooks above are
+// the ones this file fakes), so the tree needs a real QueryClient. Given no
+// mock, the query just fails against jsdom's absent network and renders the
+// header's fallback label — nothing here asserts on it.
+const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
 function Layout() {
   const { pathname, search } = useLocation()
   return (
-    <ViewportProvider kiosk={null}>
-      <div data-testid="url">{pathname + search}</div>
-      <DrawerHost />
-      <Outlet />
-    </ViewportProvider>
+    <QueryClientProvider client={queryClient}>
+      <ViewportProvider kiosk={null}>
+        <div data-testid="url">{pathname + search}</div>
+        <DrawerHost />
+        <Outlet />
+      </ViewportProvider>
+    </QueryClientProvider>
   )
 }
 
@@ -257,14 +342,23 @@ describe('DrawerHost', () => {
     expect(dlg.textContent ?? '').not.toMatch(/shift\s*\+\s*tab/i)
   })
 
-  it('?drawer=assistant renders a static placeholder with no controls', () => {
+  it('?drawer=assistant renders AssistantSheet', () => {
+    enableAssistant()
     renderAt(['/sessions?drawer=assistant'])
     const dlg = screen.getByRole('dialog', { name: /assistant/i })
-    const body = within(dlg).getByTestId('drawer-assistant')
-    expect(body).toHaveTextContent(/assistant is coming/i)
-    expect(body.querySelectorAll('button, input, textarea')).toHaveLength(0)
-    expect(within(body).queryByRole('button')).not.toBeInTheDocument()
-    expect(within(body).queryByRole('textbox')).not.toBeInTheDocument()
+    expect(within(dlg).getByTestId('runtime')).toBeInTheDocument()
+    expect(within(dlg).getByRole('textbox')).toBeInTheDocument()
+    expect(within(dlg).getByText(/AI-generated/)).toBeInTheDocument()
+  })
+
+  it('?drawer=assistant shows a settings pointer, not a composer, when disabled', () => {
+    vi.mocked(useAssistantStatus).mockReturnValue(
+      { data: { enabled: false, sessionId: null, model: 'sonnet' }, isLoading: false } as never,
+    )
+    renderAt(['/sessions?drawer=assistant'])
+    const dlg = screen.getByRole('dialog', { name: /assistant/i })
+    expect(within(dlg).getByText(/enable it in settings/i)).toBeInTheDocument()
+    expect(within(dlg).queryByRole('textbox')).not.toBeInTheDocument()
   })
 
   it('closing clears ?drawer= with replace, so history does not grow', async () => {
@@ -338,6 +432,7 @@ describe('DrawerHost', () => {
   })
 
   it('has no axe violations (assistant)', async () => {
+    enableAssistant()
     renderAt(['/sessions?drawer=assistant'])
     expect(await axe(regionEl())).toHaveNoViolations()
   })

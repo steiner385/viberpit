@@ -1,10 +1,11 @@
 from datetime import datetime
 from typing import Any
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
 def _rec(**kw: Any) -> SessionRecord:
-    base: dict[str, Any] = dict(id="s1", name="n", account="a", claude_session_id=None,
+    base: dict[str, Any] = dict(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id=None,
                                 cols=80, rows=24, cwd="/tmp")
     base.update(kw)
     return SessionRecord(**base)

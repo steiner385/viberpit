@@ -12,6 +12,7 @@ import { AccountsManager } from '../AccountsManager'
 import * as hooks from '@/api/hooks'
 import type { Account, ReauthState } from '@/api/types'
 import { queryResult } from '@/test/reactQuery'
+import { anthropicUsage, copilotUsage } from '@/test/factories'
 
 vi.mock('@/api/hooks', () => ({
   useAccounts: vi.fn(),
@@ -135,7 +136,7 @@ describe('AccountsManager — Copilot usage badge label', () => {
       data: [makeAccount({
         name: 'work',
         provider: 'anthropic',
-        usage: { session: { pct: 50, resetsAt: null }, weekly: { pct: 30, resetsAt: null } },
+        usage: anthropicUsage(50, 30),
       })],
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
@@ -146,21 +147,25 @@ describe('AccountsManager — Copilot usage badge label', () => {
     expect(screen.getByText('session')).toBeInTheDocument()
   })
 
-  it('uses "premium-req" label for Copilot account session usage', () => {
+  it('renders one "premium-req" badge for a Copilot account — never a duplicate', () => {
     vi.mocked(hooks.useAccounts).mockReturnValue({
       data: [makeAccount({
         name: 'gh-copilot',
         provider: 'copilot',
-        usage: { session: { pct: 50, resetsAt: null }, weekly: { pct: 30, resetsAt: null } },
+        usage: copilotUsage(50),
       })],
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
     render(<AccountsManager />, { wrapper })
 
-    expect(screen.getByText('premium-req')).toBeInTheDocument()
-    // "session" label should not appear for copilot
+    // The label now comes from the WINDOW the provider reported, not from a
+    // provider check in the component.
+    expect(screen.getAllByText('premium-req')).toHaveLength(1)
+    // Copilot meters one allowance, so neither Anthropic window key appears —
+    // the old wire shape duplicated the same number into a second "weekly" badge.
     expect(screen.queryByText('session')).not.toBeInTheDocument()
+    expect(screen.queryByText('weekly')).not.toBeInTheDocument()
   })
 })
 

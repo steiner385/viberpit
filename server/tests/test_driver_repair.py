@@ -6,7 +6,7 @@ import asyncio
 import json
 import os
 
-from server.sessions.driver import SessionDriver
+from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.permissions import PermissionRegistry
 from server.tests.fakes import fake_sdk as f
 from server.tests.fakes.fake_sdk import FakeSDKClient
@@ -36,7 +36,7 @@ def test_start_heals_orphaned_tool_use_on_resume(tmp_path):
                              on_can_use_tool=can_use_tool)
 
     async def run():
-        d = SessionDriver("s1", "primary", "/repo", cfg, mode="interactive",
+        d = ClaudeAgentDriver("s1", "primary", "/repo", cfg, mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(),
                           identity="me", resume="sess-1")
         await d.start()
@@ -58,7 +58,7 @@ def test_start_without_resume_does_not_touch_disk(tmp_path):
         return FakeSDKClient([f.sys_init("sess-1")], on_can_use_tool=can_use_tool)
 
     async def run():
-        d = SessionDriver("s1", "primary", "/repo", str(tmp_path), mode="interactive",
+        d = ClaudeAgentDriver("s1", "primary", "/repo", str(tmp_path), mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me")
         await d.start()
         await d.aclose()

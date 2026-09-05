@@ -2,10 +2,10 @@
 replace it with a fresh one.
 
 `_maybe_start_queued` drains a 'queued' row straight into `_spawn_session`
-with `preexisting_row=True`. If that row already carries a `claude_session_id`
+with `preexisting_row=True`. If that row already carries a `engine_session_id`
 (a previously-run session whose row ended up back in the queue) and the call
 site does not thread it through, `_spawn_session` used to build its
-SessionDriver with no resume handle at all: the SDK starts a brand-new
+ClaudeAgentDriver with no resume handle at all: the SDK starts a brand-new
 conversation, and `on_session_id` overwrites the row's pointer to the old
 one, permanently orphaning the real transcript still sitting on disk. This
 is the sibling of #1100 (an undelivered prompt, rather than a whole
@@ -17,6 +17,7 @@ import asyncio
 import logging
 
 from server.db.models import Session as DbSession
+from server.sessions.engine import AgentEngine
 
 
 def _params(**over) -> dict:
@@ -31,27 +32,27 @@ def _params(**over) -> dict:
     return p
 
 
-async def _seed_queued_with_conversation(session_id: str, claude_session_id: str,
+async def _seed_queued_with_conversation(session_id: str, engine_session_id: str,
                                           **over) -> None:
     """A 'queued' row that already ran a turn — the shape a re-queued session
     that lost a rotation race would have, as opposed to a genuinely-fresh one
-    (whose claude_session_id is NULL, see test_orphan_initial_prompt.py)."""
+    (whose engine_session_id is NULL, see test_orphan_initial_prompt.py)."""
     from server.db import db_session
     from server.sessions import session_queue as sq
     p = _params(**over)
     async with db_session() as db:
         db.add(DbSession(
             id=session_id, name=p["name"], account_name=p["account"] or "",
-            claude_session_id=claude_session_id, status="queued", pid=None,
+            engine_session_id=engine_session_id, status="queued", pid=None,
             cwd=p["cwd"] or "", repo=p["repo"], branch=None,
             permission_mode=p["permission_mode"], name_is_auto=p["name_is_auto"],
             origin=p["origin"], origin_ref=p["origin_ref"], model=p["model"]))
     await sq.enqueue(session_id, p)
 
 
-def _orch_with_queued_record(session_id: str, claude_session_id: str, **over):
+def _orch_with_queued_record(session_id: str, engine_session_id: str, **over):
     """A bare orchestrator holding the in-memory 'queued' pre-record the drain
-    requires, already carrying the prior conversation's claude_session_id."""
+    requires, already carrying the prior conversation's engine_session_id."""
     from datetime import datetime
 
     from server.sessions.orchestrator import SessionOrchestrator, SessionRecord
@@ -60,16 +61,17 @@ def _orch_with_queued_record(session_id: str, claude_session_id: str, **over):
     now = datetime.utcnow()
     orch._records[session_id] = SessionRecord(
         id=session_id, name=p["name"], account=p["account"] or "",
-        claude_session_id=claude_session_id, cols=p["cols"], rows=p["rows"],
+        engine=AgentEngine.CLAUDE_CODE,
+        engine_session_id=engine_session_id, cols=p["cols"], rows=p["rows"],
         cwd=p["cwd"] or "", repo=p["repo"], branch=None, status="queued",
         name_is_auto=True, created_at=now, updated_at=now, origin=p["origin"],
         origin_ref=p["origin_ref"], model=None)
     return orch
 
 
-def test_queue_drain_threads_the_rows_claude_session_id_as_resume(tmp_path):
+def test_queue_drain_threads_the_rows_engine_session_id_as_resume(tmp_path):
     """Primary fix: the call site in `_maybe_start_queued` must pass the row's
-    own `claude_session_id` through as `resume`, not rely on `_spawn_session`
+    own `engine_session_id` through as `resume`, not rely on `_spawn_session`
     to reconstruct it after the fact."""
     async def run():
         from server.db import init_db
@@ -86,7 +88,7 @@ def test_queue_drain_threads_the_rows_claude_session_id_as_resume(tmp_path):
 
         assert seen.get("preexisting_row") is True
         assert seen.get("resume") == "existing-csid-123", (
-            "queue-drain must thread the row's claude_session_id through as "
+            "queue-drain must thread the row's engine_session_id through as "
             "resume, or _spawn_session will start a brand-new conversation "
             "over the existing one")
 
@@ -94,7 +96,7 @@ def test_queue_drain_threads_the_rows_claude_session_id_as_resume(tmp_path):
 
 
 def test_queue_drain_passes_none_for_a_genuinely_fresh_row(tmp_path):
-    """A row that never ran (claude_session_id NULL) must not be handed a
+    """A row that never ran (engine_session_id NULL) must not be handed a
     resume handle — fresh spawn is correct there."""
     async def run():
         from server.db import db_session, init_db
@@ -104,7 +106,7 @@ def test_queue_drain_passes_none_for_a_genuinely_fresh_row(tmp_path):
         async with db_session() as db:
             db.add(DbSession(
                 id="fresh-1", name=p["name"], account_name=p["account"] or "",
-                claude_session_id=None, status="queued", pid=None,
+                engine_session_id=None, status="queued", pid=None,
                 cwd=p["cwd"] or "", repo=p["repo"], branch=None,
                 permission_mode=p["permission_mode"], name_is_auto=p["name_is_auto"],
                 origin=p["origin"], origin_ref=p["origin_ref"], model=p["model"]))
@@ -127,7 +129,7 @@ def test_spawn_session_falls_back_to_the_prior_records_id_and_warns(tmp_path, ca
     """Defense in depth: even if some future caller passes preexisting_row=True
     with no resume handle, `_spawn_session` must not silently discard a
     conversation the in-memory record already knows about — and must log the
-    near-miss with both the session id and the discarded claude_session_id so
+    near-miss with both the session id and the discarded engine_session_id so
     the orphaned transcript can still be found."""
     async def run():
         from datetime import datetime
@@ -146,14 +148,15 @@ def test_spawn_session_falls_back_to_the_prior_records_id_and_warns(tmp_path, ca
             async with db_session() as db:
                 db.add(DbSession(
                     id=sid, name="n", account_name="alpha",
-                    claude_session_id="orphaned-csid-999", status="idle", pid=None,
+                    engine_session_id="orphaned-csid-999", status="idle", pid=None,
                     cwd=cwd, repo=None, branch=None,
                     permission_mode="interactive", name_is_auto=True,
                     origin=None, origin_ref=None, model=None))
             now = datetime.utcnow()
             orch._records[sid] = SessionRecord(
                 id=sid, name="n", account="alpha",
-                claude_session_id="orphaned-csid-999",
+                engine=AgentEngine.CLAUDE_CODE,
+                engine_session_id="orphaned-csid-999",
                 cols=80, rows=24, cwd=cwd, repo=None, branch=None,
                 status="queued", name_is_auto=True, created_at=now, updated_at=now)
 
@@ -177,7 +180,7 @@ def test_spawn_session_falls_back_to_the_prior_records_id_and_warns(tmp_path, ca
 
             assert resumes_seen == ["orphaned-csid-999"], (
                 "a resume=None spawn over a row with a known prior "
-                "claude_session_id must still resume it, not start fresh")
+                "engine_session_id must still resume it, not start fresh")
             assert any("orphaned-csid-999" in r.message for r in caplog.records), (
                 "discarding a prior conversation's id must be logged so the "
                 "orphaned transcript can be found")

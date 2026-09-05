@@ -10,12 +10,13 @@ import asyncio
 
 
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
 def _make_orch():
     o = SessionOrchestrator(sdk_factory=lambda *a, **k: None)
-    rec = SessionRecord(id="s1", name="n", account="kindash", claude_session_id="c1",
+    rec = SessionRecord(id="s1", name="n", account="kindash", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                         cols=80, rows=24, cwd="/tmp/x")
     o._records["s1"] = rec
     o._drivers["s1"] = object()

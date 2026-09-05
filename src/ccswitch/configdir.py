@@ -165,7 +165,7 @@ def compose(name: str) -> Path:
 
     # Copilot accounts don't use OAuth credentials — the proxy injects auth via env vars.
     # Only write .credentials.json for Anthropic accounts.
-    if accounts.provider_of(name) != "copilot":
+    if accounts.provider_or_none(name) != "copilot":
         # read_credentials decrypts the refreshToken in memory so the composed file
         # that claude reads is always plaintext — we must never write ciphertext there.
         claude_oauth = read_credentials(paths.slot_path(name))

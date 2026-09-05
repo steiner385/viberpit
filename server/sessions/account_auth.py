@@ -3,7 +3,7 @@
 Single source of truth for turning an account's stored setup-token into the env var the
 Claude Agent SDK reads (``CLAUDE_CODE_OAUTH_TOKEN``). Session launch
 (``server/sessions/orchestrator.py``'s ``_oat_env``) and the helper SDK factories
-(``server/sessions/sdk_factory.py``'s ``real_suggestion_factory``/``real_summary_factory``) both
+(``server/sessions/claude_sdk_factory.py``'s ``real_suggestion_factory``/``real_summary_factory``) both
 call this instead of each building their own copy — an account with a dead browser-OAuth refresh
 token but a live setup-token must authenticate the same way everywhere.
 

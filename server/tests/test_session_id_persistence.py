@@ -1,7 +1,7 @@
-"""Tests for Task 1: persist claude_session_id to DB the moment the driver captures it."""
+"""Tests for Task 1: persist engine_session_id to DB the moment the driver captures it."""
 import asyncio
 from ccswitch.selector import Picked
-from server.sessions.driver import SessionDriver
+from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.permissions import PermissionRegistry
 from server.sessions.events import TurnEnd
 from server.tests.fakes.fake_sdk import FakeSDKClient
@@ -22,11 +22,11 @@ def test_driver_fires_on_session_id_once_when_captured():
             f.result(session_id="sess-77", uuid="t1")]
     calls = []
 
-    async def on_sid(session_id, claude_session_id):
-        calls.append((session_id, claude_session_id))
+    async def on_sid(session_id, engine_session_id):
+        calls.append((session_id, engine_session_id))
 
     async def run():
-        d = SessionDriver("local-1", "primary", "/tmp/r", "/tmp/cfg",
+        d = ClaudeAgentDriver("local-1", "primary", "/tmp/r", "/tmp/cfg",
                           mode="interactive", sdk_factory=_factory(msgs),
                           registry=PermissionRegistry(), identity="me",
                           on_session_id=on_sid)
@@ -41,8 +41,8 @@ def test_driver_fires_on_session_id_once_when_captured():
     assert calls == [("local-1", "sess-77")]   # exactly once, with both ids
 
 
-def test_orchestrator_persists_claude_session_id_to_db(tmp_path):
-    """The orchestrator persists claude_session_id once the driver captures it.
+def test_orchestrator_persists_engine_session_id_to_db(tmp_path):
+    """The orchestrator persists engine_session_id once the driver captures it.
 
     Uses send_prompt (not initial_prompt) because initial_prompt is now deferred
     until first WS attach — the on_session_id callback fires once the turn drains.
@@ -78,10 +78,10 @@ def test_orchestrator_persists_claude_session_id_to_db(tmp_path):
                 async with db_session() as db:
                     row = (await db.execute(
                         select(DbSession).where(DbSession.id == rec.id))).scalar_one()
-                    if row.claude_session_id == "claude-abc":
+                    if row.engine_session_id == "claude-abc":
                         break
                 await asyncio.sleep(0.02)
             await orch.close_session(rec.id)
-            return row.claude_session_id
+            return row.engine_session_id
 
     assert asyncio.run(run()) == "claude-abc"

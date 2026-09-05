@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest'
 import { deriveHistory } from '../history'
 import { OPTIMISTIC_USER_ID, type Turn } from '../reducer'

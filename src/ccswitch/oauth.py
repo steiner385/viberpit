@@ -6,8 +6,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
 from datetime import datetime, timezone
+
+from .quota import QuotaSnapshot, anthropic_snapshot
 
 try:
     _VERSION = importlib.metadata.version("ccswitch")
@@ -77,37 +78,6 @@ def _is_transient_status(status: int) -> bool:
     a 403 that survives retries as TransientError (only 400/401 flip needs-reauth).
     """
     return status in (403, 429) or 500 <= status <= 599
-
-
-@dataclass
-class Usage:
-    session_pct: float
-    session_resets_at: datetime | None
-    weekly_pct: float
-    weekly_resets_at: datetime | None
-    extra_usage_enabled: bool
-
-    def to_dict(self) -> dict:
-        return {
-            "sessionPct": self.session_pct,
-            "sessionResetsAt": self.session_resets_at.isoformat() if self.session_resets_at else None,
-            "weeklyPct": self.weekly_pct,
-            "weeklyResetsAt": self.weekly_resets_at.isoformat() if self.weekly_resets_at else None,
-            "extraUsageEnabled": self.extra_usage_enabled,
-        }
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "Usage":
-        from datetime import datetime
-        def _p(s):
-            return datetime.fromisoformat(s) if s else None
-        return cls(
-            session_pct=d["sessionPct"],
-            session_resets_at=_p(d["sessionResetsAt"]),
-            weekly_pct=d["weeklyPct"],
-            weekly_resets_at=_p(d["weeklyResetsAt"]),
-            extra_usage_enabled=d["extraUsageEnabled"],
-        )
 
 
 def _retry_delay(http_headers, attempt: int, rng=random.random) -> float:
@@ -206,7 +176,14 @@ def _parse_iso(s: str | None) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
-def parse_usage(payload: dict) -> Usage:
+def parse_usage(payload: dict, *, fetched_at: datetime | None = None) -> QuotaSnapshot:
+    """Map the Anthropic usage payload onto the canonical two-window snapshot.
+
+    Anthropic genuinely meters two windows (a rolling 5-hour "session" and a
+    rolling 7-day "weekly"), so both are reported. ``resets_at`` stays None when
+    the upstream window is inactive — the absence is real data and must not be
+    invented.
+    """
     session_pct = weekly_pct = None
     session_reset = weekly_reset = None
     for entry in payload.get("limits", []) or []:
@@ -229,11 +206,12 @@ def parse_usage(payload: dict) -> Usage:
         weekly_pct = float(sd.get("utilization", 0))
         weekly_reset = _parse_iso(sd.get("resets_at"))
     extra = bool((payload.get("extra_usage") or {}).get("is_enabled", False))
-    return Usage(session_pct, session_reset, weekly_pct, weekly_reset, extra)
+    return anthropic_snapshot(session_pct, session_reset, weekly_pct, weekly_reset,
+                              extra, fetched_at=fetched_at)
 
 
 def fetch_usage(access_token: str, *, max_retries: int = _DEFAULT_MAX_RETRIES,
-                max_total_sec: float = _DEFAULT_MAX_TOTAL_SEC) -> Usage:
+                max_total_sec: float = _DEFAULT_MAX_TOTAL_SEC) -> QuotaSnapshot:
     status, body = http_request(
         "GET", USAGE_URL,
         headers={"Authorization": f"Bearer {access_token}", "anthropic-beta": BETA_HEADER},

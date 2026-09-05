@@ -35,7 +35,8 @@ function account(over: Partial<Account> = {}): Account {
 
 function session(over: Partial<Session> = {}): Session {
   return {
-    id: 'a', name: 'a', accountName: 'acct', status: 'idle',
+    id: 'a', name: 'a', accountName: 'acct', engine: 'claude_code',
+    engineSessionId: null, status: 'idle',
     createdAt: '2024-01-01T00:00:00Z', prs: [],
     ...over,
   }
@@ -44,7 +45,7 @@ function session(over: Partial<Session> = {}): Session {
 function archivedSession(over: Partial<ArchivedSession> = {}): ArchivedSession {
   return {
     id: 'x', name: 'x', account: 'acct', cwd: '/tmp/x', repo: null,
-    claudeSessionId: null, permissionMode: 'default',
+    engine: 'claude_code', engineSessionId: null, permissionMode: 'default',
     createdAt: '2024-01-01T00:00:00Z', archivedAt: '2024-01-02T00:00:00Z',
     ...over,
   }

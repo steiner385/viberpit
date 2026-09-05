@@ -18,6 +18,7 @@ from server.app import create_app
 from server.db import db_session, init_db
 from server.db.models import Session as DbSession
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
@@ -26,7 +27,7 @@ _IDENT = {"Tailscale-User-Login": "restart@example.com"}
 
 def test_record_roundtrip_preserves_interrupted_flag():
     rec = SessionRecord(
-        id="s1", name="S1", account="acct", claude_session_id="c", cols=80, rows=24,
+        id="s1", name="S1", account="acct", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c", cols=80, rows=24,
         cwd="/tmp", interrupted_by_restart=True,
     )
     assert rec.to_dict()["interruptedByRestart"] is True
@@ -35,7 +36,7 @@ def test_record_roundtrip_preserves_interrupted_flag():
 
 def test_record_defaults_interrupted_flag_false():
     rec = SessionRecord(
-        id="s2", name="S2", account="acct", claude_session_id="c", cols=80, rows=24, cwd="/tmp",
+        id="s2", name="S2", account="acct", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c", cols=80, rows=24, cwd="/tmp",
     )
     assert rec.interrupted_by_restart is False
     assert rec.to_dict()["interruptedByRestart"] is False
@@ -52,7 +53,7 @@ def _seed_and_list(tmp_path, *, status: str) -> dict:
         await init_db(db_url=db_url)
         async with db_session() as db:
             db.add(DbSession(id="sess", name="Sess", account_name="acct",
-                             claude_session_id="c", status=status, cwd=str(tmp_path)))
+                             engine_session_id="c", status=status, cwd=str(tmp_path)))
     asyncio.run(seed())
 
     orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())

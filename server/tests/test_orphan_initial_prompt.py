@@ -24,6 +24,7 @@ import asyncio
 
 from server.db.models import Session as DbSession
 from server.db.models import SessionQueue
+from server.sessions.engine import AgentEngine
 
 
 async def _init(db_url: str) -> None:
@@ -51,7 +52,7 @@ async def _seed_queued(session_id: str, **over) -> None:
     async with db_session() as db:
         db.add(DbSession(
             id=session_id, name=p["name"], account_name=p["account"] or "",
-            claude_session_id=None, status="queued", pid=None,
+            engine_session_id=None, status="queued", pid=None,
             cwd=p["cwd"] or "", repo=p["repo"], branch=None,
             permission_mode=p["permission_mode"], name_is_auto=p["name_is_auto"],
             origin=p["origin"], origin_ref=p["origin_ref"], model=p["model"],
@@ -75,7 +76,8 @@ def _orch_with_queued_record(session_id: str, **over):
     now = datetime.utcnow()
     orch._records[session_id] = SessionRecord(
         id=session_id, name=p["name"], account=p["account"] or "",
-        claude_session_id="", cols=p["cols"], rows=p["rows"], cwd=p["cwd"] or "",
+        engine=AgentEngine.CLAUDE_CODE,
+        engine_session_id="", cols=p["cols"], rows=p["rows"], cwd=p["cwd"] or "",
         repo=p["repo"], branch=None, status="queued", name_is_auto=True,
         created_at=now, updated_at=now, origin=p["origin"],
         origin_ref=p["origin_ref"], model=None)
@@ -193,13 +195,13 @@ def test_stale_entry_whose_row_left_queued_is_dropped(tmp_path):
 # Window 2: rehydrate must recover an undelivered initial prompt.
 # ---------------------------------------------------------------------------
 
-async def _seed_spawned(session_id: str, *, origin, claude_session_id=None,
+async def _seed_spawned(session_id: str, *, origin, engine_session_id=None,
                         status="idle", initial_prompt="do the thing") -> None:
     from server.db import db_session
     async with db_session() as db:
         db.add(DbSession(
             id=session_id, name="spawned", account_name="acct",
-            claude_session_id=claude_session_id, status=status, pid=None,
+            engine_session_id=engine_session_id, status=status, pid=None,
             cwd=str("/tmp"), repo=None, branch=None,
             permission_mode="interactive", name_is_auto=True,
             origin=origin, origin_ref=None, model=None,
@@ -251,13 +253,13 @@ def test_rehydrate_redelivers_an_undelivered_automation_prompt(tmp_path):
 
 
 def test_rehydrate_never_redelivers_to_a_session_that_already_ran(tmp_path):
-    """A non-NULL claude_session_id proves turn one ran — re-sending would duplicate work."""
+    """A non-NULL engine_session_id proves turn one ran — re-sending would duplicate work."""
     async def run():
         from server.sessions.orchestrator import SessionOrchestrator
         await _init(f"sqlite+aiosqlite:///{tmp_path / 'r.db'}")
         await _seed_spawned("ran-1", origin="backlog-runner",
-                            claude_session_id="cs-123")
-        await _seed_spawned("ran-2", origin=None, claude_session_id="cs-456")
+                            engine_session_id="cs-123")
+        await _seed_spawned("ran-2", origin=None, engine_session_id="cs-456")
 
         orch = SessionOrchestrator()
         sent: list[tuple] = []
@@ -344,7 +346,7 @@ def test_rehydrate_never_redelivers_to_a_restart_interrupted_turn(tmp_path):
     async def run():
         from server.sessions.orchestrator import SessionOrchestrator
         await _init(f"sqlite+aiosqlite:///{tmp_path / 'i.db'}")
-        # No claude_session_id: turn one was in flight but the SDK had not yet
+        # No engine_session_id: turn one was in flight but the SDK had not yet
         # assigned an id — the exact window where the two paths could collide.
         await _seed_spawned("mid-1", origin="backlog-runner", status="in_progress")
         await _seed_spawned("mid-2", origin=None, status="waiting_question")

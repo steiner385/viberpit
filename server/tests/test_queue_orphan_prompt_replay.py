@@ -11,7 +11,7 @@ for a session that never ran a single turn.
 Three windows are pinned here:
 
 1. **Replay, don't discard** — an orphan with a non-null ``initial_prompt`` and a NULL
-   ``claude_session_id`` (proof no turn ever ran, the same durable evidence
+   ``engine_session_id`` (proof no turn ever ran, the same durable evidence
    ``_recover_undelivered_prompts`` relies on) is re-enqueued from the row rather than
    ended.
 2. **Ordering** — ``_maybe_start_queued``'s failure path persists ``ended`` BEFORE it
@@ -19,7 +19,7 @@ Three windows are pinned here:
    ``queued``, entry intact) instead of manufacturing the orphan this bug is about.
 3. **No escalation for a session that never ran** — the backlog runner releases the
    claim instead of stamping ``needs-human`` when its session recorded no
-   ``claude_session_id``.
+   ``engine_session_id``.
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ from server.db.models import SessionQueue
 
 async def _seed_orphan(db_url: str | None = None, *, session_id: str,
                        initial_prompt: str | None = "Implement the following GitHub issue",
-                       claude_session_id: str | None = None,
+                       engine_session_id: str | None = None,
                        status: str = "queued", **over) -> None:
     """A 'queued' row with NO session_queue entry — the orphan shape."""
     from server.db import db_session, init_db
@@ -39,7 +39,7 @@ async def _seed_orphan(db_url: str | None = None, *, session_id: str,
         await init_db(db_url=db_url)
     values = dict(
         id=session_id, name="backlog acme/repo#1", account_name="acct",
-        claude_session_id=claude_session_id, status=status, pid=None,
+        engine_session_id=engine_session_id, status=status, pid=None,
         cwd="/tmp/clone", repo="acme/repo", branch=None,
         permission_mode="full-auto", name_is_auto=True,
         origin="backlog-runner", origin_ref="acme/repo#1", model="opus",
@@ -103,11 +103,11 @@ def test_orphan_with_an_undelivered_prompt_is_requeued_not_ended(tmp_path):
 
 
 def test_orphan_that_already_ran_a_turn_is_still_ended(tmp_path):
-    """A non-NULL claude_session_id proves turn one ran — replay would duplicate work."""
+    """A non-NULL engine_session_id proves turn one ran — replay would duplicate work."""
     async def run():
         from server.sessions.orchestrator import SessionOrchestrator
         await _seed_orphan(f"sqlite+aiosqlite:///{tmp_path / 'ran.db'}",
-                           session_id="orphan-ran", claude_session_id="cs-123")
+                           session_id="orphan-ran", engine_session_id="cs-123")
 
         orch = SessionOrchestrator()
         assert await orch._reconcile_orphan_queued() == 1
@@ -408,7 +408,7 @@ def _runner(*, ran: bool | None, calls: dict):
 
 
 def test_give_up_releases_instead_of_escalating_when_the_session_never_ran():
-    """A session with no claude_session_id never ran — needs-human parks it for days."""
+    """A session with no engine_session_id never ran — needs-human parks it for days."""
     async def run():
         calls: dict = {}
         loop = _runner(ran=False, calls=calls)
@@ -451,14 +451,14 @@ def test_give_up_escalates_when_no_ran_probe_is_wired():
     asyncio.run(run())
 
 
-def test_backlog_session_ran_reads_the_claude_session_id(tmp_path):
-    """The probe's truth source: a NULL claude_session_id means no turn ever ran."""
+def test_backlog_session_ran_reads_the_engine_session_id(tmp_path):
+    """The probe's truth source: a NULL engine_session_id means no turn ever ran."""
     async def run():
         from server.sessions.orchestrator import SessionOrchestrator
         await _seed_orphan(f"sqlite+aiosqlite:///{tmp_path / 'ran_probe.db'}",
                            session_id="never-ran", status="ended")
         await _seed_orphan(session_id="did-run", status="ended",
-                           claude_session_id="cs-9")
+                           engine_session_id="cs-9")
 
         orch = SessionOrchestrator()
         assert await orch._backlog_session_ran("never-ran") is False

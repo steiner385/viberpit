@@ -47,9 +47,10 @@ class _FakeSessions:
 
 
 def _rec():
+    from server.sessions.engine import AgentEngine
     from server.sessions.types import SessionRecord
     return SessionRecord(
-        id="s1", name="n", account="a", claude_session_id="c",
+        id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c",
         cols=80, rows=24, cwd="/x", detached=False,
     )
 

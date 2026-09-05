@@ -5,6 +5,7 @@ from server.ipc.serve import build_daemon, daemon_lifespan
 from server.ipc.client import DaemonClient, protocol_compatible
 from server.tests.ipc_harness import serve_daemon_uds
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 _FAKE_X11 = object()  # sentinel — build_x11_manager returns None in X11-less CI
@@ -42,7 +43,8 @@ async def test_built_daemon_serves_handshake_and_rpc_over_uds():
     orch = SessionOrchestrator(sdk_factory=mock.MagicMock(), poll_interval=9999.0,
                                usage_fn=lambda n: None)
     orch._records["s1"] = SessionRecord(id="s1", name="S1", account="acct",
-                                        claude_session_id="cs", cols=80, rows=24, cwd="/tmp")
+                                        engine=AgentEngine.CLAUDE_CODE,
+                                        engine_session_id="cs", cols=80, rows=24, cwd="/tmp")
     app, _ = build_daemon(orchestrator=orch)
     async with serve_daemon_uds(app) as sock:
         client = DaemonClient(sock)

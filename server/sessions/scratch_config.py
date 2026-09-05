@@ -87,7 +87,7 @@ _COPIED = (CLAUDE_JSON_NAME, CREDENTIALS_NAME)
 #
 # `projects` is deliberately NOT in this set even though it is share-allowlisted. It is
 # not a shared asset — it is where the CLI writes each session's own transcript
-# (`<config_dir>/projects/<slug>/<claude_session_id>.jsonl`). Dropping the link would put
+# (`<config_dir>/projects/<slug>/<engine_session_id>.jsonl`). Dropping the link would put
 # the assistant's history somewhere `resolve_transcript_path` never looks, so a resume
 # after an idle reap or a daemon restart would silently start a blank conversation.
 ISOLATED_EXCLUDED_SHARED = frozenset({

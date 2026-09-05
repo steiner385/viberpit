@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from unittest import mock
 import pytest
-from ccswitch.oauth import Usage
+from ccswitch.quota import anthropic_snapshot
 from server.ipc.client import DaemonClient
 from server.ipc.daemon import create_daemon_app
 from server.ipc.orchestrator_rpc import register_orchestrator_rpc
@@ -21,7 +21,7 @@ def _build():
 @pytest.mark.asyncio
 async def test_usage_round_trips_a_usage_object():
     app, orch = _build()
-    u = Usage(50.0, datetime(2026, 6, 22, tzinfo=timezone.utc), 10.0, None, False)
+    u = anthropic_snapshot(50.0, datetime(2026, 6, 22, tzinfo=timezone.utc), 10.0, None, False)
     orch.poller.get = mock.AsyncMock(return_value=u)
     async with serve_daemon_uds(app) as sock:
         ro = RemoteOrchestrator(DaemonClient(sock))

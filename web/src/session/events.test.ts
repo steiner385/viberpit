@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest'
 import type { EvToolCall, EvTextDelta } from './events'
 import { SESSION_EVENT_TYPES } from './events'

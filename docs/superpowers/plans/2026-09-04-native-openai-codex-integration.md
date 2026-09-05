@@ -31,6 +31,25 @@ effort, and permission profile are the only Codex launch controls; multiple name
 are represented from day one; automatic OpenAI account rotation is not a v1 requirement; the
 experimental external-token dependency is accepted subject to the release gate below.
 
+**Tracking issues:** created in GitHub Project #26 per Task 0.1. Every phase issue is a sub-issue of
+the epic; list order is presentation only after materialization. Native blocked-by relationships are
+the execution source of truth: Phase 1 follows Phase 0; Phases 2 and 3 both follow Phase 1 and may run
+in parallel; Phase 4 follows both; Phases 5–7 then form a chain. Task PRs reference the epic and their
+phase tracker. Only the final PR that satisfies a phase's exit criterion closes that phase tracker;
+the epic remains open through Phase 7.
+
+| Scope | Issue | Plan section |
+| --- | --- | --- |
+| Epic | [#1146](https://github.com/steiner385/ccswitch/issues/1146) | whole plan |
+| Phase 0 | [#1147](https://github.com/steiner385/ccswitch/issues/1147) | Governance and external-auth release gate |
+| Phase 1 | [#1148](https://github.com/steiner385/ccswitch/issues/1148) | Provider-neutral foundations with no behavior change |
+| Phase 2 | [#1149](https://github.com/steiner385/ccswitch/issues/1149) | Codex app-server protocol and process supervision |
+| Phase 3 | [#1150](https://github.com/steiner385/ccswitch/issues/1150) | Credential authority, OpenAI accounts, models, and quota |
+| Phase 4 | [#1151](https://github.com/steiner385/ccswitch/issues/1151) | Interactive Codex runtime |
+| Phase 5 | [#1152](https://github.com/steiner385/ccswitch/issues/1152) | Fleet routing and browser experience |
+| Phase 6 | [#1153](https://github.com/steiner385/ccswitch/issues/1153) | Interactive v1 hardening and launch |
+| Phase 7 | [#1154](https://github.com/steiner385/ccswitch/issues/1154) | Required backlog and SDLC automation fast follow |
+
 Official boundary references:
 
 - [Codex app-server protocol](https://developers.openai.com/codex/app-server)
@@ -201,19 +220,24 @@ will remain stable.
 
 **Work:**
 
-- [ ] Generalize Principle I to unmodified native agent binaries and supported/documented
+- [x] Generalize Principle I to unmodified native agent binaries and supported/documented
   integration surfaces, naming Claude Code and Codex without weakening the no-fork/no-patch rule.
-- [ ] Generalize Principle II to provider-safe identity/runtime isolation: Claude config-dir
+- [x] Generalize Principle II to provider-safe identity/runtime isolation: Claude config-dir
   isolation remains intact; Codex allows one refresh authority to distribute short-lived access
   tokens while runtime homes remain host-local.
-- [ ] Generalize the technical session constraint from “one native Claude PTY” to daemon-owned
+- [x] Generalize the technical session constraint from “one native Claude PTY” to daemon-owned
   engine drivers emitting normalized events.
-- [ ] Update the constitution version and Sync Impact Report; obtain the owner's explicit
+- [x] Update the constitution version and Sync Impact Report; obtain the owner's explicit
   acknowledgement in the PR body.
-- [ ] Update governance rules/tests so the active Claude and Codex agents receive equivalent
+- [x] Update governance rules/tests so the active Claude and Codex agents receive equivalent
   protection without pretending their permission syntaxes are identical.
-- [ ] After the amendment lands, use the `gh-issue-workflow` skill to create one epic plus dependent
+- [x] After the amendment lands, use the `gh-issue-workflow` skill to create one epic plus dependent
   phase issues in GitHub Project #26. Record issue numbers in this plan before runtime execution.
+
+**Landed:** #1098 (constitution v1.2.0, provider-neutral Principles I–IV), #1102 (review corrections
+to Principle II and the session model), #1103 (shell-write gap, hook fail-open, CI amendment gate),
+#1111 (guardrail changes gated on an owner acknowledgment check). Tracking issues #1146–#1154 are
+recorded in the table above and linked as epic sub-issues.
 
 **Verification:**
 
@@ -237,29 +261,35 @@ release authority than Claude.
 
 **Work:**
 
-- [ ] Generate and inspect `codex app-server generate-json-schema` output for the exact installed
+- [x] Generate and inspect `codex app-server generate-json-schema` output for the exact installed
   version. Record CLI version, protocol methods, experimental capability requirement, and a SHA-256
   of the relevant schema subset; never commit the entire user config or credential payload.
-- [ ] Start one managed-auth authority app-server on dobby and one external-auth app-server on
+- [x] Start one managed-auth authority app-server on dobby and one external-auth app-server on
   each of two distinct registered runner hosts (initially dobby and rocky), each with a separate
   host-local temporary `CODEX_HOME`. Send the short-lived test envelope over authenticated stdin;
   never place it in SSH arguments, environment variables, shell history, or a file.
-- [ ] Initialize both runner processes with `experimentalApi=true`, inject the same current external
+- [x] Initialize both runner processes with `experimentalApi=true`, inject the same current external
   access-token envelope, and verify `account/read`, `model/list`, and
   `account/rateLimits/read` concurrently.
-- [ ] Exercise the refresh callback. Give a runner an invalid/expired access token, observe
+- [x] Exercise the refresh callback. Give a runner an invalid/expired access token, observe
   `account/chatgptAuthTokens/refresh`, answer it from the single authority, and verify the runner
   recovers without a runner-side `auth.json`.
-- [ ] Trigger simultaneous refresh requests from both runners and prove they coalesce to one
+- [x] Trigger simultaneous refresh requests from both runners and prove they coalesce to one
   authority refresh and one monotonically newer generation.
-- [ ] Prove both temporary homes contain only local runtime state and that no access/refresh token,
+- [x] Prove both temporary homes contain only local runtime state and that no access/refresh token,
   ChatGPT account id, or raw native thread id appears in stdout/stderr/findings.
-- [ ] Make the script refuse to run unless `CCSWITCH_TEST_CODEX_ACCOUNT` and
+- [x] Make the script refuse to run unless `CCSWITCH_TEST_CODEX_ACCOUNT` and
   `CCSWITCH_TEST_CODEX_EXTERNAL_AUTH=1` are set. Default mode performs no model turn.
-- [ ] Record pass/fail evidence and cleanup behavior in the findings doc.
+- [x] Record pass/fail evidence and cleanup behavior in the findings doc.
 
 **Release gate:** stop here if refresh recovery, coalescing, or redaction fails. Do not fall back to
 sharing `auth.json` or a common `CODEX_HOME` across hosts. Revisit the architecture with the owner.
+
+**Landed:** #1092 (spike harness), #1095 (hardened evidence), #1116 (two-runner refresh proof). The
+gate **passed** on the real boundary — `codex-cli 0.153.2`, two distinct runner hosts, one successful
+callback per runner coalesced to `refresh_calls: 1` and `credential_generation: 1`, clean runner
+homes, clean redaction, complete cleanup. Full record:
+`docs/superpowers/spikes/2026-09-04-codex-external-auth-findings.md`.
 
 **Verification:**
 
@@ -367,22 +397,46 @@ the script's redaction scanner reports zero secret matches; temp homes are remov
 
 **Work:**
 
-- [ ] Introduce a versioned, non-secret `accounts.json` manifest under the existing account-store
+- [x] Introduce a versioned, non-secret `accounts.json` manifest under the existing account-store
   root. Dobby/primary is its only writer; runners read snapshots. Do not overload the cross-host
-  multi-writer `ledger.json` with identity metadata.
-- [ ] Define entries with name, provider, engine, user/runner auth modes, enabled flag, credential
+  multi-writer `ledger.json` with identity metadata. *(`src/ccswitch/account_registry.py` +
+  `paths.accounts_manifest_path()`. `locked_manifest()` refuses to write unless
+  `is_manifest_writer()` (reuses `CCSWITCH_DAEMON_ROLE`); a runner reconciles in memory only.
+  Same flock + temp-file + `os.replace` discipline as `ledger.locked_ledger`.)*
+- [x] Define entries with name, provider, engine, user/runner auth modes, enabled flag, credential
   authority, health metadata, a monotonic manifest revision, and non-secret generation/timestamps.
-  Account names remain globally unique in v1.
-- [ ] Add an idempotent importer for existing Anthropic credential slots and Copilot token dirs.
+  Account names remain globally unique in v1. *(Plan vocabularies verbatim. `engine` is NULLABLE:
+  the engine vocabulary's single definition is `server/sessions/engine.py`, which `src/ccswitch`
+  cannot import — `null` means "resolve through `parse_agent_engine`", reusing that one default
+  branch instead of copying the strings. `assert_no_secrets()` runs on every write.)*
+- [x] Add an idempotent importer for existing Anthropic credential slots and Copilot token dirs.
   After import, `all_accounts()` and `provider_of()` read the manifest; filesystem discovery is
   callable only from migration/repair commands. Unknown names no longer fall back to Anthropic.
-- [ ] Replace shared `Usage` with canonical `QuotaSnapshot`/`QuotaWindow`. Anthropic produces
-  session+weekly; Copilot produces one premium window; no fabricated duplicate.
-- [ ] Replace selector math with `binding_window(model)` and make engine/provider/model filtering
+  *(`import_filesystem_accounts()` is setdefault-shaped and `locked_manifest` skips the write when
+  the body is unchanged, so a re-scan is byte-identical and does not bump the revision. Discovery
+  reachable from `ccswitch accounts import|show` and from the additive reconcile-on-read.
+  `provider_of()` raises `UnknownAccountError`; `provider_or_none()` is the explicit
+  degrade-to-None door.)*
+- [x] Replace shared `Usage` with canonical `QuotaSnapshot`/`QuotaWindow`. Anthropic produces
+  session+weekly; Copilot produces one premium window; no fabricated duplicate. *(`src/ccswitch/
+  quota.py`; `oauth.Usage` DELETED, no adapter. `availability` (available|unknown|auth_error) is
+  how a failed read is expressed — an unavailable snapshot has NO windows rather than a
+  fabricated 0%.)*
+- [x] Replace selector math with `binding_window(model)` and make engine/provider/model filtering
   happen before scoring. Preserve conservative unknown-usage behavior and Claude reserve semantics.
-- [ ] Version the cached quota blob in the ledger and migrate old Claude usage entries on read.
-  Update the CLI/API/UI to enumerate windows.
-- [ ] Add mixed-engine, model-scoped, unknown, auth-error, reset-null, and old-ledger migration tests.
+  *(`max(..., key=used_pct)` returns the FIRST maximal element, reproducing the old
+  strictly-less pair math including its tie direction. `eligible_names()` runs first, so a
+  filtered-out account is inapplicable, not busy, and never supplies `earliest_reset`. All five
+  tiers pinned by `tests/test_selector_filtering.py`.)*
+- [x] Version the cached quota blob in the ledger and migrate old Claude usage entries on read.
+  Update the CLI/API/UI to enumerate windows. *(`"v": 2`; `ledger.usage_from_blob` is the single
+  reader and migrates the live pre-versioning shape in place without a rewrite — including
+  collapsing a legacy Copilot entry's duplicated dimensions back to one `premium` window.
+  `web/src/lib/usageWindows.ts` is the browser-side single reader; `_usage_to_dict` emits
+  `windows[]`.)*
+- [x] Add mixed-engine, model-scoped, unknown, auth-error, reset-null, and old-ledger migration tests.
+  *(`tests/test_selector_filtering.py`, `tests/test_quota.py`, `tests/test_ledger_usage_migration.py`,
+  `tests/test_account_registry.py`, `web/src/lib/usageWindows.test.ts`.)*
 
 **Verification:** run every account/usage/selection suite plus the complete backend and web gates.
 This is deliberately one PR because leaving old and new usage contracts alive concurrently would

@@ -11,6 +11,7 @@ from server.app import create_app
 from server.ipc.daemon import create_daemon_app
 from server.ipc.orchestrator_rpc import register_orchestrator_rpc
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 from server.tests.ipc_harness import serve_daemon_uds
 
@@ -19,7 +20,8 @@ _IDENT = {"Tailscale-User-Login": "edge@example.com"}
 
 def _rec(sid: str, status: str = "idle") -> SessionRecord:
     r = SessionRecord(id=sid, name=sid.upper(), account="acct",
-                      claude_session_id="cs-" + sid, cols=80, rows=24, cwd="/tmp")
+                      engine=AgentEngine.CLAUDE_CODE,
+                      engine_session_id="cs-" + sid, cols=80, rows=24, cwd="/tmp")
     r.status = status
     return r
 

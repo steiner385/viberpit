@@ -37,7 +37,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
@@ -55,6 +55,8 @@ from server.sessions.commands.catalog import parse_command_line
 from server.sessions.events import ErrorEvent, PermissionRequest, tool_kind
 from server.sessions.facade import call_with_deadline
 from server.sessions.replay import replay_window
+from server.sessions import session_actions
+from server.sessions.session_actions import ActionError
 from server.sessions.types import is_assistant
 
 if TYPE_CHECKING:
@@ -469,7 +471,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             except Exception:
                 # A resumed/rehydrated session can fail to start its SDK subprocess —
                 # most commonly because the account's token is dead (needs re-auth) or
-                # the stored claude_session_id can no longer be resumed. Letting that
+                # the stored engine_session_id can no longer be resumed. Letting that
                 # propagate would crash the WS handler, closing the socket and making
                 # the client reconnect-loop forever on a blank screen. Report it and
                 # keep the socket alive (replayComplete clears the loading state).
@@ -1078,20 +1080,32 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                         # prompt next instead of queueing it behind the turn. Only
                         # forwarded when set so the plain contract is untouched.
                         interrupt = msg.get("interrupt") is True
-                        extra: dict[str, Any] = {"interrupt": True} if interrupt else {}
-                        # Context header (spec §4.5): only assistant sessions may attach
-                        # one — a coding session's prompt frame ignores it even if a
-                        # buggy/malicious client sends it, so it never reaches the SDK.
+                        extra: dict[str, bool | dict] = {"interrupt": True} if interrupt else {}
+                        # The context chip (spec §4.5): only the assistant drawer sends
+                        # `context`, and only an assistant-kind session may act on one —
+                        # a coding session ignores a supplied context outright.
+                        # get_session is per-session-routed to the owning host in fleet
+                        # mode (unlike a bare `record()`, which is not in
+                        # FleetOrchestrator's _PER_SESSION set and would resolve to
+                        # RemoteOrchestrator, which has no such method at all).
                         raw_context = msg.get("context")
                         if raw_context is not None:
+                            # Best-effort: in fleet mode this is a real RPC that can
+                            # raise DaemonTimeout/DaemonUnavailable, and the prompt
+                            # frame had no such dependency before the context chip. A
+                            # transient daemon hiccup must degrade to "no context",
+                            # never cost the user their message.
+                            rec = None
                             try:
                                 rec = await orchestrator.get_session(session_id)
-                            except DaemonUnavailable:
-                                rec = None
-                            if rec is not None and is_assistant(rec):
-                                validated = validate_context(raw_context)
-                                if validated is not None:
-                                    extra["context"] = validated
+                            except Exception:
+                                log.warning("ws.prompt context lookup failed session=%s "
+                                            "— sending without context", session_id,
+                                            exc_info=True)
+                            if is_assistant(rec):
+                                validated_context = validate_context(raw_context)
+                                if validated_context is not None:
+                                    extra["context"] = dict(validated_context)
                         status = await orchestrator.send_prompt(
                             session_id, text, attachment_ids, **extra)
                         if status == "no_driver":
@@ -1139,75 +1153,65 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                                          "text": text, "attachmentIds": attachment_ids,
                                          "reason": status})
                 elif msg_type == "interrupt":
-                    await orchestrator.interrupt(session_id)
-                    try:
-                        async with db_session() as db:
-                            await record_audit(db, "session.interrupt", identity,
-                                               {"sessionId": session_id})
-                    except Exception:
-                        log.warning("ws.audit_failed event=%s session=%s",
-                                    "session.interrupt", session_id, exc_info=True)
+                    async with db_session() as db:
+                        await session_actions.interrupt(
+                            orchestrator, db, session_id=session_id, identity=identity)
                 elif msg_type == "permissionResponse":
                     decision = msg.get("decision", "")
                     perm_id = msg.get("permId", "")
-                    ok = await orchestrator.resolve_permission(
-                        session_id, perm_id, decision, identity)
-                    if not ok:
+                    # The helper records its audit event unconditionally (matching the
+                    # pre-extraction behaviour: a rejected decision still leaves an
+                    # audit trail), so it must run to completion — and therefore
+                    # commit — INSIDE this db_session block; only the ActionError is
+                    # caught here, to render the WS-specific error frame afterward.
+                    action_error: ActionError | None = None
+                    async with db_session() as db:
+                        try:
+                            await session_actions.resolve_permission(
+                                orchestrator, db, session_id=session_id, perm_id=perm_id,
+                                decision=decision, identity=identity)
+                        except ActionError as exc:
+                            action_error = exc
+                    if action_error is not None:
                         # Same silent-drop shape as answerQuestion below: an
                         # unresolvable decision must surface, not 200-and-vanish.
                         log.warning("ws.resolve_permission rejected session=%s perm=%s identity=%s",
                                     session_id, perm_id, identity)
-                        await _send({"type": "error", "code": "PERMISSION_NOT_PENDING",
+                        await _send({"type": "error", "code": action_error.code,
                                      "message": "That permission request is no longer pending "
                                                 "— the session may have moved on. Reload to "
                                                 "see its current state.",
                                      "sessionId": session_id})
-                    await orchestrator.note_user_interaction(session_id)
-                    try:
-                        async with db_session() as db:
-                            await record_audit(db, "permission." + decision, identity,
-                                               {"sessionId": session_id, "permId": perm_id})
-                    except Exception:
-                        log.warning("ws.audit_failed event=%s session=%s",
-                                    "permission." + decision, session_id, exc_info=True)
                 elif msg_type == "setPermissionMode":
                     mode = msg.get("mode", "")
-                    await orchestrator.set_permission_mode(session_id, mode)
-                    try:
-                        async with db_session() as db:
-                            await record_audit(db, "permission_mode.change", identity,
-                                               {"sessionId": session_id, "mode": mode})
-                    except Exception:
-                        log.warning("ws.audit_failed event=%s session=%s",
-                                    "permission_mode.change", session_id, exc_info=True)
+                    async with db_session() as db:
+                        await session_actions.set_permission_mode(
+                            orchestrator, db, session_id=session_id, mode=mode,
+                            identity=identity)
                 elif msg_type == "answerQuestion":
                     question_id = msg.get("questionId", "")
                     selected = msg.get("selected", [])
                     mode = msg.get("mode", "option")
-                    if mode not in ("option", "freeform", "chat"):
-                        mode = "option"
-                    ok = await orchestrator.answer_question(
-                        session_id, question_id, selected, identity, mode)
-                    if not ok:
+                    action_error = None
+                    async with db_session() as db:
+                        try:
+                            await session_actions.answer_question(
+                                orchestrator, db, session_id=session_id,
+                                question_id=question_id, selected=selected, mode=mode,
+                                identity=identity)
+                        except ActionError as exc:
+                            action_error = exc
+                    if action_error is not None:
                         # Never a silent no-op: an unresolvable answer (no such pending
                         # question, identity mismatch, no driver) used to return 200
                         # and leave the user staring at a card that never reacts.
                         log.warning("ws.answer_question rejected session=%s qid=%s identity=%s",
                                     session_id, question_id, identity)
-                        await _send({"type": "error", "code": "QUESTION_NOT_PENDING",
+                        await _send({"type": "error", "code": action_error.code,
                                      "message": "That question is no longer pending — the "
                                                 "session may have moved on. Reload to see "
                                                 "its current state.",
                                      "sessionId": session_id})
-                    await orchestrator.note_user_interaction(session_id)
-                    try:
-                        async with db_session() as db:
-                            await record_audit(db, "question.answer", identity,
-                                               {"sessionId": session_id, "questionId": question_id,
-                                                "selected": selected, "mode": mode})
-                    except Exception:
-                        log.warning("ws.audit_failed event=%s session=%s",
-                                    "question.answer", session_id, exc_info=True)
                 elif msg_type == "activity":
                     # Lightweight steering signal — user typing / interacting before send. Refreshes
                     # the human-deference window; no response frame.

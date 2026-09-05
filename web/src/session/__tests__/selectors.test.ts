@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest'
 import { selectSubAgents, selectRunningSubAgentCount } from '../selectors'
 import type { Turn } from '../reducer'

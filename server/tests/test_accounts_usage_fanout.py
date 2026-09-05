@@ -11,18 +11,20 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime, timezone
+
+from ccswitch.quota import QuotaSnapshot, anthropic_snapshot
+
+NOW = datetime(2026, 9, 5, tzinfo=timezone.utc)
 
 
 from server.api import accounts as accounts_api
 
 
-class _FakeUsage:
-    def __init__(self, tag: str) -> None:
-        self.session_pct = 1.0
-        self.weekly_pct = 2.0
-        self.session_resets_at = None
-        self.weekly_resets_at = None
-        self.tag = tag
+def _fake_usage(tag: str) -> QuotaSnapshot:
+    """A real snapshot — the fan-out contract is about the TYPE that reaches
+    ``_usage_to_dict``, so a stand-in class would let a shape mismatch through."""
+    return anthropic_snapshot(1.0, None, 2.0, None, fetched_at=NOW)
 
 
 class _FakeOrch:
@@ -37,7 +39,7 @@ class _FakeOrch:
             await asyncio.sleep(1000)  # never returns within the timeout
         if b == "raise":
             raise RuntimeError("boom")
-        return _FakeUsage(name)
+        return _fake_usage(name)
 
 
 def test_gather_usages_isolates_hang_and_error_and_is_concurrent():
@@ -52,7 +54,7 @@ def test_gather_usages_isolates_hang_and_error_and_is_concurrent():
     result, elapsed = asyncio.run(go())
 
     # Healthy account resolves; hung and raising accounts degrade to None.
-    assert isinstance(result["ok"], _FakeUsage)
+    assert isinstance(result["ok"], QuotaSnapshot)
     assert result["slow"] is None
     assert result["bad"] is None
     # Concurrent: total ~= the single timeout (0.2s), not 3x. Generous ceiling
@@ -63,7 +65,7 @@ def test_gather_usages_isolates_hang_and_error_and_is_concurrent():
 def test_safe_usage_returns_value_on_success():
     orch = _FakeOrch({"ok": "ok"})
     got = asyncio.run(accounts_api._safe_usage(orch, "ok", timeout=1.0))
-    assert isinstance(got, _FakeUsage)
+    assert isinstance(got, QuotaSnapshot)
 
 
 def test_safe_usage_timeout_returns_none():

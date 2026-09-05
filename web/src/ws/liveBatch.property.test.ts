@@ -1,3 +1,4 @@
+// @vitest-environment node
 // web/src/ws/liveBatch.property.test.ts
 //
 // Property-based invariants for handleLiveBatch (audit wave 3). The example-based

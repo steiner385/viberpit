@@ -3,6 +3,7 @@ import pytest
 from ccswitch.account_names import InvalidAccountName
 from ccswitch.selector import Picked
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 import server.sessions.orchestrator as orch_mod
 
@@ -22,7 +23,7 @@ def _mock_known_accounts(monkeypatch, names):
 
 @pytest.mark.asyncio
 async def test_switch_account_manual_pins_and_reassigns(monkeypatch):
-    rec = SessionRecord(id="s1", name="n", account="a", claude_session_id="c1",
+    rec = SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                         cols=80, rows=24, cwd="/tmp")
     orch = _orch_with(rec)
     _mock_known_accounts(monkeypatch, ["a", "b"])
@@ -40,7 +41,7 @@ async def test_switch_account_manual_pins_and_reassigns(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_switch_account_manual_rejects_path_traversal(monkeypatch):
-    rec = SessionRecord(id="s1", name="n", account="a", claude_session_id="c1",
+    rec = SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                         cols=80, rows=24, cwd="/tmp")
     orch = _orch_with(rec)
     _mock_known_accounts(monkeypatch, ["a", "b"])
@@ -58,7 +59,7 @@ async def test_switch_account_manual_rejects_path_traversal(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_switch_account_manual_rejects_unknown_account(monkeypatch):
-    rec = SessionRecord(id="s1", name="n", account="a", claude_session_id="c1",
+    rec = SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                         cols=80, rows=24, cwd="/tmp")
     orch = _orch_with(rec)
     _mock_known_accounts(monkeypatch, ["a", "b"])  # "ghost" is valid-format but unknown
@@ -76,7 +77,7 @@ async def test_switch_account_manual_rejects_unknown_account(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_rotate_away_clears_pin(monkeypatch):
-    rec = SessionRecord(id="s1", name="n", account="a", claude_session_id="c1",
+    rec = SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                         cols=80, rows=24, cwd="/tmp", account_pinned=True)
     orch = _orch_with(rec)
     orch._recovery = type("R", (), {

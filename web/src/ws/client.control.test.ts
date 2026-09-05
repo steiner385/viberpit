@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Control-frame rejection tests (#505).
  *

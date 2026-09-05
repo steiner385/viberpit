@@ -23,6 +23,16 @@ const planPerm: PermBlock = {
   plan: true,
 }
 
+const destructiveAppActionPerm: PermBlock = {
+  ...bashPerm,
+  id: 'perm-3',
+  permId: 'perm-3',
+  tool: 'mcp__ccswitch__delete_session',
+  toolKind: 'app_action',
+  input: {},
+  alwaysAllowed: false,
+}
+
 describe('PermissionCard', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
@@ -113,6 +123,21 @@ describe('PermissionCard', () => {
     render(<PermissionCard block={bashPerm} onDecision={onDecision} />)
     await user.keyboard('{ArrowDown}{Enter}')
     expect(onDecision).toHaveBeenCalledWith('perm-1', 'deny')
+  })
+
+  it('hides "Yes, always" for a destructive app_action even in auto mode', () => {
+    render(<PermissionCard block={destructiveAppActionPerm} mode="auto" onDecision={vi.fn()} />)
+    expect(screen.getByRole('button', { name: /^Allow /i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Deny /i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Always allow/i })).toBeNull()
+  })
+
+  it('digit 3 is ignored for a destructive app_action (no always button)', async () => {
+    const user = userEvent.setup()
+    const onDecision = vi.fn()
+    render(<PermissionCard block={destructiveAppActionPerm} mode="auto" onDecision={onDecision} />)
+    await user.keyboard('3')
+    expect(onDecision).not.toHaveBeenCalled()
   })
 
   it('plan variant: digit 1 allows, 2 denies', async () => {
