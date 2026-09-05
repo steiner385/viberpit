@@ -73,9 +73,11 @@ def _factory(msgs, client_cls=None):
     cls = client_cls or FakeSDKClient
 
     # Mirror real_sdk_factory's signature — the orchestrator's factory wrapper
-    # forwards extra_env=... whenever a session has X11/OAT env, so a fake that
-    # omits it raises TypeError on those sessions ("accept and ignore it").
-    def make(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *, on_pre_compact=None):
+    # forwards extra_env=... whenever a session has X11/OAT env, and
+    # options_overlay=... for an assistant-kind session, so a fake that omits
+    # either raises TypeError on those sessions ("accept and ignore it").
+    def make(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *,
+             on_pre_compact=None, options_overlay=None):
         return cls(list(msgs), on_can_use_tool=can_use_tool)
 
     return make
@@ -1279,3 +1281,42 @@ def test_prompt_with_interrupt_flag_stops_turn_and_sends(ws_env):
         [e.get("type") for e in events]
 
     client.portal.call(orch.close_session, session_id)
+
+
+def test_prompt_context_honored_for_assistant_ignored_for_coding(ws_env):
+    """A ``prompt`` frame's ``context`` field reaches the SDK as a header only for
+    an assistant-kind session; the identical frame on a coding session must reach
+    the SDK unmodified (spec §4.5 — coding sessions never see it)."""
+    import functools
+    from server.sessions.types import ASSISTANT_KIND
+
+    _app, orch, client = ws_env([], client_cls=FakeSDKClient)
+    identity = _IDENTITY_HEADERS["Tailscale-User-Login"]
+    assistant = client.portal.call(functools.partial(
+        orch.create_session, "assistant-ws", identity=identity,
+        kind=ASSISTANT_KIND, owner_identity=identity))
+    coder = client.portal.call(orch.create_session, "coder-ws")
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": assistant.id}))
+        _drain_events(ws, until_type="replayComplete")
+        ws.send_text(json.dumps({"type": "prompt", "sessionId": assistant.id,
+                                 "text": "hi", "context": {"route": "/pipeline"}}))
+        _drain_events(ws, until=lambda e: e.get("type") == "user" and e.get("text") == "hi",
+                      timeout=8.0)
+
+        ws.send_text(json.dumps({"type": "attach", "sessionId": coder.id}))
+        _drain_events(ws, until_type="replayComplete")
+        ws.send_text(json.dumps({"type": "prompt", "sessionId": coder.id,
+                                 "text": "hi", "context": {"route": "/pipeline"}}))
+        _drain_events(ws, until=lambda e: e.get("type") == "user" and e.get("text") == "hi",
+                      timeout=8.0)
+
+    assistant_sdk = orch._drivers[assistant.id]._client
+    coder_sdk = orch._drivers[coder.id]._client
+    assert assistant_sdk.sent[0].startswith('<ccswitch-context route="/pipeline"'), \
+        assistant_sdk.sent
+    assert coder_sdk.sent == ["hi"], coder_sdk.sent
+
+    client.portal.call(orch.close_session, assistant.id)
+    client.portal.call(orch.close_session, coder.id)

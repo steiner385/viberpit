@@ -15,6 +15,8 @@ from claude_agent_sdk._errors import CLIConnectionError
 from ccswitch import copilot as _copilot_mod
 from ccswitch.accounts import provider_of as _provider_of
 from server.aio import bounded_wait
+from server.assistant.context import render_context_header
+from server.hostname import self_host_name
 from . import events as ev
 from .failure import classify, TurnFailure
 from .translator import Translator
@@ -230,6 +232,9 @@ class SessionDriver:
         self._qreg = QuestionRegistry()
         self._tr = Translator()
         self._client = None
+        # Last context header sent to the SDK (assistant sessions only) — the header
+        # is re-sent only when the route/session changes, not on every prompt.
+        self._last_context: dict | None = None
         # Broadcast fan-out: each events() subscriber gets its own queue. A single
         # asyncio.Queue is a WORK queue (each item to one getter) — fatal when
         # "attach" happens more than once per session (reconnect, 2nd viewer).
@@ -670,7 +675,7 @@ class SessionDriver:
         self._start_listener()
 
     async def send_prompt(self, text: str, images: list[dict] | None = None, *,
-                          interrupt: bool = False):
+                          interrupt: bool = False, context: dict | None = None):
         """Send a prompt. While a turn is live it joins the FIFO queue — unless
         ``interrupt`` is set, in which case the live turn is stopped and this prompt
         runs NEXT ("interrupt and post"), ahead of anything already queued."""
@@ -726,11 +731,22 @@ class SessionDriver:
             self._titled = True
             first_line = text.splitlines()[0] if text else (text or "attachment")
             self._emit(ev.Title(title=first_line[:50], source="prompt"))
-        await self._start_turn(text, images)
+        sdk_text = text
+        if context is not None and context != self._last_context:
+            sdk_text = f"{render_context_header(context, host=self_host_name())}\n{text}"
+            self._last_context = context
+        await self._start_turn(text, images, sdk_text=sdk_text, context=context)
 
-    async def _start_turn(self, text: str, images: list[dict] | None = None):
-        """Echo the user prompt, emit working status, query the SDK, drain."""
+    async def _start_turn(self, text: str, images: list[dict] | None = None, *,
+                          sdk_text: str | None = None, context: dict | None = None):
+        """Echo the user prompt, emit working status, query the SDK, drain.
+
+        ``sdk_text`` (defaulting to ``text``) is what actually reaches the SDK —
+        it may carry a prepended ``<ccswitch-context>`` header (see send_prompt).
+        The emitted UserMessage always carries the original ``text`` plus the raw
+        ``context`` dict, so the transcript and the chip stay independent of it."""
         images = images or []
+        sdk_text = text if sdk_text is None else sdk_text
         # The prompt's pump takes over the SDK cursor: park the idle listener first
         # (a no-op when this runs INSIDE the listener, dequeuing at a turn's end).
         await self._stop_listener()
@@ -755,12 +771,12 @@ class SessionDriver:
         user_turn = uuid.uuid4().hex
         self._emit(ev.UserMessage(
             turn_id=user_turn, text=text, src_uuid=user_turn,
-            images=wire_images or None))
+            images=wire_images or None, context=context))
         assert self._client is not None  # _start_turn only runs once the client is connected
         if images:
             content: list[dict] = []
-            if text:
-                content.append({"type": "text", "text": text})
+            if sdk_text:
+                content.append({"type": "text", "text": sdk_text})
             for im in images:
                 with open(im["path"], "rb") as fh:
                     raw = fh.read()
@@ -783,7 +799,7 @@ class SessionDriver:
                        "parent_tool_use_id": None, "session_id": "default"}
             await self._client.query(_aiter_one(message))
         else:
-            await self._client.query(text)
+            await self._client.query(sdk_text)
         self._pump = asyncio.create_task(self._drain())
 
     async def _call_sync_back(self) -> None:

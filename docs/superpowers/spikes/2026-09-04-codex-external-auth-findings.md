@@ -2,23 +2,23 @@
 
 **Date:** 2026-09-04
 
-**Status:** Phase 0.2 release gate failed; architecture decision pending — the safe harness is
-implemented and unit-tested, rocky has the pinned CLI, and the SSH transport defect is corrected.
-The final fenced dobby/rocky run proved that healthy initial external-auth reads work on both
-runners, but an invalid-token `account/rateLimits/read` produced no host refresh callback during
-the harness's bounded post-response observation. This result applies to that endpoint and
-`codex-cli 0.153.2`; it does not establish that no model-turn path can invoke the callback. The
-runtime design must not proceed by sharing `auth.json` or `CODEX_HOME`.
+**Status:** Phase 0.2 release gate passed. The no-model-turn `account/rateLimits/read` trigger did
+not invoke the external-auth callback. The separately owner-approved model-turn trigger on
+`codex-cli 0.153.2` completed one tools-disabled exact-`OK` turn per runner, exactly one successful
+callback from each runner, one coalesced authority refresh and credential generation, successful
+recovery reads, clean auth-only runner-home scans, clean redaction, and complete cleanup. No shared
+`auth.json` or shared `CODEX_HOME` fallback is permitted.
 
 ## Boundary inspected
 
 The local installed binary is `codex-cli 0.153.2`. Its experimental app-server JSON schemas were
 generated into a disposable directory and reduced canonically to the files governing
-initialization, external login, account reads, rate-limit reads, model listing, and external-token
-refresh. The SHA-256 of that relevant schema subset is:
+initialization, external login, account reads, rate-limit reads, model listing, external-token
+refresh, thread start, turn start, and the turn/item notifications needed to prove a model response
+without tool activity. The SHA-256 of that relevant schema subset is:
 
 ```text
-3d867fa0083c54be185b02a445153f0c5b7bfd1495d75ba6cf103d4a3f6c9be7
+09d4456bb8687bbe5abe3750bcb2dd2b2a92c91478a46810399182f064b7d3a9
 ```
 
 The generated contract contains:
@@ -28,7 +28,8 @@ The generated contract contains:
 - `account/read`, including its managed-auth proactive-refresh option;
 - `model/list`;
 - `account/rateLimits/read`;
-- the server request `account/chatgptAuthTokens/refresh` and its response shape.
+- the server request `account/chatgptAuthTokens/refresh` and its response shape;
+- `thread/start`, `turn/start`, `turn/completed`, `item/started`, and `item/completed`.
 
 The external-token login schema remains explicitly marked unstable/internal by this CLI version.
 That confirms the accepted design's version pin, startup probe, kill switch, and fail-closed
@@ -37,7 +38,9 @@ requirements remain necessary.
 ## Harness implemented
 
 [`scripts/spike_codex_external_auth.py`](../../../scripts/spike_codex_external_auth.py) is an
-opt-in, no-model-turn harness. Its intended live run does the following:
+opt-in harness whose default credential-bearing path creates no model turn. A second exact opt-in
+enables the bounded paid model-turn trigger used for the final proof. Its live run does the
+following:
 
 1. Regenerates and hashes the exact installed contract subset.
 2. Reads `/etc/machine-id` locally and remotely through a one-way domain-separated SHA-256. The
@@ -244,14 +247,83 @@ model-turn path cannot invoke the callback; testing that surface requires explic
 The implementation must not fall back to a shared `auth.json` or shared `CODEX_HOME`; the
 alternative is an approved architecture revision based on the bounded surface verified here.
 
-The script refuses to start unless both of these are explicitly set:
+## Owner-approved model-turn follow-up
+
+The owner approved exactly one minimal paid turn on each of the two runners. The additional path is
+guarded by the separate exact opt-in `CCSWITCH_TEST_CODEX_MODEL_TURN=1`; the original no-model-turn
+behavior remains the default. Before loading credentials, each target runs a local fake Responses
+provider preflight against the same fixed `gpt-5.6-luna` model and thread configuration. Both
+preflights must observe that the outgoing model request has no tool catalog (the field is absent or
+an exact empty list), and both initial model catalogs must expose that exact model.
+
+The live path creates one ephemeral, read-only, approval-never thread per runner, disables every
+supported tool capability, supplies no dynamic tools or environments, and starts exactly one turn
+whose response must be exactly `OK`. Its observer permits only user-message, reasoning, and
+assistant-message items; any tool/activity item, additional assistant response, or non-`OK` text
+fails the gate. Thread and turn identifiers are treated as sensitive for terminal output, stderr,
+and final evidence, but are expected native runtime metadata inside the dedicated host-local runner
+home.
+
+## First model-turn run and scanner correction
+
+The first approved two-turn run reached post-recovery scanning: both tools-disabled exact-`OK`
+turns completed, both runners invoked the refresh callback, the callbacks coalesced to one authority
+refresh and generation, the access token advanced, and recovery reads passed. The final home scan
+then falsely failed because it searched host-local runtime databases for native thread/turn ids,
+which Codex necessarily persists there. Cleanup still left zero temporary homes or processes on
+either host, and the authority credential cache remained owner-only mode `0600`.
+
+The scanner was corrected by defining sensitive-value classes per sink. Output, stderr, and final
+evidence reject credentials, account identifiers, refresh history, and native thread/turn ids.
+Runner-home scans reject every current or historical runner-visible access/invalid token and account
+identifier, while excluding authority-only refresh tokens and expected local runtime ids. Regression
+tests cover local runtime databases, remote scanner stdin, and multiple credential generations. A
+sibling-pattern audit found no other in-scope scanner using the same mistaken union.
+
+## Final model-turn release-gate result
+
+The explicitly approved retry completed successfully and emitted this sanitized allow-listed
+evidence:
+
+```json
+{"authority_on_local_runner":true,"cleanup_complete":true,"cli_version":"codex-cli 0.153.2","credential_generation":1,"distinct_runner_hosts":true,"empty_model_tool_catalog_preflight":true,"experimental_api_required":true,"healthy_read_only_calls":true,"model_turn_trigger_used":true,"protocol_methods":["initialize","account/login/start","account/read","account/rateLimits/read","model/list","account/chatgptAuthTokens/refresh","thread/start","turn/start","turn/completed","item/started","item/completed"],"redaction_clean":true,"refresh_callback_observed":true,"refresh_calls":1,"release_gate":"pass","runner_count":2,"runner_homes_clean":true,"schema_sha256":"09d4456bb8687bbe5abe3750bcb2dd2b2a92c91478a46810399182f064b7d3a9","tool_free_exact_ok_turns_completed":true,"topology_sha256":"07e48cc4370c149ee5c5ea308dfabdf4e9ecdefbb8f6af4ba68f93f4139ad90d"}
+```
+
+An independent allowlist check confirmed the pass state, two distinct runners, local authority,
+empty-tool preflights, two exact-`OK` turns, two observed callbacks coalesced to one refresh and one
+credential generation, clean homes/redaction/cleanup, and the absence of access-token and account-id
+fields. Independent cleanup checks found zero temporary homes and zero matching app-server processes
+on both hosts. The authority `auth.json` remained owned by `tony:tony` with mode `0600`.
+
+## Post-run callback-attribution correction
+
+Final review found that the successful run's `refresh_callback_observed` boolean was derived from
+an aggregate callback count of two. Because both runner processes shared the same untagged handler,
+two successful callbacks from one process and none from the other could theoretically satisfy that
+assertion. Both invalid-token turns and all recovery reads completed, so the observed behavior is
+consistent with one callback per runner, but the evidence did not directly prove that distribution.
+
+Each runner now receives a separately registered handler closure bound to an opaque, stable,
+in-process identity. The release gate requires exactly one successfully completed callback for every
+registered runner; duplicate callbacks from one runner cannot cover a missing callback from another.
+No identity, per-runner count, hostname, or other operational detail enters final evidence. The
+regression suite covers successful one-per-runner coverage, failed callbacks not being counted, and
+duplicate-one/missing-other rejection. The corrected runner-attributed live run passed with exactly
+one successful callback from each runner, one authority refresh/generation, and the same clean
+recovery, redaction, runner-home, and cleanup results.
+
+The paid model-turn path refuses to start unless all three of these are explicitly set:
 
 ```bash
 CCSWITCH_TEST_CODEX_EXTERNAL_AUTH=1 \
+CCSWITCH_TEST_CODEX_MODEL_TURN=1 \
 CCSWITCH_TEST_CODEX_ACCOUNT=<non-secret-account-alias> \
 python scripts/spike_codex_external_auth.py 2>&1 \
   | tee /tmp/codex-external-auth-spike.log
 ```
+
+Omitting `CCSWITCH_TEST_CODEX_MODEL_TURN` retains the default no-model-turn path; it does not
+silently enable a paid turn.
 
 `CCSWITCH_TEST_CODEX_RUNNERS` may override the default `local,rocky` pair. An alternate
 authority-only Codex home may be selected with `CCSWITCH_TEST_CODEX_AUTHORITY_HOME`; these values
@@ -259,7 +331,7 @@ are paths/aliases, never native account identifiers or credentials.
 
 ## Verification completed
 
-- Focused redaction/security suite: 95 tests passed.
+- Focused redaction/security suite: 127 tests passed.
 - Ruff: passed for the harness and focused suite.
 - Mypy: passed for the harness.
 - Opt-in refusal: passed; without both required values the script exits nonzero with sanitized JSON
@@ -286,6 +358,14 @@ are paths/aliases, never native account identifiers or credentials.
 - Final fenced live rerun: returned the same static zero-callback result after both downstream
   responses plus the 0.1-second quiet/2-second maximum barrier. It exited 1, cleanup left zero
   matching temporary homes locally and on rocky, and rocky remained on `codex-cli 0.153.2`.
+- Credential-free model-turn preflight: passed on both hosts for `gpt-5.6-luna`; each outgoing
+  request used the final model/thread configuration and exposed no tool catalog.
+- Final approved model-turn retry: passed with exactly one exact-`OK`, tools-disabled turn per
+  runner; both callbacks coalesced to one authority refresh/generation, recovery reads passed, and
+  independent redaction, runner-home, process, and cleanup checks passed.
+- Runner-attributed confirmation: passed after binding an opaque handler identity to each process;
+  each runner completed exactly one successful callback, duplicate-one/missing-other coverage was
+  impossible, and independent cleanup again found zero temporary homes or processes on both hosts.
 
 The focused tests cover exact-value removal for access tokens, refresh tokens, native account ids,
 invalid test tokens, and native thread ids; recursive diagnostic sanitization; secret-free process
@@ -320,28 +400,15 @@ The five new SSH construction cases cover multiline Python preservation; exact `
 app-server positional arguments; spaces and shell metacharacters as inert data; unsafe destination
 rejection; and empty/NUL-bearing command-vector rejection.
 
-## Live release gate failed; architecture decision pending
+## Live release gate passed
 
-The earlier unit and credential-free verification started no managed authority or runner
-app-server. The five explicitly opted-in live attempts cleaned up and exposed no credential or
-operational detail. The final run established that both runners pass their initial external-auth
-checks but the invalid-token read produced no host callback within the bounded observation for the
-tested endpoint and CLI version; no authority refresh occurred. This does not determine whether a
-model turn would trigger the callback. No thread or model turn was created. The diagnostic,
-precedence, state-classification, and fence hardening itself used no live credentials and started no
-app-server.
+The no-model-turn endpoint remains a documented negative result, not the runtime refresh trigger.
+The corrected owner-approved model-turn proof satisfied every Phase 0.2 condition on two distinct
+runner machines using one authority-managed OpenAI account: healthy initial reads, target-local
+zero-tool preflight, exact bounded turns, exactly one successful callback per runner, one coalesced
+authority refresh/generation, token advancement, recovery reads, auth-clean host-local homes,
+secret-clean output, and complete cleanup.
 
-The live gate needs all of the following before it can be run safely:
-
-1. The supported Codex CLI installed and discoverable for rocky's non-interactive SSH user
-   (**satisfied: 0.153.2**).
-2. An owner-selected ChatGPT test-account alias and authority-only managed Codex home.
-3. The explicit `CCSWITCH_TEST_CODEX_EXTERNAL_AUTH=1` opt-in.
-4. A maintenance/test window in which a supported managed token refresh is acceptable.
-
-The no-model-turn run proved distinct runner machines, meaningful initial authenticated responses,
-clean runner homes, zero stderr/evidence leaks, and complete cleanup. It did not produce either
-refresh callback, an authority refresh, access-token advancement, or recovery on a new token, so
-Phase 0.2 failed. Runtime Codex implementation must not fall back to shared `auth.json` or a shared
-`CODEX_HOME`; proceed only after explicit owner approval for a minimal model-turn trigger or an
-approved architecture revision.
+Phase 0.2 therefore unblocks implementation of the accepted dedicated-auth-listener architecture.
+This does not authorize shared credentials or a shared home: runtime Codex support must keep Dobby
+as the sole credential authority and give each runner its own host-local `CODEX_HOME`.

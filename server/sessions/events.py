@@ -46,9 +46,9 @@ class TurnModel:
 
 @dataclass
 class SessionMeta:
-    model: str; session_id: str
+    model: str; session_id: str; kind: str | None = None
     def to_wire(self): return {"type": "sessionMeta", "model": self.model,
-                               "sessionId": self.session_id}
+                               "sessionId": self.session_id, "kind": self.kind}
 
 @dataclass
 class TurnEnd:
@@ -229,9 +229,13 @@ class UserMessage:
     # mark to drop boundary copies deterministically on merge, and to detect one left
     # pinned mid-transcript (the page-boundary ordering bug, #1000).
     owner_prefix: bool = False
+    # The page the user was on when they sent this (assistant sessions only,
+    # spec §4.5) — rendered as a chip above the bubble, never sent to the SDK
+    # as-is (see driver.send_prompt, which prepends a header instead).
+    context: dict | None = None
     def to_wire(self): return {"type": "user", "turnId": self.turn_id, "text": self.text, "srcUuid": self.src_uuid,
                                "images": self.images or [], "ts": self.ts,
-                               "ownerPrefix": self.owner_prefix}
+                               "ownerPrefix": self.owner_prefix, "context": self.context}
 
 @dataclass
 class QueueUpdate:
