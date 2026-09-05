@@ -34,6 +34,10 @@ StateDirectoryMode=0700
 # credentials. systemd instead creates two unit-private, read-only bind mounts
 # outside /home before dropping privileges.
 WorkingDirectory=/opt/ccswitch-codex-auth/app
+# The editable install records the real checkout under /home/tony, which
+# ProtectHome=yes deliberately hides. Resolve both top-level server imports and
+# the src-layout ccswitch package through the unit-private read-only bind.
+Environment=PYTHONPATH=/opt/ccswitch-codex-auth/app:/opt/ccswitch-codex-auth/app/src
 # Authority-specific configuration ONLY. This file holds
 # CCSWITCH_CODEX_AUTHORITY_LISTEN_ENDPOINT, _TLS_CERT, _TLS_KEY, _TLS_CLIENT_CA and
 # _CLIENT_ALLOWLIST. It must NOT be /etc/ccswitch/ccswitch.env: the authority has
