@@ -111,7 +111,9 @@ def test_send_prompt_with_images_during_question_answers_text_and_queues_images(
 
         result = await asyncio.wait_for(cb, timeout=2.0)
         assert "see screenshot" in result.message
-        assert d._queue == [("", images)]
+        # Queue entries are (text, images, context) triples since the context chip
+        # (Task 1.7); an images-only re-queue carries no page context.
+        assert d._queue == [("", images, None)]
         await d.aclose()
 
     asyncio.run(run())
