@@ -4,7 +4,7 @@ import { describe, it, expect, vi } from 'vitest'
 import type { ComponentProps } from 'react'
 import { SessionCard } from '../SessionCard'
 import type { Session } from '@/api/types'
-import { pullRequest, session } from '@/test/factories'
+import { account as accountFixture, anthropicUsage, pullRequest, session } from '@/test/factories'
 
 // Dense two-line card contract. The card lives in a drag-resizable sidebar, so
 // its layout must be deterministic at every width and for every session shape:
@@ -103,7 +103,7 @@ describe('SessionCard two-line skeleton', () => {
 
   it('marker cluster, PRs, usage and model live in line 1, not line 2', () => {
     renderCard(rich, {
-      account: { name: 'work', status: 'ok', nickname: null, usage: { session: { pct: 74, resetsAt: null } } } as never,
+      account: accountFixture({ name: 'work', nickname: null, usage: anthropicUsage(74, 20) }),
     })
     const identity = screen.getByTestId('card-identity')
     expect(identity).toContainElement(screen.getByTestId('card-goal'))
@@ -146,7 +146,7 @@ describe('SessionCard status rail', () => {
 describe('SessionCard narrow-card declutter contract', () => {
   it('gates the marker cluster, PRs, usage and model to a wide card', () => {
     renderCard(rich, {
-      account: { name: 'work', status: 'ok', nickname: null, usage: { session: { pct: 74, resetsAt: null } } } as never,
+      account: accountFixture({ name: 'work', nickname: null, usage: anthropicUsage(74, 20) }),
     })
     expect(screen.getByTestId('card-goal')).toHaveClass('hidden', '@md:inline-flex')
     expect(screen.getByTestId('card-prs')).toHaveClass('hidden', '@md:inline-flex')

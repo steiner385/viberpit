@@ -26,6 +26,7 @@ import userEvent from '@testing-library/user-event'
 import type { Session, Account } from './api/types'
 import { renderApp } from './test/renderApp'
 import { LAYOUT_MODES } from './shell/useViewport'
+import { anthropicUsage } from '@/test/factories'
 
 vi.mock('./ws/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./ws/client')>()
@@ -43,7 +44,7 @@ vi.mock('./ws/client', async (importOriginal) => {
 const MOCK_ACCOUNTS: Account[] = [
   {
     name: 'alice', status: 'ok',
-    usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 30, resetsAt: null } },
+    usage: anthropicUsage(20, 30),
     liveSessions: { active: 0, idle: 0 }, rank: null, rankReason: null,
   },
 ]

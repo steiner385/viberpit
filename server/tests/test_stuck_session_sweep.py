@@ -12,7 +12,7 @@ import pytest
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
-from ccswitch.oauth import Usage
+from ccswitch.quota import anthropic_snapshot
 
 
 def _make_orch():
@@ -158,7 +158,7 @@ async def test_sweep_loop_survives_rotate_error():
 # ---------------------------------------------------------------------------
 
 def _usage(session, weekly):
-    return Usage(session_pct=session, session_resets_at=None,
+    return anthropic_snapshot(session_pct=session, session_resets_at=None,
                  weekly_pct=weekly, weekly_resets_at=None, extra_usage_enabled=False)
 
 

@@ -27,13 +27,13 @@ class TestMarkReauthenticated(unittest.TestCase):
     def test_clears_needs_reauth_status_and_cached_usage(self):
         with temp_env():
             from ccswitch import accounts, ledger
-            from ccswitch.oauth import Usage
+            from ccswitch.quota import anthropic_snapshot
             _seed_account("kindash")
             # Simulate a dead account: needs-reauth status + stale cached usage.
             now = datetime.now(timezone.utc)
             with ledger.locked_ledger() as led:
                 ledger.set_status(led, "kindash", "needs-reauth")
-                ledger.record_usage(led, "kindash", Usage(40.0, now, 28.0, now, False), now)
+                ledger.record_usage(led, "kindash", anthropic_snapshot(40.0, now, 28.0, now, False), now)
 
             accounts.mark_reauthenticated("kindash")
 

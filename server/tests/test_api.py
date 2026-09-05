@@ -67,8 +67,8 @@ def _make_usage_fn(accounts: dict):
 def _busy_usage():
     """100% usage on both dimensions — account is at ceiling."""
     reset = datetime.now(timezone.utc) + timedelta(hours=4)
-    from ccswitch.oauth import Usage
-    return Usage(
+    from ccswitch.quota import anthropic_snapshot
+    return anthropic_snapshot(
         session_pct=100.0,
         session_resets_at=reset,
         weekly_pct=100.0,
@@ -127,9 +127,9 @@ def _make_app_and_client(usage_fn=None, extra_env: dict | None = None):
 def test_get_accounts_returns_usage_shape():
     """GET /api/accounts returns usage shape with no token material."""
     reset = datetime.now(timezone.utc) + timedelta(hours=3)
-    from ccswitch.oauth import Usage
+    from ccswitch.quota import anthropic_snapshot
 
-    fake_usage = Usage(
+    fake_usage = anthropic_snapshot(
         session_pct=42.0,
         session_resets_at=reset,
         weekly_pct=18.0,
@@ -164,12 +164,11 @@ def test_get_accounts_returns_usage_shape():
     assert "status" in acct
     assert "usage" in acct
     usage = acct["usage"]
-    assert "session" in usage
-    assert "weekly" in usage
-    assert "pct" in usage["session"]
-    assert "resetsAt" in usage["session"]
-    assert "pct" in usage["weekly"]
-    assert "resetsAt" in usage["weekly"]
+    # Windows are a LIST — a provider reports the allowances it actually meters.
+    assert usage["availability"] == "available"
+    assert [w["key"] for w in usage["windows"]] == ["session", "weekly"]
+    for w in usage["windows"]:
+        assert "pct" in w and "resetsAt" in w and "label" in w
     # Must not contain any token material
     import json
     raw = json.dumps(data)
@@ -182,11 +181,11 @@ def test_get_accounts_returns_usage_shape():
 
 def test_get_accounts_includes_live_sessions_and_rank():
     """GET /api/accounts returns liveSessions, rank, rankReason for each account."""
-    from ccswitch.oauth import Usage
+    from ccswitch.quota import anthropic_snapshot
     reset = datetime.now(timezone.utc) + timedelta(hours=3)
-    low = Usage(session_pct=10.0, session_resets_at=reset, weekly_pct=5.0,
+    low = anthropic_snapshot(session_pct=10.0, session_resets_at=reset, weekly_pct=5.0,
                 weekly_resets_at=reset, extra_usage_enabled=False)
-    high = Usage(session_pct=60.0, session_resets_at=reset, weekly_pct=30.0,
+    high = anthropic_snapshot(session_pct=60.0, session_resets_at=reset, weekly_pct=30.0,
                  weekly_resets_at=reset, extra_usage_enabled=False)
 
     with temp_env():
@@ -222,9 +221,9 @@ def test_get_accounts_includes_live_sessions_and_rank():
 
 def test_get_accounts_at_ceiling_has_null_rank():
     """GET /api/accounts returns rank=None and rankReason=None for accounts at ceiling."""
-    from ccswitch.oauth import Usage
+    from ccswitch.quota import anthropic_snapshot
     reset = datetime.now(timezone.utc) + timedelta(hours=3)
-    busy = Usage(session_pct=100.0, session_resets_at=reset, weekly_pct=50.0,
+    busy = anthropic_snapshot(session_pct=100.0, session_resets_at=reset, weekly_pct=50.0,
                  weekly_resets_at=reset, extra_usage_enabled=False)
 
     with temp_env():
@@ -741,8 +740,9 @@ def test_account_refresh_returns_usage():
     assert response.status_code == 200
     data = response.json()
     assert "usage" in data
-    assert data["usage"]["session"]["pct"] == pytest.approx(30.0)
-    assert data["usage"]["weekly"]["pct"] == pytest.approx(55.0)
+    windows = {w["key"]: w for w in data["usage"]["windows"]}
+    assert windows["session"]["pct"] == pytest.approx(30.0)
+    assert windows["weekly"]["pct"] == pytest.approx(55.0)
     import json
     raw = json.dumps(data)
     assert "charlie-tok" not in raw

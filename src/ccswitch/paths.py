@@ -55,6 +55,19 @@ def config_path() -> Path:
     return root() / "config.json"
 
 
+def accounts_manifest_path() -> Path:
+    """The versioned, NON-SECRET account manifest (``accounts.json``).
+
+    Deliberately a sibling of — never part of — ``ledger.json``: the ledger is a
+    cross-host, multi-writer cache (usage, reservations, per-account toggles) whose
+    known failure mode is a lost update. Identity metadata (which accounts exist,
+    what provider/engine/auth mode each one is) must not share that write pattern,
+    so the manifest has ONE writer (the primary/dobby host) and every runner reads
+    the snapshot. See ``ccswitch.account_registry``.
+    """
+    return root() / "accounts.json"
+
+
 def slot_path(name: str) -> Path:
     return store_dir() / f"{name}.cred.json"
 

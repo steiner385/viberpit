@@ -38,14 +38,14 @@ if TYPE_CHECKING:
 
 from ccswitch import accounts as ccswitch_accounts
 from ccswitch import configdir, copilot as _copilot_mod, crypto, gitrepos, worktrees
-from ccswitch.accounts import provider_of as _provider_of
+from ccswitch.accounts import provider_or_none as _provider_of
 from ccswitch.account_names import (
     assert_valid_account_name, validate_account_name, InvalidAccountName,
 )
 from ccswitch.config import load_config
 from ccswitch.configdir import compose
 from ccswitch.paths import account_cfg_dir, shared_base
-from ccswitch.selector import at_ceiling, exhausted
+from ccswitch.selector import at_ceiling, exhausted, usage_known
 from server.aio import bounded_wait
 from server.assistant.context import PromptContext
 from server.audit import record_audit
@@ -404,6 +404,20 @@ PRIMARY_LEASE_TTL_S = env_float("CCSWITCH_PRIMARY_LEASE_TTL_S", 300.0, minimum=1
 # a short cache is plenty — this bounds DB reads from the event-driven rotation
 # monitor, not correctness.
 _OWNERSHIP_HOSTS_TTL_S = 60.0
+
+
+def _limiting_window(usage, ceiling: float):
+    """The window that is actually holding this account back, or None.
+
+    The FIRST window at/over *ceiling* in provider order — for Anthropic that is
+    session before weekly, which is exactly what the pair math it replaced did
+    (``session_pct >= ceiling ? session : weekly``). Falls back to the binding
+    window so a caller below the ceiling still gets the constraining one.
+    """
+    if usage is None:
+        return None
+    over = usage.windows_at_or_over(ceiling)
+    return over[0] if over else usage.binding_window()
 
 
 def daemon_role() -> str:
@@ -6838,13 +6852,24 @@ class SessionOrchestrator:
         return await generate_title(prompts, config_dir=str(compose(account)), cwd=cwd)
 
     def _account_limited(self, account: str) -> bool:
-        """True if *account*'s last-known session usage is at/above the ceiling.
+        """True if *account*'s last-known usage has no headroom left.
 
-        Best-effort: an unknown account (no cached usage) is treated as not
-        limited — a doomed title query would just degrade silently anyway.
+        "No headroom" is the shared ``selector.at_ceiling`` definition — ANY
+        window that meters the model is at/above the ceiling — not the
+        session-only check this used to make. That check was the inconsistency:
+        an account at weekly 100% / session 20% read as NOT limited here while
+        the selector, the rotation monitor and crash recovery all already treated
+        it as dead, because a turn on a weekly-exhausted account 429s exactly
+        like a session-exhausted one. This gates ``_backlog_healthy_account``, so
+        the divergence meant the backlog kept dispatching onto an account whose
+        very next turn would rate-limit.
+
+        Best-effort: an unknown account (no cached usage, or a snapshot whose
+        availability is not ``available``) is treated as not limited — a doomed
+        title query would just degrade silently anyway.
         """
         usage = self._poller.cached(account)
-        return usage is not None and getattr(usage, "session_pct", 0.0) >= _ROTATION_CEILING
+        return usage_known(usage) and at_ceiling(usage, _ROTATION_CEILING)
 
     async def _generate_fallback_title(self, rec: SessionRecord, path: str) -> str | None:
         """Summarize the session's user prompts into a title, or ``None``.
@@ -10065,9 +10090,10 @@ class SessionOrchestrator:
                         # the session as needs_attention for nothing.
                         self._maybe_sweep_on_recovery()
                         continue
-                    session_pct = getattr(usage, "session_pct", 0.0)
-                    reason = ("session limit reached" if session_pct >= _ROTATION_CEILING
-                              else "weekly limit reached")
+                    limiting = _limiting_window(usage, _ROTATION_CEILING)
+                    session_pct = limiting.used_pct if limiting is not None else 0.0
+                    reason = (f"{limiting.label} limit reached" if limiting is not None
+                              else "usage limit reached")
 
                 # Find all live sessions on this account and rotate them.
                 enabled_hosts = await self._enabled_host_names()
@@ -10107,10 +10133,9 @@ class SessionOrchestrator:
                         # they need to unpin before the session can auto-rotate.
                         log.info("rotation.skip_pinned session=%s account=%s", record.id, account)
                         record.paused_reason = "pinned_account_limited"
+                        _lim = _limiting_window(usage, _ROTATION_CEILING)
                         record.paused_until = _naive_utc(
-                            getattr(usage, "session_resets_at", None)
-                            if getattr(usage, "session_pct", 0.0) >= _ROTATION_CEILING
-                            else getattr(usage, "weekly_resets_at", None))
+                            _lim.resets_at if _lim is not None else None)
                         record.status = "limited"
                         self._spawn(
                             self._persist_status(record.id, "limited"),
@@ -10160,7 +10185,7 @@ class SessionOrchestrator:
         rebuilding the driver on the same broken account.
         """
         usage = self._poller.cached(account)
-        if usage is not None:
+        if usage_known(usage):
             return exhausted(usage, _ROTATION_CEILING,
                              extra_usage_allowed=self._extra_usage_allowed(account))
         # usage=None: distinguish "not yet polled" from "persistently failing"
@@ -10210,7 +10235,7 @@ class SessionOrchestrator:
                 if not self._owns_record(record, enabled_hosts):
                     continue
                 usage = self._poller.cached(record.account)
-                if usage is None or at_ceiling(usage, _ROTATION_CEILING):
+                if not usage_known(usage) or at_ceiling(usage, _ROTATION_CEILING):
                     continue
                 log.info("stuck-sweep.limit_reset session=%s account=%s",
                          record.id, record.account)

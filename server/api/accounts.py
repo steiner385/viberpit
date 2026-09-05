@@ -28,6 +28,7 @@ from ccswitch.accounts import (list_accounts, provider_of, remove_account,
                                set_weekly_reserve)
 from ccswitch import paths
 from ccswitch.account_names import assert_valid_account_name, InvalidAccountName
+from ccswitch.account_registry import UnknownAccountError
 from ccswitch.config import load_config
 from ccswitch.selector import rank_accounts
 from server.audit import record_audit
@@ -91,9 +92,9 @@ def _local_cached_usage(name: str):
     from ccswitch.config import load_config
 
     with ledger.locked_ledger() as led:
-        # Returns a ccswitch.oauth.Usage (or None) — the SAME type orch.usage()
-        # yields. _safe_usage's callers convert with _usage_to_dict downstream, so
-        # returning a dict here would 500 the accounts page on `.session_pct`.
+        # Returns a ccswitch.quota.QuotaSnapshot (or None) — the SAME type
+        # orch.usage() yields. _safe_usage's callers convert with _usage_to_dict
+        # downstream, so returning a raw dict here would break the accounts page.
         return ledger.cached_usage(led, name, load_config(), datetime.now(timezone.utc))
 
 
@@ -145,22 +146,37 @@ async def _gather_usages(orch, names: list[str], timeout: float) -> dict[str, An
 
 
 def _usage_to_dict(usage) -> dict[str, Any] | None:
-    """Convert a ccswitch.oauth.Usage dataclass to the wire-format dict.
+    """Convert a ``ccswitch.quota.QuotaSnapshot`` to the wire-format dict.
 
-    Returns None if usage is None (unknown/failed fetch).
-    Never includes token material.
+    ``windows`` is a LIST, not two named dimensions: a provider reports the
+    allowances it actually meters, so an Anthropic account sends session+weekly
+    and a Copilot account sends its single premium-request window (it previously
+    sent the same number twice under two labels). The browser renders whatever
+    arrives.
+
+    Returns None if usage is None (unknown/failed fetch). Never includes token
+    material.
     """
     if usage is None:
         return None
     return {
-        "session": {
-            "pct": usage.session_pct,
-            "resetsAt": iso_utc(usage.session_resets_at),
-        },
-        "weekly": {
-            "pct": usage.weekly_pct,
-            "resetsAt": iso_utc(usage.weekly_resets_at),
-        },
+        "provider": usage.provider,
+        "fetchedAt": iso_utc(usage.fetched_at),
+        # "available" | "unknown" | "auth_error" — how much the windows can be
+        # trusted. A failed read is expressed HERE, never as a fabricated window.
+        "availability": usage.availability,
+        "windows": [
+            {
+                "key": w.key,
+                "label": w.label,
+                "pct": w.used_pct,
+                "resetsAt": iso_utc(w.resets_at),
+                "durationSeconds": w.duration_seconds,
+                "scope": w.scope,
+                "appliesToModels": list(w.applies_to_models),
+            }
+            for w in usage.windows
+        ],
         # Whether the PROVIDER has extra usage enabled — not the local opt-in
         # (that is the account-level ``allowExtraUsage``). The UI warns when the
         # opt-in is on but this is false, since credits then cannot be spent.
@@ -182,12 +198,20 @@ def _account_response(
     allow_extra_usage: bool = False,
 ) -> dict[str, Any]:
     """Build the account wire format — never includes tokens."""
+    try:
+        provider = provider_of(name)
+    except UnknownAccountError:
+        # Not in the account manifest. Say so rather than defaulting to
+        # "anthropic": the browser gates provider-specific actions (Copilot
+        # re-login vs Anthropic reauth) on this field, and a wrong value offers
+        # the wrong recovery.
+        provider = "unknown"
     return {
         "name": name,
         "status": status_str,
         "usage": _usage_to_dict(usage),
         "nickname": nickname,
-        "provider": provider_of(name),
+        "provider": provider,
         "liveSessions": live_sessions or {"active": 0, "idle": 0},
         "rank": rank,
         "rankReason": rank_reason,

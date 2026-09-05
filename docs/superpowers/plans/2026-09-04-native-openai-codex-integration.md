@@ -397,22 +397,46 @@ the script's redaction scanner reports zero secret matches; temp homes are remov
 
 **Work:**
 
-- [ ] Introduce a versioned, non-secret `accounts.json` manifest under the existing account-store
+- [x] Introduce a versioned, non-secret `accounts.json` manifest under the existing account-store
   root. Dobby/primary is its only writer; runners read snapshots. Do not overload the cross-host
-  multi-writer `ledger.json` with identity metadata.
-- [ ] Define entries with name, provider, engine, user/runner auth modes, enabled flag, credential
+  multi-writer `ledger.json` with identity metadata. *(`src/ccswitch/account_registry.py` +
+  `paths.accounts_manifest_path()`. `locked_manifest()` refuses to write unless
+  `is_manifest_writer()` (reuses `CCSWITCH_DAEMON_ROLE`); a runner reconciles in memory only.
+  Same flock + temp-file + `os.replace` discipline as `ledger.locked_ledger`.)*
+- [x] Define entries with name, provider, engine, user/runner auth modes, enabled flag, credential
   authority, health metadata, a monotonic manifest revision, and non-secret generation/timestamps.
-  Account names remain globally unique in v1.
-- [ ] Add an idempotent importer for existing Anthropic credential slots and Copilot token dirs.
+  Account names remain globally unique in v1. *(Plan vocabularies verbatim. `engine` is NULLABLE:
+  the engine vocabulary's single definition is `server/sessions/engine.py`, which `src/ccswitch`
+  cannot import — `null` means "resolve through `parse_agent_engine`", reusing that one default
+  branch instead of copying the strings. `assert_no_secrets()` runs on every write.)*
+- [x] Add an idempotent importer for existing Anthropic credential slots and Copilot token dirs.
   After import, `all_accounts()` and `provider_of()` read the manifest; filesystem discovery is
   callable only from migration/repair commands. Unknown names no longer fall back to Anthropic.
-- [ ] Replace shared `Usage` with canonical `QuotaSnapshot`/`QuotaWindow`. Anthropic produces
-  session+weekly; Copilot produces one premium window; no fabricated duplicate.
-- [ ] Replace selector math with `binding_window(model)` and make engine/provider/model filtering
+  *(`import_filesystem_accounts()` is setdefault-shaped and `locked_manifest` skips the write when
+  the body is unchanged, so a re-scan is byte-identical and does not bump the revision. Discovery
+  reachable from `ccswitch accounts import|show` and from the additive reconcile-on-read.
+  `provider_of()` raises `UnknownAccountError`; `provider_or_none()` is the explicit
+  degrade-to-None door.)*
+- [x] Replace shared `Usage` with canonical `QuotaSnapshot`/`QuotaWindow`. Anthropic produces
+  session+weekly; Copilot produces one premium window; no fabricated duplicate. *(`src/ccswitch/
+  quota.py`; `oauth.Usage` DELETED, no adapter. `availability` (available|unknown|auth_error) is
+  how a failed read is expressed — an unavailable snapshot has NO windows rather than a
+  fabricated 0%.)*
+- [x] Replace selector math with `binding_window(model)` and make engine/provider/model filtering
   happen before scoring. Preserve conservative unknown-usage behavior and Claude reserve semantics.
-- [ ] Version the cached quota blob in the ledger and migrate old Claude usage entries on read.
-  Update the CLI/API/UI to enumerate windows.
-- [ ] Add mixed-engine, model-scoped, unknown, auth-error, reset-null, and old-ledger migration tests.
+  *(`max(..., key=used_pct)` returns the FIRST maximal element, reproducing the old
+  strictly-less pair math including its tie direction. `eligible_names()` runs first, so a
+  filtered-out account is inapplicable, not busy, and never supplies `earliest_reset`. All five
+  tiers pinned by `tests/test_selector_filtering.py`.)*
+- [x] Version the cached quota blob in the ledger and migrate old Claude usage entries on read.
+  Update the CLI/API/UI to enumerate windows. *(`"v": 2`; `ledger.usage_from_blob` is the single
+  reader and migrates the live pre-versioning shape in place without a rewrite — including
+  collapsing a legacy Copilot entry's duplicated dimensions back to one `premium` window.
+  `web/src/lib/usageWindows.ts` is the browser-side single reader; `_usage_to_dict` emits
+  `windows[]`.)*
+- [x] Add mixed-engine, model-scoped, unknown, auth-error, reset-null, and old-ledger migration tests.
+  *(`tests/test_selector_filtering.py`, `tests/test_quota.py`, `tests/test_ledger_usage_migration.py`,
+  `tests/test_account_registry.py`, `web/src/lib/usageWindows.test.ts`.)*
 
 **Verification:** run every account/usage/selection suite plus the complete backend and web gates.
 This is deliberately one PR because leaving old and new usage contracts alive concurrently would
