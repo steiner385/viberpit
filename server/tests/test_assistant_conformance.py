@@ -20,8 +20,10 @@ UUID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 # fails loudly (KeyError) — add its args when you add the tool.
 ARGS: dict[str, dict] = {
     "list_sessions": {}, "get_session": {"id": UUID}, "get_session_transcript": {"id": UUID},
+    "get_tool_result": {"id": UUID, "tool_id": "c1"}, "export_session": {"id": UUID},
     "search_sessions": {"query": "x"}, "list_archived_sessions": {}, "list_accounts": {},
     "list_hosts": {}, "list_prs": {}, "get_pipeline_health": {"repo": "o/n"},
+    "list_repos": {}, "list_branches": {"repo": "o/n"}, "list_stage_models": {},
     "list_automations": {}, "get_automation_events": {"id": "autopilot"}, "get_deploy_status": {},
     "list_notification_channels": {}, "list_notification_rules": {}, "get_quiet_hours": {},
     "test_notification": {"event_class": "session.done"},

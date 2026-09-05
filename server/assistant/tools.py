@@ -41,12 +41,17 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("list_sessions", ToolClass.READ, "List sessions"),
     ToolSpec("get_session", ToolClass.READ, "Get session"),
     ToolSpec("get_session_transcript", ToolClass.READ, "Read session transcript"),
+    ToolSpec("get_tool_result", ToolClass.READ, "Read a tool result"),
+    ToolSpec("export_session", ToolClass.READ, "Export session transcript"),
     ToolSpec("search_sessions", ToolClass.READ, "Search sessions"),
     ToolSpec("list_archived_sessions", ToolClass.READ, "List archived sessions"),
     ToolSpec("list_accounts", ToolClass.READ, "List accounts"),
     ToolSpec("list_hosts", ToolClass.READ, "List fleet hosts"),
     ToolSpec("list_prs", ToolClass.READ, "List pull requests"),
     ToolSpec("get_pipeline_health", ToolClass.READ, "Get CI check health"),
+    ToolSpec("list_repos", ToolClass.READ, "List repositories"),
+    ToolSpec("list_branches", ToolClass.READ, "List branches"),
+    ToolSpec("list_stage_models", ToolClass.READ, "Get CI stage models"),
     ToolSpec("list_automations", ToolClass.READ, "List automations"),
     ToolSpec("get_automation_events", ToolClass.READ, "Get automation events"),
     ToolSpec("get_deploy_status", ToolClass.READ, "Get deploy status"),
@@ -181,6 +186,25 @@ def _schema(required: tuple[str, ...] = (), **fields: Any) -> dict[str, Any]:
     }
 
 
+def _result_text(payload: Any) -> str:
+    """Render a `ToolResult` payload to plain text.
+
+    `ToolResult.to_wire` (server/sessions/events.py) carries `payload = {"content": …}`
+    where the SDK's content is EITHER a plain string OR a list of content blocks
+    (`{"type": "text", "text": …}`), depending on the tool — so both shapes are handled
+    here rather than at the call site.
+    """
+    if not isinstance(payload, dict):
+        return "" if payload is None else str(payload)
+    content = payload.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            b.get("text", "") if isinstance(b, dict) else str(b) for b in content)
+    return "" if content is None else str(content)
+
+
 def _trim_session(s: dict[str, Any]) -> dict[str, Any]:
     return {k: s[k] for k in _SESSION_KEYS if k in s}
 
@@ -275,7 +299,9 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
     @spec_tool("get_session_transcript",
                "The last N turns of a session: user prompts, assistant text and tool NAMES. "
                "Tool inputs/outputs are elided. Use to explain what a session is doing or why "
-               "it is stuck.", _schema(("id",), id=str, last_n=int))
+               "it is stuck. Each tool row carries a toolId — pass it to get_tool_result to "
+               "read that one tool call's input and output.",
+               _schema(("id",), id=str, last_n=int))
     @guarded
     async def get_session_transcript(args: dict[str, Any]) -> Any:
         n = max(1, min(int(args.get("last_n") or 20), 50))
@@ -288,12 +314,48 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
             elif t == "textDelta":
                 events.append({"role": "assistant", "text": (ev.get("text") or "")[:1000]})
             elif t == "toolCall":
-                events.append({"tool": ev.get("name")})
+                # `turnId`/`toolId` are the wire names from ToolCall.to_wire
+                # (server/sessions/events.py); toolId is what get_tool_result matches on.
+                events.append({"tool": ev.get("name"), "turnId": ev.get("turnId"),
+                               "toolId": ev.get("toolId")})
             elif t in ("permissionRequest", "question"):
                 events.append({"pending": t, "tool": ev.get("tool"), "text": ev.get("question")})
         keep = events[-n * 4:]
         return Trimmed({"events": keep, "totalTurns": data.get("totalTurns")},
                        len(events) - len(keep))
+
+    @spec_tool("get_tool_result",
+               "The full input and output of ONE tool call in a session's transcript, by the "
+               "toolId from get_session_transcript. Use it to read a failing test's output "
+               "or a command's result. Output is cut at 4000 characters.",
+               {"id": str, "tool_id": str})
+    @guarded
+    async def get_tool_result(args: dict[str, Any]) -> Any:
+        data = await api.get(f"/api/sessions/{args['id']}/transcript", params={"limit": 50})
+        call = result = None
+        for ev in data.get("events", []):
+            if ev.get("toolId") != args["tool_id"]:
+                continue
+            if ev.get("type") == "toolCall":
+                call = ev
+            elif ev.get("type") == "toolResult":
+                result = ev
+        if call is None and result is None:
+            raise ToolArgError("no tool call with that toolId in the last 50 turns")
+        out = _result_text((result or {}).get("payload"))
+        return {"tool": (call or {}).get("name"), "input": (call or {}).get("input"),
+                "ok": (result or {}).get("ok"),
+                "output": out if len(out) <= 4000 else out[:4000] + "…"}
+
+    @spec_tool("export_session",
+               "The session's transcript as markdown, tail-first, capped at max_chars "
+               "(default 20000). The escape hatch when get_session_transcript is too coarse.",
+               _schema(("id",), id=str, max_chars=int))
+    @guarded
+    async def export_session(args: dict[str, Any]) -> Any:
+        cap = max(500, min(int(args.get("max_chars") or 20000), 60000))
+        text = await api.get_text(f"/api/sessions/{args['id']}/export.md")
+        return {"markdown": text[-cap:], "truncatedChars": max(0, len(text) - cap)}
 
     @spec_tool("search_sessions", "Find sessions whose name or transcript mention all the given "
                "words. Returns ids; call get_session for details.", {"query": str})
@@ -333,6 +395,32 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
     async def get_pipeline_health(args: dict[str, Any]) -> Any:
         return await api.get("/api/pipeline/insights/checks",
                              params={"repo": args["repo"], "window": args.get("window") or "7d"})
+
+    @spec_tool("list_repos",
+               "GitHub repositories the operator's credentials can access, as owner/name with "
+               "default branch. Use it to resolve a repo the user names loosely ('the billing "
+               "repo') BEFORE create_session. Optional query filters by substring.",
+               _schema(query=str))
+    @guarded
+    async def list_repos(args: dict[str, Any]) -> Any:
+        rows = await api.get("/api/github/repos")
+        q = (args.get("query") or "").lower()
+        out = [r for r in rows if not q or q in str(r.get("nameWithOwner", "")).lower()]
+        return Trimmed(out[:100], max(0, len(out) - 100))
+
+    @spec_tool("list_branches",
+               "Branches of one repository ('owner/name'), with which one is the default.",
+               {"repo": str})
+    @guarded
+    async def list_branches(args: dict[str, Any]) -> Any:
+        return await api.get("/api/github/branches", params={"repo": args["repo"]})
+
+    @spec_tool("list_stage_models",
+               "Per-repository CI stage model: which checks run, typical durations and recent "
+               "regressions. Pair with get_pipeline_health for a window.", {})
+    @guarded
+    async def list_stage_models(args: dict[str, Any]) -> Any:
+        return await api.get("/api/pipeline/repos")
 
     @spec_tool("list_automations", "Automations (autopilot, backlog runner, PR doctor, CI/CD "
                "doctor…) with enabled flag, last run and last error.", {})
@@ -588,11 +676,13 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
         return await api.post("/api/pipeline/pr/ready-merge",
                               {"repo": args["repo"], "number": int(args["number"])})
 
-    return [list_sessions, get_session, get_session_transcript, search_sessions,
+    return [list_sessions, get_session, get_session_transcript, get_tool_result,
+            export_session, search_sessions,
             list_archived_sessions, list_accounts, list_hosts, list_prs, get_pipeline_health,
             list_automations, get_automation_events, get_deploy_status,
             list_notification_channels, list_notification_rules, get_quiet_hours,
             test_notification,
+            list_repos, list_branches, list_stage_models,
             list_automations, get_automation_events, get_deploy_status, report_gap,
             create_session, send_prompt, interrupt_session, answer_question,
             resolve_permission, set_model, set_permission_mode, resolve_model_approval,
