@@ -3,13 +3,34 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { clientLogger } from '@/obs/logger'
 
+// The node environment (used here to skip jsdom's ~1.1s-per-file setup cost) has no
+// global WebSocket on the Node 20 CI runner, so connect()'s `new WebSocket(url)` throws.
+// Stub a minimal constructor; the tests only ever invoke the onopen/onclose/onerror it installs.
+class FakeWebSocket {
+  static readonly OPEN = 1
+  readyState = 0
+  onopen: (() => void) | null = null
+  onclose: ((e: Partial<CloseEvent>) => void) | null = null
+  onerror: (() => void) | null = null
+  onmessage: (() => void) | null = null
+  url: string
+  constructor(url: string) { this.url = url }
+  close() {}
+  send() {}
+}
+
+let realWebSocket: typeof WebSocket | undefined
+
 describe('SessionSocket close logging', () => {
   beforeEach(() => {
     vi.spyOn(clientLogger, 'warn')
+    realWebSocket = globalThis.WebSocket
+    globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket
   })
 
   afterEach(() => {
     vi.restoreAllMocks()
+    if (realWebSocket) globalThis.WebSocket = realWebSocket
   })
 
   it('warns on unexpected close code (1006)', async () => {

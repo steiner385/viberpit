@@ -16,9 +16,35 @@ type Internals = {
   _reconnectTimer: ReturnType<typeof setTimeout> | null
 }
 
+// The node environment (used here to skip jsdom's ~1.1s-per-file setup cost) has no
+// global WebSocket on the Node 20 CI runner, so connect()'s `new WebSocket(url)` throws.
+// Stub a minimal constructor; the test only ever touches the onopen/onclose it installs.
+class FakeWebSocket {
+  static readonly OPEN = 1
+  readyState = 0
+  onopen: (() => void) | null = null
+  onclose: ((e: Partial<CloseEvent>) => void) | null = null
+  onerror: (() => void) | null = null
+  onmessage: (() => void) | null = null
+  url: string
+  constructor(url: string) { this.url = url }
+  close() {}
+  send() {}
+}
+
+let realWebSocket: typeof WebSocket | undefined
+
 describe('SessionSocket reconnect backoff under a flapping connection', () => {
-  beforeEach(() => vi.useFakeTimers())
-  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
+  beforeEach(() => {
+    vi.useFakeTimers()
+    realWebSocket = globalThis.WebSocket
+    globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+    if (realWebSocket) globalThis.WebSocket = realWebSocket
+  })
 
   it('keeps backoff growing when the socket opens then closes before the stability window', () => {
     const sock = new SessionSocket('ws://localhost/ws')
