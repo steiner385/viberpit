@@ -872,9 +872,11 @@ class RemoteOrchestrator:
         """Model options for an OpenAI account, from the daemon's app-server."""
         return await self._client.call("codex_models", account=account, refresh=refresh)
 
-    async def codex_account_status(self, account: str) -> dict:
+    async def codex_account_status(self, account: str, *, persist: bool = True) -> dict:
         """Quota, runner count and auth health for an OpenAI account, via the daemon."""
-        return await self._client.call("codex_account_status", account=account)
+        return await self._client.call(
+            "codex_account_status", account=account, persist=persist
+        )
 
     async def codex_validate_model(
         self, account: str, model: str | None, effort: str | None

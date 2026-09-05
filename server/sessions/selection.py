@@ -10,6 +10,7 @@ from __future__ import annotations
 from ccswitch.accounts import pick_account_detailed
 from ccswitch.config import load_config
 from ccswitch.selector import AllAccountsBusy, Picked  # re-exported so callers only import from here
+from server.sessions.engine import AgentEngine
 
 
 __all__ = ["select_account", "AllAccountsBusy", "Picked"]
@@ -17,7 +18,8 @@ __all__ = ["select_account", "AllAccountsBusy", "Picked"]
 
 def select_account(exclude: frozenset[str] = frozenset(),
                    load: dict[str, float] | None = None,
-                   *, reserve: bool = True) -> Picked:
+                   *, reserve: bool = True,
+                   engine: AgentEngine = AgentEngine.CLAUDE_CODE) -> Picked:
     """Select the best available account, skipping any in *exclude*.
 
     When ``reserve`` is True (default), writes a soft reservation into the ledger
@@ -33,4 +35,11 @@ def select_account(exclude: frozenset[str] = frozenset(),
             The exception carries ``.earliest_reset`` (datetime | None).
     """
     cfg = load_config()
-    return pick_account_detailed(cfg, exclude=set(exclude), load=load, reserve=reserve)
+    return pick_account_detailed(
+        cfg,
+        exclude=set(exclude),
+        load=load,
+        reserve=reserve,
+        require_engine=engine.value,
+        default_engine=AgentEngine.CLAUDE_CODE.value,
+    )

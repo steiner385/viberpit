@@ -45,8 +45,9 @@ QUOTA_BLOB_VERSION = 2
 AVAILABLE = "available"
 UNKNOWN = "unknown"          # transient/unspecified read failure
 AUTH_ERROR = "auth_error"    # credentials rejected — needs re-auth, not a retry
+UNSUPPORTED = "unsupported"  # provider boundary does not expose quota
 
-AVAILABILITIES = frozenset({AVAILABLE, UNKNOWN, AUTH_ERROR})
+AVAILABILITIES = frozenset({AVAILABLE, UNKNOWN, AUTH_ERROR, UNSUPPORTED})
 
 # --- window scope -----------------------------------------------------------
 # ACCOUNT: the window meters everything the account does.
@@ -156,6 +157,8 @@ class QuotaSnapshot:
     def __post_init__(self) -> None:
         object.__setattr__(self, "windows", tuple(self.windows))
         object.__setattr__(self, "fetched_at", _parse_dt(self.fetched_at))
+        if self.availability not in AVAILABILITIES:
+            raise ValueError(f"unknown quota availability {self.availability!r}")
 
     # -- queries ------------------------------------------------------------
 

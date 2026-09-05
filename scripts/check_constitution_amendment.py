@@ -24,6 +24,10 @@ import sys
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+# CI invokes this script before installing the project. Add both import roots:
+# server.* lives at the repository root, while the installable ccswitch core
+# lives under src/ and is imported by provider-neutral server contracts.
+sys.path.insert(0, str(_REPO_ROOT / "src"))
 sys.path.insert(0, str(_REPO_ROOT))
 
 from server.sdlc.constitution_gate import (  # noqa: E402

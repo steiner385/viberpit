@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import os
 from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
@@ -31,6 +32,7 @@ from ccswitch import account_registry, paths
 from ccswitch.account_names import assert_valid_account_name, InvalidAccountName
 from ccswitch.account_registry import UnknownAccountError
 from ccswitch.config import load_config
+from ccswitch.quota import AVAILABLE, QUOTA_BLOB_VERSION, QuotaSnapshot, unknown_snapshot
 from ccswitch.selector import rank_accounts
 from server.audit import record_audit
 from server.codex.auth_client import edge_authority_client
@@ -307,14 +309,71 @@ async def _codex_details(request: Request, names: list[str]) -> dict[str, dict]:
         except Exception:  # noqa: BLE001 -- one account must not fail the list
             log.warning("codex status for %s failed", account, exc_info=True)
             status = {}
+        raw_quota = status.get("quota")
+        # A failed status read is a CURRENT unknown, never permission to fall
+        # back to an older AVAILABLE ledger value for ranking/selection.
+        canonical_quota = unknown_snapshot(account_registry.PROVIDER_OPENAI)
+        quota = _usage_to_dict(canonical_quota)
+        if isinstance(raw_quota, dict):
+            parsed = _parse_codex_status_quota(raw_quota)
+            if parsed is not None:
+                canonical_quota = parsed
+                quota = _usage_to_dict(canonical_quota)
+            else:
+                log.warning("codex quota for %s was not canonical", account)
         return account, {
             "authority": health,
-            "quota": status.get("quota"),
+            "quota": quota,
             "activeRunners": status.get("activeRunners", 0),
             "degradedReason": status.get("degradedReason"),
+            "_usage": canonical_quota,
         }
 
     return dict(await asyncio.gather(*(_one(n) for n in openai_names)))
+
+
+def _parse_codex_status_quota(raw: dict[str, Any]) -> QuotaSnapshot | None:
+    """Strictly validate the provider-owned status boundary.
+
+    The shared persisted parser is deliberately migration-friendly. Native RPC
+    status is not a migration boundary: malformed input must never become an
+    AVAILABLE selection signal or a non-finite JSON number.
+    """
+    windows = raw.get("windows")
+    version = raw.get("v")
+    if (
+        type(version) is not int
+        or version != QUOTA_BLOB_VERSION
+        or raw.get("provider") != account_registry.PROVIDER_OPENAI
+        or not isinstance(raw.get("fetched_at"), str)
+        or not isinstance(raw.get("availability"), str)
+        or not isinstance(raw.get("extra_usage_enabled"), bool)
+        or not isinstance(windows, list)
+    ):
+        return None
+    for window in windows:
+        if not isinstance(window, dict):
+            return None
+        used_pct = window.get("used_pct")
+        if isinstance(used_pct, bool) or not isinstance(used_pct, (int, float)):
+            return None
+        # Range-check integers without coercing them to float: a valid JSON
+        # integer may be arbitrarily large, and math.isfinite(10**400) raises.
+        if isinstance(used_pct, int):
+            valid_pct = 0 <= used_pct <= 100
+        else:
+            valid_pct = math.isfinite(used_pct) and 0.0 <= used_pct <= 100.0
+        if not valid_pct:
+            return None
+    try:
+        snapshot = QuotaSnapshot.from_dict(raw)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    if snapshot.provider != account_registry.PROVIDER_OPENAI:
+        return None
+    if snapshot.availability == AVAILABLE and not snapshot.windows:
+        return None
+    return snapshot
 
 
 def _get_orchestrator(request: Request) -> "InProcessOrchestratorAdapter":
@@ -421,11 +480,22 @@ async def get_accounts(
     orch = _get_orchestrator(request)
     accounts_info = list_accounts()
 
+    # Codex is the one quota source that is async and app-server-backed. Read it
+    # first: the daemon persists the canonical snapshot into the ledger, after
+    # which the ordinary usage gather/ranker/selector path consumes it exactly as
+    # it does Anthropic and Copilot quota.
+    codex_by_name = await _codex_details(
+        request, [acct["name"] for acct in accounts_info]
+    )
+
     # Fetch live usage for every account concurrently, each isolated: a single
     # wedged/slow account degrades to None instead of serially stalling the list
     # or bubbling a raw ReadTimeout into a 500 (poller dedupes concurrent fetches).
     usages = await _gather_usages(
         orch, [acct["name"] for acct in accounts_info], USAGE_FETCH_TIMEOUT)
+    for name, details in codex_by_name.items():
+        if details.get("_usage") is not None:
+            usages[name] = details["_usage"]
 
     # Live session counts (display) + weighted load (ranking input).
     counts = await orch.live_session_counts()
@@ -451,9 +521,6 @@ async def get_accounts(
         extra_usage_allowed=extra_allowed,
     )
     rank_by_name = {r.name: (r.rank, r.reason) for r in ranked}
-    codex_by_name = await _codex_details(
-        request, [acct["name"] for acct in accounts_info])
-
     result = []
     for acct in accounts_info:
         name = acct["name"]
@@ -464,7 +531,15 @@ async def get_accounts(
             live_sessions=counts.get(name) or {"active": 0, "idle": 0},
             rank=rank,
             rank_reason=reason,
-            codex=codex_by_name.get(name),
+            codex=(
+                None
+                if name not in codex_by_name
+                else {
+                    key: value
+                    for key, value in codex_by_name[name].items()
+                    if key != "_usage"
+                }
+            ),
         ))
     return result
 
@@ -483,9 +558,15 @@ async def refresh_account(
 
     orch = _get_orchestrator(request)
 
-    # Force a fresh fetch (bypasses cache by going through the poller lock).
-    # Bounded + isolated: a wedged daemon degrades this to None rather than 500.
-    usage = await _safe_usage(orch, name, USAGE_FETCH_TIMEOUT)
+    codex = None
+    if _provider_or_none(name) == account_registry.PROVIDER_OPENAI:
+        details = (await _codex_details(request, [name])).get(name, {})
+        usage = details.get("_usage")
+        codex = {key: value for key, value in details.items() if key != "_usage"}
+    else:
+        # Force a fresh fetch (bypasses cache by going through the poller lock).
+        # Bounded + isolated: a wedged daemon degrades this to None rather than 500.
+        usage = await _safe_usage(orch, name, USAGE_FETCH_TIMEOUT)
 
     # Ledger-backed fields (status, nickname, reserve, defaults, toggles).
     acct = next((a for a in list_accounts() if a["name"] == name), None)
@@ -493,8 +574,12 @@ async def refresh_account(
     counts = await orch.live_session_counts()
     live = counts.get(name) or {"active": 0, "idle": 0}
     if acct is None:
-        return _account_response(name, "unknown", usage, live_sessions=live)
-    return _account_response_from_info(acct, usage, live_sessions=live)
+        return _account_response(
+            name, "unknown", usage, live_sessions=live, codex=codex
+        )
+    return _account_response_from_info(
+        acct, usage, live_sessions=live, codex=codex
+    )
 
 
 async def _revoke_openai_credentials(request: Request, name: str, *, action: str) -> None:
@@ -567,8 +652,21 @@ async def delete_account(
 
     if _provider_or_none(name) == account_registry.PROVIDER_OPENAI:
         await _revoke_openai_credentials(request, name, action="remove")
-        with contextlib.suppress(Exception):
+        try:
             await _require_authority().forget(name)
+        except AuthorityError as exc:
+            raise _authority_http_error(exc) from None
+        except AuthorityUnavailable:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "authority_unreachable",
+                    "action": "remove",
+                    "degraded": True,
+                    "retryable": True,
+                    "message": "credential removal could not be confirmed",
+                },
+            ) from None
 
     remove_account(name)
 
@@ -578,7 +676,7 @@ async def delete_account(
         # exists and would still answer for it until the lease lapsed.
         client = edge_authority_client()
         if client is not None:
-            await _sync_authority(client)
+            await _sync_authority(client, required=False)
 
     await record_audit(
         db=db,
@@ -967,19 +1065,34 @@ def _reject_invalid_name(name: str) -> None:
         ) from None
 
 
-async def _sync_authority(client) -> None:
-    """Push the authorization projection, best-effort.
+async def _sync_authority(client, *, required: bool = True) -> None:
+    """Push the authorization projection, surfacing required sync failures.
 
-    Best-effort because the caller has already made the *safe* half of its change
-    (see the ordering note on each route). A failed sync leaves the authority on
-    its previous projection, which expires on its own lease — it can only ever
-    become more restrictive, never less.
+    Required callers surface an error even when they have already made the safe
+    half of a change. Cleanup callers may explicitly choose best-effort after
+    credential destruction, when a failed sync leaves only a more restrictive
+    previous projection that expires with its lease.
     """
     try:
         await push_authorization(client)
-    except (AuthorityError, AuthorityUnavailable):
+    except AuthorityError as exc:
         log.warning("codex authorization sync failed after an account change",
                     exc_info=True)
+        if required:
+            raise _authority_http_error(exc) from None
+    except AuthorityUnavailable:
+        log.warning("codex authorization sync failed after an account change",
+                    exc_info=True)
+        if required:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "authority_unreachable",
+                    "degraded": True,
+                    "retryable": True,
+                    "message": "authorization synchronization could not be confirmed",
+                },
+            ) from None
 
 
 @router.post("/add/openai", status_code=status.HTTP_202_ACCEPTED)
@@ -1063,7 +1176,10 @@ async def openai_add_status(
         entry = account_registry.entry(name)
         if not entry.enabled:
             set_account_enabled(name, True)
-            await _sync_authority(client)
+        # Always retry the projection sync. A previous poll may have completed
+        # the required manifest-first write and then lost contact with the
+        # authority; enabled locally is not proof that issuance is enabled.
+        await _sync_authority(client)
     return state.to_wire()
 
 
@@ -1097,7 +1213,7 @@ async def openai_add_cancel(
         await client.forget(name)
     with contextlib.suppress(account_registry.AccountRegistryError, OSError):
         account_registry.forget_account(name)
-    await _sync_authority(client)
+    await _sync_authority(client, required=False)
 
     await record_audit(
         db=db,

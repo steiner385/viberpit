@@ -30,23 +30,11 @@ Vocabularies
 ``AccountProvider`` / ``UserAuthMode`` / ``RunnerAuthMode`` come from the Codex
 integration plan's "Fixed contracts" block and are defined ONCE, here.
 
-``engine`` is deliberately **nullable** and NOT re-declared here. The engine
-vocabulary's single definition is ``server.sessions.engine.AgentEngine``, which
-``src/ccswitch`` cannot import (the CLI core is installed without ``server/``, and
-the dependency runs the other way). Rather than copy the strings — the exact
-parallel-implementation shape the constitution forbids — an entry stores
-``engine=None`` to mean "resolve through the engine registry", which
-``parse_agent_engine(None, legacy_default=True)`` already answers as
-``claude_code``: the one existing "default to claude_code" branch, reused
-rather than duplicated. An entry created
-by server-side code (a Codex account, from Phase 3) carries an explicit engine
-string supplied by that layer.
-
-*Proposal, out of scope for this task:* move ``AgentEngine`` (the enum and
-``parse_agent_engine``) into ``src/ccswitch/engines.py`` and have
-``server/sessions/engine.py`` re-export it, so the manifest can validate the field
-itself. That is a one-line import change in ``server/sessions/engine.py``, which
-Task 1.3 is explicitly forbidden to touch.
+``engine`` is deliberately **nullable** and is not re-declared here. The engine
+vocabulary's single definition is ``ccswitch.engines.AgentEngine``; the server
+driver registry re-exports that same enum. An entry stores ``engine=None`` to
+mean "resolve through the engine registry", which
+``parse_agent_engine(None, legacy_default=True)`` answers as ``claude_code``.
 """
 from __future__ import annotations
 

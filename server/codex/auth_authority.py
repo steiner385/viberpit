@@ -210,11 +210,14 @@ class CredentialAuthority:
         "still minting tokens".
         """
         current = self._sync
-        if current is not None and sync.revision < current.revision:
+        if current is not None and (
+            sync.revision < current.revision
+            or (sync.revision == current.revision and sync != current)
+        ):
             raise AuthorityError(
                 AuthorityErrorCode.REVISION_ROLLBACK,
-                f"refusing manifest revision {sync.revision}; "
-                f"{current.revision} is already in force",
+                f"refusing non-advancing manifest revision {sync.revision}; "
+                f"revision {current.revision} is already bound to another projection",
             )
         self._sync = sync
         self._sync_at = self._clock()
@@ -357,49 +360,60 @@ class CredentialAuthority:
         # inside the authority's own shutdown, where that suppress would swallow the
         # CALLER's cancellation and let shutdown run on as though it were never
         # cancelled (#1164). Bounded, because a wedged login must not hold shutdown.
-        await cancel_and_reap(
-            state.task, phase=f"codex-auth-login:{account}", timeout=5.0
-        )
+        if state.task is not None and not state.task.done():
+            await cancel_and_reap(
+                state.task, phase=f"codex-auth-login:{account}", timeout=5.0
+            )
         state.snapshot = LoginSnapshot(state=LOGIN_FAILED, error="cancelled")
         return state.snapshot
 
     async def _run_login(self, account: str, home: Path) -> None:
-        try:
-            await asyncio.wait_for(
-                self._login_runner(account, home), self._login_timeout_s
-            )
-        except asyncio.CancelledError:
-            self._set_login(account, LoginSnapshot(state=LOGIN_FAILED, error="cancelled"))
-            raise
-        except TimeoutError:
-            self._set_login(
-                account,
-                LoginSnapshot(state=LOGIN_FAILED, error="device login timed out"),
-            )
-            return
-        except Exception as exc:  # noqa: BLE001 -- one typed login failure
-            self._set_login(
-                account,
-                LoginSnapshot(
-                    state=LOGIN_FAILED, error=redaction.scrub_exception(exc)
-                ),
-            )
-            return
-        # Success is the credential cache being READABLE, not the subprocess
-        # exiting 0: a login that "succeeded" without writing a usable token would
-        # otherwise be reported as authorized and fail at the first session.
-        try:
-            self._store.assert_private(account)
-            generation = self._store.bump_generation(account)
-            envelope = self._store.read_envelope(account, generation=generation)
-        except AuthorityError as exc:
-            self._set_login(
-                account,
-                LoginSnapshot(
-                    state=LOGIN_FAILED, error=exc.detail or exc.code.value
-                ),
-            )
-            return
+        lock = await self._lock_for(account)
+        async with lock:
+            try:
+                await asyncio.wait_for(
+                    self._login_runner(account, home), self._login_timeout_s
+                )
+            except asyncio.CancelledError:
+                self._set_login(account, LoginSnapshot(state=LOGIN_FAILED, error="cancelled"))
+                raise
+            except TimeoutError:
+                self._set_login(
+                    account,
+                    LoginSnapshot(state=LOGIN_FAILED, error="device login timed out"),
+                )
+                return
+            except Exception as exc:  # noqa: BLE001 -- one typed login failure
+                self._set_login(
+                    account,
+                    LoginSnapshot(
+                        state=LOGIN_FAILED, error=redaction.scrub_exception(exc)
+                    ),
+                )
+                return
+            # Validate the newly-written cache before advancing or clearing the
+            # durable revoke fence. A subprocess exit code is not authentication.
+            try:
+                self._store.assert_private(account)
+                next_generation = self._store.generation(account) + 1
+                envelope = self._store.read_envelope(
+                    account, generation=next_generation
+                )
+                generation = self._store.mark_authenticated(account)
+                if generation != next_generation:  # defensive: lock owns this writer
+                    raise AuthorityError(
+                        AuthorityErrorCode.INTERNAL,
+                        "credential generation changed during login publication",
+                        account=account,
+                    )
+            except AuthorityError as exc:
+                self._set_login(
+                    account,
+                    LoginSnapshot(
+                        state=LOGIN_FAILED, error=exc.detail or exc.code.value
+                    ),
+                )
+                return
         self._cache[account] = envelope
         self._set_login(
             account,
@@ -505,12 +519,14 @@ class CredentialAuthority:
         """
         self._authorized(account, require_enabled=False)
         await self.login_cancel(account)
-        home = self._store.home(account)
-        if home.is_dir():
-            with contextlib.suppress(Exception):
-                await self._run_vendor(("logout",), home)
-        self._store.clear_credentials(account)
-        self._cache.pop(account, None)
+        lock = await self._lock_for(account)
+        async with lock:
+            home = self._store.home(account)
+            if home.is_dir():
+                with contextlib.suppress(Exception):
+                    await self._run_vendor(("logout",), home)
+            self._store.clear_credentials(account)
+            self._cache.pop(account, None)
         log_event(logger, logging.INFO, "codex.auth.logged_out", account=account)
 
     async def _run_vendor(self, args: tuple[str, ...], home: Path) -> int:
@@ -536,6 +552,12 @@ class CredentialAuthority:
         "the cache is stale" costs one refresh no matter how many runners noticed.
         """
         self._authorized(account)
+        if self._store.revoked(account):
+            raise AuthorityError(
+                AuthorityErrorCode.REVOKED,
+                "credentials were explicitly revoked; device login is required",
+                account=account,
+            )
         cached = self._cache.get(account)
         if cached is None:
             generation = self._store.generation(account)
@@ -551,7 +573,16 @@ class CredentialAuthority:
             now=self._clock(), skew_s=self._expiry_skew_s
         ):
             return cached
-        return await self.refresh(account, rejected_generation=cached.generation)
+        refreshed = await self.refresh(
+            account, rejected_generation=cached.generation
+        )
+        if refreshed.generation < minimum_generation:
+            raise AuthorityError(
+                AuthorityErrorCode.REFRESH_FAILED,
+                "one credential rotation could not satisfy the requested generation fence",
+                account=account,
+            )
+        return refreshed
 
     async def refresh(
         self, account: str, *, rejected_generation: int = 0
@@ -565,6 +596,12 @@ class CredentialAuthority:
         had already been told to stop using.
         """
         self._authorized(account)
+        if self._store.revoked(account):
+            raise AuthorityError(
+                AuthorityErrorCode.REVOKED,
+                "credentials were explicitly revoked; device login is required",
+                account=account,
+            )
         cached = self._cache.get(account)
         if (
             cached is not None
@@ -599,37 +636,75 @@ class CredentialAuthority:
                 self._refreshes.pop(account, None)
 
     async def _do_refresh(self, account: str) -> CredentialEnvelope:
-        home = self._store.home(account)
-        if not self._store.has_credentials(account):
-            raise AuthorityError(
-                AuthorityErrorCode.LOGIN_REQUIRED,
-                "no credential cache to refresh",
-                account=account,
+        lock = await self._lock_for(account)
+        async with lock:
+            if self._store.revoked(account):
+                raise AuthorityError(
+                    AuthorityErrorCode.REVOKED,
+                    "credentials were explicitly revoked; device login is required",
+                    account=account,
+                )
+            home = self._store.home(account)
+            if not self._store.has_credentials(account):
+                raise AuthorityError(
+                    AuthorityErrorCode.LOGIN_REQUIRED,
+                    "no credential cache to refresh",
+                    account=account,
+                )
+            started = self._clock()
+            current_generation = self._store.generation(account)
+            previous = self._store.read_envelope(
+                account, generation=current_generation
             )
-        started = self._clock()
-        try:
-            await asyncio.wait_for(
-                self._refresh_runner(account, home), self._refresh_timeout_s
+            try:
+                await asyncio.wait_for(
+                    self._refresh_runner(account, home), self._refresh_timeout_s
+                )
+            except asyncio.CancelledError:
+                raise
+            except AuthorityError:
+                raise
+            except TimeoutError:
+                raise AuthorityError(
+                    AuthorityErrorCode.REFRESH_FAILED,
+                    "the credential refresh did not complete in time",
+                    account=account,
+                ) from None
+            except Exception as exc:  # noqa: BLE001 -- one typed refresh failure
+                raise AuthorityError(
+                    AuthorityErrorCode.REFRESH_FAILED,
+                    redaction.scrub_exception(exc),
+                    account=account,
+                ) from None
+            candidate = self._store.read_envelope(
+                account, generation=current_generation + 1
             )
-        except asyncio.CancelledError:
-            raise
-        except AuthorityError:
-            raise
-        except TimeoutError:
-            raise AuthorityError(
-                AuthorityErrorCode.REFRESH_FAILED,
-                "the credential refresh did not complete in time",
-                account=account,
-            ) from None
-        except Exception as exc:  # noqa: BLE001 -- one typed refresh failure
-            raise AuthorityError(
-                AuthorityErrorCode.REFRESH_FAILED,
-                redaction.scrub_exception(exc),
-                account=account,
-            ) from None
-        generation = self._store.bump_generation(account)
-        envelope = self._store.read_envelope(account, generation=generation)
-        self._cache[account] = envelope
+            if candidate.access_token == previous.access_token:
+                raise AuthorityError(
+                    AuthorityErrorCode.REFRESH_FAILED,
+                    "credential refresh did not advance the rejected access token",
+                    account=account,
+                )
+            if candidate.chatgpt_account_id != previous.chatgpt_account_id:
+                # The vendor has already replaced auth.json. Poison this cache
+                # durably before returning so a later refresh cannot adopt the
+                # switched identity as its new baseline.
+                self._cache.pop(account, None)
+                self._store.mark_revoked(account)
+                raise AuthorityError(
+                    AuthorityErrorCode.REFRESH_FAILED,
+                    "credential refresh changed the native account identity",
+                    account=account,
+                )
+            generation = self._store.bump_generation(account)
+            if generation != candidate.generation:
+                raise AuthorityError(
+                    AuthorityErrorCode.INTERNAL,
+                    "credential generation changed during refresh publication",
+                    account=account,
+                )
+            envelope = candidate
+            self._cache[account] = envelope
         log_event(
             logger,
             logging.INFO,
@@ -679,12 +754,13 @@ class CredentialAuthority:
         self._authorized(account, require_enabled=False)
         await self.login_cancel(account)
         self._cache.pop(account, None)
+        pending = self._refreshes.pop(account, None)
         await cancel_and_reap(
-            self._refreshes.pop(account, None),
-            phase=f"codex-auth-refresh:{account}",
-            timeout=5.0,
+            pending, phase=f"codex-auth-refresh:{account}", timeout=5.0
         )
-        generation = self._store.bump_generation(account)
+        lock = await self._lock_for(account)
+        async with lock:
+            generation = self._store.mark_revoked(account)
         log_event(
             logger,
             logging.WARNING,
@@ -696,10 +772,14 @@ class CredentialAuthority:
 
     async def forget(self, account: str) -> None:
         """Revoke and then destroy every trace of *account*'s credentials."""
-        with contextlib.suppress(AuthorityError):
+        self._authorized(account, require_enabled=False)
+        if not self._store.revoked(account):
             await self.revoke(account)
         self._logins.pop(account, None)
-        self._store.forget(account)
+        lock = await self._lock_for(account)
+        async with lock:
+            self._cache.pop(account, None)
+            self._store.forget(account)
         log_event(logger, logging.WARNING, "codex.auth.forgotten", account=account)
 
     async def aclose(self) -> None:
