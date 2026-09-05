@@ -23,6 +23,7 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
@@ -35,6 +36,7 @@ if TYPE_CHECKING:
     from server.pipeline.merge_train import MergeTrainState
     from server.pipeline.track import StageModel
     from server.pm.onboarding import ProjectOnboardingView
+    from server.sessions.replay import EngineReplay
 
 from ccswitch import accounts as ccswitch_accounts
 from ccswitch import configdir, copilot as _copilot_mod, crypto, gitrepos, worktrees
@@ -70,8 +72,10 @@ from server.sessions.claude_driver import ClaudeAgentDriverFactory
 from server.sessions.engine import (
     AgentDriver,
     AgentDriverConfig,
+    AgentDriverFactory,
     AgentDriverRegistry,
     AgentEngine,
+    AgentEngineUnavailable,
     AsyncCloser,
     SuggestionProvider,
     parse_agent_engine,
@@ -250,6 +254,21 @@ def _naive_utc(dt):
         from datetime import timezone
         return dt.astimezone(timezone.utc).replace(tzinfo=None)
     return dt
+
+
+@dataclass(frozen=True, slots=True)
+class _RowEngineRef:
+    """What a session's DB row says about who owns its conversation.
+
+    The engine-scoped counterpart of ``resolve_transcript_path``'s row lookup: for a
+    session this process has no record or driver for (an archived one), the row is the
+    only place the engine, the account and the native handle are still stated.
+    """
+
+    engine: AgentEngine
+    account: str
+    engine_session_id: str | None
+    model: str | None
 
 
 def _rethread_identity(driver, identity: str) -> None:
@@ -557,10 +576,8 @@ class SessionOrchestrator:
         # Injectable so tests can stub it without a live SDK call.
         self._title_fn: Callable = title_fn or self._default_title_fn
         self._registry = PermissionRegistry()
-        self._engine_registry = driver_registry or AgentDriverRegistry({
-            AgentEngine.CLAUDE_CODE: ClaudeAgentDriverFactory(
-                self._session_factory, self._registry),
-        })
+        self._engine_registry = driver_registry or AgentDriverRegistry(
+            self._default_driver_factories())
         self._drivers: dict[str, AgentDriver] = {}
         # In-flight spawns, keyed by session_id: a future resolved when
         # _spawn_session exits (registered driver or raised). _spawn_session
@@ -1211,6 +1228,64 @@ class SessionOrchestrator:
             return base(cwd, config_dir, can_use_tool, mode, resume, **kw)
         return _factory
 
+    def _default_driver_factories(self) -> dict[AgentEngine, AgentDriverFactory]:
+        """The engines this host can actually run.
+
+        Claude is unconditional. Codex is registered ONLY when ``self._codex`` is
+        wired: that attribute is already the single fail-closed signal for "Codex is
+        enabled, supported and installed" (see ``__init__``), so on a host without it
+        ``AgentDriverRegistry.require`` keeps raising ``AgentEngineUnavailable`` for a
+        Codex request instead of handing back a driver with no app-server under it.
+
+        Imported lazily, matching every other Codex touchpoint in this module: the
+        Codex package pulls in the app-server protocol and process supervision, and a
+        deployment with the feature off should not pay for that at import time.
+        """
+        factories: dict[AgentEngine, AgentDriverFactory] = {
+            AgentEngine.CLAUDE_CODE: ClaudeAgentDriverFactory(
+                self._session_factory, self._registry),
+        }
+        if self._codex is not None:
+            from server.codex.driver import CodexAgentDriverFactory
+            factories[AgentEngine.CODEX] = CodexAgentDriverFactory(
+                self._codex, self._registry, self._launch_model_for_session)
+        return factories
+
+    def _launch_model_for_session(self, session_id: str) -> str | None:
+        """The model a driver being built for *session_id* should launch on.
+
+        ``AgentDriverConfig`` carries no model (the Claude path bakes it into its SDK
+        factory), so the Codex factory resolves it through this callable — the same
+        seam as ``ClaudeAgentDriverFactory``'s ``sdk_factory_for_session``. The record
+        is the source of truth: a fresh spawn has ``model=None`` here and gets its
+        model from ``set_model`` after ``start()``, while a resume already carries the
+        persisted alias, so the thread is resumed on the right model instead of the
+        account default.
+        """
+        rec = self._records.get(session_id)
+        return getattr(rec, "model", None) if rec is not None else None
+
+    def _engine_supports(self, engine: AgentEngine | str, capability: str) -> bool:
+        """True iff this host's driver for *engine* declares *capability*.
+
+        Fail-closed on the answer: a registry that has no factory for the engine (it
+        cannot run here at all), or whose factory declares nothing, answers False. The
+        alternative default — "assume capable" — is what lets a Codex session fall into
+        a Claude-only path and come back as the wrong engine.
+
+        The ONE tolerated gap is a missing ``_engine_registry`` attribute entirely,
+        which means ``__init__`` never ran (tests build partial orchestrators with
+        ``__new__``; the module already tolerates that shape for ``_bg_tasks`` and
+        ``_repo_root``). There is then no registry to state a policy, so the caller's
+        pre-existing behaviour is preserved rather than a policy invented. In a real
+        process the attribute always exists, so this branch never gates production.
+        """
+        registry = getattr(self, "_engine_registry", None)
+        if registry is None:
+            return True
+        caps = registry.capabilities_for(engine)
+        return bool(getattr(caps, capability, False)) if caps is not None else False
+
     def _create_driver(
         self,
         *,
@@ -1223,6 +1298,7 @@ class SessionOrchestrator:
         identity: str,
         resume: str | None,
         on_sync_back: Callable[[], None],
+        reasoning_effort: str | None = None,
         suggester: SuggestionProvider | None = None,
         assistant_api: AsyncCloser | None = None,
     ) -> AgentDriver:
@@ -1235,7 +1311,17 @@ class SessionOrchestrator:
             mode=mode,
             identity=identity,
             resume=resume,
-            on_engine_session_id=self._persist_engine_session_id,
+            reasoning_effort=reasoning_effort,
+            # Bound to the identity of the driver being built, not to the session id
+            # alone: the callback fires from whichever driver happens to be running,
+            # and a superseded one reporting late must not overwrite the live handle.
+            # See _persist_engine_session_id.
+            on_engine_session_id=functools.partial(
+                self._persist_engine_session_id,
+                expect_session_id=session_id,
+                expect_engine=engine,
+                expect_account=account,
+            ),
             on_sync_back=on_sync_back,
             on_status=self._persist_status,
             on_context_usage=self._persist_context_usage,
@@ -2773,6 +2859,7 @@ class SessionOrchestrator:
                 mode=permission_mode,
                 identity=identity,
                 resume=resume,
+                reasoning_effort=reasoning_effort,
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, account),
                 suggester=self._suggester_for(kind),
                 assistant_api=assistant_api,
@@ -7119,13 +7206,57 @@ class SessionOrchestrator:
             await self._goal_sweep()
             await asyncio.sleep(120.0)
 
-    async def _persist_engine_session_id(self, session_id: str, engine_session_id: str) -> None:
+    async def _persist_engine_session_id(
+        self,
+        session_id: str,
+        engine_session_id: str,
+        *,
+        expect_session_id: str | None = None,
+        expect_engine: AgentEngine | None = None,
+        expect_account: str | None = None,
+    ) -> None:
         """Persist the native conversation id when a driver first captures it.
 
         Keeps the in-memory record in sync and immediately persists to the DB so the id
         survives a restart without waiting for rotation.
+
+        The ``expect_*`` triple is bound per driver by ``_create_driver`` and is a WRITE
+        FENCE, because ``engine_session_id`` is the only durable handle on a
+        conversation: overwrite it with the wrong value and the real transcript/thread is
+        orphaned with nothing pointing at it (the 2026-09-04 incident behind
+        ``ensure_driver``'s "NOT starting fresh" branch). Three ways that can happen, all
+        refused here:
+
+        * **another session** — a driver reporting an id under an id that is not its own,
+        * **another engine** — a Claude SDK session id landing on a row that now runs on
+          Codex, or a Codex thread id on a Claude row. The two id spaces are unrelated,
+          so a cross-engine write is unrecoverable rather than merely stale,
+        * **another account** — a driver superseded by a rotation reporting after the
+          record already moved (``_reassign`` sets ``record.account`` BEFORE the
+          replacement's ``start()``, so the live driver always matches).
+
+        A refusal is logged and dropped, never raised: this runs inside the driver's own
+        ``start()``, and failing there would turn a stale callback into a failed spawn.
         """
+        if expect_session_id is not None and session_id != expect_session_id:
+            log.error(
+                "session.engine_session_id_rejected id=%s reason=session_mismatch "
+                "driver_session=%s — refusing to write %s",
+                session_id, expect_session_id, engine_session_id)
+            return
         rec = self._records.get(session_id)
+        if rec is not None and expect_engine is not None and rec.engine is not expect_engine:
+            log.error(
+                "session.engine_session_id_rejected id=%s reason=engine_mismatch "
+                "record=%s driver=%s — refusing to write %s",
+                session_id, rec.engine, expect_engine, engine_session_id)
+            return
+        if rec is not None and expect_account is not None and rec.account != expect_account:
+            log.error(
+                "session.engine_session_id_rejected id=%s reason=account_mismatch "
+                "record=%s driver=%s — refusing to write %s",
+                session_id, rec.account, expect_account, engine_session_id)
+            return
         if rec is not None:
             rec.engine_session_id = engine_session_id
         async with db_session() as db:
@@ -8981,7 +9112,12 @@ class SessionOrchestrator:
                 except Exception:
                     pass
 
-            # Build and start a new driver resuming from the stored engine_session_id
+            # Build and start a new driver resuming from the stored engine_session_id,
+            # ON THE SESSION'S OWN ENGINE. This used to hardcode CLAUDE_CODE, so a
+            # detached Codex session came back as a Claude driver pointed at a Codex
+            # thread id — a resume that cannot work and whose first turn would mint a
+            # brand-new Claude conversation over the row.
+            resume_engine = rec.engine
             resume = rec.engine_session_id or None
             cfg_dir = compose(rec.account)
             # Ensure the working directory exists. A rehydrated session's cwd (a no-repo
@@ -9026,6 +9162,12 @@ class SessionOrchestrator:
                         )
                     raise
 
+            # …and the account's `codex app-server` for a Codex resume. Same contract
+            # as the spawn path (_ensure_codex_runner): no app-server means no session,
+            # so a failure here fails the attach rather than building a driver that
+            # would raise CodexRunnerUnavailable on its first call.
+            await self._ensure_codex_runner(resume_engine, rec.account)
+
             # An assistant's options overlay is rebuilt for EVERY driver build here, not
             # just at spawn: it is what makes the session an assistant, and the idle
             # reap drops it along with the driver. See _setup_assistant_overlay for why
@@ -9044,7 +9186,7 @@ class SessionOrchestrator:
                         session_id, identity=identity, model=rec.model)
                     built_assistant_apis.append(assistant_api)
                 return self._create_driver(
-                    engine=AgentEngine.CLAUDE_CODE,
+                    engine=resume_engine,
                     session_id=session_id,
                     account=rec.account,
                     cwd=rec.cwd,
@@ -9052,6 +9194,7 @@ class SessionOrchestrator:
                     mode=getattr(rec, "permission_mode", "interactive"),
                     identity=identity,
                     resume=resume_arg,
+                    reasoning_effort=getattr(rec, "reasoning_effort", None),
                     on_sync_back=functools.partial(ccswitch_accounts.sync_back, rec.account),
                     suggester=self._suggester_for(getattr(rec, "kind", None)),
                     assistant_api=assistant_api,
@@ -9072,6 +9215,23 @@ class SessionOrchestrator:
                     if resume is None:
                         # No resume to blame — the SDK genuinely can't start (e.g. a
                         # truly dead account token / system problem). Surface it.
+                        raise
+                    if resume_engine is not AgentEngine.CLAUDE_CODE:
+                        # The fresh-start fallback below is discriminated by the
+                        # presence of a transcript FILE, which only Claude has: for any
+                        # other engine `_find_transcript` is unconditionally None, so
+                        # the fallback would fire on every failed resume and silently
+                        # abandon a perfectly good conversation (a Codex thread lives
+                        # in the app-server and is still there after a restart). No
+                        # equivalent liveness probe exists that is cheaper or more
+                        # honest than letting the caller retry, so refuse to guess.
+                        with contextlib.suppress(Exception):
+                            await driver.aclose()
+                        log.warning(
+                            "session.resume id=%s engine=%s could not resume %s — "
+                            "surfacing the failure rather than starting a new "
+                            "conversation over it", session_id, resume_engine.value,
+                            resume, exc_info=True)
                         raise
                     # A start() failure is NOT proof that the resume handle is bad, and
                     # guessing that it is costs the user their conversation: the fresh
@@ -9108,6 +9268,26 @@ class SessionOrchestrator:
                     driver = _build(None)
                     await driver.start()
                 self._drivers[session_id] = driver
+                # Re-claim the account's Codex app-server, paired with the driver
+                # registration exactly as _spawn_session pairs it — and mirroring
+                # _teardown_driver_state, which released the claim when this session
+                # detached. Without it a resumed Codex session runs on a runner the
+                # manager believes nobody is using, and the idle sweep tears it down
+                # underneath a live thread.
+                if self._codex is not None and resume_engine is AgentEngine.CODEX:
+                    try:
+                        self._codex.attach(rec.account, session_id)
+                    except Exception:
+                        # attach() fails when the runner died between ensure() and
+                        # here. Unwind this build completely — a registered driver
+                        # bound to a dead app-server is worse than a failed attach,
+                        # which the caller retries.
+                        self._drivers.pop(session_id, None)
+                        with contextlib.suppress(Exception):
+                            self._codex.detach(session_id)
+                        with contextlib.suppress(Exception):
+                            await driver.aclose()
+                        raise
             except BaseException:
                 # The resume failed and no driver was registered: release what
                 # _setup_assistant_overlay allocated, mirroring _spawn_session's own
@@ -9323,6 +9503,14 @@ class SessionOrchestrator:
         already tracked). The conversation is resumed in its ORIGINAL cwd with no
         worktree (documented isolation exception, flagged adopted_in_place=True).
         """
+        # Adoption is Claude-only by construction — discovery scans /proc for `claude`
+        # processes and joins them to Claude transcripts — and the driver it builds is
+        # therefore hardcoded to CLAUDE_CODE below. Stating that as a capability check
+        # makes the constraint explicit at the entry point instead of implicit in the
+        # engine literal, and fails closed on a host where Claude is not registered at
+        # all rather than raising from somewhere deep in the build.
+        if not self._engine_supports(AgentEngine.CLAUDE_CODE, "adopt"):
+            raise AgentEngineUnavailable(AgentEngine.CLAUDE_CODE)
         cand = self._resolve_candidate(claude_session_id)
         if cand is None or not cand.mapped or cand.tracked:
             raise KeyError(claude_session_id)
@@ -10083,6 +10271,14 @@ class SessionOrchestrator:
         physically lives under the shared base, we also search shared_base()/projects so
         replay survives a broken per-account symlink.
         """
+        # A transcript ``.jsonl`` is a CLAUDE artefact. Codex keeps its history inside
+        # the app-server and is read back over `thread/read` (server/codex/replay.py),
+        # so answering here for a Codex session would glob the Claude projects tree for
+        # a thread id that is not a Claude session id — at best None after a full sshfs
+        # walk, at worst a collision with an unrelated transcript. Returning None is
+        # also the signal the WS attach path keys its engine-replay fallback off.
+        if self._engine_of(session_id) is not AgentEngine.CLAUDE_CODE:
+            return None
         d = self._drivers.get(session_id)
         if d and d.engine_session_id:
             config_dir, csid = d.config_dir, d.engine_session_id
@@ -10095,6 +10291,27 @@ class SessionOrchestrator:
             config_dir, csid = str(account_cfg_dir(rec.account)), rec.engine_session_id
             cwd = getattr(rec, "cwd", None)
         return self._find_transcript(config_dir, csid, cwd)
+
+    def _engine_of(self, session_id: str) -> AgentEngine:
+        """The engine owning *session_id*, defaulting to Claude for unknown ids.
+
+        Reads the live driver first and the in-memory record second — the driver is
+        authoritative while it exists (it IS the running engine), and the record covers
+        detached sessions. The Claude default preserves the historical behaviour of
+        every caller for ids this process has never heard of (archived rows resolve
+        through the DB in ``resolve_transcript_path``); a session that is genuinely
+        Codex always has a record or a driver saying so.
+
+        ``getattr`` rather than attribute access: this is called from
+        ``transcript_path``, which every status transition goes through, and a source
+        that does not state an engine (a test double, a legacy record) must fall
+        through to the next one rather than raise into a turn boundary.
+        """
+        for src in (self._drivers.get(session_id), self._records.get(session_id)):
+            engine = getattr(src, "engine", None) if src is not None else None
+            if engine is not None:
+                return parse_agent_engine(engine, legacy_default=True)
+        return AgentEngine.CLAUDE_CODE
 
     @staticmethod
     def project_dir_name(cwd: str) -> str:
@@ -11109,6 +11326,20 @@ class SessionOrchestrator:
             await self._pause_session(record, reason="invalid_rotation_target")
             return
 
+        # Rotation is engine work, not generic session work: everything below composes
+        # the target account's Claude config dir, re-trusts the project and syncs Claude
+        # credentials back, and the rebuild used to hardcode CLAUDE_CODE — so rotating a
+        # Codex session would have replaced it with a Claude driver resuming a Codex
+        # thread id. Gate on the capability rather than on the engine name, so an engine
+        # that grows real rotation support is enabled by declaring it. Refusing parks the
+        # session for a human (the same landing as a bad rotation target) instead of
+        # silently leaving a rate-limited session running into the same wall.
+        if not self._engine_supports(record.engine, "account_rotation"):
+            log.error("reassign.unsupported_engine session=%s engine=%s reason=%s — "
+                      "keeping the current driver", record.id, record.engine, reason)
+            await self._pause_session(record, reason="engine_rotation_unsupported")
+            return
+
         # Serialise with any other in-flight driver swap for this session (#1040):
         # two recoverable-failure callbacks firing back to back (e.g. two
         # `turn_dropped` events escalating to rotation), or a manual account
@@ -12018,13 +12249,132 @@ class SessionOrchestrator:
                 row = (await db.execute(
                     sa_select(DbSession).where(DbSession.id == session_id)
                 )).scalars().first()
-            if row and row.engine_session_id:
+            # Same engine gate as transcript_path: only a Claude row has a JSONL on
+            # disk, and an archived row is exactly where the in-memory record no
+            # longer exists to state the engine, so it is re-read here.
+            if (row and row.engine_session_id
+                    and parse_agent_engine(getattr(row, "engine", None),
+                                           legacy_default=True) is AgentEngine.CLAUDE_CODE):
                 path = await asyncio.to_thread(
                     self._find_transcript,
                     str(account_cfg_dir(row.account_name)), row.engine_session_id,
                     getattr(row, "cwd", None),
                 )
         return path
+
+    async def _engine_replay(self, session_id: str) -> "EngineReplay | None":
+        """The read-back adapter for *session_id*'s own engine, or None.
+
+        The one place replay dispatches on engine. Everything above it —
+        ``transcript_events``, ``transcript_window``, ``engine_replay_window`` — is
+        engine-neutral and keeps its existing contract, including "None means we could
+        not read the history", which callers that have already established the session
+        HAS history must treat as an error rather than as an empty transcript.
+
+        Claude reads its transcript ``.jsonl``; Codex reads its thread back over the
+        app-server. Neither adapter is reimplemented here — see
+        ``server/sessions/replay.py`` and ``server/codex/replay.py``.
+
+        An id this process has no record or driver for is almost always an ARCHIVED
+        row, and ``transcript_events``/``transcript_window`` promise to work for those.
+        The row is then the only statement of engine there is, so it is read: without
+        that, an archived Codex session's review page would render blank (the Claude
+        glob it would otherwise fall through to can only ever answer None for a thread
+        id). Costs one primary-key read on a review/export path, never on attach —
+        attach goes through ``transcript_path``, which is in-memory.
+        """
+        from server.sessions.replay import ClaudeTranscriptReplay
+
+        engine = self._engine_of(session_id)
+        ref: "_RowEngineRef | None" = None
+        if session_id not in self._drivers and session_id not in self._records:
+            ref = await self._row_engine_ref(session_id)
+            if ref is not None:
+                engine = ref.engine
+        if engine is AgentEngine.CODEX:
+            return await self._codex_replay(session_id, ref=ref)
+        path = await self.resolve_transcript_path(session_id)
+        return ClaudeTranscriptReplay(path) if path else None
+
+    async def _row_engine_ref(self, session_id: str) -> "_RowEngineRef | None":
+        """What the DB row says about who owns *session_id*, or None.
+
+        Never raises: this only ever refines a read, so a DB hiccup degrades to "we
+        could not tell" and the caller falls back to its in-memory answer.
+        """
+        from sqlalchemy import select as sa_select
+        try:
+            async with db_session() as db:
+                row = (await db.execute(
+                    sa_select(DbSession).where(DbSession.id == session_id)
+                )).scalars().first()
+        except Exception:
+            log.warning("session.row_engine_ref id=%s lookup failed", session_id,
+                        exc_info=True)
+            return None
+        if row is None:
+            return None
+        return _RowEngineRef(
+            engine=parse_agent_engine(getattr(row, "engine", None), legacy_default=True),
+            account=row.account_name,
+            engine_session_id=row.engine_session_id or None,
+            model=getattr(row, "model", None),
+        )
+
+    async def _codex_replay(self, session_id: str, *,
+                            ref: "_RowEngineRef | None" = None) -> "EngineReplay | None":
+        """`CodexThreadReplay` bound to this session's thread on its OWN runner.
+
+        A Codex thread can only be read by the app-server that owns the account, so a
+        detached session's history needs that runner back before it can be replayed —
+        ``ensure`` is therefore called when no client is live. It is NOT called when one
+        already is: replay runs on background sweeps (titling, summaries) as well as on
+        attach, and re-entering the manager's start path on every one of them would
+        churn a process that is already healthy.
+
+        Returns None rather than raising for every failure mode — no manager, no thread
+        id yet (the session has not run turn one), an app-server that will not start.
+        The callers all treat None as "no history available", which is the truthful
+        answer in each case, and none of them may fail a session over a read.
+
+        *ref* carries the DB row for a session this process holds no record for (an
+        archived one); it is only ever consulted when the in-memory sources are silent,
+        so a live session is still described by its own driver/record.
+        """
+        from server.codex.redaction import scrub_exception
+        from server.codex.replay import CodexThreadReplay
+
+        codex = self._codex
+        if codex is None:
+            return None
+        rec = self._records.get(session_id)
+        driver = self._drivers.get(session_id)
+        thread_id = (
+            (getattr(driver, "engine_session_id", None) if driver is not None else None)
+            or (getattr(rec, "engine_session_id", None) or None)
+            or (ref.engine_session_id if ref is not None else None)
+        )
+        account = (
+            getattr(rec, "account", None)
+            or (getattr(driver, "account", None) if driver is not None else None)
+            or (ref.account if ref is not None else None)
+        )
+        model = (getattr(rec, "model", None)
+                 or (ref.model if ref is not None else None))
+        if not thread_id or not account:
+            return None
+        client = codex.client_for(account)
+        if client is None:
+            try:
+                await codex.ensure(account)
+            except Exception as exc:
+                log_event(log, logging.WARNING, "codex.replay.runner_unavailable",
+                          session=session_id, error=scrub_exception(exc))
+                return None
+            client = codex.client_for(account)
+        if client is None:
+            return None
+        return CodexThreadReplay(client, thread_id, model=model)
 
     async def transcript_events(self, session_id: str, *, max_turns: int | None = 20) -> list:
         """Return replayed transcript events for a session (read-only review).
@@ -12037,13 +12387,11 @@ class SessionOrchestrator:
         (the sub-agent summary bug: agents spawned before the last 20 turns
         vanished from the dashboard chips).
         """
-        from server.sessions.replay import replay_events
-
-        path = await self.resolve_transcript_path(session_id)
-        if not path:
+        replay = await self._engine_replay(session_id)
+        if replay is None:
             return []
         try:
-            return await replay_events(path, max_turns=max_turns)
+            return await replay.events(max_turns=max_turns)
         except Exception:
             log.warning("session.transcript_events id=%s replay failed", session_id, exc_info=True)
             return []
@@ -12063,11 +12411,9 @@ class SessionOrchestrator:
         that has already established the transcript EXISTS must treat that None as an
         error (504), not as an empty transcript.
         """
-        from server.sessions.replay import replay_window
-
         ceiling = _TRANSCRIPT_WINDOW_CEILING_S if timeout_s is None else timeout_s
-        path = await self.resolve_transcript_path(session_id)
-        if not path:
+        replay = await self._engine_replay(session_id)
+        if replay is None:
             return None
         try:
             # Limitation: wait_for cancels the replay_window() coroutine, but if the
@@ -12081,7 +12427,7 @@ class SessionOrchestrator:
             # out of scope) — this comment exists so the next person debugging executor
             # starvation finds the explanation instead of rediscovering it.
             return await asyncio.wait_for(
-                replay_window(path, before=before, limit=limit),
+                replay.window(before=before, limit=limit),
                 timeout=ceiling,
             )
         except asyncio.TimeoutError:
@@ -12090,6 +12436,40 @@ class SessionOrchestrator:
             return None
         except Exception:
             log.warning("session.transcript_window id=%s replay failed", session_id, exc_info=True)
+            return None
+
+    async def engine_replay_window(self, session_id: str, *,
+                                   drop_incomplete_turn: bool = False,
+                                   turn_started_at: float | None = None):
+        """The ATTACH-path replay window, for engines with no transcript file.
+
+        ``transcript_window`` cannot serve the attach: only this signature carries
+        ``drop_incomplete_turn`` / ``turn_started_at``, which hand the in-progress turn
+        off to the live stream instead of replaying it twice. The Claude attach keeps
+        reading its transcript file directly in ``server/bridge/ws.py`` (in remote mode
+        the edge reads the shared file, and moving that to an RPC would change both the
+        latency and the ring/gap behaviour); this is the fallback that path takes when
+        there is no file — which is exactly the Codex case.
+
+        Same ceiling and the same None-means-error contract as ``transcript_window``.
+        """
+        replay = await self._engine_replay(session_id)
+        if replay is None:
+            return None
+        try:
+            return await asyncio.wait_for(
+                replay.window(drop_incomplete_turn=drop_incomplete_turn,
+                              turn_started_at=turn_started_at),
+                timeout=_TRANSCRIPT_WINDOW_CEILING_S,
+            )
+        except asyncio.TimeoutError:
+            log.warning("session.engine_replay_window id=%s exceeded %.0fs — "
+                        "attaching with no history", session_id,
+                        _TRANSCRIPT_WINDOW_CEILING_S)
+            return None
+        except Exception:
+            log.warning("session.engine_replay_window id=%s replay failed",
+                        session_id, exc_info=True)
             return None
 
     async def transcript_search_text(self, session_id: str) -> str:

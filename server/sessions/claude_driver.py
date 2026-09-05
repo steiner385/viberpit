@@ -19,6 +19,7 @@ from server.assistant.context import PromptContext, render_context_header
 from server.hostname import self_host_name
 from server.obs.metrics import assistant_sessions_live, assistant_ttft_ms, assistant_turn_ms
 from . import events as ev
+from .driver_stream import _STREAM_DONE, DriverStream
 from .failure import classify, TurnFailure
 from .engine import AgentCapabilities, AgentDriverConfig, AgentDriverFactory, AgentEngine
 from .translator import Translator
@@ -37,8 +38,6 @@ log = logging.getLogger(__name__)
 # CCSWITCH_STATUS_TRACE=1 to capture the raw derived status + its input signals
 # when chasing false-"Ready" reports. Remove with the trace itself once settled.
 _STATUS_TRACE = os.environ.get("CCSWITCH_STATUS_TRACE", "false").lower() in ("1", "true", "yes", "on")
-
-_STREAM_DONE = object()
 
 # Events that reconstruct a turn's transcript — the only ones retained in the
 # in-progress-turn buffer and replayed to a late subscriber. Control/ephemeral
@@ -132,57 +131,6 @@ class _MessageSource:
             await self._gen.aclose()
 
 
-class DriverStream:
-    """One attach's atomically-opened view of a driver's event stream.
-
-    Built by ``ClaudeAgentDriver.open_stream()`` with NO awaits between snapshotting
-    the in-progress turn buffer, registering the subscriber queue, and capturing
-    ``turn_active``/``turn_started_at`` — so all four describe the SAME instant.
-
-    The WS attach path needs that atomicity (the settle-race bug, B3): it awaits
-    a multi-step disk replay between reading ``turn_active`` and consuming the
-    stream. If the turn settles during those awaits, the driver clears
-    ``_turn_buffer`` — a snapshot taken *after* the replay would be empty, and
-    the in-progress turn the replay dropped (``drop_incomplete=True``) would be
-    delivered by NOBODY. Opening the stream first pins the snapshot and the
-    flags to one consistent instant; anything emitted afterwards lands in the
-    queue and is delivered live.
-    """
-
-    def __init__(self, driver: "ClaudeAgentDriver", snapshot: list,
-                 queue: asyncio.Queue, turn_active: bool,
-                 turn_started_at: float | None) -> None:
-        self._driver = driver
-        self._snapshot = snapshot
-        self._queue = queue
-        self.turn_active = turn_active
-        self.turn_started_at = turn_started_at
-
-    async def events(self):
-        """Yield the snapshot (the past), then drain the queue (strictly the
-        future) until the driver's close sentinel."""
-        try:
-            for e in self._snapshot:
-                yield e
-            while True:
-                item = await self._queue.get()
-                if item is _STREAM_DONE:
-                    return
-                yield item
-        finally:
-            self._driver._subscribers.discard(self._queue)
-
-    def close(self) -> None:
-        """Discard the subscriber queue without consuming ``events()``.
-
-        Leak guard for the WS attach error path: if the replay between
-        ``open_stream()`` and the live-task creation raises, nothing will ever
-        iterate ``events()`` (whose ``finally`` normally deregisters), so the
-        queue must be discarded here or it buffers every future emit forever.
-        Idempotent — safe alongside the generator's own discard."""
-        self._driver._subscribers.discard(self._queue)
-
-
 class ClaudeAgentDriver:
     """Drives one Claude session via an SDK client, exposing normalized events.
 
@@ -201,6 +149,7 @@ class ClaudeAgentDriver:
         self_model_switch=True,
         subagents=True,
         attachments=True,
+        account_rotation=True,
     )
 
     def __init__(self, session_id, account, cwd, config_dir, *, mode, sdk_factory, registry,
@@ -1534,6 +1483,11 @@ class ClaudeAgentDriver:
 
 class ClaudeAgentDriverFactory(AgentDriverFactory):
     """Construct Claude drivers while keeping the SDK factory below the engine seam."""
+
+    #: Republished from the driver class (never restated) so orchestration can ask
+    #: what this engine supports before a driver exists — see
+    #: ``AgentDriverRegistry.capabilities_for``.
+    capabilities = ClaudeAgentDriver.capabilities
 
     def __init__(self, sdk_factory_for_session: Callable[[str], object],
                  permission_registry: PermissionRegistry) -> None:

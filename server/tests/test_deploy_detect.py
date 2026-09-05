@@ -1,4 +1,5 @@
 import logging
+import subprocess
 
 import pytest
 from server.deploy import detect
@@ -437,3 +438,30 @@ def test_unrun_verdicts_are_cached_with_the_nongreen_ttl(monkeypatch):
     ci_fn2, calls2 = _counting_ci({"c3": "green"})      # a re-run finally produced checks
     assert detect._cached_ci("c3", ci_fn2) == "green"
     assert calls2 == ["c3"], "past the TTL the verdict is re-queried"
+
+
+@pytest.mark.asyncio
+async def test_tick_failure_surfaces_subprocess_stderr_in_the_message(caplog):
+    """A failed `git fetch` must name WHY it failed, not just its exit status.
+
+    ``git.fetch`` runs with ``capture_output=True``, so git's diagnostic is captured
+    onto ``CalledProcessError.stderr`` — but ``str(e)`` renders only "returned non-zero
+    exit status 128", and a traceback renders ``str(e)``. On 2026-09-04 the poll tick
+    failed 147 times in 24h (120 of them inside one hour) and the journal recorded the
+    exit status and nothing else, so a ~70-minute outage was indistinguishable from a
+    one-tick network blip. The reason must reach the log *message*.
+    """
+    flaky = _Flaky()
+    loop = detect.DetectLoop("/r", interval_s=0, compute=flaky)
+    flaky.mode = subprocess.CalledProcessError(
+        128, ["git", "fetch", "--quiet", "origin", "master"],
+        output="", stderr="fatal: could not read Username for 'https://github.com'\n")
+
+    with caplog.at_level(logging.WARNING):
+        await loop.tick()
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings, "a failing tick must emit a WARNING"
+    assert "could not read Username" in warnings[0].getMessage(), (
+        "git's stderr is captured but never rendered — the operator sees only "
+        "'exit status 128' and cannot tell an auth outage from a network blip")

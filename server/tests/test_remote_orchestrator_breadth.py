@@ -220,7 +220,12 @@ async def test_transcript_window_returns_replay_window():
         try:
             with mock.patch("server.sessions.replay.replay_window", new=mock.AsyncMock(return_value=fake_window)) as patched:
                 result = await ro.transcript_window("s1", limit=5)
-            patched.assert_called_once_with("/fake/t.jsonl", before=None, limit=5)
+            # The daemon-side call now goes through the engine facade's Claude
+            # adapter (ClaudeTranscriptReplay), which always passes the full
+            # keyword set; the values are the same defaults as before.
+            patched.assert_called_once_with("/fake/t.jsonl", before=None, limit=5,
+                                            drop_incomplete_turn=False,
+                                            turn_started_at=None)
             assert isinstance(result, ReplayWindow)
             assert result.total_turns == 1
         finally:
@@ -240,6 +245,57 @@ async def test_transcript_window_no_path_returns_none():
         try:
             result = await ro.transcript_window("s1")
             assert result is None
+        finally:
+            await ro.aclose()
+
+
+@pytest.mark.asyncio
+async def test_engine_replay_window_round_trips_the_attach_arguments():
+    """The WS attach fallback for an engine with no transcript file. Its two extra
+    arguments — which transcript_window deliberately does not carry — must survive the
+    RPC, or the daemon replays the in-progress turn the live stream is about to
+    re-supply and the client renders it twice."""
+    app, orch = _build()
+    seen: dict = {}
+
+    async def _window(session_id, *, drop_incomplete_turn=False, turn_started_at=None):
+        seen.update(session_id=session_id, drop_incomplete_turn=drop_incomplete_turn,
+                    turn_started_at=turn_started_at)
+        return ReplayWindow(events=[{"type": "textDelta", "text": "hi"}],
+                            earliest_turn=2, total_turns=3)
+
+    orch.engine_replay_window = _window
+
+    async with serve_daemon_uds(app) as sock:
+        ro = RemoteOrchestrator(DaemonClient(sock))
+        try:
+            result = await ro.engine_replay_window(
+                "s1", drop_incomplete_turn=True, turn_started_at=1751710123.5)
+        finally:
+            await ro.aclose()
+
+    assert seen == {"session_id": "s1", "drop_incomplete_turn": True,
+                    "turn_started_at": 1751710123.5}
+    assert isinstance(result, ReplayWindow)
+    assert (result.earliest_turn, result.total_turns) == (2, 3)
+    assert result.events == [{"type": "textDelta", "text": "hi"}]
+
+
+@pytest.mark.asyncio
+async def test_engine_replay_window_none_survives_the_rpc():
+    """None must not arrive as an empty window: the attach distinguishes "could not
+    read this session's history" from "this session has none"."""
+    app, orch = _build()
+
+    async def _none(session_id, **kw):
+        return None
+
+    orch.engine_replay_window = _none
+
+    async with serve_daemon_uds(app) as sock:
+        ro = RemoteOrchestrator(DaemonClient(sock))
+        try:
+            assert await ro.engine_replay_window("s1") is None
         finally:
             await ro.aclose()
 

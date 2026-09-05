@@ -388,6 +388,20 @@ def register_orchestrator_rpc(app, orch) -> None:
             "totalTurns": window.total_turns,
         }
 
+    async def engine_replay_window(params: dict) -> dict | None:
+        # The attach-path sibling of transcript_window, for an engine whose history
+        # lives behind the daemon (a Codex thread is readable only by the app-server
+        # that owns it). Same serialization, so both replay shapes stay identical on
+        # the wire and the edge rebuilds one ReplayWindow either way.
+        window = await orch.engine_replay_window(**params)
+        if window is None:
+            return None
+        return {
+            "events": [e.to_wire() if hasattr(e, "to_wire") else e for e in window.events],
+            "earliestTurn": window.earliest_turn,
+            "totalTurns": window.total_turns,
+        }
+
     async def resolve_model_approval(params: dict) -> dict:
         # .get, not [] — an older client that omits "model" (pre-counter-offer)
         # must still work; None means "approve exactly what was requested".
@@ -400,6 +414,7 @@ def register_orchestrator_rpc(app, orch) -> None:
     register_rpc(app, "adopt_session", adopt_session)
     register_rpc(app, "transcript_events", transcript_events)
     register_rpc(app, "transcript_window", transcript_window)
+    register_rpc(app, "engine_replay_window", engine_replay_window)
     register_rpc(app, "resolve_model_approval", resolve_model_approval)
 
     async def usage(params: dict) -> dict:
