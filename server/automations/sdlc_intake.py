@@ -177,6 +177,16 @@ class SdlcIntakeLoop:
         prompt = build_intent_prompt(trigger.text, slug=trigger.slug, repo=trigger.repo,
                                      engine=launch_engine)
         session = await self._spawn(trigger, prompt)
+        if session is None:
+            # The spawn declined (engine policy, an engine/permission-mode pair
+            # that could not open the artifact PR, or no account with headroom).
+            # Recording the artifact anyway is the worst outcome available: the
+            # pure engine answers ``AwaitApproval`` for any initiative whose
+            # intent artifact exists, so the initiative would sit "awaiting
+            # approval" forever behind a PR nobody ever opened. The spawn helper
+            # has already recorded WHY; leave the trigger pending so a later tick
+            # retries it.
+            return
         session_id = getattr(session, "id", None)
         path = artifact_path(trigger.slug, "intent")
         await self._record_intent(trigger.slug, path, session_id)

@@ -22,17 +22,28 @@ describe('describeCreateSessionFailure — the 409 triage', () => {
     expect(describeCreateSessionFailure(err)).toEqual({ kind: 'reauth', message: REAUTH_MESSAGE })
   })
 
-  it('any other 409 is "all accounts limited", carrying the reset time when the daemon gave one', () => {
+  it('all_accounts_limited carries the reset time when the daemon gave one', () => {
     expect(describeCreateSessionFailure(
       new ApiRequestError(409, { error: { code: 'all_accounts_limited' }, earliestReset: '2026-09-04T12:00:00Z' }),
     )).toEqual({ kind: 'all-limited', earliestReset: '2026-09-04T12:00:00Z' })
-    expect(describeCreateSessionFailure(new ApiRequestError(409, {})))
+    expect(describeCreateSessionFailure(
+      new ApiRequestError(409, { error: { code: 'all_accounts_limited' } }),
+    ))
       .toEqual({ kind: 'all-limited', earliestReset: null })
   })
 
-  it('a 409 whose body is not an object still reads as all-limited (no throw)', () => {
+  it('does not hide an unclassified daemon 409 behind an empty all-limited banner', () => {
+    expect(describeCreateSessionFailure(
+      new ApiRequestError(409, { detail: 'credential authority refused account: account_disabled' }),
+    )).toEqual({
+      kind: 'other',
+      message: 'credential authority refused account: account_disabled',
+    })
+  })
+
+  it('a 409 whose body is not an object uses the create fallback (no throw)', () => {
     expect(describeCreateSessionFailure(new ApiRequestError(409, null as unknown as Record<string, unknown>)))
-      .toEqual({ kind: 'all-limited', earliestReset: null })
+      .toEqual({ kind: 'other', message: CREATE_SESSION_FALLBACK })
   })
 })
 
@@ -84,12 +95,13 @@ describe('describeCreateSessionFailure — the engine-aware failures', () => {
     })
   })
 
-  it('a plain "no host available" 409 stays the all-limited banner', () => {
-    // Unchanged behaviour: an ordinary capacity shortfall is the shell banner's.
+  it('a plain "no host available" 409 stays beside the dispatch form', () => {
+    // This is runner availability, not an account quota. Hiding it behind the
+    // quota banner leaves no message when there is no quota reset timestamp.
     const err = new ApiRequestError(409, {
       error: { code: 'no_host_available', message: 'no host available' },
     })
-    expect(describeCreateSessionFailure(err)).toEqual({ kind: 'all-limited', earliestReset: null })
+    expect(describeCreateSessionFailure(err)).toEqual({ kind: 'other', message: 'no host available' })
   })
 
   it('codex_models_unavailable (502 from the app-server) is an engine failure', () => {

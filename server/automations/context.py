@@ -240,7 +240,10 @@ class AutomationContext:
         *engine* is an already-resolved answer from ``launch_plan``, for a caller
         that needed it to build the seed prompt; leave it unset and this resolves
         it. Returns ``None`` without spawning when the origin's engine policy
-        refuses the launch."""
+        refuses the launch, or when the resolved engine/permission-mode pair
+        could not complete an automation's contract (see
+        ``unattended_launch_blocker``). Every caller must treat ``None`` as
+        "no session exists" and release whatever it claimed."""
         key = dedupe_key or origin_ref
         existing = await self._existing_session(key)
         if existing is not None:
@@ -252,7 +255,7 @@ class AutomationContext:
         # Engine BEFORE permission mode and before any create_session work: the
         # engine decides which of the caller's launch inputs survive, and a
         # refusal must cost nothing.
-        from .engine_policy import sanitize_launch_for_engine
+        from .engine_policy import sanitize_launch_for_engine, unattended_launch_blocker
         plan = await self.launch_plan_or_refuse(origin_ref)
         if plan is None:
             return None
@@ -274,7 +277,18 @@ class AutomationContext:
         # full-auto fallback (see resolve_permission_mode). acceptEdits is NOT used
         # as the automation default: a Backlog Runner's core work is shell (git, gh,
         # pytest), which acceptEdits still gates — so it would stall just the same.
-        create_kwargs["permission_mode"] = resolve_permission_mode(create_kwargs)
+        mode = resolve_permission_mode(create_kwargs)
+        create_kwargs["permission_mode"] = mode
+        # Last gate before the session exists: the engine/mode pair has to be able
+        # to produce the one output an automation has (a pushed branch and a PR).
+        # Refusing here costs nothing; discovering it at `git push` costs the whole
+        # run plus a concurrency slot (Phase 7, Tasks 7.2/7.3).
+        blocker = unattended_launch_blocker(engine, mode)
+        if blocker is not None:
+            await self.emit("error", f"refused spawn for {origin_ref}: {blocker}",
+                            kind="engine_launch_refused", target=origin_ref,
+                            detail={"engine": engine.value, "permissionMode": mode})
+            return None
         rec = await self._create_session(origin=self.automation_id, origin_ref=origin_ref,
                                          **create_kwargs)
         await self.emit("info", f"spawned session for {origin_ref}",

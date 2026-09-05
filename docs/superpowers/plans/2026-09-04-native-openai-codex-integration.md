@@ -1095,14 +1095,35 @@ hosts but contains no account ids, tokens, prompts, commands, patches, or raw na
 
 **Audit and work:**
 
-- [ ] Verify the Codex prompt contract contains the issue scope, repo/worktree rules, required
+- [x] Verify the Codex prompt contract contains the issue scope, repo/worktree rules, required
   tests, PR completion marker, no-PR behavior, and permission tier without Claude-only syntax.
-- [ ] Test claim → spawn → active reconciliation → PR association → completion/archive, plus
+- [x] Test claim → spawn → active reconciliation → PR association → completion/archive, plus
   rate-limit/auth failure, approval wait, daemon restart, no-PR completion, and needs-human give-up.
-- [ ] Verify shared-account concurrent backlog sessions on different runners do not collide in auth,
+- [x] Verify shared-account concurrent backlog sessions on different runners do not collide in auth,
   branch/worktree, origin refs, or quota handling.
 - [ ] Run one opt-in low-risk repository issue through a Codex session and record sanitized evidence.
 - [ ] Change only backlog runner's policy to `codex_allowed` after its acceptance suite passes.
+
+**Audit findings (blocking the two open items):**
+
+1. **The sandbox has no network.** An automation's only output is a pushed branch and a PR, and the
+   pinned `thread/start` takes a bare `SandboxMode` with no `sandboxPolicy` override, while the
+   policy the app-server reports back defaults `workspaceWrite.networkAccess` to `false`. `full-auto`
+   — the automation default — therefore cannot `git push`. Only `bypassPermissions`
+   (`danger-full-access`) can, and granting that to unattended sessions is a separate security
+   decision from "may this origin run Codex". `engine_policy.unattended_launch_blocker` now refuses
+   the pair at launch instead of spending a session to discover it.
+2. **The account gate asked the wrong engine.** `_backlog_healthy_account` selected a *Claude*
+   account and `sanitize_launch_for_engine` then dropped it, so a Codex launch would have had no
+   account at all — and the "no healthy account, pause spawns" decision was being made on Claude's
+   quota. Every automation spawn site now resolves its account through
+   `_automation_account_for`, which selects for the engine the origin will actually launch.
+3. **A refused launch stranded its claim.** `spawn_session` returns `None` on a refusal; three of
+   six call sites treated that as success — the runner's refill recorded a state row with a null
+   session id (holding a concurrency slot, and later escalating the issue to `needs-human` on the
+   evidence of a session that never ran), and both human-triggered taps reported `"spawned"`. The
+   SDLC intake loop recorded the `intent` artifact, which wedges the initiative in `AwaitApproval`
+   behind a PR nobody opened. All fixed, with the `refused` status surfaced to the dashboard.
 
 ### Task 7.3: AI-native SDLC Codex compatibility and initiative closeout
 
@@ -1125,12 +1146,14 @@ hosts but contains no account ids, tokens, prompts, commands, patches, or raw na
 
 **Audit and work:**
 
-- [ ] Audit intake/design/plan artifact prompts for Claude-specific commands, skills, hooks,
+- [x] Audit intake/design/plan artifact prompts for Claude-specific commands, skills, hooks,
   completion markers, and review assumptions. Provide Codex-native wording while sharing one
   semantic template/data model.
-- [ ] Map environment permission tiers to Codex sandbox/approval policy without weakening release
-  separation of duties or managed deny rules.
-- [ ] Test propose-only human gates, artifact PR creation, restart/resume, approval waits, failure
+- [x] Map environment permission tiers to Codex sandbox/approval policy without weakening release
+  separation of duties or managed deny rules. (`server/codex/permissions.py` already mapped every
+  `VALID_SESSION_MODES` value; this task added the network-egress axis the mapping had left
+  implicit, derived from the sandbox rather than restated.)
+- [x] Test propose-only human gates, artifact PR creation, restart/resume, approval waits, failure
   counters, loop guards, build handoff to backlog runner, and a mixed-engine initiative chain.
 - [ ] Run one opt-in initiative through at least intent → design → plan using Codex, keeping every
   human gate intact. Record sanitized acceptance evidence.
@@ -1138,6 +1161,11 @@ hosts but contains no account ids, tokens, prompts, commands, patches, or raw na
   `CCSWITCH_CODEX_AUTOMATIONS_ENABLED`, update the feature state to include automation parity, and
   close the epic only when Project #26 dependencies show both interactive v1 and these fast-follow
   tasks complete.
+
+The same two items stay open here as in Task 7.2, and for the same reason: they are live-boundary
+work (constitution III), and finding 1 above means a Codex automation cannot open the artifact PR
+the stage exists to produce until the authority question is answered. Everything decidable offline
+is covered by `server/tests/test_sdlc_codex_acceptance.py`.
 
 ---
 

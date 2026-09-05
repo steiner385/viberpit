@@ -224,6 +224,48 @@ def resolve_engine(policy: EnginePolicy, config: dict, *,
     return engine
 
 
+def unattended_launch_blocker(engine: AgentEngine, permission_mode: str) -> str | None:
+    """Why an unattended *engine* session in *permission_mode* cannot finish an
+    automation's own contract — or ``None`` when nothing blocks it.
+
+    Every automation origin ends its seed prompt the same way: branch, commit,
+    **push**, open a PR. That is not one automation's style, it is what an
+    automation *is* here — a control loop whose only durable output is a PR. So a
+    launch whose sandbox cannot reach the network is not a degraded run, it is a
+    run that is guaranteed to do all the work and then fail at the last step,
+    having consumed quota, a concurrency slot and an attempt.
+
+    Codex's sandbox is network-isolated in every mode except ``bypassPermissions``
+    (see ``server.codex.permissions.permits_network_egress`` — a fact about the
+    pinned app-server contract, not a ccswitch setting). Claude has no sandbox at
+    all, so nothing blocks it and this is a no-op for the engine running today.
+
+    Checked at launch rather than encoded as "automations must use mode X"
+    because the mode is resolved from the operator's own account default
+    (:func:`~server.automations.context.resolve_permission_mode`); the two can
+    disagree, and the disagreement has to be reported, not assumed away.
+    """
+    if engine is not AgentEngine.CODEX:
+        return None
+    from server.codex.permissions import (
+        UnsupportedCodexPermissionMode,
+        permits_network_egress,
+    )
+
+    try:
+        if permits_network_egress(permission_mode):
+            return None
+    except UnsupportedCodexPermissionMode:
+        return (f"permission mode {permission_mode!r} has no Codex sandbox "
+                "profile, so the authority an unattended session would run with "
+                "is undefined")
+    return (f"Codex in permission mode {permission_mode!r} runs in a "
+            "network-isolated sandbox, so the session could not push a branch or "
+            "open a pull request — the only output an automation has. Grant a "
+            "mode whose sandbox permits network egress, or leave this origin on "
+            "Claude.")
+
+
 def _default_provider_of(name: str) -> str | None:
     from ccswitch import accounts as _accts
 

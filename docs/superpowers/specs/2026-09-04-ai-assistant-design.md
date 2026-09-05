@@ -1,8 +1,11 @@
 # ccswitch AI Assistant — Backend & Integration Design Spec
 
 **Date:** 2026-09-04
-**Status:** Proposed — awaiting review (produced in an autonomous session; every decision
-below that was taken without a human is listed in §0.2 so it can be overridden in review)
+**Status:** Delivered — Phases 0–4 landed (epic #1052; PR list in
+`docs/product/features/ai-assistant.md`). Decisions A1–A8 stand; **A9 is amended** and the §2
+capability table is **superseded as a roadmap** by `2026-09-05-ai-assistant-capabilities-v2-design.md`,
+which also records the as-built audit. (Originally produced in an autonomous session; the
+autonomous decisions are listed in §0.2.)
 **Feature:** The "AI drawer" meta-assistant reserved as decision **D2** in
 `2026-09-02-ui-target-state-design.md` and whose API shape is reserved in
 `2026-09-02-ui-shell-workspace-design.md` §7. This spec is the "separate future spec" both

@@ -216,7 +216,10 @@ export interface BacklogCandidatesView {
 }
 
 export interface DispatchGroupResponse {
-  status: 'spawned' | 'claim_failed' | 'no_account' | string
+  // 'refused': the launch was declined before a session existed (an engine the
+  // origin is not audited for, or an engine/permission-mode pair that could not
+  // open the PR). The claim is returned to the pool; the reason is in the feed.
+  status: 'spawned' | 'claim_failed' | 'no_account' | 'refused' | string
   session_id: string | null
   session_name: string | null
 }
