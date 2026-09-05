@@ -1,0 +1,42 @@
+{
+ "cliVersion": "codex-cli 0.153.2",
+ "contractSha256": "6d59c753a57e9de96caf066b18e98a8ff9935539f0eea5d755c3c4b22306e336",
+ "documents": [
+  "v1/InitializeParams.json",
+  "v1/InitializeResponse.json",
+  "v2/LoginAccountParams.json",
+  "v2/LoginAccountResponse.json",
+  "v2/GetAccountParams.json",
+  "v2/GetAccountResponse.json",
+  "v2/GetAccountRateLimitsResponse.json",
+  "v2/ModelListParams.json",
+  "v2/ModelListResponse.json",
+  "v2/ErrorNotification.json",
+  "v2/AccountUpdatedNotification.json",
+  "v2/AccountRateLimitsUpdatedNotification.json",
+  "v2/AccountLoginCompletedNotification.json",
+  "ChatgptAuthTokensRefreshParams.json",
+  "ChatgptAuthTokensRefreshResponse.json"
+ ],
+ "envelopes": {
+  "ClientNotification.json": {
+   "methodCount": 1,
+   "sha256": "706cf248d75027c84a3c63348d0ed507182e8eba40069dd17541793de029145a"
+  },
+  "ClientRequest.json": {
+   "methodCount": 155,
+   "sha256": "05c82ead1a820c765c23d3a1d262e4ae54889785276ee1acf7c494141fd94d70"
+  },
+  "ServerNotification.json": {
+   "methodCount": 81,
+   "sha256": "1a59e2cecb8e7930c4358f7a92245d9d52c96adb0e02b210fc39772ed10610fc"
+  },
+  "ServerRequest.json": {
+   "methodCount": 11,
+   "sha256": "38bb1c9dbb1dda2a688a7c8712b04319fe6ee2ed28b54acd2f5fd341d25567ff"
+  }
+ },
+ "generator": "scripts/refresh_codex_contract_fixtures.py",
+ "hashScope": "sha256 over the curated documents canonicalized as JSON with sorted keys and compact separators, plus the method-name inventory of every JSON-RPC envelope. The documents committed here are that same parsed content re-serialized for readability, not the generator's byte stream: the hash is invariant to upstream formatting but sensitive to every key, type, enum member, and required entry. Envelope bodies are recorded by digest only, so upstream churn in the 150+ methods ccswitch never calls does not break the pin.",
+ "methodIndex": "method_index.json"
+}
