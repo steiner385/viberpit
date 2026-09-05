@@ -54,6 +54,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Final
 
+from server.aio import cancel_and_reap
 from server.codex import process as codex_process
 from server.codex import redaction, schema
 from server.codex.capabilities import CodexAvailability, CodexUnavailableReason
@@ -720,17 +721,10 @@ class CodexRunnerManager:
         if supervisor is not None:
             supervisor.cancel()
         await self._discard(runner.process, runner.client)
-        if supervisor is not None:
-            try:
-                await supervisor
-            except asyncio.CancelledError:
-                # The supervisor answering the cancel() two lines up is the expected
-                # path; swallowing an OUTER cancellation here would eat the daemon
-                # drain's stop signal mid-teardown.
-                if codex_process.is_outer_cancellation():
-                    raise
-            except Exception:  # noqa: BLE001 -- a failed supervisor must not fail the stop
-                logger.debug("codex: supervisor teardown failed", exc_info=True)
+        # The supervisor answering the cancel() above is the expected path; swallowing
+        # an OUTER cancellation here would eat the daemon drain's stop signal
+        # mid-teardown, so reap it through the shared helper (issue #1164).
+        await cancel_and_reap(supervisor, phase=f"codex.supervisor:{account}")
         log_event(logger, logging.INFO, "codex.manager.runner_stopped", account=account)
 
     async def stop_all(self) -> None:

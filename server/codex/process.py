@@ -45,6 +45,7 @@ from collections.abc import Awaitable, Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any, Final, Protocol
 
+from server.aio import cancel_and_reap
 from server.codex import redaction, schema
 from server.codex.capabilities import CodexAvailability, CodexUnavailableReason
 from server.codex.protocol import AppServerTransport, StreamTransport
@@ -506,20 +507,6 @@ def build_child_env(
     return env
 
 
-def is_outer_cancellation() -> bool:
-    """True when the *current* task is itself being cancelled.
-
-    ``await task`` on a task we just cancelled ourselves raises ``CancelledError``
-    in the awaiter: an expected teardown outcome, safe to swallow. An **outer**
-    cancellation — the daemon drain cancelling us — must never be swallowed, or the
-    drain silently loses its stop signal. ``Task.cancelling()`` is what tells the
-    two apart, and both this module and :mod:`server.codex.manager` ask it here so
-    the rule has one implementation.
-    """
-    current = asyncio.current_task()
-    return current is not None and current.cancelling() > 0
-
-
 class CodexProcessHandle(Protocol):
     """What :mod:`server.codex.manager` needs from a running app-server child."""
 
@@ -652,17 +639,10 @@ class CodexProcess:
             except Exception:  # noqa: BLE001 -- teardown is best effort
                 logger.exception("codex app-server terminate failed")
         try:
-            if task is not None:
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    # Our own cancel() landing is expected; an outer one is the daemon
-                    # drain and must keep propagating.
-                    if is_outer_cancellation():
-                        raise
-                except Exception:  # noqa: BLE001 -- a dead diagnostics task is not fatal
-                    logger.debug("codex: stderr drain teardown failed", exc_info=True)
+            # Our own cancel() landing is expected; an outer one is the daemon drain
+            # and must keep propagating — cancel_and_reap is the one implementation
+            # of that distinction (issue #1164).
+            await cancel_and_reap(task, phase="codex.stderr-drain")
         finally:
             if transport is not None:
                 try:

@@ -72,6 +72,20 @@ def _consume(
         log.log(level, "phase %r failed", phase, exc_info=exc)
 
 
+def _cancel_requested(task: asyncio.Future[Any]) -> bool:
+    """True when someone has already asked *task* to cancel.
+
+    A second ``cancel()`` ESCALATES: it lands inside whatever teardown region the
+    child entered in response to the first one and cuts that short. Callers that
+    cancel before reaping (``CodexRunnerManager.stop`` cancels its supervisor, tears
+    the app-server down, then reaps) must still get the child's full unwind.
+    ``Task.cancelling()`` (3.11+) is the only way to ask; a plain Future has no
+    such state, so it is treated as "not yet asked".
+    """
+    cancelling = getattr(task, "cancelling", None)
+    return bool(cancelling()) if callable(cancelling) else False
+
+
 async def cancel_and_reap(
     task: asyncio.Future[Any] | None,
     *,
@@ -99,7 +113,9 @@ async def cancel_and_reap(
     ``asyncio.wait`` makes the distinction STRUCTURAL rather than a heuristic on
     ``Task.cancelling()``: it absorbs the child's cancellation into the task object
     and only ever raises the *caller's* own, so the ambiguity simply does not arise
-    and the outer cancellation propagates untouched.
+    and the outer cancellation propagates untouched. This replaces the
+    ``is_outer_cancellation()`` check ``server/codex/process.py`` used to define —
+    the rule has one implementation, and it lives here.
 
     *timeout* bounds the wait (None = until the child unwinds); on overrun the child
     is left running rather than awaited forever — a teardown phase must cost seconds,
@@ -116,7 +132,7 @@ async def cancel_and_reap(
     if task is asyncio.current_task():
         log.warning("cancel_and_reap: phase %r tried to reap its own task — ignored", phase)
         return False
-    if not task.done():
+    if not task.done() and not _cancel_requested(task):
         task.cancel()
     done, _pending = await asyncio.wait({task}, timeout=timeout)
     if not done:
