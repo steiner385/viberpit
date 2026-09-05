@@ -50,6 +50,11 @@ try:
         master_key: str | None = Field(default=None, alias="CCSWITCH_MASTER_KEY")
         session_secret: str | None = Field(default=None, alias="CCSWITCH_SESSION_SECRET")
         tailnet_allowlist: str = Field(default="", alias="CCSWITCH_TAILNET_ALLOWLIST")
+        # Peers entitled to ASSERT an identity via the Tailscale-User-Login header.
+        # Loopback is always trusted (the `tailscale serve` proxy reaches the edge
+        # there); this adds addresses for any other front-end that stamps the header,
+        # e.g. a container gateway. Empty = loopback only.
+        trusted_proxy_ips: str = Field(default="", alias="CCSWITCH_TRUSTED_PROXY_IPS")
         # Opt-in LAN-open mode: admit clients that present NO Tailscale identity as a
         # synthetic guest instead of 401'ing them. Defaults OFF so the deployed,
         # Tailscale-fronted posture stays locked down — only flip it on a trusted,
@@ -184,6 +189,11 @@ try:
             return [item.strip() for item in self.tailnet_allowlist.split(",") if item.strip()]
 
         @property
+        def trusted_proxy_ips_items(self) -> list[str]:
+            """Extra peer addresses allowed to assert an identity header."""
+            return [item.strip() for item in self.trusted_proxy_ips.split(",") if item.strip()]
+
+        @property
         def reauth_extension_id_items(self) -> list[str] | None:
             """None = use the core default list; [] = disabled; else the configured ids."""
             if self.reauth_extension_ids is None:
@@ -237,6 +247,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         tailnet_allowlist: str = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_TAILNET_ALLOWLIST", "")
+        )
+        trusted_proxy_ips: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_TRUSTED_PROXY_IPS", "")
         )
         allow_unauthenticated: bool = dataclasses.field(
             default_factory=lambda: os.environ.get(
@@ -399,6 +412,11 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         @property
         def tailnet_allowlist_items(self) -> list[str]:
             return [item.strip() for item in self.tailnet_allowlist.split(",") if item.strip()]
+
+        @property
+        def trusted_proxy_ips_items(self) -> list[str]:
+            """Extra peer addresses allowed to assert an identity header."""
+            return [item.strip() for item in self.trusted_proxy_ips.split(",") if item.strip()]
 
         @property
         def reauth_extension_id_items(self) -> list[str] | None:
