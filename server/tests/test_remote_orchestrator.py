@@ -13,7 +13,7 @@ from server.tests.ipc_harness import serve_daemon_uds
 
 
 def _rec(sid="s1"):
-    return SessionRecord(id=sid, name="S1", account="acct", claude_session_id="cs",
+    return SessionRecord(id=sid, name="S1", account="acct", engine=AgentEngine.CLAUDE_CODE, engine_session_id="cs",
                          cols=80, rows=24, cwd="/tmp")
 
 
@@ -46,6 +46,29 @@ async def test_create_session_rejects_codex_without_dispatching_on_protocol_v1()
         await remote.create_session(name="S", engine="codex")
 
     assert client.last_call is None
+
+
+@pytest.mark.asyncio
+async def test_list_archived_normalizes_old_daemon_wire_shape():
+    client = _RecordingClient([{
+        "id": "arch-1",
+        "name": "Old",
+        "account": "acct",
+        "claudeSessionId": "legacy-csid",
+        "reasoningEffort": None,
+    }])
+    remote = RemoteOrchestrator(client)
+
+    rows = await remote.list_archived()
+
+    assert rows == [{
+        "id": "arch-1",
+        "name": "Old",
+        "account": "acct",
+        "engine": "claude_code",
+        "engineSessionId": "legacy-csid",
+        "reasoningEffort": None,
+    }]
 
 
 @pytest.mark.asyncio
@@ -150,7 +173,7 @@ async def test_prs_for_over_uds():
     from server.sessions.types import SessionRecord
     app, orch = _build_app()
     orch._records["s1"] = SessionRecord(
-        id="s1", name="S1", account="acct", claude_session_id="cs", cols=80, rows=24,
+        id="s1", name="S1", account="acct", engine=AgentEngine.CLAUDE_CODE, engine_session_id="cs", cols=80, rows=24,
         cwd="/tmp", repo="o/r", authored_branches=["feat/a", "feat/b"],
     )
     cache = {
@@ -264,7 +287,7 @@ async def test_request_pr_fix_over_uds():
     from server.github.pr_status import PullRequestInfo
     app, orch = _build_app()
     orch._records["s1"] = SessionRecord(
-        id="s1", name="S1", account="acct", claude_session_id="cs", cols=80, rows=24,
+        id="s1", name="S1", account="acct", engine=AgentEngine.CLAUDE_CODE, engine_session_id="cs", cols=80, rows=24,
         cwd="/tmp", repo="o/r", authored_branches=["feat/a"],
     )
     orch._pr_poller.cached = lambda repo, br: (

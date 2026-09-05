@@ -31,6 +31,7 @@ import pytest
 
 from server.db import init_db, db_session
 from server.db.models import Session as DbSession
+from server.sessions.engine import AgentEngine
 from server.sessions.orchestrator import SessionOrchestrator, InsufficientStorageError
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
@@ -80,14 +81,16 @@ def test_archive_leaves_cwd_in_place_and_sets_db_status(tmp_path):
             await init_db(db_url=db_url)
             await _seed([
                 dict(id="s1", name="S1", account_name="acct1",
-                     claude_session_id=None, status="idle", cwd=str(cwd)),
+                     engine_session_id=None, status="idle", cwd=str(cwd)),
             ])
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
             # Manually place a SessionRecord so archive_session can read rec.cwd.
+            from server.sessions.engine import AgentEngine
             from server.sessions.types import SessionRecord
             orch._records["s1"] = SessionRecord(
                 id="s1", name="S1", account="acct1",
-                claude_session_id="", cols=80, rows=24, cwd=str(cwd),
+                engine=AgentEngine.CLAUDE_CODE,
+                engine_session_id="", cols=80, rows=24, cwd=str(cwd),
             )
             await orch.archive_session("s1")
             await _drain_bg(orch)
@@ -117,14 +120,15 @@ def test_archive_missing_cwd_still_marks_archived(tmp_path):
             await init_db(db_url=db_url)
             await _seed([
                 dict(id="s2", name="S2", account_name="acct1",
-                     claude_session_id=None, status="idle",
+                     engine_session_id=None, status="idle",
                      cwd=str(tmp_path / "nonexistent")),
             ])
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
             from server.sessions.types import SessionRecord
             orch._records["s2"] = SessionRecord(
                 id="s2", name="S2", account="acct1",
-                claude_session_id="", cols=80, rows=24,
+                engine=AgentEngine.CLAUDE_CODE,
+                engine_session_id="", cols=80, rows=24,
                 cwd=str(tmp_path / "nonexistent"),
             )
             await orch.archive_session("s2")
@@ -148,14 +152,15 @@ def test_archive_removes_from_records_and_drivers(tmp_path):
             await init_db(db_url=db_url)
             await _seed([
                 dict(id="s3", name="S3", account_name="acct1",
-                     claude_session_id=None, status="idle",
+                     engine_session_id=None, status="idle",
                      cwd=str(tmp_path / "cwd3")),
             ])
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
             from server.sessions.types import SessionRecord
             orch._records["s3"] = SessionRecord(
                 id="s3", name="S3", account="acct1",
-                claude_session_id="", cols=80, rows=24,
+                engine=AgentEngine.CLAUDE_CODE,
+                engine_session_id="", cols=80, rows=24,
                 cwd=str(tmp_path / "cwd3"),
             )
             # Fake driver
@@ -187,11 +192,11 @@ def test_rehydrate_excludes_archived_rows(tmp_path):
         await init_db(db_url=db_url)
         await _seed([
             dict(id="a1", name="Active", account_name="acc1",
-                 claude_session_id=None, status="idle", cwd="/x"),
+                 engine_session_id=None, status="idle", cwd="/x"),
             dict(id="ar1", name="Archived", account_name="acc1",
-                 claude_session_id=None, status="archived", cwd="/y"),
+                 engine_session_id=None, status="archived", cwd="/y"),
             dict(id="e1", name="Ended", account_name="acc1",
-                 claude_session_id=None, status="ended", cwd="/z"),
+                 engine_session_id=None, status="ended", cwd="/z"),
         ])
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
         n = await orch.rehydrate()
@@ -217,10 +222,11 @@ def test_list_archived_returns_archived_rows(tmp_path):
         await init_db(db_url=db_url)
         await _seed([
             dict(id="arch1", name="Old project", account_name="acc2",
-                 claude_session_id="csid-abc", status="archived", cwd="/old/proj",
+                 engine="claude_code", engine_session_id="csid-abc",
+                 reasoning_effort="high", status="archived", cwd="/old/proj",
                  repo="cairnea/KinDash"),
             dict(id="active1", name="Live", account_name="acc2",
-                 claude_session_id=None, status="idle", cwd="/live"),
+                 engine_session_id=None, status="idle", cwd="/live"),
         ])
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
         return await orch.list_archived()
@@ -231,7 +237,10 @@ def test_list_archived_returns_archived_rows(tmp_path):
     assert r["id"] == "arch1"
     assert r["name"] == "Old project"
     assert r["account"] == "acc2"
+    assert r["engine"] == "claude_code"
+    assert r["engineSessionId"] == "csid-abc"
     assert r["claudeSessionId"] == "csid-abc"
+    assert r["reasoningEffort"] == "high"
     assert r["cwd"] == "/old/proj"
     assert r["repo"] == "cairnea/KinDash"
     assert "createdAt" in r
@@ -246,7 +255,7 @@ def test_list_archived_empty_when_none(tmp_path):
         await init_db(db_url=db_url)
         await _seed([
             dict(id="a", name="A", account_name="x",
-                 claude_session_id=None, status="idle", cwd="/a"),
+                 engine_session_id=None, status="idle", cwd="/a"),
         ])
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
         return await orch.list_archived()
@@ -272,7 +281,7 @@ def test_unarchive_new_style_flips_status_in_place(tmp_path):
             await init_db(db_url=db_url)
             await _seed([
                 dict(id="s9", name="InPlace", account_name="acc1",
-                     claude_session_id=None, status="archived",
+                     engine_session_id=None, status="archived",
                      cwd=str(cwd), archive_root=None),
             ])
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
@@ -311,7 +320,7 @@ def test_unarchive_moves_folder_back_and_sets_idle(tmp_path):
             await init_db(db_url=db_url)
             await _seed([
                 dict(id="s10", name="My Session", account_name="acc1",
-                     claude_session_id="csid-10", status="archived",
+                     engine_session_id="csid-10", status="archived",
                      cwd=str(original_cwd)),
             ])
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
@@ -356,7 +365,7 @@ def test_unarchive_missing_archive_folder_raises(tmp_path):
             await init_db(db_url=db_url)
             await _seed([
                 dict(id="s11", name="Regen", account_name="acc1",
-                     claude_session_id=None, status="archived",
+                     engine_session_id=None, status="archived",
                      cwd=str(original_cwd)),
             ])
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
@@ -394,7 +403,7 @@ def test_unarchive_reappears_in_list_sessions(tmp_path):
             await init_db(db_url=db_url)
             await _seed([
                 dict(id="s12", name="Comeback", account_name="acc1",
-                     claude_session_id=None, status="archived",
+                     engine_session_id=None, status="archived",
                      cwd=str(original_cwd)),
             ])
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
@@ -428,7 +437,7 @@ def test_permanent_delete_removes_folder_and_db_row(tmp_path):
             await init_db(db_url=db_url)
             await _seed([
                 dict(id="s20", name="Delete Me", account_name="acc1",
-                     claude_session_id=None, status="archived",
+                     engine_session_id=None, status="archived",
                      cwd="/old/cwd/s20"),
             ])
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
@@ -467,13 +476,14 @@ def test_permanent_delete_live_session_archives_then_deletes(tmp_path):
             await init_db(db_url=db_url)
             await _seed([
                 dict(id="live1", name="Live", account_name="acc1",
-                     claude_session_id=None, status="idle", cwd=str(cwd)),
+                     engine_session_id=None, status="idle", cwd=str(cwd)),
             ])
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
             from server.sessions.types import SessionRecord
             orch._records["live1"] = SessionRecord(
                 id="live1", name="Live", account="acc1",
-                claude_session_id="", cols=80, rows=24, cwd=str(cwd),
+                engine=AgentEngine.CLAUDE_CODE,
+                engine_session_id="", cols=80, rows=24, cwd=str(cwd),
             )
             fake_driver = MagicMock()
             fake_driver.aclose = AsyncMock()
@@ -517,7 +527,7 @@ def test_permanent_delete_new_style_removes_worktree(tmp_path):
             await init_db(db_url=db_url)
             await _seed([
                 dict(id="s30", name="Reap", account_name="acc1",
-                     claude_session_id=None, status="archived",
+                     engine_session_id=None, status="archived",
                      cwd=str(cwd), archive_root=None),
             ])
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
@@ -551,7 +561,7 @@ def test_permanent_delete_leaves_non_ccswitch_cwd_in_place(tmp_path):
             await init_db(db_url=db_url)
             await _seed([
                 dict(id="s31", name="Guarded", account_name="acc1",
-                     claude_session_id=None, status="archived",
+                     engine_session_id=None, status="archived",
                      cwd=str(cwd), archive_root=None),
             ])
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
@@ -604,7 +614,7 @@ def test_permanent_delete_containment_guard(tmp_path):
             # Seed a normal row — the guard is about path containment.
             await _seed([
                 dict(id="safe-uuid-1234", name="Guard Test", account_name="acc1",
-                     claude_session_id=None, status="archived",
+                     engine_session_id=None, status="archived",
                      cwd="/old/cwd"),
             ])
 
@@ -636,7 +646,7 @@ def test_transcript_events_returns_replayed_events(tmp_path):
             await init_db(db_url=db_url)
             await _seed([
                 dict(id="t1", name="T1", account_name="acc1",
-                     claude_session_id="csid-t1", status="archived",
+                     engine_session_id="csid-t1", status="archived",
                      cwd="/old"),
             ])
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
@@ -668,10 +678,10 @@ def test_transcript_events_returns_empty_when_no_transcript(tmp_path):
     async def run():
         with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
-            # Session with no claude_session_id → can't glob a transcript.
+            # Session with no engine_session_id → can't glob a transcript.
             await _seed([
                 dict(id="t2", name="T2", account_name="acc1",
-                     claude_session_id=None, status="archived",
+                     engine_session_id=None, status="archived",
                      cwd="/old"),
             ])
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
@@ -696,7 +706,7 @@ def test_resolve_transcript_path_without_credential_slot(tmp_path):
             await init_db(db_url=db_url)
             await _seed([
                 dict(id="g1", name="Ghost", account_name="ghost_account",
-                     claude_session_id="csid-ghost", status="archived",
+                     engine_session_id="csid-ghost", status="archived",
                      cwd="/old"),
             ])
             # Transcript exists under the account cfg dir; NO store slot
@@ -731,7 +741,7 @@ def test_unarchive_raises_insufficient_storage_when_move_skipped(tmp_path):
             await init_db(db_url=db_url)
             await _seed([
                 dict(id="s_oom", name="OOM", account_name="acc1",
-                     claude_session_id=None, status="archived",
+                     engine_session_id=None, status="archived",
                      cwd=str(original_cwd)),
             ])
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
@@ -757,7 +767,7 @@ def test_unarchive_error_message_names_real_mountpoint(tmp_path):
             await init_db(db_url=db_url)
             await _seed([
                 dict(id="s_oom", name="OOM", account_name="acc1",
-                     claude_session_id=None, status="archived",
+                     engine_session_id=None, status="archived",
                      cwd=str(original_cwd)),
             ])
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
@@ -796,7 +806,7 @@ def test_permanent_delete_uses_stored_archive_root_not_current_home(tmp_path):
             await init_db(db_url=db_url)
             await _seed([
                 dict(id="s21", name="Stranded", account_name="acc1",
-                     claude_session_id=None, status="archived",
+                     engine_session_id=None, status="archived",
                      cwd="/old/cwd/s21", archive_root=str(old_root)),
             ])
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())

@@ -50,11 +50,12 @@ async def test_reassign_sets_account_before_driver_start(monkeypatch):
     monkeypatch.setattr(orch_mod, "db_session", lambda: _NullCtx())
 
     from server.sessions.orchestrator import SessionOrchestrator
+    from server.sessions.engine import AgentEngine
     from server.sessions.types import SessionRecord
 
     global _orch
     _orch = SessionOrchestrator.__new__(SessionOrchestrator)
-    rec = SessionRecord(id="s1", name="n", account="secondary", claude_session_id="c1",
+    rec = SessionRecord(id="s1", name="n", account="secondary", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                         cols=80, rows=24, cwd="/tmp", model=None)
     _orch._records = {"s1": rec}
     _orch._drivers = {"s1": _OldDriver()}
@@ -66,7 +67,7 @@ async def test_reassign_sets_account_before_driver_start(monkeypatch):
     _orch._suggester = None
     _orch._session_factory = lambda sid: None
     _orch._publish_event = lambda e: None
-    _orch._persist_claude_session_id = lambda *a, **k: None
+    _orch._persist_engine_session_id = lambda *a, **k: None
     _orch._persist_status = lambda *a, **k: None
     _orch._handle_recoverable_failure = lambda *a, **k: None
     _orch._persist_context_usage = lambda *a, **k: None

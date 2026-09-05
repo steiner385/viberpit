@@ -42,11 +42,11 @@ async def test_reconnect_starts_fresh_and_resets_state():
     client = fake_sdk.FakeSDKClient(messages=[])
     d = _driver(client)
     await d.start()
-    d.claude_session_id = "old-sid"
+    d._engine_session_id = "old-sid"
     d._titled = True
     await d.reconnect()
     assert client.last_resume is None          # fresh session, resume dropped
-    assert d.claude_session_id is None
+    assert d.engine_session_id is None
     assert d._titled is False
     assert d.resume is None
 

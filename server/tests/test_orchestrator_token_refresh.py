@@ -8,6 +8,7 @@ from unittest import mock
 import pytest
 
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
@@ -28,7 +29,7 @@ async def test_refresh_idle_tokens_skips_needs_reauth_and_live_sessions():
     with mock.patch("server.sessions.orchestrator.ccswitch_accounts") as ca:
         ca.list_accounts.return_value = accts
         await orch._refresh_idle_tokens_once()
-    refreshed = [c.args[0] for c in ca.ensure_valid_token.call_args_list]
+    refreshed = [c.args[0] for c in ca.acquire_valid_token.call_args_list]
     assert refreshed == ["idle_ok"], f"only the idle healthy account should refresh: {refreshed}"
 
 
@@ -40,9 +41,9 @@ async def test_refresh_idle_tokens_is_best_effort():
     orch.has_live_session = lambda name: False
     with mock.patch("server.sessions.orchestrator.ccswitch_accounts") as ca:
         ca.list_accounts.return_value = [{"name": "a", "status": "ok"}, {"name": "b", "status": "ok"}]
-        ca.ensure_valid_token.side_effect = [RuntimeError("boom"), None]
+        ca.acquire_valid_token.side_effect = [RuntimeError("boom"), None]
         await orch._refresh_idle_tokens_once()  # must not raise
-    assert [c.args[0] for c in ca.ensure_valid_token.call_args_list] == ["a", "b"]
+    assert [c.args[0] for c in ca.acquire_valid_token.call_args_list] == ["a", "b"]
 
 
 @pytest.mark.asyncio
@@ -128,7 +129,8 @@ def test_session_factory_injects_oauth_token_env(monkeypatch):
     orch = SessionOrchestrator(sdk_factory=base, poll_interval=9999.0, usage_fn=lambda n: None)
     orch._x11 = None
     orch._records["s1"] = SessionRecord(id="s1", name="n", account="primary",
-                                        claude_session_id="", cols=80, rows=24, cwd="/tmp/x")
+                                        engine=AgentEngine.CLAUDE_CODE,
+                                        engine_session_id="", cols=80, rows=24, cwd="/tmp/x")
     from server.sessions import account_auth
     monkeypatch.setattr(account_auth, "crypto", mock.MagicMock())
     account_auth.crypto.read_oauth_token = lambda acct: "sk-ant-oat01-TOK" if acct == "primary" else None
@@ -147,7 +149,8 @@ def test_session_factory_no_token_leaves_env_unchanged(monkeypatch):
     orch = SessionOrchestrator(sdk_factory=base, poll_interval=9999.0, usage_fn=lambda n: None)
     orch._x11 = None
     orch._records["s1"] = SessionRecord(id="s1", name="n", account="primary",
-                                        claude_session_id="", cols=80, rows=24, cwd="/tmp/x")
+                                        engine=AgentEngine.CLAUDE_CODE,
+                                        engine_session_id="", cols=80, rows=24, cwd="/tmp/x")
     from server.sessions import account_auth
     monkeypatch.setattr(account_auth, "crypto", mock.MagicMock())
     account_auth.crypto.read_oauth_token = lambda acct: None

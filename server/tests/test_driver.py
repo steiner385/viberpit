@@ -119,7 +119,7 @@ def test_driver_streams_turn_and_sets_session_id():
             if isinstance(e, TurnEnd):
                 break
         await d.aclose()
-        return seen, d.claude_session_id
+        return seen, d.engine_session_id
     seen, sid = asyncio.run(run())
     names = [type(e).__name__ for e in seen]
     # C3: first event is now Title (auto-title from first prompt)

@@ -1,3 +1,4 @@
+// @vitest-environment node
 // The region-visibility matrix — umbrella §4.2's table, used as the fixture.
 //
 // Every one of the 28 mode × region cells appears in EXPECTED below, not just

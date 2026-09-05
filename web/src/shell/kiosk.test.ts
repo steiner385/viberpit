@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest'
 import { readKioskConfig, DEFAULT_CYCLE_SECONDS, MIN_CYCLE_SECONDS } from './kiosk'
 

@@ -27,7 +27,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { Session, Account } from './api/types'
-import { session } from '@/test/factories'
+import { anthropicUsage, session } from '@/test/factories'
 import { api } from './api/client'
 import { renderApp } from './test/renderApp'
 
@@ -75,7 +75,7 @@ const MOCK_ACCOUNTS: Account[] = [
   {
     name: 'alice',
     status: 'ok',
-    usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 30, resetsAt: null } },
+    usage: anthropicUsage(20, 30),
     liveSessions: { active: 0, idle: 0 },
     rank: null,
     rankReason: null,
@@ -159,7 +159,7 @@ describe('App routing', () => {
     vi.mocked(api.get).mockImplementation((path: string) => {
       if (path === '/sessions/archived') return Promise.resolve([
         { id: 'arch-1', name: 'Implement issue 16', account: 'alice', cwd: '/tmp/x',
-          claudeSessionId: 'c-1', permissionMode: 'default',
+          engineSessionId: 'c-1', permissionMode: 'default',
           createdAt: '2026-06-01T10:00:00Z', archivedAt: '2026-06-02T10:00:00Z' },
       ])
       // Exact path + query only: `/sessions/archived` is a DIFFERENT endpoint,

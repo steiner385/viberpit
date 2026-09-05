@@ -30,6 +30,7 @@ import type { AccountUpdate } from '@/api/hooks'
 import { AddAccountDialog } from './AddAccountDialog'
 import { ReauthBrowserPanel } from './ReauthBrowserPanel'
 import type { Account, LiveSessionCounts, Session } from '@/api/types'
+import { reserveWindow, usageWindows } from '@/lib/usageWindows'
 
 // ── Sessions + Rank Badges ───────────────────────────────────────────────────
 
@@ -481,29 +482,32 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
           )}
           <SessionsBadge counts={account.liveSessions} />
           <RankBadge rank={account.rank} reason={account.rankReason} />
-          {account.weeklyReservePct != null && account.usage != null &&
-            account.usage.weekly.pct >= account.weeklyReservePct && <OverReserveChip />}
+          {account.weeklyReservePct != null &&
+            (reserveWindow(account.usage)?.pct ?? -1) >= account.weeklyReservePct &&
+            <OverReserveChip />}
           {account.allowExtraUsage === true && <ExtraUsageChip />}
           {/* Opted in, but the provider has extra usage off — the toggle cannot
               take effect, so say so rather than let it look armed. Usage is only
               checked when known: a failed fetch is not evidence it is disabled. */}
           {account.allowExtraUsage === true && account.usage != null &&
             account.usage.extraUsageEnabled === false && <ExtraUsageUnavailableChip />}
-          {account.usage && (
-            <>
-              <UsageBadge
-                pct={account.usage.session.pct}
-                label={account.provider === 'copilot' ? 'premium-req' : 'session'}
-                resetsAt={account.usage.session.resetsAt}
-              />
-              <UsageBadge
-                pct={account.usage.weekly.pct}
-                label="weekly"
-                resetsAt={account.usage.weekly.resetsAt}
-                markerPct={account.weeklyReservePct ?? null}
-              />
-            </>
-          )}
+          {/* One badge per window the provider actually reported. A Copilot
+              account has ONE (premium requests); it used to render that same
+              number twice, as "premium-req" and again as "weekly". The reserve
+              marker rides on whichever window the reserve is measured against. */}
+          {usageWindows(account.usage).map((w) => (
+            <UsageBadge
+              key={w.key}
+              pct={w.pct}
+              label={w.label}
+              resetsAt={w.resetsAt}
+              markerPct={
+                w.key === reserveWindow(account.usage)?.key
+                  ? account.weeklyReservePct ?? null
+                  : null
+              }
+            />
+          ))}
           {account.provider === 'copilot' ? (
             !isReauthRunning && !isAwaitingCode && (
               <button

@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { Mutation } from '@tanstack/react-query'
 import { ApiRequestError } from '@/api/client'

@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Callable
 if TYPE_CHECKING:
     from datetime import datetime
 
+    from server.assistant.client import AssistantApi
     from server.automations.completion_bar import PrFacts
     from server.github.merge_queue import QueueEntry
     from server.github.pr_status import PipelinePr
@@ -37,14 +38,14 @@ if TYPE_CHECKING:
 
 from ccswitch import accounts as ccswitch_accounts
 from ccswitch import configdir, copilot as _copilot_mod, crypto, gitrepos, worktrees
-from ccswitch.accounts import provider_of as _provider_of
+from ccswitch.accounts import provider_or_none as _provider_of
 from ccswitch.account_names import (
     assert_valid_account_name, validate_account_name, InvalidAccountName,
 )
 from ccswitch.config import load_config
 from ccswitch.configdir import compose
 from ccswitch.paths import account_cfg_dir, shared_base
-from ccswitch.selector import at_ceiling, exhausted
+from ccswitch.selector import at_ceiling, exhausted, usage_known
 from server.aio import bounded_wait
 from server.assistant.context import PromptContext
 from server.audit import record_audit
@@ -76,6 +77,7 @@ from server.sessions.engine import (
 )
 from server.sessions.orphaned_asks import orphaned_answer_prompt, orphaned_ask_kind
 from server.sessions.permissions import PermissionRegistry, resolve_permission_mode
+from server.sessions import session_actions
 from server.sessions.claude_sdk_factory import real_sdk_factory, real_suggestion_factory, real_summary_factory
 from server.sessions.replay import replay_events
 from server.sessions import status as _status_mod
@@ -405,6 +407,20 @@ PRIMARY_LEASE_TTL_S = env_float("CCSWITCH_PRIMARY_LEASE_TTL_S", 300.0, minimum=1
 _OWNERSHIP_HOSTS_TTL_S = 60.0
 
 
+def _limiting_window(usage, ceiling: float):
+    """The window that is actually holding this account back, or None.
+
+    The FIRST window at/over *ceiling* in provider order — for Anthropic that is
+    session before weekly, which is exactly what the pair math it replaced did
+    (``session_pct >= ceiling ? session : weekly``). Falls back to the binding
+    window so a caller below the ceiling still gets the constraining one.
+    """
+    if usage is None:
+        return None
+    over = usage.windows_at_or_over(ceiling)
+    return over[0] if over else usage.binding_window()
+
+
 def daemon_role() -> str:
     """Return this daemon's role from ``CCSWITCH_DAEMON_ROLE``.
 
@@ -490,6 +506,7 @@ class SessionOrchestrator:
         x11=None,
         copilot=None,
         copilot_auth=None,
+        codex=None,
         title_fn: Callable | None = None,
         summary_factory=None,
         driver_registry: AgentDriverRegistry | None = None,
@@ -516,6 +533,11 @@ class SessionOrchestrator:
         self._x11 = x11  # X11Manager | None — per-session virtual displays
         self._copilot = copilot  # CopilotProxyManager | None — per-account translating proxy
         self._copilot_auth = copilot_auth  # CopilotAuthManager | None — device-flow auth manager
+        # CodexRunnerManager | None — per-account `codex app-server` supervision.
+        # None whenever Codex is disabled, unsupported, or not installed, which is
+        # what keeps the feature fail-closed: the two lifecycle hooks below become
+        # no-ops and no other engine's behaviour changes.
+        self._codex = codex
         if os.environ.get("CCSWITCH_SUGGESTIONS", "1") == "0":
             self._suggester = None
         else:
@@ -553,7 +575,7 @@ class SessionOrchestrator:
         # In-flight completion-driver-release tasks (see _persist_status), keyed by
         # session_id. The driver is already out of `_drivers` by the time an entry
         # lands here — a fast reopen (ensure_driver) must await this before building
-        # a replacement driver against the same claude_session_id/cwd, otherwise the
+        # a replacement driver against the same engine_session_id/cwd, otherwise the
         # old process can still be flushing its session file while the new one reads
         # it (the SDK's own subprocess_cli.py warns this can lose the last assistant
         # message). Cleared on completion, success or failure, so a stuck release can
@@ -565,7 +587,7 @@ class SessionOrchestrator:
         # switch, rate-limit rotation, 401 recompose, crash recovery). Each used to
         # race independently — two recoverable-failure callbacks firing back to
         # back, or a manual switch landing mid-resume, each built and started its
-        # own `claude` process against the same claude_session_id; only one was
+        # own `claude` process against the same engine_session_id; only one was
         # ever registered in `_drivers`, so the loser ran on as an invisible twin
         # burning quota in the same worktree (#1040). A caller that finds an entry
         # here awaits it and takes its driver instead of building a second one.
@@ -1016,6 +1038,7 @@ class SessionOrchestrator:
         self._sweep_task: asyncio.Task | None = None
         self._archive_limit_task: asyncio.Task | None = None
         self._janitor_task: asyncio.Task | None = None
+        self._assistant_reap_task: asyncio.Task | None = None
         self._pr_branch_task: asyncio.Task | None = None
         # Primary-lease state (#852): the heartbeat task and the fence acquired at
         # start(). None on workers and on an orchestrator that never start()ed.
@@ -1119,6 +1142,48 @@ class SessionOrchestrator:
             overlays = self._assistant_overlays = {}
         overlays[session_id] = overlay
 
+    def _setup_assistant_overlay(self, session_id: str, *, identity: str,
+                                 model: str | None) -> "AssistantApi":
+        """Everything that makes one session an ASSISTANT rather than a coding agent:
+        mint its loopback bearer token, build the in-process ``ccswitch`` MCP server on
+        top of it, and register the resulting ``ClaudeAgentOptions`` overlay. Returns
+        the ``AssistantApi`` to hand to ``_create_driver(assistant_api=...)``, which the
+        built ``AgentDriver`` then owns closing.
+
+        Called from the spawn in ``_spawn_session`` and the resume in ``ensure_driver``.
+        It has to be called on resume, not just spawn: the overlay is the ONLY thing
+        supplying ``tools=[]``, the ``disallowed_tools`` denylist, ``strict_mcp_config``
+        and ``max_turns``, and the idle reap (spec §4.7) drops the driver — and its
+        overlay — every 15 minutes. A resume that skipped this rebuilt the drawer as a
+        plain Claude Code session with the operator's own MCP servers mounted and no tool
+        restrictions at all, while simultaneously losing its ``mcp__ccswitch__*`` tools.
+
+        NOT yet universal: ``_reassign`` (account rotation / 401 recompose / crash
+        recovery) is a THIRD site that builds an AgentDriver and does not go through
+        here, so a rotated assistant carries the closed ``AssistantApi`` of the driver it
+        replaced. That is pre-existing at this branch's merge base and is tracked
+        separately — do not read this helper as covering every driver build.
+
+        And it must REBUILD rather than preserve: the MCP tool handlers close over this
+        ``AssistantApi``, whose ``httpx.AsyncClient`` ``driver.aclose()`` closes on
+        teardown. A preserved overlay resumes with a closed client and every tool call
+        raises. The token is re-minted for the same reason — its max-age is
+        ``assistant_idle_s * 4`` (``server/auth/middleware``), short enough to expire
+        while the row is still alive and resumable.
+        """
+        from server.assistant.client import AssistantApi
+        from server.assistant.options import assistant_options
+        from server.assistant.server import build_server
+        from server.assistant.token import mint_token
+        from server.config import get_settings
+        cfg = get_settings()
+        api = AssistantApi(base_url=f"http://127.0.0.1:{cfg.port}",
+                           token=mint_token(identity, session_id), session_id=session_id)
+        self.register_assistant_overlay(session_id, assistant_options(
+            server=build_server(api), max_turns=cfg.assistant_max_turns,
+            model=model or cfg.assistant_model))
+        return api
+
     def _session_factory(self, session_id: str):
         """Return a factory closure injecting this session's DISPLAY and PreCompact hook.
 
@@ -1167,7 +1232,7 @@ class SessionOrchestrator:
             mode=mode,
             identity=identity,
             resume=resume,
-            on_engine_session_id=self._persist_claude_session_id,
+            on_engine_session_id=self._persist_engine_session_id,
             on_sync_back=on_sync_back,
             on_status=self._persist_status,
             on_context_usage=self._persist_context_usage,
@@ -1268,6 +1333,14 @@ class SessionOrchestrator:
         # local cleanup (each daemon owns its own worktrees), so workers run it too.
         self._janitor_task = asyncio.create_task(
             self._worktree_janitor_loop(interval=86400.0), name="worktree-janitor-loop"
+        )
+        # Assistant idle-reap sweep (spec §4.7): closes the driver of any AI-drawer
+        # session idle past CCSWITCH_ASSISTANT_IDLE_S, keeping the row for
+        # resume-on-reopen. Per-host local cleanup like the janitor above — an
+        # assistant's live driver only exists in the `_drivers` of the daemon that
+        # spawned it, so every host (primary or worker) must run its own sweep.
+        self._assistant_reap_task = asyncio.create_task(
+            self._assistant_reap_loop(interval=60.0), name="assistant-reap-loop"
         )
         # Fleet-global automation loops (#919): ONLY the primary daemon may run these.
         # A worker serves dispatched sessions only (#840); a worker that also drove
@@ -1441,9 +1514,21 @@ class SessionOrchestrator:
         can't starve *token* refresh. Skips accounts that are already needs-reauth
         (a dead single-use token can't be refreshed — don't hammer the endpoint)
         and accounts with a live session (the SDK owns that token family and
-        ccswitch must not refresh it out from under the running process). Reuses
-        ensure_valid_token as the single source of truth; per-account errors are
-        swallowed — status transitions stay owned by the usage_for path.
+        ccswitch must not refresh it out from under the running process).
+
+        Refreshes via ``acquire_valid_token``, NOT ``ensure_valid_token``: only the
+        former recovers a rotation the SDK already performed (on AuthError it runs
+        sync_back to pull the live cfg dir's token into the slot, then retries). This
+        sweep runs against accounts whose session just ENDED, which is precisely when
+        ccswitch's store slot holds a token the SDK has already superseded — so
+        refreshing straight from the slot got 400 invalid_grant, which
+        ``oauth.refresh_access_token`` treats as proof the grant is dead, and flipped
+        healthy accounts to needs-reauth (2026-09-04: two accounts lost OAuth this
+        way within seconds of their session ending). Every other caller in the tree
+        already uses acquire_valid_token.
+
+        Per-account errors are swallowed — status transitions stay owned by the
+        usage_for path.
         """
         try:
             accounts = ccswitch_accounts.list_accounts()
@@ -1457,9 +1542,9 @@ class SessionOrchestrator:
             if acct.get("status") == "needs-reauth" or self.has_live_session(name):
                 continue
             try:
-                await asyncio.to_thread(ccswitch_accounts.ensure_valid_token, name)
+                await asyncio.to_thread(ccswitch_accounts.acquire_valid_token, name)
             except Exception:
-                log.debug("token-refresh: ensure_valid_token failed for %s", name, exc_info=True)
+                log.debug("token-refresh: acquire_valid_token failed for %s", name, exc_info=True)
 
     async def _token_refresh_monitor(self) -> None:
         """Run an idle-token refresh immediately (restart recovery), then every
@@ -1499,7 +1584,7 @@ class SessionOrchestrator:
                      "_sdlc_synth_task",
                      "_autopilot_task", "_mirror_task",
                      "_cicd_task", "_archaudit_task", "_sweep_task",
-                     "_archive_limit_task", "_janitor_task", "_recurring_task",
+                     "_archive_limit_task", "_janitor_task", "_assistant_reap_task", "_recurring_task",
                      "_lease_task", "_hb_task", "_drain_timer"):
             # Default None: stop() must be safe on an orchestrator that never
             # start()ed (tests build one via __new__/without start).
@@ -1573,6 +1658,7 @@ class SessionOrchestrator:
         origin: str | None = None,
         origin_ref: str | None = None,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         kind: str | None = None,
         owner_identity: str | None = None,
         engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
@@ -1639,7 +1725,8 @@ class SessionOrchestrator:
                 identity=identity, permission_mode=permission_mode,
                 attachment_ids=attachment_ids, name_is_auto=name_is_auto,
                 origin=origin, origin_ref=origin_ref, model=model,
-                kind=kind, owner_identity=owner_identity)
+                reasoning_effort=reasoning_effort, kind=kind,
+                owner_identity=owner_identity, engine=selected_engine)
 
         # Global active-session cap: at/over the cap the session is created as a
         # queued row (real session, no worktree/account/driver yet) and started
@@ -1654,14 +1741,16 @@ class SessionOrchestrator:
                 branch=branch, repo=repo, identity=identity,
                 permission_mode=permission_mode, attachment_ids=attachment_ids,
                 name_is_auto=name_is_auto, origin=origin, origin_ref=origin_ref,
-                model=model, kind=kind, owner_identity=owner_identity)
+                model=model, reasoning_effort=reasoning_effort, kind=kind,
+                owner_identity=owner_identity, engine=selected_engine)
         return await self._spawn_session(
             session_id, name=name, account=account, initial_prompt=initial_prompt,
             cols=cols, rows=rows, cwd=cwd, branch=branch, repo=repo,
             identity=identity, permission_mode=permission_mode,
             attachment_ids=attachment_ids, name_is_auto=name_is_auto,
             origin=origin, origin_ref=origin_ref, model=model,
-            kind=kind, owner_identity=owner_identity, engine=selected_engine)
+            reasoning_effort=reasoning_effort, kind=kind,
+            owner_identity=owner_identity, engine=selected_engine)
 
     def _active_session_count(self) -> int:
         """Sessions consuming a runtime capacity slot (see CAPACITY_EXEMPT_STATUSES).
@@ -1684,15 +1773,18 @@ class SessionOrchestrator:
                                initial_prompt, cols, rows, cwd, branch, repo,
                                identity, permission_mode, attachment_ids,
                                name_is_auto, origin, origin_ref, model,
-                               kind=None, owner_identity=None) -> SessionRecord:
+                               reasoning_effort=None, kind=None, owner_identity=None,
+                               engine=AgentEngine.CLAUDE_CODE) -> SessionRecord:
         from datetime import datetime
         from server.sessions import session_queue as sq
         now = datetime.utcnow()
         host = local_host_stamp()
+        selected_engine = parse_agent_engine(engine)
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name=name, account_name=account or "",
-                claude_session_id=None, status="queued", pid=None,
+                engine=selected_engine.value, engine_session_id=None,
+                reasoning_effort=reasoning_effort, status="queued", pid=None,
                 cwd=cwd or "", repo=repo, branch=None,
                 permission_mode=permission_mode, name_is_auto=name_is_auto,
                 origin=origin, origin_ref=origin_ref, model=model,
@@ -1706,6 +1798,12 @@ class SessionOrchestrator:
             "attachment_ids": attachment_ids, "name_is_auto": name_is_auto,
             "origin": origin, "origin_ref": origin_ref, "model": model,
         }
+        # Preserve the protocol-v1 queue blob for Claude/default effort. Non-default
+        # values are only emitted once a compatible engine actually exists.
+        if selected_engine is not AgentEngine.CLAUDE_CODE:
+            params["engine"] = selected_engine.value
+        if reasoning_effort is not None:
+            params["reasoning_effort"] = reasoning_effort
         # `params` is a JSON column in the SHARED fleet DB and _maybe_start_queued is NOT
         # ownership-gated — ANY daemon may drain this entry and splat it into
         # _spawn_session(**params). Hosts run mixed versions on purpose (rocky lags), and
@@ -1721,11 +1819,13 @@ class SessionOrchestrator:
             params["owner_identity"] = owner_identity
         priority = await sq.enqueue(session_id, params)
         rec = SessionRecord(
-            id=session_id, name=name, account=account or "", claude_session_id="",
+            id=session_id, name=name, account=account or "", engine=selected_engine,
+            engine_session_id="",
             cols=cols, rows=rows, cwd=cwd or "", repo=repo, branch=None,
             status="queued", name_is_auto=name_is_auto,
             created_at=now, updated_at=now, origin=origin, origin_ref=origin_ref,
-            model=model, host=host, kind=kind, owner_identity=owner_identity)
+            model=model, reasoning_effort=reasoning_effort, host=host,
+            kind=kind, owner_identity=owner_identity)
         self._records[session_id] = rec
         log.info("session.queued id=%s priority=%d origin=%s",
                  session_id, priority, origin)
@@ -1735,7 +1835,8 @@ class SessionOrchestrator:
                                  initial_prompt, cols, rows, cwd, branch, repo,
                                  identity, permission_mode, attachment_ids,
                                  name_is_auto, origin, origin_ref, model,
-                                 kind=None, owner_identity=None) -> SessionRecord:
+                                 reasoning_effort=None, kind=None, owner_identity=None,
+                                 engine=AgentEngine.CLAUDE_CODE) -> SessionRecord:
         """Park a model-gated session at 'pending_approval': persist a driverless row
         with the requested model in `pending_model`, no queue entry, no capacity slot.
 
@@ -1748,10 +1849,13 @@ class SessionOrchestrator:
         from datetime import datetime
         now = datetime.utcnow()
         host = local_host_stamp()
+        selected_engine = parse_agent_engine(engine)
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name=name, account_name=account or "",
-                claude_session_id=None, status="pending_approval", pid=None,
+                engine=selected_engine.value, engine_session_id=None,
+                reasoning_effort=reasoning_effort,
+                status="pending_approval", pid=None,
                 cwd=cwd or "", repo=repo, branch=None,
                 permission_mode=permission_mode, name_is_auto=name_is_auto,
                 origin=origin, origin_ref=origin_ref,
@@ -1769,13 +1873,15 @@ class SessionOrchestrator:
             rows=rows, cwd=cwd, branch=branch, repo=repo, identity=identity,
             permission_mode=permission_mode, attachment_ids=attachment_ids,
             name_is_auto=name_is_auto, origin=origin, origin_ref=origin_ref, model=model,
-            kind=kind, owner_identity=owner_identity)
+            reasoning_effort=reasoning_effort, kind=kind,
+            owner_identity=owner_identity, engine=selected_engine)
         rec = SessionRecord(
-            id=session_id, name=name, account=account or "", claude_session_id="",
+            id=session_id, name=name, account=account or "", engine=selected_engine,
+            engine_session_id="",
             cols=cols, rows=rows, cwd=cwd or "", repo=repo, branch=None,
             status="pending_approval", name_is_auto=name_is_auto,
             created_at=now, updated_at=now, origin=origin, origin_ref=origin_ref,
-            model=None, pending_model=model, host=host,
+            model=None, reasoning_effort=reasoning_effort, pending_model=model, host=host,
             kind=kind, owner_identity=owner_identity)
         self._records[session_id] = rec
         log.info("session.pending_approval id=%s model=%s origin=%s",
@@ -1982,6 +2088,8 @@ class SessionOrchestrator:
             permission_mode=row.permission_mode, attachment_ids=None,
             name_is_auto=row.name_is_auto, origin=row.origin,
             origin_ref=row.origin_ref,
+            engine=parse_agent_engine(getattr(row, "engine", None), legacy_default=True),
+            reasoning_effort=getattr(row, "reasoning_effort", None),
             kind=getattr(row, "kind", None),
             owner_identity=getattr(row, "owner_identity", None))
 
@@ -2021,10 +2129,14 @@ class SessionOrchestrator:
                     await db.delete(existing)
                 await db.flush()
                 host = local_host_stamp()
+                selected_engine = parse_agent_engine(
+                    kwargs.get("engine"), legacy_default=True)
                 db.add(DbSession(
                     id=session_id, name=kwargs.get("name"),
                     account_name=kwargs.get("account") or "",
-                    claude_session_id=None, status="pending_approval", pid=None,
+                    engine=selected_engine.value, engine_session_id=None,
+                    reasoning_effort=kwargs.get("reasoning_effort"),
+                    status="pending_approval", pid=None,
                     cwd=kwargs.get("cwd") or "", repo=kwargs.get("repo"), branch=None,
                     permission_mode=kwargs.get("permission_mode"),
                     name_is_auto=kwargs.get("name_is_auto"),
@@ -2041,13 +2153,15 @@ class SessionOrchestrator:
             now = datetime.utcnow()
             self._records[session_id] = SessionRecord(
                 id=session_id, name=kwargs.get("name") or session_id,
-                account=kwargs.get("account") or "", claude_session_id="",
+                account=kwargs.get("account") or "", engine=selected_engine,
+                engine_session_id="",
                 cols=kwargs.get("cols", 80), rows=kwargs.get("rows", 24),
                 cwd=kwargs.get("cwd") or "", repo=kwargs.get("repo"), branch=None,
                 status="pending_approval", name_is_auto=kwargs.get("name_is_auto", True),
                 created_at=now, updated_at=now, origin=kwargs.get("origin"),
                 origin_ref=kwargs.get("origin_ref"),
-                model=None, pending_model=model, host=host,
+                model=None, reasoning_effort=kwargs.get("reasoning_effort"),
+                pending_model=model, host=host,
                 kind=kwargs.get("kind"),
                 owner_identity=kwargs.get("owner_identity"))
         except Exception:
@@ -2146,7 +2260,7 @@ class SessionOrchestrator:
                 # 2026-09-04). 'queued' is capacity-exempt, so nothing double-counts.
                 try:
                     await self._spawn_session(
-                        sid, preexisting_row=True, resume=row.claude_session_id or None,
+                        sid, preexisting_row=True, resume=row.engine_session_id or None,
                         **params)
                 except Exception as exc:
                     # A real start failure (as opposed to the process dying): the
@@ -2191,7 +2305,9 @@ class SessionOrchestrator:
                             id=sid,
                             name=params.get("name", sid),
                             account=params.get("account") or "",
-                            claude_session_id="",
+                            engine=parse_agent_engine(
+                                params.get("engine"), legacy_default=True),
+                            engine_session_id="",
                             cols=params.get("cols", 220),
                             rows=params.get("rows", 50),
                             cwd=params.get("cwd") or "",
@@ -2203,6 +2319,7 @@ class SessionOrchestrator:
                             origin=params.get("origin"),
                             origin_ref=params.get("origin_ref"),
                             model=params.get("model"),
+                            reasoning_effort=params.get("reasoning_effort"),
                         )
                     else:
                         self._records[sid].status = "ended"
@@ -2285,7 +2402,7 @@ class SessionOrchestrator:
         Decision, in two branches (#1100 narrowed the original blanket reap):
 
         REPLAY when the row carries a non-null ``initial_prompt`` AND a NULL
-        ``claude_session_id``. That pair is the same durable proof
+        ``engine_session_id``. That pair is the same durable proof
         ``_recover_undelivered_prompts`` runs on: the prompt survived, and a NULL
         claude session id means the SDK never assigned one, i.e. turn ONE never ran,
         so re-running it duplicates nothing. The entry is rebuilt from the row via
@@ -2367,14 +2484,14 @@ class SessionOrchestrator:
         """Whether a queue orphan's turn one can be safely re-run from the row (#1100).
 
         The same two-part durable proof ``_recover_undelivered_prompts`` uses — a
-        surviving ``initial_prompt`` and a NULL ``claude_session_id`` (no SDK session
+        surviving ``initial_prompt`` and a NULL ``engine_session_id`` (no SDK session
         was ever assigned, so no turn ever ran) — plus that method's assistant
         exclusion: an assistant thread's "initial prompt" is the user's first drawer
         message, and re-driving it would answer a question asked before the restart.
         """
         if is_assistant_kind(getattr(row, "kind", None)):
             return False
-        if getattr(row, "claude_session_id", None):
+        if getattr(row, "engine_session_id", None):
             return False
         return bool((getattr(row, "initial_prompt", None) or "").strip())
 
@@ -2393,6 +2510,11 @@ class SessionOrchestrator:
         kind = kwargs.pop("kind", None)
         owner_identity = kwargs.pop("owner_identity", None)
         params: dict = {"model": getattr(row, "model", None), **kwargs}
+        engine = parse_agent_engine(params.pop("engine"), legacy_default=True)
+        if engine is not AgentEngine.CLAUDE_CODE:
+            params["engine"] = engine.value
+        if params.get("reasoning_effort") is None:
+            params.pop("reasoning_effort", None)
         if kind is not None:
             params["kind"] = kind
         if owner_identity is not None:
@@ -2486,6 +2608,7 @@ class SessionOrchestrator:
         origin: str | None,
         origin_ref: str | None,
         model: str | None,
+        reasoning_effort: str | None = None,
         kind: str | None = None,
         owner_identity: str | None = None,
         preexisting_row: bool = False,
@@ -2499,7 +2622,7 @@ class SessionOrchestrator:
         account_name, cwd, branch, model) instead of INSERT-ing a new one.
         Task 4 (_maybe_start_queued) calls this path.
 
-        *resume* is the ``claude_session_id`` to resume, when one exists — the
+        *resume* is the ``engine_session_id`` to resume, when one exists — the
         queue-drain call site threads the row's own id through here so a
         pre-existing conversation is never silently replaced by a fresh one
         (#1107). *kind*/*owner_identity* default to None so a queue entry
@@ -2577,6 +2700,9 @@ class SessionOrchestrator:
         if self._copilot is not None and _provider_of(account) == _copilot_mod.PROVIDER:
             await self._copilot.ensure(account)
 
+        # …and the per-account Codex app-server for codex-engine sessions.
+        await self._ensure_codex_runner(selected_engine, account)
+
         # Pre-seed the in-memory record so _session_factory's _oat_env closure can
         # look up the account (needed for copilot env injection during driver.start()).
         # The model field is patched below once the driver resolves the actual alias.
@@ -2587,14 +2713,14 @@ class SessionOrchestrator:
         _prior = self._records.get(session_id)
         _host = getattr(_prior, "host", None) or local_host_stamp()
         # Belt-and-suspenders for #1107: the queue-drain call site threads the
-        # row's claude_session_id through `resume` explicitly, but if some future
+        # row's engine_session_id through `resume` explicitly, but if some future
         # caller passes preexisting_row=True without it, a prior in-memory record
         # (rebuilt from the row via _record_from_row) still carries the real id —
         # fall back to resuming it rather than silently starting a fresh
         # conversation over an existing one. A non-empty prior id that we are
         # about to abandon anyway is logged so the orphaned transcript can still
         # be found.
-        _prior_csid = (getattr(_prior, "claude_session_id", None) or None)
+        _prior_csid = (getattr(_prior, "engine_session_id", None) or None)
         if resume is None and _prior_csid:
             log.warning(
                 "session.spawn_over_existing_conversation id=%s prior_csid=%s — "
@@ -2604,13 +2730,16 @@ class SessionOrchestrator:
             resume = _prior_csid
         _pre_record = SessionRecord(
             id=session_id, name=name, account=account,
-            claude_session_id=resume or "",
+            engine=selected_engine,
+            engine_session_id=resume or "",
             cols=cols, rows=rows, cwd=cwd, repo=repo, branch=branch_name,
             status="idle", name_is_auto=name_is_auto,
             created_at=getattr(_prior, "created_at", None) or _now,
             updated_at=_now, usage_unverified=usage_unverified,
-            origin=origin, origin_ref=origin_ref, model=None, host=_host,
+            origin=origin, origin_ref=origin_ref, model=None,
+            reasoning_effort=reasoning_effort, host=_host,
             kind=kind, owner_identity=owner_identity,
+            last_activity_at=time.monotonic(),
         )
         self._records[session_id] = _pre_record
         # Track the spawn from the pre-seed until the driver is registered (or the
@@ -2627,18 +2756,8 @@ class SessionOrchestrator:
             # driver.start() below.
             assistant_api = None
             if is_assistant_kind(kind):
-                from server.assistant.client import AssistantApi
-                from server.assistant.options import assistant_options
-                from server.assistant.server import build_server
-                from server.assistant.token import mint_token
-                from server.config import get_settings
-                cfg = get_settings()
-                assistant_api = AssistantApi(
-                    base_url=f"http://127.0.0.1:{cfg.port}",
-                    token=mint_token(identity, session_id), session_id=session_id)
-                self.register_assistant_overlay(session_id, assistant_options(
-                    server=build_server(assistant_api), max_turns=cfg.assistant_max_turns,
-                    model=model or cfg.assistant_model))
+                assistant_api = self._setup_assistant_overlay(
+                    session_id, identity=identity, model=model)
 
             driver = self._create_driver(
                 engine=selected_engine,
@@ -2674,6 +2793,14 @@ class SessionOrchestrator:
             else:
                 model = None
             self._drivers[session_id] = driver
+            # Claim the account's Codex app-server for this session. Deliberately
+            # paired with the driver registration above, which is the exact moment
+            # "this session has a running driver" becomes true — and whose mirror
+            # image, _teardown_driver_state, releases the claim. Attaching earlier
+            # would leak a runner whenever driver.start() failed; a runner nobody
+            # attached to is idle-reaped by the manager either way.
+            if self._codex is not None and selected_engine == AgentEngine.CODEX:
+                self._codex.attach(account, session_id)
             # Human-created sessions (origin is None) DEFER the initial prompt until the
             # first WebSocket client attaches. Sending it before any subscriber exists
             # risks the turn's events being lost: control events broadcast to zero
@@ -2698,7 +2825,9 @@ class SessionOrchestrator:
                         sa_update(DbSession)
                         .where(DbSession.id == session_id)
                         .values(status="idle", account_name=account,
-                                cwd=cwd, branch=branch_name, model=model)
+                                engine=selected_engine.value, cwd=cwd,
+                                branch=branch_name, model=model,
+                                reasoning_effort=reasoning_effort)
                     )
             else:
                 # Persist DB row (fresh session, not previously queued)
@@ -2707,7 +2836,9 @@ class SessionOrchestrator:
                         id=session_id,
                         name=name,
                         account_name=account,
-                        claude_session_id=None,
+                        engine=selected_engine.value,
+                        engine_session_id=None,
+                        reasoning_effort=reasoning_effort,
                         status="idle",
                         pid=None,
                         cwd=cwd,
@@ -2743,8 +2874,65 @@ class SessionOrchestrator:
             if not spawn_done.done():
                 spawn_done.set_result(None)
 
-    async def close_session(self, session_id: str) -> None:
-        """Stop the driver, clean up the session worktree, mark the row ended."""
+    async def _ensure_codex_runner(self, engine: AgentEngine, account: str) -> None:
+        """Start the account's `codex app-server` — for codex-engine sessions only.
+
+        Gated on the engine, so a Claude or Copilot spawn never touches the Codex
+        boundary at all, and on the manager being wired (it is None whenever Codex
+        is disabled or unavailable). A failure here is NOT swallowed: for a session
+        that is about to run on Codex, no app-server means no session, and failing
+        the spawn is the fail-closed answer. It cannot reach another engine's spawn
+        because the gate above never lets it run there.
+        """
+        if self._codex is None or engine != AgentEngine.CODEX:
+            return
+        await self._codex.ensure(account)
+
+    async def _teardown_driver_state(self, session_id: str) -> AgentDriver | None:
+        """Unregister a session's live driver plus every per-session dict keyed off it,
+        stop its virtual X11 display, and RETURN the popped driver (None if none was
+        registered) so the caller owns the ``aclose()``.
+
+        The single source of truth for "this session no longer has a running driver",
+        shared by ``close_session``, ``archive_session`` and the assistant idle reap.
+        Three verbatim copies of this block existed before; the third had already
+        drifted (it also dropped the assistant options overlay, which turned every
+        resume after a reap into an UNRESTRICTED coding session).
+
+        Two things deliberately stay with the CALLER, because they legitimately differ:
+
+        * ``aclose()`` timing — close_session awaits it inline (the worktree cleanup
+          below it must not race a live process), archive_session defers it to a task
+          (aclose takes up to _CLOSE_GRACE_SEC and the request must not wait), the
+          assistant reap publishes it in ``_releasing`` (its record survives, so a
+          resume can arrive mid-teardown and must wait for the old CLI to flush).
+        * the ``_records`` pop — close/archive drop the record; the assistant reap MUST
+          keep it, or resume-on-reopen (spec §4.7) is destroyed.
+
+        ORDERING: the driver pop comes FIRST and is the atomic claim on this teardown.
+        Everything after it can yield (``stop_display`` awaits), and a prompt arriving
+        in that window would pass ``send_prompt``'s ``self._drivers.get(session_id)``
+        check, start a turn on the driver we are about to close, and be silently lost —
+        the caller having already been told "sent", with no promptRejected.
+        """
+        driver = self._drivers.pop(session_id, None)
+        self._last_prompt.pop(session_id, None)
+        self._turn_restart_at.pop(session_id, None)
+        self._self_model_state.pop(session_id, None)
+        self._handled_model_requests.pop(session_id, None)
+        self._pending_initial_prompt.pop(session_id, None)
+
+        # Release this session's claim on its account's Codex app-server (a no-op
+        # for every other engine: the manager only knows sessions that attached).
+        # Runs unconditionally, like the display teardown below, so a ref-count is
+        # never stranded — and is guarded, because a wedged Codex manager must not
+        # be able to stop a Claude session from being torn down.
+        if self._codex is not None:
+            try:
+                self._codex.detach(session_id)
+            except Exception:
+                log.exception("session.codex_detach_failed id=%s", session_id)
+
         # Teardown the virtual X11 display — runs unconditionally so orphaned
         # displays are never leaked even when the driver was never registered.
         if self._x11 is not None:
@@ -2752,13 +2940,11 @@ class SessionOrchestrator:
                 await self._x11.stop_display(session_id)
             except Exception:
                 log.exception("session.display_cleanup_failed id=%s", session_id)
+        return driver
 
-        driver = self._drivers.pop(session_id, None)
-        self._last_prompt.pop(session_id, None)
-        self._turn_restart_at.pop(session_id, None)
-        self._self_model_state.pop(session_id, None)
-        self._handled_model_requests.pop(session_id, None)
-        self._pending_initial_prompt.pop(session_id, None)
+    async def close_session(self, session_id: str) -> None:
+        """Stop the driver, clean up the session worktree, mark the row ended."""
+        driver = await self._teardown_driver_state(session_id)
         if driver is not None:
             await driver.aclose()
         record = self._records.pop(session_id, None)
@@ -2830,6 +3016,137 @@ class SessionOrchestrator:
         # session can start. Tracked via _spawn so stop() can cancel it before it
         # writes into a later test's DB.
         self._spawn(self._maybe_start_queued(), name="queue-drain-on-close")
+
+    async def _reap_idle_assistants_once(self, *, now: float | None = None) -> list[str]:
+        """Close the driver of every assistant idle for > assistant_idle_s whose turn
+        is not live. Spec §4.7: the row stays (status 'ended', claude_session_id kept)
+        so the next ``POST /api/assistant/session`` resumes the same thread.
+
+        This deliberately does NOT call ``close_session`` — that method pops the
+        record out of ``_records`` (only ``archive`` may do that for an assistant;
+        see ``find_assistant``), which would destroy resume-on-reopen. Instead it
+        calls the shared ``_teardown_driver_state`` and sets
+        ``status='ended'`` itself. It also skips close_session's worktree/scratch-dir
+        cleanup (an assistant never gets one — no ``cwd`` inside the worktree base)
+        and its ``session_queue`` removal (assistants are exempt from the queue; they
+        never occupy an entry — see ``create_session``'s capacity-exempt path — so
+        there is nothing to remove and no #1100 ordering hazard to observe here).
+        """
+        from server.config import get_settings
+        idle = get_settings().assistant_idle_s
+        now = time.monotonic() if now is None else now
+        reaped: list[str] = []
+        for rec in list(self._records.values()):
+            if not is_assistant(rec) or rec.id not in self._drivers:
+                continue
+            driver = self._drivers[rec.id]
+            # "A turn is in flight" off the provider-neutral AgentDriver surface, the
+            # same composition the stall watchdog uses below: `turn_active` covers a
+            # prompt or CLI-initiated turn, `drain_alive` the tail where the turn has
+            # been flagged done but its pump is still unwinding. Reaping in that tail
+            # would aclose() a driver mid-drain.
+            if driver.turn_active or driver.drain_alive:
+                continue
+            last = rec.last_activity_at or now
+            if now - last < idle:
+                continue
+
+            # ---- ATOMIC CLAIM · nothing from here to the `await` below may suspend ----
+            #
+            # `_teardown_driver_state`'s stop_display is SLOW — it kills the display's
+            # browser tree, terminates twice, unlinks the lock/socket and releases the
+            # lease, and budgets ~10 s for it (server/x11/x11manager.py). Throughout that
+            # await the driver is already unregistered while the old `claude` process is
+            # very much alive. So EVERY piece of state that tells the rest of the
+            # orchestrator "this session is being torn down" has to be published BEFORE
+            # it, not after.
+            #
+            # Publishing after was a real defect: the user returns to the drawer right at
+            # the idle boundary and prompts, send_prompt correctly answers "no_driver",
+            # ws.py drops the stale stream and rebuilds through ensure_driver — which
+            # finds `_ensure_lock` free, `_swapping` empty, `_releasing` EMPTY and a
+            # status that is not yet "ended", and starts a SECOND claude process on the
+            # same claude_session_id. The sweep would then resume and delete that
+            # rebuild's overlay (`_session_factory` re-reads `_assistant_overlays` on
+            # every factory call, so the next model switch or recoverable-failure
+            # respawn would come back with no tools=[] and no denylist — Critical 1
+            # again, by the back door) and stamp the live session "ended".
+            #
+            # Only `_records` is deliberately left alone: the row surviving IS
+            # resume-on-reopen (spec §4.7).
+
+            # Drop the options overlay. Correct BECAUSE ensure_driver rebuilds it (see
+            # _setup_assistant_overlay): the overlay captures an AssistantApi whose
+            # httpx client driver.aclose() below is about to close, so a preserved
+            # overlay would hand the resumed session dead MCP tools. It must not simply
+            # be LEAKED either — a resume that found no overlay would build a plain,
+            # unrestricted coding agent out of the drawer.
+            self._assistant_overlays.pop(rec.id, None)
+            rec.status = "ended"
+
+            # Publish the teardown in `_releasing` rather than awaiting aclose() inline.
+            # Unlike close_session/archive_session the RECORD SURVIVES here, so a resume
+            # during this window is the EXPECTED user action (reopening the drawer right
+            # at the reap boundary) — and ensure_driver waits on `_releasing` before
+            # building a replacement driver with the same resume=, precisely so the new
+            # `claude` process cannot race the old one's transcript flush and lose the
+            # tail. Same self-clearing idiom as _persist_status's completion release, so
+            # a stuck aclose can never make the drawer permanently unopenable.
+            #
+            # `_teardown_done` keeps the ORIGINAL ordering inside that published window:
+            # the task is registered synchronously (that is the whole point) but does not
+            # touch the driver until the display stop and the DB write have finished, so
+            # aclose() still runs last and a resume unblocked by this entry always finds
+            # the row already stamped.
+            teardown_done: asyncio.Future = asyncio.get_running_loop().create_future()
+
+            async def _release(d=driver, sid=rec.id, gate=teardown_done):
+                try:
+                    with contextlib.suppress(Exception):
+                        await gate
+                    with contextlib.suppress(Exception):
+                        await d.aclose()
+                finally:
+                    if self._releasing.get(sid) is asyncio.current_task():
+                        self._releasing.pop(sid, None)
+            self._releasing[rec.id] = self._spawn(
+                _release(), name=f"assistant-reap-release-{rec.id}")
+            # ---- end of the atomic claim -------------------------------------------
+
+            try:
+                # Shared teardown: unregisters the driver FIRST (the atomic claim against
+                # a prompt racing this sweep — see _teardown_driver_state), clears the
+                # per-session dicts, then stops the virtual X11 display. An assistant has
+                # tools=[] so it never uses the display, but _spawn_session/ensure_driver
+                # allocate one for every session kind regardless and the pool is finite;
+                # start_display is idempotent, so a later resume re-leasing it is a no-op.
+                # (`driver` above is the same object: nothing between the turn-in-flight
+                # check and here awaits, so no other coroutine can have swapped it.)
+                await self._teardown_driver_state(rec.id)
+                async with db_session() as db:
+                    from sqlalchemy import update as sa_update
+                    await db.execute(
+                        sa_update(DbSession).where(DbSession.id == rec.id).values(status="ended")
+                    )
+            finally:
+                # In `finally` so a failed display stop or DB write can never strand the
+                # release task — and with it every later attach to this session.
+                if not teardown_done.done():
+                    teardown_done.set_result(None)
+            reaped.append(rec.id)
+            log.info("assistant.reap id=%s idle_s=%.0f", rec.id, now - last)
+        return reaped
+
+    async def _assistant_reap_loop(self, interval: float = 60.0) -> None:
+        """Periodic sweep pairing with _reap_idle_assistants_once. Mirrors
+        _worktree_janitor_loop's shape: sleep, sweep, swallow+log any failure so one
+        bad tick never kills the loop."""
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self._reap_idle_assistants_once()
+            except Exception:
+                log.exception("assistant-reap: sweep failed")
 
     async def rename_session(self, session_id: str, name: str) -> None:
         """Update the session name in the DB and in-memory record.
@@ -2981,7 +3298,7 @@ class SessionOrchestrator:
         # itself frees the driver/capacity slot, no model call and no autopilot
         # dependency required. Nothing is archived — the row and transcript stay;
         # reopening lazily rebuilds the driver via ensure_driver (resume=
-        # claude_session_id).
+        # engine_session_id).
         #
         # ONLY `complete` — never `done`. `done` is not a finished-work signal: it is
         # what derive_status returns for ANY ended turn (turns_completed >= 1, no turn
@@ -3619,8 +3936,8 @@ class SessionOrchestrator:
     async def _backlog_session_ran(self, session_id: str) -> bool:
         """True if the runner session *session_id* ever started turn one (#1100).
 
-        ``claude_session_id`` is NULL until the SDK assigns one, which happens when
-        turn ONE actually starts (``_persist_claude_session_id``) — the same durable
+        ``engine_session_id`` is NULL until the SDK assigns one, which happens when
+        turn ONE actually starts (``_persist_engine_session_id``) — the same durable
         never-ran proof ``_recover_undelivered_prompts`` and the orphan reaper key
         off. Reads the DB row, so it survives a restart that dropped the record.
 
@@ -3628,7 +3945,7 @@ class SessionOrchestrator:
         ran, and the caller must fail safe toward the normal give-up path."""
         from sqlalchemy import select as _select
         async with db_session() as db:
-            row = (await db.execute(_select(DbSession.claude_session_id).where(
+            row = (await db.execute(_select(DbSession.engine_session_id).where(
                 DbSession.id == session_id))).first()
         if row is None:
             return True
@@ -6578,13 +6895,24 @@ class SessionOrchestrator:
         return await generate_title(prompts, config_dir=str(compose(account)), cwd=cwd)
 
     def _account_limited(self, account: str) -> bool:
-        """True if *account*'s last-known session usage is at/above the ceiling.
+        """True if *account*'s last-known usage has no headroom left.
 
-        Best-effort: an unknown account (no cached usage) is treated as not
-        limited — a doomed title query would just degrade silently anyway.
+        "No headroom" is the shared ``selector.at_ceiling`` definition — ANY
+        window that meters the model is at/above the ceiling — not the
+        session-only check this used to make. That check was the inconsistency:
+        an account at weekly 100% / session 20% read as NOT limited here while
+        the selector, the rotation monitor and crash recovery all already treated
+        it as dead, because a turn on a weekly-exhausted account 429s exactly
+        like a session-exhausted one. This gates ``_backlog_healthy_account``, so
+        the divergence meant the backlog kept dispatching onto an account whose
+        very next turn would rate-limit.
+
+        Best-effort: an unknown account (no cached usage, or a snapshot whose
+        availability is not ``available``) is treated as not limited — a doomed
+        title query would just degrade silently anyway.
         """
         usage = self._poller.cached(account)
-        return usage is not None and getattr(usage, "session_pct", 0.0) >= _ROTATION_CEILING
+        return usage_known(usage) and at_ceiling(usage, _ROTATION_CEILING)
 
     async def _generate_fallback_title(self, rec: SessionRecord, path: str) -> str | None:
         """Summarize the session's user prompts into a title, or ``None``.
@@ -6749,21 +7077,21 @@ class SessionOrchestrator:
             await self._goal_sweep()
             await asyncio.sleep(120.0)
 
-    async def _persist_claude_session_id(self, session_id: str, claude_session_id: str) -> None:
-        """Callback fired by the driver the first time it captures the Claude session id.
+    async def _persist_engine_session_id(self, session_id: str, engine_session_id: str) -> None:
+        """Persist the native conversation id when a driver first captures it.
 
         Keeps the in-memory record in sync and immediately persists to the DB so the id
         survives a restart without waiting for rotation.
         """
         rec = self._records.get(session_id)
         if rec is not None:
-            rec.claude_session_id = claude_session_id
+            rec.engine_session_id = engine_session_id
         async with db_session() as db:
             from sqlalchemy import update as sa_update
             await db.execute(
                 sa_update(DbSession)
                 .where(DbSession.id == session_id)
-                .values(claude_session_id=claude_session_id)
+                .values(engine_session_id=engine_session_id)
             )
 
     def _record_from_row(self, row, **overrides) -> SessionRecord:
@@ -6777,7 +7105,8 @@ class SessionOrchestrator:
             id=row.id,
             name=row.name,
             account=row.account_name,
-            claude_session_id=row.claude_session_id or "",
+            engine=parse_agent_engine(getattr(row, "engine", None), legacy_default=True),
+            engine_session_id=row.engine_session_id or "",
             cols=80,
             rows=24,
             cwd=row.cwd,
@@ -6798,6 +7127,7 @@ class SessionOrchestrator:
             last_turn_at=getattr(row, "last_turn_at", None),
             adopted_in_place=bool(getattr(row, "adopted_in_place", False)),
             model=getattr(row, "model", None),
+            reasoning_effort=getattr(row, "reasoning_effort", None),
             pending_model=getattr(row, "pending_model", None),
             pending_model_reason=getattr(row, "pending_model_reason", None),
             pending_model_requested_by=getattr(row, "pending_model_requested_by", None),
@@ -6964,8 +7294,8 @@ class SessionOrchestrator:
 
         * ``initial_prompt`` is the prompt itself (persisted at create time, and also
           re-written by ``unarchive`` as the "why you're back" seed).
-        * ``claude_session_id`` is NULL until the SDK assigns one, which happens when
-          turn ONE actually starts (see ``_persist_claude_session_id``). A NULL is
+        * ``engine_session_id`` is NULL until the SDK assigns one, which happens when
+          turn ONE actually starts (see ``_persist_engine_session_id``). A NULL is
           therefore proof that no turn has ever run, which is what makes redelivery
           idempotent in effect: a session that really did run cannot match, and one
           whose turn died with the daemon *should* be re-prompted.
@@ -6977,7 +7307,7 @@ class SessionOrchestrator:
         delay daemon startup.
 
         Not covered (deliberately): an ``unarchive`` seed stranded the same way. That
-        row HAS a claude_session_id (it ran turns before being archived), so the
+        row HAS a engine_session_id (it ran turns before being archived), so the
         never-ran test above cannot distinguish "seed still pending" from "seed already
         delivered"; separating them needs a durable delivered-at marker this fix does
         not add. Pre-existing behaviour, called out so it is not mistaken for covered.
@@ -7016,7 +7346,7 @@ class SessionOrchestrator:
                 # would drive the same session twice. Skipping keeps the two sets
                 # disjoint: they own interrupted rows, this owns never-started ones.
                 continue
-            if getattr(row, "claude_session_id", None):
+            if getattr(row, "engine_session_id", None):
                 continue  # turn one already ran — re-sending would duplicate work
             prompt = (getattr(row, "initial_prompt", None) or "").strip()
             if not prompt:
@@ -7203,7 +7533,7 @@ class SessionOrchestrator:
         on exactly that status. So after "reaped, then a deploy restart" (a common
         pairing: the reap fires at 15 min idle) the row is in the DB but not in memory,
         the scan in ``find_assistant`` returns None, and ``POST /api/assistant/session``
-        mints a BRAND-NEW thread. Nothing crashes — the old ``claude_session_id`` and
+        mints a BRAND-NEW thread. Nothing crashes — the old ``engine_session_id`` and
         its CLI transcript are intact on disk — but nothing points at them any more,
         which is the same silently-orphaned-history shape as the 2026-09-04 torn-read
         incident. This closes the gap so §4.7's "Daemon restart … continues" holds for
@@ -8018,19 +8348,53 @@ class SessionOrchestrator:
         return self._poller
 
     def has_live_session(self, account: str) -> bool:
-        """Return True if any live AgentDriver is currently running on *account*.
+        """Return True if a live AgentDriver anywhere IN THE FLEET is running on *account*.
 
-        Used by the poller's usage_fn to decide whether it is safe to call
-        oauth.refresh_access_token: while the SDK subprocess owns the token
-        family (live session), only the SDK must refresh so we avoid
+        Used by the poller's usage_fn and the idle-token sweep to decide whether it is
+        safe to call oauth.refresh_access_token: while the SDK subprocess owns the
+        token family (live session), only the SDK must refresh so we avoid
         single-use-token reuse-detection.
+
+        Ownership is FLEET-WIDE, not host-local. Checking only ``_drivers`` — this
+        process's own drivers — made a session running on a worker read as "not live"
+        on the primary, so the primary refreshed and rotated a token family the
+        worker's running SDK still held (2026-09-04). The primary deliberately holds
+        every fleet row in ``_records`` (see ``_owns_record``), so the fleet-wide
+        answer is available synchronously here; that matters because this is called
+        from a threadpool thread and so — unlike its sibling accessors
+        ``live_session_load`` / ``live_session_counts``, which fan out over async RPC
+        via ``_MERGE_ALL_HOSTS`` — it cannot await a round trip.
+
+        Errs toward "live": a false True only delays a proactive refresh (the
+        on-demand acquire_valid_token path still runs), while a false False rotates
+        the token out from under a running process and kills the account.
         """
         # Snapshot values() before iterating: _drivers is mutated by the event
         # loop (create_session / close_session / _do_rotate) while this method
         # can be called from a threadpool thread (the poller's usage_fn closure).
         # Iterating the live dict while the event loop mutates it raises
         # RuntimeError: dictionary changed size during iteration.
-        return any(d.account == account for d in list(self._drivers.values()))
+        if any(d.account == account for d in list(self._drivers.values())):
+            return True
+        # Only REMOTE rows are consulted. For this host _drivers above is authoritative
+        # and never stale, so falling back to _records locally could only add false
+        # positives (a lingering row whose process is gone would suppress proactive
+        # refresh forever). A row we cannot see a driver for — another fleet host's —
+        # is the gap this closes.
+        #
+        # CAPACITY_EXEMPT_STATUSES is the documented single source of truth for "holds
+        # no live driver"; its stated invariant is that a session holding a live driver
+        # is never capacity-exempt, which is exactly the token-ownership question. Note
+        # `done` and `idle` are NOT exempt: they are live sessions between turns that
+        # keep a warm driver, and so still own the token family.
+        #
+        # Unlike _active_session_count, assistant sessions are NOT excluded: the
+        # assistant is a real `claude` process holding a real token family.
+        me = self_host_name()
+        return any(r.account == account
+                   and r.host is not None and r.host != me
+                   and r.status not in CAPACITY_EXEMPT_STATUSES
+                   for r in list(self._records.values()))
 
     def live_session_load(self) -> dict[str, float]:
         """Weighted count of live sessions per account, for load-aware selection.
@@ -8279,7 +8643,7 @@ class SessionOrchestrator:
 
         - If a live driver already exists, return it (idempotent).
         - If the SessionRecord exists but is detached, build a new AgentDriver with
-          resume=<claude_session_id>, start it, store it, and mark the record as live.
+          resume=<engine_session_id>, start it, store it, and mark the record as live.
         - If the session_id is unknown, return None.
 
         ``identity`` is the verified identity of the caller attaching to the session
@@ -8383,7 +8747,7 @@ class SessionOrchestrator:
             # (see _persist_status): its driver is already out of `_drivers`, but
             # the old `claude` process may still be shutting down / flushing its
             # session file to disk. Building a replacement driver with the same
-            # resume=claude_session_id against the same cwd while that write is
+            # resume=engine_session_id against the same cwd while that write is
             # still in flight races it — the SDK's own subprocess_cli.py warns this
             # can lose the last assistant message. Wait for the release to finish
             # first; it always clears its own `_releasing` entry (success or
@@ -8408,8 +8772,8 @@ class SessionOrchestrator:
                 except Exception:
                     pass
 
-            # Build and start a new driver resuming from the stored claude_session_id
-            resume = rec.claude_session_id or None
+            # Build and start a new driver resuming from the stored engine_session_id
+            resume = rec.engine_session_id or None
             cfg_dir = compose(rec.account)
             # Ensure the working directory exists. A rehydrated session's cwd (a no-repo
             # scratch dir or a git worktree) may have been removed when the session was
@@ -8453,7 +8817,23 @@ class SessionOrchestrator:
                         )
                     raise
 
+            # An assistant's options overlay is rebuilt for EVERY driver build here, not
+            # just at spawn: it is what makes the session an assistant, and the idle
+            # reap drops it along with the driver. See _setup_assistant_overlay for why
+            # it must be rebuilt rather than preserved (the old one holds a closed
+            # loopback client and a token that may already have expired). Rebuilt per
+            # _build() call, so the fresh-start fallback below — which acloses the first
+            # driver, and with it the first AssistantApi — also gets a live one.
+            built_assistant_apis: list[AssistantApi] = []
+
             def _build(resume_arg):
+                assistant_api = None
+                if is_assistant(rec):
+                    # Must run before _create_driver: the SDK factory reads
+                    # self._assistant_overlays[session_id] when it builds the client.
+                    assistant_api = self._setup_assistant_overlay(
+                        session_id, identity=identity, model=rec.model)
+                    built_assistant_apis.append(assistant_api)
                 return self._create_driver(
                     engine=AgentEngine.CLAUDE_CODE,
                     session_id=session_id,
@@ -8465,6 +8845,7 @@ class SessionOrchestrator:
                     resume=resume_arg,
                     on_sync_back=functools.partial(ccswitch_accounts.sync_back, rec.account),
                     suggester=self._suggester_for(getattr(rec, "kind", None)),
+                    assistant_api=assistant_api,
                 )
 
             # Publish this build as an in-flight swap (#1040) so a concurrent
@@ -8485,7 +8866,7 @@ class SessionOrchestrator:
                         raise
                     # A start() failure is NOT proof that the resume handle is bad, and
                     # guessing that it is costs the user their conversation: the fresh
-                    # driver below reports a new claude_session_id, _persist_claude_session_id
+                    # driver below reports a new engine_session_id, _persist_engine_session_id
                     # overwrites the stored one, and the real transcript is orphaned with
                     # nothing left pointing at it. That is not hypothetical — on 2026-09-04
                     # a torn read of the account's `.claude.json` (rocky's account store was
@@ -8518,6 +8899,18 @@ class SessionOrchestrator:
                     driver = _build(None)
                     await driver.start()
                 self._drivers[session_id] = driver
+            except BaseException:
+                # The resume failed and no driver was registered: release what
+                # _setup_assistant_overlay allocated, mirroring _spawn_session's own
+                # start()-failure path. Leaving the overlay behind would let an
+                # unrelated later build for this id pick up a stale one holding a
+                # closed loopback client, and the httpx clients would leak.
+                if built_assistant_apis:
+                    self._assistant_overlays.pop(session_id, None)
+                    for _api in built_assistant_apis:
+                        with contextlib.suppress(Exception):
+                            await _api.aclose()
+                raise
             finally:
                 if self._swapping.get(session_id) is swap_done:
                     del self._swapping[session_id]
@@ -8595,7 +8988,7 @@ class SessionOrchestrator:
         from the orchestrator's own account config and record map.
         """
         known = [a["name"] for a in ccswitch_accounts.list_accounts()]
-        tracked = {r.claude_session_id for r in self._records.values() if r.claude_session_id}
+        tracked = {r.engine_session_id for r in self._records.values() if r.engine_session_id}
         return _adopt.discover_candidates(known, tracked)
 
     async def list_adoptable_candidates(self) -> list[dict]:
@@ -8798,7 +9191,8 @@ class SessionOrchestrator:
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name=cand.name, account_name=cand.account,
-                claude_session_id=claude_session_id, status="idle", pid=None,
+                engine=AgentEngine.CLAUDE_CODE.value,
+                engine_session_id=claude_session_id, status="idle", pid=None,
                 cwd=cand.cwd, repo=None, permission_mode=permission_mode,
                 name_is_auto=True, adopted_in_place=True, last_turn_at=adopted_last_turn,
                 host=adopt_host,
@@ -8813,7 +9207,8 @@ class SessionOrchestrator:
         adopt_now = datetime.utcnow()
         rec = SessionRecord(
             id=session_id, name=cand.name, account=cand.account,
-            claude_session_id=claude_session_id, cols=80, rows=24,
+            engine=AgentEngine.CLAUDE_CODE,
+            engine_session_id=claude_session_id, cols=80, rows=24,
             cwd=cand.cwd, repo=None, status="idle", adopted_in_place=True,
             permission_mode=permission_mode,
             created_at=adopt_now, updated_at=adopt_now,  # row-write time
@@ -8905,7 +9300,10 @@ class SessionOrchestrator:
                           interrupt: bool = False,
                           context: PromptContext | None = None) -> str:
         """Deliver a prompt to a live driver. ``interrupt`` = "interrupt and post":
-        stop the in-flight turn and run this prompt next instead of queueing it."""
+        stop the in-flight turn and run this prompt next instead of queueing it.
+        ``context`` is the assistant-only "context chip" (spec §4.5); the ws bridge
+        validates it and passes it only for an assistant-kind session — forwarded
+        here as-is."""
         if self._draining:
             # No new turns during a deploy drain. Tell the browser so it re-queues
             # (promptRejected) and shows the hold banner — never silently swallow it.
@@ -9403,9 +9801,14 @@ class SessionOrchestrator:
             label = arg or "default"
             driver = self._drivers.get(session_id)
             was_busy = driver is not None and driver.turn_active
-            restarted = await self.set_model_for_session(
-                session_id, arg or None, when="after_turn" if after_turn else "now",
-                identity=identity)
+            # Routes through the same helper the HTTP `/model` endpoint calls (Task
+            # 3.1 / constitution VI: one implementation, not a WS-only copy that
+            # never records `session.model_change`).
+            async with db_session() as db:
+                model_result = await session_actions.set_model(
+                    self, db, session_id=session_id, model=arg or None,
+                    when="after_turn" if after_turn else "now", identity=identity)
+            restarted = model_result["restarted"]
             # A model-gated switch is parked (pending_model set), not applied: the
             # session keeps running on its current model until approved. Say so
             # instead of the misleading "Model → <alias>" (which reads as "applied").
@@ -9448,9 +9851,9 @@ class SessionOrchestrator:
         return False
 
     def transcript_path(self, session_id) -> str | None:
-        """Locate the Claude transcript `<config_dir>/projects/*/<claude_session_id>.jsonl`.
+        """Locate the Claude transcript `<config_dir>/projects/*/<engine_session_id>.jsonl`.
 
-        The transcript is found by GLOBBING for its globally-unique claude_session_id
+        The transcript is found by GLOBBING for its globally-unique engine_session_id
         across all project dirs, rather than computing the project-dir name from cwd.
         Claude derives project-dir names by replacing BOTH '/' and '.' with '-' and
         KEEPS the leading slash (→ leading dash) — replicating that exactly is fragile
@@ -9460,14 +9863,14 @@ class SessionOrchestrator:
         recorded cwd differs from where it actually ran still resolves).
 
         Falls back to the SessionRecord + account_cfg_dir(account) when the driver is
-        absent or has no claude_session_id (e.g. rehydrated/detached sessions).
+        absent or has no engine_session_id (e.g. rehydrated/detached sessions).
 
         Each account's per-account `projects` dir is itself a symlink to the one shared
         projects tree (configdir.SHARE_ALLOWLIST). That symlink can rot — point at itself
         or a sibling account — which makes the glob through `<config_dir>/projects` resolve
         nothing and silently blanks the transcript on attach (idle "Waiting for input"
         sessions only show replayed history, so they go blank; a live session masks it by
-        streaming). Since the claude_session_id is globally unique and every transcript
+        streaming). Since the engine_session_id is globally unique and every transcript
         physically lives under the shared base, we also search shared_base()/projects so
         replay survives a broken per-account symlink.
         """
@@ -9478,9 +9881,9 @@ class SessionOrchestrator:
             cwd = getattr(rec0, "cwd", None) if rec0 is not None else None
         else:
             rec = self._records.get(session_id)
-            if rec is None or not rec.claude_session_id:
+            if rec is None or not rec.engine_session_id:
                 return None
-            config_dir, csid = str(account_cfg_dir(rec.account)), rec.claude_session_id
+            config_dir, csid = str(account_cfg_dir(rec.account)), rec.engine_session_id
             cwd = getattr(rec, "cwd", None)
         return self._find_transcript(config_dir, csid, cwd)
 
@@ -9735,9 +10138,10 @@ class SessionOrchestrator:
                         # the session as needs_attention for nothing.
                         self._maybe_sweep_on_recovery()
                         continue
-                    session_pct = getattr(usage, "session_pct", 0.0)
-                    reason = ("session limit reached" if session_pct >= _ROTATION_CEILING
-                              else "weekly limit reached")
+                    limiting = _limiting_window(usage, _ROTATION_CEILING)
+                    session_pct = limiting.used_pct if limiting is not None else 0.0
+                    reason = (f"{limiting.label} limit reached" if limiting is not None
+                              else "usage limit reached")
 
                 # Find all live sessions on this account and rotate them.
                 enabled_hosts = await self._enabled_host_names()
@@ -9777,10 +10181,9 @@ class SessionOrchestrator:
                         # they need to unpin before the session can auto-rotate.
                         log.info("rotation.skip_pinned session=%s account=%s", record.id, account)
                         record.paused_reason = "pinned_account_limited"
+                        _lim = _limiting_window(usage, _ROTATION_CEILING)
                         record.paused_until = _naive_utc(
-                            getattr(usage, "session_resets_at", None)
-                            if getattr(usage, "session_pct", 0.0) >= _ROTATION_CEILING
-                            else getattr(usage, "weekly_resets_at", None))
+                            _lim.resets_at if _lim is not None else None)
                         record.status = "limited"
                         self._spawn(
                             self._persist_status(record.id, "limited"),
@@ -9830,7 +10233,7 @@ class SessionOrchestrator:
         rebuilding the driver on the same broken account.
         """
         usage = self._poller.cached(account)
-        if usage is not None:
+        if usage_known(usage):
             return exhausted(usage, _ROTATION_CEILING,
                              extra_usage_allowed=self._extra_usage_allowed(account))
         # usage=None: distinguish "not yet polled" from "persistently failing"
@@ -9880,7 +10283,7 @@ class SessionOrchestrator:
                 if not self._owns_record(record, enabled_hosts):
                     continue
                 usage = self._poller.cached(record.account)
-                if usage is None or at_ceiling(usage, _ROTATION_CEILING):
+                if not usage_known(usage) or at_ceiling(usage, _ROTATION_CEILING):
                     continue
                 log.info("stuck-sweep.limit_reset session=%s account=%s",
                          record.id, record.account)
@@ -10429,11 +10832,17 @@ class SessionOrchestrator:
         """Stamp the wall-clock time the user last steered this session (prompt/answer/permission/
         typing ping). Drives autopilot human-deference + the cooldown badge. In-memory ONLY — no DB
         write (a 120s window is meaningless across a restart), so this is safe to call on the WS
-        receive path (never blocks on I/O, cf. the no-DB-write-on-attach rule)."""
+        receive path (never blocks on I/O, cf. the no-DB-write-on-attach rule).
+
+        Also stamps ``last_activity_at`` (a monotonic clock, immune to wall-clock jumps) —
+        the assistant idle-reap sweep's only signal for "has the drawer been touched
+        recently," so this must stay synchronous and side-effect-free beyond the two
+        in-memory field writes."""
         from datetime import datetime
         record = self._records.get(session_id)
         if record is not None:
             record.last_user_interaction_at = datetime.utcnow()
+            record.last_activity_at = time.monotonic()
 
     async def set_autopilot_paused(self, session_id: str, paused: bool) -> None:
         """Pin a session to manual (paused=True) or return it to autopilot governance.
@@ -10489,7 +10898,7 @@ class SessionOrchestrator:
         # two recoverable-failure callbacks firing back to back (e.g. two
         # `turn_dropped` events escalating to rotation), or a manual account
         # switch landing while ensure_driver is mid-resume-build. Each used to
-        # build+start its own AgentDriver against the same claude_session_id —
+        # build+start its own AgentDriver against the same engine_session_id —
         # both processes came up live, only one was ever registered in
         # `_drivers`, and the loser ran on as an invisible twin CLI. A caller that
         # finds an entry here waits for it, then re-derives its own driver/record
@@ -10529,9 +10938,9 @@ class SessionOrchestrator:
             identity = old_driver.identity
         else:
             # Driverless path: session lost its driver while idle (proxy crash, etc.).
-            # Use stored record fields — cwd and claude_session_id are persisted on
+            # Use stored record fields — cwd and engine_session_id are persisted on
             # every turn so they're reliable even after a daemon restart.
-            claude_sid = record.claude_session_id
+            claude_sid = record.engine_session_id
             cwd = record.cwd
             mode = getattr(record, "permission_mode", "interactive")
             identity = SYSTEM_IDENTITY
@@ -10686,20 +11095,9 @@ class SessionOrchestrator:
         ``context`` snapshots the decision features for AUTO archives, so a later manual
         unarchive can tell an auto-archive was reversed and record a learning heuristic.
         """
-        # Teardown the virtual X11 display — mirrors close_session.
-        if self._x11 is not None:
-            try:
-                await self._x11.stop_display(session_id)
-            except Exception:
-                log.exception("session.display_cleanup_failed id=%s", session_id)
-
-        # Stop the driver and clear in-memory state (mirrors close_session head).
-        driver = self._drivers.pop(session_id, None)
-        self._last_prompt.pop(session_id, None)
-        self._turn_restart_at.pop(session_id, None)
-        self._self_model_state.pop(session_id, None)
-        self._handled_model_requests.pop(session_id, None)
-        self._pending_initial_prompt.pop(session_id, None)
+        # Unregister the driver, clear in-memory state and stop the X11 display —
+        # the shared teardown close_session and the assistant reap also use.
+        driver = await self._teardown_driver_state(session_id)
 
         # Remove from active records BEFORE driver.aclose() so the session
         # disappears from list_sessions() immediately and a background refetch
@@ -11023,7 +11421,20 @@ class SessionOrchestrator:
                 "account": row.account_name,
                 "cwd": row.cwd,
                 "repo": row.repo,
-                "claudeSessionId": row.claude_session_id,
+                "engine": parse_agent_engine(
+                    getattr(row, "engine", None), legacy_default=True).value,
+                "engineSessionId": row.engine_session_id,
+                # Temporary daemon→old-edge alias. The current edge strips this
+                # before serving browser clients; old edges still require it
+                # because daemons restart first during a rolling deployment.
+                "claudeSessionId": (
+                    row.engine_session_id
+                    if parse_agent_engine(
+                        getattr(row, "engine", None), legacy_default=True
+                    ) is AgentEngine.CLAUDE_CODE
+                    else None
+                ),
+                "reasoningEffort": getattr(row, "reasoning_effort", None),
                 "permissionMode": row.permission_mode,
                 "createdAt": iso_utc(row.created_at),
                 "archivedAt": iso_utc(row.updated_at),
@@ -11402,10 +11813,10 @@ class SessionOrchestrator:
                 row = (await db.execute(
                     sa_select(DbSession).where(DbSession.id == session_id)
                 )).scalars().first()
-            if row and row.claude_session_id:
+            if row and row.engine_session_id:
                 path = await asyncio.to_thread(
                     self._find_transcript,
-                    str(account_cfg_dir(row.account_name)), row.claude_session_id,
+                    str(account_cfg_dir(row.account_name)), row.engine_session_id,
                     getattr(row, "cwd", None),
                 )
         return path

@@ -19,11 +19,11 @@ def test_rehydrate_loads_non_ended_rows_as_detached(tmp_path):
         await init_db(db_url=db_url)
         await _seed([
             dict(id="a", name="Alpha", account_name="acct1",
-                 claude_session_id="claude-a", status="idle", cwd="/repo/a"),
+                 engine_session_id="claude-a", status="idle", cwd="/repo/a"),
             dict(id="b", name="Beta", account_name="acct2",
-                 claude_session_id=None, status="working", cwd="/repo/b"),
+                 engine_session_id=None, status="working", cwd="/repo/b"),
             dict(id="c", name="Gone", account_name="acct1",
-                 claude_session_id="claude-c", status="ended", cwd="/repo/c"),
+                 engine_session_id="claude-c", status="ended", cwd="/repo/c"),
         ])
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
         n = await orch.rehydrate()
@@ -33,8 +33,8 @@ def test_rehydrate_loads_non_ended_rows_as_detached(tmp_path):
     assert n == 2                       # a + b, not the ended c
     assert set(recs) == {"a", "b"}
     assert recs["a"].detached is True
-    assert recs["a"].claude_session_id == "claude-a"
-    assert recs["b"].claude_session_id == ""   # NULL coerced to ""
+    assert recs["a"].engine_session_id == "claude-a"
+    assert recs["b"].engine_session_id == ""   # NULL coerced to ""
     assert recs["b"].status == "idle"          # working normalized to idle
     assert drivers == {}                        # lazy: no drivers spawned
 
@@ -51,13 +51,13 @@ def test_rehydrate_normalizes_awaiting_human_statuses(tmp_path):
         await init_db(db_url=db_url)
         await _seed([
             dict(id="perm", name="Perm", account_name="x",
-                 claude_session_id="cs1", status="waiting_input", cwd="/r"),
+                 engine_session_id="cs1", status="waiting_input", cwd="/r"),
             dict(id="ques", name="Ques", account_name="x",
-                 claude_session_id="cs2", status="waiting_question", cwd="/r"),
+                 engine_session_id="cs2", status="waiting_question", cwd="/r"),
             dict(id="plan", name="Plan", account_name="x",
-                 claude_session_id="cs3", status="ready_review", cwd="/r"),
+                 engine_session_id="cs3", status="ready_review", cwd="/r"),
             dict(id="calm", name="Calm", account_name="x",
-                 claude_session_id="cs4", status="idle", cwd="/r"),
+                 engine_session_id="cs4", status="idle", cwd="/r"),
         ])
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
         await orch.rehydrate()
@@ -84,7 +84,7 @@ def test_rehydrate_persists_waiting_input_normalization_to_db(tmp_path):
         await init_db(db_url=db_url)
         await _seed([
             dict(id="orphan", name="Orphan", account_name="x",
-                 claude_session_id="cs1", status="waiting_input", cwd="/r",
+                 engine_session_id="cs1", status="waiting_input", cwd="/r",
                  pid=None),
         ])
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
@@ -109,7 +109,7 @@ def test_rehydrate_is_idempotent(tmp_path):
     async def run():
         await init_db(db_url=db_url)
         await _seed([dict(id="a", name="A", account_name="x",
-                          claude_session_id="cs", status="idle", cwd="/r")])
+                          engine_session_id="cs", status="idle", cwd="/r")])
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
         first = await orch.rehydrate()
         second = await orch.rehydrate()    # no new rows added

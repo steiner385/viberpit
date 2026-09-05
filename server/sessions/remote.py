@@ -9,7 +9,7 @@ import logging
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from ccswitch.oauth import Usage
+from ccswitch.quota import QuotaSnapshot
 from server.assistant.context import PromptContext
 from server.ipc.client import DaemonError, DaemonUnavailable
 from server.sessions.facade import rpc_deadline
@@ -762,14 +762,30 @@ class RemoteOrchestrator:
         return r if isinstance(r, dict) else {}
 
     async def list_archived(self):
-        return await self._client.call("list_archived")
+        rows = await self._client.call("list_archived")
+        normalized = []
+        for row in rows:
+            item = dict(row)
+            # One rolling-upgrade window: an old daemon has neither ``engine``
+            # nor the engine-neutral session-id key. Normalize at this internal
+            # RPC boundary so the browser sees only the current public contract.
+            item["engine"] = parse_agent_engine(
+                item["engine"] if "engine" in item else AgentEngine.CLAUDE_CODE
+            ).value
+            if "engineSessionId" not in item:
+                item["engineSessionId"] = item.get("claudeSessionId")
+            item.setdefault("reasoningEffort", None)
+            item.pop("claudeSessionId", None)
+            normalized.append(item)
+        return normalized
 
     async def unarchive(self, session_id):
         r = await self._client.call("unarchive", session_id=session_id)
         return SessionRecord.from_dict(r["session"]) if r["session"] is not None else None
 
     async def adopt_session(self, claude_session_id, identity):
-        r = await self._client.call("adopt_session", claude_session_id=claude_session_id, identity=identity)
+        r = await self._client.call(
+            "adopt_session", claude_session_id=claude_session_id, identity=identity)
         return SessionRecord.from_dict(r["record"]), r["metadata"]
 
     async def transcript_events(self, session_id, *, max_turns: int | None = 20):
@@ -822,7 +838,7 @@ class RemoteOrchestrator:
             # Wedged/slow daemon → treat as unknown usage rather than 500 the caller.
             log.warning("usage RPC for %s unavailable — returning None", name)
             return None
-        return Usage.from_dict(r["usage"]) if r["usage"] is not None else None
+        return QuotaSnapshot.from_dict(r["usage"]) if r["usage"] is not None else None
 
     async def pending_permissions(self, session_id):
         return await self._client.call("pending_permissions", session_id=session_id)

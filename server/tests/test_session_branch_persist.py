@@ -6,12 +6,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
 def test_session_record_roundtrips_branch():
     rec = SessionRecord(
-        id="s1", name="n", account="a", claude_session_id="", cols=80, rows=24,
+        id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="", cols=80, rows=24,
         cwd="/tmp/wt", repo="o/r", branch="ccswitch/main-abcd",
     )
     assert rec.branch == "ccswitch/main-abcd"
@@ -21,7 +22,7 @@ def test_session_record_roundtrips_branch():
 
 def test_session_record_branch_defaults_none():
     rec = SessionRecord(
-        id="s1", name="n", account="a", claude_session_id="", cols=80, rows=24,
+        id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="", cols=80, rows=24,
         cwd="/tmp/wt",
     )
     assert rec.branch is None
@@ -37,7 +38,7 @@ def _make_row(**kwargs):
         id="s1",
         name="test",
         account_name="acct-a",
-        claude_session_id="cid1",
+        engine_session_id="cid1",
         cwd="/tmp",
         repo="acme/widget",
         branch=None,
@@ -104,7 +105,7 @@ async def test_rehydrate_restores_branch(monkeypatch):
 async def test_rehydrate_branch_defaults_none_when_column_absent(monkeypatch):
     """getattr fallback: row without branch attr (older DB) gets branch=None."""
     row = SimpleNamespace(
-        id="s1", name="test", account_name="acct-a", claude_session_id="cid1",
+        id="s1", name="test", account_name="acct-a", engine_session_id="cid1",
         cwd="/tmp", repo="acme/widget", status="idle", name_is_auto=True,
         permission_mode="interactive", created_at=datetime(2025, 1, 1),
         adopted_in_place=False, model=None, account_pinned=False,
@@ -161,7 +162,7 @@ async def test_refresh_live_branches_updates_moved_worktree(monkeypatch):
     import server.sessions.orchestrator as orch_mod
     orch = _make_orch()
     orch._records["s1"] = SessionRecord(
-        id="s1", name="n", account="a", claude_session_id="", cols=80, rows=24,
+        id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="", cols=80, rows=24,
         cwd="/tmp/wt", repo="o/r", branch="ccswitch/old-frozen",
     )
     monkeypatch.setattr(orch_mod.worktrees, "is_git_repo", lambda p: True)
@@ -178,7 +179,7 @@ async def test_refresh_live_branches_keeps_branch_when_detached(monkeypatch):
     import server.sessions.orchestrator as orch_mod
     orch = _make_orch()
     orch._records["s1"] = SessionRecord(
-        id="s1", name="n", account="a", claude_session_id="", cols=80, rows=24,
+        id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="", cols=80, rows=24,
         cwd="/tmp/wt", repo="o/r", branch="feat/keep",
     )
     monkeypatch.setattr(orch_mod.worktrees, "is_git_repo", lambda p: True)
@@ -191,7 +192,7 @@ async def test_refresh_live_branches_skips_non_git(monkeypatch):
     import server.sessions.orchestrator as orch_mod
     orch = _make_orch()
     orch._records["s1"] = SessionRecord(
-        id="s1", name="n", account="a", claude_session_id="", cols=80, rows=24,
+        id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="", cols=80, rows=24,
         cwd="/tmp/wt", repo="o/r", branch="feat/keep",
     )
     monkeypatch.setattr(orch_mod.worktrees, "is_git_repo", lambda p: False)

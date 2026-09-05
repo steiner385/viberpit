@@ -1,3 +1,4 @@
+// @vitest-environment node
 // Ported from plotroom@5166b52 frontend/src/__tests__/queueFront.test.ts; edits: import repointing (../queueFront, ../types)
 import { describe, it, expect } from 'vitest';
 import { nextToMerge } from '../queueFront';

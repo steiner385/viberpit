@@ -1,8 +1,9 @@
 import { useState, useId } from 'react'
-import { ChevronDown, ChevronRight, FileEdit, FileText, Terminal, List, Search, Globe, Bot, Plug, Wrench } from 'lucide-react'
+import { ChevronDown, ChevronRight, FileEdit, FileText, Terminal, List, Search, Globe, Bot, Plug, Sparkles, Wrench } from 'lucide-react'
 import type { Block, SubThread } from '@/session/reducer'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import type { ToolKind } from '@/session/events'
+import { appActionTitle } from '@/session/appActions'
 import { ToolResult } from './ToolResult'
 import { StructuredView } from './StructuredView'
 import { sizeHint } from '@/lib/toolContent'
@@ -39,8 +40,16 @@ function kindIcon(kind: ToolKind) {
     case 'web':    return <Globe size={14} />
     case 'task':   return <Bot size={14} />
     case 'mcp':    return <Plug size={14} />
+    case 'app_action': return <Sparkles size={14} />
     default:       return <Wrench size={14} />
   }
+}
+
+// App-action rows read as a completed action ("Listed sessions"), not the raw
+// mcp__ccswitch__ name — the operator shouldn't have to know the MCP plumbing.
+function toolDisplayName(kind: ToolKind, name: string): string {
+  if (kind !== 'app_action') return name
+  return appActionTitle(name) ?? name
 }
 
 function keyArg(kind: ToolKind, input: Record<string, unknown>): string {
@@ -76,6 +85,7 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
   const subRegionId = useId()
 
   const summary = keyArg(block.toolKind, block.input)
+  const displayName = toolDisplayName(block.toolKind, block.name)
   // Completed tools dim to grey (Claude-Code style); a running tool stays prominent.
   const complete = block.result !== undefined
 
@@ -97,7 +107,7 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
           )}
         >
           <span className={cn('shrink-0', complete ? 'text-gray-400 dark:text-gray-500' : 'text-gray-600 dark:text-gray-300')}>{kindIcon(block.toolKind)}</span>
-          <span className={cn('shrink-0 font-medium', complete ? 'text-gray-500 dark:text-gray-400' : 'text-gray-900 dark:text-gray-100')}>{block.name}</span>
+          <span className={cn('shrink-0 font-medium', complete ? 'text-gray-500 dark:text-gray-400' : 'text-gray-900 dark:text-gray-100')}>{displayName}</span>
           {summary && (
             <span className="truncate text-xs text-gray-500 dark:text-gray-400">{summary}</span>
           )}
@@ -153,7 +163,7 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
       {/* Header row */}
       <div className="flex items-center gap-2 px-3 py-1">
         <span className="text-gray-500 dark:text-gray-400">{kindIcon(block.toolKind)}</span>
-        <span className="font-medium text-gray-900 dark:text-gray-100">{block.name}</span>
+        <span className="font-medium text-gray-900 dark:text-gray-100">{displayName}</span>
         {summary && (
           <span className="truncate text-gray-500 dark:text-gray-400 text-xs">{summary}</span>
         )}
@@ -250,7 +260,7 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
                 {/* Status glyph */}
                 <span className="font-bold">{ok ? '✓' : '✕'}</span>
                 {/* Tool name */}
-                <span className="text-xs font-medium">{block.name}</span>
+                <span className="text-xs font-medium">{displayName}</span>
                 {/* Key arg */}
                 {summary && (
                   <span className="truncate text-xs opacity-75">· {summary}</span>

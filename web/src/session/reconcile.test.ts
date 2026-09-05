@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest'
 import { revIsNewer, shouldApplyRev, reconcileSessions } from './reconcile'
 import type { Session } from '@/api/types'

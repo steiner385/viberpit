@@ -8,6 +8,7 @@ from server.ipc.client import DaemonClient, DaemonUnavailable
 from server.ipc.serve import build_daemon
 from server.ipc.tls import ClientTLSFiles
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 from server.tests.ipc_harness import serve_daemon_tls
 
@@ -16,7 +17,8 @@ def _orch():
     o = SessionOrchestrator(sdk_factory=mock.MagicMock(), poll_interval=9999.0,
                             usage_fn=lambda n: None)
     o._records["s1"] = SessionRecord(id="s1", name="S1", account="acct",
-                                     claude_session_id="cs", cols=80, rows=24, cwd="/tmp")
+                                     engine=AgentEngine.CLAUDE_CODE,
+                                     engine_session_id="cs", cols=80, rows=24, cwd="/tmp")
     return o
 
 

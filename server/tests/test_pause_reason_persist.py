@@ -13,6 +13,7 @@ from server.db import db_session, init_db
 from server.db.models import Session as DbSession
 from server.sessions import orchestrator as orch_mod
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord, SYSTEM_IDENTITY
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
@@ -21,7 +22,7 @@ async def _build_orch(tmp_path, **row):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
     await init_db(db_url=db_url)
     base = dict(id="s1", name="New Session", account_name="acct1",
-                claude_session_id="claude-s1", status="idle", cwd="/repo/s1")
+                engine_session_id="claude-s1", status="idle", cwd="/repo/s1")
     base.update(row)
     async with db_session() as db:
         db.add(DbSession(**base))
@@ -131,7 +132,7 @@ async def test_reassign_clears_pause_fields(monkeypatch):
     monkeypatch.setattr(orch_mod, "compose", lambda a: "/cfg")
     monkeypatch.setattr(orch_mod.configdir, "trust_project", lambda *a, **k: None)
     monkeypatch.setattr(orch_mod, "db_session", lambda: _NullCtx(stmts))
-    rec = SessionRecord(id="s1", name="n", account="a", claude_session_id="c1",
+    rec = SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                         cols=80, rows=24, cwd="/tmp", status="needs_attention",
                         paused_reason="all_accounts_busy",
                         paused_until=_dt.datetime(2026, 9, 4, 16, 10))
@@ -140,7 +141,7 @@ async def test_reassign_clears_pause_fields(monkeypatch):
     orch._last_prompt = {"s1": "go"}; orch._turn_restart_at = {}; orch._swapping = {}
     orch._clock = time.time; orch._registry = None; orch._suggester = None
     orch._session_factory = lambda sid: None
-    orch._persist_claude_session_id = lambda *a, **k: None
+    orch._persist_engine_session_id = lambda *a, **k: None
 
     async def _persist_status(sid, status):  # awaited by the parked-status persist
         rec.status = status

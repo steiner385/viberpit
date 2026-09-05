@@ -7,6 +7,7 @@ import { popOverlay, pushOverlay } from '@/shell/useOverlayState'
 import { QUICK_REPLIES } from '@/lib/quickReplies'
 import { cn } from '@/lib/utils'
 import { formatRepoLabel } from '@/lib/repoLabel'
+import { bindingWindow } from '@/lib/usageWindows'
 import { isValidTimestamp, relTime } from '@/lib/relativeTime'
 import { TIER_ACCENT } from '@/session/statusTier'
 import { sessionTriage } from '@/session/triageTier'
@@ -590,17 +591,24 @@ export function SessionCard({ session, account, selected = false, listMode = fal
               <span>Fix</span>
             </button>
           )}
-          {account?.usage && (
-            <span data-testid="card-usage" className="hidden @md:inline-flex items-center flex-shrink-0">
-              <UsageBadge
-                compact
-                className="inline-flex"
-                pct={account.usage.session.pct}
-                label="session"
-                resetsAt={account.usage.session.resetsAt}
-              />
-            </span>
-          )}
+          {/* The card has room for ONE number, so show the window that actually
+              binds this account (the most-used one) rather than assuming a
+              dimension named "session" that a single-allowance provider does not
+              have. */}
+          {(() => {
+            const w = bindingWindow(account?.usage)
+            return w ? (
+              <span data-testid="card-usage" className="hidden @md:inline-flex items-center flex-shrink-0">
+                <UsageBadge
+                  compact
+                  className="inline-flex"
+                  pct={w.pct}
+                  label={w.label}
+                  resetsAt={w.resetsAt}
+                />
+              </span>
+            ) : null
+          })()}
           {/* Model chip — which model the session is running, right before the
               account chip so the pair reads together ("Opus · tony@…"). Only
               shown when the record pins a model; null means the account/binary

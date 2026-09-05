@@ -32,9 +32,9 @@ def test_startup_report_records_rehydrated_count(tmp_path):
         await init_db(db_url=db_url)
         async with db_session() as db:
             db.add(DbSession(id="a", name="A", account_name="acct",
-                             claude_session_id="c", status="idle", cwd=str(tmp_path)))
+                             engine_session_id="c", status="idle", cwd=str(tmp_path)))
             db.add(DbSession(id="b", name="B", account_name="acct",
-                             claude_session_id="c", status="working", cwd=str(tmp_path)))
+                             engine_session_id="c", status="working", cwd=str(tmp_path)))
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
         await orch.rehydrate()
         report = orch.startup_report()

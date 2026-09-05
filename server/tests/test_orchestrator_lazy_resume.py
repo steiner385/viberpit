@@ -18,7 +18,7 @@ from server.tests.fakes.fake_factory import fake_sdk_factory
 # -----------------------------------------------------------------------
 
 def _seed_and_rehydrate(db_url: str, session_id: str, cwd: str,
-                         claude_session_id: str | None, account: str = "acct1"):
+                         engine_session_id: str | None, account: str = "acct1"):
     """Seed a DB row and rehydrate an orchestrator from it, return the orchestrator."""
     async def _run():
         await init_db(db_url=db_url)
@@ -27,7 +27,7 @@ def _seed_and_rehydrate(db_url: str, session_id: str, cwd: str,
                 id=session_id,
                 name="test-session",
                 account_name=account,
-                claude_session_id=claude_session_id,
+                engine_session_id=engine_session_id,
                 status="idle",
                 cwd=cwd,
             ))
@@ -39,11 +39,11 @@ def _seed_and_rehydrate(db_url: str, session_id: str, cwd: str,
 
 
 # -----------------------------------------------------------------------
-# Test 1: ensure_driver resumes a detached session with claude_session_id
+# Test 1: ensure_driver resumes a detached session with engine_session_id
 # -----------------------------------------------------------------------
 
 def test_ensure_driver_resumes_detached_session(tmp_path):
-    """ensure_driver returns a driver for a detached row, calling sdk with resume=<claude_session_id>."""
+    """ensure_driver returns a driver for a detached row, calling sdk with resume=<engine_session_id>."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
     cwd = str(tmp_path)
     session_id = "s1"
@@ -62,7 +62,7 @@ def test_ensure_driver_resumes_detached_session(tmp_path):
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name="test", account_name="acct1",
-                claude_session_id=claude_resume_id, status="idle", cwd=cwd,
+                engine_session_id=claude_resume_id, status="idle", cwd=cwd,
             ))
         orch = SessionOrchestrator(sdk_factory=tracking_factory)
         await orch.rehydrate()
@@ -91,7 +91,7 @@ def test_ensure_driver_resumes_detached_session(tmp_path):
 
 
 def test_ensure_driver_falls_back_to_fresh_when_resume_fails(tmp_path):
-    """If resuming the stored claude_session_id fails (e.g. the session lived under a
+    """If resuming the stored engine_session_id fails (e.g. the session lived under a
     different cwd/project, or was pruned), ensure_driver retries with resume=None so
     the session stays USABLE rather than erroring out."""
     from server.tests.fakes.fake_sdk import FakeSDKClient
@@ -115,7 +115,7 @@ def test_ensure_driver_falls_back_to_fresh_when_resume_fails(tmp_path):
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name="t", account_name="acct1",
-                claude_session_id="stale-unresumable-id", status="idle", cwd=cwd,
+                engine_session_id="stale-unresumable-id", status="idle", cwd=cwd,
             ))
         orch = SessionOrchestrator(sdk_factory=factory)
         await orch.rehydrate()
@@ -142,8 +142,8 @@ def test_ensure_driver_never_starts_fresh_when_the_transcript_still_exists(tmp_p
     bad. It is not the only way start() fails: on 2026-09-04 a torn read of the account's
     `.claude.json` (rocky's account store was mounted with a 600s sshfs attribute cache)
     made the `claude` CLI exit 1 inside the SDK's initialize(), so the fallback fired,
-    built a driver with resume=None, and `_persist_claude_session_id` then OVERWROTE the
-    good `claude_session_id` with the empty session's id. Six sessions were permanently
+    built a driver with resume=None, and `_persist_engine_session_id` then OVERWROTE the
+    good `engine_session_id` with the empty session's id. Six sessions were permanently
     detached from multi-megabyte transcripts that were sitting intact on disk the whole
     time, and each came back reporting it had no idea what it was working on.
 
@@ -173,7 +173,7 @@ def test_ensure_driver_never_starts_fresh_when_the_transcript_still_exists(tmp_p
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name="t", account_name="acct1",
-                claude_session_id=good_csid, status="idle", cwd=cwd,
+                engine_session_id=good_csid, status="idle", cwd=cwd,
             ))
         orch = SessionOrchestrator(sdk_factory=factory)
         await orch.rehydrate()
@@ -193,7 +193,7 @@ def test_ensure_driver_never_starts_fresh_when_the_transcript_still_exists(tmp_p
 
         async with db_session() as db:
             row = await db.get(DbSession, session_id)
-            persisted = row.claude_session_id
+            persisted = row.engine_session_id
         return orch, driver, resume_calls, persisted
 
     orch, driver, resume_calls, persisted = asyncio.run(_run())
@@ -206,17 +206,17 @@ def test_ensure_driver_never_starts_fresh_when_the_transcript_still_exists(tmp_p
     assert orch.driver(session_id) is None, "no half-built driver may stay registered"
     # The whole point: the pointer to the real conversation survives.
     assert persisted == good_csid, (
-        f"claude_session_id must still point at the intact transcript, got {persisted!r}"
+        f"engine_session_id must still point at the intact transcript, got {persisted!r}"
     )
-    assert orch.get_session(session_id).claude_session_id == good_csid
+    assert orch.get_session(session_id).engine_session_id == good_csid
 
 
 # -----------------------------------------------------------------------
-# Test 2: ensure_driver handles claude_session_id=None (fresh start)
+# Test 2: ensure_driver handles engine_session_id=None (fresh start)
 # -----------------------------------------------------------------------
 
-def test_ensure_driver_empty_claude_session_id(tmp_path):
-    """ensure_driver with no claude_session_id calls factory with resume=None (no crash)."""
+def test_ensure_driver_empty_engine_session_id(tmp_path):
+    """ensure_driver with no engine_session_id calls factory with resume=None (no crash)."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
     cwd = str(tmp_path)
     session_id = "s2"
@@ -233,7 +233,7 @@ def test_ensure_driver_empty_claude_session_id(tmp_path):
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name="test", account_name="acct1",
-                claude_session_id=None, status="idle", cwd=cwd,
+                engine_session_id=None, status="idle", cwd=cwd,
             ))
         orch = SessionOrchestrator(sdk_factory=tracking_factory)
         await orch.rehydrate()
@@ -340,7 +340,7 @@ def test_ensure_driver_threads_attaching_identity(tmp_path):
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name="test", account_name="acct1",
-                claude_session_id="resume-me", status="idle", cwd=cwd,
+                engine_session_id="resume-me", status="idle", cwd=cwd,
             ))
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
         await orch.rehydrate()
@@ -427,7 +427,7 @@ def test_ensure_driver_concurrent_calls_start_driver_once(tmp_path):
                 id=session_id,
                 name="concurrent-test",
                 account_name="acct1",
-                claude_session_id=claude_resume_id,
+                engine_session_id=claude_resume_id,
                 status="idle",
                 cwd=cwd,
             ))
@@ -476,7 +476,7 @@ def test_ensure_driver_recreates_missing_cwd(tmp_path):
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name="t", account_name="acct1",
-                claude_session_id="csid", status="idle", cwd=missing_cwd,
+                engine_session_id="csid", status="idle", cwd=missing_cwd,
             ))
         orch = SessionOrchestrator(sdk_factory=factory)
         await orch.rehydrate()

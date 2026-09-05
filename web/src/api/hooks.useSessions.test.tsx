@@ -9,7 +9,7 @@ import { addPendingSession, __resetPending } from '@/lib/pendingSessions'
 
 vi.mock('./client', () => ({ api: { get: vi.fn() }, ApiRequestError: class extends Error {} }))
 
-const real: Session = { id: 'sess-1', name: 'Real', accountName: 'a', status: 'idle', createdAt: 'x', prs: [] }
+const real: Session = { id: 'sess-1', name: 'Real', accountName: 'a', engine: 'claude_code', engineSessionId: null, status: 'idle', createdAt: 'x', prs: [] }
 
 describe('useSessions — merges pending placeholders', () => {
   let qc: QueryClient
@@ -26,7 +26,7 @@ describe('useSessions — merges pending placeholders', () => {
     const { result } = renderHook(() => useSessions(), { wrapper })
     await waitFor(() => expect(result.current.data).toEqual([real]))
 
-    act(() => { addPendingSession({ name: 'Pending', accountName: '', status: 'in_progress', createdAt: 'y', prs: [] }) })
+    act(() => { addPendingSession({ name: 'Pending', accountName: '', engine: 'claude_code', engineSessionId: null, status: 'in_progress', createdAt: 'y', prs: [] }) })
     await waitFor(() => {
       expect(result.current.data).toHaveLength(2)
       expect(result.current.data?.some((s) => s.pending)).toBe(true)

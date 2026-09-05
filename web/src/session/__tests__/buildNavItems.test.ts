@@ -1,3 +1,4 @@
+// @vitest-environment node
 // web/src/session/__tests__/buildNavItems.test.ts
 import { describe, it, expect } from 'vitest'
 import { buildNavItems, type SessionGroup } from '../ordering'

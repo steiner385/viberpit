@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest'
 import { bandSegments, pseudoElapsedFromPercent, liveElapsedS, isOverrun, expectedTotals, ganttScale, ganttSegments } from '@/lib/etaBand'
 

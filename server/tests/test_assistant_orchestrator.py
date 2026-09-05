@@ -132,7 +132,7 @@ def test_assistant_scratch_config_dir_drops_customisation_but_keeps_projects(
     prompt module).
 
     `projects` MUST stay: it is not a shared asset but the CLI's own transcript store
-    (<config_dir>/projects/<slug>/<claude_session_id>.jsonl). Without the link a resume
+    (<config_dir>/projects/<slug>/<engine_session_id>.jsonl). Without the link a resume
     after an idle reap or a daemon restart runs against a config dir that has never seen
     that session id — a silently blank conversation.
     """
@@ -186,9 +186,9 @@ def test_assistant_scratch_dir_prunes_links_left_by_an_earlier_build(tmp_path, m
 
 def _fake_usage(account: str):
     from datetime import datetime, timedelta, timezone
-    from ccswitch.oauth import Usage
+    from ccswitch.quota import anthropic_snapshot
     reset = datetime.now(timezone.utc) + timedelta(hours=5)
-    return Usage(10.0, reset, 10.0, reset, False)
+    return anthropic_snapshot(10.0, reset, 10.0, reset, False)
 
 
 def _seed_account(name: str) -> None:
@@ -301,7 +301,7 @@ def test_assistant_kind_persists_to_the_db_row(tmp_path):
     asyncio.run(run())
 
 
-async def _park_as_reaped(session_id: str, claude_session_id: str = "cli-abc") -> None:
+async def _park_as_reaped(session_id: str, engine_session_id: str = "cli-abc") -> None:
     """Put a row in the exact state the idle reap leaves behind: status='ended' with
     the CLI resume handle still on the row (spec §4.7 'Idle reap … kept (CLI JSONL)')."""
     from sqlalchemy import update as sa_update
@@ -309,7 +309,7 @@ async def _park_as_reaped(session_id: str, claude_session_id: str = "cli-abc") -
     from server.db.models import Session as DbSession
     async with db_session() as db:
         await db.execute(sa_update(DbSession).where(DbSession.id == session_id)
-                         .values(status="ended", claude_session_id=claude_session_id))
+                         .values(status="ended", engine_session_id=engine_session_id))
         await db.commit()
 
 
@@ -329,7 +329,7 @@ def test_reaped_assistant_survives_a_daemon_restart(tmp_path):
     """#1122: the reap parks the thread on 'ended', which `rehydrate` deliberately
     skips (INACTIVE_SESSION_STATUSES) — so without an on-demand DB adoption
     `find_assistant` returns None after a restart and the drawer silently starts a
-    NEW thread, stranding the previous claude_session_id and its transcript."""
+    NEW thread, stranding the previous engine_session_id and its transcript."""
     async def run():
         orch = await _make_orch(db_url=f"sqlite+aiosqlite:///{tmp_path / 'reap.db'}",
                                 tmp_path=tmp_path)
@@ -349,7 +349,7 @@ def test_reaped_assistant_survives_a_daemon_restart(tmp_path):
             assert found is not None and found.id == a.id
             assert found.status == "ended"          # POST /session branches on this to resume
             assert found.kind == ASSISTANT_KIND and found.owner_identity == "u@x"
-            assert found.claude_session_id == "cli-abc"   # the resume handle survives
+            assert found.engine_session_id == "cli-abc"   # the resume handle survives
             # Adopted into _records, so ensure_driver can resume it like any detached row.
             assert a.id in orch._records
         finally:
@@ -427,20 +427,20 @@ def test_adoption_picks_the_newest_reaped_thread(tmp_path):
             old = await orch.create_session(name="Assistant", cwd=str(tmp_path),
                                             identity="u@x", kind=ASSISTANT_KIND,
                                             owner_identity="u@x")
-            await _park_as_reaped(old.id, claude_session_id="cli-old")
+            await _park_as_reaped(old.id, engine_session_id="cli-old")
             await _backdate(old.id, hours=1)   # deterministic ordering, no clock race
             orch._records.clear()
             orch._drivers.clear()
             new = await orch.create_session(name="Assistant", cwd=str(tmp_path),
                                             identity="u@x", kind=ASSISTANT_KIND,
                                             owner_identity="u@x")
-            await _park_as_reaped(new.id, claude_session_id="cli-new")
+            await _park_as_reaped(new.id, engine_session_id="cli-new")
             orch._records.clear()
             orch._drivers.clear()
 
             found = await orch.find_assistant("u@x")
             assert found is not None and found.id == new.id
-            assert found.claude_session_id == "cli-new"
+            assert found.engine_session_id == "cli-new"
         finally:
             await _stop_orch(orch)
 

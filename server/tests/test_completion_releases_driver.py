@@ -9,7 +9,7 @@ fill with finished-but-unarchived sessions and deadlock the queue forever.
 `_persist_status` now pops + closes the driver itself on the `complete` transition
 (see orchestrator.py, same pop+suppress+aclose idiom as close_session/stop()).
 Nothing is archived: the row and transcript stay, and reopening lazily rebuilds the
-driver via `ensure_driver` (resume=claude_session_id).
+driver via `ensure_driver` (resume=engine_session_id).
 
 ONLY `complete`. `done` is NOT a finished-work signal — `derive_status` returns it
 for any ended turn (turns_completed >= 1, no turn active), i.e. after every ordinary
@@ -69,7 +69,7 @@ async def _build_orch(tmp_path, **row):
     db_url = f"sqlite+aiosqlite:///{tmp_path/'ccswitch.db'}"
     await init_db(db_url=db_url)
     base = dict(id="s1", name="New Session", account_name="acct1",
-                claude_session_id="claude-s1", status="in_progress", cwd="/repo/s1")
+                engine_session_id="claude-s1", status="in_progress", cwd="/repo/s1")
     base.update(row)
     async with db_session() as db:
         db.add(DbSession(**base))
@@ -176,7 +176,7 @@ def test_teardown_failure_still_removes_driver_from_registry(tmp_path):
 #
 # Fix 1: a fast reopen must not race the old process's teardown. ensure_driver now
 # awaits any in-flight completion-driver-release (tracked in orch._releasing) before
-# building a replacement driver against the same claude_session_id/cwd — this race
+# building a replacement driver against the same engine_session_id/cwd — this race
 # was unreachable before this task (a `complete` session always had a live driver),
 # so it is a regression introduced by deferring aclose(), not a pre-existing gap.
 #

@@ -1,9 +1,10 @@
 from datetime import datetime, timezone
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
 def _rec(**kw):
-    base = dict(id="s1", name="S1", account="acct", claude_session_id="cs",
+    base = dict(id="s1", name="S1", account="acct", engine=AgentEngine.CLAUDE_CODE, engine_session_id="cs",
                 cols=80, rows=24, cwd="/tmp")
     base.update(kw)
     return SessionRecord(**base)
