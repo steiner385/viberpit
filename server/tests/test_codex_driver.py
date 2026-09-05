@@ -839,6 +839,42 @@ async def test_a_queued_prompt_can_be_cancelled(harness):
 
 
 @pytest.mark.asyncio
+async def test_a_stale_queued_attachment_does_not_strand_later_prompts(
+    harness, tmp_path
+):
+    work = tmp_path / "work"
+    work.mkdir()
+    shot = work / "shot.png"
+    shot.write_bytes(b"png")
+    driver = await harness.boot(cwd=str(work))
+    await harness.run_turn("first")
+    harness.server.rule(
+        schema.METHOD_TURN_STEER, error={"code": -32600, "message": "queue"}
+    )
+    await driver.send_prompt(
+        "stale image", images=[{"path": str(shot), "mime": "image/png"}]
+    )
+    harness.server.rule(
+        schema.METHOD_TURN_STEER, error={"code": -32600, "message": "queue"}
+    )
+    await driver.send_prompt("valid prompt")
+    await harness.settle()
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"png")
+    shot.unlink()
+    shot.symlink_to(outside)
+
+    harness.notify_turn_completed()
+    await harness.settle()
+
+    starts = harness.frames(schema.METHOD_TURN_START)
+    assert starts[-1]["params"]["input"] == [
+        {"type": "text", "text": "valid prompt"}
+    ]
+    assert driver.queued() == []
+
+
+@pytest.mark.asyncio
 async def test_a_late_subscriber_replays_the_turn_in_progress(harness):
     driver = await harness.boot()
     await harness.run_turn("hello")
@@ -861,6 +897,7 @@ async def test_a_late_subscriber_replays_the_turn_in_progress(harness):
 @pytest.mark.asyncio
 async def test_reconnect_starts_a_fresh_thread(harness):
     driver = await harness.boot()
+    old_pump = driver._pump
     await harness.run_turn("hello")
     harness.server.rule(
         schema.METHOD_THREAD_START, result=thread_config("thread-2")
@@ -871,6 +908,8 @@ async def test_reconnect_starts_a_fresh_thread(harness):
     assert driver.engine_session_id == "thread-2"
     assert driver.turn_active is False
     assert len(harness.frames(schema.METHOD_THREAD_START)) == 2
+    assert old_pump is not None and old_pump.done()
+    assert driver._pump is not old_pump
 
 
 @pytest.mark.asyncio

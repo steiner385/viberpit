@@ -530,11 +530,17 @@ def test_isolation_survives_reattach_and_rotation(tmp_path):
     assert orch._suggester_for(None) is orch._suggester
     assert orch._suggester_for(ASSISTANT_KIND) is None
 
-    # The two rebuild sites must call the helpers, not re-derive the decision.
-    # (`_reassign` validates and delegates; `_reassign_locked` builds the driver.)
-    for name in ("ensure_driver", "_reassign_locked"):
+    # Every driver-building site must call the engine-specific config helper,
+    # not re-derive the setup sequence.
+    for name in ("_spawn_session", "ensure_driver", "_reassign_locked", "adopt_session"):
         src_text = inspect.getsource(getattr(SessionOrchestrator, name))
-        assert "_isolated_dir_for(" in src_text, name
+        assert "_driver_config_dir(" in src_text, name
+
+    # The three general rebuild sites also share the suggester decision. Adoption
+    # is deliberately a normal coding session and therefore has no kind branch.
+    # (`_reassign` validates and delegates; `_reassign_locked` builds the driver.)
+    for name in ("_spawn_session", "ensure_driver", "_reassign_locked"):
+        src_text = inspect.getsource(getattr(SessionOrchestrator, name))
         assert "_suggester_for(" in src_text, name
         assert "suggester=self._suggester," not in src_text, name
 
@@ -673,18 +679,16 @@ def test_real_spawn_leaves_the_worktree_trusted(tmp_path):
         env_patch.stop()
 
 
-def test_driver_building_sites_compose_then_trust_then_isolate():
-    """Source-order guard for all three sites, so a later refactor cannot re-order the
-    sequence again (this regression WAS a later refactor)."""
+def test_driver_config_helper_composes_then_trusts_then_isolates():
+    """The one config-preparation seam preserves Claude's load-bearing order."""
     from server.sessions.orchestrator import SessionOrchestrator
 
-    for name in ("_spawn_session", "ensure_driver", "_reassign_locked"):
-        src_text = inspect.getsource(getattr(SessionOrchestrator, name))
-        compose_at = src_text.index("compose(")
-        trust_at = src_text.index("configdir.trust_project(")
-        isolate_at = src_text.index("_isolated_dir_for(")
-        assert compose_at < trust_at < isolate_at, (
-            f"{name}: must be compose -> trust_project -> _isolated_dir_for")
+    src_text = inspect.getsource(SessionOrchestrator._driver_config_dir)
+    compose_at = src_text.index("compose(")
+    trust_at = src_text.index("configdir.trust_project(")
+    isolate_at = src_text.index("_isolated_dir_for(")
+    assert compose_at < trust_at < isolate_at, (
+        "must be compose -> trust_project -> _isolated_dir_for")
 
 
 def test_register_assistant_overlay_reaches_the_sdk_factory(tmp_path):
