@@ -80,6 +80,20 @@ describe('useBulkSelection', () => {
     expect(result.current.isSelected('a')).toBe(true)
   })
 
+  it('a shift-click on an id absent from visibleIds falls back to a plain toggle', () => {
+    // 'c' is present (so the render-time prune does not immediately drop it)
+    // but NOT visible — unlike the "anchor no longer visible" case above,
+    // where the ANCHOR fell out of view, here the just-clicked id is the one
+    // missing from `visibleIds`. Without the `end !== -1` guard this produced
+    // `[lo, hi] = [-1, anchorIdx]`, whose range loop reads `visibleIds[-1]` —
+    // `undefined` — into the selection.
+    const { result } = renderHook(() => useBulkSelection(['a', 'b'], IDS))
+    act(() => result.current.toggleOne('a'))          // anchor, visible
+    act(() => result.current.toggleOne('c', true))    // shift-click, present but not visible
+    expect([...result.current.selected].sort()).toEqual(['a', 'c'])
+    expect(result.current.selected.has(undefined as unknown as string)).toBe(false)
+  })
+
   it('clear() empties the selection and forgets the anchor', () => {
     const { result } = renderHook(() => useBulkSelection(IDS))
     act(() => result.current.toggleOne('b'))

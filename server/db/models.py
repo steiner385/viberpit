@@ -220,8 +220,9 @@ class Session(Base):
     assisted_by: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     # Generic row-write time: bumped on EVERY update (status, sub-agents, branch, name,
-    # model, pin…). Used for the archived-sessions list's "archived at" only — NOT the
-    # "active … ago" label, which would otherwise reset on every incidental write.
+    # model, pin…). Used as the archived-sessions list's "archived at" only as a legacy
+    # fallback, when `archived_at` is NULL — NOT the "active … ago" label, which would
+    # otherwise reset on every incidental write.
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
     )

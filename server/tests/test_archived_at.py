@@ -244,3 +244,77 @@ def test_list_recent_archived_rows_real_db_where_clause(tmp_path):
 
     rows = asyncio.run(run())
     assert {r["id"] for r in rows} == {"in"}
+
+
+# ---------------------------------------------------------------------------
+# list_archived serves archived_at, not updated_at
+# ---------------------------------------------------------------------------
+
+
+def test_list_archived_serves_archived_at_not_updated_at(tmp_path):
+    """A row write AFTER archiving must not move the reported archivedAt.
+
+    `updated_at` bumps on every write (rename, status, sub-agents). Serving it
+    as "archived at" made an old archive look freshly archived, and reordered
+    the archived list's default sort behind any incidental touch.
+    """
+    from server.db import init_db, db_session
+    from server.db.models import Session as DbSession
+    from server.sessions.orchestrator import SessionOrchestrator
+    from server.tests.fakes.fake_factory import fake_sdk_factory
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'archived_at_list.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        archived_at = datetime(2026, 1, 1, 12, 0, 0)
+        async with db_session() as db:
+            db.add(DbSession(
+                id="a1", name="Old", account_name="acc",
+                status="archived", cwd="/tmp/a1", archived_at=archived_at,
+            ))
+        # A later, unrelated write — exactly what bumps updated_at in the wild.
+        async with db_session() as db:
+            row = await db.get(DbSession, "a1")
+            row.name = "Old (renamed)"
+
+        orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+        rows = await orch.list_archived()
+
+        async with db_session() as db:
+            fresh = await db.get(DbSession, "a1")
+            return rows, fresh.updated_at
+
+    rows, updated_at = asyncio.run(run())
+    assert len(rows) == 1
+    assert rows[0]["archivedAt"].startswith("2026-01-01T12:00:00"), rows[0]["archivedAt"]
+    assert not rows[0]["archivedAt"].startswith(updated_at.isoformat()[:19]), (
+        "archivedAt still tracks updated_at"
+    )
+
+
+def test_list_archived_falls_back_to_updated_at_for_legacy_rows(tmp_path):
+    """A row archived before the archived_at column existed has NULL there.
+
+    It must still report a time rather than null — the card's label and the
+    default sort both read this field.
+    """
+    from server.db import init_db, db_session
+    from server.db.models import Session as DbSession
+    from server.sessions.orchestrator import SessionOrchestrator
+    from server.tests.fakes.fake_factory import fake_sdk_factory
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'archived_at_legacy.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        async with db_session() as db:
+            db.add(DbSession(
+                id="legacy", name="Ancient", account_name="acc",
+                status="archived", cwd="/tmp/legacy", archived_at=None,
+            ))
+        orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+        return await orch.list_archived()
+
+    rows = asyncio.run(run())
+    assert rows[0]["archivedAt"] is not None

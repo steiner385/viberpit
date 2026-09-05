@@ -14,7 +14,7 @@ export interface SelectOption<V extends string> {
 /**
  * The Status/Project/Environment selection, its domains, and the setter — one
  * prop, not three loose optionals, so "this list has filters" is a single
- * yes/no. ArchivedManager mounts the same controls without it and keeps exactly
+ * yes/no. ArchivedSessionList mounts the same controls without it and keeps exactly
  * the search/group/sort strip it has today.
  *
  * `options` is the UNFILTERED domain (see `useSessionListState`); the value and
@@ -38,7 +38,7 @@ interface SessionListControlsProps<G extends string, S extends string> {
   sortOptions?: SelectOption<S>[]
   searchPlaceholder?: string
   searchAriaLabel?: string
-  /** Omit to render no filter selects at all (ArchivedManager). */
+  /** Omit to render no filter selects at all (ArchivedSessionList). */
   filters?: FilterControls
 }
 
