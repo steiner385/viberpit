@@ -26,7 +26,6 @@ vi.mock('@/api/hooks', () => ({
   useDeleteAccount: vi.fn(),
   useSetAccountEnabled: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useGithubRepos: vi.fn(),
-  useGithubBranches: vi.fn(),
   useModels: vi.fn(() => ({ data: [{ id: 'default', label: 'Default' }, { id: 'opus', label: 'Opus' }, { id: 'fable', label: 'Fable' }] })),
   useSettings: vi.fn(),
   useUpdateSettings: vi.fn(),
@@ -123,7 +122,6 @@ describe('session-card actions (via AppShell)', () => {
 
     vi.mocked(hooks.useGithubRepos).mockReturnValue(queryResult([]))
 
-    vi.mocked(hooks.useGithubBranches).mockReturnValue(queryResult({ default: null, branches: [] }))
 
     vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings()))
 

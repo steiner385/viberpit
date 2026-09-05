@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { HelpCircle, Monitor, Moon, Plus, Sparkles, Sun, type LucideIcon } from 'lucide-react'
+import { HelpCircle, Monitor, Moon, Sparkles, Sun, type LucideIcon } from 'lucide-react'
 import { Menu } from '@/ui/Menu'
 import { useOpenDrawer } from '@/shell/drawerParam'
 import { useTheme, type ThemeChoice } from '@/shell/theme'
@@ -7,14 +7,23 @@ import { NavItem } from './NavItem'
 
 /**
  * The shell's global actions — the controls that belong to the app rather than
- * to a section: New session, Assistant, Help, Theme.
+ * to a section: Assistant, Help, Theme.
  *
  * They appear in `NavRail`'s bottom cluster on tablet/desktop and in `NavBar`'s
  * More sheet on phone. This is the same reason `NavItem` exists: the list, the
- * order, the `/sessions?dialog=new` target and the theme options are one thing,
- * and a second copy would drift the first time an action was added. Settings is
- * deliberately NOT here — it is a nav section with an active state, so each
- * region renders it itself, once.
+ * order and the theme options are one thing, and a second copy would drift the
+ * first time an action was added. Settings is deliberately NOT here — it is a
+ * nav section with an active state, so each region renders it itself, once.
+ *
+ * "New session" is NOT here either, and that is a decision rather than an
+ * omission. It used to lead the cluster, as a `<Link>` to `?dialog=new`, and it
+ * read as a duplicate of the Sessions list's own New Session button while
+ * actually doing something else — the link opened a modal create form, the list
+ * button flips `app.dock` to the `DispatchBar`. Creating a session is now the
+ * dock's job alone, so the entry point lives at the foot of the list column,
+ * against the bar it operates (`SessionListColumn`). A global action here would
+ * put a create control in Pipeline, Insights and Settings, where there is no
+ * dock for it to reach.
  *
  * `showLabel` is passed straight through to `NavItem`; the accessible name is
  * present either way.
@@ -38,7 +47,6 @@ export function GlobalActions({ showLabel = false }: { showLabel?: boolean }) {
 
   return (
     <>
-      <NavItem to="/sessions?dialog=new" icon={Plus} label="New session" showLabel={showLabel} />
       <NavItem onClick={() => openDrawer('assistant')} icon={Sparkles} label="Assistant" showLabel={showLabel} />
       <NavItem onClick={() => openDrawer('help')} icon={HelpCircle} label="Help" showLabel={showLabel} />
       <NavItem

@@ -177,10 +177,15 @@ describe('? opens the help drawer', () => {
     expect(composer()).toHaveValue('?')
   })
 
-  it('NOT while a modal dialog is open', async () => {
+  // The fixture used to be the New Session dialog, which was retired with
+  // `?dialog=new`. An OVERLAY-mode `Sheet` is the better stand-in anyway: it is
+  // the same modal focus trap as far as `overlayIsOpen()` is concerned, and it
+  // is the exact surface the pushed-drawer case below contrasts against, so the
+  // two tests now differ only in the media query — which is the real rule.
+  it('NOT while a modal overlay is open', async () => {
     const user = userEvent.setup()
-    renderApp({ path: '/sessions?dialog=new', mode: 'desktop' })
-    await waitFor(() => expect(screen.getByRole('dialog', { name: /new session/i })).toBeInTheDocument())
+    renderApp({ path: '/sessions?drawer=assistant', mode: 'desktop' })
+    await waitFor(() => expect(screen.getByRole('dialog', { name: /assistant/i })).toHaveAttribute('aria-modal', 'true'))
     await user.keyboard('?')
     expect(helpDrawer()).not.toBeInTheDocument()
   })
@@ -353,10 +358,10 @@ describe('↑/↓ move the list highlight', () => {
     expect(row('One')).toHaveAttribute('data-selected', 'true')
   })
 
-  it('NOT while a modal dialog is open', async () => {
+  it('NOT while a modal overlay is open', async () => {
     const user = userEvent.setup()
-    renderApp({ path: '/sessions?dialog=new', mode: 'desktop' })
-    await waitFor(() => expect(screen.getByRole('dialog', { name: /new session/i })).toBeInTheDocument())
+    renderApp({ path: '/sessions?drawer=assistant', mode: 'desktop' })
+    await waitFor(() => expect(screen.getByRole('dialog', { name: /assistant/i })).toHaveAttribute('aria-modal', 'true'))
     await user.keyboard('{ArrowDown}')
     expect(row('One')).not.toHaveAttribute('data-selected', 'true')
     expect(row('Two')).not.toHaveAttribute('data-selected', 'true')

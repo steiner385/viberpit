@@ -48,7 +48,6 @@ export const QK = {
   adoptable: ['adoptable-sessions'] as const,
   config: ['config'] as const,
   githubRepos: ['github-repos'] as const,
-  githubBranches: (repo?: string) => ['github-branches', repo] as const,
   settings: ['settings'] as const,
   sessionSearch: (q: string, scope: string = 'live') => ['session-search', scope, q] as const,
   prs: ['prs'] as const,
@@ -142,11 +141,6 @@ export interface GithubRepo {
   cloned: boolean
 }
 
-export interface GithubBranchInfo {
-  default: string | null
-  branches: string[]
-}
-
 export interface ConfigInfo {
   repoRoot: string
   adoptionEnabled: boolean
@@ -185,15 +179,6 @@ export function useGithubRepos() {
     // refetch-on-focus and multiple tabs into a request storm.
     retry: 1,
     refetchInterval: reposRefetchInterval,
-  })
-}
-
-export function useGithubBranches(repo?: string) {
-  return useQuery<GithubBranchInfo>({
-    queryKey: QK.githubBranches(repo),
-    queryFn: () => api.get<GithubBranchInfo>(`/github/branches?repo=${encodeURIComponent(repo!)}`),
-    enabled: !!repo,
-    staleTime: 10_000,
   })
 }
 
@@ -274,9 +259,12 @@ export function useCreateSession() {
   const qc = useQueryClient()
   return useMutation<Session, ApiRequestError, CreateSessionInput, { tempId: string }>({
     mutationFn: (input) => api.post<Session>('/sessions', input),
-    // Both callers (NewSessionDialogHost, PromptDock → DispatchBar) render the
-    // failure inline next to the form that raised it; the global toast would be
-    // a second, vaguer copy of the same message.
+    // The one caller (PromptDock → DispatchBar) renders the failure inline in
+    // the bar that raised it; the global toast would be a second, vaguer copy of
+    // the same message. It was two callers until the New Session dialog was
+    // retired — with the dialog gone, the bar's inline error is the user's ONLY
+    // copy, which is what makes suppressing the toast a real commitment rather
+    // than a de-duplication.
     meta: { suppressErrorToast: true },
     onMutate: (input) => {
       // Placeholder lives outside the query cache so the 5s poll can't wipe it

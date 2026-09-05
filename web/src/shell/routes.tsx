@@ -53,7 +53,6 @@
    drift this file exists to prevent. */
 import type { ReactElement } from 'react'
 import { Navigate, Outlet, useNavigate, useParams, useSearchParams, type RouteObject } from 'react-router-dom'
-import { DIALOG_PARAM } from './dialogParam'
 import { NAV_BY_ID, settingsSectionPath } from './navDefs'
 import {
   SESSIONS_PATH, ARCHIVED_PATH,
@@ -208,6 +207,19 @@ export function LibraryRedirect() {
   const [params] = useSearchParams()
   return <Navigate to={settingsSectionPath(params.get('section'), 'plugins')} replace />
 }
+
+/**
+ * The legacy `?dialog=` search param.
+ *
+ * It is defined here, next to its only reader, rather than in a `dialogParam`
+ * module. That module existed to serve `?dialog=new` — the reader, the name
+ * union and the close helper for the New Session dialog — and went with it when
+ * creating a session became the dock's job. What survives is this one string,
+ * for one redirect off a URL shape the app stopped minting long ago. A module
+ * whose whole remaining export is a constant for a legacy redirect is the sort
+ * of half-dead file the next reader mistakes for live machinery.
+ */
+const DIALOG_PARAM = 'dialog'
 
 /**
  * `?dialog=settings` on ANY path → `/settings/general`, param dropped.
