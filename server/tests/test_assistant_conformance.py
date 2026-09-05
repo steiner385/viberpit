@@ -81,23 +81,17 @@ def test_every_tool_has_an_eval_case():
     assert not missing, f"tools with no eval case: {sorted(missing)}"
 
 
-# Starter chips with no backing tool yet (spec v2 G1): Task 5.3 adds list_repos /
-# list_stage_models for the initiatives/projects chips, Task 6.5 restores the CI-regression
-# insights chip. Tracked explicitly — rather than just excluded — so this test still catches
-# a genuinely NEW gap (an added chip with no case, or one of these regaining a case without
-# the set being updated) while it stays green until those tasks land.
-KNOWN_STARTER_GAPS: frozenset[str] = frozenset({
-    "Which initiatives have no active session?",
-    "Summarize initiative progress",
-    "Which project has the most open work?",
-    "What is blocked by a dependency?",
-    "What regressed in CI recently?",
-})
-
-
 def test_every_starter_has_an_eval_case():
+    """No exceptions list: the five G1 gaps this test was born tracking are closed.
+
+    Task 5.3 backed the insights chip with list_stage_models, and Task 5.6 replaced the
+    initiatives/projects chips that no tool could serve. The tracking set that stood in
+    for them is deleted rather than left empty — an empty allow-list is the same
+    assertion with a stale comment attached. Task 6.5 restores section-specific chips on
+    top of Pack P, and it has to add their eval cases in the same change to stay green.
+    """
     src = Path("web/src/features/assistant/starters.ts").read_text()
     chips = set(re.findall(r"^\s+'([^']+)',\s*$", src, re.M))
     prompts = {c["prompt"] for c in _cases()}
     missing = chips - prompts
-    assert missing == KNOWN_STARTER_GAPS, f"starter chips with no eval case: {sorted(missing)}"
+    assert not missing, f"starter chips with no eval case: {sorted(missing)}"
