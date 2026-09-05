@@ -70,4 +70,4 @@ async def test_orchestrator_send_prompt_forwards_interrupt_to_driver():
     orch._drivers["s1"] = driver
     status = await orch.send_prompt("s1", "now", None, interrupt=True)
     assert status == "sent"
-    driver.send_prompt.assert_awaited_once_with("now", [], interrupt=True)
+    driver.send_prompt.assert_awaited_once_with("now", [], interrupt=True, context=None)
