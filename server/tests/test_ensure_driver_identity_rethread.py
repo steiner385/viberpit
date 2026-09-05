@@ -113,7 +113,7 @@ def test_rethread_makes_question_asked_under_system_answerable(tmp_path):
         # what ClaudeAgentDriver's AskUserQuestion handler registers.
         qid, fut = d_sys._qreg.request("s3", "t1", "H", "Q?", [{"label": "A"}], False,
                                        d_sys.identity)
-        pid, pfut = await d_sys._reg.request(
+        pid, pfut, _ = await d_sys._reg.request(
             "s3", "t1", "Bash", {"command": "make"}, mode="interactive",
             denylist=PermissionRegistry.DANGEROUS, allowlist=True, identity=d_sys.identity)
         # Now the real user attaches (WS attach → ensure_driver with their identity).
