@@ -27,6 +27,7 @@ from server.pm.github_sync import (
 from server.pm.mirror_store import ProductSyncView
 
 from .base import AutomationStatus, ConfigField
+from .engine_policy import EnginePolicy
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +67,10 @@ class PmSync:
         "and refreshes the feature index from merged docs. Read-only toward "
         "GitHub; the mirror is disposable, GitHub stays the truth.")
     modes: tuple[str, ...] = ("off", "on")
+    # Audited engine ceiling (Phase 7, Task 7.1). This origin has no Codex
+    # acceptance evidence, so it launches Claude only. Widening it is a
+    # reviewable one-line change gated on its acceptance suite passing.
+    engine_policy: EnginePolicy = EnginePolicy.CLAUDE_ONLY
     config_schema = [
         ConfigField("min_sync_interval_s", "Min sync interval (s)", "int", 300,
                     help="A repo is re-synced no more often than this unless "

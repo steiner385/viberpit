@@ -28,6 +28,7 @@ from server.sdlc import engine
 from server.sdlc.prompts import artifact_path, build_intent_prompt
 
 from .base import AutomationStatus, ConfigField
+from .engine_policy import EnginePolicy
 
 # A trigger's per-day spawn ceiling is enforced over a rolling 24h window.
 _DAY_SECONDS = 24 * 60 * 60
@@ -61,6 +62,10 @@ class SdlcIntake:
         "Turns a brainstorm/triage trigger into a proposed intent.md PR — the "
         "front of the AI-native SDLC loop. Propose-only: a human advance is the gate.")
     modes: tuple[str, ...] = ("off", "propose", "auto")
+    # Audited engine ceiling (Phase 7, Task 7.1). This origin has no Codex
+    # acceptance evidence, so it launches Claude only. Widening it is a
+    # reviewable one-line change gated on its acceptance suite passing.
+    engine_policy: EnginePolicy = EnginePolicy.CLAUDE_ONLY
     config_schema = [
         ConfigField("enabled_repos", "Repositories", "repo-multiselect", [],
                     help="Repositories this intake automation may open intent PRs in."),
@@ -161,7 +166,16 @@ class SdlcIntakeLoop:
         self._stash_counts(len(triggers), awaiting)
 
     async def _propose_intent(self, trigger: Trigger) -> None:
-        prompt = build_intent_prompt(trigger.text, slug=trigger.slug, repo=trigger.repo)
+        # The intent instructions state a commit trailer, the one engine-specific
+        # line in them, so the engine has to be known before the prompt is built
+        # (Phase 7, Task 7.1). A refusal is recorded by the context and skips the
+        # proposal rather than seeding a session for an unaudited engine.
+        plan = await self._ctx.launch_plan_or_refuse(f"{trigger.slug}:intent")
+        if plan is None:
+            return
+        launch_engine, _config = plan
+        prompt = build_intent_prompt(trigger.text, slug=trigger.slug, repo=trigger.repo,
+                                     engine=launch_engine)
         session = await self._spawn(trigger, prompt)
         session_id = getattr(session, "id", None)
         path = artifact_path(trigger.slug, "intent")

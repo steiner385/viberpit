@@ -23,6 +23,11 @@ export interface Automation {
   mode: string | null
   modes: string[]
   status: AutomationStatus
+  /** Audited agent-engine ceiling for this origin (Phase 7). `claude_only` means
+   *  the origin has no Codex acceptance evidence, so `configSchema` carries no
+   *  engine selector — the absence IS the enforcement, and the card must not
+   *  synthesize one. Optional so older fixtures still compile. */
+  enginePolicy?: 'claude_only' | 'codex_allowed' | 'codex_only'
   configSchema: ConfigField[]
   config: Record<string, unknown>
   /** Optional user-configured cadence ({activeHours?, cron?}), or null (#603).

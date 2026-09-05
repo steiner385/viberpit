@@ -233,6 +233,19 @@ function SchedulePanel({ automation: a }: ConfigPanelProps) {
   )
 }
 
+/** Label for the engine this automation actually launches on, or null when
+ *  there is nothing to say (Phase 7).
+ *
+ *  Deliberately silent for a `claude_only` origin: every origin is claude_only
+ *  until it passes a Codex acceptance suite, so a badge on all of them would be
+ *  noise. It reads the CONFIG rather than the policy, because `codex_allowed` is
+ *  only permission — an origin can hold it and still be running Claude. */
+function engineBadge(a: Automation): string | null {
+  if (!a.enginePolicy || a.enginePolicy === 'claude_only') return null
+  const selected = a.config?.engine ?? a.configSchema.find((f) => f.key === 'engine')?.default
+  return selected === 'codex' ? 'Codex' : 'Claude'
+}
+
 // --- Main card ---------------------------------------------------------------
 
 export function AutomationCard({ automation: a }: {
@@ -251,6 +264,14 @@ export function AutomationCard({ automation: a }: {
             {a.activeSessions > 0 && (
               <span className="text-xs tabular-nums rounded-full bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 px-2 py-0.5 leading-none">
                 {a.activeSessions} active
+              </span>
+            )}
+            {engineBadge(a) && (
+              <span
+                className="text-xs rounded-full bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300 px-2 py-0.5 leading-none"
+                title="Agent engine this automation's unattended sessions run on"
+              >
+                {engineBadge(a)}
               </span>
             )}
           </div>

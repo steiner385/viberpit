@@ -6,7 +6,7 @@ from sqlalchemy import select
 from server.db import db_session
 from server.db.models import Automation as AutomationRow
 
-from .base import Automation
+from .base import Automation, ConfigSchema
 from .context import AutomationContext
 
 
@@ -24,6 +24,18 @@ class AutomationRegistry:
 
     def all(self) -> list[Automation]:
         return list(self._by_id.values())
+
+    def schema_for(self, automation_id: str) -> ConfigSchema:
+        """THE config schema for *automation_id*: its own fields plus whatever its
+        audited engine ceiling adds (Phase 7, Task 7.1).
+
+        Every reader goes through here — the API validates a PATCH against it,
+        publishes it as ``configSchema``, and ``read_automation_config`` reads
+        through it — so an ``engine`` key cannot be accepted by one and rejected
+        as unknown by another."""
+        from .engine_policy import effective_config_schema
+
+        return effective_config_schema(self._by_id[automation_id])
 
     def context_for(self, automation_id: str, *, create_session=None) -> AutomationContext:
         return AutomationContext(automation_id, create_session=create_session)
