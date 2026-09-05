@@ -968,6 +968,22 @@ def test_note_login_prompt_lifts_the_uri_and_code_out_of_vendor_output(tmp_path)
     assert snapshot.verification_uri == "https://auth.openai.com/device"
 
 
+def test_note_login_prompt_accepts_current_code_shape_and_strips_ansi(tmp_path):
+    """Codex 0.153 emits a 4-5 code and color-resets both displayed values."""
+    authority = make_authority(make_store(tmp_path))
+    authority._set_login(ACCOUNT, LoginSnapshot(state=LOGIN_PENDING))
+
+    authority._note_login_prompt(
+        ACCOUNT,
+        "\x1b[34mhttps://auth.openai.com/codex/device\x1b[0m",
+    )
+    authority._note_login_prompt(ACCOUNT, "\x1b[34mCODE-12345\x1b[0m")
+
+    snapshot = authority.login_status(ACCOUNT)
+    assert snapshot.verification_uri == "https://auth.openai.com/codex/device"
+    assert snapshot.user_code == "CODE-12345"
+
+
 def test_note_login_prompt_ignores_chatter_and_terminal_logins(tmp_path):
     authority = make_authority(make_store(tmp_path))
     authority._set_login(ACCOUNT, LoginSnapshot(state=LOGIN_PENDING))

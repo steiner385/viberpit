@@ -91,8 +91,13 @@ DEFAULT_EXPIRY_SKEW_S: Final = 60.0
 #: where to go. Deliberately permissive: the login's SUCCESS is decided by the
 #: credential cache appearing, never by matching this text, so a vendor wording
 #: change degrades the UI hint and cannot break the flow.
-_URI_RE: Final = re.compile(r"https://\S+")
-_CODE_RE: Final = re.compile(r"\b([A-Z0-9]{4}-[A-Z0-9]{4})\b")
+_URI_RE: Final = re.compile(r"https://[^\s\x1b]+")
+# Codex 0.153 emits e.g. ``CODE-12345`` while earlier builds/documentation used
+# ``ABCD-1234``.  Match the vendor's bounded uppercase token shape rather than a
+# single release's segment lengths; ANSI color resets sit outside the match.
+_CODE_RE: Final = re.compile(
+    r"(?<![A-Z0-9])([A-Z0-9]{4,12}-[A-Z0-9]{4,12})(?![A-Z0-9])"
+)
 
 
 class InstanceLock:

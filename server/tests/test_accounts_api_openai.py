@@ -198,7 +198,7 @@ def test_add_openai_registers_disabled_and_syncs_before_login(authority):
     the registration has to come first; `enabled=False` is what keeps that
     ordering from creating a usable account before any credential exists.
     """
-    from ccswitch import account_registry
+    from ccswitch import account_registry, ledger
 
     with temp_env():
         client, _ = _make_client(authority)
@@ -212,6 +212,13 @@ def test_add_openai_registers_disabled_and_syncs_before_login(authority):
             assert entry.provider == "openai"
             assert entry.engine == "codex"
             assert entry.enabled is False
+            with ledger.locked_ledger() as led:
+                assert ledger.is_account_enabled(led, "chatgpt-pro") is False
+            listed = client.get("/api/accounts", headers=IDENTITY_HEADERS)
+            account = next(
+                item for item in listed.json() if item["name"] == "chatgpt-pro"
+            )
+            assert account["enabled"] is False
 
     authorize_at = next(
         i for i, c in enumerate(authority.calls) if c.startswith("authorize:")
@@ -269,12 +276,17 @@ def test_add_openai_status_enables_on_authorized(authority):
 
 
 def test_add_openai_cancel_drops_the_placeholder_entry(authority):
-    from ccswitch import account_registry
+    from ccswitch import account_registry, ledger
 
     with temp_env():
-        _register_openai("chatgpt-pro", enabled=False)
         client, _ = _make_client(authority)
         with client:
+            started = client.post(
+                "/api/accounts/add/openai",
+                json={"name": "chatgpt-pro"},
+                headers=IDENTITY_HEADERS,
+            )
+            assert started.status_code == 202
             resp = client.post(
                 "/api/accounts/add/openai/cancel",
                 json={"name": "chatgpt-pro"},
@@ -282,7 +294,30 @@ def test_add_openai_cancel_drops_the_placeholder_entry(authority):
             )
             assert resp.status_code == 200
             assert not account_registry.has_account("chatgpt-pro")
+            with ledger.locked_ledger() as led:
+                assert "chatgpt-pro" not in led["accounts"]
     assert "forget:chatgpt-pro" in authority.calls
+
+
+def test_add_openai_cancel_cannot_delete_an_authorized_account(authority):
+    """The add-modal Cancel route is never an account-delete shortcut."""
+    from ccswitch import account_registry
+
+    with temp_env():
+        _register_openai("chatgpt-pro", enabled=True)
+        client, _ = _make_client(authority)
+        with client:
+            resp = client.post(
+                "/api/accounts/add/openai/cancel",
+                json={"name": "chatgpt-pro"},
+                headers=IDENTITY_HEADERS,
+            )
+            assert resp.status_code == 409
+            assert resp.json()["detail"]["error"] == "account_already_authorized"
+            assert account_registry.has_account("chatgpt-pro")
+
+    assert "login_cancel:chatgpt-pro" not in authority.calls
+    assert "forget:chatgpt-pro" not in authority.calls
 
 
 def test_openai_routes_503_without_an_authority(monkeypatch):
