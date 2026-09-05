@@ -67,12 +67,14 @@ import asyncio
 import itertools
 import json
 import logging
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Final, Protocol
 
 from server.codex import redaction, schema
 from server.obs.context import log_event
+from server.obs.metrics import codex_request_ms
 
 logger = logging.getLogger(__name__)
 
@@ -447,9 +449,20 @@ class CodexAppServerClient:
                 raise CodexExternalAuthDisabled(
                     "initialize experimental API does not match client configuration"
                 )
-        raw = await self._run_owned_operation(
-            lambda: self._request(method, validated, timeout), method=method
-        )
+        # Method latency is measured HERE for the same reason the external-auth
+        # gate is: this is the one door every outbound request goes through, so a
+        # method added later cannot escape instrumentation by forgetting it.
+        started = time.monotonic()
+        outcome = "error"
+        try:
+            raw = await self._run_owned_operation(
+                lambda: self._request(method, validated, timeout), method=method
+            )
+            outcome = "ok"
+        finally:
+            codex_request_ms.labels(method, outcome).observe(
+                (time.monotonic() - started) * 1000.0
+            )
         return schema.parse_client_response(method, raw)
 
     async def notify(self, method: str, params: Mapping[str, Any] | None = None) -> None:
