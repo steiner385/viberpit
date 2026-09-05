@@ -68,6 +68,9 @@ export const QK = {
   backlogGroups: ['backlog-groups'] as const,
   backlogCandidates: ['backlog-candidates'] as const,
   daemonHealth: ['daemon-health'] as const,
+  copilotAddStatus: (name: string) => ['copilot-add-status', name] as const,
+  openaiAddStatus: (name: string) => ['openai-add-status', name] as const,
+  openaiReauthStatus: (name: string) => ['openai-reauth-status', name] as const,
   libraryPlugins: ['library', 'plugins'] as const,
   libraryPlugin: (id: string) => ['library', 'plugin', id] as const,
   librarySkills: ['library', 'skills'] as const,
@@ -662,8 +665,13 @@ export function useCancelAddAccount() {
 // Copilot device-flow add: initiates the GitHub device-flow OAuth for a new
 // Copilot account slot. The name is sent in the body since the slot does not exist yet.
 export function useAddCopilotAccount() {
+  const qc = useQueryClient()
   return useMutation<DeviceCodeState, ApiRequestError, string>({
     mutationFn: (name) => api.post<DeviceCodeState>('/accounts/add/copilot', { name }),
+    // The POST creates a NEW flow and returns its first state. Seed that state
+    // before the component enables polling, otherwise a cached terminal result
+    // from the previous attempt can stop the new poll immediately.
+    onSuccess: (state, name) => { qc.setQueryData(QK.copilotAddStatus(name), state) },
   })
 }
 
@@ -672,7 +680,7 @@ export function useAddCopilotAccount() {
 // at terminal states (authorized | failed) to avoid unnecessary requests.
 export function useCopilotAddStatus(name: string, enabled: boolean) {
   return useQuery<DeviceCodeState>({
-    queryKey: ['copilot-add-status', name],
+    queryKey: QK.copilotAddStatus(name),
     queryFn: () => api.get<DeviceCodeState>(`/accounts/add/copilot?name=${encodeURIComponent(name)}`),
     enabled,
     refetchInterval: (query) => {
@@ -701,14 +709,16 @@ export function useCancelCopilotAdd() {
 // verificationUri anywhere that outlives the query cache.
 
 export function useAddOpenAIAccount() {
+  const qc = useQueryClient()
   return useMutation<DeviceCodeState, ApiRequestError, string>({
     mutationFn: (name) => api.post<DeviceCodeState>('/accounts/add/openai', { name }),
+    onSuccess: (state, name) => { qc.setQueryData(QK.openaiAddStatus(name), state) },
   })
 }
 
 export function useOpenAIAddStatus(name: string, enabled: boolean) {
   return useQuery<DeviceCodeState>({
-    queryKey: ['openai-add-status', name],
+    queryKey: QK.openaiAddStatus(name),
     queryFn: () => api.get<DeviceCodeState>(`/accounts/add/openai?name=${encodeURIComponent(name)}`),
     enabled,
     refetchInterval: (query) => {
@@ -736,14 +746,16 @@ export function useCancelOpenAIAdd() {
 // would hand one reader the other's shape.
 
 export function useOpenAIReauth() {
+  const qc = useQueryClient()
   return useMutation<DeviceCodeState, ApiRequestError, string>({
     mutationFn: (name) => api.post<DeviceCodeState>(`/accounts/${encodeURIComponent(name)}/reauth`),
+    onSuccess: (state, name) => { qc.setQueryData(QK.openaiReauthStatus(name), state) },
   })
 }
 
 export function useOpenAIReauthStatus(name: string, enabled: boolean) {
   return useQuery<DeviceCodeState>({
-    queryKey: ['openai-reauth-status', name],
+    queryKey: QK.openaiReauthStatus(name),
     queryFn: () => api.get<DeviceCodeState>(`/accounts/${encodeURIComponent(name)}/reauth`),
     enabled,
     refetchInterval: (query) => {

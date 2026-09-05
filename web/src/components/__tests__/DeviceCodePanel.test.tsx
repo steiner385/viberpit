@@ -32,6 +32,11 @@ describe('DeviceCodePanel', () => {
     expect(screen.getByText(/starting device authorization/i)).toBeInTheDocument()
   })
 
+  it('narrates the start request before the first status response arrives', () => {
+    render(<DeviceCodePanel started providerLabel="ChatGPT" />)
+    expect(screen.getByText(/starting device authorization/i)).toBeInTheDocument()
+  })
+
   it('shows the code, names the provider, and opens the link safely', () => {
     render(<DeviceCodePanel
       state={state({
