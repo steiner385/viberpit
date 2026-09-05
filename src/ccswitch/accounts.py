@@ -14,6 +14,7 @@ from . import account_registry, copilot, ledger, oauth, paths
 from .account_names import aliases_store_root
 from .config import Config, load_config
 from .creds import merge_keep_later, read_credentials, read_json, split_credentials, write_credentials, write_json_secure
+from .engines import AgentEngine
 from .quota import QuotaSnapshot, unknown_snapshot
 from .selector import AllAccountsBusy, Picked, eligible_names, select_picked
 
@@ -551,8 +552,8 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
 def pick_account_detailed(cfg: Config, exclude: set[str] = frozenset(),
                           load: dict[str, float] | None = None,
                           *, reserve: bool = True,
-                          require_engine: str | None = None,
-                          default_engine: str | None = None) -> Picked:
+                          require_engine: str | None = AgentEngine.CLAUDE_CODE.value,
+                          default_engine: str | None = AgentEngine.CLAUDE_CODE.value) -> Picked:
     """Select the best available account.
 
     ``reserve`` (default True) writes a soft reservation on the picked account so
@@ -631,6 +632,7 @@ def pick_account_detailed(cfg: Config, exclude: set[str] = frozenset(),
 
 def pick_account(cfg: Config, exclude: set[str] = frozenset(),
                  load: dict[str, float] | None = None) -> str:
+    """Pick for the legacy Claude launchers; never cross into Codex accounts."""
     return pick_account_detailed(cfg, exclude, load).name
 
 
