@@ -31,6 +31,22 @@ effort, and permission profile are the only Codex launch controls; multiple name
 are represented from day one; automatic OpenAI account rotation is not a v1 requirement; the
 experimental external-token dependency is accepted subject to the release gate below.
 
+**Tracking issues:** created in GitHub Project #26 per Task 0.1. Every phase issue is a sub-issue of
+the epic, listed in the epic in phase order because the backlog runner treats sub-issue list order as
+execution order. PRs reference the epic (`Refs #1146`) and close only their own phase tracker.
+
+| Scope | Issue | Plan section |
+| --- | --- | --- |
+| Epic | [#1146](https://github.com/steiner385/ccswitch/issues/1146) | whole plan |
+| Phase 0 | [#1147](https://github.com/steiner385/ccswitch/issues/1147) | Governance and external-auth release gate |
+| Phase 1 | [#1148](https://github.com/steiner385/ccswitch/issues/1148) | Provider-neutral foundations with no behavior change |
+| Phase 2 | [#1149](https://github.com/steiner385/ccswitch/issues/1149) | Codex app-server protocol and process supervision |
+| Phase 3 | [#1150](https://github.com/steiner385/ccswitch/issues/1150) | Credential authority, OpenAI accounts, models, and quota |
+| Phase 4 | [#1151](https://github.com/steiner385/ccswitch/issues/1151) | Interactive Codex runtime |
+| Phase 5 | [#1152](https://github.com/steiner385/ccswitch/issues/1152) | Fleet routing and browser experience |
+| Phase 6 | [#1153](https://github.com/steiner385/ccswitch/issues/1153) | Interactive v1 hardening and launch |
+| Phase 7 | [#1154](https://github.com/steiner385/ccswitch/issues/1154) | Required backlog and SDLC automation fast follow |
+
 Official boundary references:
 
 - [Codex app-server protocol](https://developers.openai.com/codex/app-server)
@@ -201,19 +217,24 @@ will remain stable.
 
 **Work:**
 
-- [ ] Generalize Principle I to unmodified native agent binaries and supported/documented
+- [x] Generalize Principle I to unmodified native agent binaries and supported/documented
   integration surfaces, naming Claude Code and Codex without weakening the no-fork/no-patch rule.
-- [ ] Generalize Principle II to provider-safe identity/runtime isolation: Claude config-dir
+- [x] Generalize Principle II to provider-safe identity/runtime isolation: Claude config-dir
   isolation remains intact; Codex allows one refresh authority to distribute short-lived access
   tokens while runtime homes remain host-local.
-- [ ] Generalize the technical session constraint from “one native Claude PTY” to daemon-owned
+- [x] Generalize the technical session constraint from “one native Claude PTY” to daemon-owned
   engine drivers emitting normalized events.
-- [ ] Update the constitution version and Sync Impact Report; obtain the owner's explicit
+- [x] Update the constitution version and Sync Impact Report; obtain the owner's explicit
   acknowledgement in the PR body.
-- [ ] Update governance rules/tests so the active Claude and Codex agents receive equivalent
+- [x] Update governance rules/tests so the active Claude and Codex agents receive equivalent
   protection without pretending their permission syntaxes are identical.
-- [ ] After the amendment lands, use the `gh-issue-workflow` skill to create one epic plus dependent
+- [x] After the amendment lands, use the `gh-issue-workflow` skill to create one epic plus dependent
   phase issues in GitHub Project #26. Record issue numbers in this plan before runtime execution.
+
+**Landed:** #1098 (constitution v1.2.0, provider-neutral Principles I–IV), #1102 (review corrections
+to Principle II and the session model), #1103 (shell-write gap, hook fail-open, CI amendment gate),
+#1111 (guardrail changes gated on an owner acknowledgment check). Tracking issues #1146–#1154 are
+recorded in the table above and linked as epic sub-issues.
 
 **Verification:**
 
@@ -237,29 +258,35 @@ release authority than Claude.
 
 **Work:**
 
-- [ ] Generate and inspect `codex app-server generate-json-schema` output for the exact installed
+- [x] Generate and inspect `codex app-server generate-json-schema` output for the exact installed
   version. Record CLI version, protocol methods, experimental capability requirement, and a SHA-256
   of the relevant schema subset; never commit the entire user config or credential payload.
-- [ ] Start one managed-auth authority app-server on dobby and one external-auth app-server on
+- [x] Start one managed-auth authority app-server on dobby and one external-auth app-server on
   each of two distinct registered runner hosts (initially dobby and rocky), each with a separate
   host-local temporary `CODEX_HOME`. Send the short-lived test envelope over authenticated stdin;
   never place it in SSH arguments, environment variables, shell history, or a file.
-- [ ] Initialize both runner processes with `experimentalApi=true`, inject the same current external
+- [x] Initialize both runner processes with `experimentalApi=true`, inject the same current external
   access-token envelope, and verify `account/read`, `model/list`, and
   `account/rateLimits/read` concurrently.
-- [ ] Exercise the refresh callback. Give a runner an invalid/expired access token, observe
+- [x] Exercise the refresh callback. Give a runner an invalid/expired access token, observe
   `account/chatgptAuthTokens/refresh`, answer it from the single authority, and verify the runner
   recovers without a runner-side `auth.json`.
-- [ ] Trigger simultaneous refresh requests from both runners and prove they coalesce to one
+- [x] Trigger simultaneous refresh requests from both runners and prove they coalesce to one
   authority refresh and one monotonically newer generation.
-- [ ] Prove both temporary homes contain only local runtime state and that no access/refresh token,
+- [x] Prove both temporary homes contain only local runtime state and that no access/refresh token,
   ChatGPT account id, or raw native thread id appears in stdout/stderr/findings.
-- [ ] Make the script refuse to run unless `CCSWITCH_TEST_CODEX_ACCOUNT` and
+- [x] Make the script refuse to run unless `CCSWITCH_TEST_CODEX_ACCOUNT` and
   `CCSWITCH_TEST_CODEX_EXTERNAL_AUTH=1` are set. Default mode performs no model turn.
-- [ ] Record pass/fail evidence and cleanup behavior in the findings doc.
+- [x] Record pass/fail evidence and cleanup behavior in the findings doc.
 
 **Release gate:** stop here if refresh recovery, coalescing, or redaction fails. Do not fall back to
 sharing `auth.json` or a common `CODEX_HOME` across hosts. Revisit the architecture with the owner.
+
+**Landed:** #1092 (spike harness), #1095 (hardened evidence), #1116 (two-runner refresh proof). The
+gate **passed** on the real boundary — `codex-cli 0.153.2`, two distinct runner hosts, one successful
+callback per runner coalesced to `refresh_calls: 1` and `credential_generation: 1`, clean runner
+homes, clean redaction, complete cleanup. Full record:
+`docs/superpowers/spikes/2026-09-04-codex-external-auth-findings.md`.
 
 **Verification:**
 
