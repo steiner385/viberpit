@@ -117,6 +117,21 @@ try:
         codex_supported_versions: str = Field(
             default="", alias="CCSWITCH_CODEX_SUPPORTED_VERSIONS")
         codex_idle_grace_s: float = Field(default=300.0, alias="CCSWITCH_CODEX_IDLE_GRACE_S")
+        # How long the edge's authorization projection stays valid at the credential
+        # authority, and how often the edge renews it. The authority stops issuing
+        # when the lease lapses, so `interval < lease` is not a tuning preference —
+        # a single missed renewal must not take Codex down.
+        codex_auth_sync_lease_s: float = Field(
+            default=900.0, alias="CCSWITCH_CODEX_AUTH_SYNC_LEASE_S")
+        codex_auth_sync_interval_s: float = Field(
+            default=300.0, alias="CCSWITCH_CODEX_AUTH_SYNC_INTERVAL_S")
+        # Cache lifetimes for the per-account Codex `model/list` and
+        # `account/rateLimits/read` answers. Both are cheap to re-fetch and both are
+        # per (account, CLI version), so these are short.
+        codex_model_cache_s: float = Field(
+            default=300.0, alias="CCSWITCH_CODEX_MODEL_CACHE_S")
+        codex_quota_cache_s: float = Field(
+            default=60.0, alias="CCSWITCH_CODEX_QUOTA_CACHE_S")
         # Server-side dictation (server/stt): off by default; needs the `stt` extra.
         enable_stt: bool = Field(default=False, alias="CCSWITCH_ENABLE_STT")
         stt_model: str = Field(default="base.en", alias="CCSWITCH_STT_MODEL")
@@ -342,6 +357,18 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         codex_idle_grace_s: float = dataclasses.field(
             default_factory=lambda: float(os.environ.get("CCSWITCH_CODEX_IDLE_GRACE_S", "300.0"))
+        )
+        codex_auth_sync_lease_s: float = dataclasses.field(
+            default_factory=lambda: float(os.environ.get("CCSWITCH_CODEX_AUTH_SYNC_LEASE_S", "900.0"))
+        )
+        codex_auth_sync_interval_s: float = dataclasses.field(
+            default_factory=lambda: float(os.environ.get("CCSWITCH_CODEX_AUTH_SYNC_INTERVAL_S", "300.0"))
+        )
+        codex_model_cache_s: float = dataclasses.field(
+            default_factory=lambda: float(os.environ.get("CCSWITCH_CODEX_MODEL_CACHE_S", "300.0"))
+        )
+        codex_quota_cache_s: float = dataclasses.field(
+            default_factory=lambda: float(os.environ.get("CCSWITCH_CODEX_QUOTA_CACHE_S", "60.0"))
         )
         enable_stt: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_ENABLE_STT", "false").lower() in ("1","true","yes","on")

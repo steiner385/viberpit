@@ -578,6 +578,22 @@ async def create_session(
                 },
             },
         )
+    # A Codex model and its reasoning effort are one choice, validated together
+    # against the SELECTED account's own `model/list` — the list differs by plan,
+    # so there is nothing to check until an account is named. With no account the
+    # spawn path auto-selects one and the app-server does the rejecting; validating
+    # against some other account's catalog would be worse than not validating.
+    if body.engine is AgentEngine.CODEX and body.account:
+        verdict = await orch.codex_validate_model(
+            body.account, body.model, body.reasoningEffort
+        )
+        if not verdict.get("ok", True):
+            return JSONResponse(
+                status_code=status.HTTP_409_CONFLICT,
+                content={"error": verdict.get("error") or {
+                    "code": "model_effort_mismatch"}},
+            )
+
     # When the user supplies no name, the session is auto-named (Claude title / first
     # prompt) and stays auto until a manual rename. A supplied name is pinned manual.
     name_is_auto = not (body.name and body.name.strip())

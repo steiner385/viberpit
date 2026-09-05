@@ -8,6 +8,7 @@ The server runs as a **systemd service** on the Tailscale host.
 |------|------|
 | `ccswitch.service` | Long-running uvicorn server (`server.app:app`), serves the API + built `web/dist`. |
 | `ccswitch-daemon.service` | Session daemon (`python -m server.ipc`) — owns live `claude` PTY sessions in remote mode. |
+| `ccswitch-codex-auth.service` | ChatGPT credential authority (`python -m server.codex.auth_main`) — the only holder of OpenAI refresh tokens. Separate OS user, separate mTLS trust domain, no failover. |
 
 ## Deploy (Plan 1: manual)
 
@@ -154,6 +155,100 @@ daemon whose loop is wedged (it can't run the drain, so waiting 660 s is pointle
 above). After pulling this change, re-run the Install steps and `daemon-reload` on each
 daemon host, or the installed unit keeps its old `control-group` / 60 s behaviour and
 the drain is defeated before it starts.
+
+## ChatGPT credential authority (`ccswitch-codex-auth.service`)
+
+`ccswitch-codex-auth.service` runs `python -m server.codex.auth_main` — the **only**
+process in the fleet that holds an OpenAI/ChatGPT *refresh* token. Runners
+(dobby's daemon, rocky's worker) never hold one: they fetch short-lived access-token
+envelopes over mutual TLS and hand them straight to `codex app-server` over stdin.
+
+This is a separate trust domain from the session daemon, and the separation is the
+whole point:
+
+* it runs as its own OS user (`ccswitch-auth`), so the user that runs `claude` and
+  `codex app-server` cannot read the credential store;
+* it has its own key material and its own env file — reusing a
+  `CCSWITCH_SESSIOND_*` key is refused at startup, not merely discouraged;
+* it is **not** `PartOf=` the daemon. A daemon restart (which touches every live
+  session) must not restart the process holding every ChatGPT credential.
+
+There is **no failover in v1.** A second authority sharing the state directory
+would be a second writer of the per-account generation counter, so the second start
+takes an exclusive lock or exits 3.
+
+### Install
+
+```bash
+sudo install -m644 deploy/ccswitch-codex-auth.sysusers \
+     /usr/lib/sysusers.d/ccswitch-codex-auth.conf
+sudo systemd-sysusers
+sudo install -m644 deploy/ccswitch-codex-auth.service /etc/systemd/system/
+sudo systemctl daemon-reload
+# Enable only once /etc/ccswitch/codex-auth.env exists (see below):
+# sudo systemctl enable --now ccswitch-codex-auth.service
+```
+
+### `/etc/ccswitch/codex-auth.env` (root-only, NOT committed)
+
+Deliberately a separate file from `/etc/ccswitch/ccswitch.env`: the authority has no
+business inheriting the edge's database URL, GitHub credentials, or session-daemon
+client key.
+
+```bash
+CCSWITCH_CODEX_AUTHORITY_LISTEN_ENDPOINT=https://0.0.0.0:8442
+CCSWITCH_CODEX_AUTHORITY_TLS_CERT=/etc/ccswitch/codex-auth/server.pem
+CCSWITCH_CODEX_AUTHORITY_TLS_KEY=/etc/ccswitch/codex-auth/server.key
+CCSWITCH_CODEX_AUTHORITY_TLS_CLIENT_CA=/etc/ccswitch/codex-auth/client-ca.pem
+# Deny-by-default. Unlike the session daemon's allowlist, an EMPTY value is a
+# startup error, not "permissive".
+CCSWITCH_CODEX_AUTHORITY_CLIENT_ALLOWLIST=codex-edge,codex-runner:dobby,codex-runner:rocky
+```
+
+Client certificate common names carry the role, and the per-route ACL is built on
+them: `codex-edge` may administer logins and push the authorization sync;
+`codex-runner:<host>` may **only** request an envelope or a refresh. A certificate
+presenting both identities is rejected outright.
+
+### Edge and runner configuration
+
+Every host that talks to the authority (the edge, and each runner) needs:
+
+```bash
+CCSWITCH_CODEX_AUTHORITY_ENDPOINT=https://dobby:8442
+CCSWITCH_CODEX_AUTHORITY_CLIENT_CERT=/etc/ccswitch/codex-auth/<role>.pem
+CCSWITCH_CODEX_AUTHORITY_CLIENT_KEY=/etc/ccswitch/codex-auth/<role>.key
+CCSWITCH_CODEX_AUTHORITY_CLIENT_CA=/etc/ccswitch/codex-auth/server-ca.pem
+```
+
+With `CCSWITCH_CODEX_ENABLED=true` and `CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED=true`
+but no authority reachable, `build_codex_manager` returns `None` and Codex is simply
+off on that host. It does **not** fall back to managed runner credentials — that
+fallback would put a refresh token back on a session host, which is the property
+this service exists to remove.
+
+### Verifying the isolation
+
+The claim is that the session user cannot reach the credential store. Check it:
+
+```bash
+sudo -u tony test -r /var/lib/ccswitch-codex-auth/accounts && echo BROKEN || echo ok
+sudo ls -ld /var/lib/ccswitch-codex-auth        # expect drwx------ ccswitch-auth
+```
+
+The service also asserts this itself on every login (`CredentialStore.assert_private`)
+and refuses to publish a credential from a group- or world-readable home.
+
+### Revoking an account
+
+Order matters, and the API enforces it: **revoke at the authority, fan invalidation
+out to every runner, then write the manifest.** A partial fan-out returns HTTP 502
+with `degraded: true` rather than reporting the account disabled — some host may
+still be running an app-server with a live envelope. Retry until it is clean.
+
+Restarting the authority is cheap: it holds no sessions, cancels in-flight device
+logins, and the persisted generation counter means a restart cannot re-mint a number
+an in-flight runner is still fencing against.
 
 ## Deploy controller (`ccswitch-deploy-controller.service`)
 
