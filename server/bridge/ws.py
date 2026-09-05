@@ -560,7 +560,8 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                              "ok": True, **result}))
             return True
 
-        async def _emit_live_extras(session_id: str, driver, events: list) -> None:
+        async def _emit_live_extras(session_id: str, driver, events: list, *,
+                                    open_turn_resupplied: bool = False) -> None:
             """Post-attach live wiring: suggestion seeding, command catalog, pending
             permission/question re-emit, live status, and the deferred initial prompt.
             Only meaningful once a live driver exists. Each step is best-effort.
@@ -570,7 +571,22 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             here would OVERTAKE it (a permissionRequest landing before replayReset
             gets wiped: the reducer stores permission blocks inside turns). They are
             enqueued raw + session-tagged; the batcher redacts at flush. The
-            'commands' catalog is the deliberate exception (see below)."""
+            'commands' catalog is the deliberate exception (see below).
+
+            ``open_turn_resupplied`` — the in-progress turn was dropped from the disk
+            replay and the live stream's snapshot (driver turn buffer / daemon ring)
+            re-supplies it whole, asks included (session bce4b626, 2026-09-05 05:53).
+            Then the pending permission/question re-emit below is NOT just redundant,
+            it is mis-ordered: these frames enter out_q now, but the snapshot is only
+            forwarded once the live task starts — so the ask arrived BEFORE the turn's
+            own UserMessage/TurnStart, the client fabricated the assistant turn for it
+            at the tail, and the re-supplied prompt was appended UNDER that turn. Every
+            later delta then grew the turn above the prompt: the "my prompt is stuck at
+            the bottom while the answer scrolls past it" bug. The snapshot copy sits at
+            the ask's real place in the turn, so it is the only copy sent. The re-emit
+            stays for the attaches nothing re-supplies from — a full disk replay after
+            ring eviction (the disk card is read-only and carries a different id), or a
+            cursor catch-up (the client already holds the turn, dedup by id)."""
             # A session resumed into an idle state has no in-memory turn context, so the
             # turn-completion suggestion trigger never fires. Seed one suggestion from
             # the replayed transcript tail (best-effort; driver gates + dedupes).
@@ -584,29 +600,31 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             # session — top-level by design, see _emit_command_catalog's docstring.
             await _emit_command_catalog(session_id)
 
-            # Re-emit any pending permission requests for this session. Build the frame
-            # through PermissionRequest.to_wire() — the same wire format the live path
-            # uses — so the re-emit can't drift from it (it previously hardcoded
-            # plan=False, dropping the plan flag for a pending ExitPlanMode approval).
-            for p in await orchestrator.pending_permissions(session_id):
-                out_q.put_nowait({**PermissionRequest(
-                    p["permId"], p["turn_id"], p["tool"], tool_kind(p["tool"]),
-                    p["input"], plan=(p["tool"] == "ExitPlanMode"),
-                ).to_wire(), "sessionId": session_id})
-
-            # Re-emit any pending AskUserQuestion events for this session. Mirrors the
-            # permission re-emit above so a refresh/reattach while the model is blocked
-            # in _handle_ask_user_question never silently hangs.
             from server.sessions import events as ev
-            for q in await orchestrator.pending_questions(session_id):
-                out_q.put_nowait({**ev.Question(
-                    question_id=q["question_id"],
-                    turn_id=q["turn_id"],
-                    header=q["header"],
-                    question=q["question"],
-                    options=q["options"],
-                    multi_select=q["multi_select"],
-                ).to_wire(), "sessionId": session_id})
+            if not open_turn_resupplied:
+                # Re-emit any pending permission requests for this session. Build the
+                # frame through PermissionRequest.to_wire() — the same wire format the
+                # live path uses — so the re-emit can't drift from it (it previously
+                # hardcoded plan=False, dropping the plan flag for a pending ExitPlanMode
+                # approval).
+                for p in await orchestrator.pending_permissions(session_id):
+                    out_q.put_nowait({**PermissionRequest(
+                        p["permId"], p["turn_id"], p["tool"], tool_kind(p["tool"]),
+                        p["input"], plan=(p["tool"] == "ExitPlanMode"),
+                    ).to_wire(), "sessionId": session_id})
+
+                # Re-emit any pending AskUserQuestion events for this session. Mirrors
+                # the permission re-emit above so a refresh/reattach while the model is
+                # blocked in _handle_ask_user_question never silently hangs.
+                for q in await orchestrator.pending_questions(session_id):
+                    out_q.put_nowait({**ev.Question(
+                        question_id=q["question_id"],
+                        turn_id=q["turn_id"],
+                        header=q["header"],
+                        question=q["question"],
+                        options=q["options"],
+                        multi_select=q["multi_select"],
+                    ).to_wire(), "sessionId": session_id})
 
             # Re-offer a question whose waiter died with the daemon. The loop above
             # only ever finds LIVE questions; after a restart the registry is empty
@@ -961,7 +979,11 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                     events = await _replay_and_complete(
                         session_id, drop_incomplete=drop_incomplete,
                         turn_started_at=turn_started_at)
-                    await _emit_live_extras(session_id, driver, events)
+                    # drop_incomplete is exactly "the stream snapshot delivers the open
+                    # turn" — the pair was pinned together above — so it also decides
+                    # whether the pending-ask re-emit would duplicate (and precede) it.
+                    await _emit_live_extras(session_id, driver, events,
+                                            open_turn_resupplied=drop_incomplete)
             except BaseException:
                 # Nothing has consumed the stream yet (only events()'s finally or
                 # close() deregisters it) — discard the queue so a failed attach
