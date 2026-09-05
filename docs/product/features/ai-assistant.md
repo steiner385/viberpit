@@ -6,6 +6,7 @@ links:
   specs:
     - docs/superpowers/specs/2026-09-04-ai-assistant-research.md
     - docs/superpowers/specs/2026-09-04-ai-assistant-design.md
+    - docs/superpowers/specs/2026-09-05-ai-assistant-capabilities-v2-design.md
   code:
     - server/assistant/api.py
     - server/assistant/client.py
@@ -70,8 +71,15 @@ sharing, voice, or proactive/unsolicited messages — the assistant only speaks 
   list, is capacity-exempt, and is torn down after `CCSWITCH_ASSISTANT_IDLE_S` (default 900s) of
   inactivity, resuming from its persisted CLI transcript on reopen.
 - **Kill switch** — `CCSWITCH_ASSISTANT_ENABLED` (default `true` as of the Phase 4 launch, #1186;
-  `AppSettings.assistant_enabled` overrides it per deployment). Setting it `false` disables both the
-  drawer's composer and the assistant HTTP routes.
+  `AppSettings.assistant_enabled` overrides it per deployment). Setting it `false` makes
+  `POST /api/assistant/session` return 404 and the drawer show its disabled placeholder — it stops
+  **new** threads; a thread already running keeps its driver until the idle reap
+  (`CCSWITCH_ASSISTANT_IDLE_S`) ends it (spec §8).
+- **Capability roadmap (v2)** — the as-built audit, the core/extended/ancillary use-case map and
+  the nine capability packs that extend the tool surface (product & delivery, automations control,
+  session power tools, GitHub, proactive notices, opt-in operator tier, external MCP/CLI access) are
+  in `docs/superpowers/specs/2026-09-05-ai-assistant-capabilities-v2-design.md`; plan:
+  `docs/superpowers/plans/2026-09-05-ai-assistant-capabilities-v2.md`.
 - **Token is loopback-only** — `server/assistant/token.py` mints an identity- and session-bound,
   HMAC-signed `ccas1:` bearer token, never persisted, accepted only from loopback by
   `IdentityMiddleware` (spec §4.3). It cannot authenticate a request that didn't originate from the
