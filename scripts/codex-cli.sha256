@@ -1,0 +1,24 @@
+# SHA-256 digests of the Codex CLI release artefacts this fleet is allowed to run.
+#
+# Format: "<sha256>  <asset-name>", one per line — the same shape as
+# scripts/copilot2api.sha256 and `sha256sum` output.
+#
+# This file is INTENTIONALLY without a digest for the current pin. A digest can
+# only be established by fetching the artefact on a host that can reach the
+# network and confirming its provenance against the upstream release, so it is
+# recorded once and then enforced everywhere:
+#
+#     bash scripts/fetch-codex.sh --record      # on a trusted host, once
+#     git add scripts/codex-cli.sha256 && commit
+#
+# Until then `scripts/fetch-codex.sh` FAILS CLOSED rather than installing an
+# unverified binary. That is deliberate: the point of the pin is that every runner
+# executes the same bytes — dobby and rocky sharing one ChatGPT account must not
+# disagree about what `codex` is — and a placeholder digest committed ahead of
+# time would only teach an operator to overwrite the expected value with whatever
+# they had just downloaded, which is not a check at all.
+#
+# Version drift is caught independently of this file: `fetch-codex.sh` refuses to
+# install a binary whose `--version` is not server/codex/schema.py's
+# PINNED_CLI_VERSION, and the daemon re-generates and hashes the app-server JSON
+# schema before offering Codex at all (server/codex/process.py:probe_availability).
