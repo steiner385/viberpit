@@ -474,7 +474,10 @@ describe('PromptDock — dispatch', () => {
     const user = userEvent.setup()
     const onAllLimited = vi.fn()
     POST_SESSIONS = async () => {
-      throw new ApiRequestError(409, { earliestReset: '2026-09-03T18:00:00Z' })
+      throw new ApiRequestError(409, {
+        error: { code: 'all_accounts_limited' },
+        earliestReset: '2026-09-03T18:00:00Z',
+      })
     }
     renderAt('/sessions', { onAllLimited })
 

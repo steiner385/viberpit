@@ -1041,9 +1041,10 @@ async def copilot_add_cancel(
 # credential lands: not in a slot on this host, but inside the credential
 # authority's private state directory, which the edge never reads.
 #
-# The manifest entry is written only AFTER the login succeeds. Writing it first
-# would advertise an account that cannot start a session, and — worse — would let
-# the authorization sync mark it enabled before it had credentials.
+# A disabled manifest placeholder is written before login so the authority can
+# address it, but the operative ledger and manifest flags stay disabled until a
+# status poll observes authorization.  The accounts list and session selector
+# must therefore never advertise the placeholder as runnable.
 # ---------------------------------------------------------------------------
 
 
@@ -1128,7 +1129,11 @@ async def openai_add_start(
         account_registry.PROVIDER_OPENAI,
         engine=AgentEngine.CODEX.value,
     )
-    account_registry.set_enabled(name, False)
+    # Disable in BOTH sources of truth.  The ledger is the operative switch used
+    # by account selection and the accounts API; changing only the manifest makes
+    # a credential-less placeholder look enabled because legacy ledger entries
+    # default to enabled.
+    set_account_enabled(name, False)
     await _sync_authority(client)
 
     try:
@@ -1198,6 +1203,23 @@ async def openai_add_cancel(
     never run.
     """
     name = body.name
+    if account_registry.has_account(name):
+        entry = account_registry.entry(name)
+        if (
+            entry.provider == account_registry.PROVIDER_OPENAI
+            and entry.enabled
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "account_already_authorized",
+                    "name": name,
+                    "message": (
+                        "The OpenAI account is already authorized; remove it "
+                        "through account settings instead."
+                    ),
+                },
+            )
     client = _require_authority()
     try:
         state = await client.login_cancel(name)
@@ -1211,8 +1233,11 @@ async def openai_add_cancel(
 
     with contextlib.suppress(Exception):
         await client.forget(name)
+    # Use the canonical account cleanup so the placeholder's operative ledger
+    # row is removed along with its manifest entry.  Calling forget_account()
+    # directly would leave a dead, disabled ledger record behind.
     with contextlib.suppress(account_registry.AccountRegistryError, OSError):
-        account_registry.forget_account(name)
+        remove_account(name)
     await _sync_authority(client, required=False)
 
     await record_audit(
