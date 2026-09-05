@@ -47,6 +47,29 @@ describe('PermanentDeleteDialog', () => {
     expect(onClose).not.toHaveBeenCalled()
   })
 
+  it('refuses to dismiss via Escape while a bulk run (with an abort path) is in flight', async () => {
+    const onClose = vi.fn()
+    render(
+      <PermanentDeleteDialog
+        {...base}
+        names={['a', 'b', 'c']}
+        isPending
+        progress={{ done: 1, total: 3 }}
+        onCancel={vi.fn()}
+        onClose={onClose}
+      />,
+    )
+    await userEvent.keyboard('{Escape}')
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('still dismisses via Escape while pending on the single-session path (no onCancel)', async () => {
+    const onClose = vi.fn()
+    render(<PermanentDeleteDialog {...base} names={['One']} isPending onClose={onClose} />)
+    await userEvent.keyboard('{Escape}')
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+
   it('confirms', async () => {
     const onConfirm = vi.fn()
     render(<PermanentDeleteDialog {...base} onConfirm={onConfirm} names={['One']} />)

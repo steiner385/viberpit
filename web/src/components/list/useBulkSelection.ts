@@ -2,10 +2,10 @@
 // Multi-select over a list: the selection set, the shift-range anchor, and the
 // prune that drops ids which have left the list.
 //
-// `SessionList` and `ArchivedManager` each carried their own copy of all three
-// (SessionList.tsx:158-197, ArchivedManager.tsx:252-299). They had already
-// drifted in the one way that matters: which list a selection is allowed to
-// survive in. This hook keeps BOTH lists explicit instead of picking a winner.
+// `SessionList` and `ArchivedManager` each carried their own copy of all three.
+// They had already drifted in the one way that matters: which list a
+// selection is allowed to survive in. This hook keeps BOTH lists explicit
+// instead of picking a winner.
 import { useState } from 'react'
 
 export interface BulkSelection {

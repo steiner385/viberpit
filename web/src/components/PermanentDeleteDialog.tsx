@@ -16,12 +16,8 @@ import { useRef } from 'react'
 import { cn } from '@/lib/utils'
 import { Dialog } from '@/ui/Dialog'
 import { Button } from '@/ui/Button'
+import type { BulkDeleteProgress } from '@/api/hooks'
 import { prefersReducedMotion } from './session/brailleSpinner'
-
-export interface BulkDeleteProgressShape {
-  done: number
-  total: number
-}
 
 interface PermanentDeleteDialogProps {
   /** One name = the single-session copy; more = the counted bulk copy. */
@@ -30,7 +26,7 @@ interface PermanentDeleteDialogProps {
   onConfirm: () => void
   isPending: boolean
   /** Bulk only: drives the progress bar. */
-  progress?: BulkDeleteProgressShape | null
+  progress?: BulkDeleteProgress | null
   /** Bulk only: abort at the next chunk boundary. */
   onCancel?: () => void
 }
@@ -43,7 +39,20 @@ export function PermanentDeleteDialog({
   const title = count === 1 ? 'Permanently delete session' : `Permanently delete ${count} sessions`
 
   return (
-    <Dialog open onClose={onClose} title={title} size="sm" initialFocus={cancelRef} dismissable={!isPending}>
+    <Dialog
+      open
+      onClose={onClose}
+      title={title}
+      size="sm"
+      initialFocus={cancelRef}
+      // Refuse to dismiss only when a bulk run is actually in flight AND has an
+      // abort path (onCancel). The single-session callers (AppShell,
+      // SessionActions) pass no onCancel and the API client issues that DELETE
+      // with no signal/timeout — if we also blocked Esc/backdrop there, a hung
+      // request would leave the user stuck behind a modal they cannot leave.
+      // Do not simplify this back to `!isPending`.
+      dismissable={!(isPending && onCancel)}
+    >
       {isPending && progress ? (
         <div className="space-y-2">
           <div className="flex items-center justify-between text-sm text-ink-muted">
