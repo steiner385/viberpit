@@ -56,8 +56,10 @@ async def test_backlog_spawn_passes_pinned_model(tmp_path, monkeypatch):
     orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
     await orch._backlog_spawn(_BATCH, "acct")
     assert captured["model"] == "sonnet"
+    # `engine` joins the detail in Phase 7: a spawn record has to say which agent
+    # ran it, or a mixed-engine backlog is unreadable after the fact.
     assert captured["detail"] == {"issues": ["o/r#7"], "model": "sonnet",
-                                  "model_source": "pinned"}
+                                  "model_source": "pinned", "engine": "claude_code"}
 
 
 @pytest.mark.asyncio
@@ -88,7 +90,8 @@ async def test_backlog_spawn_default_keeps_account_default(tmp_path, monkeypatch
     orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
     await orch._backlog_spawn(_BATCH, "acct")
     assert captured["model"] is None
-    assert captured["detail"] == {"issues": ["o/r#7"]}  # no model keys
+    # No model keys — but the engine is always recorded (Phase 7).
+    assert captured["detail"] == {"issues": ["o/r#7"], "engine": "claude_code"}
 
 
 # --------------------------------------------------------------------------- #

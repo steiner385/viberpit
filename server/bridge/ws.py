@@ -23,6 +23,15 @@ Message protocol (JSON):
   are reserved for things that are NOT transcript state (error banners, the
   slash-command catalog, session-LIST lifecycle updates).
 
+Inbound ordering (#1180):
+  The receive loop dispatches but does NOT wait. Frames in _CHAINED_FRAMES —
+  everything that mutates a session's live stream or its turn order — run on a
+  per-session FIFO work chain; the rest (permissionResponse, answerQuestion,
+  activity) run inline. Ordering is therefore preserved exactly where it is
+  load-bearing (per session) and nowhere else, so a lazy resume that takes tens
+  of seconds no longer freezes the whole socket. See the "Per-session work
+  chains" section for why a bare task-per-frame would not do.
+
 Security:
   - Handshake identity via the require_ws_identity dependency.
   - Per-frame identity re-verification: a frame whose identity no longer matches
@@ -36,7 +45,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Callable
+import time
+from collections.abc import Awaitable, Callable
+from functools import partial
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
@@ -78,6 +89,31 @@ _MAX_FRAME = 262144
 # resume used to hang the attach with no timeout, leaving the client spinning on
 # "Loading session…" indefinitely. Bound it and surface SESSION_RESUME_TIMEOUT.
 _RESUME_TIMEOUT = 90.0
+# Frames that mutate a session's live stream or its turn ordering run on that
+# session's ordered work chain instead of inline on the receive loop (#1180).
+# Everything NOT listed here is handled inline — deliberately, because those are
+# exactly the frames that ANSWER a blocked live turn (permissionResponse,
+# answerQuestion) or are pure signals (activity): they have no ordering
+# relationship with a resume and are the ones a stalled loop hurt most.
+_CHAINED_FRAMES = frozenset({
+    "attach", "detach", "prompt", "interrupt", "setPermissionMode",
+    "cancelQueued", "command",
+})
+# Depth cap on one session's work chain. The blocking receive loop this replaces
+# had implicit backpressure — a client could not outrun a handler it was waiting
+# on, because TCP stopped reading. Deferring removes that, so the queue needs an
+# explicit bound or a fast client could pile unbounded 256KB frames on a session
+# stuck in a 90 s resume. Over the cap the frame is refused, never silently dropped.
+_MAX_SESSION_WORK = 64
+# Only log a chain wait that a human would notice; an idle chain starts work in
+# well under a millisecond and logging every frame would drown the journal.
+_WORK_WAIT_LOG_MS = 250.0
+# Ceiling on letting in-flight chain work finish when the socket closes. A
+# disconnect DURING a lazy resume must still deliver the user's prompt: the
+# blocking loop never even noticed the disconnect until _ensure_live returned, so
+# the resume+send always completed. Each item is internally bounded by
+# _RESUME_TIMEOUT, so this reproduces that without an unbounded teardown.
+_WORK_DRAIN_TIMEOUT = _RESUME_TIMEOUT + 15.0
 
 
 async def _forward_live(stream, out_q: "asyncio.Queue[dict]", session_id: str) -> None:
@@ -467,6 +503,26 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                                                   turn_started_at,
                                                   epoch=orchestrator.daemon_epoch())
 
+        def _error_complete(session_id: str) -> dict:
+            """Build an error-path replayComplete frame.
+
+            Stamps epoch (#497) via the same cached sync read that _run_replay_and_complete
+            uses — daemon_epoch() is an in-memory field with no DB dependency, so it is safe
+            to call even when the DB connection is broken (e.g. aiosqlite pool corruption on
+            async-generator teardown). The epoch lets a client that retries the attach know
+            which epoch's cursor is valid without a fresh /info round-trip.
+
+            Socket-scoped rather than nested in _resume_driver_or_error because it is the
+            ONE way every aborted attach clears the client's spinner — the saturated-chain
+            refusal needs it too, and a second copy there would be a parallel
+            implementation of an invariant this file states twice.
+            """
+            frame: dict = {"type": "replayComplete", "sessionId": session_id}
+            ep = orchestrator.daemon_epoch()
+            if ep is not None:
+                frame["epoch"] = ep
+            return frame
+
         async def _resume_driver_or_error(session_id: str):
             """Resume (or fetch) the live driver, bounded by _RESUME_TIMEOUT.
 
@@ -476,20 +532,6 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             error frame plus a replayComplete (so the client's loading state always
             clears) and returns None.
             """
-            def _error_complete() -> dict:
-                """Build an error-path replayComplete frame.
-
-                Stamps epoch (#497) via the same cached sync read that _run_replay_and_complete
-                uses — daemon_epoch() is an in-memory field with no DB dependency, so it is safe
-                to call even when the DB connection is broken (e.g. aiosqlite pool corruption on
-                async-generator teardown). The epoch lets a client that retries the attach know
-                which epoch's cursor is valid without a fresh /info round-trip."""
-                frame: dict = {"type": "replayComplete", "sessionId": session_id}
-                ep = orchestrator.daemon_epoch()
-                if ep is not None:
-                    frame["epoch"] = ep
-                return frame
-
             try:
                 # The deadline goes INTO the RPC (call_with_deadline), never around it:
                 # asyncio.wait_for CANCELS an in-flight httpx request, orphaning the
@@ -512,7 +554,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # The error frame stays a direct top-level send (it's a banner, not
                 # transcript state), but replayComplete IS transcript state — route
                 # it through out_q so it can never overtake queued session frames.
-                out_q.put_nowait(_error_complete())
+                out_q.put_nowait(_error_complete(session_id))
                 return None
             except DaemonUnavailable:
                 log.warning("ws.attach: session daemon unavailable for %s", session_id)
@@ -533,13 +575,13 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 await _send({"type": "error", "code": "SESSION_START_FAILED",
                              "message": f"Couldn't resume this session.{hint}",
                              "sessionId": session_id})
-                out_q.put_nowait(_error_complete())
+                out_q.put_nowait(_error_complete(session_id))
                 return None
             if driver is None:
                 await _send({"type": "error", "code": "SESSION_NOT_FOUND",
                              "message": f"Session {session_id!r} not found",
                              "sessionId": session_id})
-                out_q.put_nowait(_error_complete())
+                out_q.put_nowait(_error_complete(session_id))
                 return None
             return driver
 
@@ -1044,11 +1086,24 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
         async def _ensure_live(session_id: str) -> bool:
             """Make the session live + streaming so a prompt can flow, resuming a
             detached session lazily. Returns False if the resume failed (an error frame
-            was already emitted). Idempotent: a no-op if already streaming."""
+            was already emitted). Idempotent: a no-op if already streaming.
+
+            Emits ``ws.session.resume`` so the cost of the lazy resume is a MEASURED
+            number rather than an anecdote (#1180): ``resume_ms`` is ensure_driver
+            alone (spawning the SDK subprocess and its MCP fleet — the part suspected
+            of dominating the 30 s–2 min a user waits), ``total_ms`` adds the
+            catalog/deferred-prompt/status wiring that follows it. An already-live
+            session short-circuits and logs nothing, so the event counts only real
+            resumes.
+            """
             if session_id in live_tasks:
                 return True
+            started = time.monotonic()
             driver = await _resume_driver_or_error(session_id)
+            resume_ms = round((time.monotonic() - started) * 1000, 1)
             if driver is None:
+                log_event(log, logging.WARNING, "ws.session.resume",
+                          session_id=session_id, resume_ms=resume_ms, ok=False)
                 return False
             # Same uniform interface as _handle_attach (no replay here, so there is
             # no settle race to close — but ONE way of opening a live stream keeps
@@ -1077,10 +1132,346 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 ).to_wire(), "sessionId": session_id})
             except Exception:
                 log.warning("ws._ensure_live: live status emit failed for %s", session_id, exc_info=True)
+            log_event(log, logging.INFO, "ws.session.resume",
+                      session_id=session_id, resume_ms=resume_ms,
+                      total_ms=round((time.monotonic() - started) * 1000, 1), ok=True)
             return True
 
         async def _handle_detach(session_id: str) -> None:
             await _teardown_live_task(session_id)
+
+        # ------------------------------------------------------------------
+        # Per-session work chains — the receive loop must never block (#1180)
+        # ------------------------------------------------------------------
+        # The handler used to process frames strictly sequentially, so while
+        # _ensure_live resumed a detached session's `claude` process NOTHING else on
+        # this socket was handled: no permission answer, no question answer, no
+        # prompt for a different session. A user who gave up and hit Stop during a
+        # slow wake-up was queued behind the very thing they wanted to cancel.
+        #
+        # Spawning a bare task per frame would fix the stall and break ordering
+        # (prompt #2 overtaking prompt #1's resume, a detach tearing down the stream
+        # an attach is still building). So ordering is preserved exactly where it is
+        # load-bearing — PER SESSION — and nowhere else: one FIFO chain per session
+        # id, and the receive loop returns to receive_text() immediately.
+
+        # session_id → its FIFO of pending work (None is the drain sentinel)
+        work_queues: dict[str, "asyncio.Queue[tuple[str, Callable[[], Awaitable[None]], float] | None]"] = {}
+        # session_id → the task draining that FIFO
+        work_tasks: dict[str, asyncio.Task] = {}
+
+        async def _work_chain(
+            session_id: str,
+            queue: "asyncio.Queue[tuple[str, Callable[[], Awaitable[None]], float] | None]",
+        ) -> None:
+            """Run one session's deferred frames, strictly in order, until drained.
+
+            A failing item must NOT kill the chain — that would silently strand every
+            later frame for this session on an otherwise healthy socket. Each item is
+            therefore isolated exactly like the inline dispatch was: a handler that
+            raised never took the receive loop down either.
+            """
+            with bind_session(session_id):
+                while True:
+                    item = await queue.get()
+                    if item is None:      # drain sentinel — socket is closing
+                        return
+                    label, factory, queued_at = item
+                    waited_ms = (time.monotonic() - queued_at) * 1000
+                    if waited_ms >= _WORK_WAIT_LOG_MS:
+                        # The head-of-line delay this change exists to bound. Visible
+                        # in the journal so a stall shows up as a number.
+                        log_event(log, logging.INFO, "ws.work.queued",
+                                  session_id=session_id, op=label,
+                                  waited_ms=round(waited_ms, 1), depth=queue.qsize())
+                    # ONE event-loop checkpoint per item — do not remove.
+                    #
+                    # The receive loop this replaces had this property for free:
+                    # anyio's stream receive() begins with an unconditional
+                    # `await checkpoint()`, so every frame boundary yielded once.
+                    # `asyncio.Queue.get()` does NOT — on a non-empty queue it returns
+                    # without ever awaiting, so a burst of frames would run back to
+                    # back with zero scheduler ticks between them.
+                    #
+                    # That window is load-bearing. `attach`+`detach` arriving together
+                    # (the client's gap-heal does exactly this) would otherwise cancel
+                    # the ws-live task `attach` had just created BEFORE it had ever run,
+                    # so the driver-stream snapshot it was holding — the in-progress
+                    # turn, which the disk transcript lags — was dropped on the floor.
+                    # Pinned by test_ws_frame_order's B4 stale-straddle test.
+                    await asyncio.sleep(0)
+                    try:
+                        await factory()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        log.exception("ws.work failed session=%s op=%s", session_id, label)
+
+        def _defer(session_id: str, label: str,
+                   factory: "Callable[[], Awaitable[None]]") -> bool:
+            """Queue *factory* on *session_id*'s chain. False = chain saturated.
+
+            Synchronous by design: it is called from the receive loop, and the
+            check-then-enqueue must not straddle an await or two frames could both
+            pass the depth cap.
+
+            A chain is created on first use and lives until the socket closes — it is
+            deliberately NOT torn down on detach. An idle chain is one coroutine parked
+            on queue.get(), and the alternative is worse: detach runs ON the chain, so
+            it cannot cleanly retire the task it is running inside, and a re-attach
+            would just rebuild it. The bound is sessions-visited-per-socket, i.e. per
+            browser tab.
+            """
+            queue = work_queues.get(session_id)
+            if queue is None:
+                queue = asyncio.Queue()
+                work_queues[session_id] = queue
+                work_tasks[session_id] = supervise(
+                    asyncio.create_task(_work_chain(session_id, queue),
+                                        name=f"ws-work-{session_id}"),
+                    name=f"ws-work-{session_id}", on_failure=_on_forward_task_failed)
+            if queue.qsize() >= _MAX_SESSION_WORK:
+                return False
+            queue.put_nowait((label, factory, time.monotonic()))
+            return True
+
+        async def _drain_work_chains() -> None:
+            """Let every chain finish its queued work, then exit (socket teardown).
+
+            NOT a cancel: a disconnect during a lazy resume must still deliver the
+            user's prompt. The blocking loop this replaces could not even observe the
+            disconnect until _ensure_live returned, so the resume+send always ran to
+            completion — cancelling here would lose messages that used to land. Each
+            item is bounded by _RESUME_TIMEOUT inside ensure_driver, so the wait is
+            bounded too; the caller cancels whatever is still running afterwards.
+            """
+            if not work_tasks:
+                return
+            for queue in work_queues.values():
+                queue.put_nowait(None)
+            _done, pending = await asyncio.wait(set(work_tasks.values()),
+                                                timeout=_WORK_DRAIN_TIMEOUT)
+            if pending:
+                log.warning("ws.work: %d chain(s) unfinished after %.0fs — cancelling",
+                            len(pending), _WORK_DRAIN_TIMEOUT)
+
+        async def _refuse_saturated(msg_type: str, session_id: str, msg: dict) -> None:
+            """Tell the client a frame was refused because the session's chain is full.
+
+            A prompt gets ``promptRejected`` — the established "this was NOT delivered"
+            ack, which the browser re-queues and flushes later — because a refused
+            prompt is a user message and a dropped user message must never be silent.
+            Anything else gets an error banner.
+            """
+            log.warning("ws.work: session %s chain saturated — refusing %s",
+                        session_id, msg_type)
+            if msg_type == "prompt":
+                await _send({"type": "promptRejected", "sessionId": session_id,
+                             "text": msg.get("text", ""),
+                             "attachmentIds": msg.get("attachmentIds"),
+                             "reason": "busy"})
+                return
+            await _send({"type": "error", "code": "SESSION_BUSY",
+                         "message": "This session has too many pending requests — "
+                                    "give it a moment and try again.",
+                         "sessionId": session_id})
+            if msg_type == "attach":
+                # Every aborted attach owes the client a replayComplete or it spins on
+                # "Loading session…" forever — the same debt _resume_driver_or_error
+                # pays on all three of its failure paths. Rides out_q, not a direct
+                # send, because replayComplete IS transcript state.
+                out_q.put_nowait(_error_complete(session_id))
+
+        # ------------------------------------------------------------------
+        # Chained frame handlers — run on the session's work chain, never inline
+        # ------------------------------------------------------------------
+
+        async def _handle_prompt(msg: dict, session_id: str) -> None:
+            """Resume-if-needed, then deliver one prompt.
+
+            The lazy resume lives here rather than in the receive loop (#1180):
+            send_prompt no-ops without a live driver, so a detached session must be
+            woken first — and that wake is what used to freeze the whole socket. The
+            receipt ack is NOT here; it is sent from the loop before this is even
+            queued, so it still lands in milliseconds (see the dispatch site).
+            """
+            started = time.monotonic()
+            if not await _ensure_live(session_id):
+                return
+            ensured = time.monotonic()
+            text = msg.get("text", "")
+            attachment_ids = msg.get("attachmentIds")
+            # "Interrupt and post": stop the in-flight turn and run this
+            # prompt next instead of queueing it behind the turn. Only
+            # forwarded when set so the plain contract is untouched.
+            interrupt = msg.get("interrupt") is True
+            extra: dict[str, bool | dict] = {"interrupt": True} if interrupt else {}
+            # The context chip (spec §4.5) and the per-identity prompt rate
+            # limit (spec §4.6) both apply only to an assistant-kind session,
+            # so both need the record's kind up front — a coding session
+            # ignores a supplied context outright and is never rate-limited
+            # here. get_session is per-session-routed to the owning host in
+            # fleet mode (unlike a bare `record()`, which is not in
+            # FleetOrchestrator's _PER_SESSION set and would resolve to
+            # RemoteOrchestrator, which has no such method at all).
+            raw_context = msg.get("context")
+            rec = None
+            try:
+                rec = await orchestrator.get_session(session_id)
+            except Exception:
+                # Best-effort: in fleet mode this is a real RPC that can
+                # raise DaemonTimeout/DaemonUnavailable, and the prompt
+                # frame had no such dependency before the context chip. A
+                # transient daemon hiccup must degrade to "no context, no
+                # rate limit", never cost the user their message.
+                log.warning("ws.prompt session lookup failed session=%s "
+                            "— sending without context/rate-limit check",
+                            session_id, exc_info=True)
+            assistant_record = is_assistant(rec)
+            if assistant_record and raw_context is not None:
+                validated_context = validate_context(raw_context)
+                if validated_context is not None:
+                    extra["context"] = dict(validated_context)
+            if (assistant_record
+                    and _assistant_prompt_limiter.check(identity) is not None):
+                # Checked BEFORE send_prompt so a rate-limited prompt costs
+                # nothing downstream (same principle as the tool-call
+                # limiter in server/assistant/client.py).
+                log.warning("ws.prompt rate_limited session=%s identity=%s",
+                            session_id, identity)
+                await _send({"type": "promptRejected", "sessionId": session_id,
+                             "text": text, "attachmentIds": attachment_ids,
+                             "reason": "RATE_LIMITED"})
+                return
+            if assistant_record:
+                assistant_prompts_total.inc()
+            status = await orchestrator.send_prompt(
+                session_id, text, attachment_ids, **extra)
+            if status == "no_driver":
+                # The 2026-08-30 unresponsive-session incident: the daemon
+                # dropped the driver AFTER this socket attached, so
+                # _ensure_live's live_tasks short-circuit vouched for a
+                # stream whose driver no longer existed and the user's
+                # message evaporated behind a "Ready" header. live_tasks is
+                # EDGE state; only send_prompt's answer reflects the
+                # daemon's truth — so on no_driver, drop the stale stream,
+                # rebuild through the FULL _ensure_live path (ensure_driver
+                # + fresh open_stream), and retry the send exactly once.
+                # A failed rebuild falls through to promptRejected below —
+                # recovery must never turn into a retry loop.
+                log.warning(
+                    "ws.prompt: no_driver with a live stream entry — "
+                    "rebuilding driver and retrying once session=%s",
+                    session_id)
+                await _teardown_live_task(session_id)
+                if await _ensure_live(session_id):
+                    status = await orchestrator.send_prompt(
+                        session_id, text, attachment_ids, **extra)
+            await orchestrator.note_user_interaction(session_id)
+            # The split #1180 asked for, isolated: `ensure_ms` is the wake
+            # (ws.session.resume breaks it down further), `send_ms` is everything
+            # after the driver exists. Together they answer "does the resume really
+            # dominate the wait?" with a measurement instead of an anecdote — the
+            # same question the staged acks made visible to the USER, now answerable
+            # from the journal.
+            log_event(log, logging.INFO, "ws.prompt.deliver",
+                      session_id=session_id, status=status,
+                      ensure_ms=round((ensured - started) * 1000, 1),
+                      send_ms=round((time.monotonic() - ensured) * 1000, 1))
+            if status == "sent":
+                # The driver has the text: a turn starts next, or it queues
+                # behind a live one (the driver emits its own queue/status
+                # frames for that). Only "sent" may claim this — the
+                # draining/no_driver answers get promptRejected below.
+                await _send({"type": "promptAck", "sessionId": session_id,
+                             "stage": "delivered"})
+            if interrupt and status == "sent":
+                # Same trail a Stop leaves, tagged so the audit shows the
+                # turn was cut short to post a prompt, not abandoned.
+                try:
+                    async with db_session() as db:
+                        await record_audit(db, "session.interrupt", identity,
+                                           {"sessionId": session_id,
+                                            "withPrompt": True})
+                except Exception:
+                    log.warning("ws.audit_failed event=%s session=%s",
+                                "session.interrupt", session_id, exc_info=True)
+            if status in ("draining", "no_driver"):
+                # The turn was refused — ack it so the browser re-queues
+                # instead of losing the prompt. "draining": a deploy drain.
+                # "no_driver": the session's driver was released between
+                # _ensure_live and the send (or _ensure_live believed it was
+                # already live). Either way the prompt was NOT delivered, and
+                # a dropped user message must never be silent.
+                log.warning("ws.prompt rejected session=%s reason=%s",
+                            session_id, status)
+                await _send({"type": "promptRejected", "sessionId": session_id,
+                             "text": text, "attachmentIds": attachment_ids,
+                             "reason": status})
+
+        async def _run_session_frame(msg: dict) -> None:
+            """Dispatch one _CHAINED_FRAMES frame. Runs on the session's chain.
+
+            Its identity was already re-verified against the handshake on the receive
+            loop before it was queued, so a frame can never outlive a revocation by
+            sitting in the queue.
+            """
+            msg_type = msg.get("type", "")
+            session_id = msg.get("sessionId", "")
+            if msg_type == "attach":
+                # Optional wave-3 catch-up cursor: the client's last CONTIGUOUS daemon
+                # srcSeq (audit W2.3). Accept only a real non-negative int (reject bool,
+                # which is an int subclass, and anything malformed) — otherwise omit it
+                # and full-replay. The server, not the client, still owns the ring
+                # coverage decision (ring_covers) before honoring it.
+                raw_cursor = msg.get("sinceSrcSeq")
+                since_src_seq = (raw_cursor if isinstance(raw_cursor, int)
+                                 and not isinstance(raw_cursor, bool)
+                                 and raw_cursor >= 0 else None)
+                # The epoch that minted the cursor (#497): the browser echoes back the
+                # `epoch` it saw on the resumeOk/replayComplete that established this
+                # cursor. Accept only a real string; anything else → None → the epoch
+                # gate treats it as a mismatch and full-replays (conservative default).
+                raw_epoch = msg.get("sinceEpoch")
+                since_epoch = raw_epoch if isinstance(raw_epoch, str) else None
+                await _handle_attach(session_id, since_src_seq, since_epoch)
+            elif msg_type == "detach":
+                await _handle_detach(session_id)
+            elif msg_type == "prompt":
+                await _handle_prompt(msg, session_id)
+            elif msg_type == "interrupt":
+                async with db_session() as db:
+                    await session_actions.interrupt(
+                        orchestrator, db, session_id=session_id, identity=identity)
+            elif msg_type == "setPermissionMode":
+                mode = msg.get("mode", "")
+                async with db_session() as db:
+                    await session_actions.set_permission_mode(
+                        orchestrator, db, session_id=session_id, mode=mode,
+                        identity=identity)
+            elif msg_type == "cancelQueued":
+                index = msg.get("index")
+                if isinstance(index, int) and not isinstance(index, bool):
+                    ok = await orchestrator.cancel_queued(session_id, index)
+                    if not ok:
+                        # Same silent-drop shape as answerQuestion /
+                        # permissionResponse (issue #917): a cancel the daemon
+                        # can't honor (stale index — the queue already
+                        # drained/shifted — or no live driver) must surface,
+                        # not 200-and-vanish while the chip stays put.
+                        log.warning("ws.cancel_queued rejected session=%s index=%s identity=%s",
+                                    session_id, index, identity)
+                        await _send({"type": "error", "code": "QUEUED_NOT_FOUND",
+                                     "message": "That queued prompt is no longer in the queue "
+                                                "— it may have already run or been removed. "
+                                                "Reload to see its current state.",
+                                     "sessionId": session_id})
+            elif msg_type == "command":
+                name = msg.get("name", "")
+                args = msg.get("args", "")
+                if not await _run_command_and_reply(session_id, name, args):
+                    await _send(redact_event({"type": "commandResult", "sessionId": session_id,
+                                 "name": name, "ok": False, "error": "unknown command"}))
 
         # ------------------------------------------------------------------
         # Main receive loop
@@ -1117,153 +1508,44 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 msg_type = msg.get("type", "")
                 session_id = msg.get("sessionId", "")
 
-                if msg_type == "attach":
-                    # Optional wave-3 catch-up cursor: the client's last CONTIGUOUS daemon
-                    # srcSeq (audit W2.3). Accept only a real non-negative int (reject bool,
-                    # which is an int subclass, and anything malformed) — otherwise omit it
-                    # and full-replay. The server, not the client, still owns the ring
-                    # coverage decision (ring_covers) before honoring it.
-                    raw_cursor = msg.get("sinceSrcSeq")
-                    since_src_seq = (raw_cursor if isinstance(raw_cursor, int)
-                                     and not isinstance(raw_cursor, bool)
-                                     and raw_cursor >= 0 else None)
-                    # The epoch that minted the cursor (#497): the browser echoes back the
-                    # `epoch` it saw on the resumeOk/replayComplete that established this
-                    # cursor. Accept only a real string; anything else → None → the epoch
-                    # gate treats it as a mismatch and full-replays (conservative default).
-                    raw_epoch = msg.get("sinceEpoch")
-                    since_epoch = raw_epoch if isinstance(raw_epoch, str) else None
-                    await _handle_attach(session_id, since_src_seq, since_epoch)
-                elif msg_type == "detach":
-                    await _handle_detach(session_id)
-                elif msg_type == "prompt":
-                    # ACK RECEIPT FIRST — before the wake-up below, not after it.
+                if msg_type in _CHAINED_FRAMES:
+                    if msg_type == "prompt":
+                        # ACK RECEIPT FIRST — before the wake-up below, not after it.
+                        #
+                        # This is the positive counterpart to the promptRejected frame
+                        # further down. Everything else this branch does is slow: on a
+                        # detached session _ensure_live resumes a `claude` process, and
+                        # that resume is where a user's 30 s–2 min of total UI silence
+                        # actually went. Until now the first observable consequence of a
+                        # prompt was the driver's own user-echo at the far end of all of
+                        # it, so "did my message even reach the server?" had no answer
+                        # for as long as the answer took to compute.
+                        #
+                        # `resuming` tells the browser WHICH wait it is in, so the pending
+                        # bubble can say "waking session…" rather than a bare spinner.
+                        # live_tasks membership is the same short-circuit _ensure_live
+                        # itself uses, read before the await so it reflects the decision
+                        # _ensure_live is about to make.
+                        #
+                        # It stays on the RECEIVE LOOP even though the work below is now
+                        # deferred (#1180). Queueing the ack with the work would put it
+                        # behind whatever else this session has in flight — the one thing
+                        # an "I heard you" frame may never wait for.
+                        await _send({
+                            "type": "promptAck", "sessionId": session_id,
+                            "stage": "received" if session_id in live_tasks else "resuming",
+                        })
+                    # Ordered per session, off the receive loop. The lazy resume a
+                    # prompt triggers (_ensure_live) can take tens of seconds, and it
+                    # used to run HERE — freezing every other frame on the socket
+                    # (#1180). Queued instead, so the loop is back at receive_text()
+                    # in microseconds while the wake proceeds.
                     #
-                    # This is the positive counterpart to the promptRejected frame
-                    # further down. Everything else this branch does is slow: on a
-                    # detached session _ensure_live resumes a `claude` process, and
-                    # that resume is where a user's 30 s–2 min of total UI silence
-                    # actually went. Until now the first observable consequence of a
-                    # prompt was the driver's own user-echo at the far end of all of
-                    # it, so "did my message even reach the server?" had no answer
-                    # for as long as the answer took to compute.
-                    #
-                    # `resuming` tells the browser WHICH wait it is in, so the pending
-                    # bubble can say "waking session…" rather than a bare spinner.
-                    # live_tasks membership is the same short-circuit _ensure_live
-                    # itself uses, read before the await so it reflects the decision
-                    # _ensure_live is about to make.
-                    await _send({
-                        "type": "promptAck", "sessionId": session_id,
-                        "stage": "received" if session_id in live_tasks else "resuming",
-                    })
-                    # Resume a read-only (detached) session lazily on first input, then
-                    # send. send_prompt no-ops without a live driver, so the resume must
-                    # happen here — not on attach, where it would block mere viewing.
-                    if await _ensure_live(session_id):
-                        text = msg.get("text", "")
-                        attachment_ids = msg.get("attachmentIds")
-                        # "Interrupt and post": stop the in-flight turn and run this
-                        # prompt next instead of queueing it behind the turn. Only
-                        # forwarded when set so the plain contract is untouched.
-                        interrupt = msg.get("interrupt") is True
-                        extra: dict[str, bool | dict] = {"interrupt": True} if interrupt else {}
-                        # The context chip (spec §4.5) and the per-identity prompt rate
-                        # limit (spec §4.6) both apply only to an assistant-kind session,
-                        # so both need the record's kind up front — a coding session
-                        # ignores a supplied context outright and is never rate-limited
-                        # here. get_session is per-session-routed to the owning host in
-                        # fleet mode (unlike a bare `record()`, which is not in
-                        # FleetOrchestrator's _PER_SESSION set and would resolve to
-                        # RemoteOrchestrator, which has no such method at all).
-                        raw_context = msg.get("context")
-                        rec = None
-                        try:
-                            rec = await orchestrator.get_session(session_id)
-                        except Exception:
-                            # Best-effort: in fleet mode this is a real RPC that can
-                            # raise DaemonTimeout/DaemonUnavailable, and the prompt
-                            # frame had no such dependency before the context chip. A
-                            # transient daemon hiccup must degrade to "no context, no
-                            # rate limit", never cost the user their message.
-                            log.warning("ws.prompt session lookup failed session=%s "
-                                        "— sending without context/rate-limit check",
-                                        session_id, exc_info=True)
-                        assistant_record = is_assistant(rec)
-                        if assistant_record and raw_context is not None:
-                            validated_context = validate_context(raw_context)
-                            if validated_context is not None:
-                                extra["context"] = dict(validated_context)
-                        if (assistant_record
-                                and _assistant_prompt_limiter.check(identity) is not None):
-                            # Checked BEFORE send_prompt so a rate-limited prompt costs
-                            # nothing downstream (same principle as the tool-call
-                            # limiter in server/assistant/client.py).
-                            log.warning("ws.prompt rate_limited session=%s identity=%s",
-                                        session_id, identity)
-                            await _send({"type": "promptRejected", "sessionId": session_id,
-                                         "text": text, "attachmentIds": attachment_ids,
-                                         "reason": "RATE_LIMITED"})
-                            continue
-                        if assistant_record:
-                            assistant_prompts_total.inc()
-                        status = await orchestrator.send_prompt(
-                            session_id, text, attachment_ids, **extra)
-                        if status == "no_driver":
-                            # The 2026-08-30 unresponsive-session incident: the daemon
-                            # dropped the driver AFTER this socket attached, so
-                            # _ensure_live's live_tasks short-circuit vouched for a
-                            # stream whose driver no longer existed and the user's
-                            # message evaporated behind a "Ready" header. live_tasks is
-                            # EDGE state; only send_prompt's answer reflects the
-                            # daemon's truth — so on no_driver, drop the stale stream,
-                            # rebuild through the FULL _ensure_live path (ensure_driver
-                            # + fresh open_stream), and retry the send exactly once.
-                            # A failed rebuild falls through to promptRejected below —
-                            # recovery must never turn into a retry loop.
-                            log.warning(
-                                "ws.prompt: no_driver with a live stream entry — "
-                                "rebuilding driver and retrying once session=%s",
-                                session_id)
-                            await _teardown_live_task(session_id)
-                            if await _ensure_live(session_id):
-                                status = await orchestrator.send_prompt(
-                                    session_id, text, attachment_ids, **extra)
-                        await orchestrator.note_user_interaction(session_id)
-                        if status == "sent":
-                            # The driver has the text: a turn starts next, or it queues
-                            # behind a live one (the driver emits its own queue/status
-                            # frames for that). Only "sent" may claim this — the
-                            # draining/no_driver answers get promptRejected below.
-                            await _send({"type": "promptAck", "sessionId": session_id,
-                                         "stage": "delivered"})
-                        if interrupt and status == "sent":
-                            # Same trail a Stop leaves, tagged so the audit shows the
-                            # turn was cut short to post a prompt, not abandoned.
-                            try:
-                                async with db_session() as db:
-                                    await record_audit(db, "session.interrupt", identity,
-                                                       {"sessionId": session_id,
-                                                        "withPrompt": True})
-                            except Exception:
-                                log.warning("ws.audit_failed event=%s session=%s",
-                                            "session.interrupt", session_id, exc_info=True)
-                        if status in ("draining", "no_driver"):
-                            # The turn was refused — ack it so the browser re-queues
-                            # instead of losing the prompt. "draining": a deploy drain.
-                            # "no_driver": the session's driver was released between
-                            # _ensure_live and the send (or _ensure_live believed it was
-                            # already live). Either way the prompt was NOT delivered, and
-                            # a dropped user message must never be silent.
-                            log.warning("ws.prompt rejected session=%s reason=%s",
-                                        session_id, status)
-                            await _send({"type": "promptRejected", "sessionId": session_id,
-                                         "text": text, "attachmentIds": attachment_ids,
-                                         "reason": status})
-                elif msg_type == "interrupt":
-                    async with db_session() as db:
-                        await session_actions.interrupt(
-                            orchestrator, db, session_id=session_id, identity=identity)
+                    # partial, not a lambda: the frame is bound NOW, so the next loop
+                    # iteration rebinding `msg` can never change what a queued item runs.
+                    if not _defer(session_id, msg_type,
+                                  partial(_run_session_frame, msg)):
+                        await _refuse_saturated(msg_type, session_id, msg)
                 elif msg_type == "permissionResponse":
                     decision = msg.get("decision", "")
                     perm_id = msg.get("permId", "")
@@ -1290,12 +1572,6 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                                                 "— the session may have moved on. Reload to "
                                                 "see its current state.",
                                      "sessionId": session_id})
-                elif msg_type == "setPermissionMode":
-                    mode = msg.get("mode", "")
-                    async with db_session() as db:
-                        await session_actions.set_permission_mode(
-                            orchestrator, db, session_id=session_id, mode=mode,
-                            identity=identity)
                 elif msg_type == "answerQuestion":
                     question_id = msg.get("questionId", "")
                     selected = msg.get("selected", [])
@@ -1324,42 +1600,32 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                     # Lightweight steering signal — user typing / interacting before send. Refreshes
                     # the human-deference window; no response frame.
                     await orchestrator.note_user_interaction(session_id)
-                elif msg_type == "cancelQueued":
-                    index = msg.get("index")
-                    if isinstance(index, int) and not isinstance(index, bool):
-                        ok = await orchestrator.cancel_queued(session_id, index)
-                        if not ok:
-                            # Same silent-drop shape as answerQuestion /
-                            # permissionResponse (issue #917): a cancel the daemon
-                            # can't honor (stale index — the queue already
-                            # drained/shifted — or no live driver) must surface,
-                            # not 200-and-vanish while the chip stays put.
-                            log.warning("ws.cancel_queued rejected session=%s index=%s identity=%s",
-                                        session_id, index, identity)
-                            await _send({"type": "error", "code": "QUEUED_NOT_FOUND",
-                                         "message": "That queued prompt is no longer in the queue "
-                                                    "— it may have already run or been removed. "
-                                                    "Reload to see its current state.",
-                                         "sessionId": session_id})
-                elif msg_type == "command":
-                    name = msg.get("name", "")
-                    args = msg.get("args", "")
-                    if not await _run_command_and_reply(session_id, name, args):
-                        await _send(redact_event({"type": "commandResult", "sessionId": session_id,
-                                     "name": name, "ok": False, "error": "unknown command"}))
                 else:
                     await _send({"type": "error", "code": "UNKNOWN_TYPE",
                                  "message": f"Unknown message type: {msg_type!r}"})
 
         finally:
-            # Cancel live streams.
-            for sid in list(live_tasks.keys()):
-                await _handle_detach(sid)
+            # Let queued/in-flight per-session work finish first (a disconnect
+            # mid-resume must still deliver the prompt), THEN cancel whatever is
+            # left. The drain runs in its own try so a cancellation arriving during
+            # it (a SIGTERM drain) still reaches the cancel-and-reap below instead
+            # of leaking the chains as orphan tasks.
+            try:
+                await _drain_work_chains()
+            finally:
+                for sid, work_task in list(work_tasks.items()):
+                    await cancel_and_reap(work_task, phase=f"ws.work:{sid}", timeout=0.5)
+                work_tasks.clear()
+                work_queues.clear()
 
-            await cancel_and_reap(event_task, phase="ws.events", timeout=0.5)
-            await cancel_and_reap(batcher_task, phase="ws.batcher", timeout=0.5)
+                # Cancel live streams.
+                for sid in list(live_tasks.keys()):
+                    await _handle_detach(sid)
 
-            await orchestrator.unsubscribe_events(event_q)
-            log.debug("ws.disconnect identity=%s", identity)
+                await cancel_and_reap(event_task, phase="ws.events", timeout=0.5)
+                await cancel_and_reap(batcher_task, phase="ws.batcher", timeout=0.5)
+
+                await orchestrator.unsubscribe_events(event_q)
+                log.debug("ws.disconnect identity=%s", identity)
 
     return router

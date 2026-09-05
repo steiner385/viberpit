@@ -38,6 +38,31 @@ _CANCEL_RE = re.compile(
 )
 
 
+# Commit attribution for an agent-authored commit, per engine.
+#
+# THE source: this literal was copy-pasted into four seed prompts
+# (backlog_prompt, sdlc/prompts, and twice in pm/classification), so a Codex
+# automation would have instructed its session to co-author every commit as
+# Claude. These are ccswitch's OWN attribution strings — the Claude line matches
+# the trailer the Claude Code harness already asks for; the Codex line is a plain
+# git trailer ccswitch chose, not a claim about an OpenAI convention.
+_COMMIT_TRAILERS: dict[str, str] = {
+    "claude_code": "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+    "codex": "Co-Authored-By: Codex <noreply@openai.com>",
+}
+
+
+def commit_trailer(engine: object = None) -> str:
+    """The ``Co-Authored-By`` trailer a session spawned on *engine* should use.
+
+    *engine* accepts an ``AgentEngine`` or its string value; anything unknown or
+    absent gets the Claude trailer, which is the pre-Phase-7 behavior every seed
+    prompt had hardcoded.
+    """
+    key = getattr(engine, "value", engine)
+    return _COMMIT_TRAILERS.get(str(key), _COMMIT_TRAILERS["claude_code"])
+
+
 def marker_instructions(*, self_model_switch: bool) -> str:
     """Compose every ccswitch marker instruction into one system-prompt append.
 

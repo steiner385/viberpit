@@ -179,13 +179,68 @@ class AutomationContext:
                 Session.origin_ref == key,
                 Session.status.not_in(INACTIVE_SESSION_STATUSES)))).scalars().first()
 
+    async def launch_plan(self) -> tuple[Any, dict]:
+        """``(engine, config)`` this automation's next session would launch with.
+
+        THE engine decision for every automation (Phase 7, Task 7.1). The policy
+        ceiling is read off the registry by ``automation_id`` rather than threaded
+        through a dozen construction sites, so there is one answer per origin and
+        nothing to keep in sync.
+
+        Public because a caller may need the engine BEFORE it can build its seed
+        prompt — the prompt states a commit trailer, and a Codex session must not
+        be told to co-author its commits as Claude. Such a caller passes the
+        engine back in through ``spawn_session(engine=...)`` so the decision is
+        made once.
+
+        Raises ``EnginePolicyViolation`` when the only engine this origin is
+        audited for cannot be launched right now.
+        """
+        from server.config import get_settings
+
+        from .config_store import read_effective_config
+        from .engine_policy import DEFAULT_ENGINE_POLICY, policy_for, resolve_engine
+        from .registry import registry
+
+        try:
+            policy = policy_for(registry.get(self.automation_id))
+        except KeyError:  # an ad-hoc origin is unaudited by definition
+            policy = DEFAULT_ENGINE_POLICY
+        config = await read_effective_config(self.automation_id)
+        engine = resolve_engine(
+            policy, config,
+            automations_enabled=bool(
+                getattr(get_settings(), "codex_automations_enabled", False)))
+        return engine, config
+
+    async def launch_plan_or_refuse(self, origin_ref: str) -> tuple[Any, dict] | None:
+        """``launch_plan()``, or ``None`` after recording why the launch is refused.
+
+        The single refusal path, so a caller that resolves the engine early (to
+        build its seed prompt) and ``spawn_session`` itself report an out-of-policy
+        launch identically."""
+        from .engine_policy import EnginePolicyViolation
+        try:
+            return await self.launch_plan()
+        except EnginePolicyViolation as exc:
+            await self.emit("error", f"refused spawn for {origin_ref}: {exc.reason}",
+                            kind="engine_policy_refused", target=origin_ref,
+                            detail={"policy": exc.policy.value})
+            return None
+
     async def spawn_session(self, *, origin_ref: str, dedupe_key: str | None = None,
-                            detail: dict | None = None, **create_kwargs) -> Any:
+                            detail: dict | None = None, engine: Any = None,
+                            **create_kwargs) -> Any:
         """Find-or-create a session for this automation. If a NON-terminal session
         with the same (origin, dedupe_key) already exists, return it and emit a
         'skipped_duplicate' event instead of creating a second. Otherwise create
         via the injected create_session (which stamps origin/origin_ref), then emit
-        a linked 'spawned' event (carrying the optional ``detail`` payload)."""
+        a linked 'spawned' event (carrying the optional ``detail`` payload).
+
+        *engine* is an already-resolved answer from ``launch_plan``, for a caller
+        that needed it to build the seed prompt; leave it unset and this resolves
+        it. Returns ``None`` without spawning when the origin's engine policy
+        refuses the launch."""
         key = dedupe_key or origin_ref
         existing = await self._existing_session(key)
         if existing is not None:
@@ -194,6 +249,25 @@ class AutomationContext:
             return existing
         if self._create_session is None:
             raise RuntimeError("AutomationContext has no create_session bound")
+        # Engine BEFORE permission mode and before any create_session work: the
+        # engine decides which of the caller's launch inputs survive, and a
+        # refusal must cost nothing.
+        from .engine_policy import sanitize_launch_for_engine
+        plan = await self.launch_plan_or_refuse(origin_ref)
+        if plan is None:
+            return None
+        resolved, config = plan
+        engine = resolved if engine is None else engine
+        _kwargs, dropped = sanitize_launch_for_engine(engine, create_kwargs, config=config)
+        if dropped:
+            # Visible, not silent: the plan forbids quietly routing a Claude-picked
+            # account or a Claude model alias into another engine's runner.
+            await self.emit(
+                "info",
+                f"dropped {', '.join(dropped)} — incompatible with engine {engine.value}",
+                kind="engine_launch_adjusted", target=origin_ref,
+                detail={"engine": engine.value, "dropped": list(dropped)})
+        create_kwargs["engine"] = engine
         # An automation session has nobody watching it, so it must not inherit
         # create_session's human-oriented "interactive" default (#750). Resolve the
         # mode the way the human path does: explicit choice → account default →

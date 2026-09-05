@@ -1,12 +1,20 @@
 ---
 slug: openai-codex-integration
 title: Native OpenAI / Codex Integration
-state: discovery
+state: delivering
 links:
   specs:
     - docs/superpowers/specs/2026-09-04-native-openai-codex-integration-design.md
   project: https://github.com/users/steiner385/projects/26
+  acceptance: docs/superpowers/spikes/2026-09-04-codex-interactive-acceptance.md
 ---
+
+> **State.** Phases 1–6 have landed behind fail-closed flags:
+> `CCSWITCH_CODEX_ENABLED` and `CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED` are both
+> `false` everywhere, and `CCSWITCH_CODEX_AUTOMATIONS_ENABLED` stays false until
+> Phase 7. This becomes `live` only when Part 2 of the acceptance record —
+> the real-boundary runs on dobby and rocky — passes and the owner enables the
+> flags. Operator procedures: `docs/runbooks/codex-credential-authority.md`.
 
 # Native OpenAI / Codex Integration
 
@@ -72,6 +80,20 @@ compatibility audit; API-key authentication in v1.
   preserved; an API key with unknown spend must not be ranked as unused quota.
 - V1 is ChatGPT device-code auth plus interactive sessions. API-key auth is post-v1. Backlog/SDLC
   Codex automation parity is a required fast follow after origin-specific compatibility tests.
+- **Automation engine policy (Phase 7).** Every automation origin declares an audited engine
+  ceiling — `claude_only`, `codex_allowed`, or `codex_only` — in code
+  (`server/automations/engine_policy.py`). There is no implicit "any": an origin that declares
+  nothing is `claude_only`. An origin whose ceiling admits more than one engine gains an `engine`
+  selector in its ordinary automation config; an origin that does not offers no such field, so the
+  API rejects `{"engine": "codex"}` as an unknown key, and the one automation spawn helper clamps
+  again at launch. The reason unattended sessions get a stricter gate than interactive ones: they
+  run in `full-auto` with git/gh/pytest and nobody watching, so an unverified prompt contract or
+  completion-marker mismatch is not a degraded experience. `CCSWITCH_CODEX_AUTOMATIONS_ENABLED`
+  (default `false`) is the global kill switch — it forces every `codex_allowed` origin back to
+  Claude without an operator unwinding each config, and it is separate from `CCSWITCH_CODEX_ENABLED`
+  so enabling Codex for humans does not enable it for control loops. **As of Phase 7 Task 7.1 every
+  origin is `claude_only`;** widening one is gated on that origin's Codex acceptance suite passing
+  (Tasks 7.2 and 7.3).
 - Users explicitly select Claude Code or Codex. V1 Codex controls are model, reasoning effort, and
   permission profile. The data model supports multiple named OpenAI accounts immediately, while
   automatic OpenAI-account rotation is deferred.

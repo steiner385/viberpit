@@ -329,6 +329,37 @@ Expected: `"healthy": true`, `sha` matches the edge's deployed SHA, `protocol` m
 
 ---
 
+### Step 9 — Codex (optional)
+
+Skip this unless the host should also run Codex sessions. A runner with no Codex
+stays `healthy`, keeps taking Claude sessions, and remains a deploy target — the
+daemon reports `binary_not_found` through `/info.engines` and drops out of *Codex*
+dispatch only. Codex is never a boot dependency.
+
+The full procedure — pinned binary install, the authority's separate PKI, the
+client CN this host must present, and the six-check preflight — is
+`docs/runbooks/codex-credential-authority.md` § 3. In outline:
+
+```bash
+bash scripts/fetch-codex.sh                       # pinned + digest-verified
+# install codex-runner:<host>.pem/.key (0600) + server-ca.pem, add the CN to the
+# authority's CCSWITCH_CODEX_AUTHORITY_CLIENT_ALLOWLIST, restart the authority
+python -m server.codex.doctor                     # exits 0 when nothing failed
+```
+
+- [ ] `python -m server.codex.doctor` reports no FAIL.
+- [ ] `find /var/lib/ccswitch/state/ccswitch/codex -name auth.json` prints nothing
+      — a runner must never hold a refresh token.
+- [ ] Both launch flags stay `false` until the controlled-enablement bar has passed.
+
+> The unit sets `Environment=XDG_STATE_HOME=%S/ccswitch/state` so per-account
+> `CODEX_HOME`s land on systemd's host-local `StateDirectory`. If you install the
+> unit by hand, `daemon-reload` — otherwise Codex homes follow
+> `$HOME/.local/state`, which on a runner with sshfs-mounted state is refused
+> (correctly) as not provably local.
+
+---
+
 ## Rollback
 
 No edge restart is needed.

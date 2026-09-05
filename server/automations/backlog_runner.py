@@ -16,6 +16,7 @@ from .backlog_selection import SELECTION_STRATEGIES, Batch, should_free_slot
 from .base import AutomationStatus, ConfigField
 from .model_pick import AUTOMATION_MODEL_CHOICES
 from .context import AutomationContext
+from .engine_policy import EnginePolicy
 
 log = logging.getLogger(__name__)
 
@@ -143,6 +144,10 @@ class BacklogRunner:
     name = "Backlog Runner"
     description = "Continuously implements high-priority backlog issues into reviewed-ready PRs."
     modes: tuple[str, ...] = ("off", "propose", "auto")
+    # Audited engine ceiling (Phase 7, Task 7.1). This origin has no Codex
+    # acceptance evidence, so it launches Claude only. Widening it is a
+    # reviewable one-line change gated on its acceptance suite passing.
+    engine_policy: EnginePolicy = EnginePolicy.CLAUDE_ONLY
     config_schema = [
         ConfigField(key="enabled_repos", label="Repositories", type="repo-multiselect",
                     default=[], help="Repos to draw issues from (empty = all)."),

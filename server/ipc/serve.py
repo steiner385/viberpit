@@ -132,6 +132,25 @@ async def daemon_lifespan(app, orchestrator):
                 log.info("daemon startup: reaped %d orphaned codex app-server(s)", reaped)
         except Exception:
             log.warning("daemon startup: codex orphan reap failed", exc_info=True)
+    # One structured startup verdict (`codex.doctor.report`) for the six independent
+    # ways a Codex runner can be misconfigured — the binary, the runtime home, the
+    # authority, the client certificate, the account manifest, and the launch flags.
+    # It REUSES the availability the manager just computed rather than probing the
+    # binary a second time, and it runs as a supervised background task because one
+    # of its checks talks to the authority under a 20 s admin deadline: a daemon that
+    # owns live `claude` processes may not have its boot delayed by diagnostics.
+    from server.codex.doctor import run_and_log as _codex_doctor
+    from server.obs.tasks import supervise as _supervise
+    app.state.codex_doctor_task = _supervise(
+        asyncio.create_task(
+            _codex_doctor(
+                get_settings(),
+                availability=getattr(orchestrator._codex, "availability", None),
+            ),
+            name="codex-doctor",
+        ),
+        name="codex-doctor",
+    )
     try:
         await orchestrator.rehydrate()
     except Exception as exc:
@@ -238,6 +257,12 @@ async def daemon_lifespan(app, orchestrator):
             loop_lag_task = None
         if loop_lag_task is not None:
             await cancel_and_reap(loop_lag_task, phase="daemon.loop-lag")
+        # A daemon stopped within seconds of boot can still have the doctor waiting
+        # on the authority's 20 s admin deadline; reap it the same way, never with a
+        # hand-rolled cancel (#1164).
+        doctor_task = getattr(app.state, "codex_doctor_task", None)
+        if doctor_task is not None:
+            await cancel_and_reap(doctor_task, phase="daemon.codex-doctor")
         await orchestrator.stop()
 
 

@@ -144,6 +144,14 @@ try:
         codex_enabled: bool = Field(default=False, alias="CCSWITCH_CODEX_ENABLED")
         codex_external_auth_enabled: bool = Field(
             default=False, alias="CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED")
+        # Automation parity (Phase 7). Separate from `codex_enabled` because an
+        # INTERACTIVE Codex session has a human watching it, while an automation
+        # session runs unattended in full-auto with git/gh/pytest — so enabling
+        # Codex for humans must not enable it for control loops. Turning this off
+        # forces every `codex_allowed` origin back to Claude without an operator
+        # having to unwind each origin's config (server/automations/engine_policy.py).
+        codex_automations_enabled: bool = Field(
+            default=False, alias="CCSWITCH_CODEX_AUTOMATIONS_ENABLED")
         codex_bin: str = Field(default="codex", alias="CCSWITCH_CODEX_BIN")
         # Comma list of `codex --version` strings an operator has verified beyond
         # the pin in server/codex/schema.py. It WIDENS the pinned set; it can never
@@ -391,6 +399,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         codex_external_auth_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED", "false").lower() in ("1","true","yes","on")
+        )
+        codex_automations_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_CODEX_AUTOMATIONS_ENABLED", "false").lower() in ("1","true","yes","on")
         )
         codex_bin: str = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_CODEX_BIN", "codex")

@@ -28,6 +28,7 @@ import contextlib
 import json
 import logging
 import ssl
+import time
 from collections.abc import Mapping
 from typing import Any, Final
 
@@ -52,6 +53,11 @@ from server.codex.auth_types import (
 )
 from server.codex.auth_server import MAX_FRAME_BYTES
 from server.obs.context import log_event
+from server.obs.metrics import (
+    codex_auth_generation,
+    codex_auth_request_ms,
+    codex_auth_requests_total,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +117,7 @@ class AuthorityClient:
             {"account": account, "minimumGeneration": minimum_generation},
             account=account,
         )
-        return CredentialEnvelope.from_wire(result.get("envelope"))
+        return self._observed(CredentialEnvelope.from_wire(result.get("envelope")))
 
     async def refresh(
         self, account: str, *, rejected_generation: int = 0
@@ -121,7 +127,19 @@ class AuthorityClient:
             {"account": account, "rejectedGeneration": rejected_generation},
             account=account,
         )
-        return CredentialEnvelope.from_wire(result.get("envelope"))
+        return self._observed(CredentialEnvelope.from_wire(result.get("envelope")))
+
+    @staticmethod
+    def _observed(envelope: CredentialEnvelope) -> CredentialEnvelope:
+        """Publish the envelope's generation, and nothing else about it.
+
+        The generation is the anti-rollback counter — non-secret by construction
+        ("a rotation happened", never what rotated) — and watching it is how an
+        operator sees a 401 storm coalescing into ONE refresh rather than one per
+        runner. The envelope itself never leaves this line.
+        """
+        codex_auth_generation.labels(envelope.account).set(float(envelope.generation))
+        return envelope
 
     # -- edge-role calls ---------------------------------------------------
 
@@ -173,6 +191,44 @@ class AuthorityClient:
     # -- transport ---------------------------------------------------------
 
     async def _call(
+        self,
+        method: str,
+        params: Mapping[str, Any],
+        *,
+        account: str | None = None,
+        deadline_s: float | None = None,
+    ) -> Mapping[str, Any]:
+        """One instrumented authority round-trip.
+
+        Every call — a runner's envelope/refresh and the edge's admin methods
+        alike — already funnels through here, so this is the one place authority
+        health is counted. The outcome label separates a *refusal* (the authority
+        answered "no", a typed ``AuthorityErrorCode``) from an *outage*
+        (``unavailable``), because the plan's alerting question is which of the two
+        is happening, and they demand opposite responses.
+        """
+        started = time.monotonic()
+        outcome = "ok"
+        try:
+            return await self._invoke(
+                method, params, account=account, deadline_s=deadline_s
+            )
+        except AuthorityUnavailable:
+            outcome = "unavailable"
+            raise
+        except AuthorityError as exc:
+            outcome = exc.code.value
+            raise
+        except Exception:
+            outcome = "error"
+            raise
+        finally:
+            codex_auth_requests_total.labels(method, outcome).inc()
+            codex_auth_request_ms.labels(method, outcome).observe(
+                (time.monotonic() - started) * 1000.0
+            )
+
+    async def _invoke(
         self,
         method: str,
         params: Mapping[str, Any],

@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from server.auth.middleware import current_identity
 from server.automations.base import validate_config
 from server.automations.context import AutomationContext
+from server.automations.engine_policy import policy_for
 from server.automations.registry import registry
 from server.automations.schedule import PRESETS, ScheduleError, next_runs, parse_schedule
 from server.db import get_db
@@ -86,7 +87,12 @@ async def list_automations(request: Request, _identity: str = Depends(current_id
             "id": a.id, "name": a.name, "description": a.description,
             "enabled": row.enabled, "mode": row.mode, "modes": list(a.modes),
             "status": statuses.get(a.id) or a.status(ctx=None).to_dict(),
-            "configSchema": [f.to_dict() for f in a.config_schema],
+            # The schema INCLUDING the engine fields this origin's audited
+            # ceiling admits (none for a claude_only origin). Same source the
+            # PATCH validates against, so the browser can never render a control
+            # the server would reject.
+            "configSchema": [f.to_dict() for f in registry.schema_for(a.id)],
+            "enginePolicy": policy_for(a).value,
             "config": row.config or {},
             "schedule": row.schedule or None,
             "lastActiveAt": row.last_active_at.isoformat() if row.last_active_at else None,
@@ -144,7 +150,11 @@ async def patch_automation(automation_id: str, body: PatchBody,
         row.mode = body.mode
     if body.config is not None:
         try:
-            row.config = validate_config(automation.config_schema, body.config)
+            # Validated against the ENGINE-AWARE schema: an origin with no Codex
+            # acceptance evidence offers no `engine` field, so `{"engine": ...}`
+            # lands here as an unknown key and 422s. That is the enforcement —
+            # not a special case downstream (Phase 7, Task 7.1).
+            row.config = validate_config(registry.schema_for(automation_id), body.config)
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))
     if body.schedule is not None:

@@ -29,6 +29,7 @@ from server.pm.reconcile_diff import Mutation, compile_edges, diff_fields, membe
 from server.pm.reconcile_inputs import ProductFacts
 
 from .base import AutomationStatus, ConfigField
+from .engine_policy import EnginePolicy
 
 log = logging.getLogger(__name__)
 
@@ -76,6 +77,10 @@ class GhReconcile:
     description = ("Writes Projects v2 Status/Score/Stage, board membership and native blocked-by "
                    "edges from ccswitch decisions. Journaled, capped, leader-gated.")
     modes: tuple[str, ...] = ("off", "dry_run", "apply")
+    # Audited engine ceiling (Phase 7, Task 7.1). This origin has no Codex
+    # acceptance evidence, so it launches Claude only. Widening it is a
+    # reviewable one-line change gated on its acceptance suite passing.
+    engine_policy: EnginePolicy = EnginePolicy.CLAUDE_ONLY
     config_schema = [
         ConfigField("max_mutations_per_cycle", "Blast cap (mutations per product per tick)", "int",
                     50,

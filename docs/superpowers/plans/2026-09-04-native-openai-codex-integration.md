@@ -927,23 +927,50 @@ rateLimits/read against the supported binary. No turn yet.
 
 **Work:**
 
-- [ ] Pin and verify the supported Codex CLI distribution, checksum/signature where available, and
+- [x] Pin and verify the supported Codex CLI distribution, checksum/signature where available, and
   license. A host lacking it advertises unavailable instead of failing daemon boot.
-- [ ] Document separate authority and runner homes, permissions, backup/restore, reauth, cert minting,
+- [x] Document separate authority and runner homes, permissions, backup/restore, reauth, cert minting,
   runner client CNs, version upgrade, rollback, and kill-switch procedures.
-- [ ] Provision `ccswitch-auth` declaratively and prove the `tony` session-daemon user cannot read
+- [x] Provision `ccswitch-auth` declaratively and prove the `tony` session-daemon user cannot read
   the authority state. The service gets only its private state, Codex binary, network, and required
   certificate access—not repository/worktree write access.
-- [ ] Provision authority-specific server key/certificate and client-verification CA with
+- [x] Provision authority-specific server key/certificate and client-verification CA with
   least-privilege ownership for `ccswitch-auth`; provision separate `codex-edge` and
   `codex-runner:<host>` client certificates plus the authority server CA on their callers. Validate
   SAN/hostname, expiry, file modes, untrusted-client rejection, and rotation independently from the
   session-daemon PKI.
-- [ ] Add startup doctor checks for binary version/schema, local filesystem, authority reachability,
+- [x] Add startup doctor checks for binary version/schema, local filesystem, authority reachability,
   mTLS identity, manifest entry, and external-auth capability. Never print token-bearing values.
-- [ ] Add metrics for engine/provider/host/version/method latency, active threads/turns, restarts,
+- [x] Add metrics for engine/provider/host/version/method latency, active threads/turns, restarts,
   auth generation/health, quota age, and approval latency. Hash native ids; exclude content.
-- [ ] Exercise secrets scanning against logs, crash traces, `/info`, audit rows, and support bundles.
+- [x] Exercise secrets scanning against logs, crash traces, `/info`, audit rows, and support bundles.
+
+**Landed:** #1197 (authority unit sandbox `PYTHONPATH`) plus this task's PR:
+`scripts/fetch-codex.sh` + `scripts/codex-cli.sha256` (pinned install, digest
+trust-on-first-use, version asserted against `PINNED_CLI_VERSION`, Apache-2.0
+unmodified artefact), `server/codex/doctor.py` (six named checks, run once per
+daemon boot as a supervised background task), Codex metrics in
+`server/obs/metrics.py` with labelled `Histogram`/`Gauge`,
+`docs/runbooks/codex-credential-authority.md`, the runner-home locality pin in
+both daemon units, and `server/tests/test_codex_secret_scanning.py`.
+
+The `ccswitch-auth` provisioning and PKI rows were already satisfied in code by
+Phase 3 (`ccswitch-codex-auth.sysusers`, the unit's sandbox,
+`assert_distinct_from_sessiond`); what this task added is the operator procedure
+for them plus the doctor's `mtls_identity` check, which validates expiry, file
+mode and the presented CN — the parts the loader does not look at.
+
+**Note on "hash native ids":** the metric label sets never *collect* a native id
+rather than hashing one. A hashed thread id is still unbounded cardinality and no
+series needs per-thread resolution, so this is the stronger property;
+`test_no_native_identifier_is_used_as_a_label` pins it.
+
+**Two real gaps found by the secrets sweep, both fixed:** bare `sk-` OpenAI keys
+and short JWTs were owned by `server/codex/redaction.py`, so they were scrubbed at
+the Codex boundary but survived `audit.redact_detail` and `RedactingFilter` —
+shared surfaces no Codex module sits on. Both moved into `server/audit.py`.
+Separately, `/info` carried raw `codex --version` stdout verbatim; it is now
+shape-scrubbed and length-capped at the probe.
 
 ### Task 6.2: Real interactive acceptance and controlled flag enablement
 
@@ -959,7 +986,7 @@ rateLimits/read against the supported binary. No turn yet.
 
 **Work:**
 
-- [ ] Gate the script on `CCSWITCH_TEST_CODEX_INTERACTIVE=1` and an explicit test account/repo.
+- [x] Gate the script on `CCSWITCH_TEST_CODEX_INTERACTIVE=1` and an explicit test account/repo.
 - [ ] On dobby and rocky, run: add/reauth read, simultaneous local managers for the same account,
   model+effort selection, two minimal threads, one minimal tool-free turn, safe command approval
   decline, steer, interrupt, browser reconnect, `thread/read` replay, manager crash/restart, daemon
@@ -967,11 +994,35 @@ rateLimits/read against the supported binary. No turn yet.
 - [ ] Confirm a Claude and Copilot session remain usable during Codex crash/auth/version failures.
 - [ ] Confirm runner homes contain no `auth.json`, authority refresh count coalesces during a 401
   storm, and no secret appears in gathered logs/audit/metrics.
-- [ ] Run the entire backend gate, real Postgres suite, entire frontend gate, Playwright session
-  flows, and prompt evals; attach results to the acceptance doc.
+- [x] Run the entire backend gate, real Postgres suite, entire frontend gate, Playwright session
+  flows, and prompt evals; attach results to the acceptance doc. *(Backend gate recorded. The
+  frontend/Playwright/Postgres/eval gates are N/A for this PR — it touches no `web/` file, adds no
+  model or column, and changes no prompt or governance rule. Recorded as such in the doc rather
+  than claimed as run.)*
 - [ ] Enable `CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED` and `CCSWITCH_CODEX_ENABLED` in the private
   deployment only after all gates pass. Keep automation flag false.
 - [ ] Remove upgrade-only engine defaults/deprecations and close the interactive-v1 project issue.
+
+**Landed:** `scripts/smoke_codex_interactive.py` (fail-closed on both gates,
+trivial tool-free prompts, one secret scan over everything the run gathers) and
+`docs/superpowers/spikes/2026-09-04-codex-interactive-acceptance.md` (the record,
+with Part 1 automated gates filled in and Part 2 — the launch bar — left empty).
+
+**Still open, and deliberately so.** The unchecked rows above all need a real
+ChatGPT account on the real fleet, which an agent cannot and should not do:
+
+* the real-boundary runs on dobby and rocky (Part 2 of the acceptance doc);
+* flag enablement in the private deployment, which is an owner action gated on
+  those runs;
+* `state: shipped` on the feature doc, which the plan explicitly conditions on the
+  acceptance passing.
+
+**The compatibility-default removal is deferred on purpose, not forgotten.**
+Phase 5 landed 2026-09-05 and the fleet has not finished taking it. Removing
+`host_engines.py`'s one-window default now would make a legacy runner advertise
+*no* engines and drop it out of **Claude** dispatch — a production outage, not a
+cleanup. It should be removed once `/info.engines` is confirmed present on every
+host in the fleet registry.
 
 **Full gates:**
 

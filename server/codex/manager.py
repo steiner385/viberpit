@@ -46,6 +46,7 @@ import asyncio
 import logging
 import os
 import random
+import socket
 import time
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
@@ -58,7 +59,11 @@ from server.aio import cancel_and_reap
 from server.codex import process as codex_process
 from server.codex import redaction, schema
 from server.codex.redaction import Redacted
-from server.codex.capabilities import CodexAvailability, CodexUnavailableReason
+from server.codex.capabilities import (
+    CODEX_ENGINE,
+    CodexAvailability,
+    CodexUnavailableReason,
+)
 from server.codex.external_auth import (
     ExternalAuthUnavailable,
     assert_no_runner_credentials,
@@ -66,6 +71,13 @@ from server.codex.external_auth import (
 from server.codex.process import CodexProcess, CodexProcessHandle
 from server.codex.protocol import CodexAppServerClient, RefreshHandler
 from server.obs.context import log_event
+from server.obs.metrics import (
+    codex_approval_ms,
+    codex_build_info,
+    codex_runner_restarts_total,
+    codex_threads_active,
+    codex_turns_active,
+)
 from server.sessions.adopt import _proc_lister, terminate_process_tree
 
 logger = logging.getLogger(__name__)
@@ -595,7 +607,12 @@ class CodexRunnerManager:
         """Open a turn, fenced to the runner generation it starts on."""
         runner = self._runners.get(account)
         generation = runner.generation if runner is not None else -1
-        self._turns.setdefault(account, {})[thread_id] = generation
+        turns = self._turns.setdefault(account, {})
+        # Re-opening a turn for a thread that already has one must not double-count
+        # the gauge; the dict already treats it as one turn.
+        if thread_id not in turns:
+            codex_turns_active.labels(account).inc()
+        turns[thread_id] = generation
         return TurnToken(account=account, thread_id=thread_id, generation=generation)
 
     def finish_turn(self, token: TurnToken) -> TurnOutcome:
@@ -608,7 +625,7 @@ class CodexRunnerManager:
         the ``_Runner`` object, a crash-storm give-up (or an idle reap) followed by
         a fresh ``ensure()`` cannot re-mint the generation this token was fenced to.
         """
-        self._turns.get(token.account, {}).pop(token.thread_id, None)
+        self._close_turn(token.account, token.thread_id)
         runner = self._runners.get(token.account)
         current = self._generations.get(token.account, 0)
         if (
@@ -624,6 +641,22 @@ class CodexRunnerManager:
 
     def active_turns(self, account: str) -> tuple[str, ...]:
         return tuple(sorted(self._turns.get(account, {})))
+
+    def _close_turn(self, account: str, thread_id: str) -> None:
+        """Drop one turn from the book AND the gauge.
+
+        Three unrelated paths retire a turn — a normal finish, a thread
+        unregistering mid-turn, and a crash that wipes the account's whole book —
+        so the pop and the gauge decrement live together here rather than being
+        copied into each of them and drifting.
+        """
+        if self._turns.get(account, {}).pop(thread_id, None) is not None:
+            codex_turns_active.labels(account).dec()
+
+    def _close_all_turns(self, account: str) -> None:
+        for thread_id in list(self._turns.get(account, {})):
+            self._close_turn(account, thread_id)
+        self._turns.pop(account, None)
 
     # -- thread notification ----------------------------------------------
 
@@ -643,20 +676,25 @@ class CodexRunnerManager:
         cannot end up half-subscribed, and :meth:`unregister_thread` has exactly
         one inverse to keep correct.
         """
-        self._notifiers.setdefault(account, {})[thread_id] = notifier
+        notifiers = self._notifiers.setdefault(account, {})
+        # Re-registering the same thread (a driver reattach) is one thread, not two.
+        if thread_id not in notifiers:
+            codex_threads_active.labels(account).inc()
+        notifiers[thread_id] = notifier
         if events is not None:
             self._event_sinks.setdefault(account, {})[thread_id] = events
         if approvals is not None:
             self._approval_sinks.setdefault(account, {})[thread_id] = approvals
 
     def unregister_thread(self, account: str, thread_id: str) -> None:
-        self._notifiers.get(account, {}).pop(thread_id, None)
+        if self._notifiers.get(account, {}).pop(thread_id, None) is not None:
+            codex_threads_active.labels(account).dec()
         self._event_sinks.get(account, {}).pop(thread_id, None)
         # Dropped BEFORE the turn fence, so a request arriving during teardown
         # finds no handler and takes the protocol's fail-closed `-32601` path
         # rather than reaching a driver that is already closing.
         self._approval_sinks.get(account, {}).pop(thread_id, None)
-        self._turns.get(account, {}).pop(thread_id, None)
+        self._close_turn(account, thread_id)
 
     # -- app-server stream routing ----------------------------------------
 
@@ -760,6 +798,7 @@ class CodexRunnerManager:
         )
         if sink is None:
             self.unrouted_approvals += 1
+            codex_approval_ms.labels("unrouted").observe(0.0)
             log_event(
                 logger,
                 logging.WARNING,
@@ -770,7 +809,17 @@ class CodexRunnerManager:
             raise CodexRunnerMissingError(
                 "no live ccswitch session owns this codex approval request"
             )
-        return await sink(method, params)
+        # Approval latency is wall-clock time waiting on a HUMAN, which is exactly
+        # what makes it worth measuring: a session left holding an approval blocks
+        # its turn and the app-server behind it.
+        started = time.monotonic()
+        outcome = "error"
+        try:
+            response = await sink(method, params)
+            outcome = "decided"
+        finally:
+            codex_approval_ms.labels(outcome).observe((time.monotonic() - started) * 1000.0)
+        return response
 
     def _notify(self, notice: RunnerNotice) -> None:
         for thread_id, notifier in list(self._notifiers.get(notice.account, {}).items()):
@@ -846,7 +895,7 @@ class CodexRunnerManager:
                 detail=detail,
             )
         )
-        self._turns.pop(runner.account, None)
+        self._close_all_turns(runner.account)
         await self._discard(runner.process, runner.client)
 
         if self._clock() - runner.started_at >= self._healthy_uptime_s:
@@ -855,6 +904,7 @@ class CodexRunnerManager:
         while True:
             runner.restarts += 1
             if runner.restarts > self._max_restarts:
+                codex_runner_restarts_total.labels(runner.account, "gave_up").inc()
                 await self._give_up(runner, detail)
                 return False
             await self._sleep(self._backoff_delay(runner.restarts))
@@ -863,8 +913,10 @@ class CodexRunnerManager:
             try:
                 replacement = await self._start_runner(runner.account)
             except CodexStartError as exc:
+                codex_runner_restarts_total.labels(runner.account, "failed").inc()
                 detail = redaction.scrub_exception(exc)
                 continue
+            codex_runner_restarts_total.labels(runner.account, "restarted").inc()
             runner.process = replacement.process
             runner.client = replacement.client
             runner.home = replacement.home
@@ -1114,6 +1166,15 @@ async def build_codex_manager(settings: Any) -> CodexRunnerManager | None:
         cli_version=availability.cli_version,
         binary=availability.binary_path,
     )
+    # The identity every other Codex series joins against. Set once, here, because
+    # a daemon serves exactly one host with exactly one binary — see the comment on
+    # `codex_build_info` for why these are not per-observation labels.
+    from ccswitch.account_registry import PROVIDER_OPENAI
+
+    codex_build_info.labels(
+        CODEX_ENGINE.value, PROVIDER_OPENAI, socket.gethostname(),
+        availability.cli_version or "unknown",
+    ).set(1.0)
     manager = CodexRunnerManager(
         availability=availability,
         codex_home_base=default_codex_home_base(),

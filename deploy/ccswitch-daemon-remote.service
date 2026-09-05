@@ -23,6 +23,16 @@ RuntimeDirectoryPreserve=yes
 StateDirectory=ccswitch
 WorkingDirectory=/home/tony/GitHub/ccswitch
 EnvironmentFile=/etc/ccswitch/ccswitch.env
+# Where per-account CODEX_HOMEs land: /var/lib/ccswitch/state/ccswitch/codex.
+# This matters MORE on a remote runner than on dobby: this host mounts shared
+# ccswitch config over sshfs, and `codex app-server` keeps SQLite + WAL, thread
+# state and shell history under CODEX_HOME. Putting that on a FUSE mount is the
+# 2026-09-03 torn-read incident (#1005) applied to a file format that assumes
+# local locking. StateDirectory= is host-local by construction, so locality stops
+# depending on where $HOME/.local/state happens to resolve here. XDG_STATE_HOME
+# has exactly ONE reader in this repo
+# (server/codex/manager.py:default_codex_home_base), so this moves nothing else.
+Environment=XDG_STATE_HOME=%S/ccswitch/state
 # Boot-time version reconcile (spec: fleet deploy fan-out §3): fast-forward this checkout to
 # deploy_state.deployed_sha when it is behind. Always exits 0 — a runner that cannot
 # reconcile still starts; the edge's skew gate keeps it out of dispatch until fixed.
@@ -54,6 +64,8 @@ KillMode=mixed
 # Sized for rocky's 31 GB, versus 10G/12G on dobby's 19 GB host. Memory headroom is
 # the main reason for offloading sessions here in the first place.
 MemoryHigh=24G
+# Shared with every `codex app-server` this runner supervises (one per ACCOUNT,
+# ref-counted and idle-reaped after CCSWITCH_CODEX_IDLE_GRACE_S).
 MemoryMax=28G
 # TasksMax counts threads: this daemon owns every live claude session plus its MCP
 # fleet, Xvfb and thread pools. MemoryMax is the real backstop.
