@@ -150,15 +150,13 @@ def _whois_identity(request: Request | WebSocket) -> str | None:
     import json
     try:
         direct_peer = request.client.host if request.client else None
-        peer_ip: str | None
+        peer_ip: str | None = direct_peer
         if _peer_is_trusted(request):
-            # Only honour X-Real-IP when the request came through a trusted proxy —
-            # the same boundary that decides who may stamp an identity header, so a
-            # reverse proxy is either trusted for both or for neither. A client
-            # reaching Uvicorn directly cannot substitute the peer whois verifies.
+            # Only honour X-Real-IP when something entitled to set it sits in front:
+            # loopback, or an address in CCSWITCH_TRUSTED_PROXY_IPS. This is the same
+            # predicate the identity-header gate uses — one peer-trust rule in this
+            # module, not two that can drift apart.
             peer_ip = request.headers.get("X-Real-IP") or direct_peer
-        else:
-            peer_ip = direct_peer
         if not peer_ip:
             return None
         # Validate peer_ip is a real IP address to prevent argv flag injection
