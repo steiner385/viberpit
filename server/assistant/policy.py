@@ -82,3 +82,9 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
 def route_allowed(method: str, path: str) -> bool:
     path = path.split("?", 1)[0]
     return any(m == method.upper() and rx.match(path) for m, rx in ASSISTANT_ROUTE_ALLOW)
+
+
+# READ-class tools whose backing route is a POST that mutates nothing (a dry-run or a
+# render). The conformance test (server/tests/test_assistant_conformance.py) lets a
+# READ tool use POST only when it is listed here. Later tasks add names to this set.
+READ_POSTS: frozenset[str] = frozenset()
