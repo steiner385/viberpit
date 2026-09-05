@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { SessionList } from '../SessionList'
 import type { Session, Account } from '@/api/types'
-import { account, session } from '@/test/factories'
+import { anthropicUsage, account, session } from '@/test/factories'
 
 const SESSIONS: Session[] = [
   session({
@@ -29,12 +29,12 @@ const ACCOUNTS: Account[] = [
   account({
     name: 'alice',
     status: 'ok',
-    usage: { session: { pct: 30, resetsAt: null }, weekly: { pct: 50, resetsAt: null } },
+    usage: anthropicUsage(30, 50),
   }),
   account({
     name: 'bob',
     status: 'limited',
-    usage: { session: { pct: 95, resetsAt: null }, weekly: { pct: 80, resetsAt: null } },
+    usage: anthropicUsage(95, 80),
   }),
 ]
 

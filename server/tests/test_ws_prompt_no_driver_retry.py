@@ -92,3 +92,42 @@ def test_prompt_still_rejected_when_the_rebuild_also_fails(ws_env):
                                ("promptRejected", "error"), timeout=8.0)
         terminal = [e for e in events if e.get("type") in ("promptRejected", "error")]
         assert terminal, f"no rejection surfaced: {[e.get('type') for e in events]}"
+
+
+def test_prompt_survives_a_failing_context_lookup(ws_env):
+    """The context chip (spec §4.5) added `await orchestrator.get_session(...)` to the
+    prompt frame. In fleet mode that is a real per-session RPC to the owning daemon, so
+    it can raise DaemonTimeout/DaemonUnavailable — on a path that previously had no such
+    dependency at all. A transient daemon hiccup must cost the user the CHIP, never the
+    message.
+    """
+    _app, orch, client = ws_env([])
+    session = client.portal.call(orch.create_session, "ctx-victim")
+    sid = session.id
+
+    real_send = orch.send_prompt
+    seen: list[dict] = []
+
+    async def spy_send(session_id, text, attachment_ids=None, **kw):
+        seen.append(dict(kw))
+        return await real_send(session_id, text, attachment_ids, **kw)
+
+    orch.send_prompt = spy_send  # type: ignore[method-assign]
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        _attach(ws, sid)
+
+        def boom(*_a, **_k):
+            raise RuntimeError("daemon unavailable")
+
+        orch.get_session = boom  # type: ignore[method-assign]
+        ws.send_text(json.dumps({"type": "prompt", "sessionId": sid,
+                                 "text": "what is on this page?",
+                                 "context": {"route": "/sessions"}}))
+        deadline = time.monotonic() + 8.0
+        while not seen and time.monotonic() < deadline:
+            time.sleep(0.05)
+
+    assert seen == [{}], (
+        "a failed context lookup must degrade to 'no context', not drop the prompt; "
+        f"sends seen: {seen!r}")

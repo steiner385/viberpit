@@ -27,7 +27,7 @@ async def test_reassign_rebuilds_assistant_api_for_assistant_kind(monkeypatch):
     class _NewDriver:
         def __init__(self, *a, assistant_api=None, **k):
             self.cwd = "/tmp"; self.mode = "interactive"; self.identity = None
-            self.claude_session_id = "c1"
+            self.engine_session_id = "c1"
             captured["assistant_api"] = assistant_api
 
         async def start(self): pass
@@ -35,22 +35,31 @@ async def test_reassign_rebuilds_assistant_api_for_assistant_kind(monkeypatch):
         async def set_model(self, m): pass
 
     class _OldDriver:
-        cwd = "/tmp"; mode = "interactive"; identity = None; claude_session_id = "c1"
+        cwd = "/tmp"; mode = "interactive"; identity = None; engine_session_id = "c1"
 
         async def interrupt(self): pass
 
         async def aclose(self): pass
 
-    monkeypatch.setattr(orch_mod, "SessionDriver", _NewDriver)
+    monkeypatch.setattr(
+        orch_mod.SessionOrchestrator,
+        "_create_driver",
+        lambda self, **kw: _NewDriver(
+            resume=kw.get("resume"),
+            identity=kw.get("identity"),
+            assistant_api=kw.get("assistant_api"),
+        ),
+    )
     monkeypatch.setattr(orch_mod, "compose", lambda a: "/cfg")
     monkeypatch.setattr(orch_mod.configdir, "trust_project", lambda *a, **k: None)
     monkeypatch.setattr(orch_mod, "db_session", lambda: _NullCtx())
 
     from server.sessions.orchestrator import SessionOrchestrator
+    from server.sessions.engine import AgentEngine
     from server.sessions.types import ASSISTANT_KIND, SessionRecord
 
     orch = SessionOrchestrator.__new__(SessionOrchestrator)
-    rec = SessionRecord(id="s1", name="n", account="a", claude_session_id="c1",
+    rec = SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                         cols=80, rows=24, cwd="/tmp", model=None, kind=ASSISTANT_KIND)
     old_overlay = {"stale": True}
     orch._records = {"s1": rec}
@@ -63,7 +72,7 @@ async def test_reassign_rebuilds_assistant_api_for_assistant_kind(monkeypatch):
     orch._registry = None
     orch._suggester = None
     orch._session_factory = lambda sid: None
-    orch._persist_claude_session_id = lambda *a, **k: None
+    orch._persist_engine_session_id = lambda *a, **k: None
     orch._persist_status = lambda *a, **k: None
     orch._handle_recoverable_failure = lambda *a, **k: None
     orch._publish_event = lambda e: None

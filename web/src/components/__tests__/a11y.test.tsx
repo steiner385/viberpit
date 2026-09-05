@@ -15,7 +15,7 @@ import { EmptyState } from '../EmptyState'
 import { SessionList } from '../SessionList'
 import { UsageBadge, StatusPill } from '../UsageBadge'
 import type { Session, Account } from '@/api/types'
-import { account, session } from '@/test/factories'
+import { anthropicUsage, account, session } from '@/test/factories'
 
 expect.extend(toHaveNoViolations)
 
@@ -25,12 +25,12 @@ const ACCOUNTS: Account[] = [
   account({
     name: 'alice',
     status: 'ok',
-    usage: { session: { pct: 30, resetsAt: null }, weekly: { pct: 50, resetsAt: null } },
+    usage: anthropicUsage(30, 50),
   }),
   account({
     name: 'bob',
     status: 'limited',
-    usage: { session: { pct: 95, resetsAt: null }, weekly: { pct: 80, resetsAt: null } },
+    usage: anthropicUsage(95, 80),
   }),
 ]
 

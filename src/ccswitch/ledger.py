@@ -8,7 +8,8 @@ import tempfile
 from datetime import datetime
 
 from . import paths
-from .oauth import Usage
+from .quota import (WINDOW_SESSION, WINDOW_WEEKLY, QuotaSnapshot,
+                    anthropic_snapshot, copilot_snapshot)
 
 log = logging.getLogger(__name__)
 
@@ -155,33 +156,131 @@ def clear_usage_fetch_backoff(led: dict, name: str) -> None:
         acct.pop("usageFetchCooldownUntil", None)
 
 
-def record_usage(led: dict, name: str, u: Usage, now: datetime) -> None:
-    # A recorded fetch is by definition a successful one — reset the backoff.
-    clear_usage_fetch_backoff(led, name)
-    _acct(led, name)["usage"] = {
-        "session_pct": u.session_pct,
-        "session_resets_at": u.session_resets_at.isoformat() if u.session_resets_at else None,
-        "weekly_pct": u.weekly_pct,
-        "weekly_resets_at": u.weekly_resets_at.isoformat() if u.weekly_resets_at else None,
-        "extra_usage_enabled": u.extra_usage_enabled,
-        "fetched_at": now.isoformat(),
+def _legacy_usage_fields(u: QuotaSnapshot) -> dict:
+    """The pre-v2 ``Usage`` keys, DERIVED from *u*'s canonical windows.
+
+    @deprecated — delete in the interactive-v1 cleanup PR, together with the
+    ``_migrate_legacy_usage`` reader below. This is the one-window rolling-
+    compatibility emit the plan's "Rolling compatibility" constraint allows, and
+    the same shape as ``SessionRecord.to_dict``'s legacy ``claudeSessionId``.
+
+    ``ledger.json`` is explicitly CROSS-HOST (see ``locked_ledger``) and the fleet
+    upgrades host by host — rocky is routinely left a deploy behind. The pre-v2
+    reader does ``Usage(blob["session_pct"], …)`` with no guard, and
+    ``accounts.usage_for`` calls it inside ``locked_ledger`` with no ``try``, so
+    the moment the primary's poller rewrote every blob as v2-only, the lagging
+    host would raise ``KeyError: 'session_pct'`` for EVERY account, its usage
+    cache would go all-``None``, and ``select_picked(optimistic_fallback=False)``
+    would raise ``AllAccountsBusy(kind="no_usable_accounts")`` — no session could
+    spawn there at all.
+
+    There is no second computation path: every value is projected out of the
+    windows the snapshot already carries. A provider that meters a SINGLE
+    allowance (Copilot's ``premium``) fills BOTH legacy dimensions with that one
+    number, reproducing ``copilot.usage_from_proxy``'s old projection exactly, so
+    an old host's selector ranks the account precisely as it did before.
+    """
+    session = u.window(WINDOW_SESSION)
+    weekly = u.window(WINDOW_WEEKLY)
+    if session is None and weekly is None and len(u.windows) == 1:
+        session = weekly = u.windows[0]
+
+    def _pct(w) -> float:
+        return float(w.used_pct) if w is not None else 0.0
+
+    def _reset(w) -> str | None:
+        return w.resets_at.isoformat() if w is not None and w.resets_at else None
+
+    return {
+        "session_pct": _pct(session),
+        "session_resets_at": _reset(session),
+        "weekly_pct": _pct(weekly),
+        "weekly_resets_at": _reset(weekly),
+        "extra_usage_enabled": bool(u.extra_usage_enabled),
     }
 
 
-def cached_usage(led: dict, name: str, cfg, now: datetime) -> Usage | None:
+def record_usage(led: dict, name: str, u: QuotaSnapshot, now: datetime) -> None:
+    """Cache one account's quota snapshot. The blob is VERSIONED (``v``) so a
+    future shape change is a migration rather than a misread.
+
+    It ALSO carries the legacy ``session_pct`` / ``weekly_pct`` keys for one
+    fleet-upgrade window so a not-yet-deployed host can still read it — see
+    ``_legacy_usage_fields``. ``usage_from_blob`` keys off ``v``, so a current
+    reader never looks at them.
+    """
+    # A recorded fetch is by definition a successful one — reset the backoff.
+    clear_usage_fetch_backoff(led, name)
+    blob = _legacy_usage_fields(u)
+    blob.update(u.to_dict())
+    blob["fetched_at"] = now.isoformat()
+    _acct(led, name)["usage"] = blob
+
+
+def _provider_hint(name: str) -> str:
+    """Best-effort provider for an account, for legacy-blob migration only.
+
+    Local import + broad except on purpose: ``accounts`` imports this module, and
+    a manifest that has not been reconciled yet must degrade to the historical
+    default rather than break every cached read.
+    """
+    try:
+        from . import account_registry
+        return account_registry.provider_of(name)
+    except Exception:  # noqa: BLE001 — see docstring
+        return "anthropic"
+
+
+def _migrate_legacy_usage(name: str, blob: dict) -> QuotaSnapshot:
+    """Read a PRE-VERSIONING usage blob as a QuotaSnapshot.
+
+    Live ledgers on dobby and rocky hold the old ``Usage`` encoding
+    (``session_pct`` / ``session_resets_at`` / ``weekly_pct`` /
+    ``weekly_resets_at`` / ``extra_usage_enabled``). Dropping those entries would
+    blank every account's usage for a full cache TTL right after a deploy, and
+    misreading them would feed the selector garbage — so they are migrated in
+    place, on read, without a rewrite.
+
+    Copilot entries in that shape are the fabricated duplicate this change
+    removes: both dimensions hold the SAME premium-request number. They are
+    migrated back to the single ``premium`` window they always were, so the
+    duplicate does not survive the upgrade in cached form.
+    """
+    def _dt(key: str) -> datetime | None:
+        v = blob.get(key)
+        return datetime.fromisoformat(v) if v else None
+
+    fetched = datetime.fromisoformat(blob["fetched_at"])
+    if _provider_hint(name) == "copilot":
+        return copilot_snapshot(float(blob.get("session_pct") or 0.0),
+                                _dt("session_resets_at"), fetched_at=fetched)
+    return anthropic_snapshot(
+        float(blob.get("session_pct") or 0.0), _dt("session_resets_at"),
+        float(blob.get("weekly_pct") or 0.0), _dt("weekly_resets_at"),
+        bool(blob.get("extra_usage_enabled")), fetched_at=fetched,
+    )
+
+
+def usage_from_blob(name: str, blob: dict) -> QuotaSnapshot:
+    """Decode a stored usage blob of EITHER shape. The single reader."""
+    if blob.get("v"):
+        return QuotaSnapshot.from_dict(blob)
+    return _migrate_legacy_usage(name, blob)
+
+
+def cached_usage(led: dict, name: str, cfg, now: datetime) -> QuotaSnapshot | None:
     blob = _acct(led, name).get("usage")
     if not blob:
         return None
     fetched = datetime.fromisoformat(blob["fetched_at"])
     if (now - fetched).total_seconds() > cfg.usage_cache_ttl_sec:
         return None
-    sr = blob.get("session_resets_at")
-    wr = blob.get("weekly_resets_at")
-    return Usage(
-        blob["session_pct"], datetime.fromisoformat(sr) if sr else None,
-        blob["weekly_pct"], datetime.fromisoformat(wr) if wr else None,
-        blob["extra_usage_enabled"],
-    )
+    try:
+        return usage_from_blob(name, blob)
+    except (KeyError, TypeError, ValueError):
+        log.warning("ledger: unreadable cached usage for %s — treating as unknown",
+                    name, exc_info=True)
+        return None
 
 
 def set_status(led: dict, name: str, status: str) -> None:

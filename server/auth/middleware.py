@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
-from server.auth.identity import verify_identity
+from server.auth.identity import host_is_loopback, verify_identity
 from server.config import get_settings
 from server.db.models import AppSession
 
@@ -90,7 +90,6 @@ def _unsign_session_id(signed: str) -> str | None:
         return None
 
 
-_LOOPBACK = frozenset({"127.0.0.1", "::1"})
 
 
 def _assistant_claims(request: Request) -> "AssistantClaims | None":
@@ -102,7 +101,7 @@ def _assistant_claims(request: Request) -> "AssistantClaims | None":
     if not auth.startswith("Bearer " + PREFIX):
         return None
     client = request.client
-    if client is None or client.host not in _LOOPBACK:
+    if client is None or not host_is_loopback(client.host):
         return None
     return verify_token(auth[len("Bearer "):], max_age_s=get_settings().assistant_idle_s * 4)
 

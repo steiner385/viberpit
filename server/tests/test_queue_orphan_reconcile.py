@@ -19,7 +19,7 @@ async def _seed_session(db_url: str, *, session_id: str, status: str = "queued",
     async with db_session() as db:
         db.add(DbSession(
             id=session_id, name="orphan", account_name="acct",
-            claude_session_id=None, status=status, pid=None,
+            engine_session_id=None, status=status, pid=None,
             cwd="/tmp/orphan", repo=None, branch=None,
             permission_mode="interactive", name_is_auto=True,
             origin="backlog-runner", origin_ref="acme/repo#1", model=None,

@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 import websockets
 
+from server.aio import cancel_and_reap
 from server.ipc import protocol as proto
 from server.ipc.paths import Endpoint, parse_endpoint
 
@@ -924,11 +925,10 @@ class DaemonClient:
 
     async def aclose(self) -> None:
         if self._reader_task is not None:
-            self._reader_task.cancel()
-            try:
-                await self._reader_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
+            # cancel_and_reap, not a hand-rolled cancel/await: this runs inside the
+            # SIGTERM drain, where swallowing our OWN cancellation overruns the stop
+            # budget (issue #1164).
+            await cancel_and_reap(self._reader_task, phase="ipc.client.reader")
         # The reserved health channel is a second AsyncClient, so it needs its own close
         # or its socket outlives the client (short-lived callers like host_probe build one
         # DaemonClient per probe). Closed FIRST and each close guarded independently: with

@@ -1,7 +1,7 @@
 from __future__ import annotations
 import asyncio
 import pytest
-from server.sessions.driver import SessionDriver
+from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.permissions import PermissionRegistry
 from server.sessions import events as ev
 from server.tests.fakes import fake_sdk as f
@@ -13,7 +13,7 @@ def _driver(**kw):
     def factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
         return FakeSDKClient([], on_can_use_tool=can_use_tool)
     clock = {"t": 100.0}
-    d = SessionDriver("sid", "alpha", "/tmp", "/tmp/cfg", mode="default",
+    d = ClaudeAgentDriver("sid", "alpha", "/tmp", "/tmp/cfg", mode="default",
                       sdk_factory=factory, registry=PermissionRegistry(),
                       identity="wstest@example.com", clock=lambda: clock["t"], **kw)
     return d, clock
@@ -93,7 +93,7 @@ async def test_assistant_output_clears_condensing_when_boundary_missing():
     def factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
         return _PreCompactClient(msgs, on_pre_compact, on_can_use_tool=can_use_tool)
 
-    d = SessionDriver("sid", "alpha", "/tmp", "/tmp/cfg", mode="default",
+    d = ClaudeAgentDriver("sid", "alpha", "/tmp", "/tmp/cfg", mode="default",
                       sdk_factory=factory, registry=PermissionRegistry(), identity="x")
     await d.start()
     await d.send_prompt("hi")

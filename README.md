@@ -147,24 +147,12 @@ spoofed and the server trusts all callers unconditionally.
   It is the required gate before exposing the server to any network that is not your personal
   tailnet. This path is deferred to a future release (P4).
 
-### Deploy (Railway — deferred, app-level auth must be enabled first)
+### Deploy
 
-> **Not recommended until the passkey auth gate is enabled.** The steps below are provided for
-> reference so the Railway wiring is documented when that hardening ships.
-
-Required environment variables in the Railway service:
-
-| Variable | Description |
-|----------|-------------|
-| `CCSWITCH_MASTER_KEY` | 64-hex master encryption key — set as a Railway Secret |
-| `CCSWITCH_SESSION_SECRET` | 64-hex cookie signing key — set as a Railway Secret |
-| `CCSWITCH_TAILNET_ALLOWLIST` | Your tailnet identity, or leave empty only for personal single-user deploys |
-| `DATABASE_URL` / `CCSWITCH_DB_URL` | Railway managed PostgreSQL URL (set automatically by the Postgres plugin) |
-| `CCSWITCH_HOST` | `0.0.0.0` (Railway requires binding to all interfaces) |
-| `CCSWITCH_PORT` | `8787` (or Railway's `$PORT`) |
-
-The Dockerfile is multi-stage: it builds the web assets in a Node stage and copies `web/dist`
-into the Python stage, so `railway up` produces a single image serving both API and static files.
+The supported deploy path is systemd units on a Tailscale-only host — see `deploy/README.md`
+for the runbook. There is no container image; a prior Railway-portable Dockerfile was removed
+as unreferenced scaffolding that had drifted from the installed extras and the loopback-bind
+auth model (see `server/deploy/`).
 
 ---
 

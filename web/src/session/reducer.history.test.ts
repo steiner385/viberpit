@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect, vi } from 'vitest'
 import { transcriptReducer, initialTranscript, buildTurnsFromEvents, findOrderAnomalies } from './reducer'
 import type { LocalAction, TranscriptState } from './reducer'

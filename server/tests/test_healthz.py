@@ -39,11 +39,12 @@ def test_healthz_500_on_schema_error(tmp_path, monkeypatch):
 
 def test_healthz_reports_busy_and_active_sessions(tmp_path):
     """/healthz surfaces orchestrator drain-readiness for the deployer's idle gate."""
+    from server.sessions.engine import AgentEngine
     from server.sessions.types import SessionRecord
     client = _client(tmp_path)
     orch = client.app.state.orchestrator
     orch._records["s1"] = SessionRecord(
-        id="s1", name="s1", account="acct", claude_session_id="cs",
+        id="s1", name="s1", account="acct", engine=AgentEngine.CLAUDE_CODE, engine_session_id="cs",
         cols=80, rows=24, cwd="/tmp", status="in_progress",
     )
     with client:

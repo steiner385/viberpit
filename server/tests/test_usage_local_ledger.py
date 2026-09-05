@@ -27,19 +27,19 @@ class _Orch:
 
     async def usage(self, name):
         self.calls.append(name)
-        from ccswitch.oauth import Usage
-        return Usage(99.0, None, 99.0, None, False)
+        from ccswitch.quota import anthropic_snapshot
+        return anthropic_snapshot(99.0, None, 99.0, None, False)
 
 
 def test_fresh_local_usage_skips_the_rpc(monkeypatch):
     """A fresh ledger entry must be served locally — no RPC at all."""
-    from ccswitch.oauth import Usage
+    from ccswitch.quota import anthropic_snapshot
 
     monkeypatch.setattr(acct_api, "_local_cached_usage",
-                        lambda name: Usage(7.0, None, 12.0, None, False) if name == "a" else None)
+                        lambda name: anthropic_snapshot(7.0, None, 12.0, None, False) if name == "a" else None)
     orch = _Orch()
     got = asyncio.run(acct_api._safe_usage(orch, "a", 3.0))
-    assert got.session_pct == 7.0, "must return a Usage, not a dict"
+    assert got.window("session").used_pct == 7.0, "must return a QuotaSnapshot, not a dict"
     assert orch.calls == [], "a fresh local read must not hit the daemon"
 
 
@@ -48,7 +48,7 @@ def test_stale_local_usage_falls_back_to_the_rpc(monkeypatch):
     monkeypatch.setattr(acct_api, "_local_cached_usage", lambda name: None)
     orch = _Orch()
     got = asyncio.run(acct_api._safe_usage(orch, "b", 3.0))
-    assert got.session_pct == 99.0
+    assert got.window("session").used_pct == 99.0
     assert orch.calls == ["b"], "must fall back to the daemon when the cache is cold"
 
 
@@ -60,7 +60,7 @@ def test_local_read_failure_falls_back_not_raises(monkeypatch):
     monkeypatch.setattr(acct_api, "_local_cached_usage", boom)
     orch = _Orch()
     got = asyncio.run(acct_api._safe_usage(orch, "c", 3.0))
-    assert got.session_pct == 99.0
+    assert got.window("session").used_pct == 99.0
     assert orch.calls == ["c"]
 
 
@@ -98,5 +98,11 @@ def test_real_local_read_returns_a_usage_object(tmp_path, monkeypatch):
 
     got = acct_api._local_cached_usage("acct")
     assert got is not None
-    assert got.session_pct == 42.0, "must be a Usage dataclass, not a dict"
-    assert acct_api._usage_to_dict(got)["session"]["pct"] == 42.0
+    assert got.window("session").used_pct == 42.0, "must be a QuotaSnapshot, not a dict"
+    # …and the legacy (pre-versioning) blob above migrated on read.
+    assert [w.key for w in got.windows] == ["session", "weekly"]
+    wire = acct_api._usage_to_dict(got)
+    assert wire["windows"][0] == {
+        "key": "session", "label": "session", "pct": 42.0, "resetsAt": None,
+        "durationSeconds": 18000, "scope": "account", "appliesToModels": [],
+    }

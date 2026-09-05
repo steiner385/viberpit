@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest'
 import { groupBlocks } from './groupBlocks'
 import type { Block } from './reducer'

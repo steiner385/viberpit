@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 
 from server.app import create_app
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine, AgentEngineUnavailable
 from server.sessions.fleet_router import UnknownHost, NoHostAvailable
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
@@ -60,6 +61,9 @@ def _make_record(sid: str) -> types.SimpleNamespace:
         updated_at_iso=None,
         rev_at=None,
         cwd=None,
+        engine=AgentEngine.CLAUDE_CODE,
+        engine_session_id="",
+        reasoning_effort=None,
     )
 
 
@@ -129,6 +133,7 @@ def test_create_forwards_host_as_prefer():
             )
         assert resp.status_code == 201, resp.text
         assert fake.last_create_kwargs["prefer"] == "dobby"
+        assert fake.last_create_kwargs["engine"] is AgentEngine.CLAUDE_CODE
     finally:
         os.unlink(tf.name)
 
@@ -148,6 +153,7 @@ def test_create_without_host_passes_prefer_none():
             )
         assert resp.status_code == 201, resp.text
         assert fake.last_create_kwargs.get("prefer") is None
+        assert fake.last_create_kwargs["engine"] is AgentEngine.CLAUDE_CODE
     finally:
         os.unlink(tf.name)
 
@@ -169,6 +175,11 @@ class _NoHostAvailableOrch(FakeOrch):
 
     async def create_session(self, **kwargs):
         raise NoHostAvailable("all fleet hosts are unhealthy or at capacity")
+
+
+class _EngineUnavailableOrch(FakeOrch):
+    async def create_session(self, **kwargs):
+        raise AgentEngineUnavailable(AgentEngine.CODEX)
 
 
 def test_unknown_host_returns_400():
@@ -207,5 +218,53 @@ def test_no_host_available_returns_409():
         assert resp.status_code == 409, resp.text
         body = resp.json()
         assert body["error"]["code"] == "no_host_available"
+    finally:
+        os.unlink(tf.name)
+
+
+def test_recognized_unavailable_engine_returns_typed_409():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+        db_url = f"sqlite+aiosqlite:///{tf.name}"
+    try:
+        client = _build_client(_EngineUnavailableOrch(), db_url)
+        with patch.dict(os.environ, _make_env(db_url)), client:
+            resp = client.post(
+                "/api/sessions",
+                json={"initialPrompt": "hi", "engine": "codex"},
+                headers=_H,
+            )
+        assert resp.status_code == 409, resp.text
+        assert resp.json()["error"] == {
+            "code": "engine_unavailable",
+            "message": "agent engine is not available: codex",
+            "engine": "codex",
+        }
+    finally:
+        os.unlink(tf.name)
+
+
+def test_reasoning_effort_is_rejected_for_claude():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+        db_url = f"sqlite+aiosqlite:///{tf.name}"
+    try:
+        fake = FakeOrch()
+        client = _build_client(fake, db_url)
+        with patch.dict(os.environ, _make_env(db_url)), client:
+            resp = client.post(
+                "/api/sessions",
+                json={
+                    "initialPrompt": "hi",
+                    "engine": "claude_code",
+                    "reasoningEffort": "high",
+                },
+                headers=_H,
+            )
+        assert resp.status_code == 400, resp.text
+        assert resp.json()["error"] == {
+            "code": "unsupported_reasoning_effort",
+            "message": "reasoningEffort is not supported by agent engine: claude_code",
+            "engine": "claude_code",
+        }
+        assert fake.last_create_kwargs == {}
     finally:
         os.unlink(tf.name)

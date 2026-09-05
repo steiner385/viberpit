@@ -7,13 +7,8 @@ import { AccountsManager } from '../AccountsManager'
 import * as hooks from '@/api/hooks'
 import type { Account } from '@/api/types'
 import type { ReauthState } from '@/api/types'
-import { appSettings } from '@/test/factories'
+import { anthropicUsage, appSettings } from '@/test/factories'
 import { queryResult } from '@/test/reactQuery'
-
-vi.mock('../ReauthBrowserPanel', () => ({
-  ReauthBrowserPanel: ({ vncSession }: { vncSession: string }) =>
-    <div data-testid="reauth-vnc">{vncSession}</div>,
-}))
 
 vi.mock('@/api/hooks', () => ({
   useAllPrs: vi.fn(() => ({ data: [] })),
@@ -164,7 +159,7 @@ describe('AccountRow — Re-authenticate button', () => {
   })
 
   it('shows a subtle reauth icon button (not the amber label) for ok account', async () => {
-    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'ok', usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 50, resetsAt: null } } })]))
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'ok', usage: anthropicUsage(20, 50) })]))
 
     render(<AccountsManager />, { wrapper })
 
@@ -188,24 +183,13 @@ describe('AccountRow — Re-authenticate button', () => {
     expect(reauthMutate).toHaveBeenCalledWith('kindash', expect.anything())
   })
 
-  it('shows "on the host screen" fallback when running without a vncSession', async () => {
+  it('shows a "verifying" message while running (no browser/VNC involved)', async () => {
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'needs-relogin' })]))
-    vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult(makeReauthState({ state: 'running', vncSession: null })))
+    vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult(makeReauthState({ state: 'running' })))
 
     render(<AccountsManager />, { wrapper })
 
-    expect(screen.getByText(/on the host screen/i)).toBeInTheDocument()
-    expect(screen.queryByTestId('reauth-vnc')).not.toBeInTheDocument()
-  })
-
-  it('shows the VNC panel and in-page copy when running with a vncSession', async () => {
-    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'needs-relogin' })]))
-    vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult(makeReauthState({ state: 'running', vncSession: '__reauth__' })))
-
-    render(<AccountsManager />, { wrapper })
-
-    expect(await screen.findByTestId('reauth-vnc')).toHaveTextContent('__reauth__')
-    expect(screen.getByText(/sign in to claude in the window below/i)).toBeInTheDocument()
+    expect(screen.getByText(/verifying the pasted code/i)).toBeInTheDocument()
   })
 
   it('shows Cancel button while running', async () => {
@@ -230,7 +214,7 @@ describe('AccountRow — Re-authenticate button', () => {
 
     // Optimistically: the status line should vanish (back to idle locally)
     await waitFor(() => {
-      expect(screen.queryByText(/on the host screen/i)).not.toBeInTheDocument()
+      expect(screen.queryByText(/verifying the pasted code/i)).not.toBeInTheDocument()
     })
   })
 
@@ -277,7 +261,7 @@ describe('AccountRow — Re-authenticate button', () => {
   })
 })
 
-describe('AccountRow — Generate long-lived token / awaiting_code flow', () => {
+describe('AccountRow — awaiting_code flow', () => {
   const reauthMutate = vi.fn()
   const submitCodeMutate = vi.fn()
 
@@ -301,31 +285,9 @@ describe('AccountRow — Generate long-lived token / awaiting_code flow', () => 
     } as unknown as ReturnType<typeof hooks.useSubmitReauthCode>)
   })
 
-  it('"Generate long-lived token" button renders on an ok (healthy) account row', async () => {
-    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'ok', usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 50, resetsAt: null } } })]))
-
-    render(<AccountsManager />, { wrapper })
-
-    expect(screen.getByRole('button', { name: /generate long-lived token for kindash/i })).toBeInTheDocument()
-  })
-
-  it('clicking "Generate long-lived token" calls reauth mutate with setup_token mode', async () => {
-    const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'ok', usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 50, resetsAt: null } } })]))
-
-    render(<AccountsManager />, { wrapper })
-
-    await user.click(screen.getByRole('button', { name: /generate long-lived token for kindash/i }))
-
-    expect(reauthMutate).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'kindash', mode: 'setup_token' }),
-      expect.anything(),
-    )
-  })
-
   it('awaiting_code state renders authUrl anchor, Copy button, and code input', async () => {
     const authUrl = 'https://claude.com/cai/oauth/authorize?x=1'
-    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'ok', usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 50, resetsAt: null } } })]))
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'ok', usage: anthropicUsage(20, 50) })]))
     vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult(makeReauthState({ state: 'awaiting_code', authUrl } as Partial<ReauthState>)))
 
     render(<AccountsManager />, { wrapper })
@@ -345,7 +307,7 @@ describe('AccountRow — Generate long-lived token / awaiting_code flow', () => 
   it('typing a code and clicking Submit calls submitCode mutate with the entered code', async () => {
     const user = userEvent.setup()
     const authUrl = 'https://claude.com/cai/oauth/authorize?x=1'
-    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'ok', usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 50, resetsAt: null } } })]))
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'ok', usage: anthropicUsage(20, 50) })]))
     vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult(makeReauthState({ state: 'awaiting_code', authUrl } as Partial<ReauthState>)))
 
     render(<AccountsManager />, { wrapper })
@@ -361,12 +323,13 @@ describe('AccountRow — Generate long-lived token / awaiting_code flow', () => 
     )
   })
 
-  it('"Generate long-lived token" button is disabled while awaiting_code', async () => {
-    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'ok', usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 50, resetsAt: null } } })]))
+  it('hides the "Re-authenticate" button while awaiting_code (Cancel takes over)', async () => {
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'ok', usage: anthropicUsage(20, 50) })]))
     vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult(makeReauthState({ state: 'awaiting_code', authUrl: 'https://claude.com/cai/oauth/authorize?x=1' } as Partial<ReauthState>)))
 
     render(<AccountsManager />, { wrapper })
 
-    expect(screen.getByRole('button', { name: /generate long-lived token for kindash/i })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: /re-authenticate kindash/i })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /cancel reauth/i })).toBeInTheDocument()
   })
 })

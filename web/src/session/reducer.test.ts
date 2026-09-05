@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Tests for transcriptReducer (session/reducer.ts).
  * Pure function — no mocks needed.

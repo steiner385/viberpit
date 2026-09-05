@@ -15,6 +15,7 @@ import time
 from typing import Awaitable, Callable, Union
 
 from ccswitch import gitrepos
+from server.aio import cancel_and_reap
 
 from .api_budget import PriorityGate
 from .pr_status import (
@@ -279,11 +280,7 @@ class PrStatusPoller:
 
     async def stop(self) -> None:
         if self._task is not None:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
+            await cancel_and_reap(self._task, phase="pr-status-poller")
             self._task = None
 
     async def _fire_on_cycle(self) -> None:

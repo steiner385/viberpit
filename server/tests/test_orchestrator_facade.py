@@ -1,6 +1,7 @@
 from unittest import mock
 import pytest
 from server.sessions.facade import InProcessOrchestratorAdapter
+from server.sessions.engine import AgentEngine, InvalidAgentEngine
 
 
 def _orch():
@@ -21,6 +22,29 @@ async def test_async_method_is_awaited_and_forwarded():
     f = InProcessOrchestratorAdapter(orch)
     assert await f.create_session(name="S", account="a") == "created"
     orch.create_session.assert_awaited_once_with(name="S", account="a")
+
+
+@pytest.mark.asyncio
+async def test_create_session_normalizes_explicit_engine_before_forwarding():
+    orch = _orch()
+    facade = InProcessOrchestratorAdapter(orch)
+
+    await facade.create_session(name="S", engine="claude_code")
+
+    orch.create_session.assert_awaited_once_with(
+        name="S", engine=AgentEngine.CLAUDE_CODE)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("engine", ["openai", None])
+async def test_create_session_rejects_invalid_engine_before_forwarding(engine):
+    orch = _orch()
+    facade = InProcessOrchestratorAdapter(orch)
+
+    with pytest.raises(InvalidAgentEngine):
+        await facade.create_session(name="S", engine=engine)
+
+    orch.create_session.assert_not_awaited()
 
 
 @pytest.mark.asyncio

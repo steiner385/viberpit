@@ -61,8 +61,9 @@ def test_adoptable_returns_flagged_candidates():
 
 def test_adopt_happy_path(monkeypatch):
     client, orch = _client()
+    from server.sessions.engine import AgentEngine
     from server.sessions.types import SessionRecord
-    rec = SessionRecord(id="newid", name="Work", account="kindash", claude_session_id="aaa",
+    rec = SessionRecord(id="newid", name="Work", account="kindash", engine=AgentEngine.CLAUDE_CODE, engine_session_id="aaa",
                         cols=80, rows=24, cwd="/home/u/repo", adopted_in_place=True)
 
     async def fake_adopt(sid, identity, **kw):

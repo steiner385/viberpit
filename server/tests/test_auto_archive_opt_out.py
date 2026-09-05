@@ -36,7 +36,7 @@ async def _seed(rows: list[dict]) -> None:
 
 
 def _archived_row(**over) -> dict:
-    base = dict(id="s1", name="S", account_name="a", claude_session_id=None,
+    base = dict(id="s1", name="S", account_name="a", engine_session_id=None,
                 status="archived", cwd="/tmp/does-not-matter")
     base.update(over)
     # Archived rows resolve their directory through archive_root, so seed one and
@@ -154,8 +154,9 @@ def test_get_context_stamps_opt_out_and_hint(tmp_path):
         with patch.dict(os.environ, {"CCSWITCH_HOME": str(tmp_path)}):
             await init_db(db_url=db_url)
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            from server.sessions.engine import AgentEngine
             from server.sessions.types import SessionRecord
-            rec = SessionRecord(id="s1", name="S", account="a", claude_session_id="",
+            rec = SessionRecord(id="s1", name="S", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
                                 cols=80, rows=24, cwd="/tmp", repo="o/r", status="idle")
             rec.auto_archive_opt_out_reason = "manual-unarchive"
             orch._records["s1"] = rec
