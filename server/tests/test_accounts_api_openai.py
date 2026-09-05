@@ -534,3 +534,31 @@ def test_accounts_list_costs_nothing_when_no_openai_account_exists(authority):
     assert resp.status_code == 200
     assert "health" not in authority.calls
     sessions.codex_account_status.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Lifespan wiring
+# ---------------------------------------------------------------------------
+
+
+def test_no_authority_means_no_background_sync_task():
+    """A deployment without a credential authority must not gain a shutdown phase.
+
+    The edge's authorization sync is a background task cancelled during shutdown.
+    Most deployments have no authority at all, and one that starts an idle task
+    anyway would add a cancel-and-reap phase to every shutdown — including the CI
+    lifespan-budget tests — for a feature that is switched off.
+    """
+    from server.app import create_app
+    from server.sessions.orchestrator import SessionOrchestrator
+    from server.tests.fakes.fake_factory import fake_sdk_factory
+
+    with temp_env():
+        with patch.dict(os.environ, _ENV):
+            app = create_app(
+                orchestrator=SessionOrchestrator(
+                    sdk_factory=fake_sdk_factory(), poll_interval=9999.0
+                )
+            )
+        with TestClient(app):
+            assert app.state.codex_auth_sync_task is None
