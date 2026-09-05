@@ -178,6 +178,15 @@ class DeployController:
                 for p in Phase:
                     self._set(p, PhaseState.DONE)
                 return self.status
+            # Can the units this deploy restarts actually be exec'd again? A unit keeps
+            # running long after its ExecStart binary is gone (a live process holds open
+            # inodes, not paths), so the breakage is invisible until the restart — and
+            # the restart is ours. Checked BEFORE ci_verdict: it is a local stat, so a
+            # host that cannot come back up costs no GitHub round-trip. Reports every
+            # broken unit at once, so one fix-and-retry cycle clears them all.
+            broken = await asyncio.to_thread(self._steps.check_unit_interpreters)
+            if broken:
+                raise DeployError("preflight", "; ".join(broken))
             verdict = await asyncio.to_thread(self._steps.ci_verdict, remote)
             if verdict != "green":
                 raise DeployError("preflight", f"CI verdict={verdict}")
