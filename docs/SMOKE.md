@@ -21,7 +21,7 @@ A quick end-to-end check of the ccswitch web UI. Full scenario coverage is in
 - At least two accounts registered (`ccswitch add alpha`, `ccswitch add beta`).
 - Backend running: `CCSWITCH_MASTER_KEY=... uvicorn server.app:app --host 127.0.0.1 --port 8787`
 - Web assets built: `cd web && npm run build` (or dev server: `npm run dev`).
-- Optionally: `tailscale serve https / http://127.0.0.1:8787` to reach from a phone.
+- Optionally: set up the nginx vhost via `deploy/ccswitch-tailnet.nginx` (see `deploy/README.md`) to reach from a phone over HTTPS.
 
 ### Steps
 1. Open `http://127.0.0.1:8787` (or the Tailscale HTTPS URL).

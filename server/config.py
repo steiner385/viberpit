@@ -32,6 +32,26 @@ def env_float(name: str, default: float, *, minimum: float | None = None) -> flo
     return value
 
 
+def opt_csv_items(raw: str | None) -> list[str] | None:
+    """Parse an OPTIONAL comma-separated env knob into a list.
+
+    THE single parser for the reauth "unset → core default, set-but-empty → none"
+    knobs, so the tri-state cannot drift between the pydantic Settings and the
+    dataclass fallback (constitution VI). ``None`` in → ``None`` out (use the
+    library default); ``""`` in → ``[]`` out (explicitly disabled).
+    """
+    if raw is None:
+        return None
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _reauth_chrome_profile_default() -> Path:
+    """Dedicated reauth Chrome profile path, via the core's single definition."""
+    from ccswitch.paths import reauth_chrome_profile_dir
+
+    return reauth_chrome_profile_dir()
+
+
 try:
     from pydantic_settings import BaseSettings
     from pydantic import Field
@@ -72,14 +92,28 @@ try:
         )
         reauth_display: str = Field(default=":0", alias="CCSWITCH_REAUTH_DISPLAY")
         reauth_virtual_display: bool = Field(default=True, alias="CCSWITCH_REAUTH_VIRTUAL_DISPLAY")
+        # Source profile the reauth flow copies from. Defaults to a dedicated,
+        # ccswitch-owned profile — pointing this at the operator's everyday
+        # ~/.config/google-chrome/Default is opt-in, because everything under it is
+        # one missed cleanup away from sitting in reauth-tmp (#1105).
         chrome_profile: str = Field(
-            default_factory=lambda: str(Path.home() / ".config" / "google-chrome" / "Default"),
+            default_factory=lambda: str(_reauth_chrome_profile_default()),
             alias="CCSWITCH_CHROME_PROFILE",
         )
         # Extension ids carried into the temp login profile (comma list). Unset → the
         # core default (1Password, ccswitch.auth_login.REAUTH_EXTENSION_IDS); set but
         # empty → carry none. Spec: 2026-09-04-reauth-profile-fidelity-design.md D2.
         reauth_extension_ids: str | None = Field(default=None, alias="CCSWITCH_REAUTH_EXTENSIONS")
+        # Domains whose cookies are carried into the temp login profile (comma list).
+        # Unset → the core default (ccswitch.auth_login.REAUTH_COOKIE_HOSTS, empty);
+        # set but empty → carry none. Setting e.g. "google.com" re-presents that
+        # session from a throwaway profile — see the warning on REAUTH_COOKIE_HOSTS.
+        reauth_cookie_hosts: str | None = Field(
+            default=None, alias="CCSWITCH_REAUTH_COOKIE_HOSTS")
+        # Copy the source profile's saved-password database into the temp profile.
+        # An OAuth login never needs it; off by default (#1105).
+        reauth_copy_login_data: bool = Field(
+            default=False, alias="CCSWITCH_REAUTH_COPY_LOGIN_DATA")
         # A human doing a fresh Google login on a cold browser can take several
         # minutes; the timeout must outlast that or it tears down the localhost
         # callback listener mid-login (zombie consent page).
@@ -211,9 +245,12 @@ try:
         @property
         def reauth_extension_id_items(self) -> list[str] | None:
             """None = use the core default list; [] = disabled; else the configured ids."""
-            if self.reauth_extension_ids is None:
-                return None
-            return [i.strip() for i in self.reauth_extension_ids.split(",") if i.strip()]
+            return opt_csv_items(self.reauth_extension_ids)
+
+        @property
+        def reauth_cookie_host_items(self) -> list[str] | None:
+            """None = use the core default list; [] = no cookies; else the configured hosts."""
+            return opt_csv_items(self.reauth_cookie_hosts)
 
         @property
         def fleet_hosts_map(self) -> dict[str, str]:
@@ -293,10 +330,16 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
             default_factory=lambda: os.environ.get("CCSWITCH_REAUTH_VIRTUAL_DISPLAY", "true").lower() in ("1", "true", "yes", "on")
         )
         chrome_profile: str = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_CHROME_PROFILE") or str(Path.home() / ".config" / "google-chrome" / "Default")
+            default_factory=lambda: os.environ.get("CCSWITCH_CHROME_PROFILE") or str(_reauth_chrome_profile_default())
         )
         reauth_extension_ids: str | None = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_REAUTH_EXTENSIONS")
+        )
+        reauth_cookie_hosts: str | None = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_REAUTH_COOKIE_HOSTS")
+        )
+        reauth_copy_login_data: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_REAUTH_COPY_LOGIN_DATA", "false").lower() in ("1", "true", "yes", "on")
         )
         reauth_timeout_s: float = dataclasses.field(
             default_factory=lambda: float(os.environ.get("CCSWITCH_REAUTH_TIMEOUT_S", "900"))
@@ -447,9 +490,11 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
 
         @property
         def reauth_extension_id_items(self) -> list[str] | None:
-            if self.reauth_extension_ids is None:
-                return None
-            return [i.strip() for i in self.reauth_extension_ids.split(",") if i.strip()]
+            return opt_csv_items(self.reauth_extension_ids)
+
+        @property
+        def reauth_cookie_host_items(self) -> list[str] | None:
+            return opt_csv_items(self.reauth_cookie_hosts)
 
         @property
         def fleet_hosts_map(self) -> dict[str, str]:

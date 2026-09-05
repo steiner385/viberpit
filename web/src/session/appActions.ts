@@ -21,6 +21,22 @@ export const APP_ACTION_TITLES: Record<string, string> = {
   list_automations: 'Listed automations',
   get_automation_events: 'Checked automation events',
   get_deploy_status: 'Checked deploy status',
+  create_session: 'Started a session',
+  send_prompt: 'Sent a prompt',
+  interrupt_session: 'Interrupted session',
+  answer_question: 'Answered a question',
+  resolve_permission: 'Resolved a permission',
+  set_model: 'Switched model',
+  set_permission_mode: 'Changed permission mode',
+  resolve_model_approval: 'Resolved model approval',
+  archive_session: 'Archived session',
+  unarchive_session: 'Unarchived session',
+  set_autopilot_paused: 'Changed autopilot pause',
+  fix_pr: 'Fixed a pull request',
+  set_automation_enabled: 'Changed automation',
+  delete_session: 'Deleted session permanently',
+  cancel_queued_session: 'Cancelled queued session',
+  ready_merge_pr: 'Readied + auto-merged PR',
 }
 
 /** `fullToolName` is the wire name, e.g. `mcp__ccswitch__list_sessions`. Returns

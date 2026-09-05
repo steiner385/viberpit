@@ -6,6 +6,16 @@ from typing import Any
 
 import httpx
 
+from server.api.ratelimit import TokenBucketRateLimiter
+from server.sessions.types import SYSTEM_IDENTITY
+
+# Tool-call ceiling for ONE assistant session (spec §4.10): a burst of 30 calls,
+# refilling at 1/s — so a runaway loop settles at ~60 calls/min and a 31st call in
+# a cold minute is refused. Reuses the API layer's limiter (server/api/ratelimit.py),
+# which is deliberately framework-free so non-FastAPI callers like this one can use it.
+TOOL_CALL_CAPACITY = 30.0
+TOOL_CALL_REFILL_PER_SEC = 1.0
+
 
 class AssistantApiError(Exception):
     def __init__(self, status: int, message: str):
@@ -16,6 +26,7 @@ class AssistantApiError(Exception):
 
 class AssistantApi:
     def __init__(self, *, base_url: str, token: str, session_id: str,
+                 identity: str = SYSTEM_IDENTITY,
                  transport: httpx.AsyncBaseTransport | None = None,
                  timeout_s: float = 20.0) -> None:
         self._client = httpx.AsyncClient(
@@ -23,11 +34,25 @@ class AssistantApi:
             headers={"Authorization": f"Bearer {token}",
                      "X-CCSwitch-Via": "assistant",
                      "X-CCSwitch-Assistant-Session": session_id})
+        self.session_id = session_id
+        # The identity the token is bound to (server/assistant/token.py mints it over
+        # {identity, session_id}). Carried here so the `assistant.tool_call` audit is
+        # attributed to the human who owns the drawer, not to "system".
+        self.identity = identity
+        # One bucket per AssistantApi = one per assistant session: the orchestrator
+        # mints exactly one client per session (``_setup_assistant_overlay``). Keyed by
+        # session id anyway so the key is meaningful in a shared-limiter future.
+        self._limiter = TokenBucketRateLimiter(TOOL_CALL_CAPACITY, TOOL_CALL_REFILL_PER_SEC)
 
     async def aclose(self) -> None:
         await self._client.aclose()
 
     async def _call(self, method: str, path: str, **kw: Any) -> Any:
+        # Checked BEFORE the request so a rate-limited call costs nothing downstream.
+        # Surfaced as a normal AssistantApiError, so `guarded()` in tools.py turns it
+        # into an is_error tool result the model can read and back off from.
+        if self._limiter.check(self.session_id) is not None:
+            raise AssistantApiError(429, "rate limited — slow down and batch your work")
         try:
             r = await self._client.request(method, path, **kw)
         except httpx.HTTPError as exc:
