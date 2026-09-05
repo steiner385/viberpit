@@ -498,9 +498,13 @@ class RemoteOrchestrator:
         return SessionRecord.from_dict(r["session"])
 
     async def send_prompt(self, session_id: str, text: str, images=None, *,
-                          interrupt: bool = False) -> str | None:
+                          interrupt: bool = False, context: dict | None = None) -> str | None:
+        # `context` is the assistant-only "context chip" (spec §4.5); ws.py only
+        # ever sets it for an assistant-kind session, so it is almost always None
+        # here — forwarded unconditionally (like `interrupt`) so the daemon-side
+        # handler sees the real value either way.
         r = await self._client.call("send_prompt", session_id=session_id, text=text,
-                                    images=images, interrupt=interrupt)
+                                    images=images, interrupt=interrupt, context=context)
         return (r or {}).get("status")
 
     def daemon_sha(self) -> str | None:

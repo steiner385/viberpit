@@ -5,8 +5,11 @@ import re
 from typing import Any, NotRequired, TypedDict   # Python 3.12 — NotRequired is stdlib
 from xml.sax.saxutils import quoteattr
 
-_ROUTE = re.compile(r"^/(sessions|pipeline|automations|initiatives|projects|archived|insights|settings)(/[A-Za-z0-9._-]+)*$")
-_SID = re.compile(r"^[A-Za-z0-9-]{8,64}$")
+# \Z (not $): `$` matches just before a single trailing "\n" too, so a route or
+# sessionId with a smuggled newline would pass validation and reach the wire
+# (UserMessage.context) unescaped — quoteattr only protects the SDK-bound header.
+_ROUTE = re.compile(r"\A/(sessions|pipeline|automations|initiatives|projects|archived|insights|settings)(/[A-Za-z0-9._-]+)*\Z")
+_SID = re.compile(r"\A[A-Za-z0-9-]{8,64}\Z")
 
 
 class PromptContext(TypedDict):

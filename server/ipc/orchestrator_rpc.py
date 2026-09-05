@@ -162,9 +162,13 @@ def register_orchestrator_rpc(app, orch) -> None:
         return {"session": rec.to_dict()}
 
     async def send_prompt(params: dict) -> dict:
-        # `interrupt` (interrupt-and-post) is only forwarded when set, so an edge
-        # that predates the flag keeps the plain queued-send contract.
-        extra = {"interrupt": True} if params.get("interrupt") is True else {}
+        # `interrupt` (interrupt-and-post) and `context` (the assistant-only
+        # "context chip", spec §4.5) are only forwarded when set, so an edge that
+        # predates either param keeps the plain queued-send contract.
+        extra: dict = {"interrupt": True} if params.get("interrupt") is True else {}
+        context = params.get("context")
+        if context is not None:
+            extra["context"] = context
         status = await orch.send_prompt(params["session_id"], params["text"],
                                         params.get("images"), **extra)
         return {"status": status}

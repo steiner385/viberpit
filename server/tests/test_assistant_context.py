@@ -10,6 +10,10 @@ def test_validate_context():
     assert validate_context({"route": "/etc/passwd"}) is None
     assert validate_context({"route": "/sessions", "sessionId": "<x>"}) is None
     assert validate_context("nope") is None
+    # `$` (not `\Z`) matches just before a single trailing "\n" — a smuggled
+    # newline must not slip through and reach the wire unescaped.
+    assert validate_context({"route": "/sessions\n"}) is None
+    assert validate_context({"route": "/sessions", "sessionId": "abcdefgh\n"}) is None
 
 
 def test_header_is_single_line_and_escaped():
