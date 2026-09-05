@@ -10,6 +10,11 @@ hangs). We drive the ASGI app directly instead — send one request, capture the
 first `http.response.body` frame, then send http.disconnect and cancel — which
 is the real integration path (status line, headers, and a live DashboardState
 frame all flow through the auth middleware).
+
+The hand-built scope's "client" must be a loopback address: verify_identity()
+only trusts the Tailscale-User-Login header from a loopback (or configured
+trusted-proxy) peer (issue #1131) — a real, non-loopback IP here would 401
+even with an allowlist bypass.
 """
 from __future__ import annotations
 
@@ -80,7 +85,7 @@ async def _drive_sse(app, headers: list[tuple[bytes, bytes]]):
     scope = {
         "type": "http", "method": "GET", "path": "/api/pipeline/events",
         "raw_path": b"/api/pipeline/events", "query_string": b"",
-        "headers": headers, "client": ("1.2.3.4", 9999), "scheme": "http",
+        "headers": headers, "client": ("127.0.0.1", 9999), "scheme": "http",
         "server": ("t", 80),
     }
     sent_request = False
@@ -232,7 +237,7 @@ async def test_events_emits_notification_on_new_ci_failure():
         "type": "http", "method": "GET", "path": "/api/pipeline/events",
         "raw_path": b"/api/pipeline/events", "query_string": b"",
         "headers": [(b"tailscale-user-login", b"testuser@example.com")],
-        "client": ("1.2.3.4", 9999), "scheme": "http", "server": ("t", 80),
+        "client": ("127.0.0.1", 9999), "scheme": "http", "server": ("t", 80),
     }
     sent_request = False
     disconnect = asyncio.Event()
@@ -380,7 +385,7 @@ async def test_events_requires_identity():
     scope = {
         "type": "http", "method": "GET", "path": "/api/pipeline/events",
         "raw_path": b"/api/pipeline/events", "query_string": b"",
-        "headers": [], "client": ("1.2.3.4", 9999), "scheme": "http",
+        "headers": [], "client": ("127.0.0.1", 9999), "scheme": "http",
         "server": ("t", 80),
     }
     start: dict = {}

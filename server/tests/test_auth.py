@@ -8,13 +8,34 @@ Tests:
 """
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 from httpx import AsyncClient, ASGITransport
 from fastapi import FastAPI, WebSocket
 from fastapi.testclient import TestClient
 
 from server.app import create_app
+from server.auth.identity import verify_identity
 from server.auth.middleware import IdentityMiddleware, require_ws_identity
+
+
+def _fake_request(*, header: str | None, peer_ip: str | None):
+    """A minimal duck-typed Request stand-in exposing only .headers/.client.
+
+    A real socket peer is never attacker-controlled — this simulates one at
+    an arbitrary, non-loopback IP to test the header-trust boundary directly,
+    which Starlette's TestClient/ASGITransport can't do (their default peers
+    are loopback or a non-IP hostname, both already trusted).
+    """
+    request = MagicMock()
+    request.headers = {"Tailscale-User-Login": header} if header else {}
+    if peer_ip is None:
+        request.client = None
+    else:
+        request.client = MagicMock()
+        request.client.host = peer_ip
+    return request
 
 
 # ---------------------------------------------------------------------------
@@ -166,3 +187,64 @@ async def test_ws_upgrade_without_identity_is_rejected():
         # Expected: connection refused / HTTP 401 from middleware before upgrade
         pass
     # The test simply asserts no unhandled exception escapes (WS rejection is the goal)
+
+
+# ---------------------------------------------------------------------------
+# Peer-trust boundary for the identity header (issue #1131)
+# ---------------------------------------------------------------------------
+
+
+def test_spoofed_header_from_untrusted_peer_is_rejected(monkeypatch):
+    """A non-loopback, non-configured peer presenting the header is denied."""
+    monkeypatch.delenv("CCSWITCH_TRUSTED_PROXY_IPS", raising=False)
+    request = _fake_request(header="alice@example.com", peer_ip="203.0.113.7")
+    assert verify_identity(request) is None
+
+
+def test_spoofed_header_does_not_fall_back_to_guest(monkeypatch):
+    """An untrusted-peer header must not fall through to the LAN-open guest
+    path even when CCSWITCH_ALLOW_UNAUTHENTICATED is set (fail closed)."""
+    monkeypatch.setenv("CCSWITCH_ALLOW_UNAUTHENTICATED", "1")
+    monkeypatch.delenv("CCSWITCH_TRUSTED_PROXY_IPS", raising=False)
+    try:
+        request = _fake_request(header="alice@example.com", peer_ip="203.0.113.7")
+        assert verify_identity(request) is None
+    finally:
+        monkeypatch.delenv("CCSWITCH_ALLOW_UNAUTHENTICATED", raising=False)
+
+
+def test_header_from_loopback_peer_is_trusted(monkeypatch):
+    """The loopback peer (the real `tailscale serve` posture) is always trusted."""
+    monkeypatch.delenv("CCSWITCH_TRUSTED_PROXY_IPS", raising=False)
+    request = _fake_request(header="alice@example.com", peer_ip="127.0.0.1")
+    assert verify_identity(request) == "alice@example.com"
+
+
+def test_header_from_configured_trusted_proxy_is_accepted(monkeypatch):
+    """A peer IP listed in CCSWITCH_TRUSTED_PROXY_IPS is accepted."""
+    monkeypatch.setenv("CCSWITCH_TRUSTED_PROXY_IPS", "203.0.113.7")
+    try:
+        request = _fake_request(header="alice@example.com", peer_ip="203.0.113.7")
+        assert verify_identity(request) == "alice@example.com"
+    finally:
+        monkeypatch.delenv("CCSWITCH_TRUSTED_PROXY_IPS", raising=False)
+
+
+def test_header_from_trusted_proxy_cidr_is_accepted(monkeypatch):
+    """CCSWITCH_TRUSTED_PROXY_IPS also accepts CIDR ranges."""
+    monkeypatch.setenv("CCSWITCH_TRUSTED_PROXY_IPS", "203.0.113.0/24")
+    try:
+        request = _fake_request(header="alice@example.com", peer_ip="203.0.113.7")
+        assert verify_identity(request) == "alice@example.com"
+    finally:
+        monkeypatch.delenv("CCSWITCH_TRUSTED_PROXY_IPS", raising=False)
+
+
+def test_header_from_peer_outside_trusted_cidr_is_rejected(monkeypatch):
+    """A peer just outside the configured CIDR is still denied."""
+    monkeypatch.setenv("CCSWITCH_TRUSTED_PROXY_IPS", "203.0.113.0/24")
+    try:
+        request = _fake_request(header="alice@example.com", peer_ip="198.51.100.7")
+        assert verify_identity(request) is None
+    finally:
+        monkeypatch.delenv("CCSWITCH_TRUSTED_PROXY_IPS", raising=False)
