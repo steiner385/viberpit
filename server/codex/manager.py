@@ -25,6 +25,9 @@ What Codex adds on top of that idiom, and why:
   outcome is :data:`TurnOutcome.INDETERMINATE`. That is enforced by the manager,
   not by the good behaviour of callers, because "the model finished" and "the
   process that was running the model is gone" are indistinguishable from outside.
+  Generations are monotonic **per account** and outlive the runner they fence, so
+  a give-up (or an idle reap) followed by a fresh ``ensure`` cannot re-mint the
+  number an in-flight token was fenced to.
   Threads are told through :class:`RunnerNotice` to recover via ``thread/read``
   (Phase 4 performs the call; this module defines and guarantees the contract).
 * **Failure is contained.** Nothing in the supervision path may raise into a
@@ -47,6 +50,7 @@ import time
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
+from functools import partial
 from pathlib import Path
 from typing import Any, Final
 
@@ -157,7 +161,12 @@ class _Runner:
     home: Path
     process: CodexProcessHandle
     client: CodexAppServerClient
-    generation: int = 1
+    #: Never defaulted: the value is minted by ``CodexRunnerManager._next_generation``
+    #: so that it survives the runner it fences. A per-runner counter would restart
+    #: at 1 whenever the runner object is replaced, and a turn token minted before a
+    #: crash would then compare equal to a fresh runner — reporting a lost turn as
+    #: COMPLETED, which is the one thing this class exists to prevent.
+    generation: int
     started_at: float = 0.0
     restarts: int = 0
     sessions: set[str] = field(default_factory=set)
@@ -223,7 +232,12 @@ class CodexRunnerManager:
         self._sessions: dict[str, str] = {}  # session id -> account
         self._notifiers: dict[str, dict[str, ThreadNotifier]] = {}
         self._turns: dict[str, dict[str, int]] = {}  # account -> thread -> generation
-        self._idle_tasks: set[asyncio.Task[None]] = set()
+        #: Monotonic per account for the life of the manager. Owned here rather than
+        #: on `_Runner` precisely so that stop(), the idle reaper and `_give_up` —
+        #: all of which drop the runner — cannot rewind the fence.
+        self._generations: dict[str, int] = {}
+        #: At most one armed teardown per account; re-arming cancels the previous.
+        self._idle_tasks: dict[str, asyncio.Task[None]] = {}
         self.notify_errors = 0
 
     def __repr__(self) -> str:
@@ -255,8 +269,18 @@ class CodexRunnerManager:
         return runner.home if runner is not None else None
 
     def generation_for(self, account: str) -> int | None:
+        """The live runner's generation, or ``None`` when the account has no runner.
+
+        Note that the *next* runner for this account will not reuse this number:
+        generations are monotonic per account (see :meth:`_next_generation`).
+        """
         runner = self._runners.get(account)
         return runner.generation if runner is not None else None
+
+    def _next_generation(self, account: str) -> int:
+        generation = self._generations.get(account, 0) + 1
+        self._generations[account] = generation
+        return generation
 
     # -- default factories -------------------------------------------------
 
@@ -357,6 +381,7 @@ class CodexRunnerManager:
             home=home,
             process=process,
             client=client,
+            generation=self._next_generation(account),
             started_at=self._clock(),
         )
 
@@ -396,6 +421,17 @@ class CodexRunnerManager:
         """Claim the account's runner for *session_id* (idempotent)."""
         runner = self._runners.get(account)
         if runner is None:
+            # The runner was given up on (crash storm) or reaped between the caller's
+            # ensure() and its driver registration. The session is now running with
+            # nothing to claim; that must not be silent, or it looks like a healthy
+            # attach right up until the first request fails.
+            log_event(
+                logger,
+                logging.WARNING,
+                "codex.manager.attach_without_runner",
+                account=account,
+                session=session_id,
+            )
             return
         runner.sessions.add(session_id)
         self._sessions[session_id] = account
@@ -413,12 +449,32 @@ class CodexRunnerManager:
             self._arm_idle_teardown(account)
 
     def _arm_idle_teardown(self, account: str) -> None:
+        """(Re-)arm the account's single idle timer.
+
+        Every ``ensure()`` and every last-detach re-arms. Without cancelling the
+        previous timer, N of those on one account leave N tasks sleeping out the
+        grace window — harmless (the ``idle_epoch`` guard makes the stale ones
+        no-ops) but unbounded, so exactly one is kept alive at a time.
+        """
         runner = self._runners.get(account)
         if runner is None:
             return
-        task = asyncio.create_task(self._idle_teardown(account, runner.idle_epoch))
-        self._idle_tasks.add(task)
-        task.add_done_callback(self._idle_tasks.discard)
+        self._cancel_idle_task(account)
+        task = asyncio.create_task(
+            self._idle_teardown(account, runner.idle_epoch), name=f"codex-idle-{account}"
+        )
+        self._idle_tasks[account] = task
+        task.add_done_callback(partial(self._forget_idle_task, account))
+
+    def _cancel_idle_task(self, account: str) -> None:
+        task = self._idle_tasks.pop(account, None)
+        # A timer that is itself calling stop() must not cancel itself mid-teardown.
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+
+    def _forget_idle_task(self, account: str, task: asyncio.Task[None]) -> None:
+        if self._idle_tasks.get(account) is task:
+            del self._idle_tasks[account]
 
     async def _idle_teardown(self, account: str, epoch: int) -> None:
         await asyncio.sleep(self._idle_grace_s)
@@ -439,13 +495,24 @@ class CodexRunnerManager:
     def finish_turn(self, token: TurnToken) -> TurnOutcome:
         """Close a turn. ``COMPLETED`` only if the same process ran it throughout.
 
-        The caller does not get to assert success: if the runner was replaced (or
-        removed) since :meth:`begin_turn`, the app-server that was executing the
-        turn is gone and the result is unknowable, so it is INDETERMINATE.
+        The caller does not get to assert success: if the runner was replaced,
+        removed, or given up on since :meth:`begin_turn`, the app-server that was
+        executing the turn is gone and the result is unknowable, so it is
+        INDETERMINATE. Because generations are monotonic *per account* and outlive
+        the ``_Runner`` object, a crash-storm give-up (or an idle reap) followed by
+        a fresh ``ensure()`` cannot re-mint the generation this token was fenced to.
         """
         self._turns.get(token.account, {}).pop(token.thread_id, None)
         runner = self._runners.get(token.account)
-        if runner is None or runner.generation != token.generation:
+        current = self._generations.get(token.account, 0)
+        if (
+            runner is None
+            or token.generation != runner.generation
+            # A replacement whose generation is already minted but not yet installed:
+            # the process that was running this turn has been discarded even though
+            # the old runner object is still the registered one.
+            or token.generation < current
+        ):
             return TurnOutcome.INDETERMINATE
         return TurnOutcome.COMPLETED
 
@@ -494,8 +561,19 @@ class CodexRunnerManager:
                 if runner.stopping or self._runners.get(runner.account) is not runner:
                     return
                 runner.settled = False
-                if not await self._handle_exit(runner, code):
-                    return
+                # The whole crash→discard→respawn→re-login sequence runs under the
+                # SAME per-account lock that ensure() takes. Without it, ensure()
+                # lands between the discard and the replacement, sees a runner
+                # object that is still registered, and hands the caller a client
+                # that has already been aclose()d. Startup and login stay serialized
+                # per account (plan, Phase 2 Work bullet 3) in the restart path too.
+                lock = await self._lock_for(runner.account)
+                async with lock:
+                    if runner.stopping or self._runners.get(runner.account) is not runner:
+                        runner.settled = True
+                        return
+                    if not await self._handle_exit(runner, code):
+                        return
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 -- supervision must never escape as a task error
@@ -549,7 +627,7 @@ class CodexRunnerManager:
             runner.process = replacement.process
             runner.client = replacement.client
             runner.home = replacement.home
-            runner.generation += 1
+            runner.generation = replacement.generation  # minted monotonically per account
             runner.started_at = replacement.started_at
             runner.settled = True
             log_event(
@@ -637,6 +715,7 @@ class CodexRunnerManager:
             self._sessions.pop(session_id, None)
         runner.sessions.clear()
         self._turns.pop(account, None)
+        self._cancel_idle_task(account)
         supervisor, runner.supervisor = runner.supervisor, None
         if supervisor is not None:
             supervisor.cancel()
@@ -644,8 +723,14 @@ class CodexRunnerManager:
         if supervisor is not None:
             try:
                 await supervisor
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
+            except asyncio.CancelledError:
+                # The supervisor answering the cancel() two lines up is the expected
+                # path; swallowing an OUTER cancellation here would eat the daemon
+                # drain's stop signal mid-teardown.
+                if codex_process.is_outer_cancellation():
+                    raise
+            except Exception:  # noqa: BLE001 -- a failed supervisor must not fail the stop
+                logger.debug("codex: supervisor teardown failed", exc_info=True)
         log_event(logger, logging.INFO, "codex.manager.runner_stopped", account=account)
 
     async def stop_all(self) -> None:

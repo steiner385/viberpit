@@ -82,6 +82,29 @@ def test_undeterminable_filesystem_is_refused():
         proc.assert_local_filesystem("/data/codex", mounts=())
 
 
+def test_filesystem_type_follows_a_symlinked_path_component(tmp_path):
+    """A lexical (abspath) match reads the LINK's mount, not the target's (#1005)."""
+    share = tmp_path / "share"
+    share.mkdir()
+    link = tmp_path / "state"
+    link.symlink_to(share)
+    mounts = (("/", "ext4"), (str(share), "fuse.sshfs"))
+    assert proc.filesystem_type_for(link / "ccswitch" / "codex", mounts=mounts) == "fuse.sshfs"
+
+
+def test_filesystem_type_resolves_a_path_that_does_not_exist_yet(tmp_path):
+    """The refusal must run BEFORE the home is created, i.e. on a missing tail."""
+    share = tmp_path / "share"
+    share.mkdir()
+    (tmp_path / "state").symlink_to(share)
+    mounts = (("/", "ext4"), (str(share), "nfs4"))
+    candidate = tmp_path / "state" / "ccswitch" / "codex" / "openai-main"
+    assert not candidate.exists()
+    assert proc.filesystem_type_for(candidate, mounts=mounts) == "nfs4"
+    with pytest.raises(proc.CodexHomeRefused):
+        proc.assert_local_filesystem(candidate, mounts=mounts)
+
+
 def test_parse_proc_mounts_extracts_mount_point_and_type():
     text = (
         "/dev/sda1 / ext4 rw,relatime 0 0\n"
@@ -125,6 +148,31 @@ def test_ensure_codex_home_refuses_a_symlink(tmp_path):
     with pytest.raises(proc.CodexHomeRefused) as excinfo:
         proc.ensure_codex_home(base, "acct", mounts=LOCAL_MOUNTS)
     assert "symlink" in str(excinfo.value)
+
+
+def test_ensure_codex_home_refuses_a_symlinked_ancestor(tmp_path):
+    """An ancestor link redirects the home just as effectively as a link on it."""
+    real = tmp_path / "authority"
+    real.mkdir()
+    (tmp_path / "state").symlink_to(real)
+    base = tmp_path / "state" / "codex"
+    base.mkdir()
+    with pytest.raises(proc.CodexHomeRefused) as excinfo:
+        proc.ensure_codex_home(base, "acct", mounts=LOCAL_MOUNTS)
+    assert "symlink" in str(excinfo.value)
+    assert not (real / "codex" / "acct").exists()  # refused BEFORE creating anything
+
+
+def test_ensure_codex_home_refuses_a_network_mount_reached_through_a_symlink(tmp_path):
+    """The deployed shape: ~/.local/state linked onto this fleet's sshfs share."""
+    share = tmp_path / "share"
+    share.mkdir()
+    (tmp_path / "state").symlink_to(share)
+    mounts = (("/", "ext4"), (str(share), "fuse.sshfs"))
+    with pytest.raises(proc.CodexHomeRefused) as excinfo:
+        proc.ensure_codex_home(tmp_path / "state" / "codex", "acct", mounts=mounts)
+    assert "fuse.sshfs" in str(excinfo.value)
+    assert not (share / "codex").exists()
 
 
 def test_ensure_codex_home_refuses_a_network_filesystem(tmp_path):
@@ -412,6 +460,75 @@ def test_process_wait_reports_the_exit_code(tmp_path):
         child.returncode = 3
         child._exited.set()
         assert await asyncio.wait_for(waiter, 1.0) == 3
+
+    asyncio.run(go())
+
+
+def test_version_probe_kills_a_child_that_outlives_its_timeout():
+    """wait_for only cancels communicate(); the wedged child must not be orphaned."""
+
+    class _WedgedChild:
+        def __init__(self) -> None:
+            self.returncode: int | None = None
+            self.killed = False
+            self._exited = asyncio.Event()
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            await asyncio.Event().wait()  # never returns
+            return b"", b""
+
+        def kill(self) -> None:
+            self.killed = True
+            self.returncode = -9
+            self._exited.set()
+
+        async def wait(self) -> int:
+            await self._exited.wait()
+            return self.returncode or 0
+
+    async def go():
+        child = _WedgedChild()
+
+        async def spawn(*argv, **kwargs):
+            return child
+
+        with pytest.raises((asyncio.TimeoutError, TimeoutError)):
+            await asyncio.wait_for(
+                proc._default_runner("/usr/bin/codex", "--version", spawn=spawn), 0.02
+            )
+        assert child.killed
+        assert child.returncode == -9  # killed AND reaped
+
+    asyncio.run(go())
+
+
+def test_process_stop_re_raises_an_outer_cancellation():
+    """Swallowing CancelledError here would eat the daemon drain's stop signal."""
+
+    async def go():
+        child = _FakeChild()
+        p = proc.CodexProcess(
+            "/usr/bin/codex", "/tmp", spawn=_fake_spawn(child, []),
+            parent_env={"PATH": "/usr/bin"},
+        )
+        await p.start()
+
+        async def stubborn() -> None:
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.05)  # slow to die: we get cancelled meanwhile
+                raise
+
+        assert p._stderr_task is not None
+        p._stderr_task.cancel()
+        p._stderr_task = asyncio.create_task(stubborn())
+        await asyncio.sleep(0)
+        stopping = asyncio.ensure_future(p.stop(timeout=0.01))
+        await asyncio.sleep(0.01)
+        stopping.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await stopping
 
     asyncio.run(go())
 

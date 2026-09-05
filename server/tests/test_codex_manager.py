@@ -344,6 +344,39 @@ def test_re_ensuring_inside_the_grace_window_cancels_the_pending_reap():
     asyncio.run(go())
 
 
+def test_re_arming_the_idle_timer_does_not_accumulate_tasks():
+    """One timer per account: every ensure/detach re-arms, and N arms left N tasks."""
+
+    async def go():
+        manager, _ = _manager(idle_grace_s=60.0)
+        await manager.ensure("a")
+        for _ in range(20):
+            manager.attach("a", "s1")
+            manager.detach("s1")
+            await manager.ensure("a")
+        await asyncio.sleep(0)
+        armed = [
+            t for t in asyncio.all_tasks()
+            if t.get_name().startswith("codex-idle-") and not t.done()
+        ]
+        assert len(armed) == 1
+        await manager.stop_all()
+
+    asyncio.run(go())
+
+
+def test_attach_without_a_runner_is_logged(caplog):
+    """A give-up between ensure() and driver registration must not be silent."""
+
+    async def go():
+        manager, _ = _manager()
+        manager.attach("a", "s1")
+
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(go())
+    assert any("attach_without_runner" in r.getMessage() for r in caplog.records)
+
+
 def test_attach_after_ensure_survives_the_idle_window():
     async def go():
         manager, _ = _manager(idle_grace_s=0.02)
@@ -425,6 +458,75 @@ def test_a_turn_started_on_a_dead_runner_is_indeterminate():
         token = manager.begin_turn("a", "t1")
         await manager.stop("a")
         assert manager.finish_turn(token) is mgr_mod.TurnOutcome.INDETERMINATE
+
+    asyncio.run(go())
+
+
+def test_a_token_from_before_a_give_up_is_indeterminate_after_a_re_ensure():
+    """The fence must outlive the runner: a crash storm then a fresh ensure()."""
+
+    async def go():
+        manager, spawned = _manager(max_restarts=1)
+        await manager.ensure("a")
+        token = manager.begin_turn("a", "t1")
+        for _ in range(4):
+            live = spawned[-1]
+            if not live.started:
+                break
+            live.crash()
+            await manager.wait_settled("a", timeout=2.0)
+        assert manager.client_for("a") is None  # gave up
+        await manager.ensure("a")  # a later session brings the account back
+        assert manager.generation_for("a") != token.generation
+        assert manager.finish_turn(token) is mgr_mod.TurnOutcome.INDETERMINATE
+        await manager.stop_all()
+
+    asyncio.run(go())
+
+
+def test_a_token_from_before_an_idle_reap_is_indeterminate_after_a_re_ensure():
+    async def go():
+        manager, _ = _manager(idle_grace_s=0.02)
+        await manager.ensure("a")
+        token = manager.begin_turn("a", "t1")
+        await asyncio.sleep(0.1)  # the idle reaper takes the runner away
+        assert manager.client_for("a") is None
+        await manager.ensure("a")
+        assert manager.generation_for("a") == 2  # generations are never reused
+        assert manager.finish_turn(token) is mgr_mod.TurnOutcome.INDETERMINATE
+        await manager.stop_all()
+
+    asyncio.run(go())
+
+
+def test_ensure_never_hands_back_a_client_from_an_in_flight_restart():
+    """A caller landing mid-restart must wait, not receive the aclose()d client."""
+
+    async def go():
+        reached_backoff = asyncio.Event()
+        release = asyncio.Event()
+
+        async def sleep(seconds: float) -> None:
+            reached_backoff.set()
+            await release.wait()
+
+        manager, spawned = _manager(sleep=sleep)
+        await manager.ensure("a")
+        doomed = manager.client_for("a")
+        spawned[0].crash()
+        # The supervisor has now discarded the dead client and is inside its backoff.
+        await asyncio.wait_for(reached_backoff.wait(), 2.0)
+
+        pending = asyncio.ensure_future(manager.ensure("a"))
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert not pending.done()  # serialized behind the restart, not served a corpse
+
+        release.set()
+        await asyncio.wait_for(pending, 2.0)
+        assert len(spawned) == 2
+        assert manager.client_for("a") is not doomed
+        await manager.stop_all()
 
     asyncio.run(go())
 
@@ -549,6 +651,34 @@ def test_stop_is_not_a_crash():
         assert seen == []
         assert len(spawned) == 1  # no restart
         assert manager.client_for("a") is None
+
+    asyncio.run(go())
+
+
+def test_stop_re_raises_an_outer_cancellation():
+    """Swallowing it would eat the daemon drain's stop signal mid-teardown."""
+
+    async def go():
+        manager, _ = _manager()
+        await manager.ensure("a")
+        runner = manager._runners["a"]
+        assert runner.supervisor is not None
+        runner.supervisor.cancel()
+
+        async def stubborn() -> None:
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.05)  # slow to die: we get cancelled meanwhile
+                raise
+
+        runner.supervisor = asyncio.create_task(stubborn())
+        await asyncio.sleep(0)
+        stopping = asyncio.ensure_future(manager.stop("a"))
+        await asyncio.sleep(0.01)
+        stopping.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await stopping
 
     asyncio.run(go())
 

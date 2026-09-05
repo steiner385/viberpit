@@ -20,8 +20,11 @@ Three rules are enforced here rather than left to callers:
   2026-09-04 sshfs torn-read incident (#1005) is what a shared mount does to a
   file format that assumes local locking. :func:`assert_local_filesystem` refuses
   a network fstype *and* refuses when the mount table cannot prove locality, and
-  :func:`ensure_codex_home` refuses a symlink so the runner home can never be
-  aimed at the authority's managed home.
+  it asks that question of the *resolved* path, because a single symlinked
+  ancestor (``~/.local/state`` pointed at this fleet's sshfs share is the deployed
+  shape) would otherwise walk straight past a lexical check.
+  :func:`ensure_codex_home` additionally refuses a symlink anywhere in the home's
+  path, so the runner home can never be aimed at the authority's managed home.
 * **No credential ever reaches the child's environment or argv.** The child gets a
   minimal allowlist plus ``CODEX_HOME``, and :func:`build_child_env` refuses to
   build an environment that carries anything credential-shaped (checked with
@@ -186,17 +189,54 @@ def read_mounts(path: str = "/proc/mounts") -> tuple[tuple[str, str], ...]:
         return ()
 
 
+def resolve_real_path(path: str | Path) -> str | None:
+    """Absolute, symlink-free form of *path*; ``None`` when it cannot be resolved.
+
+    ``os.path.abspath`` is purely *lexical*, so it answers "which mount holds this
+    path" for the link rather than for the directory Codex would really write to:
+    with ``/tmp/x/state -> /mnt/shared/state``, an abspath match reports the local
+    root filesystem for a home that lands on sshfs. ``realpath`` is non-strict, so
+    it resolves the components that exist and appends the not-yet-created tail
+    verbatim — which is what lets the refusal run *before* the home is created.
+    """
+    try:
+        return os.path.realpath(os.path.expanduser(str(path)))
+    except OSError:
+        return None
+
+
+def first_symlinked_component(path: str | Path) -> Path | None:
+    """The outermost component of *path* that is a symlink, or ``None``.
+
+    Whole-path, not just the leaf: an ancestor link redirects the home exactly as
+    effectively as a link on the home itself.
+    """
+    absolute = Path(os.path.abspath(os.path.expanduser(str(path))))
+    current = Path(absolute.anchor or os.sep)
+    for part in absolute.parts[1:]:
+        current = current / part
+        try:
+            if current.is_symlink():
+                return current
+        except OSError:  # pragma: no cover - an unreadable component is not provably real
+            return current
+    return None
+
+
 def filesystem_type_for(path: str | Path, *, mounts: Mounts | None = None) -> str | None:
     """The fstype of the mount that holds *path*, by longest mount-point match.
 
     The path need not exist yet — this is a mount-table question, so it is
     answerable before the directory is created (which is what lets the caller
-    refuse *before* writing anything).
+    refuse *before* writing anything). Symlinks are resolved first, so the answer
+    describes the filesystem the bytes would land on.
     """
     table = read_mounts() if mounts is None else tuple(mounts)
     if not table:
         return None
-    target = os.path.abspath(os.path.expanduser(str(path)))
+    target = resolve_real_path(path)
+    if target is None:
+        return None
     best: tuple[int, str] | None = None
     for point, fstype in table:
         normalized = os.path.abspath(point)
@@ -254,13 +294,16 @@ def ensure_codex_home(
     assert_local_filesystem(base_path, mounts=mounts)
 
     home = base_path / safe
-    if home.is_symlink():
-        # A symlinked runner home is how Codex state would silently land in the
-        # credential authority's managed home (or on a shared mount that passed the
-        # check above). The plan forbids it outright.
+    linked = first_symlinked_component(home)
+    if linked is not None:
+        # A symlink anywhere in the home's path is how Codex state would silently
+        # land in the credential authority's managed home (or on a shared mount).
+        # The locality assert above already follows links, so this is the identity
+        # half of the same rule: the directory we create must be the one we checked.
         raise CodexHomeRefused(
-            f"refusing CODEX_HOME at {home}: it is a symlink; the runner home must "
-            "be a real local directory and must never be linked to the authority home"
+            f"refusing CODEX_HOME at {home}: {linked} is a symlink; the runner home "
+            "and every component of its path must be real local directories, never "
+            "links to the authority home or onto a shared mount"
         )
     base_path.mkdir(parents=True, exist_ok=True, mode=0o700)
     home.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -282,14 +325,50 @@ CommandRunner = Callable[..., Awaitable[tuple[int, str, str]]]
 BinaryResolver = Callable[[str], "str | None"]
 
 
-async def _default_runner(binary: str, *args: str) -> tuple[int, str, str]:
-    child = await asyncio.create_subprocess_exec(
+async def _kill_probe_child(child: Any) -> None:
+    """SIGKILL and reap a probe child that outlived its timeout.
+
+    ``asyncio.wait_for`` only cancels the ``communicate()`` await; the child itself
+    keeps running, so a wedged ``codex --version`` would be orphaned for the life of
+    the daemon. Best-effort throughout: this runs while an exception is already
+    unwinding and must not replace it.
+    """
+    if getattr(child, "returncode", None) is not None:
+        return
+    try:
+        child.kill()
+    except (ProcessLookupError, OSError):
+        return
+    except Exception:  # noqa: BLE001 -- reaping must not mask the original failure
+        logger.debug("codex: version probe child could not be killed", exc_info=True)
+        return
+    try:
+        await child.wait()
+    except asyncio.CancelledError:
+        # Already unwinding a cancellation: the child has its SIGKILL and the loop's
+        # child watcher reaps it. The caller re-raises the original CancelledError,
+        # so the cancellation is delayed here, never swallowed.
+        pass
+    except Exception:  # noqa: BLE001 -- best effort
+        logger.debug("codex: version probe child could not be reaped", exc_info=True)
+
+
+async def _default_runner(
+    binary: str,
+    *args: str,
+    spawn: Callable[..., Awaitable[Any]] = asyncio.create_subprocess_exec,
+) -> tuple[int, str, str]:
+    child = await spawn(
         binary,
         *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    out, err = await child.communicate()
+    try:
+        out, err = await child.communicate()
+    except (asyncio.CancelledError, Exception):  # noqa: BLE001 -- kill, then re-raise
+        await _kill_probe_child(child)
+        raise
     return (
         child.returncode if child.returncode is not None else -1,
         out.decode("utf-8", "replace"),
@@ -427,6 +506,20 @@ def build_child_env(
     return env
 
 
+def is_outer_cancellation() -> bool:
+    """True when the *current* task is itself being cancelled.
+
+    ``await task`` on a task we just cancelled ourselves raises ``CancelledError``
+    in the awaiter: an expected teardown outcome, safe to swallow. An **outer**
+    cancellation — the daemon drain cancelling us — must never be swallowed, or the
+    drain silently loses its stop signal. ``Task.cancelling()`` is what tells the
+    two apart, and both this module and :mod:`server.codex.manager` ask it here so
+    the rule has one implementation.
+    """
+    current = asyncio.current_task()
+    return current is not None and current.cancelling() > 0
+
+
 class CodexProcessHandle(Protocol):
     """What :mod:`server.codex.manager` needs from a running app-server child."""
 
@@ -558,14 +651,21 @@ class CodexProcess:
                 pass
             except Exception:  # noqa: BLE001 -- teardown is best effort
                 logger.exception("codex app-server terminate failed")
-        if task is not None:
-            task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
-        if transport is not None:
-            try:
-                await transport.aclose()
-            except Exception:  # noqa: BLE001 -- the child is already gone
-                pass
+        try:
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    # Our own cancel() landing is expected; an outer one is the daemon
+                    # drain and must keep propagating.
+                    if is_outer_cancellation():
+                        raise
+                except Exception:  # noqa: BLE001 -- a dead diagnostics task is not fatal
+                    logger.debug("codex: stderr drain teardown failed", exc_info=True)
+        finally:
+            if transport is not None:
+                try:
+                    await transport.aclose()
+                except Exception:  # noqa: BLE001 -- the child is already gone
+                    pass
