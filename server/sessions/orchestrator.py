@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Callable
 if TYPE_CHECKING:
     from datetime import datetime
 
+    from server.assistant.client import AssistantApi
     from server.automations.completion_bar import PrFacts
     from server.github.merge_queue import QueueEntry
     from server.github.pr_status import PipelinePr
@@ -1016,6 +1017,7 @@ class SessionOrchestrator:
         self._sweep_task: asyncio.Task | None = None
         self._archive_limit_task: asyncio.Task | None = None
         self._janitor_task: asyncio.Task | None = None
+        self._assistant_reap_task: asyncio.Task | None = None
         self._pr_branch_task: asyncio.Task | None = None
         # Primary-lease state (#852): the heartbeat task and the fence acquired at
         # start(). None on workers and on an orchestrator that never start()ed.
@@ -1118,6 +1120,48 @@ class SessionOrchestrator:
         if overlays is None:
             overlays = self._assistant_overlays = {}
         overlays[session_id] = overlay
+
+    def _setup_assistant_overlay(self, session_id: str, *, identity: str,
+                                 model: str | None) -> "AssistantApi":
+        """Everything that makes one session an ASSISTANT rather than a coding agent:
+        mint its loopback bearer token, build the in-process ``ccswitch`` MCP server on
+        top of it, and register the resulting ``ClaudeAgentOptions`` overlay. Returns
+        the ``AssistantApi`` to hand to ``_create_driver(assistant_api=...)``, which the
+        built ``AgentDriver`` then owns closing.
+
+        Called from the spawn in ``_spawn_session`` and the resume in ``ensure_driver``.
+        It has to be called on resume, not just spawn: the overlay is the ONLY thing
+        supplying ``tools=[]``, the ``disallowed_tools`` denylist, ``strict_mcp_config``
+        and ``max_turns``, and the idle reap (spec §4.7) drops the driver — and its
+        overlay — every 15 minutes. A resume that skipped this rebuilt the drawer as a
+        plain Claude Code session with the operator's own MCP servers mounted and no tool
+        restrictions at all, while simultaneously losing its ``mcp__ccswitch__*`` tools.
+
+        NOT yet universal: ``_reassign`` (account rotation / 401 recompose / crash
+        recovery) is a THIRD site that builds an AgentDriver and does not go through
+        here, so a rotated assistant carries the closed ``AssistantApi`` of the driver it
+        replaced. That is pre-existing at this branch's merge base and is tracked
+        separately — do not read this helper as covering every driver build.
+
+        And it must REBUILD rather than preserve: the MCP tool handlers close over this
+        ``AssistantApi``, whose ``httpx.AsyncClient`` ``driver.aclose()`` closes on
+        teardown. A preserved overlay resumes with a closed client and every tool call
+        raises. The token is re-minted for the same reason — its max-age is
+        ``assistant_idle_s * 4`` (``server/auth/middleware``), short enough to expire
+        while the row is still alive and resumable.
+        """
+        from server.assistant.client import AssistantApi
+        from server.assistant.options import assistant_options
+        from server.assistant.server import build_server
+        from server.assistant.token import mint_token
+        from server.config import get_settings
+        cfg = get_settings()
+        api = AssistantApi(base_url=f"http://127.0.0.1:{cfg.port}",
+                           token=mint_token(identity, session_id), session_id=session_id)
+        self.register_assistant_overlay(session_id, assistant_options(
+            server=build_server(api), max_turns=cfg.assistant_max_turns,
+            model=model or cfg.assistant_model))
+        return api
 
     def _session_factory(self, session_id: str):
         """Return a factory closure injecting this session's DISPLAY and PreCompact hook.
@@ -1268,6 +1312,14 @@ class SessionOrchestrator:
         # local cleanup (each daemon owns its own worktrees), so workers run it too.
         self._janitor_task = asyncio.create_task(
             self._worktree_janitor_loop(interval=86400.0), name="worktree-janitor-loop"
+        )
+        # Assistant idle-reap sweep (spec §4.7): closes the driver of any AI-drawer
+        # session idle past CCSWITCH_ASSISTANT_IDLE_S, keeping the row for
+        # resume-on-reopen. Per-host local cleanup like the janitor above — an
+        # assistant's live driver only exists in the `_drivers` of the daemon that
+        # spawned it, so every host (primary or worker) must run its own sweep.
+        self._assistant_reap_task = asyncio.create_task(
+            self._assistant_reap_loop(interval=60.0), name="assistant-reap-loop"
         )
         # Fleet-global automation loops (#919): ONLY the primary daemon may run these.
         # A worker serves dispatched sessions only (#840); a worker that also drove
@@ -1511,7 +1563,7 @@ class SessionOrchestrator:
                      "_sdlc_synth_task",
                      "_autopilot_task", "_mirror_task",
                      "_cicd_task", "_archaudit_task", "_sweep_task",
-                     "_archive_limit_task", "_janitor_task", "_recurring_task",
+                     "_archive_limit_task", "_janitor_task", "_assistant_reap_task", "_recurring_task",
                      "_lease_task", "_hb_task", "_drain_timer"):
             # Default None: stop() must be safe on an orchestrator that never
             # start()ed (tests build one via __new__/without start).
@@ -2623,6 +2675,7 @@ class SessionOrchestrator:
             updated_at=_now, usage_unverified=usage_unverified,
             origin=origin, origin_ref=origin_ref, model=None, host=_host,
             kind=kind, owner_identity=owner_identity,
+            last_activity_at=time.monotonic(),
         )
         self._records[session_id] = _pre_record
         # Track the spawn from the pre-seed until the driver is registered (or the
@@ -2639,18 +2692,8 @@ class SessionOrchestrator:
             # driver.start() below.
             assistant_api = None
             if is_assistant_kind(kind):
-                from server.assistant.client import AssistantApi
-                from server.assistant.options import assistant_options
-                from server.assistant.server import build_server
-                from server.assistant.token import mint_token
-                from server.config import get_settings
-                cfg = get_settings()
-                assistant_api = AssistantApi(
-                    base_url=f"http://127.0.0.1:{cfg.port}",
-                    token=mint_token(identity, session_id), session_id=session_id)
-                self.register_assistant_overlay(session_id, assistant_options(
-                    server=build_server(assistant_api), max_turns=cfg.assistant_max_turns,
-                    model=model or cfg.assistant_model))
+                assistant_api = self._setup_assistant_overlay(
+                    session_id, identity=identity, model=model)
 
             driver = self._create_driver(
                 engine=selected_engine,
@@ -2755,8 +2798,40 @@ class SessionOrchestrator:
             if not spawn_done.done():
                 spawn_done.set_result(None)
 
-    async def close_session(self, session_id: str) -> None:
-        """Stop the driver, clean up the session worktree, mark the row ended."""
+    async def _teardown_driver_state(self, session_id: str) -> AgentDriver | None:
+        """Unregister a session's live driver plus every per-session dict keyed off it,
+        stop its virtual X11 display, and RETURN the popped driver (None if none was
+        registered) so the caller owns the ``aclose()``.
+
+        The single source of truth for "this session no longer has a running driver",
+        shared by ``close_session``, ``archive_session`` and the assistant idle reap.
+        Three verbatim copies of this block existed before; the third had already
+        drifted (it also dropped the assistant options overlay, which turned every
+        resume after a reap into an UNRESTRICTED coding session).
+
+        Two things deliberately stay with the CALLER, because they legitimately differ:
+
+        * ``aclose()`` timing — close_session awaits it inline (the worktree cleanup
+          below it must not race a live process), archive_session defers it to a task
+          (aclose takes up to _CLOSE_GRACE_SEC and the request must not wait), the
+          assistant reap publishes it in ``_releasing`` (its record survives, so a
+          resume can arrive mid-teardown and must wait for the old CLI to flush).
+        * the ``_records`` pop — close/archive drop the record; the assistant reap MUST
+          keep it, or resume-on-reopen (spec §4.7) is destroyed.
+
+        ORDERING: the driver pop comes FIRST and is the atomic claim on this teardown.
+        Everything after it can yield (``stop_display`` awaits), and a prompt arriving
+        in that window would pass ``send_prompt``'s ``self._drivers.get(session_id)``
+        check, start a turn on the driver we are about to close, and be silently lost —
+        the caller having already been told "sent", with no promptRejected.
+        """
+        driver = self._drivers.pop(session_id, None)
+        self._last_prompt.pop(session_id, None)
+        self._turn_restart_at.pop(session_id, None)
+        self._self_model_state.pop(session_id, None)
+        self._handled_model_requests.pop(session_id, None)
+        self._pending_initial_prompt.pop(session_id, None)
+
         # Teardown the virtual X11 display — runs unconditionally so orphaned
         # displays are never leaked even when the driver was never registered.
         if self._x11 is not None:
@@ -2764,13 +2839,11 @@ class SessionOrchestrator:
                 await self._x11.stop_display(session_id)
             except Exception:
                 log.exception("session.display_cleanup_failed id=%s", session_id)
+        return driver
 
-        driver = self._drivers.pop(session_id, None)
-        self._last_prompt.pop(session_id, None)
-        self._turn_restart_at.pop(session_id, None)
-        self._self_model_state.pop(session_id, None)
-        self._handled_model_requests.pop(session_id, None)
-        self._pending_initial_prompt.pop(session_id, None)
+    async def close_session(self, session_id: str) -> None:
+        """Stop the driver, clean up the session worktree, mark the row ended."""
+        driver = await self._teardown_driver_state(session_id)
         if driver is not None:
             await driver.aclose()
         record = self._records.pop(session_id, None)
@@ -2842,6 +2915,137 @@ class SessionOrchestrator:
         # session can start. Tracked via _spawn so stop() can cancel it before it
         # writes into a later test's DB.
         self._spawn(self._maybe_start_queued(), name="queue-drain-on-close")
+
+    async def _reap_idle_assistants_once(self, *, now: float | None = None) -> list[str]:
+        """Close the driver of every assistant idle for > assistant_idle_s whose turn
+        is not live. Spec §4.7: the row stays (status 'ended', claude_session_id kept)
+        so the next ``POST /api/assistant/session`` resumes the same thread.
+
+        This deliberately does NOT call ``close_session`` — that method pops the
+        record out of ``_records`` (only ``archive`` may do that for an assistant;
+        see ``find_assistant``), which would destroy resume-on-reopen. Instead it
+        calls the shared ``_teardown_driver_state`` and sets
+        ``status='ended'`` itself. It also skips close_session's worktree/scratch-dir
+        cleanup (an assistant never gets one — no ``cwd`` inside the worktree base)
+        and its ``session_queue`` removal (assistants are exempt from the queue; they
+        never occupy an entry — see ``create_session``'s capacity-exempt path — so
+        there is nothing to remove and no #1100 ordering hazard to observe here).
+        """
+        from server.config import get_settings
+        idle = get_settings().assistant_idle_s
+        now = time.monotonic() if now is None else now
+        reaped: list[str] = []
+        for rec in list(self._records.values()):
+            if not is_assistant(rec) or rec.id not in self._drivers:
+                continue
+            driver = self._drivers[rec.id]
+            # "A turn is in flight" off the provider-neutral AgentDriver surface, the
+            # same composition the stall watchdog uses below: `turn_active` covers a
+            # prompt or CLI-initiated turn, `drain_alive` the tail where the turn has
+            # been flagged done but its pump is still unwinding. Reaping in that tail
+            # would aclose() a driver mid-drain.
+            if driver.turn_active or driver.drain_alive:
+                continue
+            last = rec.last_activity_at or now
+            if now - last < idle:
+                continue
+
+            # ---- ATOMIC CLAIM · nothing from here to the `await` below may suspend ----
+            #
+            # `_teardown_driver_state`'s stop_display is SLOW — it kills the display's
+            # browser tree, terminates twice, unlinks the lock/socket and releases the
+            # lease, and budgets ~10 s for it (server/x11/x11manager.py). Throughout that
+            # await the driver is already unregistered while the old `claude` process is
+            # very much alive. So EVERY piece of state that tells the rest of the
+            # orchestrator "this session is being torn down" has to be published BEFORE
+            # it, not after.
+            #
+            # Publishing after was a real defect: the user returns to the drawer right at
+            # the idle boundary and prompts, send_prompt correctly answers "no_driver",
+            # ws.py drops the stale stream and rebuilds through ensure_driver — which
+            # finds `_ensure_lock` free, `_swapping` empty, `_releasing` EMPTY and a
+            # status that is not yet "ended", and starts a SECOND claude process on the
+            # same claude_session_id. The sweep would then resume and delete that
+            # rebuild's overlay (`_session_factory` re-reads `_assistant_overlays` on
+            # every factory call, so the next model switch or recoverable-failure
+            # respawn would come back with no tools=[] and no denylist — Critical 1
+            # again, by the back door) and stamp the live session "ended".
+            #
+            # Only `_records` is deliberately left alone: the row surviving IS
+            # resume-on-reopen (spec §4.7).
+
+            # Drop the options overlay. Correct BECAUSE ensure_driver rebuilds it (see
+            # _setup_assistant_overlay): the overlay captures an AssistantApi whose
+            # httpx client driver.aclose() below is about to close, so a preserved
+            # overlay would hand the resumed session dead MCP tools. It must not simply
+            # be LEAKED either — a resume that found no overlay would build a plain,
+            # unrestricted coding agent out of the drawer.
+            self._assistant_overlays.pop(rec.id, None)
+            rec.status = "ended"
+
+            # Publish the teardown in `_releasing` rather than awaiting aclose() inline.
+            # Unlike close_session/archive_session the RECORD SURVIVES here, so a resume
+            # during this window is the EXPECTED user action (reopening the drawer right
+            # at the reap boundary) — and ensure_driver waits on `_releasing` before
+            # building a replacement driver with the same resume=, precisely so the new
+            # `claude` process cannot race the old one's transcript flush and lose the
+            # tail. Same self-clearing idiom as _persist_status's completion release, so
+            # a stuck aclose can never make the drawer permanently unopenable.
+            #
+            # `_teardown_done` keeps the ORIGINAL ordering inside that published window:
+            # the task is registered synchronously (that is the whole point) but does not
+            # touch the driver until the display stop and the DB write have finished, so
+            # aclose() still runs last and a resume unblocked by this entry always finds
+            # the row already stamped.
+            teardown_done: asyncio.Future = asyncio.get_running_loop().create_future()
+
+            async def _release(d=driver, sid=rec.id, gate=teardown_done):
+                try:
+                    with contextlib.suppress(Exception):
+                        await gate
+                    with contextlib.suppress(Exception):
+                        await d.aclose()
+                finally:
+                    if self._releasing.get(sid) is asyncio.current_task():
+                        self._releasing.pop(sid, None)
+            self._releasing[rec.id] = self._spawn(
+                _release(), name=f"assistant-reap-release-{rec.id}")
+            # ---- end of the atomic claim -------------------------------------------
+
+            try:
+                # Shared teardown: unregisters the driver FIRST (the atomic claim against
+                # a prompt racing this sweep — see _teardown_driver_state), clears the
+                # per-session dicts, then stops the virtual X11 display. An assistant has
+                # tools=[] so it never uses the display, but _spawn_session/ensure_driver
+                # allocate one for every session kind regardless and the pool is finite;
+                # start_display is idempotent, so a later resume re-leasing it is a no-op.
+                # (`driver` above is the same object: nothing between the turn-in-flight
+                # check and here awaits, so no other coroutine can have swapped it.)
+                await self._teardown_driver_state(rec.id)
+                async with db_session() as db:
+                    from sqlalchemy import update as sa_update
+                    await db.execute(
+                        sa_update(DbSession).where(DbSession.id == rec.id).values(status="ended")
+                    )
+            finally:
+                # In `finally` so a failed display stop or DB write can never strand the
+                # release task — and with it every later attach to this session.
+                if not teardown_done.done():
+                    teardown_done.set_result(None)
+            reaped.append(rec.id)
+            log.info("assistant.reap id=%s idle_s=%.0f", rec.id, now - last)
+        return reaped
+
+    async def _assistant_reap_loop(self, interval: float = 60.0) -> None:
+        """Periodic sweep pairing with _reap_idle_assistants_once. Mirrors
+        _worktree_janitor_loop's shape: sleep, sweep, swallow+log any failure so one
+        bad tick never kills the loop."""
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self._reap_idle_assistants_once()
+            except Exception:
+                log.exception("assistant-reap: sweep failed")
 
     async def rename_session(self, session_id: str, name: str) -> None:
         """Update the session name in the DB and in-memory record.
@@ -8499,7 +8703,23 @@ class SessionOrchestrator:
                         )
                     raise
 
+            # An assistant's options overlay is rebuilt for EVERY driver build here, not
+            # just at spawn: it is what makes the session an assistant, and the idle
+            # reap drops it along with the driver. See _setup_assistant_overlay for why
+            # it must be rebuilt rather than preserved (the old one holds a closed
+            # loopback client and a token that may already have expired). Rebuilt per
+            # _build() call, so the fresh-start fallback below — which acloses the first
+            # driver, and with it the first AssistantApi — also gets a live one.
+            built_assistant_apis: list[AssistantApi] = []
+
             def _build(resume_arg):
+                assistant_api = None
+                if is_assistant(rec):
+                    # Must run before _create_driver: the SDK factory reads
+                    # self._assistant_overlays[session_id] when it builds the client.
+                    assistant_api = self._setup_assistant_overlay(
+                        session_id, identity=identity, model=rec.model)
+                    built_assistant_apis.append(assistant_api)
                 return self._create_driver(
                     engine=AgentEngine.CLAUDE_CODE,
                     session_id=session_id,
@@ -8511,6 +8731,7 @@ class SessionOrchestrator:
                     resume=resume_arg,
                     on_sync_back=functools.partial(ccswitch_accounts.sync_back, rec.account),
                     suggester=self._suggester_for(getattr(rec, "kind", None)),
+                    assistant_api=assistant_api,
                 )
 
             # Publish this build as an in-flight swap (#1040) so a concurrent
@@ -8564,6 +8785,18 @@ class SessionOrchestrator:
                     driver = _build(None)
                     await driver.start()
                 self._drivers[session_id] = driver
+            except BaseException:
+                # The resume failed and no driver was registered: release what
+                # _setup_assistant_overlay allocated, mirroring _spawn_session's own
+                # start()-failure path. Leaving the overlay behind would let an
+                # unrelated later build for this id pick up a stale one holding a
+                # closed loopback client, and the httpx clients would leak.
+                if built_assistant_apis:
+                    self._assistant_overlays.pop(session_id, None)
+                    for _api in built_assistant_apis:
+                        with contextlib.suppress(Exception):
+                            await _api.aclose()
+                raise
             finally:
                 if self._swapping.get(session_id) is swap_done:
                     del self._swapping[session_id]
@@ -8951,7 +9184,10 @@ class SessionOrchestrator:
                           interrupt: bool = False,
                           context: PromptContext | None = None) -> str:
         """Deliver a prompt to a live driver. ``interrupt`` = "interrupt and post":
-        stop the in-flight turn and run this prompt next instead of queueing it."""
+        stop the in-flight turn and run this prompt next instead of queueing it.
+        ``context`` is the assistant-only "context chip" (spec §4.5); the ws bridge
+        validates it and passes it only for an assistant-kind session — forwarded
+        here as-is."""
         if self._draining:
             # No new turns during a deploy drain. Tell the browser so it re-queues
             # (promptRejected) and shows the hold banner — never silently swallow it.
@@ -10475,11 +10711,17 @@ class SessionOrchestrator:
         """Stamp the wall-clock time the user last steered this session (prompt/answer/permission/
         typing ping). Drives autopilot human-deference + the cooldown badge. In-memory ONLY — no DB
         write (a 120s window is meaningless across a restart), so this is safe to call on the WS
-        receive path (never blocks on I/O, cf. the no-DB-write-on-attach rule)."""
+        receive path (never blocks on I/O, cf. the no-DB-write-on-attach rule).
+
+        Also stamps ``last_activity_at`` (a monotonic clock, immune to wall-clock jumps) —
+        the assistant idle-reap sweep's only signal for "has the drawer been touched
+        recently," so this must stay synchronous and side-effect-free beyond the two
+        in-memory field writes."""
         from datetime import datetime
         record = self._records.get(session_id)
         if record is not None:
             record.last_user_interaction_at = datetime.utcnow()
+            record.last_activity_at = time.monotonic()
 
     async def set_autopilot_paused(self, session_id: str, paused: bool) -> None:
         """Pin a session to manual (paused=True) or return it to autopilot governance.
@@ -10732,20 +10974,9 @@ class SessionOrchestrator:
         ``context`` snapshots the decision features for AUTO archives, so a later manual
         unarchive can tell an auto-archive was reversed and record a learning heuristic.
         """
-        # Teardown the virtual X11 display — mirrors close_session.
-        if self._x11 is not None:
-            try:
-                await self._x11.stop_display(session_id)
-            except Exception:
-                log.exception("session.display_cleanup_failed id=%s", session_id)
-
-        # Stop the driver and clear in-memory state (mirrors close_session head).
-        driver = self._drivers.pop(session_id, None)
-        self._last_prompt.pop(session_id, None)
-        self._turn_restart_at.pop(session_id, None)
-        self._self_model_state.pop(session_id, None)
-        self._handled_model_requests.pop(session_id, None)
-        self._pending_initial_prompt.pop(session_id, None)
+        # Unregister the driver, clear in-memory state and stop the X11 display —
+        # the shared teardown close_session and the assistant reap also use.
+        driver = await self._teardown_driver_state(session_id)
 
         # Remove from active records BEFORE driver.aclose() so the session
         # disappears from list_sessions() immediately and a background refetch

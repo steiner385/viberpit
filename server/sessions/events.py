@@ -53,7 +53,11 @@ class TurnModel:
 
 @dataclass
 class SessionMeta:
-    model: str; session_id: str; kind: str | None = None
+    model: str; session_id: str
+    # "assistant" for the AI-drawer session's own SDK-level meta event; None for a
+    # coding session. Mirrors SessionRecord.kind (server/sessions/types.py) so a
+    # live-attaching client can tell the two apart without a separate REST call.
+    kind: str | None = None
     def to_wire(self): return {"type": "sessionMeta", "model": self.model,
                                "sessionId": self.session_id, "kind": self.kind}
 
@@ -236,9 +240,12 @@ class UserMessage:
     # mark to drop boundary copies deterministically on merge, and to detect one left
     # pinned mid-transcript (the page-boundary ordering bug, #1000).
     owner_prefix: bool = False
-    # The page the user was on when they sent this (assistant sessions only,
-    # spec §4.5) — rendered as a chip above the bubble, never sent to the SDK
-    # as-is (see driver.send_prompt, which prepends a header instead).
+    # The page (route/sessionId) the user was on when they sent this prompt — the
+    # "context chip" (spec §4.5). Only ever set on an assistant-kind session; a
+    # coding session's UserMessage always carries None. Always the ORIGINAL user
+    # text/context pair: the `<ccswitch-context>` header the driver prepends in
+    # _start_turn before handing the prompt to the SDK never appears here — this is
+    # what the transcript bubble renders.
     context: PromptContext | None = None
     def to_wire(self): return {"type": "user", "turnId": self.turn_id, "text": self.text, "srcUuid": self.src_uuid,
                                "images": self.images or [], "ts": self.ts,
