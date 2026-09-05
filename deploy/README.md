@@ -110,6 +110,13 @@ PYTHONPATH=<repo>/src <repo>/.venv/bin/python -m server.deploy --once
   steps above by hand (`sudo install -m644 ... && sudo systemctl daemon-reload`)
   and then restart the affected service(s), or the running unit stays on its old
   config indefinitely.
+- **Migrations never run automatically** (see "Notes" under the AI assistant migration,
+  `server/db/migrations/versions/0022_assistant_sessions.py`): `_reconcile_columns` ALTER-ADDs the
+  new nullable columns on both dialects at startup, but reconcile never creates indexes on an
+  existing table. `ix_sessions_kind_owner` (sessions.kind, sessions.owner_identity) must be created
+  by hand on the live Postgres DB after this deploy:
+  `CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_sessions_kind_owner ON sessions (kind,
+  owner_identity);` — the assistant works without it, just slower once session volume grows.
 
 ## Session daemon (`ccswitch-daemon.service`)
 

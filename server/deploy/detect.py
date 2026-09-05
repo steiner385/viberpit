@@ -200,17 +200,22 @@ class DetectLoop:
     async def tick(self) -> None:
         try:
             self.state = await asyncio.to_thread(self._compute, self.repo)
-        except Exception:
+        except Exception as e:
             # Never propagate into the poll loop: keep serving the last good state and
             # retry next tick. But don't swallow silently — a stuck poll would otherwise
             # show "nothing to deploy" indefinitely with no operator signal.
+            #
+            # exc_info alone is NOT that signal. `git.fetch` runs with
+            # capture_output=True, so git's diagnostic lands on CalledProcessError.stderr
+            # — an attribute no traceback renders, since str(e) is only "returned
+            # non-zero exit status 128". Surface the reason in the message itself.
             self._consecutive_failures += 1
             level = (logging.ERROR
                      if self._consecutive_failures >= self.escalate_after_consecutive
                      else logging.WARNING)
-            log.log(level, "deploy detect tick failed for %s (%d consecutive) — "
+            log.log(level, "deploy detect tick failed for %s (%d consecutive): %s — "
                     "serving last good state", self.repo, self._consecutive_failures,
-                    exc_info=True)
+                    _steps.err_reason(e), exc_info=True)
         else:
             self._consecutive_failures = 0
 

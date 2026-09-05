@@ -235,7 +235,10 @@ def test_start_failure_persists_ended_before_removing_the_queue_entry(tmp_path):
         real_remove = sq.remove
 
         async def _remove(session_id):
-            status_when_entry_dropped.append(await _status(session_id))
+            # This replaces a module-global seam. Ignore an unrelated background
+            # queue removal that happens to overlap this narrow ordering probe.
+            if session_id == "fail-order":
+                status_when_entry_dropped.append(await _status(session_id))
             return await real_remove(session_id)
 
         async def _boom(*a, **k):
@@ -248,7 +251,7 @@ def test_start_failure_persists_ended_before_removing_the_queue_entry(tmp_path):
         finally:
             sq.remove = real_remove  # type: ignore[assignment]
 
-        assert status_when_entry_dropped == ["ended"], (
+        assert status_when_entry_dropped and set(status_when_entry_dropped) == {"ended"}, (
             "the queue entry was dropped while the row still read 'queued' — a kill "
             "in that window strands the session as an unreplayable orphan")
         assert await sq.positions() == {}
@@ -273,7 +276,10 @@ async def _status_when_entry_dropped(orch_call, session_id: str) -> list[str]:
     real_remove = sq.remove
 
     async def _remove(sid):
-        seen.append(await _status(sid))
+        # The seam is module-global, while the assertion is about one session.
+        # A leaked/background queue task may remove a different entry concurrently.
+        if sid == session_id:
+            seen.append(await _status(sid))
         return await real_remove(sid)
 
     sq.remove = _remove  # type: ignore[assignment]
@@ -303,7 +309,7 @@ def test_close_persists_ended_before_removing_the_queue_entry(tmp_path):
         seen = await _status_when_entry_dropped(
             lambda: orch.close_session("close-1"), "close-1")
 
-        assert seen == ["ended"], (
+        assert seen and set(seen) == {"ended"}, (
             "the queue entry was dropped while the row still read 'queued' — a kill "
             "in that window leaves a closed session the reaper would replay")
 
@@ -324,7 +330,7 @@ def test_archive_persists_archived_before_removing_the_queue_entry(tmp_path):
         seen = await _status_when_entry_dropped(
             lambda: orch.archive_session("arch-1"), "arch-1")
 
-        assert seen == ["archived"]
+        assert seen and set(seen) == {"archived"}
 
     asyncio.run(run())
 
@@ -347,7 +353,10 @@ def test_queue_cancel_persists_ended_before_removing_the_queue_entry(tmp_path):
 
         seen = await _status_when_entry_dropped(_cancel, "cancel-1")
 
-        assert seen == ["ended"]
+        # _persist_status("ended") schedules a queue drain. That stale-entry reap
+        # may race the explicit remove below, so one or two removers are valid; the
+        # ordering contract is that every one of them sees the terminal row.
+        assert seen and set(seen) == {"ended"}
         assert out == [True]
         assert await sq.positions() == {}
         # A session that was never queued is still reported as a miss (API 404).
