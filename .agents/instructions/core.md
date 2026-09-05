@@ -100,12 +100,6 @@ Admins may push directly in emergencies.
   `server/db/clock.py:db_utc_now()`. Every column is naive UTC, but Postgres `CURRENT_TIMESTAMP` is
   tz-aware and SQLite-only tests hide it — the last slip marked every prod session "Status unknown"
   (2026-09-03, #964).
-- **Cancel rule:** never hand-roll `task.cancel()` + `await task` in a teardown path; use
-  `server/aio.py:cancel_and_reap()`. A hand-rolled `except (asyncio.CancelledError, Exception)`
-  (or `suppress(asyncio.CancelledError, …)`) swallows the *caller's* cancellation as readily as
-  the child's, so a SIGTERM drain keeps running instead of unwinding and eventually eats the
-  unit's `TimeoutStopSec` SIGKILL with live sessions attached (#1164). Both shapes are blocked by
-  `server/tests/test_no_swallowed_outer_cancellation.py`.
 - A fresh git worktree has no built env (network blocks `uv sync` of the ~70MB claude-agent-sdk).
   Run against the main checkout's prebuilt env (`<main-checkout>/.venv/bin/python -m pytest …`) and
   symlink `web/node_modules` from the main checkout.
