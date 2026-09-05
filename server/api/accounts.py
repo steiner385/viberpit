@@ -901,13 +901,20 @@ async def copilot_add_status(
     return await orch.copilot_add_status(name)
 
 
-class CopilotAddCancelBody(BaseModel):
+class AddCancelBody(BaseModel):
+    """Body for cancelling a device-flow add. Shared by Copilot and OpenAI.
+
+    One model rather than one per provider: both flows are cancelled by naming the
+    account, and a `CopilotAddCancelBody` sitting in an OpenAI route would read as
+    a copy-paste slip rather than as deliberate reuse.
+    """
+
     name: str
 
 
 @router.post("/add/copilot/cancel")
 async def copilot_add_cancel(
-    body: CopilotAddCancelBody,
+    body: AddCancelBody,
     request: Request,
     identity: str = Depends(current_identity),
     db=Depends(get_db),
@@ -1062,7 +1069,7 @@ async def openai_add_status(
 
 @router.post("/add/openai/cancel")
 async def openai_add_cancel(
-    body: CopilotAddCancelBody,
+    body: AddCancelBody,
     request: Request,
     identity: str = Depends(current_identity),
     db=Depends(get_db),

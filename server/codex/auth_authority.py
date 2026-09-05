@@ -55,6 +55,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final
 
+from server.aio import cancel_and_reap
 from server.codex import process as codex_process
 from server.codex import redaction, schema
 from server.codex.auth_store import CredentialStore
@@ -352,10 +353,13 @@ class CredentialAuthority:
         state = self._logins.get(account)
         if state is None:
             return LoginSnapshot()
-        if state.task is not None and not state.task.done():
-            state.task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await state.task
+        # cancel_and_reap, not `cancel()` + `suppress(CancelledError)`: this can run
+        # inside the authority's own shutdown, where that suppress would swallow the
+        # CALLER's cancellation and let shutdown run on as though it were never
+        # cancelled (#1164). Bounded, because a wedged login must not hold shutdown.
+        await cancel_and_reap(
+            state.task, phase=f"codex-auth-login:{account}", timeout=5.0
+        )
         state.snapshot = LoginSnapshot(state=LOGIN_FAILED, error="cancelled")
         return state.snapshot
 
@@ -675,9 +679,11 @@ class CredentialAuthority:
         self._authorized(account, require_enabled=False)
         await self.login_cancel(account)
         self._cache.pop(account, None)
-        pending = self._refreshes.pop(account, None)
-        if pending is not None and not pending.done():
-            pending.cancel()
+        await cancel_and_reap(
+            self._refreshes.pop(account, None),
+            phase=f"codex-auth-refresh:{account}",
+            timeout=5.0,
+        )
         generation = self._store.bump_generation(account)
         log_event(
             logger,
@@ -698,10 +704,11 @@ class CredentialAuthority:
 
     async def aclose(self) -> None:
         for account in list(self._logins):
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(AuthorityError):
                 await self.login_cancel(account)
-        for task in list(self._refreshes.values()):
-            if not task.done():
-                task.cancel()
+        for account, task in list(self._refreshes.items()):
+            await cancel_and_reap(
+                task, phase=f"codex-auth-refresh:{account}", timeout=5.0
+            )
         self._refreshes.clear()
         self._cache.clear()

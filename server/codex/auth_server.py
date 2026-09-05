@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final
 
+from server.aio import cancel_and_reap
 from server.codex import redaction
 from server.codex.auth_endpoint import EDGE_IDENTITY, RUNNER_IDENTITY_PREFIX
 from server.codex.auth_authority import CredentialAuthority
@@ -311,10 +312,14 @@ class AuthorityServer:
         except (ConnectionError, asyncio.IncompleteReadError):
             pass
         finally:
+            # cancel_and_reap per task rather than cancel-all + gather: `gather(...,
+            # return_exceptions=True)` returns the CALLER's CancelledError as a
+            # value instead of propagating it, so a listener being shut down would
+            # sail past its own cancellation (#1164).
             for task in list(inflight):
-                task.cancel()
-            with contextlib.suppress(Exception):
-                await asyncio.gather(*inflight, return_exceptions=True)
+                await cancel_and_reap(
+                    task, phase=f"codex-auth-conn:{identity}", timeout=5.0
+                )
             await _close(writer)
 
     async def _dispatch(

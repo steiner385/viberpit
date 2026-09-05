@@ -114,7 +114,14 @@ class ExternalAuthProvider:
         self._degraded.pop(account, None)
         pending = self._refreshes.pop(account, None)
         if pending is not None and not pending.done():
+            # `cancel()` WITHOUT awaiting, deliberately: this method is sync (the
+            # manager calls it from a fan-out that must not block on a wedged
+            # authority), so there is no `await` here to swallow an outer
+            # cancellation — the hazard `cancel_and_reap` exists for. The task's own
+            # exception is retrieved by the done-callback below so it is not
+            # reported as never-retrieved.
             pending.cancel()
+            pending.add_done_callback(lambda t: t.cancelled() or t.exception())
         log_event(logger, logging.INFO, "codex.external_auth.invalidated", account=account)
 
     # -- the manager's CredentialSupplier ----------------------------------
