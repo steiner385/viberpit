@@ -47,6 +47,7 @@ from ccswitch.configdir import compose
 from ccswitch.paths import account_cfg_dir, shared_base
 from ccswitch.selector import at_ceiling, exhausted
 from server.aio import bounded_wait
+from server.assistant.context import PromptContext
 from server.audit import record_audit
 from server.db import db_session
 from server.db.models import AUTO_ARCHIVE_PROVENANCE, CAPACITY_EXEMPT_STATUSES, INACTIVE_SESSION_STATUSES, Session as DbSession
@@ -8932,7 +8933,8 @@ class SessionOrchestrator:
         return self._pending_initial_attachment_ids.pop(session_id, None)
 
     async def send_prompt(self, session_id, text, attachment_ids=None, *,
-                          interrupt: bool = False, context: dict | None = None) -> str:
+                          interrupt: bool = False,
+                          context: PromptContext | None = None) -> str:
         """Deliver a prompt to a live driver. ``interrupt`` = "interrupt and post":
         stop the in-flight turn and run this prompt next instead of queueing it."""
         if self._draining:
@@ -10599,11 +10601,15 @@ class SessionOrchestrator:
             _copilot = getattr(self, "_copilot", None)
             if _copilot is not None and _provider_of(new_account) == _copilot_mod.PROVIDER:
                 await _copilot.ensure(new_account)
-            # Re-arm an assistant for the NEW process, exactly as ensure_driver's resume
-            # does. The registered overlay is per-process: its `ccswitch` MCP tools are
-            # bound to the loopback client `old_driver.aclose()` just closed, so reusing
-            # it would leave the rotated assistant with tools that fail every call while
-            # looking healthy — and the new driver holding no client to close.
+            # An assistant-kind session's overlay carries an AssistantApi whose MCP
+            # tool handlers close over a live httpx.AsyncClient. old_driver.aclose()
+            # above already closed that client (it belonged to old_driver), so every
+            # mcp__ccswitch__* call on the rebuilt driver would raise against a dead
+            # connection unless a FRESH AssistantApi is minted here and re-registered
+            # under record.id before the new SessionDriver is built (#1125). This is the
+            # third driver-building site, with _spawn_session and ensure_driver's resume;
+            # all three go through `_arm_assistant` so the token + in-process MCP server
+            # + overlay triple has ONE definition to keep in step.
             assistant_api = (self._arm_assistant(record.id, identity, record.model)
                              if is_assistant(record) else None)
             new_driver = SessionDriver(
@@ -10625,7 +10631,13 @@ class SessionOrchestrator:
             # _oat_env, which reads record.account to pick the setup-token. If left stale, a
             # cross-account reassign injects the old account's token into the new config (#346).
             record.account = new_account
-            await new_driver.start()
+            try:
+                await new_driver.start()
+            except Exception:
+                if assistant_api is not None:
+                    self._assistant_overlays.pop(record.id, None)
+                    await assistant_api.aclose()
+                raise
             self._install_driver(record.id, new_driver)
             if record.model is not None:
                 await new_driver.set_model(record.model)

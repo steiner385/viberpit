@@ -125,6 +125,26 @@ def test_reaped_thread_is_reused_after_a_daemon_restart(tmp_path):
         assert c.get("/api/assistant/status", headers=_H).json()["sessionId"] == first
 
 
+def test_resume_threads_the_callers_identity(tmp_path):
+    """The resume path must build the driver under the REAL identity.
+
+    ensure_driver defaults to SYSTEM_IDENTITY, and a driver built under "system"
+    registers its questions/permissions as owned by "system" — every answer the
+    real user then sends is rejected ("question no longer pending", #1080). The WS
+    attach re-threads identity moments later, so the window is narrow, but anything
+    the resumed driver asks before the drawer attaches is unanswerable."""
+    from unittest.mock import AsyncMock
+
+    with _client(tmp_path) as c:
+        sid = c.post("/api/assistant/session", json={}, headers=_H).json()["id"]
+        orch = c.app.state.sessions._orch
+        orch._records[sid].status = "ended"
+        with patch.object(SessionOrchestrator, "ensure_driver", new=AsyncMock()) as ed:
+            r = c.post("/api/assistant/session", json={}, headers=_H)
+        assert r.json()["state"] == "resumed"
+        assert ed.await_args.kwargs.get("identity") == "u@example.com"
+
+
 def test_gated_model_is_400(tmp_path):
     with _client(tmp_path, {"CCSWITCH_MODEL_APPROVAL_DENYLIST": "fable"}) as c:
         r = c.post("/api/assistant/session", json={"model": "fable"}, headers=_H)
