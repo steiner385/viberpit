@@ -55,3 +55,58 @@ describe('transcript.turn.fabricated telemetry', () => {
     spy.mockRestore()
   })
 })
+
+describe('fabricated turn re-anchors on its turnStart', () => {
+  // A mid-turn reattach while an ask is pending (screenshot session bce4b626,
+  // 2026-09-05 05:53): the edge re-emitted the pending question BEFORE the live
+  // stream re-supplied the open turn, so the reducer fabricated the assistant turn
+  // at the tail and the re-supplied prompt landed UNDER it. Every later delta then
+  // grew the turn above the prompt — "my prompt is stuck at the bottom while the
+  // answer scrolls past it".
+  const RESET: SessionEvent = { type: 'replayReset' }
+  const DONE: SessionEvent = { type: 'replayComplete' }
+  const question: SessionEvent = {
+    type: 'question', questionId: 'q1', turnId: 'X', header: 'Surfaces',
+    question: 'Where?', options: [], multiSelect: false,
+  }
+
+  it('moves the fabricated turn below the prompt its turnStart follows', () => {
+    const spy = vi.spyOn(clientLogger, 'warn').mockImplementation(() => {})
+    const evs: SessionEvent[] = [
+      RESET, DONE,
+      question,                                                   // extras re-emit → fabricated X
+      { type: 'user', turnId: 'U', text: 'oftentimes when I send…' }, // open-turn resupply
+      { type: 'turnStart', turnId: 'X' },
+      { type: 'textDelta', turnId: 'X', text: 'One more scoping question:' },
+    ]
+    const s = evs.reduce(transcriptReducer, initialTranscript)
+    expect(s.turns.map((t) => t.id)).toEqual(['U', 'X'])
+    const x = s.turns[1]
+    expect(x.fabricated).toBeUndefined()
+    expect(x.blocks.map((b) => b.kind)).toEqual(['question', 'text'])
+    spy.mockRestore()
+  })
+
+  it('leaves a fabricated turn that is already last in place (same reference)', () => {
+    const spy = vi.spyOn(clientLogger, 'warn').mockImplementation(() => {})
+    const s0 = [RESET, DONE, { type: 'user', turnId: 'U', text: 'go' } as SessionEvent, question]
+      .reduce(transcriptReducer, initialTranscript)
+    expect(s0.turns[1].fabricated).toBe(true)
+    const s1 = transcriptReducer(s0, { type: 'turnStart', turnId: 'X' })
+    expect(s1.turns.map((t) => t.id)).toEqual(['U', 'X'])
+    expect(s1.turns[1].fabricated).toBeUndefined()
+    expect(s1.turns[1].blocks).toBe(s0.turns[1].blocks)
+    spy.mockRestore()
+  })
+
+  it('never moves a turn its own turnStart introduced', () => {
+    const evs: SessionEvent[] = [
+      RESET, DONE,
+      { type: 'turnStart', turnId: 'A' },
+      { type: 'user', turnId: 'U', text: 'next' },
+      { type: 'turnStart', turnId: 'A' },   // replay/resupply overlap: idempotent, stays put
+    ]
+    const s = evs.reduce(transcriptReducer, initialTranscript)
+    expect(s.turns.map((t) => t.id)).toEqual(['A', 'U'])
+  })
+})

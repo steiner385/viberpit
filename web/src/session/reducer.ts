@@ -41,11 +41,17 @@ export type Block =
 // mid-logical-turn (see EvUser.ownerPrefix). It is the ONLY order signal a user turn
 // carries: user turns have no ordinal, so a misplaced prompt — the actual #1000 bug —
 // is invisible to the ordinal scan and detectable only through this mark.
+//
 // `pending` is set ONLY on a `pending:N` user turn — a prompt the user has sent that
 // no server echo has confirmed yet. It carries how far that prompt has got (see
 // promptStage.ts) so the bubble can say "waking session…" instead of nothing at all.
 // The real `user` echo adopts the turn and drops the mark; nothing else sets it.
-export interface Turn { id: string; role: 'user' | 'assistant'; blocks: Block[]; model?: string | null; ordinal?: number; ownerPrefix?: boolean; context?: PromptContext; pending?: PromptStage }
+//
+// `fabricated` marks an assistant turn created by a block event that arrived before
+// the turn's own `turnStart` (see ensureAssistantTurn). Its tail position is a
+// placeholder, not a fact: the turnStart that later names this id fixes where the
+// turn really begins, and the reducer re-anchors it there (the flag is cleared).
+export interface Turn { id: string; role: 'user' | 'assistant'; blocks: Block[]; model?: string | null; ordinal?: number; ownerPrefix?: boolean; context?: PromptContext; pending?: PromptStage; fabricated?: boolean }
 
 /** A self-contained conversation thread (the main transcript, or one sub-agent). */
 export interface SubThread { turns: Turn[]; openBlockId: string | null; model?: string | null }
@@ -375,13 +381,36 @@ function resolveQuestionInPlace(state: TranscriptState, questionId: string, answ
  * turn at the TAIL and count it. A block event with no preceding turnStart means the
  * frame reached us out of order (an attach re-emit of a pending ask/error whose turn
  * fell outside the replay window, a delta for an evicted turn) — the fabricated turn
- * may render far from where its content belongs. Returns [nextTurns, idx].
+ * may render far from where its content belongs, so it is marked `fabricated` and
+ * `anchorTurnStart` moves it once its turnStart says where it begins.
+ * Returns [nextTurns, idx].
  */
 function ensureAssistantTurn(turns: Turn[], turnId: string, evType: string): [Turn[], number] {
   const idx = findTurnIdx(turns, turnId)
   if (idx !== -1) return [turns, idx]
   clientLogger.warn(`transcript.turn.fabricated type=${evType} turnId=${turnId}`)
-  return [[...turns, { id: turnId, role: 'assistant', blocks: [] }], turns.length]
+  return [[...turns, { id: turnId, role: 'assistant', blocks: [], fabricated: true }], turns.length]
+}
+
+/**
+ * A turnStart for a turn that already exists. Normally idempotent (replay overlap,
+ * resupply dedup). For a FABRICATED turn it is the first authoritative word on where
+ * the turn begins: the placeholder was appended wherever the tail happened to be,
+ * and anything that arrived since — above all the user prompt this turn answers —
+ * belongs ABOVE it. Session bce4b626 (2026-09-05 05:53): a mid-turn reattach
+ * re-emitted the pending question ahead of the open-turn resupply, the question
+ * fabricated the assistant turn, the re-supplied prompt landed under it, and every
+ * later delta grew the turn above the prompt. Move the turn (blocks intact) to the
+ * tail — the arrival-order position its turnStart has now — and clear the mark.
+ * Returns the same array when nothing moves.
+ */
+function anchorTurnStart(turns: Turn[], idx: number): Turn[] {
+  const turn = turns[idx]
+  if (!turn.fabricated) return turns
+  const anchored: Turn = { ...turn }
+  delete anchored.fabricated
+  if (idx === turns.length - 1) return replaceTurn(turns, idx, () => anchored)
+  return [...turns.slice(0, idx), ...turns.slice(idx + 1), anchored]
 }
 
 /**
@@ -431,8 +460,9 @@ function applyToThread(thread: SubThread, ev: BlockEvent): SubThread {
     case 'turnStart': {
       const idx = findTurnIdx(thread.turns, ev.turnId)
       if (idx !== -1) {
-        if (thread.openBlockId === null) return thread
-        return { turns: thread.turns, openBlockId: null }
+        const turns = anchorTurnStart(thread.turns, idx)
+        if (turns === thread.turns && thread.openBlockId === null) return thread
+        return { turns, openBlockId: null }
       }
       return {
         turns: [...thread.turns, { id: ev.turnId, role: 'assistant', blocks: [] }],
@@ -638,9 +668,12 @@ export function transcriptReducer(
       const { turnId } = ev
       const idx = findTurnIdx(state.turns, turnId)
       if (idx !== -1) {
-        // Idempotent — turn already exists. If openBlockId is already null, return state unchanged.
-        if (state.openBlockId === null) return state
-        return { ...state, openBlockId: null, latestSuggestions: [] }
+        // Idempotent — turn already exists (a fabricated one is re-anchored here, see
+        // anchorTurnStart). If nothing moved and openBlockId is already null, return
+        // state unchanged.
+        const turns = anchorTurnStart(state.turns, idx)
+        if (turns === state.turns && state.openBlockId === null) return state
+        return { ...state, turns, openBlockId: null, latestSuggestions: [] }
       }
       const ordinal = ev.turnIndex ?? undefined
       return {

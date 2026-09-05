@@ -273,18 +273,21 @@ def test_attach_delivers_in_progress_turn_even_if_it_settles_during_replay(monke
 # Extras ordering — session-scoped attach extras ride the FIFO, after the reset
 # ---------------------------------------------------------------------------
 
-def test_pending_permission_reemit_arrives_batched_after_replay_reset():
+def test_pending_permission_reemit_arrives_batched_after_replay_reset(tmp_path):
     """A pending permission re-emitted on attach must arrive AFTER replayReset and
     inside a batch (sessionEvent path) — a direct top-level send could overtake the
     out_q replay, and the reducer stores permission blocks inside turns, so a
-    permissionRequest landing before the reset is wiped by it."""
+    permissionRequest landing before the reset is wiped by it.
+
+    The re-emit only fires when nothing re-supplies the open turn (here: the stream
+    reports no active turn, the shape of a ring-evicted remote attach), so the reset
+    comes from replayed history rather than from a dropped in-progress turn."""
     pending = [{"permId": "perm-1", "turn_id": "t1", "tool": "ExitPlanMode",
                 "input": {"plan": "ship it"}}]
     driver = _ScriptedDriver()
-    # Mid-turn attach: turn_active=True forces the replayReset even with no history.
-    driver.open_stream = lambda: _BlockingStream(  # type: ignore[method-assign]
-        [], turn_active=True, turn_started_at=time.time())
-    app = create_app(orchestrator=_BaseOrch(driver, path=None, registry=_Reg(pending)))
+    driver.open_stream = lambda: _BlockingStream([])  # type: ignore[method-assign]
+    app = create_app(orchestrator=_BaseOrch(driver, path=_write_transcript(tmp_path),
+                                            registry=_Reg(pending)))
 
     with TestClient(app, raise_server_exceptions=False) as client:
         with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
@@ -320,3 +323,72 @@ def test_pending_permission_reemit_arrives_batched_after_replay_reset():
         "live Status must not be a top-level frame")
     status_batched = [e for e in flat if e.get("type") == "status" and "state" in e]
     assert status_batched and status_batched[0].get("sessionId") == "s1"
+
+
+# ---------------------------------------------------------------------------
+# Open-turn resupply owns the turn's pending asks — no early re-emit ahead of it
+# ---------------------------------------------------------------------------
+
+class _PendingQuestionOrch(_BaseOrch):
+    def pending_questions(self, session_id):
+        return [{"question_id": "q1", "turn_id": "X", "header": "Surfaces",
+                 "question": "Where?", "options": [], "multi_select": False}]
+
+
+def _open_turn_with_ask(ask_frame: dict) -> list:
+    """The open turn as a driver snapshot: prompt, turnStart, then the pending ask."""
+    return [
+        _FakeEvent({"type": "user", "turnId": "U", "text": "oftentimes when I send…"}),
+        _FakeEvent({"type": "turnStart", "turnId": "X"}),
+        _FakeEvent(ask_frame),
+    ]
+
+
+def _attach_and_collect(app, frame_type: str):
+    with TestClient(app, raise_server_exceptions=False) as client:
+        with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+            ws.send_text(json.dumps({"type": "attach", "sessionId": "s1"}))
+
+            def done(flat):
+                # Stop once the snapshot copy (the one AFTER the prompt) has arrived —
+                # an early re-emit, if any, necessarily precedes it.
+                users = [i for i, e in enumerate(flat) if e.get("type") == "user"]
+                return bool(users) and any(
+                    e.get("type") == frame_type for e in flat[users[0]:])
+
+            flat, _raw = _collect_flat(ws, done, timeout=4.0)
+    return flat
+
+
+def _assert_ask_follows_prompt(flat, frame_type: str):
+    types = [e.get("type") for e in flat]
+    asks = [i for i, e in enumerate(flat) if e.get("type") == frame_type]
+    user_idx = types.index("user")
+    # Screenshot session bce4b626 (2026-09-05 05:53): the pending-ask re-emit landed
+    # BEFORE the open-turn resupply, the reducer fabricated the assistant turn for it
+    # at the tail, and the re-supplied prompt was appended UNDER that turn — the
+    # "prompt stuck at the bottom while the answer scrolls past it" bug. The resupply
+    # already carries the ask at its real position, so it must be the only copy.
+    assert len(asks) == 1 and asks[0] > user_idx, (
+        f"expected exactly one {frame_type}, after the user frame; got {types}")
+
+
+def test_resupplied_open_turn_is_the_only_source_of_its_pending_question():
+    driver = _ScriptedDriver()
+    ask = {"type": "question", "questionId": "q1", "turnId": "X", "header": "Surfaces",
+           "question": "Where?", "options": [], "multiSelect": False}
+    driver.open_stream = lambda: _BlockingStream(  # type: ignore[method-assign]
+        _open_turn_with_ask(ask), turn_active=True, turn_started_at=time.time())
+    app = create_app(orchestrator=_PendingQuestionOrch(driver, path=None))
+    _assert_ask_follows_prompt(_attach_and_collect(app, "question"), "question")
+
+
+def test_resupplied_open_turn_is_the_only_source_of_its_pending_permission():
+    pending = [{"permId": "perm-1", "turn_id": "X", "tool": "Bash", "input": {"command": "ls"}}]
+    driver = _ScriptedDriver()
+    ask = {"type": "permissionRequest", "permId": "perm-1", "turnId": "X", "tool": "Bash",
+           "toolKind": "bash", "input": {"command": "ls"}, "plan": False}
+    driver.open_stream = lambda: _BlockingStream(  # type: ignore[method-assign]
+        _open_turn_with_ask(ask), turn_active=True, turn_started_at=time.time())
+    app = create_app(orchestrator=_BaseOrch(driver, path=None, registry=_Reg(pending)))
+    _assert_ask_follows_prompt(_attach_and_collect(app, "permissionRequest"), "permissionRequest")

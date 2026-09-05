@@ -46,7 +46,17 @@ _STREAM_DONE = object()
 # WS attach path (_emit_live_extras); buffering them would double-emit.
 _TURN_CONTENT = (ev.UserMessage, ev.TurnStart, ev.TurnModel, ev.SessionMeta,
                  ev.TextDelta, ev.ThinkingDelta, ev.ToolCall, ev.ToolResult,
-                 ev.TurnEnd, ev.ErrorEvent)
+                 ev.TurnEnd, ev.ErrorEvent,
+                 # The turn's asks and their resolutions ride the attach snapshot too, so
+                 # a mid-turn reattach re-delivers a pending permission/question AT ITS
+                 # PLACE in the turn — after the prompt and the content that led to it —
+                 # exactly as the daemon ring does in remote mode. The WS bridge used to
+                 # re-emit pending asks separately, AHEAD of the open-turn resupply; the
+                 # client fabricated the assistant turn for that early copy and the
+                 # re-supplied prompt then landed under it (the "prompt stuck at the
+                 # bottom" bug). The resolutions must travel with them so an already-
+                 # decided ask does not resurrect as pending on the reattached view.
+                 ev.PermissionRequest, ev.PermissionResolved, ev.Question, ev.QuestionResolved)
 
 # How long aclose() waits for the CLI to flush its synthetic interrupt result for a
 # turn wedged mid-tool-call before giving up and cancelling the drain.
