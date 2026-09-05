@@ -86,6 +86,46 @@ thread — so the mic is normally ready within ~10 s of startup, and a dictation
 while that download is still running simply waits for `ready`.
 `GET /api/config` shows `sttEnabled: true` when it is live.
 
+## AI assistant (on by default)
+
+The assistant drawer (`docs/product/features/ai-assistant.md`) is **enabled by default** as of
+the Phase 4 launch — an edge with none of these vars set serves it. Nothing needs installing:
+it reuses the normal session stack, so there is no extra venv extra and no model download.
+
+| Var | Default | What it does |
+|---|---|---|
+| `CCSWITCH_ASSISTANT_ENABLED` | `true` | Kill switch. `false` → `POST /api/assistant/session` returns 404 `ASSISTANT_DISABLED`, `/api/assistant/status` reports `enabled: false`, and the drawer falls back to its placeholder. Note it stops *new* sessions: an already-running assistant keeps its driver until the normal idle sweep closes it (below), so disable then wait out `CCSWITCH_ASSISTANT_IDLE_S` if you need the drivers gone. |
+| `CCSWITCH_ASSISTANT_MODEL` | `sonnet` | Model new assistant sessions spawn on. A tier that needs approval is refused with 400 `MODEL_GATED` rather than silently downgraded. |
+| `CCSWITCH_ASSISTANT_IDLE_S` | `900` | Idle grace before an assistant's driver is closed. **Also sets the assistant bearer token's max age (`idle_s × 4`, `server/auth/middleware.py`)** — raising it lengthens a credential's lifetime, so treat it as a security knob, not just a timeout. |
+| `CCSWITCH_ASSISTANT_MAX_TURNS` | `30` | SDK turn cap per assistant session. |
+| `CCSWITCH_ASSISTANT_MAX_PROMPTS_PER_HOUR` | `120` | Per-identity prompt rate limit; over it the WS replies `promptRejected` / `RATE_LIMITED`. |
+
+**The Settings toggle overrides the env var, not the other way round.** `assistant_enabled` in
+`server/assistant/policy.py` reads `app_settings.assistant_enabled` first and only falls back to
+the env when that column is NULL. So once anyone has flipped Settings → General → AI assistant,
+editing `CCSWITCH_ASSISTANT_ENABLED` in `ccswitch.env` has **no effect** — to disable a deployment
+for good, turn the switch off in Settings (or `UPDATE app_settings SET assistant_enabled = false
+WHERE id = 'singleton';`). Set it back to NULL to hand control to the env var again.
+`CCSWITCH_ASSISTANT_MODEL` / `assistant_model` follow the same precedence.
+
+Check what a running edge actually resolved — this is the assistant's analogue of `sttEnabled`,
+and unlike STT it is **not** in `GET /api/config`, because the answer depends on DB state:
+
+```bash
+curl -s https://dobby.tail0dd570.ts.net/api/assistant/status   # {"enabled":true,"sessionId":…,"model":"sonnet"}
+```
+
+Assistant sessions are ordinary sessions with `kind == "assistant"`, hidden from the session
+list and scoped to the identity that created them. Their only tools are the in-process
+`ccswitch` MCP server, whose calls are additionally fenced by a deny-by-default route
+allowlist (`ASSISTANT_ROUTE_ALLOW` in `server/assistant/policy.py`) enforced *before* routing;
+the bearer token is loopback-only and never persisted. Metrics to scrape:
+`assistant_prompts_total`, `assistant_tool_calls_total{tool,class,outcome}`,
+`assistant_ttft_ms`, `assistant_turn_ms`, `assistant_sessions_live`.
+
+See also the `ix_sessions_kind_owner` index note under "Notes" below — the assistant works
+without it, but wants it once session volume grows.
+
 ## Operate
 
 ```bash
