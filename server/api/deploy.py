@@ -5,7 +5,9 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from server.audit import record_audit
 from server.auth.middleware import current_identity
+from server.db import get_db
 from server.deploy.client import DeployControllerClient, DeployControllerUnavailable
 
 router = APIRouter(prefix="/api/deploy", tags=["deploy"])
@@ -66,11 +68,28 @@ class DeployStartBody(BaseModel):
 @router.post("/start")
 async def deploy_start(
     body: DeployStartBody | None = None,
-    _identity: str = Depends(current_identity),
+    identity: str = Depends(current_identity),
     client: DeployControllerClient = Depends(get_deploy_client),
+    db=Depends(get_db),
 ) -> JSONResponse:
+    # A deploy is privileged and outward-facing, so record WHO asked for it. The
+    # identity is already resolved here for authorisation; auditing it is what makes
+    # an unexpected deploy attributable after the fact. Refused and unavailable
+    # attempts are recorded too - a preflight rejection is precisely the shape an
+    # unexpected trigger takes, so dropping it would lose the interesting case.
+    #
+    # NOTE: this covers deploys that arrive through the edge. The controller's unix
+    # socket accepts /start directly, and such a caller never reaches this route.
+    target = body.targetSha if body is not None else None
     try:
-        code, resp = await client.start(body.targetSha if body is not None else None)
-        return JSONResponse(resp, status_code=code)
+        code, resp = await client.start(target)
     except DeployControllerUnavailable:
+        await record_audit(db=db, type="deploy_start", identity=identity,
+                           detail={"targetSha": target, "started": False,
+                                   "reason": "controller unavailable"})
         return JSONResponse({"started": False, "reason": "controller unavailable"}, status_code=503)
+    await record_audit(db=db, type="deploy_start", identity=identity,
+                       detail={"targetSha": target, "status": code,
+                               "started": bool(resp.get("started")),
+                               "reason": resp.get("reason")})
+    return JSONResponse(resp, status_code=code)
