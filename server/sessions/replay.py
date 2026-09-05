@@ -3,6 +3,7 @@ import dataclasses, json, asyncio, logging, os, time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from server.assistant.context import strip_context_header
 from server.config import env_float
 from . import events as ev
 from .transcript_entries import is_harness_user_entry
@@ -232,8 +233,15 @@ def _build_events(path: str) -> tuple[list, object | None]:
             # transcript can't disagree about what a prompt is. (Any tool_results on the
             # entry still emit below.)
             if (text or imgs) and not is_harness_user_entry(o, text):
+                # An assistant prompt was journalled with the `<ccswitch-context …/>`
+                # header the driver prepends for the model (driver._start_turn). Split
+                # it back off here — the ONE place replay rebuilds a UserMessage — so
+                # the marker never renders as part of the user's own words and the chip
+                # (spec §4.5) survives a reload instead of only existing live.
+                text, ctx = strip_context_header(text)
                 out.append(ev.UserMessage(turn_id=uuid, text=text, src_uuid=uuid,
-                                          images=imgs or None, ts=ts))
+                                          images=imgs or None, ts=ts,
+                                          context=dict(ctx) if ctx else None))
             out.extend(_tool_result_events(content, uuid, ts, None))
         elif typ == "assistant":
             # Reconstruct the model once (status strip needs it after re-attach).

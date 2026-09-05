@@ -777,11 +777,13 @@ class SessionDriver:
         # the last prompt, so every follow-up in the same view doesn't repeat it.
         sdk_text = text
         if context is not None and context != self._last_context:
-            # Import here, not at module scope: orchestrator.py imports SessionDriver
-            # from this module, so a top-level import back would be circular. By the
-            # time a prompt is actually sent, orchestrator has long finished importing.
-            from server.sessions.orchestrator import local_host_stamp
-            sdk_text = render_context_header(context, host=local_host_stamp()) + "\n" + text
+            # `self_host_name()`, NOT `local_host_stamp()`: the latter is an OWNERSHIP
+            # marker that returns None on the primary by design, and assistants are
+            # pinned to the primary (FleetOrchestrator.create_session), so `host=` would
+            # never have rendered in any topology. server.hostname is dependency-light,
+            # so this can be a plain module-scope-safe local import with no cycle.
+            from server.hostname import self_host_name
+            sdk_text = render_context_header(context, host=self_host_name()) + "\n" + text
             self._last_context = context
         if images:
             content: list[dict] = []
