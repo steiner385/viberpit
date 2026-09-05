@@ -10,10 +10,18 @@
 // semantics would promise a tabpanel relationship that the router does not
 // provide. `aria-current="page"` is the honest marker for "you are here".
 //
+// The name/count split is `ui/badgedName` + `ui/Badge`, the same pair `NavItem`,
+// `Tabs` and `SettingsNav` use — NOT a label node beside a count node. The
+// accname algorithm trims each element's contribution and concatenates, so
+// `<a>Active<span>7</span></a>` is announced "Active7". One `sr-only` node
+// carries the whole name; the visible label and the pill are `aria-hidden`.
+//
 // Tokens only — this file is under `src/features/`, where
 // `ccswitch/no-raw-palette` is enforced.
 import { Link } from 'react-router-dom'
 import { cn } from '@/lib/utils'
+import { Badge } from '@/ui/Badge'
+import { badgedName } from '@/ui/badgedName'
 import { ARCHIVED_PATH, SESSIONS_PATH, type ListScope } from '@/session/sessionNavState'
 
 export interface ScopeSegmentProps {
@@ -30,10 +38,29 @@ const item = cn(
 const here = 'bg-accent-wash text-accent'
 const elsewhere = 'text-ink-muted hover:bg-surface-raised hover:text-ink'
 
-/** A zero count renders nothing rather than "0" — the same convention the nav
- *  badges use, and "Archived 0" reads as a counter that failed. */
-function count(n: number) {
-  return n > 0 ? <span className="tabular-nums text-xs">{n}</span> : null
+interface ScopeLinkProps {
+  to: string
+  label: string
+  /** `badgedName` and `Badge` both read 0 as "no count" — "Archived 0" reads as
+   *  a counter that failed, so a zero scope is announced and drawn bare. */
+  count: number
+  current: boolean
+}
+
+function ScopeLink({ to, label, count, current }: ScopeLinkProps) {
+  return (
+    <Link
+      to={to}
+      aria-current={current ? 'page' : undefined}
+      className={cn(item, current ? here : elsewhere)}
+    >
+      <span aria-hidden="true">{label}</span>
+      <span className="sr-only">{badgedName({ label, count })}</span>
+      {count > 0 && (
+        <Badge tone={current ? 'accent' : 'neutral'} count={count} aria-hidden="true" />
+      )}
+    </Link>
+  )
 }
 
 export function ScopeSegment({ scope, activeCount, archivedCount }: ScopeSegmentProps) {
@@ -42,22 +69,13 @@ export function ScopeSegment({ scope, activeCount, archivedCount }: ScopeSegment
       aria-label="Session scope"
       className="flex gap-1 rounded-md border border-edge bg-surface p-1"
     >
-      <Link
-        to={SESSIONS_PATH}
-        aria-current={scope === 'live' ? 'page' : undefined}
-        className={cn(item, scope === 'live' ? here : elsewhere)}
-      >
-        Active
-        {count(activeCount)}
-      </Link>
-      <Link
+      <ScopeLink to={SESSIONS_PATH} label="Active" count={activeCount} current={scope === 'live'} />
+      <ScopeLink
         to={ARCHIVED_PATH}
-        aria-current={scope === 'archived' ? 'page' : undefined}
-        className={cn(item, scope === 'archived' ? here : elsewhere)}
-      >
-        Archived
-        {count(archivedCount)}
-      </Link>
+        label="Archived"
+        count={archivedCount}
+        current={scope === 'archived'}
+      />
     </nav>
   )
 }

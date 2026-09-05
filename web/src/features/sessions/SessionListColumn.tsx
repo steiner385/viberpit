@@ -94,9 +94,13 @@ export function SessionListColumn({
   onReviewSession,
   ...live
 }: SessionListColumnProps) {
-  // The archived COUNT only — the same query the archived nav badge used to
-  // read, so this is a cache hit and not a second fetch. The archived ROWS are
-  // fetched by `ArchivedScopeBody`, and only while that scope is on screen.
+  // The archived COUNT, for the segment. This subscription is UNCONDITIONAL —
+  // the count is on screen in both scopes, so the archived query (10 s stale /
+  // 30 s poll) is live in both, exactly as it was when the nav badge read it.
+  // Same query key as `ArchivedScopeBody`'s, so mounting that body adds a
+  // subscriber and not a second fetch. What stays scope-local is the archived
+  // SEARCH and ORDERING state, which belongs to the body that renders the rows.
+  // The live poll is untouched either way: two queries, never merged (D4).
   const { data: archived = [] } = useArchivedSessions()
 
   return (
@@ -112,7 +116,7 @@ export function SessionListColumn({
       </div>
 
       {scope === 'live'
-        ? <LiveScopeBody state={state} onNew={onNew} {...live} />
+        ? <LiveScopeBody state={state} {...live} />
         : <ArchivedScopeBody onReviewSession={onReviewSession} />}
 
       {/* Daemon health: collapses to nothing when there is no daemon to watch.
@@ -167,9 +171,11 @@ export function SessionListColumn({
   )
 }
 
+/** `onNew` and `newSelected` are the frame's, not the body's: the button they
+ *  drive sits in the column's foot, below the daemon indicator. */
 type LiveScopeBodyProps = Omit<
   SessionListColumnProps,
-  'scope' | 'newSelected' | 'onReviewSession'
+  'scope' | 'newSelected' | 'onNew' | 'onReviewSession'
 >
 
 /** The live scope: the column body as it has always been, unchanged. */

@@ -417,8 +417,10 @@ describe('SessionListColumn — scope switch', () => {
       scope: 'live',
       archived: [],
     })
-    expect(screen.getByRole('link', { name: /Active/ })).toHaveTextContent('2')
-    expect(screen.getByRole('link', { name: /Archived/ }).textContent).toBe('Archived')
+    // Exact accessible names: a count rendered as a sibling node would be
+    // announced "Active2", and a `/Active/` regex would pass on it.
+    expect(screen.getByRole('link', { name: 'Active (2)' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Archived' })).toBeInTheDocument()
   })
 
   it('keeps the daemon indicator in both scopes', () => {

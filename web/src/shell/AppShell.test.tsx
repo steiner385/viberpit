@@ -29,7 +29,7 @@
 // evidence of adequate contrast. Contrast is checked separately by
 // src/__tests__/contrast.test.ts against the tokens in index.css.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { axe, toHaveNoViolations } from 'jest-axe'
 import { createMemoryRouter, RouterProvider, type RouteObject } from 'react-router-dom'
@@ -37,7 +37,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 expect.extend(toHaveNoViolations)
 
-import type { Session } from '@/api/types'
+import type { ArchivedSession, Session } from '@/api/types'
+import { archivedSession } from '@/test/factories'
 
 // ── typed fixtures (R10: real values, never `as unknown as T`) ────────────────
 
@@ -57,6 +58,10 @@ function session(over: Partial<Session> = {}): Session {
 
 const SESSIONS: Session[] = [session({ id: 'a', name: 'First' }), session({ id: 'b', name: 'Second' })]
 
+/** One archived row, so the list column's archived scope has something to show
+ *  and the scope segment has a count to announce. */
+const ARCHIVED: ArchivedSession[] = [archivedSession({ id: 'arc-1', name: 'Old work' })]
+
 // ── the fake daemon ──────────────────────────────────────────────────────────
 //
 // The api CLIENT is faked, not the hooks: every hook the shell mounts —
@@ -71,6 +76,9 @@ vi.mock('@/api/client', async (importOriginal) => {
     api: {
       get: vi.fn(async (path: string): Promise<unknown> => {
         if (path === '/sessions' || path === '/sessions?viewing=1') return SESSIONS
+        // A DIFFERENT endpoint from `/sessions` — answering it with the live
+        // list would make every session look archived.
+        if (path === '/sessions/archived') return ARCHIVED
         if (path === '/fleet/hosts') return { hosts: [] }
         if (path === '/config') return { adoptionEnabled: false }
         return []
@@ -325,6 +333,53 @@ describe('AppShell — the conditional regions', () => {
     await waitFor(() => expect(presentAppRegions()).toContain('app.list'))
   })
 
+  /**
+   * The shell's ONE derivation of list scope (`listScopeForPath(pathname)` in
+   * `useSessionsWorkspace`), asserted end to end.
+   *
+   * Nothing else covers it: `ContextList.test.tsx` re-derives it test-side and
+   * `SessionListColumn.test.tsx` passes a literal, so hardcoding `scope: 'live'`
+   * in the shell would make the archived list unreachable from the UI with the
+   * whole suite still green. Mutation-checked: with that hardcode in place this
+   * case fails on "Old work", and the rest of the file still passes.
+   *
+   * Asserted inside `app.list` specifically — the archived ROWS, not merely a
+   * route that resolved. The page beside them is `ArchivedWelcome`, which holds
+   * no rows, so a match here can only have come from the column.
+   */
+  it('puts the list column in the archived scope on /sessions/archived', async () => {
+    renderShell({ path: '/sessions/archived', mode: 'desktop' })
+    const list = await waitFor(() => {
+      const el = document.querySelector('[data-region="app.list"]')
+      if (!el) throw new Error('app.list is not on screen')
+      return el as HTMLElement
+    })
+    // The archived rows themselves …
+    expect(await within(list).findByText('Old work')).toBeInTheDocument()
+    // … the archived scope marked current on the segment, with its count …
+    expect(within(list).getByRole('link', { name: 'Archived (1)' })).toHaveAttribute(
+      'aria-current',
+      'page',
+    )
+    // … and the live scope's own affordances gone.
+    expect(within(list).queryByRole('button', { name: 'New Session' })).not.toBeInTheDocument()
+  })
+
+  it('puts the list column in the live scope on /sessions', async () => {
+    renderShell({ path: '/sessions', mode: 'desktop' })
+    const list = await waitFor(() => {
+      const el = document.querySelector('[data-region="app.list"]')
+      if (!el) throw new Error('app.list is not on screen')
+      return el as HTMLElement
+    })
+    expect(await within(list).findByText('First')).toBeInTheDocument()
+    expect(within(list).queryByText('Old work')).not.toBeInTheDocument()
+    expect(within(list).getByRole('link', { name: 'Active (2)' })).toHaveAttribute(
+      'aria-current',
+      'page',
+    )
+  })
+
   it('shows the list and the dock together on phone, with the page hidden behind them', async () => {
     renderShell({ path: '/sessions', mode: 'phone' })
     await screen.findByTestId('page-sessions')
@@ -462,7 +517,14 @@ describe('AppShell — accessibility', () => {
     // (`findByTestId`, then `withSessionRows` for the dock's `aria-controls`
     // target), so there is nothing left for a retry to fix.
     expect(await axe(document.body, AXE_OPTIONS)).toHaveNoViolations()
-  })
+    // …and the same reasoning applies one level out, to the CASE timeout. A full
+    // shell now renders the scope segment too, and under a parallel full-suite
+    // run the phone pass has measured 5.1s against vitest's 5s default — while
+    // taking ~1s in isolation. That is scheduler contention, not a slow render,
+    // and letting the default trip turns a contended machine into a red
+    // accessibility test that says nothing about accessibility. CI is slower
+    // than a dev box, so the default is the wrong bound here.
+  }, 20_000)
 
   /**
    * Push mode is the ordinary desktop (≥1280px) shape of the drawer, and it was
@@ -487,5 +549,7 @@ describe('AppShell — accessibility', () => {
     expect(regionCounts().get('app.drawer')).toBe(1)
 
     expect(await axe(document.body, AXE_OPTIONS)).toHaveNoViolations()
-  })
+    // Same whole-body axe pass as the cases above, so the same case timeout —
+    // this one renders MORE than they do (a push-mode drawer plus its resizer).
+  }, 20_000)
 })

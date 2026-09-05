@@ -7,10 +7,13 @@
 // scrolling band — so `SessionListColumn`'s layout is identical in either
 // scope: fixed head, one scroll region, fixed foot.
 //
-// Its hook lives HERE rather than in the column, so the 30 s archived poll runs
-// only while this scope is on screen and never behind the live list. The
-// column's own `useArchivedSessions()` (for the segment's count) is the same
-// cached query key, so mounting this adds no fetch.
+// Its hook lives HERE rather than in the column so the archived SEARCH and
+// ORDERING state belongs to the body that renders the rows. It is NOT what
+// scopes the archived query: the column subscribes to `useArchivedSessions()`
+// unconditionally for the segment's count, so that query polls in both scopes —
+// as it did when the nav badge read it. This adds a subscriber to the same
+// cached key, not a second fetch. The live poll is untouched either way; the
+// two streams are never merged (D4).
 //
 // It is a component of its own rather than a private function inside
 // `SessionListColumn` because it is the unit the archived tests mount: the
