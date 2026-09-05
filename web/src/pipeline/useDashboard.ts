@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { DashboardState, NotificationEvent } from './types';
 import { useApiBase } from './ApiBaseContext';
+import { readNotifyPref, writeNotifyPref } from './notifyPref';
 
 // ---- browser notifications (issue #19) ----
 // Opt-in Web Notifications for the named `notification` SSE frames. No service
@@ -9,18 +10,8 @@ import { useApiBase } from './ApiBaseContext';
 // Display text comes pre-rendered from the server (ev.rendered) so the bell, the
 // host-command sink, and the webhook never disagree — see server/notifier.ts.
 
-const LS_NOTIFY_KEY = 'prdash.notifications';
-
 function notifySupported(): boolean {
   return typeof Notification !== 'undefined';
-}
-
-function readNotifyPref(): boolean {
-  try { return localStorage.getItem(LS_NOTIFY_KEY) === 'true'; } catch { return false; }
-}
-
-function writeNotifyPref(v: boolean): void {
-  try { localStorage.setItem(LS_NOTIFY_KEY, String(v)); } catch { /* private mode — ignore */ }
 }
 
 /** Frames arrive once per poll cycle; if none lands within this window while the
