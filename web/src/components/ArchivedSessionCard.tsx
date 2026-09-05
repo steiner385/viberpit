@@ -52,7 +52,12 @@ export function ArchivedSessionCard({
   // Prefer the accurate repo field (GitHub nameWithOwner); fall back to the
   // cwd-derived name only for legacy/scratch rows that never recorded one.
   const repoLabel = formatRepoLabel(session.repo ?? repoFromCwd(session.cwd))
-  const now = useNow()
+  // 60s, not the SessionCard default of 1s: an archived timestamp is days old
+  // (see the "Archived Nd ago" label below), so the displayed text changes at
+  // most once a day. ArchivedManager's QUICK_PURGE_COUNTS goes up to 200 rows
+  // and neither this card nor CardFrame is memoized, so a per-second tick here
+  // would be 200 needless re-renders/sec for a label that never visibly moves.
+  const now = useNow(60_000)
 
   return (
     <CardFrame
@@ -63,6 +68,7 @@ export function ArchivedSessionCard({
       selected={selected}
       listMode={listMode}
       onOpen={onReview}
+      swipeEnabled={!unarchiving}
       swipeRight={{
         label: `Unarchive ${name}`,
         icon: <ArchiveRestore size={20} aria-hidden="true" />,
@@ -85,6 +91,7 @@ export function ArchivedSessionCard({
       trailing={
         <>
           <span
+            data-testid="card-account"
             className="flex-shrink-0 max-w-[30%] truncate text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded"
             title={session.account}
           >

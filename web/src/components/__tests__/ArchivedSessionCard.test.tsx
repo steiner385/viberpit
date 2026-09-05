@@ -74,4 +74,44 @@ describe('ArchivedSessionCard', () => {
     expect(screen.queryByTestId('card-model')).not.toBeInTheDocument()
     expect(screen.queryByTestId('card-prs')).not.toBeInTheDocument()
   })
+
+  it('falls back to the cwd-derived repo when the session has no repo field', () => {
+    render(<ArchivedSessionCard {...props({
+      session: archivedSession({ repo: null, cwd: '/home/x/.ccswitch/worktrees/KinDash/ab12' }),
+    })} />)
+    // repoFromCwd takes the segment right after `worktrees/`, not the basename
+    // (a meaningless hash) or the `.ccswitch` parent — see repoFromCwd.ts.
+    expect(screen.getByText('KinDash')).toBeInTheDocument()
+  })
+
+  it('tags the account chip with the shared card-account testid', () => {
+    render(<ArchivedSessionCard {...props()} />)
+    expect(screen.getByTestId('card-account')).toHaveTextContent('alice')
+  })
+
+  describe('unarchiving', () => {
+    it('shows the default enabled Unarchive label when not unarchiving', async () => {
+      render(<ArchivedSessionCard {...props()} />)
+      await userEvent.click(screen.getByRole('button', { name: 'More actions for Old project' }))
+      const item = screen.getByRole('menuitem', { name: 'Unarchive' })
+      expect(item).toBeEnabled()
+    })
+
+    it('shows a disabled "Restoring…" label while unarchiving', async () => {
+      render(<ArchivedSessionCard {...props({ unarchiving: true })} />)
+      await userEvent.click(screen.getByRole('button', { name: 'More actions for Old project' }))
+      const item = screen.getByRole('menuitem', { name: 'Restoring…' })
+      expect(item).toBeDisabled()
+    })
+
+    it('disables the swipe gesture while unarchiving, so a second swipe cannot double-submit', () => {
+      // CardFrame only attaches the swipe layer (and its 'card-swipe-fg'
+      // testid) when swipeEnabled — same pattern as the pending-session case
+      // in SessionCardSwipe.test.tsx's "does not render the swipe layer".
+      render(<ArchivedSessionCard {...props({ unarchiving: true })} />)
+      expect(screen.queryByTestId('card-swipe-fg')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('swipe-panel-unarchive')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('swipe-panel-delete')).not.toBeInTheDocument()
+    })
+  })
 })
