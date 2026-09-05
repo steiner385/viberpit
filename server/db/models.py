@@ -397,9 +397,9 @@ class AppSettings(Base):
     # session lingers exactly like a per-session manual opt-out. Nullable (three-state:
     # NULL means "unset → default enabled") so init_db backfills it without a migration.
     auto_archive_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
-    # Model-approval policy. `model_approval_action` is the action to take when a
-    # gated model is requested ("approve" | "deny" | NULL = prompt). `model_approval_denylist`
-    # is a JSON-encoded list of model aliases that are always denied without a prompt.
+    # Per-install model-approval action: "require_approval" | "block" | "allow" | NULL
+    # (NULL = fall back to CCSWITCH_MODEL_APPROVAL_ACTION). See
+    # server/sessions/model_policy.VALID_ACTIONS — the one definition of the set.
     # Both nullable so init_db backfills them without a migration on both dialects.
     model_approval_action: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     model_approval_denylist: Mapped[str | None] = mapped_column(String, nullable=True, default=None)

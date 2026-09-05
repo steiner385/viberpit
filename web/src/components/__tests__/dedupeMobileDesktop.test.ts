@@ -65,23 +65,29 @@ function shellSources(): { rel: string; text: string }[] {
 const routes = read('src/shell/routes.tsx')
 const appShell = read('src/shell/AppShell.tsx')
 const mainPaneSession = read('src/features/sessions/MainPaneSession.tsx')
-const settingsView = read('src/components/settings/SettingsView.tsx')
+const settingsDefs = read('src/features/settings/settingsDefs.ts')
 
 describe('#43 accounts/archived panels — one implementation', () => {
-  it('the route table is the only mount point for SettingsView and ArchivedManager', () => {
+  it('the route table is the only mount point for the Settings pages and ArchivedManager', () => {
     // Both were mounted by each shell before; both are pages now, and the table
-    // is the one place a page is named.
-    expect(routes).toMatch(/<SettingsView\b/)
+    // is the one place a page is named. `SettingsView` was deleted with the
+    // Settings redesign (sub-spec C) and its two successors are named here.
+    expect(routes).toMatch(/<SettingsPage\b/)
+    expect(routes).toMatch(/<SettingsIndexPage\b/)
     expect(routes).toMatch(/<ArchivedManager\b/)
     for (const { rel, text } of shellSources()) {
       if (rel === 'src/shell/routes.tsx') continue
-      expect(text, `${rel} mounts SettingsView`).not.toMatch(/<SettingsView\b/)
+      expect(text, `${rel} mounts a Settings page`).not.toMatch(/<Settings(Index)?Page\b/)
       expect(text, `${rel} mounts ArchivedManager`).not.toMatch(/<ArchivedManager\b/)
     }
   })
 
-  it('SettingsView is the single mount point for the shared AccountsManager', () => {
-    expect(settingsView).toMatch(/<AccountsManager\b/)
+  it('settingsDefs is the single mount point for the shared AccountsManager', () => {
+    // The registry names the component for the `accounts` section, and
+    // `SettingsPage` renders whatever the registry says — so "the one place
+    // AccountsManager is mounted" moved from a JSX branch to a table row. The
+    // property is unchanged: exactly one, and no host re-inlines it.
+    expect(settingsDefs).toMatch(/component:\s*AccountsManager\b/)
     for (const { rel, text } of shellSources()) {
       expect(text, `${rel} mounts AccountsManager`).not.toMatch(/<AccountsManager\b/)
     }

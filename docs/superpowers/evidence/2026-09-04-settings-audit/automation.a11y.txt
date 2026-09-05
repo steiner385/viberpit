@@ -1,0 +1,118 @@
+uid=3_0 RootWebArea "ccswitch" url="http://127.0.0.1:8787/settings/automation"
+  uid=3_1 navigation "Sections"
+    uid=3_2 link "Sessions (4)" url="http://127.0.0.1:8787/sessions"
+      uid=3_3 StaticText "Sessions (4)"
+    uid=3_4 link "Pipeline (8)" url="http://127.0.0.1:8787/pipeline"
+      uid=3_5 StaticText "Pipeline (8)"
+    uid=3_6 link "Automations (5)" url="http://127.0.0.1:8787/automations"
+      uid=3_7 StaticText "Automations (5)"
+    uid=3_8 link "Initiatives" url="http://127.0.0.1:8787/initiatives"
+      uid=3_9 StaticText "Initiatives"
+    uid=3_10 link "Products" url="http://127.0.0.1:8787/projects"
+      uid=3_11 StaticText "Products"
+    uid=3_12 link "Archived (100)" url="http://127.0.0.1:8787/archived"
+      uid=3_13 StaticText "Archived (100)"
+    uid=3_14 link "Insights" url="http://127.0.0.1:8787/insights"
+      uid=3_15 StaticText "Insights"
+    uid=3_16 link "New session" url="http://127.0.0.1:8787/sessions?dialog=new"
+      uid=3_17 StaticText "New session"
+    uid=3_18 button "Assistant"
+    uid=3_19 button "Help"
+    uid=3_20 button "Theme"
+    uid=3_21 link "Settings" url="http://127.0.0.1:8787/settings"
+      uid=3_22 StaticText "Settings"
+    uid=3_23 button "Expand navigation" expandable
+  uid=3_24 main
+    uid=3_25 tab "General" selectable
+    uid=3_26 tab "Accounts" selectable
+    uid=3_27 tab "Automation" selectable selected
+    uid=3_28 tab "Notifications" selectable
+    uid=3_29 tab "Hooks" selectable
+    uid=3_30 tab "Plugins" selectable
+    uid=3_31 tab "Skills" selectable
+    uid=3_32 tab "Commands" selectable
+    uid=3_33 tab "MCP Servers" selectable
+    uid=3_34 tab "Presets" selectable
+    uid=3_35 tab "Templates" selectable
+    uid=3_36 tab "Profiles" selectable
+    uid=3_37 tab "Snapshots" selectable
+    uid=3_38 tab "Fleet" selectable
+    uid=3_39 StaticText "PR Doctor"
+    uid=3_40 StaticText "1"
+    uid=3_41 StaticText " active"
+    uid=3_42 StaticText "Watches CI on PRs created via ccswitch and restores failing ones."
+    uid=3_43 StaticText "watching 1 failing PR(s)"
+    uid=3_44 combobox "Mode" expandable haspopup="menu" value="auto"
+      uid=3_45 option "off" selectable value="off"
+      uid=3_46 option "auto" selectable selected value="auto"
+      uid=3_47 option "propose" selectable value="propose"
+    uid=3_48 StaticText "Acts automatically without confirmation."
+    uid=3_49 switch "PR Doctor enabled" checked
+    uid=3_50 button "Expand" expandable
+    uid=3_51 StaticText "Backlog Runner"
+    uid=3_52 StaticText "4"
+    uid=3_53 StaticText " active"
+    uid=3_54 StaticText "Continuously implements high-priority backlog issues into reviewed-ready PRs."
+    uid=3_55 StaticText "1 implementing, 0 eligible, 23 blocked"
+    uid=3_56 combobox "Mode" expandable haspopup="menu" value="auto"
+      uid=3_57 option "off" selectable value="off"
+      uid=3_58 option "propose" selectable value="propose"
+      uid=3_59 option "auto" selectable selected value="auto"
+    uid=3_60 StaticText "Acts automatically without confirmation."
+    uid=3_61 switch "Backlog Runner enabled" checked
+    uid=3_62 button "Expand" expandable
+    uid=3_63 StaticText "Autopilot"
+    uid=3_64 StaticText "Continuously advances every governed session toward its goal."
+    uid=3_65 StaticText "0 advancing"
+    uid=3_66 combobox "Mode" expandable haspopup="menu" value="propose"
+      uid=3_67 option "off" selectable value="off"
+      uid=3_68 option "propose" selectable selected value="propose"
+      uid=3_69 option "auto" selectable value="auto"
+    uid=3_70 StaticText "Suggests actions — you approve before anything runs."
+    uid=3_71 switch "Autopilot enabled" checked
+    uid=3_72 button "Expand" expandable
+    uid=3_73 StaticText "CI/CD Doctor"
+    uid=3_74 StaticText "Watches CI health across repos: flaky tests, advisory-check stability and graduation, and workflow waste."
+    uid=3_75 StaticText "40 open finding(s), 34 graduation candidate(s)"
+    uid=3_76 switch "CI/CD Doctor enabled" checked
+    uid=3_77 button "Expand" expandable
+    uid=3_78 StaticText "Archive Audit"
+    uid=3_79 StaticText "Re-audits recently archived sessions against the completion bar and auto-unarchives ones archived prematurely (no merged/armed PR)."
+    uid=3_80 StaticText "idle"
+    uid=3_81 switch "Archive Audit enabled" checked
+    uid=3_82 button "Expand" expandable
+    uid=3_83 StaticText "SDLC Intake"
+    uid=3_84 StaticText "Turns a brainstorm/triage trigger into a proposed intent.md PR — the front of the AI-native SDLC loop. Propose-only: a human advance is the gate."
+    uid=3_85 StaticText "idle"
+    uid=3_86 combobox "Mode" expandable haspopup="menu" value="propose"
+      uid=3_87 option "off" selectable value="off"
+      uid=3_88 option "propose" selectable selected value="propose"
+      uid=3_89 option "auto" selectable value="auto"
+    uid=3_90 StaticText "Suggests actions — you approve before anything runs."
+    uid=3_91 switch "SDLC Intake enabled" checked
+    uid=3_92 button "Expand" expandable
+    uid=3_93 StaticText "SDLC Synthesizer"
+    uid=3_94 StaticText "Carries initiatives intent→spec→plan as artifact PRs (propose-only v1)."
+    uid=3_95 StaticText "proposes spec/plan artifacts for in-progress initiatives"
+    uid=3_96 combobox "Mode" expandable haspopup="menu" value="propose"
+      uid=3_97 option "off" selectable value="off"
+      uid=3_98 option "propose" selectable selected value="propose"
+      uid=3_99 option "auto" selectable value="auto"
+    uid=3_100 StaticText "Suggests actions — you approve before anything runs."
+    uid=3_101 switch "SDLC Synthesizer enabled" checked
+    uid=3_102 button "Expand" expandable
+    uid=3_103 StaticText "PM Sync"
+    uid=3_104 StaticText "Mirrors onboarded projects' GitHub issues/PRs into the work-item index and refreshes the feature index from merged docs. Read-only toward GitHub; the mirror is disposable, GitHub stays the truth."
+    uid=3_105 StaticText "0 synced · 0 backfilling · 1 projects · 0 errors"
+    uid=3_106 switch "PM Sync enabled" checked
+    uid=3_107 button "Expand" expandable
+    uid=3_108 StaticText "GitHub Reconcile"
+    uid=3_109 StaticText "Writes Projects v2 Status/Score/Stage, board membership and native blocked-by edges from ccswitch decisions. Journaled, capped, leader-gated."
+    uid=3_110 StaticText "idle"
+    uid=3_111 combobox "Mode" expandable haspopup="menu" value="off"
+      uid=3_112 option "off" selectable selected value="off"
+      uid=3_113 option "dry_run" selectable value="dry_run"
+      uid=3_114 option "apply" selectable value="apply"
+    uid=3_115 switch "GitHub Reconcile enabled"
+    uid=3_116 button "Expand" expandable
+  uid=3_117 region "Notifications alt+T" live="polite" relevant="additions text"

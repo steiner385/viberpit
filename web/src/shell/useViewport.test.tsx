@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, renderHook } from '@testing-library/react'
 import { MEDIA, stubMatchMedia } from '@/test/matchMedia'
 import { ViewportProvider, useViewport } from './useViewport'
 
@@ -69,6 +69,13 @@ describe('useViewport', () => {
       .toBe('desktop/desktop/false')
   })
 
+  it('reports portrait from the orientation query (DEC-3)', () => {
+    stubMatchMedia([MEDIA.tablet, MEDIA.portrait])
+    const { result } = renderHook(() => useViewport(), { wrapper: ({ children }) => <ViewportProvider kiosk={null}>{children}</ViewportProvider> })
+    expect(result.current.mode).toBe('tablet')
+    expect(result.current.portrait).toBe(true)
+  })
+
   // D13's drawer threshold sits BETWEEN the tier breakpoints: the drawer pushes
   // from 1280, while `width` only changes at 1024 and 1440. These pin the gap —
   // a consumer deriving push from `width === 'wide'` would be wrong for the
@@ -98,11 +105,11 @@ import { fileURLToPath } from 'node:url'
 
 /**
  * useViewport is the only LAYOUT matchMedia reader. This walks the source and
- * fails if a new min-width/max-width query appears outside it — whether read
- * via a raw `matchMedia(...)` call or through the `useMediaQuery(...)` wrapper.
- * Non-layout queries (motion, pointer, colour-scheme) are listed as deliberate
- * exemptions — see DEC-8 in the plan. Adding a file here must be a decision,
- * not a reflex.
+ * fails if a new min-width/max-width/orientation query appears outside it —
+ * whether read via a raw `matchMedia(...)` call or through the `useMediaQuery(...)`
+ * wrapper. Non-layout queries (motion, pointer, colour-scheme) are listed as
+ * deliberate exemptions — see DEC-8 in the plan. Adding a file here must be a
+ * decision, not a reflex.
  *
  * The walk root is derived from this test file's own location (via
  * import.meta.url), NOT process.cwd(). process.cwd() differs by invocation:
@@ -113,7 +120,7 @@ import { fileURLToPath } from 'node:url'
  * process.cwd() would have made this guard pass vacuously — walking the wrong
  * tree and finding nothing to flag — under that second invocation.
  */
-const LAYOUT_QUERY = /(?:matchMedia|useMediaQuery)\(\s*['"`]\((?:min|max)-width/
+const LAYOUT_QUERY = /(?:matchMedia|useMediaQuery)\(\s*['"`]\((?:(?:min|max)-width|orientation)/
 const EXEMPT = new Set<string>([
   'src/shell/useViewport.tsx',
   // Takes `query` as a parameter, not a literal, so this never matches the

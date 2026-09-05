@@ -16,6 +16,13 @@ describe('page primitives', () => {
     expect(document.title).toBe('Automations — ccswitch')
   })
 
+  it('PageHeader can title the document differently from its h1', () => {
+    // Settings: one page called "Settings", whose TAB says which section is open.
+    render(<PageHeader title="Settings" documentTitle="Defaults · Settings" />)
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Settings')
+    expect(document.title).toBe('Defaults · Settings — ccswitch')
+  })
+
   it('PageHeader renders meta and actions', () => {
     render(<PageHeader title="Automations" meta="3 active" actions={<button>New</button>} />)
     expect(screen.getByText('3 active')).toBeInTheDocument()
