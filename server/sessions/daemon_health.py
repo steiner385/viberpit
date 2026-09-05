@@ -28,6 +28,8 @@ from collections import deque
 from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
+from server.aio import cancel_and_reap
+
 log = logging.getLogger("server.sessions.daemon_health")
 
 # Mirror the watchdog's default (scripts/ccswitch-health-check.sh: STATE_DIR).
@@ -175,9 +177,7 @@ class DaemonHealthMonitor:
 
     async def stop(self) -> None:
         if self._task is not None:
-            self._task.cancel()
-            try:
-                await self._task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
+            # Reached from the SIGTERM drain: an outer cancellation must unwind us,
+            # not be mistaken for the poller's own (issue #1164).
+            await cancel_and_reap(self._task, phase="daemon-health-monitor")
             self._task = None

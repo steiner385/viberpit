@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from server.aio import cancel_and_reap
+
 log = logging.getLogger(__name__)
 
 REAUTH_DISPLAY_KEY = "__reauth__"   # reserved pseudo-session key for the reauth virtual display
@@ -312,11 +314,8 @@ class ReauthManager:
         self._kill_launcher()
 
         if task is not None and not task.done():
-            task.cancel()
-            try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
-                pass
+            # Bounded reap; an outer cancellation still unwinds us (issue #1164).
+            await cancel_and_reap(task, phase="reauth.runner", timeout=5.0)
 
         # Drive cleanup from the state machine rather than relying solely on the
         # runner's finally block: asyncio.to_thread cannot be interrupted, so the

@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
+from server.aio import cancel_and_reap
 from server.assistant.context import validate_context
 from server.audit import record_audit, redact_event
 from server.auth.identity import verify_identity
@@ -830,16 +831,11 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             task = live_tasks.pop(session_id, None)
             if task is None:
                 return
-            task.cancel()
-            try:
-                await asyncio.wait_for(task, timeout=0.5)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass
-            except Exception:
-                # A supervised task that already FAILED re-raises its exception here; it was
-                # observed + logged by supervise, so swallow it — never let a dead forwarding
-                # task crash the teardown of an otherwise clean detach/rebind.
-                pass
+            # A supervised task that already FAILED has its exception retrieved (and
+            # logged) inside cancel_and_reap, so a dead forwarding task can't crash an
+            # otherwise clean detach/rebind — and a cancellation aimed at THIS socket
+            # handler propagates instead of being mistaken for the task's (#1164).
+            await cancel_and_reap(task, phase=f"ws.live:{session_id}", timeout=0.5)
 
         async def _handle_attach(session_id: str, since_src_seq: int | None = None,
                                  since_epoch: str | None = None) -> None:
@@ -1248,21 +1244,8 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             for sid in list(live_tasks.keys()):
                 await _handle_detach(sid)
 
-            event_task.cancel()
-            try:
-                await asyncio.wait_for(event_task, timeout=0.5)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass
-            except Exception:
-                pass  # already observed + logged by supervise (see _handle_detach)
-
-            batcher_task.cancel()
-            try:
-                await asyncio.wait_for(batcher_task, timeout=0.5)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass
-            except Exception:
-                pass  # already observed + logged by supervise (see _handle_detach)
+            await cancel_and_reap(event_task, phase="ws.events", timeout=0.5)
+            await cancel_and_reap(batcher_task, phase="ws.batcher", timeout=0.5)
 
             await orchestrator.unsubscribe_events(event_q)
             log.debug("ws.disconnect identity=%s", identity)

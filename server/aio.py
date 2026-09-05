@@ -1,10 +1,13 @@
-"""Shared asyncio teardown helper.
+"""Shared asyncio teardown helpers.
 
 ``bounded_wait`` is the single implementation of "await this, but never hang":
 give the awaitable a budget, then cancel it, then give the cancellation a grace
 window, then abandon it with a loud log. Shutdown paths must use this instead of
 bare ``await`` — an unbounded await in teardown wedged CI's TestClient exits for
 11+ minutes until the job's wall-clock timeout killed pytest (issue #846).
+
+``cancel_and_reap`` is the single implementation of "cancel this child and wait
+for it, without swallowing MY OWN cancellation" (issue #1164).
 """
 from __future__ import annotations
 
@@ -57,14 +60,71 @@ async def bounded_wait(
     return False
 
 
-def _consume(task: asyncio.Task[Any], phase: str) -> None:
+def _consume(
+    task: asyncio.Future[Any], phase: str, *, level: int = logging.WARNING
+) -> None:
     """Retrieve the task's outcome so a failure can't surface as 'exception was
     never retrieved' noise later; log it against the phase name instead."""
     if task.cancelled():
         return
     exc = task.exception()
     if exc is not None:
-        log.warning("bounded_wait: phase %r failed", phase, exc_info=exc)
+        log.log(level, "phase %r failed", phase, exc_info=exc)
+
+
+async def cancel_and_reap(
+    task: asyncio.Future[Any] | None,
+    *,
+    phase: str,
+    timeout: float | None = None,
+) -> bool:
+    """Cancel *task* and wait for it to unwind, swallowing only ITS cancellation.
+
+    The single implementation of the teardown dance that used to be copied into
+    every ``stop()``/``aclose()``/detach path (issue #1164). Hand-rolled, it read::
+
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):   # ← eats the OUTER cancel
+            pass
+
+    After ``task.cancel()`` the ``CancelledError`` from ``await task`` is *usually*
+    the child's — but when the surrounding coroutine is itself being cancelled (the
+    SIGTERM drain, ``server/ipc/drain_on_signal.py``) that handler swallows the outer
+    cancellation and the caller runs on as though it were never cancelled. A graceful
+    shutdown then overruns ``ccswitch-daemon.service``'s ``TimeoutStopSec`` and is
+    SIGKILLed with every live session attached.
+
+    ``asyncio.wait`` makes the distinction STRUCTURAL rather than a heuristic on
+    ``Task.cancelling()``: it absorbs the child's cancellation into the task object
+    and only ever raises the *caller's* own, so the ambiguity simply does not arise
+    and the outer cancellation propagates untouched.
+
+    *timeout* bounds the wait (None = until the child unwinds); on overrun the child
+    is left running rather than awaited forever — a teardown phase must cost seconds,
+    not the process (issue #846). Child failures are retrieved and logged at DEBUG:
+    these are shutdown paths, and their previous behaviour was to swallow silently.
+
+    Returns True if *task* is finished when we return (including "nothing to reap"),
+    False if it outlived the timeout — or if it is the caller's own task, which is
+    never cancelled here: self-cancelling a teardown path is the very failure this
+    helper exists to prevent.
+    """
+    if task is None:
+        return True
+    if task is asyncio.current_task():
+        log.warning("cancel_and_reap: phase %r tried to reap its own task — ignored", phase)
+        return False
+    if not task.done():
+        task.cancel()
+    done, _pending = await asyncio.wait({task}, timeout=timeout)
+    if not done:
+        log.debug("cancel_and_reap: phase %r still unwinding after %ss — abandoned",
+                  phase, timeout)
+        return False
+    _consume(task, phase, level=logging.DEBUG)
+    return True
 
 
 def iter_task_frames(task: asyncio.Task[Any]) -> tuple[list[Any], Any]:

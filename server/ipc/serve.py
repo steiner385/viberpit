@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 
+from server.aio import cancel_and_reap
 from server.config import get_settings
 from server.db import init_db
 from server.ipc.daemon import create_daemon_app
@@ -196,11 +197,7 @@ async def daemon_lifespan(app, orchestrator):
         except Exception:
             loop_lag_task = None
         if loop_lag_task is not None:
-            loop_lag_task.cancel()
-            try:
-                await loop_lag_task
-            except asyncio.CancelledError:
-                pass
+            await cancel_and_reap(loop_lag_task, phase="daemon.loop-lag")
         await orchestrator.stop()
 
 
