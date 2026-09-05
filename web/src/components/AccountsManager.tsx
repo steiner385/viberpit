@@ -294,6 +294,7 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
   const [deviceReauthStarted, setDeviceReauthStarted] = useState(false)
   const openaiReauth = useOpenAIReauth()
   const cancelOpenAIReauth = useCancelOpenAIReauth()
+  const deviceReauthStarting = openaiReauth.isPending
   const deviceStatusQuery = useOpenAIReauthStatus(account.name, isOpenAI && deviceReauthStarted)
   const deviceStatus = deviceReauthStarted ? deviceStatusQuery.data : undefined
 
@@ -317,8 +318,8 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
   }, [deviceStatus?.state, qc])
 
   function handleOpenAIReauth() {
-    setDeviceReauthStarted(true)
     openaiReauth.mutate(account.name, {
+      onSuccess: () => setDeviceReauthStarted(true),
       onError: () => setDeviceReauthStarted(false),
     })
   }
@@ -641,7 +642,7 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
               </button>
             )
           ) : isOpenAI ? (
-            !deviceReauthStarted && (
+            !deviceReauthStarted && !deviceReauthStarting && (
               <button
                 type="button"
                 className={cn(
@@ -673,7 +674,8 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
               </button>
             )
           )}
-          {(isReauthRunning || isAwaitingCode || deviceReauthStarted) && (
+          {(isReauthRunning || isAwaitingCode || deviceReauthStarted
+            || deviceReauthStarting) && (
             <button
               type="button"
               className={cn(
@@ -685,6 +687,7 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
               )}
               aria-label="Cancel reauth"
               onClick={deviceReauthStarted ? handleOpenAICancel : handleCancel}
+              disabled={deviceReauthStarting}
             >
               Cancel
             </button>
@@ -699,7 +702,7 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
       {!editing && isOpenAI && (
         <DeviceCodePanel
           state={deviceStatus}
-          started={deviceReauthStarted}
+          started={deviceReauthStarted || deviceReauthStarting}
           providerLabel="ChatGPT"
         />
       )}

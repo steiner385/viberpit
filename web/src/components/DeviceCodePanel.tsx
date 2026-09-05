@@ -59,7 +59,7 @@ export function DeviceCodePanel({ state, started, providerLabel }: DeviceCodePan
     )
   }
 
-  if (state?.state === 'pending' && started) {
+  if (started && (state === undefined || state.state === 'pending')) {
     return (
       <p className="mt-4 text-xs text-amber-600 dark:text-amber-400">
         Starting device authorization…

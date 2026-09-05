@@ -9,7 +9,7 @@
  * credential-adjacent secret for its short life, and nothing may persist it.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AddAccountDialog } from '../AddAccountDialog'
@@ -65,6 +65,12 @@ async function startFlow(user: ReturnType<typeof userEvent.setup>, onClose = vi.
 beforeEach(() => {
   vi.clearAllMocks()
   window.localStorage.clear()
+  const mutate = vi.fn((
+    _name: string,
+    options?: { onSuccess?: () => void },
+  ) => { options?.onSuccess?.() })
+  vi.mocked(hooks.useAddOpenAIAccount).mockReturnValue(
+    { mutate, isPending: false } as unknown as ReturnType<typeof hooks.useAddOpenAIAccount>)
 })
 
 describe('AddAccountDialog — OpenAI (ChatGPT) device flow', () => {
@@ -90,6 +96,33 @@ describe('AddAccountDialog — OpenAI (ChatGPT) device flow', () => {
       { mutate: addMutate, isPending: false } as unknown as ReturnType<typeof hooks.useAddOpenAIAccount>)
     await startFlow(user)
     expect(addMutate).toHaveBeenCalledWith('chatgpt', expect.anything())
+  })
+
+  it('does not poll stale terminal state before the start POST succeeds', async () => {
+    const user = userEvent.setup()
+    const pollEnabled: boolean[] = []
+    let finishStart: (() => void) | undefined
+    vi.mocked(hooks.useOpenAIAddStatus).mockImplementation((_name: string, enabled: boolean) => {
+      pollEnabled.push(enabled)
+      return {
+        data: enabled ? deviceState({ state: 'failed', error: 'cancelled' }) : undefined,
+        isLoading: false,
+      } as ReturnType<typeof hooks.useOpenAIAddStatus>
+    })
+    const addMutate = vi.fn((
+      _name: string,
+      options?: { onSuccess?: () => void },
+    ) => { finishStart = options?.onSuccess })
+    vi.mocked(hooks.useAddOpenAIAccount).mockReturnValue(
+      { mutate: addMutate, isPending: false } as unknown as ReturnType<typeof hooks.useAddOpenAIAccount>)
+
+    await startFlow(user)
+
+    // The authority may still hold `cancelled` from the previous attempt. A
+    // status GET before this POST completes would render it and stop polling.
+    expect(pollEnabled.at(-1)).toBe(false)
+    act(() => finishStart?.())
+    await waitFor(() => expect(pollEnabled.at(-1)).toBe(true))
   })
 
   it('shows the device code and the verification link', async () => {

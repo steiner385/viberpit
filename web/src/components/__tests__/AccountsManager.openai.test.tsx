@@ -8,7 +8,7 @@
  * OAuth, and not the Copilot add route (which 409s on an existing name).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AccountsManager } from '../AccountsManager'
@@ -96,7 +96,12 @@ function setupDefaultMocks() {
   vi.mocked(hooks.useReauthAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useReauthAccount>)
   vi.mocked(hooks.useCancelReauth).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCancelReauth>)
   vi.mocked(hooks.useSubmitReauthCode).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useSubmitReauthCode>)
-  vi.mocked(hooks.useOpenAIReauth).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useOpenAIReauth>)
+  const openaiMutate = vi.fn((
+    _name: string,
+    options?: { onSuccess?: () => void },
+  ) => { options?.onSuccess?.() })
+  vi.mocked(hooks.useOpenAIReauth).mockReturnValue(
+    { ...NOOP_MUTATION, mutate: openaiMutate } as unknown as ReturnType<typeof hooks.useOpenAIReauth>)
   vi.mocked(hooks.useCancelOpenAIReauth).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCancelOpenAIReauth>)
   vi.mocked(hooks.useReauthStatus).mockReturnValue(
     queryResult<ReauthState>({ state: 'idle', message: null, startedAt: null }))
@@ -184,6 +189,37 @@ describe('AccountsManager — OpenAI reauth is the device flow', () => {
 
     expect(openaiStart).toHaveBeenCalledWith('chatgpt', expect.anything())
     expect(anthropicStart).not.toHaveBeenCalled()
+  })
+
+  it('does not poll the previous terminal result until reauth start succeeds', async () => {
+    const pollEnabled: boolean[] = []
+    let finishStart: (() => void) | undefined
+    vi.mocked(hooks.useOpenAIReauthStatus).mockImplementation(
+      (_name: string, enabled: boolean) => {
+        pollEnabled.push(enabled)
+        return {
+          data: enabled
+            ? { state: 'failed', userCode: null, verificationUri: null, error: 'cancelled' }
+            : undefined,
+          isLoading: false,
+        } as ReturnType<typeof hooks.useOpenAIReauthStatus>
+      },
+    )
+    const mutate = vi.fn((
+      _name: string,
+      options?: { onSuccess?: () => void },
+    ) => { finishStart = options?.onSuccess })
+    vi.mocked(hooks.useOpenAIReauth).mockReturnValue(
+      { ...NOOP_MUTATION, mutate } as unknown as ReturnType<typeof hooks.useOpenAIReauth>)
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([openaiAccount()]))
+
+    const user = userEvent.setup()
+    render(<AccountsManager />, { wrapper })
+    await user.click(screen.getByRole('button', { name: /re-run device flow for chatgpt/i }))
+
+    expect(pollEnabled.at(-1)).toBe(false)
+    act(() => finishStart?.())
+    await waitFor(() => expect(pollEnabled.at(-1)).toBe(true))
   })
 
   it('shows the device code inline once the authority issues one', async () => {
