@@ -48,7 +48,7 @@ def test_claude_adapter_satisfies_provider_neutral_driver_contract():
         attachments=True,
     )
 
-    driver.claude_session_id = "native-1"
+    driver._engine_session_id = "native-1"
     assert driver.engine_session_id == "native-1"
 
 

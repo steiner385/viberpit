@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 from server.api.sessions import _record_to_dict
 from server.app import create_app
 from server.db.models import DEFAULT_MAX_ACTIVE_SESSIONS
+from server.sessions.engine import AgentEngine
 from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
@@ -40,6 +41,9 @@ def _make_record(sid: str, status: str = "idle") -> types.SimpleNamespace:
         id=sid,
         name=f"Session {sid}",
         account="acct1",
+        engine=AgentEngine.CLAUDE_CODE,
+        engine_session_id=None,
+        reasoning_effort=None,
         repo=None,
         status=status,
         name_is_auto=True,

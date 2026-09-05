@@ -554,7 +554,7 @@ class SessionOrchestrator:
         # In-flight completion-driver-release tasks (see _persist_status), keyed by
         # session_id. The driver is already out of `_drivers` by the time an entry
         # lands here — a fast reopen (ensure_driver) must await this before building
-        # a replacement driver against the same claude_session_id/cwd, otherwise the
+        # a replacement driver against the same engine_session_id/cwd, otherwise the
         # old process can still be flushing its session file while the new one reads
         # it (the SDK's own subprocess_cli.py warns this can lose the last assistant
         # message). Cleared on completion, success or failure, so a stuck release can
@@ -566,7 +566,7 @@ class SessionOrchestrator:
         # switch, rate-limit rotation, 401 recompose, crash recovery). Each used to
         # race independently — two recoverable-failure callbacks firing back to
         # back, or a manual switch landing mid-resume, each built and started its
-        # own `claude` process against the same claude_session_id; only one was
+        # own `claude` process against the same engine_session_id; only one was
         # ever registered in `_drivers`, so the loser ran on as an invisible twin
         # burning quota in the same worktree (#1040). A caller that finds an entry
         # here awaits it and takes its driver instead of building a second one.
@@ -1211,7 +1211,7 @@ class SessionOrchestrator:
             mode=mode,
             identity=identity,
             resume=resume,
-            on_engine_session_id=self._persist_claude_session_id,
+            on_engine_session_id=self._persist_engine_session_id,
             on_sync_back=on_sync_back,
             on_status=self._persist_status,
             on_context_usage=self._persist_context_usage,
@@ -1637,6 +1637,7 @@ class SessionOrchestrator:
         origin: str | None = None,
         origin_ref: str | None = None,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         kind: str | None = None,
         owner_identity: str | None = None,
         engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
@@ -1703,7 +1704,8 @@ class SessionOrchestrator:
                 identity=identity, permission_mode=permission_mode,
                 attachment_ids=attachment_ids, name_is_auto=name_is_auto,
                 origin=origin, origin_ref=origin_ref, model=model,
-                kind=kind, owner_identity=owner_identity)
+                reasoning_effort=reasoning_effort, kind=kind,
+                owner_identity=owner_identity, engine=selected_engine)
 
         # Global active-session cap: at/over the cap the session is created as a
         # queued row (real session, no worktree/account/driver yet) and started
@@ -1718,14 +1720,16 @@ class SessionOrchestrator:
                 branch=branch, repo=repo, identity=identity,
                 permission_mode=permission_mode, attachment_ids=attachment_ids,
                 name_is_auto=name_is_auto, origin=origin, origin_ref=origin_ref,
-                model=model, kind=kind, owner_identity=owner_identity)
+                model=model, reasoning_effort=reasoning_effort, kind=kind,
+                owner_identity=owner_identity, engine=selected_engine)
         return await self._spawn_session(
             session_id, name=name, account=account, initial_prompt=initial_prompt,
             cols=cols, rows=rows, cwd=cwd, branch=branch, repo=repo,
             identity=identity, permission_mode=permission_mode,
             attachment_ids=attachment_ids, name_is_auto=name_is_auto,
             origin=origin, origin_ref=origin_ref, model=model,
-            kind=kind, owner_identity=owner_identity, engine=selected_engine)
+            reasoning_effort=reasoning_effort, kind=kind,
+            owner_identity=owner_identity, engine=selected_engine)
 
     def _active_session_count(self) -> int:
         """Sessions consuming a runtime capacity slot (see CAPACITY_EXEMPT_STATUSES).
@@ -1748,15 +1752,18 @@ class SessionOrchestrator:
                                initial_prompt, cols, rows, cwd, branch, repo,
                                identity, permission_mode, attachment_ids,
                                name_is_auto, origin, origin_ref, model,
-                               kind=None, owner_identity=None) -> SessionRecord:
+                               reasoning_effort=None, kind=None, owner_identity=None,
+                               engine=AgentEngine.CLAUDE_CODE) -> SessionRecord:
         from datetime import datetime
         from server.sessions import session_queue as sq
         now = datetime.utcnow()
         host = local_host_stamp()
+        selected_engine = parse_agent_engine(engine)
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name=name, account_name=account or "",
-                claude_session_id=None, status="queued", pid=None,
+                engine=selected_engine.value, engine_session_id=None,
+                reasoning_effort=reasoning_effort, status="queued", pid=None,
                 cwd=cwd or "", repo=repo, branch=None,
                 permission_mode=permission_mode, name_is_auto=name_is_auto,
                 origin=origin, origin_ref=origin_ref, model=model,
@@ -1770,6 +1777,12 @@ class SessionOrchestrator:
             "attachment_ids": attachment_ids, "name_is_auto": name_is_auto,
             "origin": origin, "origin_ref": origin_ref, "model": model,
         }
+        # Preserve the protocol-v1 queue blob for Claude/default effort. Non-default
+        # values are only emitted once a compatible engine actually exists.
+        if selected_engine is not AgentEngine.CLAUDE_CODE:
+            params["engine"] = selected_engine.value
+        if reasoning_effort is not None:
+            params["reasoning_effort"] = reasoning_effort
         # `params` is a JSON column in the SHARED fleet DB and _maybe_start_queued is NOT
         # ownership-gated — ANY daemon may drain this entry and splat it into
         # _spawn_session(**params). Hosts run mixed versions on purpose (rocky lags), and
@@ -1785,11 +1798,13 @@ class SessionOrchestrator:
             params["owner_identity"] = owner_identity
         priority = await sq.enqueue(session_id, params)
         rec = SessionRecord(
-            id=session_id, name=name, account=account or "", claude_session_id="",
+            id=session_id, name=name, account=account or "", engine=selected_engine,
+            engine_session_id="",
             cols=cols, rows=rows, cwd=cwd or "", repo=repo, branch=None,
             status="queued", name_is_auto=name_is_auto,
             created_at=now, updated_at=now, origin=origin, origin_ref=origin_ref,
-            model=model, host=host, kind=kind, owner_identity=owner_identity)
+            model=model, reasoning_effort=reasoning_effort, host=host,
+            kind=kind, owner_identity=owner_identity)
         self._records[session_id] = rec
         log.info("session.queued id=%s priority=%d origin=%s",
                  session_id, priority, origin)
@@ -1799,7 +1814,8 @@ class SessionOrchestrator:
                                  initial_prompt, cols, rows, cwd, branch, repo,
                                  identity, permission_mode, attachment_ids,
                                  name_is_auto, origin, origin_ref, model,
-                                 kind=None, owner_identity=None) -> SessionRecord:
+                                 reasoning_effort=None, kind=None, owner_identity=None,
+                                 engine=AgentEngine.CLAUDE_CODE) -> SessionRecord:
         """Park a model-gated session at 'pending_approval': persist a driverless row
         with the requested model in `pending_model`, no queue entry, no capacity slot.
 
@@ -1812,10 +1828,13 @@ class SessionOrchestrator:
         from datetime import datetime
         now = datetime.utcnow()
         host = local_host_stamp()
+        selected_engine = parse_agent_engine(engine)
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name=name, account_name=account or "",
-                claude_session_id=None, status="pending_approval", pid=None,
+                engine=selected_engine.value, engine_session_id=None,
+                reasoning_effort=reasoning_effort,
+                status="pending_approval", pid=None,
                 cwd=cwd or "", repo=repo, branch=None,
                 permission_mode=permission_mode, name_is_auto=name_is_auto,
                 origin=origin, origin_ref=origin_ref,
@@ -1833,13 +1852,15 @@ class SessionOrchestrator:
             rows=rows, cwd=cwd, branch=branch, repo=repo, identity=identity,
             permission_mode=permission_mode, attachment_ids=attachment_ids,
             name_is_auto=name_is_auto, origin=origin, origin_ref=origin_ref, model=model,
-            kind=kind, owner_identity=owner_identity)
+            reasoning_effort=reasoning_effort, kind=kind,
+            owner_identity=owner_identity, engine=selected_engine)
         rec = SessionRecord(
-            id=session_id, name=name, account=account or "", claude_session_id="",
+            id=session_id, name=name, account=account or "", engine=selected_engine,
+            engine_session_id="",
             cols=cols, rows=rows, cwd=cwd or "", repo=repo, branch=None,
             status="pending_approval", name_is_auto=name_is_auto,
             created_at=now, updated_at=now, origin=origin, origin_ref=origin_ref,
-            model=None, pending_model=model, host=host,
+            model=None, reasoning_effort=reasoning_effort, pending_model=model, host=host,
             kind=kind, owner_identity=owner_identity)
         self._records[session_id] = rec
         log.info("session.pending_approval id=%s model=%s origin=%s",
@@ -2046,6 +2067,8 @@ class SessionOrchestrator:
             permission_mode=row.permission_mode, attachment_ids=None,
             name_is_auto=row.name_is_auto, origin=row.origin,
             origin_ref=row.origin_ref,
+            engine=parse_agent_engine(getattr(row, "engine", None), legacy_default=True),
+            reasoning_effort=getattr(row, "reasoning_effort", None),
             kind=getattr(row, "kind", None),
             owner_identity=getattr(row, "owner_identity", None))
 
@@ -2085,10 +2108,14 @@ class SessionOrchestrator:
                     await db.delete(existing)
                 await db.flush()
                 host = local_host_stamp()
+                selected_engine = parse_agent_engine(
+                    kwargs.get("engine"), legacy_default=True)
                 db.add(DbSession(
                     id=session_id, name=kwargs.get("name"),
                     account_name=kwargs.get("account") or "",
-                    claude_session_id=None, status="pending_approval", pid=None,
+                    engine=selected_engine.value, engine_session_id=None,
+                    reasoning_effort=kwargs.get("reasoning_effort"),
+                    status="pending_approval", pid=None,
                     cwd=kwargs.get("cwd") or "", repo=kwargs.get("repo"), branch=None,
                     permission_mode=kwargs.get("permission_mode"),
                     name_is_auto=kwargs.get("name_is_auto"),
@@ -2105,13 +2132,15 @@ class SessionOrchestrator:
             now = datetime.utcnow()
             self._records[session_id] = SessionRecord(
                 id=session_id, name=kwargs.get("name") or session_id,
-                account=kwargs.get("account") or "", claude_session_id="",
+                account=kwargs.get("account") or "", engine=selected_engine,
+                engine_session_id="",
                 cols=kwargs.get("cols", 80), rows=kwargs.get("rows", 24),
                 cwd=kwargs.get("cwd") or "", repo=kwargs.get("repo"), branch=None,
                 status="pending_approval", name_is_auto=kwargs.get("name_is_auto", True),
                 created_at=now, updated_at=now, origin=kwargs.get("origin"),
                 origin_ref=kwargs.get("origin_ref"),
-                model=None, pending_model=model, host=host,
+                model=None, reasoning_effort=kwargs.get("reasoning_effort"),
+                pending_model=model, host=host,
                 kind=kwargs.get("kind"),
                 owner_identity=kwargs.get("owner_identity"))
         except Exception:
@@ -2210,7 +2239,7 @@ class SessionOrchestrator:
                 # 2026-09-04). 'queued' is capacity-exempt, so nothing double-counts.
                 try:
                     await self._spawn_session(
-                        sid, preexisting_row=True, resume=row.claude_session_id or None,
+                        sid, preexisting_row=True, resume=row.engine_session_id or None,
                         **params)
                 except Exception as exc:
                     # A real start failure (as opposed to the process dying): the
@@ -2255,7 +2284,9 @@ class SessionOrchestrator:
                             id=sid,
                             name=params.get("name", sid),
                             account=params.get("account") or "",
-                            claude_session_id="",
+                            engine=parse_agent_engine(
+                                params.get("engine"), legacy_default=True),
+                            engine_session_id="",
                             cols=params.get("cols", 220),
                             rows=params.get("rows", 50),
                             cwd=params.get("cwd") or "",
@@ -2267,6 +2298,7 @@ class SessionOrchestrator:
                             origin=params.get("origin"),
                             origin_ref=params.get("origin_ref"),
                             model=params.get("model"),
+                            reasoning_effort=params.get("reasoning_effort"),
                         )
                     else:
                         self._records[sid].status = "ended"
@@ -2349,7 +2381,7 @@ class SessionOrchestrator:
         Decision, in two branches (#1100 narrowed the original blanket reap):
 
         REPLAY when the row carries a non-null ``initial_prompt`` AND a NULL
-        ``claude_session_id``. That pair is the same durable proof
+        ``engine_session_id``. That pair is the same durable proof
         ``_recover_undelivered_prompts`` runs on: the prompt survived, and a NULL
         claude session id means the SDK never assigned one, i.e. turn ONE never ran,
         so re-running it duplicates nothing. The entry is rebuilt from the row via
@@ -2431,14 +2463,14 @@ class SessionOrchestrator:
         """Whether a queue orphan's turn one can be safely re-run from the row (#1100).
 
         The same two-part durable proof ``_recover_undelivered_prompts`` uses — a
-        surviving ``initial_prompt`` and a NULL ``claude_session_id`` (no SDK session
+        surviving ``initial_prompt`` and a NULL ``engine_session_id`` (no SDK session
         was ever assigned, so no turn ever ran) — plus that method's assistant
         exclusion: an assistant thread's "initial prompt" is the user's first drawer
         message, and re-driving it would answer a question asked before the restart.
         """
         if is_assistant_kind(getattr(row, "kind", None)):
             return False
-        if getattr(row, "claude_session_id", None):
+        if getattr(row, "engine_session_id", None):
             return False
         return bool((getattr(row, "initial_prompt", None) or "").strip())
 
@@ -2457,6 +2489,11 @@ class SessionOrchestrator:
         kind = kwargs.pop("kind", None)
         owner_identity = kwargs.pop("owner_identity", None)
         params: dict = {"model": getattr(row, "model", None), **kwargs}
+        engine = parse_agent_engine(params.pop("engine"), legacy_default=True)
+        if engine is not AgentEngine.CLAUDE_CODE:
+            params["engine"] = engine.value
+        if params.get("reasoning_effort") is None:
+            params.pop("reasoning_effort", None)
         if kind is not None:
             params["kind"] = kind
         if owner_identity is not None:
@@ -2550,6 +2587,7 @@ class SessionOrchestrator:
         origin: str | None,
         origin_ref: str | None,
         model: str | None,
+        reasoning_effort: str | None = None,
         kind: str | None = None,
         owner_identity: str | None = None,
         preexisting_row: bool = False,
@@ -2563,7 +2601,7 @@ class SessionOrchestrator:
         account_name, cwd, branch, model) instead of INSERT-ing a new one.
         Task 4 (_maybe_start_queued) calls this path.
 
-        *resume* is the ``claude_session_id`` to resume, when one exists — the
+        *resume* is the ``engine_session_id`` to resume, when one exists — the
         queue-drain call site threads the row's own id through here so a
         pre-existing conversation is never silently replaced by a fresh one
         (#1107). *kind*/*owner_identity* default to None so a queue entry
@@ -2651,14 +2689,14 @@ class SessionOrchestrator:
         _prior = self._records.get(session_id)
         _host = getattr(_prior, "host", None) or local_host_stamp()
         # Belt-and-suspenders for #1107: the queue-drain call site threads the
-        # row's claude_session_id through `resume` explicitly, but if some future
+        # row's engine_session_id through `resume` explicitly, but if some future
         # caller passes preexisting_row=True without it, a prior in-memory record
         # (rebuilt from the row via _record_from_row) still carries the real id —
         # fall back to resuming it rather than silently starting a fresh
         # conversation over an existing one. A non-empty prior id that we are
         # about to abandon anyway is logged so the orphaned transcript can still
         # be found.
-        _prior_csid = (getattr(_prior, "claude_session_id", None) or None)
+        _prior_csid = (getattr(_prior, "engine_session_id", None) or None)
         if resume is None and _prior_csid:
             log.warning(
                 "session.spawn_over_existing_conversation id=%s prior_csid=%s — "
@@ -2668,12 +2706,14 @@ class SessionOrchestrator:
             resume = _prior_csid
         _pre_record = SessionRecord(
             id=session_id, name=name, account=account,
-            claude_session_id=resume or "",
+            engine=selected_engine,
+            engine_session_id=resume or "",
             cols=cols, rows=rows, cwd=cwd, repo=repo, branch=branch_name,
             status="idle", name_is_auto=name_is_auto,
             created_at=getattr(_prior, "created_at", None) or _now,
             updated_at=_now, usage_unverified=usage_unverified,
-            origin=origin, origin_ref=origin_ref, model=None, host=_host,
+            origin=origin, origin_ref=origin_ref, model=None,
+            reasoning_effort=reasoning_effort, host=_host,
             kind=kind, owner_identity=owner_identity,
             last_activity_at=time.monotonic(),
         )
@@ -2753,7 +2793,9 @@ class SessionOrchestrator:
                         sa_update(DbSession)
                         .where(DbSession.id == session_id)
                         .values(status="idle", account_name=account,
-                                cwd=cwd, branch=branch_name, model=model)
+                                engine=selected_engine.value, cwd=cwd,
+                                branch=branch_name, model=model,
+                                reasoning_effort=reasoning_effort)
                     )
             else:
                 # Persist DB row (fresh session, not previously queued)
@@ -2762,7 +2804,9 @@ class SessionOrchestrator:
                         id=session_id,
                         name=name,
                         account_name=account,
-                        claude_session_id=None,
+                        engine=selected_engine.value,
+                        engine_session_id=None,
+                        reasoning_effort=reasoning_effort,
                         status="idle",
                         pid=None,
                         cwd=cwd,
@@ -3197,7 +3241,7 @@ class SessionOrchestrator:
         # itself frees the driver/capacity slot, no model call and no autopilot
         # dependency required. Nothing is archived — the row and transcript stay;
         # reopening lazily rebuilds the driver via ensure_driver (resume=
-        # claude_session_id).
+        # engine_session_id).
         #
         # ONLY `complete` — never `done`. `done` is not a finished-work signal: it is
         # what derive_status returns for ANY ended turn (turns_completed >= 1, no turn
@@ -3835,8 +3879,8 @@ class SessionOrchestrator:
     async def _backlog_session_ran(self, session_id: str) -> bool:
         """True if the runner session *session_id* ever started turn one (#1100).
 
-        ``claude_session_id`` is NULL until the SDK assigns one, which happens when
-        turn ONE actually starts (``_persist_claude_session_id``) — the same durable
+        ``engine_session_id`` is NULL until the SDK assigns one, which happens when
+        turn ONE actually starts (``_persist_engine_session_id``) — the same durable
         never-ran proof ``_recover_undelivered_prompts`` and the orphan reaper key
         off. Reads the DB row, so it survives a restart that dropped the record.
 
@@ -3844,7 +3888,7 @@ class SessionOrchestrator:
         ran, and the caller must fail safe toward the normal give-up path."""
         from sqlalchemy import select as _select
         async with db_session() as db:
-            row = (await db.execute(_select(DbSession.claude_session_id).where(
+            row = (await db.execute(_select(DbSession.engine_session_id).where(
                 DbSession.id == session_id))).first()
         if row is None:
             return True
@@ -6965,21 +7009,21 @@ class SessionOrchestrator:
             await self._goal_sweep()
             await asyncio.sleep(120.0)
 
-    async def _persist_claude_session_id(self, session_id: str, claude_session_id: str) -> None:
-        """Callback fired by the driver the first time it captures the Claude session id.
+    async def _persist_engine_session_id(self, session_id: str, engine_session_id: str) -> None:
+        """Persist the native conversation id when a driver first captures it.
 
         Keeps the in-memory record in sync and immediately persists to the DB so the id
         survives a restart without waiting for rotation.
         """
         rec = self._records.get(session_id)
         if rec is not None:
-            rec.claude_session_id = claude_session_id
+            rec.engine_session_id = engine_session_id
         async with db_session() as db:
             from sqlalchemy import update as sa_update
             await db.execute(
                 sa_update(DbSession)
                 .where(DbSession.id == session_id)
-                .values(claude_session_id=claude_session_id)
+                .values(engine_session_id=engine_session_id)
             )
 
     def _record_from_row(self, row, **overrides) -> SessionRecord:
@@ -6993,7 +7037,8 @@ class SessionOrchestrator:
             id=row.id,
             name=row.name,
             account=row.account_name,
-            claude_session_id=row.claude_session_id or "",
+            engine=parse_agent_engine(getattr(row, "engine", None), legacy_default=True),
+            engine_session_id=row.engine_session_id or "",
             cols=80,
             rows=24,
             cwd=row.cwd,
@@ -7014,6 +7059,7 @@ class SessionOrchestrator:
             last_turn_at=getattr(row, "last_turn_at", None),
             adopted_in_place=bool(getattr(row, "adopted_in_place", False)),
             model=getattr(row, "model", None),
+            reasoning_effort=getattr(row, "reasoning_effort", None),
             pending_model=getattr(row, "pending_model", None),
             pending_model_reason=getattr(row, "pending_model_reason", None),
             pending_model_requested_by=getattr(row, "pending_model_requested_by", None),
@@ -7180,8 +7226,8 @@ class SessionOrchestrator:
 
         * ``initial_prompt`` is the prompt itself (persisted at create time, and also
           re-written by ``unarchive`` as the "why you're back" seed).
-        * ``claude_session_id`` is NULL until the SDK assigns one, which happens when
-          turn ONE actually starts (see ``_persist_claude_session_id``). A NULL is
+        * ``engine_session_id`` is NULL until the SDK assigns one, which happens when
+          turn ONE actually starts (see ``_persist_engine_session_id``). A NULL is
           therefore proof that no turn has ever run, which is what makes redelivery
           idempotent in effect: a session that really did run cannot match, and one
           whose turn died with the daemon *should* be re-prompted.
@@ -7193,7 +7239,7 @@ class SessionOrchestrator:
         delay daemon startup.
 
         Not covered (deliberately): an ``unarchive`` seed stranded the same way. That
-        row HAS a claude_session_id (it ran turns before being archived), so the
+        row HAS a engine_session_id (it ran turns before being archived), so the
         never-ran test above cannot distinguish "seed still pending" from "seed already
         delivered"; separating them needs a durable delivered-at marker this fix does
         not add. Pre-existing behaviour, called out so it is not mistaken for covered.
@@ -7232,7 +7278,7 @@ class SessionOrchestrator:
                 # would drive the same session twice. Skipping keeps the two sets
                 # disjoint: they own interrupted rows, this owns never-started ones.
                 continue
-            if getattr(row, "claude_session_id", None):
+            if getattr(row, "engine_session_id", None):
                 continue  # turn one already ran — re-sending would duplicate work
             prompt = (getattr(row, "initial_prompt", None) or "").strip()
             if not prompt:
@@ -7419,7 +7465,7 @@ class SessionOrchestrator:
         on exactly that status. So after "reaped, then a deploy restart" (a common
         pairing: the reap fires at 15 min idle) the row is in the DB but not in memory,
         the scan in ``find_assistant`` returns None, and ``POST /api/assistant/session``
-        mints a BRAND-NEW thread. Nothing crashes — the old ``claude_session_id`` and
+        mints a BRAND-NEW thread. Nothing crashes — the old ``engine_session_id`` and
         its CLI transcript are intact on disk — but nothing points at them any more,
         which is the same silently-orphaned-history shape as the 2026-09-04 torn-read
         incident. This closes the gap so §4.7's "Daemon restart … continues" holds for
@@ -8529,7 +8575,7 @@ class SessionOrchestrator:
 
         - If a live driver already exists, return it (idempotent).
         - If the SessionRecord exists but is detached, build a new AgentDriver with
-          resume=<claude_session_id>, start it, store it, and mark the record as live.
+          resume=<engine_session_id>, start it, store it, and mark the record as live.
         - If the session_id is unknown, return None.
 
         ``identity`` is the verified identity of the caller attaching to the session
@@ -8633,7 +8679,7 @@ class SessionOrchestrator:
             # (see _persist_status): its driver is already out of `_drivers`, but
             # the old `claude` process may still be shutting down / flushing its
             # session file to disk. Building a replacement driver with the same
-            # resume=claude_session_id against the same cwd while that write is
+            # resume=engine_session_id against the same cwd while that write is
             # still in flight races it — the SDK's own subprocess_cli.py warns this
             # can lose the last assistant message. Wait for the release to finish
             # first; it always clears its own `_releasing` entry (success or
@@ -8658,8 +8704,8 @@ class SessionOrchestrator:
                 except Exception:
                     pass
 
-            # Build and start a new driver resuming from the stored claude_session_id
-            resume = rec.claude_session_id or None
+            # Build and start a new driver resuming from the stored engine_session_id
+            resume = rec.engine_session_id or None
             cfg_dir = compose(rec.account)
             # Ensure the working directory exists. A rehydrated session's cwd (a no-repo
             # scratch dir or a git worktree) may have been removed when the session was
@@ -8752,7 +8798,7 @@ class SessionOrchestrator:
                         raise
                     # A start() failure is NOT proof that the resume handle is bad, and
                     # guessing that it is costs the user their conversation: the fresh
-                    # driver below reports a new claude_session_id, _persist_claude_session_id
+                    # driver below reports a new engine_session_id, _persist_engine_session_id
                     # overwrites the stored one, and the real transcript is orphaned with
                     # nothing left pointing at it. That is not hypothetical — on 2026-09-04
                     # a torn read of the account's `.claude.json` (rocky's account store was
@@ -8874,7 +8920,7 @@ class SessionOrchestrator:
         from the orchestrator's own account config and record map.
         """
         known = [a["name"] for a in ccswitch_accounts.list_accounts()]
-        tracked = {r.claude_session_id for r in self._records.values() if r.claude_session_id}
+        tracked = {r.engine_session_id for r in self._records.values() if r.engine_session_id}
         return _adopt.discover_candidates(known, tracked)
 
     async def list_adoptable_candidates(self) -> list[dict]:
@@ -9077,7 +9123,8 @@ class SessionOrchestrator:
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name=cand.name, account_name=cand.account,
-                claude_session_id=claude_session_id, status="idle", pid=None,
+                engine=AgentEngine.CLAUDE_CODE.value,
+                engine_session_id=claude_session_id, status="idle", pid=None,
                 cwd=cand.cwd, repo=None, permission_mode=permission_mode,
                 name_is_auto=True, adopted_in_place=True, last_turn_at=adopted_last_turn,
                 host=adopt_host,
@@ -9092,7 +9139,8 @@ class SessionOrchestrator:
         adopt_now = datetime.utcnow()
         rec = SessionRecord(
             id=session_id, name=cand.name, account=cand.account,
-            claude_session_id=claude_session_id, cols=80, rows=24,
+            engine=AgentEngine.CLAUDE_CODE,
+            engine_session_id=claude_session_id, cols=80, rows=24,
             cwd=cand.cwd, repo=None, status="idle", adopted_in_place=True,
             permission_mode=permission_mode,
             created_at=adopt_now, updated_at=adopt_now,  # row-write time
@@ -9730,9 +9778,9 @@ class SessionOrchestrator:
         return False
 
     def transcript_path(self, session_id) -> str | None:
-        """Locate the Claude transcript `<config_dir>/projects/*/<claude_session_id>.jsonl`.
+        """Locate the Claude transcript `<config_dir>/projects/*/<engine_session_id>.jsonl`.
 
-        The transcript is found by GLOBBING for its globally-unique claude_session_id
+        The transcript is found by GLOBBING for its globally-unique engine_session_id
         across all project dirs, rather than computing the project-dir name from cwd.
         Claude derives project-dir names by replacing BOTH '/' and '.' with '-' and
         KEEPS the leading slash (→ leading dash) — replicating that exactly is fragile
@@ -9742,14 +9790,14 @@ class SessionOrchestrator:
         recorded cwd differs from where it actually ran still resolves).
 
         Falls back to the SessionRecord + account_cfg_dir(account) when the driver is
-        absent or has no claude_session_id (e.g. rehydrated/detached sessions).
+        absent or has no engine_session_id (e.g. rehydrated/detached sessions).
 
         Each account's per-account `projects` dir is itself a symlink to the one shared
         projects tree (configdir.SHARE_ALLOWLIST). That symlink can rot — point at itself
         or a sibling account — which makes the glob through `<config_dir>/projects` resolve
         nothing and silently blanks the transcript on attach (idle "Waiting for input"
         sessions only show replayed history, so they go blank; a live session masks it by
-        streaming). Since the claude_session_id is globally unique and every transcript
+        streaming). Since the engine_session_id is globally unique and every transcript
         physically lives under the shared base, we also search shared_base()/projects so
         replay survives a broken per-account symlink.
         """
@@ -9760,9 +9808,9 @@ class SessionOrchestrator:
             cwd = getattr(rec0, "cwd", None) if rec0 is not None else None
         else:
             rec = self._records.get(session_id)
-            if rec is None or not rec.claude_session_id:
+            if rec is None or not rec.engine_session_id:
                 return None
-            config_dir, csid = str(account_cfg_dir(rec.account)), rec.claude_session_id
+            config_dir, csid = str(account_cfg_dir(rec.account)), rec.engine_session_id
             cwd = getattr(rec, "cwd", None)
         return self._find_transcript(config_dir, csid, cwd)
 
@@ -10777,7 +10825,7 @@ class SessionOrchestrator:
         # two recoverable-failure callbacks firing back to back (e.g. two
         # `turn_dropped` events escalating to rotation), or a manual account
         # switch landing while ensure_driver is mid-resume-build. Each used to
-        # build+start its own AgentDriver against the same claude_session_id —
+        # build+start its own AgentDriver against the same engine_session_id —
         # both processes came up live, only one was ever registered in
         # `_drivers`, and the loser ran on as an invisible twin CLI. A caller that
         # finds an entry here waits for it, then re-derives its own driver/record
@@ -10817,9 +10865,9 @@ class SessionOrchestrator:
             identity = old_driver.identity
         else:
             # Driverless path: session lost its driver while idle (proxy crash, etc.).
-            # Use stored record fields — cwd and claude_session_id are persisted on
+            # Use stored record fields — cwd and engine_session_id are persisted on
             # every turn so they're reliable even after a daemon restart.
-            claude_sid = record.claude_session_id
+            claude_sid = record.engine_session_id
             cwd = record.cwd
             mode = getattr(record, "permission_mode", "interactive")
             identity = SYSTEM_IDENTITY
@@ -11300,7 +11348,20 @@ class SessionOrchestrator:
                 "account": row.account_name,
                 "cwd": row.cwd,
                 "repo": row.repo,
-                "claudeSessionId": row.claude_session_id,
+                "engine": parse_agent_engine(
+                    getattr(row, "engine", None), legacy_default=True).value,
+                "engineSessionId": row.engine_session_id,
+                # Temporary daemon→old-edge alias. The current edge strips this
+                # before serving browser clients; old edges still require it
+                # because daemons restart first during a rolling deployment.
+                "claudeSessionId": (
+                    row.engine_session_id
+                    if parse_agent_engine(
+                        getattr(row, "engine", None), legacy_default=True
+                    ) is AgentEngine.CLAUDE_CODE
+                    else None
+                ),
+                "reasoningEffort": getattr(row, "reasoning_effort", None),
                 "permissionMode": row.permission_mode,
                 "createdAt": iso_utc(row.created_at),
                 "archivedAt": iso_utc(row.updated_at),
@@ -11679,10 +11740,10 @@ class SessionOrchestrator:
                 row = (await db.execute(
                     sa_select(DbSession).where(DbSession.id == session_id)
                 )).scalars().first()
-            if row and row.claude_session_id:
+            if row and row.engine_session_id:
                 path = await asyncio.to_thread(
                     self._find_transcript,
-                    str(account_cfg_dir(row.account_name)), row.claude_session_id,
+                    str(account_cfg_dir(row.account_name)), row.engine_session_id,
                     getattr(row, "cwd", None),
                 )
         return path

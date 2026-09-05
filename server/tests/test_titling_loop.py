@@ -17,7 +17,7 @@ async def _build_orch(tmp_path, *, title_fn=None, **row):
     db_url = f"sqlite+aiosqlite:///{tmp_path/'ccswitch.db'}"
     await init_db(db_url=db_url)
     base = dict(id="s1", name="New Session", account_name="acct1",
-                claude_session_id="claude-s1", status="in_progress", cwd="/repo/s1")
+                engine_session_id="claude-s1", status="in_progress", cwd="/repo/s1")
     base.update(row)
     await _seed([base])
     orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), title_fn=title_fn)

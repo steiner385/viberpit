@@ -11,7 +11,7 @@ from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
 
-def _seed_and_rehydrate(db_url: str, session_id: str, cwd: str, claude_session_id: str | None):
+def _seed_and_rehydrate(db_url: str, session_id: str, cwd: str, engine_session_id: str | None):
     """Helper: seed a DB row and rehydrate the orchestrator from it."""
     async def _run():
         await init_db(db_url=db_url)
@@ -20,7 +20,7 @@ def _seed_and_rehydrate(db_url: str, session_id: str, cwd: str, claude_session_i
                 id=session_id,
                 name="test-session",
                 account_name="acct1",
-                claude_session_id=claude_session_id,
+                engine_session_id=engine_session_id,
                 status="idle",
                 cwd=cwd,
             ))
@@ -39,7 +39,7 @@ def test_transcript_path_detached_session_file_exists(tmp_path):
     session_id = "sess-detached-1"
 
     # Build the expected path structure:
-    # <config_dir>/projects/<cwd_key>/<claude_session_id>.jsonl
+    # <config_dir>/projects/<cwd_key>/<engine_session_id>.jsonl
     fake_config_dir = tmp_path / "fake-config"
     cwd_key = cwd.lstrip("/").replace("/", "-")
     transcript_dir = fake_config_dir / "projects" / cwd_key
@@ -73,7 +73,7 @@ def test_transcript_path_detached_session_file_missing(tmp_path):
 
 
 def test_transcript_path_found_under_nonmatching_project_dir(tmp_path):
-    """Regression: the transcript is located by globbing the unique claude_session_id,
+    """Regression: the transcript is located by globbing the unique engine_session_id,
     so it resolves even when the project-dir name doesn't equal cwd.lstrip('/').replace('/','-').
 
     Claude's real convention keeps the leading slash (→ leading dash) and replaces '.'
@@ -108,7 +108,7 @@ def test_transcript_path_resolves_via_shared_base_when_account_symlink_broken(tm
     ``projects`` dir is a symlink to the one shared projects tree, but that symlink can
     rot — point at itself or a sibling account — which silently breaks replay on attach
     and leaves the transcript blank. The transcript physically lives in the shared base,
-    so transcript_path must resolve by the globally-unique claude_session_id there even
+    so transcript_path must resolve by the globally-unique engine_session_id there even
     when the per-account symlink is broken.
     """
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"

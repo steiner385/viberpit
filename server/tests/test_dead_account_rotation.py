@@ -17,6 +17,7 @@ import pytest
 from server.sessions import orchestrator as orch_mod
 from server.sessions import recovery as R
 from server.sessions.orchestrator import SessionOrchestrator, _ROTATION_CEILING
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 from server.usage.poller import UsagePoller
 from ccswitch.oauth import Usage
@@ -67,7 +68,7 @@ def _make_orch():
 
 
 def _rec(o, account="copilot_acct", *, with_driver=True, status="idle"):
-    rec = SessionRecord(id="s1", name="n", account=account, claude_session_id="c1",
+    rec = SessionRecord(id="s1", name="n", account=account, engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                         cols=80, rows=24, cwd="/tmp/x", status=status)
     o._records["s1"] = rec
     if with_driver:
@@ -224,7 +225,8 @@ async def test_rotation_monitor_skips_ended_sessions():
         fail_count=orch_mod._UNREACHABLE_ROTATION_THRESHOLD)
     for status in list(INACTIVE_SESSION_STATUSES)[:2]:
         rec = SessionRecord(id=f"s-{status}", name="n", account="copilot_acct",
-                            claude_session_id="c1", cols=80, rows=24, cwd="/tmp",
+                            engine=AgentEngine.CLAUDE_CODE,
+                            engine_session_id="c1", cols=80, rows=24, cwd="/tmp",
                             status=status)
         o._records[rec.id] = rec
         o._drivers[rec.id] = object()

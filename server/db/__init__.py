@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from server.config import get_settings
 from server.db.models import Base
+from server.sessions.engine import AgentEngine
 
 log = logging.getLogger(__name__)
 
@@ -168,6 +169,29 @@ def _normalize_pending_rearm_null(sync_conn) -> None:
         ))
 
 
+def _backfill_session_engine(sync_conn) -> None:
+    """Idempotently migrate legacy session identity into the engine-neutral columns.
+
+    Production startup uses reconciliation rather than Alembic. The legacy physical
+    column may therefore remain on an existing database even though it is deliberately
+    absent from the ORM. It is read only here, during migration, and never by runtime
+    session code.
+    """
+    inspector = sa_inspect(sync_conn)
+    if "sessions" not in set(inspector.get_table_names()):
+        return
+    columns = {column["name"] for column in inspector.get_columns("sessions")}
+    if "engine" in columns:
+        sync_conn.execute(sa_text(
+            "UPDATE sessions SET engine = :engine WHERE engine IS NULL"
+        ), {"engine": AgentEngine.CLAUDE_CODE.value})
+    if {"engine_session_id", "claude_session_id"}.issubset(columns):
+        sync_conn.execute(sa_text(
+            "UPDATE sessions SET engine_session_id = claude_session_id "
+            "WHERE engine_session_id IS NULL"
+        ))
+
+
 def _assert_no_schema_drift(sync_conn) -> None:
     """After reconcile, verify every model column exists in its table.
 
@@ -217,6 +241,10 @@ async def init_db(db_url: str | None = None) -> None:
         # dialect-generic: reconcile compiles column types against the live dialect and
         # only ever ADDs a missing column, and the drift assert compares names only.
         await conn.run_sync(_reconcile_columns)
+        # Reconciliation only adds columns; copy legacy identity before the ORM can
+        # observe the rows. This is deliberately dialect-generic because the live
+        # Postgres deployment does not run Alembic revisions.
+        await conn.run_sync(_backfill_session_engine)
         await conn.run_sync(_assert_no_schema_drift)
         if url.startswith("sqlite"):
             # SQLite-only: `pending_rearm = 'null'` compares a json column to text,

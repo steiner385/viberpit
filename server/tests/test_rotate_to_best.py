@@ -12,6 +12,7 @@ import pytest
 from ccswitch.selector import AllAccountsBusy, Picked
 from server.sessions import orchestrator as orch_mod
 from server.sessions.orchestrator import SessionOrchestrator, _ROTATE_REPLAY_STATUSES, _REPLAY_STATUSES
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord, SYSTEM_IDENTITY
 
 
@@ -20,7 +21,7 @@ class _Driver:
 
 
 def _rec(status="needs_attention", **kw):
-    base = dict(id="s1", name="n", account="a", claude_session_id="c1",
+    base = dict(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                 cols=80, rows=24, cwd="/tmp", status=status)
     base.update(kw)
     return SessionRecord(**base)

@@ -15,7 +15,7 @@ async def _build_orch(tmp_path, **row):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
     await init_db(db_url=db_url)
     base = dict(id="s1", name="New Session", account_name="acct1",
-                claude_session_id="claude-s1", status="idle", cwd="/repo/s1")
+                engine_session_id="claude-s1", status="idle", cwd="/repo/s1")
     base.update(row)
     async with db_session() as db:
         db.add(DbSession(**base))

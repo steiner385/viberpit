@@ -64,6 +64,8 @@ export type SessionStatus =
   | 'queued'
   | 'pending_approval'
 
+export type AgentEngine = 'claude_code' | 'codex'
+
 /**
  * Statuses a session holds BEFORE its driver exists — parked at the launch-time
  * model gate, or waiting for a capacity slot. No runtime slot, no transcript yet;
@@ -131,6 +133,10 @@ export interface Session {
   id: string
   name: string
   accountName: string
+  engine: AgentEngine
+  engineSessionId: string | null
+  /** Engine-native reasoning choice; null means the model default. */
+  reasoningEffort?: string | null
   /** GitHub nameWithOwner ("owner/name") this session works on, or null for a scratch session. */
   repo?: string | null
   /** Fleet host that ran this session. Null for sessions created before the fleet
@@ -228,7 +234,9 @@ export interface ArchivedSession {
   cwd: string
   /** GitHub nameWithOwner (e.g. "cairnea/KinDash"); null for scratch/legacy rows. */
   repo: string | null
-  claudeSessionId: string | null
+  engine: AgentEngine
+  engineSessionId: string | null
+  reasoningEffort?: string | null
   permissionMode: string
   createdAt: string
   archivedAt: string

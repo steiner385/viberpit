@@ -210,7 +210,7 @@ class ClaudeAgentDriver:
         self._identity = identity
         self.denylist = denylist
         self.resume = resume
-        self.claude_session_id: str | None = None
+        self._engine_session_id: str | None = None
         self._on_session_id = on_session_id
         self._on_sync_back = on_sync_back
         # async callback ``on_status(session_id, derived_status)`` — keeps
@@ -304,7 +304,7 @@ class ClaudeAgentDriver:
     @property
     def engine_session_id(self) -> str | None:
         """The Claude conversation id through the provider-neutral driver contract."""
-        return self.claude_session_id
+        return self._engine_session_id
 
     def _turn(self):
         return getattr(self._tr, "_turn_id", None) or "turn"
@@ -967,11 +967,11 @@ class ClaudeAgentDriver:
                 self._turn_produced_output = True
             self._note_progress(e)
             self._emit(e)
-        if self.claude_session_id is None and self._tr.session_id:
-            self.claude_session_id = self._tr.session_id
+        if self._engine_session_id is None and self._tr.session_id:
+            self._engine_session_id = self._tr.session_id
             if self._on_session_id is not None:
                 try:
-                    await self._on_session_id(self.session_id, self.claude_session_id)
+                    await self._on_session_id(self.session_id, self._engine_session_id)
                 except Exception:
                     log.exception("driver.on_session_id session=%s", self.session_id)
 
@@ -1407,7 +1407,7 @@ class ClaudeAgentDriver:
                                phase=f"driver.reconnect-aexit:{self.session_id}")
             await self._call_sync_back()
         self.resume = None
-        self.claude_session_id = None
+        self._engine_session_id = None
         self._titled = False
         self._queue.clear()
         self._turn_active = False

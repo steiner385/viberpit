@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 
 from server.automations.autopilot_policy import Decision
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
@@ -70,7 +71,7 @@ def test_unarchive_preserves_origin_repo_and_assisted_by(tmp_path):
 
 
 def test_session_record_roundtrips_assisted_by():
-    rec = SessionRecord(id="s1", name="n", account="a", claude_session_id="",
+    rec = SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
                         cols=80, rows=24, cwd="/tmp", assisted_by="autopilot")
     d = rec.to_dict()
     assert d["assistedBy"] == "autopilot"
@@ -79,7 +80,7 @@ def test_session_record_roundtrips_assisted_by():
 
 def test_record_to_dict_serializes_assisted_by():
     from server.api.sessions import _record_to_dict
-    rec = SessionRecord(id="s1", name="n", account="a", claude_session_id="",
+    rec = SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
                         cols=80, rows=24, cwd="/tmp", assisted_by="autopilot")
     assert _record_to_dict(rec, repo=None)["assistedBy"] == "autopilot"
 
@@ -93,7 +94,8 @@ def test_autopilot_apply_marks_session_assisted(tmp_path):
         await _seed(tmp_path, "assist.db", status="done")
         orch = _bare_orch()
         orch._records = {"s1": SessionRecord(id="s1", name="n", account="a",
-                                             claude_session_id="", cols=80, rows=24,
+                                             engine=AgentEngine.CLAUDE_CODE,
+                                             engine_session_id="", cols=80, rows=24,
                                              cwd="/tmp", status="done")}
 
         async def _ensure(sid, ident=None):

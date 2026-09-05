@@ -159,7 +159,7 @@ describe('App routing', () => {
     vi.mocked(api.get).mockImplementation((path: string) => {
       if (path === '/sessions/archived') return Promise.resolve([
         { id: 'arch-1', name: 'Implement issue 16', account: 'alice', cwd: '/tmp/x',
-          claudeSessionId: 'c-1', permissionMode: 'default',
+          engineSessionId: 'c-1', permissionMode: 'default',
           createdAt: '2026-06-01T10:00:00Z', archivedAt: '2026-06-02T10:00:00Z' },
       ])
       // Exact path + query only: `/sessions/archived` is a DIFFERENT endpoint,

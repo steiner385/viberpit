@@ -1,9 +1,10 @@
 from server.api.sessions import _record_to_dict
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
 def _rec(**kw):
-    base = dict(id="s1", name="n", account="a", claude_session_id="c1",
+    base = dict(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                 cols=80, rows=24, cwd="/tmp")
     base.update(kw)
     return SessionRecord(**base)

@@ -10,6 +10,7 @@ import types
 import pytest
 
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 from ccswitch.oauth import Usage
 
@@ -32,7 +33,8 @@ def _make_orch():
 
 def _rec(o, session_id="s1", account="acct", *, status="needs_attention"):
     rec = SessionRecord(id=session_id, name="n", account=account,
-                        claude_session_id=None, cols=80, rows=24, cwd="/tmp")
+                        engine=AgentEngine.CLAUDE_CODE,
+                        engine_session_id=None, cols=80, rows=24, cwd="/tmp")
     rec.status = status
     o._records[session_id] = rec
     return rec

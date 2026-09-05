@@ -16,6 +16,7 @@ from unittest import mock
 import pytest
 
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 import server.sessions.orchestrator as orch_mod
 
@@ -41,9 +42,10 @@ def _make_orch():
 
 
 def _rec(o, session_id="s1", account="copilot_acct", *,
-         with_driver=True, cwd="/tmp/x", claude_session_id="c1"):
+         with_driver=True, cwd="/tmp/x", engine_session_id="c1"):
     rec = SessionRecord(id=session_id, name="n", account=account,
-                        claude_session_id=claude_session_id,
+                        engine=AgentEngine.CLAUDE_CODE,
+                        engine_session_id=engine_session_id,
                         cols=80, rows=24, cwd=cwd)
     o._records[session_id] = rec
     if with_driver:

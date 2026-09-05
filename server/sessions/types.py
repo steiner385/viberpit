@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from server.sessions.engine import AgentEngine, parse_agent_engine
 from server.sessions.usage_stall import is_usage_stalled
 from server.time_iso import iso_utc
 
@@ -48,7 +49,8 @@ class SessionRecord:
     id: str                  # UUID, also the session key in SessionOrchestrator/ClaudeAgentDriver
     name: str                # user-visible label
     account: str             # current account name (updated on rotation)
-    claude_session_id: str   # value passed to --resume on rotation
+    engine: AgentEngine      # native executable owning the conversation
+    engine_session_id: str   # native id passed to resume on rotation/recovery
     cols: int
     rows: int
     cwd: str
@@ -68,6 +70,7 @@ class SessionRecord:
     adopted_in_place: bool = False   # resumed in original cwd, no worktree (adopted session)
     sub_agents: list | None = None   # [{agentId,parentAgentId,agentType,description,status}], refreshed at status changes
     model: str | None = None         # persisted model alias/id; None = account default
+    reasoning_effort: str | None = None  # engine-native effort; None = model default
     # Requested model held pending human approval while status == "pending_approval"
     # (the launch gate parks a gated tier here rather than spawning it — see
     # SessionOrchestrator._hold_for_approval). Mirrors DB Session.pending_model; None
@@ -170,7 +173,18 @@ class SessionRecord:
         # `from_dict` restores it faithfully over RPC.
         return {
             "id": self.id, "name": self.name, "account": self.account,
-            "claudeSessionId": self.claude_session_id, "cols": self.cols, "rows": self.rows,
+            "engine": self.engine.value,
+            "engineSessionId": self.engine_session_id,
+            # Temporary daemon→edge rolling-upgrade alias. Daemons deploy before
+            # the edge, so the old edge still needs this key while the new edge
+            # already understands ``engineSessionId``. Browser serializers never
+            # expose it, and it is intentionally null for non-Claude engines.
+            "claudeSessionId": (
+                self.engine_session_id
+                if self.engine is AgentEngine.CLAUDE_CODE
+                else None
+            ),
+            "cols": self.cols, "rows": self.rows,
             "cwd": self.cwd, "repo": self.repo, "branch": self.branch, "detached": self.detached,
             "origin": self.origin, "origin_ref": self.origin_ref,
             "assistedBy": self.assisted_by,
@@ -183,6 +197,7 @@ class SessionRecord:
             "revAt": self.rev_at,
             "adoptedInPlace": self.adopted_in_place,
             "model": self.model,
+            "reasoningEffort": self.reasoning_effort,
             "pendingModel": self.pending_model,
             "pendingModelReason": self.pending_model_reason,
             "pendingModelRequestedBy": self.pending_model_requested_by,
@@ -221,7 +236,17 @@ class SessionRecord:
         rev = d.get("revAt")
         return cls(
             id=d["id"], name=d["name"], account=d["account"],
-            claude_session_id=d["claudeSessionId"], cols=d["cols"], rows=d["rows"],
+            # Only an omitted field identifies an old daemon. An explicit null is
+            # malformed current wire data and must not be relabelled as Claude.
+            engine=parse_agent_engine(
+                d["engine"] if "engine" in d else AgentEngine.CLAUDE_CODE),
+            # ``claudeSessionId`` is accepted only at this daemon→edge rolling-
+            # upgrade boundary. Browser payloads and all internal models use the
+            # canonical engine-neutral key.
+            engine_session_id=((d.get("engineSessionId")
+                                if "engineSessionId" in d
+                                else d.get("claudeSessionId")) or ""),
+            cols=d["cols"], rows=d["rows"],
             cwd=d["cwd"], repo=d.get("repo"), branch=d.get("branch"), detached=d.get("detached", False),
             origin=d.get("origin"), origin_ref=d.get("origin_ref"),
             assisted_by=d.get("assistedBy"),
@@ -234,6 +259,7 @@ class SessionRecord:
             updated_at=datetime.fromisoformat(rev) if rev else None,
             adopted_in_place=d.get("adoptedInPlace", False),
             model=d.get("model"),
+            reasoning_effort=d.get("reasoningEffort"),
             pending_model=d.get("pendingModel"),
             pending_model_reason=d.get("pendingModelReason"),
             pending_model_requested_by=d.get("pendingModelRequestedBy"),

@@ -6,7 +6,7 @@ import type { ArchivedSession } from '@/api/types'
 
 const a = (over: Partial<ArchivedSession>): ArchivedSession => ({
   id: 'x', name: 'x', account: 'tony', cwd: '/home/u/GitHub/KinDash', repo: null,
-  claudeSessionId: null, permissionMode: 'default',
+  engine: 'claude_code', engineSessionId: null, permissionMode: 'default',
   createdAt: '2026-06-01T00:00:00Z', archivedAt: '2026-06-10T00:00:00Z', ...over,
 })
 

@@ -40,6 +40,7 @@ from server.sessions.orchestrator import (
 )
 from server.ipc.client import DaemonError, DaemonUnavailable
 from server.sessions.facade import call_with_deadline
+from server.sessions.engine import AgentEngine, AgentEngineUnavailable
 from server.sessions.permissions import resolve_permission_mode
 from server.sessions.selection import AllAccountsBusy
 from server.sessions.fleet_router import UnknownHost, NoHostAvailable
@@ -81,6 +82,8 @@ class CreateSessionRequest(BaseModel):
     # Model alias/id to start the session on (e.g. "opus", "fable"). None / "default"
     # → the account default; the value is applied to the driver once it starts.
     model: str | None = None
+    engine: AgentEngine = AgentEngine.CLAUDE_CODE
+    reasoningEffort: str | None = None
     # Optional runner preference. None → auto-rank; a name → that host first, still
     # failing over. Forwarded to FleetOrchestrator.create_session as prefer=.
     host: str | None = None
@@ -202,6 +205,9 @@ def _record_to_dict(
         "id": record.id,
         "name": record.name,
         "accountName": record.account,
+        "engine": record.engine.value,
+        "engineSessionId": record.engine_session_id or None,
+        "reasoningEffort": record.reasoning_effort,
         "repo": record.repo if repo is _UNSET else repo,
         # Fleet host that ran this session. None for pre-fleet sessions and for
         # deployments whose endpoint is not in an operator-managed registry.
@@ -548,11 +554,25 @@ async def create_session(
     identity: str = Depends(current_identity),
     db=Depends(get_db),
 ):
-    """Create a new Claude session on the most-headroom account.
+    """Create a native-agent session on the most-headroom compatible account.
 
     Returns 409 with earliestReset if all accounts are at ceiling.
     """
     orch = _get_orchestrator(request)
+    if body.reasoningEffort is not None and body.engine is AgentEngine.CLAUDE_CODE:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={
+                "error": {
+                    "code": "unsupported_reasoning_effort",
+                    "message": (
+                        "reasoningEffort is not supported by agent engine: "
+                        f"{body.engine.value}"
+                    ),
+                    "engine": body.engine.value,
+                },
+            },
+        )
     # When the user supplies no name, the session is auto-named (Claude title / first
     # prompt) and stays auto until a manual rename. A supplied name is pinned manual.
     name_is_auto = not (body.name and body.name.strip())
@@ -638,6 +658,9 @@ async def create_session(
             attachment_ids=body.attachmentIds,
             name_is_auto=name_is_auto,
             model=_resolved_model,
+            engine=body.engine,
+            **({"reasoning_effort": body.reasoningEffort}
+               if body.reasoningEffort is not None else {}),
         )
     except UnknownHost as exc:
         return JSONResponse(
@@ -648,6 +671,17 @@ async def create_session(
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
             content={"error": {"code": "no_host_available", "message": str(exc)}},
+        )
+    except AgentEngineUnavailable as exc:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "error": {
+                    "code": "engine_unavailable",
+                    "message": str(exc),
+                    "engine": exc.engine.value,
+                },
+            },
         )
     except (gitrepos.CloneError, gitrepos.GhError) as exc:
         # repo→clone resolution now happens inside orch.create_session (on
@@ -780,7 +814,13 @@ async def list_archived_sessions(
 ) -> list[dict]:
     """Return all archived session metadata."""
     orch = _get_orchestrator(request)
-    return await orch.list_archived()
+    rows = await orch.list_archived()
+    # The orchestrator's internal RPC wire temporarily carries the old Claude
+    # alias for daemon-first rolling deploys. It is not part of the browser API.
+    return [
+        {key: value for key, value in row.items() if key != "claudeSessionId"}
+        for row in rows
+    ]
 
 
 async def _search_ids(items, fetch_text, terms) -> list[str]:

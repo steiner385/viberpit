@@ -10,6 +10,7 @@ import pytest
 from server.sessions import orchestrator as orch_mod
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.selection import AllAccountsBusy, Picked
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 from server.sessions import recovery as R
 
@@ -49,7 +50,7 @@ def _make_orch():
 
 
 def _rec(o, account="kindash"):
-    rec = SessionRecord(id="s1", name="n", account=account, claude_session_id="c1",
+    rec = SessionRecord(id="s1", name="n", account=account, engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                         cols=80, rows=24, cwd="/tmp/x")
     o._records["s1"] = rec
     o._drivers["s1"] = object()
@@ -468,7 +469,7 @@ async def test_replay_same_account_precompact_ordering():
 
     o = SessionOrchestrator(sdk_factory=lambda *a, **k: None)
     o._clock = lambda: 1000.0
-    rec = SessionRecord(id="s1", name="n", account="kindash", claude_session_id="c1",
+    rec = SessionRecord(id="s1", name="n", account="kindash", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                         cols=80, rows=24, cwd="/tmp/x")
     o._records["s1"] = rec
 
@@ -496,7 +497,7 @@ def test_recompose_forces_token_refresh_before_reassign(monkeypatch):
         order.append(("reassign", new_account, reason))
     o._reassign = spy_reassign
 
-    rec = SessionRecord(id="s1", name="n", account="kindash", claude_session_id="c1",
+    rec = SessionRecord(id="s1", name="n", account="kindash", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                         cols=80, rows=24, cwd="/tmp/x")
     o._records["s1"] = rec
     o._drivers["s1"] = object()
@@ -528,7 +529,7 @@ def test_recompose_proceeds_when_token_refresh_raises(monkeypatch):
         order.append(("reassign", new_account, reason))
     o._reassign = spy_reassign
 
-    rec = SessionRecord(id="s1", name="n", account="kindash", claude_session_id="c1",
+    rec = SessionRecord(id="s1", name="n", account="kindash", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                         cols=80, rows=24, cwd="/tmp/x")
     o._records["s1"] = rec
     o._drivers["s1"] = object()
