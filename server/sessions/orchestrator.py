@@ -576,6 +576,7 @@ class SessionOrchestrator:
         # Injectable so tests can stub it without a live SDK call.
         self._title_fn: Callable = title_fn or self._default_title_fn
         self._registry = PermissionRegistry()
+        self._custom_driver_registry = driver_registry is not None
         self._engine_registry = driver_registry or AgentDriverRegistry(
             self._default_driver_factories())
         self._drivers: dict[str, AgentDriver] = {}
@@ -1227,6 +1228,16 @@ class SessionOrchestrator:
                             extra_env=extra, **kw)
             return base(cwd, config_dir, can_use_tool, mode, resume, **kw)
         return _factory
+
+    def install_codex_manager(self, manager) -> None:
+        """Install the async startup result before rehydrate or session creation.
+
+        The default registry snapshots available managers at construction. Refresh
+        it when daemon startup finishes probing Codex, preserving injected registries.
+        """
+        self._codex = manager
+        if not self._custom_driver_registry:
+            self._engine_registry = AgentDriverRegistry(self._default_driver_factories())
 
     def _default_driver_factories(self) -> dict[AgentEngine, AgentDriverFactory]:
         """The engines this host can actually run.

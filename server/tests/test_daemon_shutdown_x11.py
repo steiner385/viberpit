@@ -24,6 +24,7 @@ class _Orch:
         self._x11 = x11
         self.stopped = False
     async def rehydrate(self): return 0
+    def install_codex_manager(self, manager): self._codex = manager
     async def rearm_background_tasks(self): return 0
     async def start(self): pass
     async def stop(self): self.stopped = True

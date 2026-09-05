@@ -120,11 +120,12 @@ async def daemon_lifespan(app, orchestrator):
     # sessions from starting.
     from server.codex.manager import build_codex_manager
     try:
-        orchestrator._codex = await build_codex_manager(get_settings())
+        codex_manager = await build_codex_manager(get_settings())
     except Exception:
         log.warning("daemon startup: codex manager build failed — codex disabled",
                     exc_info=True)
-        orchestrator._codex = None
+        codex_manager = None
+    orchestrator.install_codex_manager(codex_manager)
     if orchestrator._codex is not None:
         try:
             reaped = orchestrator._codex.sweep_orphans()
