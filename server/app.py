@@ -427,6 +427,49 @@ async def _lifespan(app: FastAPI):
         _app_sessions_prune_loop(), name="app-sessions-prune"
     )
 
+    # --- codex authorization sync -------------------------------------------
+    # The credential authority cannot enumerate accounts; it only issues for names
+    # the edge has told it about, and only while that projection is inside its
+    # lease. So this is not a cache-warmer — it is the renewal that keeps OpenAI
+    # accounts usable at all, and its absence is what makes a dead edge fail
+    # CLOSED rather than leave a disabled account minting tokens.
+    #
+    # Full-sync on startup, then every `codex_auth_sync_interval_s` (default 300s,
+    # well inside the 900s lease so a single failure is not an outage). Silent
+    # no-op when no authority is configured: most deployments have none.
+    app.state.codex_auth_sync_task = None
+    _codex_auth = None
+    try:
+        from server.codex.auth_client import edge_authority_client as _edge_authority
+
+        _codex_auth = _edge_authority()
+    except Exception:
+        _logging.getLogger("server.codex").warning(
+            "codex authority client could not be built", exc_info=True)
+    if _codex_auth is not None:
+        from server.codex.authorization import push_authorization as _push_authz
+
+        async def _codex_auth_sync_loop() -> None:
+            _log = _logging.getLogger("server.codex")
+            from server.config import get_settings as _cfg_get
+
+            _cfg = _cfg_get()
+            _lease = float(getattr(_cfg, "codex_auth_sync_lease_s", 900.0))
+            _interval = float(getattr(_cfg, "codex_auth_sync_interval_s", 300.0))
+            while True:
+                try:
+                    await _push_authz(_codex_auth, lease_s=_lease)
+                except Exception:
+                    # Never fatal: the previous projection stays in force until its
+                    # lease lapses, which can only make the authority MORE
+                    # restrictive, never less.
+                    _log.warning("codex authorization sync failed", exc_info=True)
+                await asyncio.sleep(_interval)
+
+        app.state.codex_auth_sync_task = asyncio.create_task(
+            _codex_auth_sync_loop(), name="codex-auth-sync"
+        )
+
     yield
     # Shutdown. Every await below is bounded via bounded_wait (issue #846): a single
     # wedged phase used to hang TestClient exits (CI red for the full job budget) and
@@ -441,6 +484,7 @@ async def _lifespan(app: FastAPI):
                            phase="shutdown:pipeline-state")
     for _attr, _phase in (("loop_lag_task", "loop-lag-watchdog"),
                           ("app_sessions_prune_task", "app-sessions-prune"),
+                          ("codex_auth_sync_task", "codex-auth-sync"),
                           ("fleet_probe_task", "fleet-probe")):
         _t = getattr(app.state, _attr, None)
         if _t is not None:

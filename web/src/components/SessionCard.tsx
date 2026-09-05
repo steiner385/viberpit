@@ -11,6 +11,7 @@ import { bindingWindow } from '@/lib/usageWindows'
 import { isValidTimestamp, relTime } from '@/lib/relativeTime'
 import { TIER_ACCENT } from '@/session/statusTier'
 import { sessionTriage } from '@/session/triageTier'
+import { useSessionPromptFlight } from '@/lib/promptFlight'
 import { anyChecksFailing, isActionablePrState } from '@/session/prStatus'
 import { isGatedTier, tierLabel } from '@/session/modelName'
 import { UsageBadge } from './UsageBadge'
@@ -122,7 +123,12 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   // (the restart-stranded relabel included). sessionTriage is the SAME function
   // the group header / sort use, so a card can never show a calm "Waiting…"/"Your
   // turn" pill while sitting under the "Failed" header (Fix B).
-  const presentation = sessionTriage(session)
+  // A prompt this user sent whose turn has not started yet. Read from the socket-owned
+  // store rather than from the session record: the wait happens entirely before the
+  // server has any new status to report, which is exactly why the card used to sit on
+  // a calm "Ready" through the whole thing.
+  const promptStage = useSessionPromptFlight(session.id)
+  const presentation = sessionTriage(session, promptStage)
   const accent = TIER_ACCENT[presentation.tier]
   const isBusy = presentation.tier === 'busy'
 

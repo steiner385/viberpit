@@ -8493,6 +8493,168 @@ class SessionOrchestrator:
         """Return the proxy /usage payload for a copilot account, or None."""
         return self._copilot.usage(account) if self._copilot is not None else None
 
+    # ------------------------------------------------------------------
+    # Codex (OpenAI) account surfaces
+    #
+    # These three run HERE, on the host that owns the app-server, because
+    # `model/list` and `account/rateLimits/read` are questions only a live,
+    # logged-in `codex app-server` can answer. The edge reaches them over the
+    # daemon RPC like every other cross-host inspection.
+    # ------------------------------------------------------------------
+
+    async def codex_models(self, account: str, refresh: bool = False) -> dict:
+        """Model options for one OpenAI account, from `model/list`.
+
+        Starting the app-server is a side effect the caller has asked for
+        implicitly: there is no way to enumerate an account's models without a
+        logged-in process for that account. It is ref-counted and idle-reaped like
+        any other, so a model-picker open costs one app-server for the grace
+        period and nothing after.
+        """
+        codex = self._codex
+        if codex is None or not codex.available:
+            return {"state": "unavailable", "models": []}
+        from server.codex.catalog import ModelCatalogError
+
+        try:
+            await codex.ensure(account)
+            client = codex.client_for(account)
+            models = await self._codex_catalog().models(
+                account,
+                client=client,
+                cli_version=codex.availability.cli_version or "",
+                refresh=refresh,
+            )
+        except ModelCatalogError as exc:
+            return {"state": "error", "models": [], "detail": str(exc)}
+        except Exception as exc:  # noqa: BLE001 -- a picker must not 500 the page
+            log.warning("codex_models(%s) failed", account, exc_info=True)
+            from server.codex import redaction
+
+            return {
+                "state": "error",
+                "models": [],
+                "detail": redaction.scrub_exception(exc),
+            }
+        return {"state": "ok", "models": [m.to_wire() for m in models]}
+
+    async def codex_validate_model(
+        self, account: str, model: str | None, effort: str | None
+    ) -> dict:
+        """Validate a (model, effort) PAIR for an OpenAI account before dispatch.
+
+        A pair, not two fields: ``gpt-5.1-codex`` may be valid and ``xhigh`` may be
+        valid and the combination still not exist, so validating them separately
+        would let a request through that the app-server then rejects mid-turn.
+
+        Drift is retried exactly once. The catalog is cached for minutes, so the
+        common cause of a miss is "this account's plan changed" or "the CLI was
+        upgraded" — one forced refresh answers that. Retrying further would turn a
+        genuinely wrong model name into a `model/list` loop.
+        """
+        from server.codex.catalog import ModelCatalogError, ModelEffortMismatch
+
+        codex = self._codex
+        if codex is None or not codex.available:
+            # Nothing to validate against. Let the spawn path produce its own typed
+            # unavailability rather than inventing a second one here.
+            return {"ok": True, "model": model, "effort": effort}
+        catalog = self._codex_catalog()
+        cli_version = codex.availability.cli_version or ""
+        try:
+            await codex.ensure(account)
+            client = codex.client_for(account)
+            for refresh in (False, True):
+                models = await catalog.models(
+                    account, client=client, cli_version=cli_version, refresh=refresh
+                )
+                try:
+                    chosen, chosen_effort = catalog.validate(models, model, effort)
+                except ModelEffortMismatch as mismatch:
+                    if refresh:
+                        return {"ok": False, "error": mismatch.to_wire()}
+                    continue
+                return {"ok": True, "model": chosen, "effort": chosen_effort}
+        except ModelCatalogError as exc:
+            # We could not enumerate the models, so we cannot say the pair is wrong.
+            # Allow it: the app-server is the authority and will reject it if it is.
+            log.warning("codex model validation for %s degraded: %s", account, exc)
+        return {"ok": True, "model": model, "effort": effort}
+
+    async def codex_account_status(self, account: str) -> dict:
+        """Everything host-local the accounts page needs about one OpenAI account.
+
+        One RPC rather than three. Quota, the live runner count and the auth
+        degraded-reason are all answers only this host can give, they are all read
+        on the same page load, and they are all cheap — splitting them would cost
+        three round trips per account per refresh for no gain.
+        """
+        from server.codex.quota import QuotaSnapshot, QuotaState
+
+        codex = self._codex
+        if codex is None or not codex.available:
+            return {
+                "quota": QuotaSnapshot(
+                    state=QuotaState.UNSUPPORTED,
+                    detail="codex is not available on this host",
+                ).to_wire(),
+                "activeRunners": 0,
+                "degradedReason": None,
+            }
+        # Deliberately NOT ensure()d: this is polled by the accounts page, and
+        # starting an app-server on every poll would keep one alive per account
+        # forever, defeating the idle reaper. With nothing running the reader
+        # answers UNKNOWN (or last-good with an age), which is the honest answer.
+        client = codex.client_for(account)
+        snapshot = await self._codex_quota_reader().read(account, client=client)
+        provider = getattr(codex, "external_auth", None)
+        return {
+            "quota": snapshot.to_wire(),
+            "activeRunners": 1 if client is not None else 0,
+            "degradedReason": (
+                None if provider is None else provider.degraded_reason(account)
+            ),
+        }
+
+    async def codex_invalidate_credentials(self, account: str) -> dict:
+        """Drop cached Codex credentials for *account* and stop its app-server.
+
+        The runner half of a revocation. Reported as ``{"invalidated": bool}`` so
+        the edge can tell "this host had nothing to do" from "this host failed",
+        which is the difference between a clean disable and a degraded one.
+        """
+        codex = self._codex
+        if codex is None:
+            return {"invalidated": False, "reason": "codex not enabled on this host"}
+        await codex.invalidate_credentials(account)
+        self._codex_catalog().invalidate(account)
+        self._codex_quota_reader().invalidate(account)
+        return {"invalidated": True}
+
+    def _codex_catalog(self):
+        catalog = getattr(self, "_codex_model_catalog", None)
+        if catalog is None:
+            from server.codex.catalog import CodexModelCatalog
+            from server.config import get_settings
+
+            catalog = CodexModelCatalog(
+                cache_ttl_s=float(getattr(get_settings(), "codex_model_cache_s", 300.0))
+            )
+            self._codex_model_catalog = catalog
+        return catalog
+
+    def _codex_quota_reader(self):
+        reader = getattr(self, "_codex_quota_cache", None)
+        if reader is None:
+            from server.codex.quota import CodexQuotaReader
+            from server.config import get_settings
+
+            reader = CodexQuotaReader(
+                cache_ttl_s=float(getattr(get_settings(), "codex_quota_cache_s", 60.0))
+            )
+            self._codex_quota_cache = reader
+        return reader
+
     def driver(self, session_id: str) -> AgentDriver | None:
         """Return the live AgentDriver for session_id, or None."""
         return self._drivers.get(session_id)

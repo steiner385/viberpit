@@ -13,6 +13,7 @@ import { QuestionCard } from './QuestionCard'
 import { ErrorCard } from './ErrorCard'
 import { RecoveringCard } from './RecoveringCard'
 import { BlockRow } from './BlockRow'
+import { PendingPromptNote } from './PendingPromptNote'
 
 interface Props {
   turn: TurnType
@@ -104,6 +105,10 @@ export const Turn = memo(function Turn({
             return null
         }
       })}
+      {/* A prompt the user has sent that no server echo has confirmed yet. The `user`
+          echo adopts the turn and clears `pending`, so this note disappears the moment
+          the real turn exists — no separate teardown. */}
+      {isUser && turn.pending && <PendingPromptNote stage={turn.pending} />}
     </div>
   )
 })

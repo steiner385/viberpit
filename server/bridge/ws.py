@@ -1066,6 +1066,26 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 elif msg_type == "detach":
                     await _handle_detach(session_id)
                 elif msg_type == "prompt":
+                    # ACK RECEIPT FIRST — before the wake-up below, not after it.
+                    #
+                    # This is the positive counterpart to the promptRejected frame
+                    # further down. Everything else this branch does is slow: on a
+                    # detached session _ensure_live resumes a `claude` process, and
+                    # that resume is where a user's 30 s–2 min of total UI silence
+                    # actually went. Until now the first observable consequence of a
+                    # prompt was the driver's own user-echo at the far end of all of
+                    # it, so "did my message even reach the server?" had no answer
+                    # for as long as the answer took to compute.
+                    #
+                    # `resuming` tells the browser WHICH wait it is in, so the pending
+                    # bubble can say "waking session…" rather than a bare spinner.
+                    # live_tasks membership is the same short-circuit _ensure_live
+                    # itself uses, read before the await so it reflects the decision
+                    # _ensure_live is about to make.
+                    await _send({
+                        "type": "promptAck", "sessionId": session_id,
+                        "stage": "received" if session_id in live_tasks else "resuming",
+                    })
                     # Resume a read-only (detached) session lazily on first input, then
                     # send. send_prompt no-ops without a live driver, so the resume must
                     # happen here — not on attach, where it would block mere viewing.
@@ -1125,6 +1145,13 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                                 status = await orchestrator.send_prompt(
                                     session_id, text, attachment_ids, **extra)
                         await orchestrator.note_user_interaction(session_id)
+                        if status == "sent":
+                            # The driver has the text: a turn starts next, or it queues
+                            # behind a live one (the driver emits its own queue/status
+                            # frames for that). Only "sent" may claim this — the
+                            # draining/no_driver answers get promptRejected below.
+                            await _send({"type": "promptAck", "sessionId": session_id,
+                                         "stage": "delivered"})
                         if interrupt and status == "sent":
                             # Same trail a Stop leaves, tagged so the audit shows the
                             # turn was cut short to post a prompt, not abandoned.

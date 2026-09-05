@@ -2,9 +2,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { SessionList } from '../SessionList'
 import type { Session, Account } from '@/api/types'
 import { anthropicUsage, account, session } from '@/test/factories'
+
+// Partial mock: only the bulk-archive mutation is replaced, so the select-mode
+// test below can assert on what it was called with without a real network
+// request. Every other hook stays real, matching every other test in this file.
+const bulkArchiveMutate = vi.fn()
+vi.mock('@/api/hooks', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/hooks')>()
+  return { ...actual, useBulkArchiveSessions: () => ({ mutate: bulkArchiveMutate, isPending: false }) }
+})
+
+import { SessionList } from '../SessionList'
 
 const SESSIONS: Session[] = [
   session({
@@ -798,5 +808,33 @@ describe('SessionList — Rotate stalled button', () => {
   it('does not render the button when nothing is stalled', () => {
     render(<SessionList {...sharedProps} sessions={SESSIONS} />, { wrapper })
     expect(screen.queryByRole('button', { name: /rotate stalled/i })).not.toBeInTheDocument()
+  })
+})
+
+describe('SessionList — select mode (live list bulk archive)', () => {
+  const sharedProps = {
+    accounts: ACCOUNTS, onNew: vi.fn(), onOpen: vi.fn(), onRename: vi.fn(),
+    onClose: vi.fn(), onDelete: vi.fn(), onQuickResume: vi.fn(),
+  }
+
+  beforeEach(() => vi.clearAllMocks())
+
+  it('selects two rows, archives the selection, and Done clears the bulk-actions bar', async () => {
+    const user = userEvent.setup()
+    render(<SessionList {...sharedProps} sessions={SESSIONS} />, { wrapper })
+
+    await user.click(screen.getByRole('button', { name: 'Select' }))
+    await user.click(screen.getByRole('checkbox', { name: 'Select Work session' }))
+    await user.click(screen.getByRole('checkbox', { name: 'Select Research' }))
+    expect(screen.getByText('2 selected')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Archive (2)' }))
+    expect(bulkArchiveMutate).toHaveBeenCalledOnce()
+    const [ids] = bulkArchiveMutate.mock.calls[0]
+    expect(ids).toHaveLength(2)
+    expect(ids).toEqual(expect.arrayContaining(['sess-1', 'sess-2']))
+
+    await user.click(screen.getByRole('button', { name: 'Done' }))
+    expect(screen.queryByRole('region', { name: 'Bulk actions' })).not.toBeInTheDocument()
   })
 })

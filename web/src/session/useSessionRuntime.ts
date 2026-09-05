@@ -11,7 +11,10 @@
 
 import { useEffect, useMemo, useReducer, useState, useCallback, useRef } from 'react'
 import { useSessionSocket } from '@/ws/client'
-import type { ConnectionState, SocketChannel, WsRotatedMsg, WsErrorMsg } from '@/ws/client'
+import type {
+  ConnectionState, SocketChannel, WsRotatedMsg, WsErrorMsg, WsPromptAckMsg, WsPromptRejectedMsg,
+} from '@/ws/client'
+import { PROMPT_ACK_TIMEOUT_MS } from '@/session/promptStage'
 import { transcriptReducer, initialTranscript } from '@/session/reducer'
 import type { TranscriptState } from '@/session/reducer'
 import type { SessionEvent, Command, PromptContext } from '@/session/events'
@@ -135,6 +138,13 @@ export function useSessionRuntime(
 
   const [mode, setMode] = useState('interactive')
   const [armedQuestionId, setArmedQuestionId] = useState<string | null>(null)
+  // Live ack-watchdog timers (one per send), cleared on unmount so a closed session
+  // never dispatches into an unmounted reducer.
+  const ackTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set())
+  useEffect(() => {
+    const timers = ackTimersRef.current
+    return () => { for (const t of timers) clearTimeout(t); timers.clear() }
+  }, [])
   const [commands, setCommands] = useState<Command[]>([])
   const [commandResult, setCommandResult] = useState<{ render: 'help' | 'context'; data: unknown } | null>(null)
   const modeRef = useRef('interactive')
@@ -163,6 +173,21 @@ export function useSessionRuntime(
       dispatch({ type: 'error', code: msg.code, message: msg.message, resetsAt: msg.resetsAt ?? null })
     }
 
+    // The edge's positive receipt for a prompt frame (server/bridge/ws.py). This is the
+    // frame that closes the "did it even reach the server?" gap: the first one arrives
+    // BEFORE the session wake-up, so it lands in milliseconds even when the turn itself
+    // is two minutes away.
+    const onPromptAck = (msg: WsPromptAckMsg) => {
+      if (msg.sessionId !== sessionId) return
+      dispatch({ type: '_promptStage', stage: msg.stage })
+    }
+    // The server refused the prompt and the socket re-queued it for the next flush —
+    // the bubble goes back to "held", not to an error: the prompt is still coming.
+    const onPromptHeld = (msg: WsPromptRejectedMsg) => {
+      if (msg.sessionId !== sessionId) return
+      dispatch({ type: '_promptHeld', text: msg.text })
+    }
+
     const onCommands = (msg: { sessionId: string; commands: Command[] }) => {
       if (msg.sessionId !== sessionId) return
       setCommands(msg.commands)
@@ -180,6 +205,8 @@ export function useSessionRuntime(
     on('error', onError)
     on('commands', onCommands)
     on('commandResult', onCommandResult)
+    on('promptAck', onPromptAck)
+    on('promptHeld', onPromptHeld)
     // Seed the user's prompt optimistically so it shows the instant the session
     // opens, before the SDK echoes it back. The reducer adopts (re-keys) this
     // turn when the real `user` event arrives, so there's no duplicate. The seed
@@ -194,6 +221,8 @@ export function useSessionRuntime(
       off('error', onError)
       off('commands', onCommands)
       off('commandResult', onCommandResult)
+      off('promptAck', onPromptAck)
+      off('promptHeld', onPromptHeld)
       detach(sessionId)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -280,14 +309,26 @@ export function useSessionRuntime(
         onAnswer(armedQuestionId, [text], 'chat')
         return
       }
+      // Send FIRST, then record — the frame's fate is what the bubble reports, and a
+      // prompt the socket had to hold must not be drawn as one that is on its way.
+      // (Omit the trailing arg entirely when there's no context, rather than passing an
+      // explicit `undefined` — callers, and their test mocks, that assert the prompt was
+      // sent with exactly 3 args must keep seeing exactly 3.)
+      const result = context
+        ? prompt(sessionId, text, attachmentIds, context)
+        : prompt(sessionId, text, attachmentIds)
       // Track the sent prompt so a reconnect whose replayReset outruns the
-      // transcript-file write can re-assert it instead of dropping it silently.
-      dispatch({ type: '_trackSentPrompt', text })
-      // Omit the trailing arg entirely when there's no context, rather than passing an
-      // explicit `undefined` — callers (and their test mocks) that assert the prompt
-      // was sent with exactly 3 args must keep seeing exactly 3.
-      if (context) prompt(sessionId, text, attachmentIds, context)
-      else prompt(sessionId, text, attachmentIds)
+      // transcript-file write can re-assert it instead of dropping it silently — and
+      // render it immediately as a pending bubble carrying that stage.
+      dispatch({ type: '_trackSentPrompt', text, stage: result })
+      // Ack watchdog. Fires unconditionally after every send; the reducer decides
+      // whether anything is actually still unacknowledged by then, so there is no
+      // per-prompt timer bookkeeping to get wrong. Cleared on unmount.
+      const timer = setTimeout(() => {
+        ackTimersRef.current.delete(timer)
+        dispatch({ type: '_promptStalled' })
+      }, PROMPT_ACK_TIMEOUT_MS)
+      ackTimersRef.current.add(timer)
     },
     [sessionId, prompt, onAnswer, armedQuestionId],
   )

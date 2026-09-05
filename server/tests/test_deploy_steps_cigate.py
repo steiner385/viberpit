@@ -117,3 +117,84 @@ def test_unreadable_protection_falls_back_to_all_checks():
             raise RuntimeError("HTTP 403: admin required")
         return runs
     assert steps.ci_verdict("s", gh_api=api) == "red"
+
+
+# --- a required check that will NEVER report: "unrun", not a forever-"pending" ---
+# GitHub keeps at most ONE pending run per concurrency group and cancels any earlier
+# pending one — even with cancel-in-progress:false. During a merge burst on master the
+# middle commits' CI runs are therefore cancelled before a single job starts, so those
+# shas carry NO check-run for the required contexts, ever. On the check-runs endpoint
+# alone that is indistinguishable from "the run hasn't started yet", so the gate
+# reported "pending" forever and the deploy banner spun on a verdict that could not
+# resolve. Consulting the workflow RUNS for the sha separates the two.
+
+def _wf(*pairs):
+    """actions/runs JSON from (status, conclusion) pairs."""
+    return json.dumps({"workflow_runs": [{"status": s, "conclusion": c} for s, c in pairs]})
+
+
+def _gh_runs(check_runs_json, *, contexts, runs_json):
+    """gh_api stub routing three ways: protection, actions/runs, check-runs."""
+    def api(path):
+        if "protection/required_status_checks" in path:
+            return json.dumps({"contexts": list(contexts)})
+        if "actions/runs" in path:
+            return runs_json
+        return check_runs_json
+    return api
+
+
+_REQUIRED = ["lint-and-test", "frontend", "amendment"]
+
+
+def test_missing_required_check_with_a_cancelled_run_is_unrun():
+    runs = _named(("amendment", "success"))     # ci.yml was cancelled before any job ran
+    api = _gh_runs(runs, contexts=_REQUIRED,
+                   runs_json=_wf(("completed", "success"), ("completed", "cancelled")))
+    assert steps.ci_verdict("s", gh_api=api) == "unrun"
+
+
+def test_missing_required_check_stays_pending_while_a_run_is_in_flight():
+    # A cancelled sibling does not make an in-flight run's verdict final.
+    runs = _named(("amendment", "success"))
+    api = _gh_runs(runs, contexts=_REQUIRED,
+                   runs_json=_wf(("completed", "cancelled"), ("in_progress", None)))
+    assert steps.ci_verdict("s", gh_api=api) == "pending"
+
+
+def test_missing_required_check_stays_pending_when_nothing_was_cancelled():
+    # Every run finished cleanly and the context is still absent — the check-run may
+    # simply not have propagated yet. Conservative: pending, never "unrun".
+    runs = _named(("amendment", "success"))
+    api = _gh_runs(runs, contexts=_REQUIRED, runs_json=_wf(("completed", "success")))
+    assert steps.ci_verdict("s", gh_api=api) == "pending"
+
+
+def test_unrun_probe_failure_falls_back_to_pending():
+    # The extra probe is best-effort: an unreadable actions API must never upgrade the
+    # verdict's severity beyond the historical "pending".
+    runs = _named(("amendment", "success"))
+
+    def api(path):
+        if "protection/required_status_checks" in path:
+            return json.dumps({"contexts": _REQUIRED})
+        if "actions/runs" in path:
+            raise RuntimeError("HTTP 502")
+        return runs
+    assert steps.ci_verdict("s", gh_api=api) == "pending"
+
+
+def test_green_path_never_probes_the_actions_api():
+    # The probe is one extra round-trip per detect tick; it must fire only on the rare
+    # missing-context branch, not on every healthy commit.
+    runs = _named(("lint-and-test", "success"), ("frontend", "success"),
+                  ("amendment", "success"))
+    paths: list[str] = []
+
+    def api(path):
+        paths.append(path)
+        if "protection/required_status_checks" in path:
+            return json.dumps({"contexts": _REQUIRED})
+        return runs
+    assert steps.ci_verdict("s", gh_api=api) == "green"
+    assert not any("actions/runs" in p for p in paths)

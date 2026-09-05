@@ -246,4 +246,27 @@ describe('DeployPanel', () => {
     expect(screen.getByRole('button', { name: /deploy now/i })).toBeEnabled()
   })
 
+  // A tip whose CI run was cancelled before any job started carries no check-runs and
+  // never will. Rendering that as "pending" tells the operator to wait for something
+  // that is not coming; it needs its own words.
+  it('says an unrun tip never ran, alongside the partial-deploy offer', () => {
+    const commits = ['c3', 'c2', 'c1'].map(sha => (
+      { sha, subject: `s ${sha}`, author: 't', iso: 'i' }))
+    mockHooks(
+      { behind: true, commits, ci: 'green', tipCi: 'unrun', deployableSha: 'c2', deployableCount: 2 },
+      { running: false, phases: {} })
+    render(<DeployPanel />)
+    expect(screen.getByText(/2 of 3 deployable \(tip CI never ran\)/i)).toBeInTheDocument()
+  })
+
+  it('says CI never ran when an unrun tip leaves nothing deployable', () => {
+    mockHooks(
+      { behind: true, commits: [{ sha: 'c1', subject: 's', author: 't', iso: 'i' }],
+        ci: 'unrun', tipCi: 'unrun', deployableSha: '', deployableCount: 0 },
+      { running: false, phases: {} })
+    render(<DeployPanel />)
+    expect(screen.getByRole('button', { name: /deploy now/i })).toBeDisabled()
+    expect(screen.getByText(/CI never ran/i)).toBeInTheDocument()
+  })
+
 })
