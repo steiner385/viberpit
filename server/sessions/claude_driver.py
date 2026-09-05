@@ -17,6 +17,7 @@ from ccswitch.accounts import provider_or_none as _provider_of
 from server.aio import bounded_wait, cancel_and_reap
 from server.assistant.context import PromptContext, render_context_header
 from server.hostname import self_host_name
+from server.obs.metrics import assistant_sessions_live, assistant_ttft_ms, assistant_turn_ms
 from . import events as ev
 from .driver_stream import _STREAM_DONE, DriverStream
 from .failure import classify, TurnFailure
@@ -45,7 +46,17 @@ _STATUS_TRACE = os.environ.get("CCSWITCH_STATUS_TRACE", "false").lower() in ("1"
 # WS attach path (_emit_live_extras); buffering them would double-emit.
 _TURN_CONTENT = (ev.UserMessage, ev.TurnStart, ev.TurnModel, ev.SessionMeta,
                  ev.TextDelta, ev.ThinkingDelta, ev.ToolCall, ev.ToolResult,
-                 ev.TurnEnd, ev.ErrorEvent)
+                 ev.TurnEnd, ev.ErrorEvent,
+                 # The turn's asks and their resolutions ride the attach snapshot too, so
+                 # a mid-turn reattach re-delivers a pending permission/question AT ITS
+                 # PLACE in the turn — after the prompt and the content that led to it —
+                 # exactly as the daemon ring does in remote mode. The WS bridge used to
+                 # re-emit pending asks separately, AHEAD of the open-turn resupply; the
+                 # client fabricated the assistant turn for that early copy and the
+                 # re-supplied prompt then landed under it (the "prompt stuck at the
+                 # bottom" bug). The resolutions must travel with them so an already-
+                 # decided ask does not resurrect as pending on the reattached view.
+                 ev.PermissionRequest, ev.PermissionResolved, ev.Question, ev.QuestionResolved)
 
 # How long aclose() waits for the CLI to flush its synthetic interrupt result for a
 # turn wedged mid-tool-call before giving up and cancelling the drain.
@@ -191,6 +202,8 @@ class ClaudeAgentDriver:
         # coding session. Owned here (not the orchestrator) so it is closed exactly
         # once, alongside the SDK client, in aclose() below.
         self._assistant_api = assistant_api
+        if self._assistant_api is not None:
+            assistant_sessions_live.inc()
         self._reg = registry
         self._qreg = QuestionRegistry()
         self._tr = Translator()
@@ -222,6 +235,10 @@ class ClaudeAgentDriver:
         # active. Consumed by the WS attach path (→ replay_window.turn_started_at)
         # to scope the incomplete-turn drop to the turn that actually is in progress.
         self._turn_started_at: float | None = None
+        # Epoch seconds of the in-progress turn's first TextDelta, or None until one
+        # arrives (reset per-turn in _start_turn / _open_autonomous_turn). Assistant-kind
+        # only — feeds assistant_ttft_ms (spec §4.10).
+        self._turn_first_delta_at: float | None = None
         self._retrying: bool = False
         self._condensing: bool = False
         self._turns_completed: int = 0
@@ -779,6 +796,7 @@ class ClaudeAgentDriver:
         # progress — same-host clocks, and the CLI stamps its user entry only AFTER
         # this point (it processes the prompt we are about to send).
         self._turn_started_at = time.time()
+        self._turn_first_delta_at = None
         self._last_turn_outcome = "success"
         await self._emit_status()
         # Build the live UserMessage image refs (url/mime/name only).
@@ -912,6 +930,11 @@ class ClaudeAgentDriver:
                 await self._consume_condensing(ev.Condensing(active=False))
             if isinstance(e, ev.TextDelta):
                 self._last_assistant_parts.append(e.text)
+                if is_assistant_kind(self.kind) and self._turn_first_delta_at is None:
+                    self._turn_first_delta_at = time.time()
+                    if self._turn_started_at is not None:
+                        assistant_ttft_ms.observe(
+                            (self._turn_first_delta_at - self._turn_started_at) * 1000)
             elif isinstance(e, ev.TurnEnd):
                 self._last_turn_outcome = e.outcome
                 self._last_turn_id = e.turn_id
@@ -962,6 +985,10 @@ class ClaudeAgentDriver:
         refresh, suggestions, and the listener back on the cursor."""
         # Capture any token rotation the SDK performed during this turn.
         await self._call_sync_back()
+        # Before any turn-scoped flag is cleared below (either branch): this turn
+        # is settling right now, whether or not another is queued right behind it.
+        if is_assistant_kind(self.kind) and self._turn_started_at is not None:
+            assistant_turn_ms.observe((time.time() - self._turn_started_at) * 1000)
         # Clear every turn-scoped flag so none outlives the turn that set it.
         self._reset_turn_flags()
         # If queued prompts remain, pop the front and start the next turn.
@@ -1018,6 +1045,7 @@ class ClaudeAgentDriver:
         self._turn_produced_output = False
         self._turn_active = True
         self._turn_started_at = time.time()
+        self._turn_first_delta_at = None
         self._last_turn_outcome = "success"
         log.info("driver.autonomous_turn: CLI-initiated turn session=%s", self.session_id)
         await self._emit_status()
@@ -1445,7 +1473,10 @@ class ClaudeAgentDriver:
         # drain's finally sync_back already ran before the close was requested).
         await self._call_sync_back()
         if self._assistant_api is not None:
-            await self._assistant_api.aclose()
+            try:
+                await self._assistant_api.aclose()
+            finally:
+                assistant_sessions_live.dec()
         for q in self._subscribers:
             q.put_nowait(_STREAM_DONE)
 

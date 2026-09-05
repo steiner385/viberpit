@@ -8,8 +8,11 @@ describe('transcriptReducer — _trackSentPrompt buffer', () => {
     const s = transcriptReducer(initialTranscript, { type: '_trackSentPrompt', text: 'hello' })
     expect(s.pendingSent).toEqual([{ id: 'pending:0', text: 'hello' }])
     expect(s.pendingSentSeq).toBe(1)
-    // tracking must not itself create a turn — the live echo renders it
-    expect(s.turns).toHaveLength(0)
+    // Tracking also renders the prompt immediately (the pending bubble). It used to
+    // create no turn and wait for the live echo, which is what left a sent prompt
+    // invisible for as long as the server took to wake the session.
+    expect(s.turns).toHaveLength(1)
+    expect(s.turns[0]).toMatchObject({ id: 'pending:0', pending: 'sent' })
   })
 
   it('keeps insertion order and unique ids across multiple sends', () => {
@@ -169,12 +172,13 @@ describe('transcriptReducer — re-assert on replay', () => {
   })
 
   it('initial replayComplete (no reset) does not re-assert even with a populated buffer', () => {
-    // A prompt is tracked but no replayReset has occurred (hadReset stays false);
-    // the initial/empty-transcript replayComplete must not synthesize a turn before
-    // the live echo arrives.
+    // A prompt is tracked but no replayReset has occurred (hadReset stays false); the
+    // initial/empty-transcript replayComplete must not synthesize a SECOND turn on top
+    // of the pending bubble the send already rendered.
     let s = transcriptReducer(initialTranscript, { type: '_trackSentPrompt', text: 'hello' })
-    s = transcriptReducer(s, DONE)        // initial replayComplete, hadReset=false
-    expect(userTexts(s)).toEqual([])      // nothing re-asserted
-    expect(s.pendingSent).toHaveLength(1) // still buffered
+    s = transcriptReducer(s, DONE)          // initial replayComplete, hadReset=false
+    expect(userTexts(s)).toEqual(['hello']) // the send's own bubble, not a re-assert
+    expect(s.turns).toHaveLength(1)         // nothing duplicated it
+    expect(s.pendingSent).toHaveLength(1)   // still buffered
   })
 })

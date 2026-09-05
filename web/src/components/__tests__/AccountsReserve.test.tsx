@@ -26,7 +26,6 @@ vi.mock('@/api/hooks', () => ({
   useDeleteAccount: vi.fn(),
   useSetAccountEnabled: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useGithubRepos: vi.fn(),
-  useGithubBranches: vi.fn(),
   useModels: vi.fn(() => ({ data: [{ id: 'default', label: 'Default' }, { id: 'opus', label: 'Opus' }, { id: 'fable', label: 'Fable' }] })),
   useSettings: vi.fn(),
   useUpdateSettings: vi.fn(),
@@ -105,7 +104,6 @@ describe('AccountRow — weekly reserve', () => {
     vi.mocked(hooks.useCloseSession).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useCloseSession>)
     vi.mocked(hooks.useRefreshAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useRefreshAccount>)
     vi.mocked(hooks.useGithubRepos).mockReturnValue(queryResult([]))
-    vi.mocked(hooks.useGithubBranches).mockReturnValue(queryResult({ default: null, branches: [] }))
     vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings()))
     vi.mocked(hooks.useUpdateSettings).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUpdateSettings>)
     vi.mocked(hooks.useUpdateAccount).mockReturnValue({

@@ -28,7 +28,6 @@ vi.mock('@/api/hooks', () => ({
   useSetAccountEnabled: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useGithubRepos: vi.fn(),
   useModels: vi.fn(() => ({ data: [] })),
-  useGithubBranches: vi.fn(),
   useSettings: vi.fn(),
   useUpdateSettings: vi.fn(),
   useReauthAccount: vi.fn(),
@@ -111,7 +110,6 @@ function setupDefaultMocks() {
   vi.mocked(hooks.useUpdateAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUpdateAccount>)
   vi.mocked(hooks.useDeleteAccount).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useDeleteAccount>)
   vi.mocked(hooks.useGithubRepos).mockReturnValue(queryResult([]))
-  vi.mocked(hooks.useGithubBranches).mockReturnValue(queryResult({ default: null, branches: [] }))
   vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings()))
   vi.mocked(hooks.useUpdateSettings).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useUpdateSettings>)
   vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult(makeReauthState({ state: 'idle' })))

@@ -11,7 +11,6 @@ import {
   useAccounts, useCloseSession, useConfig, usePermanentDeleteSession,
   useRenameSession, useSendPrompt, useSessions,
 } from '@/api/hooks'
-import { NewSessionDialogHost } from '@/features/sessions/NewSessionDialogHost'
 import { RenameDialog } from '@/features/sessions/RenameDialog'
 import { PermanentDeleteDialog } from '@/components/PermanentDeleteDialog'
 import { useSessionListState } from '@/features/sessions/useSessionListState'
@@ -21,7 +20,6 @@ import { setServerSttEnabled } from '@/lib/sttCapability'
 import { textEntryClaimsKey } from '@/lib/detachKeyGuard'
 import { nextSessionAfterClose } from '@/session/nextAfterArchive'
 import { SESSIONS_PATH, sessionPath } from '@/session/sessionNavState'
-import { useDialogName } from './dialogParam'
 import { useDrawerName, useOpenDrawer, type DrawerName } from './drawerParam'
 import { InteractionProvider } from './InteractionContext'
 import { readKioskConfig } from './kiosk'
@@ -380,10 +378,10 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
   // `undefined` = no banner; `null` = limited with no known reset time.
   const [allLimitedReset, setAllLimitedReset] = React.useState<string | null | undefined>(undefined)
 
-  // The all-limited banner's three ways out, all ported from the two old shells
-  // (each carried its own copy; this is the surviving one). Task 17 moved the
-  // state here but not these rules, so without them the banner could only be
-  // dismissed by hand.
+  // The all-limited banner's ways out, ported from the two old shells (each
+  // carried its own copy; this is the surviving one). Task 17 moved the state
+  // here but not these rules, so without them the banner could only be dismissed
+  // by hand.
   //
   // 1. An account became selectable again — a non-null `rank` means the ranker
   //    would pick it, so the banner is stale. A STANDING condition: while it
@@ -391,22 +389,15 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
   if (allLimitedReset !== undefined && accounts.some((a) => a.rank !== null)) {
     setAllLimitedReset(undefined)
   }
-  // 2. The user OPENED the New Session dialog: they are acting on the banner, so
-  //    it stops shouting. `Dashboard` did this inside `openNewDialog`, a click
-  //    handler; the dialog is a `<Link>` now, so the trigger is the param going
-  //    open — an EDGE, not a standing condition, which is why it is written as
-  //    the documented "adjust state when a prop changes" pair rather than folded
-  //    into the test above. Folded in, it would clear the banner on every render
-  //    while the dialog is open, and the 409 that RAISES the banner arrives while
-  //    it still is: the banner would be set and wiped in the same commit, and the
-  //    user would never learn why nothing started.
-  const newDialogOpen = useDialogName() === 'new'
-  const [dialogWasOpen, setDialogWasOpen] = React.useState(newDialogOpen)
-  if (dialogWasOpen !== newDialogOpen) {
-    setDialogWasOpen(newDialogOpen)
-    if (newDialogOpen) setAllLimitedReset(undefined)
-  }
-  // 3. The reset time passed. `setTimeout` rather than a render-time compare so
+  // There used to be a second rule here: opening the New Session dialog cleared
+  // the banner, on the reading that the user was already acting on it. It went
+  // with the dialog. It is deliberately NOT re-pointed at the DispatchBar's
+  // submit, because that submit is what RAISES the banner — the 409 arrives from
+  // the same interaction, so the banner would be set and cleared in one commit
+  // and the user would never learn why nothing started. That hazard is the same
+  // one the dialog version had to be written as an edge to avoid.
+  //
+  // 2. The reset time passed. `setTimeout` rather than a render-time compare so
   //    `Date.now()` is not read during render (react-hooks/purity).
   React.useEffect(() => {
     if (allLimitedReset === undefined || allLimitedReset === null) return
@@ -485,9 +476,6 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
 
   const dialogs = (
     <>
-      {/* `?dialog=new` — DEC-5, open in every layout mode. The host reads the
-          param itself; the shell only supplies what is app-level about it. */}
-      <NewSessionDialogHost accounts={accounts} onAllLimited={setAllLimitedReset} />
       {renameTarget && (
         <RenameDialog
           sessionId={renameTarget.id}
@@ -501,7 +489,7 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
       )}
       {deleteTarget && (
         <PermanentDeleteDialog
-          sessionName={deleteTarget.name}
+          names={[deleteTarget.name]}
           onClose={() => setDeleteTarget(null)}
           isPending={permanentDelete.isPending}
           onConfirm={() => {

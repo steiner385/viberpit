@@ -333,6 +333,26 @@ def test_constitution_workflow_reruns_on_body_edit():
     assert "edited" in trigger, "constitution.yml must re-run when the PR body is edited"
 
 
+def test_constitution_script_bootstraps_src_before_install() -> None:
+    """The amendment gate runs before CI installs the ccswitch core package."""
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(_REPO_ROOT / "scripts/check_constitution_amendment.py"),
+            "--help",
+        ],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_managed_deny_covers_every_protected_path():
     """Every protected path gets both a Write and an Edit deny pattern."""
     patterns = set(managed_deny_patterns())

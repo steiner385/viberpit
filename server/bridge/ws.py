@@ -43,14 +43,17 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
 from server.aio import cancel_and_reap
+from server.api.ratelimit import TokenBucketRateLimiter
 from server.assistant.context import validate_context
 from server.audit import record_audit, redact_event
 from server.auth.identity import verify_identity
 from server.auth.middleware import require_ws_identity
+from server.config import get_settings
 from server.db import db_session
 from server.ipc import protocol as proto
 from server.ipc.client import DaemonTimeout, DaemonUnavailable
 from server.obs.context import bind_session, log_event
+from server.obs.metrics import assistant_prompts_total
 from server.obs.tasks import supervise
 from server.sessions.commands.catalog import parse_command_line
 from server.sessions.events import ErrorEvent, PermissionRequest, tool_kind
@@ -335,6 +338,14 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
     """
     router = APIRouter()
 
+    # Per-identity assistant prompt cap (spec §4.6): a burst of max/6 (~10 min of
+    # steady use) refilling continuously to the configured hourly rate. Built once
+    # per router — i.e. once per app/process, not per connection — so the bucket is
+    # shared across every socket and assistant thread the identity has open.
+    _max_prompts_per_hour = max(1, get_settings().assistant_max_prompts_per_hour)
+    _assistant_prompt_limiter = TokenBucketRateLimiter(
+        _max_prompts_per_hour / 6, _max_prompts_per_hour / 3600)
+
     @router.websocket("/ws")
     async def ws_endpoint(
         websocket: WebSocket,
@@ -598,7 +609,8 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                              "ok": True, **result}))
             return True
 
-        async def _emit_live_extras(session_id: str, driver, events: list) -> None:
+        async def _emit_live_extras(session_id: str, driver, events: list, *,
+                                    open_turn_resupplied: bool = False) -> None:
             """Post-attach live wiring: suggestion seeding, command catalog, pending
             permission/question re-emit, live status, and the deferred initial prompt.
             Only meaningful once a live driver exists. Each step is best-effort.
@@ -608,7 +620,22 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             here would OVERTAKE it (a permissionRequest landing before replayReset
             gets wiped: the reducer stores permission blocks inside turns). They are
             enqueued raw + session-tagged; the batcher redacts at flush. The
-            'commands' catalog is the deliberate exception (see below)."""
+            'commands' catalog is the deliberate exception (see below).
+
+            ``open_turn_resupplied`` — the in-progress turn was dropped from the disk
+            replay and the live stream's snapshot (driver turn buffer / daemon ring)
+            re-supplies it whole, asks included (session bce4b626, 2026-09-05 05:53).
+            Then the pending permission/question re-emit below is NOT just redundant,
+            it is mis-ordered: these frames enter out_q now, but the snapshot is only
+            forwarded once the live task starts — so the ask arrived BEFORE the turn's
+            own UserMessage/TurnStart, the client fabricated the assistant turn for it
+            at the tail, and the re-supplied prompt was appended UNDER that turn. Every
+            later delta then grew the turn above the prompt: the "my prompt is stuck at
+            the bottom while the answer scrolls past it" bug. The snapshot copy sits at
+            the ask's real place in the turn, so it is the only copy sent. The re-emit
+            stays for the attaches nothing re-supplies from — a full disk replay after
+            ring eviction (the disk card is read-only and carries a different id), or a
+            cursor catch-up (the client already holds the turn, dedup by id)."""
             # A session resumed into an idle state has no in-memory turn context, so the
             # turn-completion suggestion trigger never fires. Seed one suggestion from
             # the replayed transcript tail (best-effort; driver gates + dedupes).
@@ -622,29 +649,31 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             # session — top-level by design, see _emit_command_catalog's docstring.
             await _emit_command_catalog(session_id)
 
-            # Re-emit any pending permission requests for this session. Build the frame
-            # through PermissionRequest.to_wire() — the same wire format the live path
-            # uses — so the re-emit can't drift from it (it previously hardcoded
-            # plan=False, dropping the plan flag for a pending ExitPlanMode approval).
-            for p in await orchestrator.pending_permissions(session_id):
-                out_q.put_nowait({**PermissionRequest(
-                    p["permId"], p["turn_id"], p["tool"], tool_kind(p["tool"]),
-                    p["input"], plan=(p["tool"] == "ExitPlanMode"),
-                ).to_wire(), "sessionId": session_id})
-
-            # Re-emit any pending AskUserQuestion events for this session. Mirrors the
-            # permission re-emit above so a refresh/reattach while the model is blocked
-            # in _handle_ask_user_question never silently hangs.
             from server.sessions import events as ev
-            for q in await orchestrator.pending_questions(session_id):
-                out_q.put_nowait({**ev.Question(
-                    question_id=q["question_id"],
-                    turn_id=q["turn_id"],
-                    header=q["header"],
-                    question=q["question"],
-                    options=q["options"],
-                    multi_select=q["multi_select"],
-                ).to_wire(), "sessionId": session_id})
+            if not open_turn_resupplied:
+                # Re-emit any pending permission requests for this session. Build the
+                # frame through PermissionRequest.to_wire() — the same wire format the
+                # live path uses — so the re-emit can't drift from it (it previously
+                # hardcoded plan=False, dropping the plan flag for a pending ExitPlanMode
+                # approval).
+                for p in await orchestrator.pending_permissions(session_id):
+                    out_q.put_nowait({**PermissionRequest(
+                        p["permId"], p["turn_id"], p["tool"], tool_kind(p["tool"]),
+                        p["input"], plan=(p["tool"] == "ExitPlanMode"),
+                    ).to_wire(), "sessionId": session_id})
+
+                # Re-emit any pending AskUserQuestion events for this session. Mirrors
+                # the permission re-emit above so a refresh/reattach while the model is
+                # blocked in _handle_ask_user_question never silently hangs.
+                for q in await orchestrator.pending_questions(session_id):
+                    out_q.put_nowait({**ev.Question(
+                        question_id=q["question_id"],
+                        turn_id=q["turn_id"],
+                        header=q["header"],
+                        question=q["question"],
+                        options=q["options"],
+                        multi_select=q["multi_select"],
+                    ).to_wire(), "sessionId": session_id})
 
             # Re-offer a question whose waiter died with the daemon. The loop above
             # only ever finds LIVE questions; after a restart the registry is empty
@@ -999,7 +1028,11 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                     events = await _replay_and_complete(
                         session_id, drop_incomplete=drop_incomplete,
                         turn_started_at=turn_started_at)
-                    await _emit_live_extras(session_id, driver, events)
+                    # drop_incomplete is exactly "the stream snapshot delivers the open
+                    # turn" — the pair was pinned together above — so it also decides
+                    # whether the pending-ask re-emit would duplicate (and precede) it.
+                    await _emit_live_extras(session_id, driver, events,
+                                            open_turn_resupplied=drop_incomplete)
             except BaseException:
                 # Nothing has consumed the stream yet (only events()'s finally or
                 # close() deregisters it) — discard the queue so a failed attach
@@ -1104,6 +1137,26 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 elif msg_type == "detach":
                     await _handle_detach(session_id)
                 elif msg_type == "prompt":
+                    # ACK RECEIPT FIRST — before the wake-up below, not after it.
+                    #
+                    # This is the positive counterpart to the promptRejected frame
+                    # further down. Everything else this branch does is slow: on a
+                    # detached session _ensure_live resumes a `claude` process, and
+                    # that resume is where a user's 30 s–2 min of total UI silence
+                    # actually went. Until now the first observable consequence of a
+                    # prompt was the driver's own user-echo at the far end of all of
+                    # it, so "did my message even reach the server?" had no answer
+                    # for as long as the answer took to compute.
+                    #
+                    # `resuming` tells the browser WHICH wait it is in, so the pending
+                    # bubble can say "waking session…" rather than a bare spinner.
+                    # live_tasks membership is the same short-circuit _ensure_live
+                    # itself uses, read before the await so it reflects the decision
+                    # _ensure_live is about to make.
+                    await _send({
+                        "type": "promptAck", "sessionId": session_id,
+                        "stage": "received" if session_id in live_tasks else "resuming",
+                    })
                     # Resume a read-only (detached) session lazily on first input, then
                     # send. send_prompt no-ops without a live driver, so the resume must
                     # happen here — not on attach, where it would block mere viewing.
@@ -1115,31 +1168,45 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                         # forwarded when set so the plain contract is untouched.
                         interrupt = msg.get("interrupt") is True
                         extra: dict[str, bool | dict] = {"interrupt": True} if interrupt else {}
-                        # The context chip (spec §4.5): only the assistant drawer sends
-                        # `context`, and only an assistant-kind session may act on one —
-                        # a coding session ignores a supplied context outright.
-                        # get_session is per-session-routed to the owning host in fleet
-                        # mode (unlike a bare `record()`, which is not in
+                        # The context chip (spec §4.5) and the per-identity prompt rate
+                        # limit (spec §4.6) both apply only to an assistant-kind session,
+                        # so both need the record's kind up front — a coding session
+                        # ignores a supplied context outright and is never rate-limited
+                        # here. get_session is per-session-routed to the owning host in
+                        # fleet mode (unlike a bare `record()`, which is not in
                         # FleetOrchestrator's _PER_SESSION set and would resolve to
                         # RemoteOrchestrator, which has no such method at all).
                         raw_context = msg.get("context")
-                        if raw_context is not None:
+                        rec = None
+                        try:
+                            rec = await orchestrator.get_session(session_id)
+                        except Exception:
                             # Best-effort: in fleet mode this is a real RPC that can
                             # raise DaemonTimeout/DaemonUnavailable, and the prompt
                             # frame had no such dependency before the context chip. A
-                            # transient daemon hiccup must degrade to "no context",
-                            # never cost the user their message.
-                            rec = None
-                            try:
-                                rec = await orchestrator.get_session(session_id)
-                            except Exception:
-                                log.warning("ws.prompt context lookup failed session=%s "
-                                            "— sending without context", session_id,
-                                            exc_info=True)
-                            if is_assistant(rec):
-                                validated_context = validate_context(raw_context)
-                                if validated_context is not None:
-                                    extra["context"] = dict(validated_context)
+                            # transient daemon hiccup must degrade to "no context, no
+                            # rate limit", never cost the user their message.
+                            log.warning("ws.prompt session lookup failed session=%s "
+                                        "— sending without context/rate-limit check",
+                                        session_id, exc_info=True)
+                        assistant_record = is_assistant(rec)
+                        if assistant_record and raw_context is not None:
+                            validated_context = validate_context(raw_context)
+                            if validated_context is not None:
+                                extra["context"] = dict(validated_context)
+                        if (assistant_record
+                                and _assistant_prompt_limiter.check(identity) is not None):
+                            # Checked BEFORE send_prompt so a rate-limited prompt costs
+                            # nothing downstream (same principle as the tool-call
+                            # limiter in server/assistant/client.py).
+                            log.warning("ws.prompt rate_limited session=%s identity=%s",
+                                        session_id, identity)
+                            await _send({"type": "promptRejected", "sessionId": session_id,
+                                         "text": text, "attachmentIds": attachment_ids,
+                                         "reason": "RATE_LIMITED"})
+                            continue
+                        if assistant_record:
+                            assistant_prompts_total.inc()
                         status = await orchestrator.send_prompt(
                             session_id, text, attachment_ids, **extra)
                         if status == "no_driver":
@@ -1163,6 +1230,13 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                                 status = await orchestrator.send_prompt(
                                     session_id, text, attachment_ids, **extra)
                         await orchestrator.note_user_interaction(session_id)
+                        if status == "sent":
+                            # The driver has the text: a turn starts next, or it queues
+                            # behind a live one (the driver emits its own queue/status
+                            # frames for that). Only "sent" may claim this — the
+                            # draining/no_driver answers get promptRejected below.
+                            await _send({"type": "promptAck", "sessionId": session_id,
+                                         "stage": "delivered"})
                         if interrupt and status == "sent":
                             # Same trail a Stop leaves, tagged so the audit shows the
                             # turn was cut short to post a prompt, not abandoned.

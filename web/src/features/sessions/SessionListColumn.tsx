@@ -85,24 +85,11 @@ export function SessionListColumn({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* Fixed head: New Session and the list controls stay above the scroll band. */}
-      <div className="shrink-0 space-y-2 p-2">
-        <button
-          type="button"
-          data-selected={newSelected}
-          onClick={onNew}
-          className={cn(
-            'flex w-full min-h-target items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-            newSelected
-              ? 'border-accent bg-accent-wash text-accent'
-              : 'border-edge text-ink hover:bg-surface-raised',
-          )}
-        >
-          <Plus size={16} aria-hidden="true" />
-          New Session
-        </button>
-
+      {/* Fixed head: the list controls stay above the scroll band. `empty:hidden`
+          because the controls are conditional and they are now the band's only
+          child — without it a session-less list paints a bare 1rem strip above
+          the scroll area, which reads as a control that failed to render. */}
+      <div className="shrink-0 space-y-2 p-2 empty:hidden">
         {/* Gated on the whole list, pre-spawn rows included: a lone queued
             session is still a session, and an empty toolbar reads as broken. */}
         {sessions.length > 0 && (
@@ -146,7 +133,6 @@ export function SessionListColumn({
           isLoading={isLoading}
           selectedId={selectedId ?? nav.highlightedSession?.id}
           selectedGroupKey={nav.highlightedGroupKey ?? null}
-          onNew={onNew}
           onOpen={onOpen}
           onRename={onRename}
           onClose={onClose}
@@ -168,9 +154,46 @@ export function SessionListColumn({
         {adoptionEnabled && <AdoptPanel />}
       </div>
 
-      {/* Foot: collapses to nothing when there is no daemon to watch. */}
-      <div className="shrink-0 px-2 pb-2 empty:hidden">
+      {/* Daemon health: collapses to nothing when there is no daemon to watch. */}
+      <div className="shrink-0 px-2 empty:hidden">
         <DaemonHealthIndicator />
+      </div>
+
+      {/* Foot: New Session, deliberately the LAST thing in the column.
+
+          It sits here rather than at the head so it is adjacent to `app.dock`,
+          which is the surface it operates: the button's whole job is to clear
+          the open session (`onNew` → navigate to `/sessions`), which flips the
+          dock from `SessionComposer` to `DispatchBar`. Head-mounted, it was a
+          control at one end of the column acting on a bar at the other; here,
+          the bar it lights up is the next thing you look at. On phone and tablet
+          the dock stacks directly beneath this button; on desktop the dock is in
+          `app.main` and shares this bottom band across the resizer.
+
+          Below `DaemonHealthIndicator`, not above it: both are `shrink-0` at the
+          end of a flex column, so with the button last it holds the bottom edge
+          whether or not the health line is showing. Above it, the button would
+          shift by a row every time the daemon readout appeared or collapsed.
+
+          It keeps its border and the column's own padding so that on phone,
+          where it lands flush against the DispatchBar's surface, it still reads
+          as a separate control rather than part of the bar. */}
+      <div className="shrink-0 p-2">
+        <button
+          type="button"
+          data-selected={newSelected}
+          onClick={onNew}
+          className={cn(
+            'flex w-full min-h-target items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+            newSelected
+              ? 'border-accent bg-accent-wash text-accent'
+              : 'border-edge text-ink hover:bg-surface-raised',
+          )}
+        >
+          <Plus size={16} aria-hidden="true" />
+          New Session
+        </button>
       </div>
     </div>
   )

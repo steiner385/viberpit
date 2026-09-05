@@ -2,22 +2,25 @@ import { useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
 /**
- * The shared `?param=<name>` overlay contract — the mechanics `drawerParam` and
- * `dialogParam` are both built from.
+ * The shared `?param=<name>` overlay contract — the mechanics `drawerParam` is
+ * built from.
  *
- * ## Why this is one module and not two copies
+ * ## Why this is a module and not inlined
  *
- * `?drawer=` and `?dialog=` are the same idea twice: a search param whose value
- * names an overlay, read back through an allow-list so an unrecognised value
- * renders NOTHING, and written with `replace` so opening an overlay is not a
- * place Back can return to (umbrella §4.4). Task 18 found `?dialog=new` had no
- * renderer at all; writing its reader by hand next to `drawerParam`'s would have
- * been the second copy of the rule, and the first place the two would drift is
- * the `replace` — the half a reviewer cannot see in a diff.
+ * The rule it holds is: a search param whose value names an overlay, read back
+ * through an allow-list so an unrecognised value renders NOTHING, and written
+ * with `replace` so opening an overlay is not a place Back can return to
+ * (umbrella §4.4). It was extracted when `?dialog=` became a second reader of
+ * that rule alongside `?drawer=`, because writing the second reader by hand
+ * would have been a copy, and the first place the two would drift is the
+ * `replace` — the half a reviewer cannot see in a diff.
  *
- * The param NAMES still live with their own modules (`DRAWER_PARAM`,
- * `DIALOG_PARAM`), because those are the contract each region publishes. What
- * lives here is only the how.
+ * `?dialog=` has since gone (the New Session dialog it served was retired when
+ * creating a session became `app.dock`'s job), leaving `?drawer=` as the only
+ * caller. The module stays anyway: it is the reason the `replace` semantics are
+ * stated once, and the next overlay param gets them for free rather than
+ * re-deriving them. What is NOT kept here is a param name — those live with the
+ * region that publishes them (`DRAWER_PARAM`). What lives here is only the how.
  *
  * ## Why `replace`, in one sentence
  *

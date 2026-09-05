@@ -4,6 +4,7 @@ import {
   type StatusTier, type StatusPresentation,
 } from './statusTier'
 import { anyChecksFailing } from './prStatus'
+import type { PromptStage } from './promptStage'
 
 /** Tiers at which nothing is already watching the session's PR: it has no live
  *  turn and no armed Monitor/wakeup. Only these get lifted by a failing PR.
@@ -24,12 +25,13 @@ const AT_REST = new Set<StatusTier>(['your-turn'])
  * never overridden — either an agent is already on the PR, or the session is
  * already more urgent than a failing PR.
  */
-export function sessionTriage(session: Session): StatusPresentation {
+export function sessionTriage(session: Session, promptStage?: PromptStage): StatusPresentation {
   const base = statusPresentation(session.status, {
     interruptedByRestart: session.interruptedByRestart,
     liveness: session.liveness,
     usageStalled: session.usageStalled,
     pausedUntil: session.pausedUntil,
+    promptStage,
   })
   if (
     AT_REST.has(base.tier)
@@ -41,7 +43,15 @@ export function sessionTriage(session: Session): StatusPresentation {
   return base
 }
 
-/** Triage tier for grouping/sorting — the tier of the single {@link sessionTriage}
+/**
+ * Triage tier for grouping/sorting. Deliberately called WITHOUT a prompt stage: the
+ * in-flight overlay maps to the `busy` tier, which sorts last, so letting a send drive
+ * grouping would fling the card to the bottom of the list the moment the user hit
+ * Enter and fling it back when the turn started. The pill carries that news instead —
+ * the one place the pill/header pairing this module guarantees is intentionally
+ * relaxed, because the alternative moves the thing the user is looking at.
+ *
+ * Otherwise: the tier of the single {@link sessionTriage}
  *  read, so the group a card lands in always matches the pill it shows. */
 export function triageTier(session: Session): StatusTier {
   return sessionTriage(session).tier

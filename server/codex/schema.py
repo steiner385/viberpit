@@ -980,8 +980,11 @@ class GetAccountRateLimitsResponse:
 
 def _parse_rate_limit_window(payload: Any, what: str) -> RateLimitWindow:
     body = _as_mapping(payload, what)
+    used_percent = _require_int(body, "usedPercent", what)
+    if not 0 <= used_percent <= 100:
+        raise CodexSchemaError(f"{what}.usedPercent must be between 0 and 100")
     return RateLimitWindow(
-        used_percent=_require_int(body, "usedPercent", what),
+        used_percent=used_percent,
         resets_at=_optional_int(body, "resetsAt", what),
         window_duration_mins=_optional_int(body, "windowDurationMins", what),
     )

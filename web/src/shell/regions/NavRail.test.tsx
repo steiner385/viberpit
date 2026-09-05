@@ -81,8 +81,11 @@ describe('NavRail', () => {
       expect(within(nav).getAllByRole('link', { name: new RegExp(def.label) })).toHaveLength(1)
     }
     // Derived from the same array the rail iterates: every section is present
-    // exactly once, so a duplicated Settings target cannot slip back in.
-    expect(within(nav).getAllByRole('link')).toHaveLength(NAV_DEFS.length + 1) // + New session
+    // exactly once, so a duplicated Settings target cannot slip back in. Exactly
+    // `NAV_DEFS.length` — no "+ 1": the rail's remaining global actions
+    // (Assistant, Help, Theme) are buttons, and New session, which used to be
+    // the one extra link, now lives at the foot of the Sessions list column.
+    expect(within(nav).getAllByRole('link')).toHaveLength(NAV_DEFS.length)
   })
 
   it('marks the active section with aria-current', () => {
@@ -117,12 +120,16 @@ describe('NavRail', () => {
     expect(screen.getByTestId('url')).toHaveTextContent('drawer=help')
   })
 
-  it('New session is a link to the URL-addressable dialog', () => {
+  // The rail carried a "New session" link to `?dialog=new` that read as a
+  // duplicate of the Sessions list's own New Session button while doing
+  // something else entirely — the link opened a modal create form, the button
+  // flips `app.dock` to the DispatchBar. The dialog is gone and the button is
+  // the single create control, at the foot of the list column against the bar
+  // it operates. Asserted as an absence so the duplicate cannot quietly return.
+  it('offers no create control — that belongs to the Sessions list column', () => {
     renderRail()
-    expect(screen.getByRole('link', { name: 'New session' })).toHaveAttribute(
-      'href',
-      '/sessions?dialog=new',
-    )
+    expect(screen.queryByRole('link', { name: /new session/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /new session/i })).not.toBeInTheDocument()
   })
 
   it('every control meets the 44px touch target', () => {

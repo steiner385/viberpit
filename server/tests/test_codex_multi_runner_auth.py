@@ -36,6 +36,7 @@ from server.codex.external_auth import (
     ExternalAuthUnavailable,
     assert_no_runner_credentials,
 )
+from server.codex.redaction import Redacted
 
 ACCOUNT = "chatgpt-pro"
 CHATGPT_ACCOUNT_ID = "ec35f85c-8981-4d2f-9f0e-000000000000"
@@ -188,7 +189,8 @@ def test_two_runners_refreshing_at_once_coalesce_to_one_generation(fleet):
         await fleet["dobby"].login_params(ACCOUNT)
         await fleet["rocky"].login_params(ACCOUNT)
         params = schema.ChatgptAuthTokensRefreshParams(
-            reason=schema.REFRESH_REASON_UNAUTHORIZED
+            reason=schema.REFRESH_REASON_UNAUTHORIZED,
+            previous_account_id=Redacted(CHATGPT_ACCOUNT_ID),
         )
         return await asyncio.gather(
             fleet["dobby"].refresh_handler_for(ACCOUNT)(params),
@@ -218,7 +220,8 @@ def test_a_second_runner_rejecting_a_superseded_generation_gets_the_current_one(
     from server.codex import schema
 
     params = schema.ChatgptAuthTokensRefreshParams(
-        reason=schema.REFRESH_REASON_UNAUTHORIZED
+        reason=schema.REFRESH_REASON_UNAUTHORIZED,
+        previous_account_id=Redacted(CHATGPT_ACCOUNT_ID),
     )
 
     async def go():
@@ -245,7 +248,8 @@ def test_neither_runner_home_ever_holds_a_credential(fleet):
         await fleet["dobby"].login_params(ACCOUNT)
         await fleet["rocky"].login_params(ACCOUNT)
         params = schema.ChatgptAuthTokensRefreshParams(
-            reason=schema.REFRESH_REASON_UNAUTHORIZED
+            reason=schema.REFRESH_REASON_UNAUTHORIZED,
+            previous_account_id=Redacted(CHATGPT_ACCOUNT_ID),
         )
         await fleet["dobby"].refresh_handler_for(ACCOUNT)(params)
 
@@ -263,7 +267,8 @@ def test_revocation_stops_both_runners_at_the_authority(fleet):
     from server.codex import schema
 
     params = schema.ChatgptAuthTokensRefreshParams(
-        reason=schema.REFRESH_REASON_UNAUTHORIZED
+        reason=schema.REFRESH_REASON_UNAUTHORIZED,
+        previous_account_id=Redacted(CHATGPT_ACCOUNT_ID),
     )
 
     async def go():

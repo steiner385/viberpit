@@ -3,22 +3,14 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
+from ccswitch.engines import (
+    AgentEngine,
+    InvalidAgentEngine as InvalidAgentEngine,
+    parse_agent_engine,
+)
 from server.assistant.context import PromptContext
-
-
-class AgentEngine(StrEnum):
-    """Native executable that owns a coding session."""
-
-    CLAUDE_CODE = "claude_code"
-    CODEX = "codex"
-
-
-class InvalidAgentEngine(ValueError):
-    """Raised when a request names no recognized native agent engine."""
-
 
 class AgentEngineUnavailable(RuntimeError):
     """Raised when an engine is recognized but has no installed driver factory."""
@@ -26,24 +18,6 @@ class AgentEngineUnavailable(RuntimeError):
     def __init__(self, engine: AgentEngine) -> None:
         self.engine = engine
         super().__init__(f"agent engine is not available: {engine.value}")
-
-
-def parse_agent_engine(
-    value: AgentEngine | str | None,
-    *,
-    legacy_default: bool = False,
-) -> AgentEngine:
-    """Parse an engine value, defaulting a missing value only on legacy boundaries."""
-    if value is None:
-        if legacy_default:
-            return AgentEngine.CLAUDE_CODE
-        raise InvalidAgentEngine("agent engine is required")
-    if isinstance(value, AgentEngine):
-        return value
-    try:
-        return AgentEngine(value)
-    except (TypeError, ValueError) as exc:
-        raise InvalidAgentEngine(f"unknown agent engine: {value!r}") from exc
 
 
 @dataclass(frozen=True, slots=True)

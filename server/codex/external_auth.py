@@ -33,6 +33,7 @@ property we removed.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -78,9 +79,11 @@ class ExternalAuthProvider:
     ) -> None:
         self._client = client
         self._max_failures = max(1, max_consecutive_failures)
-        #: account -> generation we last logged in (or refreshed) with. This is the
-        #: ONLY per-account state; no envelope is retained.
+        #: account -> generation we last logged in (or refreshed) with.
         self._generations: dict[str, int] = {}
+        #: Native identity fence retained only as a one-way digest. This lets a
+        #: refresh callback prove continuity without parking the identifier itself.
+        self._account_ids: dict[str, str] = {}
         #: account -> monotonic epoch, bumped by invalidate(). Handlers capture it.
         self._epochs: dict[str, int] = {}
         self._failures: dict[str, int] = {}
@@ -110,6 +113,7 @@ class ExternalAuthProvider:
         """
         self._epochs[account] = self._epochs.get(account, 0) + 1
         self._generations.pop(account, None)
+        self._account_ids.pop(account, None)
         self._failures.pop(account, None)
         self._degraded.pop(account, None)
         pending = self._refreshes.pop(account, None)
@@ -129,19 +133,20 @@ class ExternalAuthProvider:
     async def login_params(self, account: str) -> schema.ExternalAuthLoginParams:
         """Fetch an envelope and convert it to login parameters.
 
-        The envelope is a local: nothing here stores it, and the only thing that
-        outlives this frame is ``generation``. That is deliberate — a provider
-        that cached envelopes would be a second credential store on the exact host
-        that is not supposed to have one.
+        The envelope is local: nothing here stores it. Only its generation and a
+        one-way digest of its native account identifier outlive this frame. A
+        provider that cached envelopes would be a second credential store on the
+        exact host that is not supposed to have one.
         """
         degraded = self._degraded.get(account)
         if degraded is not None:
             raise ExternalAuthUnavailable(
                 f"codex auth for {account} is degraded: {degraded}"
             )
+        minimum_generation = self._generations.get(account, 0)
         try:
             envelope = await self._client.envelope(
-                account, minimum_generation=self._generations.get(account, 0)
+                account, minimum_generation=minimum_generation
             )
         except AuthorityError as exc:
             self._note_failure(account, exc)
@@ -152,6 +157,10 @@ class ExternalAuthProvider:
             raise ExternalAuthUnavailable(
                 f"the credential authority is unreachable: {exc}"
             ) from None
+        if envelope.generation < minimum_generation:
+            raise ExternalAuthUnavailable(
+                f"credential authority returned an older generation for {account}"
+            )
         self._accept(account, envelope)
         return envelope.to_login_params()
 
@@ -171,12 +180,38 @@ class ExternalAuthProvider:
                 raise ExternalAuthUnavailable(
                     f"refresh handler for {account} belongs to a superseded manager"
                 )
-            envelope = await self._refresh(account, reason=params.reason)
+            expected_id = self._account_ids.get(account)
+            if (
+                expected_id is None
+                or params.previous_account_id is None
+                or _identity_digest(params.previous_account_id) != expected_id
+            ):
+                raise ExternalAuthUnavailable(
+                    f"refresh handler for {account} received a mismatched native account"
+                )
+            rejected_generation = self._generations.get(account, 0)
+            if rejected_generation < 1:
+                raise ExternalAuthUnavailable(
+                    f"refresh handler for {account} has no accepted generation"
+                )
+            envelope = await self._refresh(
+                account,
+                reason=params.reason,
+                expected_epoch=epoch,
+                rejected_generation=rejected_generation,
+            )
             return envelope.to_refresh_response()
 
         return handler
 
-    async def _refresh(self, account: str, *, reason: str) -> CredentialEnvelope:
+    async def _refresh(
+        self,
+        account: str,
+        *,
+        reason: str,
+        expected_epoch: int | None = None,
+        rejected_generation: int | None = None,
+    ) -> CredentialEnvelope:
         degraded = self._degraded.get(account)
         if degraded is not None:
             raise ExternalAuthUnavailable(
@@ -188,7 +223,21 @@ class ExternalAuthProvider:
             # cancelling the rotation every other caller is waiting on.
             return await asyncio.shield(existing)
         task = asyncio.create_task(
-            self._do_refresh(account, reason), name=f"codex-auth-refresh-{account}"
+            self._do_refresh(
+                account,
+                reason,
+                expected_epoch=(
+                    self._epochs.get(account, 0)
+                    if expected_epoch is None
+                    else expected_epoch
+                ),
+                rejected_generation=(
+                    self._generations.get(account, 0)
+                    if rejected_generation is None
+                    else rejected_generation
+                ),
+            ),
+            name=f"codex-auth-refresh-{account}",
         )
         self._refreshes[account] = task
         try:
@@ -197,11 +246,25 @@ class ExternalAuthProvider:
             if self._refreshes.get(account) is task and task.done():
                 self._refreshes.pop(account, None)
 
-    async def _do_refresh(self, account: str, reason: str) -> CredentialEnvelope:
-        rejected = self._generations.get(account, 0)
+    async def _do_refresh(
+        self,
+        account: str,
+        reason: str,
+        *,
+        expected_epoch: int,
+        rejected_generation: int,
+    ) -> CredentialEnvelope:
+        if self._epochs.get(account, 0) != expected_epoch:
+            raise ExternalAuthUnavailable(
+                f"refresh handler for {account} belongs to a superseded manager"
+            )
+        if self._generations.get(account, 0) != rejected_generation:
+            raise ExternalAuthUnavailable(
+                f"refresh handler for {account} no longer matches the rejected generation"
+            )
         try:
             envelope = await self._client.refresh(
-                account, rejected_generation=rejected
+                account, rejected_generation=rejected_generation
             )
         except AuthorityError as exc:
             self._note_failure(account, exc)
@@ -213,7 +276,15 @@ class ExternalAuthProvider:
             raise ExternalAuthUnavailable(
                 f"credential refresh for {account} could not reach the authority: {exc}"
             ) from None
-        if envelope.generation <= rejected:
+        if self._epochs.get(account, 0) != expected_epoch:
+            raise ExternalAuthUnavailable(
+                f"refresh handler for {account} belongs to a superseded manager"
+            )
+        if self._generations.get(account, 0) != rejected_generation:
+            raise ExternalAuthUnavailable(
+                f"refresh handler for {account} no longer matches the rejected generation"
+            )
+        if envelope.generation <= rejected_generation:
             # The authority answered with a credential no newer than the one the
             # app-server just rejected. Retrying would produce the same answer, so
             # this counts as a failure rather than a success.
@@ -243,10 +314,30 @@ class ExternalAuthProvider:
     # -- bookkeeping -------------------------------------------------------
 
     def _accept(self, account: str, envelope: CredentialEnvelope) -> None:
+        if envelope.account != account:
+            raise ExternalAuthUnavailable(
+                "credential authority returned an envelope for another account alias"
+            )
+        current_generation = self._generations.get(account, 0)
+        if envelope.generation < current_generation:
+            # login_params captures its minimum before awaiting the authority.
+            # A concurrent refresh may advance the account while that read is in
+            # flight; never let the delayed response rewind the runner's fence.
+            raise ExternalAuthUnavailable(
+                f"credential authority returned older generation "
+                f"{envelope.generation} for {account}; already accepted "
+                f"{current_generation}"
+            )
+        account_id_digest = _identity_digest(envelope.chatgpt_account_id)
+        previous_id = self._account_ids.get(account)
+        if previous_id is not None and account_id_digest != previous_id:
+            raise ExternalAuthUnavailable(
+                f"credential authority changed the native account identity for {account}"
+            )
         self._generations[account] = envelope.generation
+        self._account_ids[account] = account_id_digest
         self._failures.pop(account, None)
         self._degraded.pop(account, None)
-
     def _note_failure(self, account: str, exc: Exception) -> None:
         """Count a refusal and, past the cap, stop asking.
 
@@ -272,6 +363,12 @@ class ExternalAuthProvider:
                 reason=reason,
                 failures=count,
             )
+
+
+def _identity_digest(value: redaction.Redacted) -> str:
+    """Return a non-reversible continuity key for a native account identifier."""
+
+    return hashlib.sha256(value.reveal().encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------------------

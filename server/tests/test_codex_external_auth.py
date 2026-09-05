@@ -73,8 +73,16 @@ class FakeAuthorityClient:
         return _envelope(self.generation, token=f"{TOKEN}.{self.generation}")
 
 
-def _refresh_params(reason: str = schema.REFRESH_REASON_UNAUTHORIZED):
-    return schema.ChatgptAuthTokensRefreshParams(reason=reason)
+def _refresh_params(
+    reason: str = schema.REFRESH_REASON_UNAUTHORIZED,
+    previous_account_id: str | None = ACCOUNT_ID,
+):
+    return schema.ChatgptAuthTokensRefreshParams(
+        reason=reason,
+        previous_account_id=(
+            None if previous_account_id is None else Redacted(previous_account_id)
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +131,47 @@ def test_login_params_asks_for_at_least_the_generation_we_already_had():
     assert seen == [0, 2]
 
 
+def test_login_params_rejects_an_envelope_below_the_requested_minimum():
+    client = FakeAuthorityClient()
+    provider = ExternalAuthProvider(client)
+
+    async def go():
+        await provider.login_params("chatgpt-pro")
+        await provider._refresh("chatgpt-pro", reason="unauthorized")
+        client.generation = 1
+        await provider.login_params("chatgpt-pro")
+
+    with pytest.raises(ExternalAuthUnavailable, match="older generation"):
+        asyncio.run(go())
+
+
+def test_delayed_login_cannot_rewind_a_concurrent_refresh():
+    client = FakeAuthorityClient()
+    provider = ExternalAuthProvider(client)
+
+    async def go():
+        await provider.login_params("chatgpt-pro")
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def delayed_envelope(account: str, *, minimum_generation: int = 0):
+            stale = _envelope(client.generation)
+            started.set()
+            await release.wait()
+            return stale
+
+        client.envelope = delayed_envelope  # type: ignore[method-assign]
+        delayed_login = asyncio.create_task(provider.login_params("chatgpt-pro"))
+        await started.wait()
+        await provider._refresh("chatgpt-pro", reason="unauthorized")
+        release.set()
+        with pytest.raises(ExternalAuthUnavailable, match="older generation"):
+            await delayed_login
+
+    asyncio.run(go())
+    assert provider.generation_for("chatgpt-pro") == 2
+
+
 def test_login_params_fails_closed_on_a_typed_refusal():
     client = FakeAuthorityClient()
     client.envelope_error = AuthorityError(
@@ -168,6 +217,38 @@ def test_refresh_handler_answers_with_a_newer_generation():
     assert isinstance(response, schema.ChatgptAuthTokensRefreshResponse)
     assert response.access_token.reveal().endswith(".2")
     assert provider.generation_for("chatgpt-pro") == 2
+
+
+@pytest.mark.parametrize("previous", [None, "different-native-account"])
+def test_refresh_handler_refuses_a_missing_or_mismatched_previous_account(previous):
+    client = FakeAuthorityClient()
+    provider = ExternalAuthProvider(client)
+    handler = provider.refresh_handler_for("chatgpt-pro")
+
+    async def go():
+        await provider.login_params("chatgpt-pro")
+        await handler(_refresh_params(previous_account_id=previous))
+
+    with pytest.raises(ExternalAuthUnavailable):
+        asyncio.run(go())
+    assert client.refresh_calls == 0
+
+
+def test_login_refuses_an_envelope_for_a_different_account_alias():
+    client = FakeAuthorityClient()
+    provider = ExternalAuthProvider(client)
+
+    async def wrong_alias(account: str, *, minimum_generation: int = 0):
+        return CredentialEnvelope(
+            account="other-alias",
+            generation=1,
+            access_token=Redacted(TOKEN),
+            chatgpt_account_id=Redacted(ACCOUNT_ID),
+        )
+
+    client.envelope = wrong_alias  # type: ignore[method-assign]
+    with pytest.raises(ExternalAuthUnavailable):
+        asyncio.run(provider.login_params("chatgpt-pro"))
 
 
 def test_concurrent_refreshes_coalesce_to_one_authority_call():

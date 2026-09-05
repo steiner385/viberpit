@@ -472,6 +472,16 @@ def test_parse_rate_limits_response_rejects_a_bool_used_percent() -> None:
         schema.parse_rate_limits_response({"rateLimits": {"primary": {"usedPercent": True}}})
 
 
+@pytest.mark.parametrize("used_percent", [-1, 101])
+def test_parse_rate_limits_response_rejects_out_of_range_usage(
+    used_percent: int,
+) -> None:
+    with pytest.raises(CodexSchemaError, match="between 0 and 100"):
+        schema.parse_rate_limits_response(
+            {"rateLimits": {"primary": {"usedPercent": used_percent}}}
+        )
+
+
 @pytest.mark.parametrize(
     "payload",
     [

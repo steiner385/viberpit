@@ -119,6 +119,19 @@ def make_authority(store: CredentialStore, **kwargs: object) -> CredentialAuthor
     return CredentialAuthority(store=store, **kwargs)  # type: ignore[arg-type]
 
 
+def test_corrupt_durable_generation_state_fails_closed(tmp_path):
+    store = make_store(tmp_path)
+    store.bump_generation(ACCOUNT)
+    (tmp_path / "authority-state" / "state" / f"{ACCOUNT}.json").write_text(
+        "{not-json", encoding="utf-8"
+    )
+
+    with pytest.raises(AuthorityError) as excinfo:
+        store.generation(ACCOUNT)
+
+    assert excinfo.value.code is AuthorityErrorCode.INTERNAL
+
+
 def record(name: str = ACCOUNT, *, enabled: bool = True) -> AuthorizationRecord:
     return AuthorizationRecord(
         name=name, provider="openai", engine="codex", enabled=enabled
@@ -344,6 +357,26 @@ async def test_authorize_accepts_an_equal_or_higher_revision(tmp_path):
 
     await install_sync(authority, record(), revision=5)
     assert authority.health().sync_revision == 5
+
+
+@pytest.mark.asyncio
+async def test_authorize_rejects_a_different_payload_at_the_same_revision(tmp_path):
+    """A revision fences the payload, not just the integer ordering.
+
+    The enabled bit is partly sourced from the ledger, so replaying revision 4
+    with a different record could otherwise re-enable an account without any
+    monotonic manifest advance.  An exact retry remains idempotent above.
+    """
+    authority = make_authority(make_store(tmp_path))
+    await install_sync(authority, record(enabled=False), revision=4)
+
+    with pytest.raises(AuthorityError) as excinfo:
+        await install_sync(authority, record(enabled=True), revision=4)
+
+    assert excinfo.value.code is AuthorityErrorCode.REVISION_ROLLBACK
+    with pytest.raises(AuthorityError) as disabled:
+        await authority.get_envelope(ACCOUNT)
+    assert disabled.value.code is AuthorityErrorCode.ACCOUNT_DISABLED
 
 
 @pytest.mark.asyncio
@@ -577,6 +610,78 @@ async def test_a_failing_refresh_runner_becomes_a_typed_refresh_failure(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_refresh_refuses_to_advance_when_access_token_did_not_change(tmp_path):
+    """A new generation may never relabel the access token that just 401'd."""
+    clock = FakeClock()
+
+    async def refresh_runner(account: str, home: Path) -> None:
+        return None
+
+    store, authority = _refresh_authority(tmp_path, clock, refresh_runner)
+    await install_sync(authority, record())
+
+    with pytest.raises(AuthorityError) as excinfo:
+        await authority.refresh(ACCOUNT, rejected_generation=1)
+
+    assert excinfo.value.code is AuthorityErrorCode.REFRESH_FAILED
+    assert store.generation(ACCOUNT) == 1
+
+
+@pytest.mark.asyncio
+async def test_envelope_never_returns_below_the_requested_minimum(tmp_path):
+    clock = FakeClock()
+
+    async def refresh_runner(account: str, home: Path) -> None:
+        write_auth_json(
+            home,
+            make_access_token(exp=int(clock.now + 3600), nonce="only-one-step"),
+        )
+
+    _, authority = _refresh_authority(tmp_path, clock, refresh_runner)
+    await install_sync(authority, record())
+
+    with pytest.raises(AuthorityError) as excinfo:
+        await authority.get_envelope(ACCOUNT, minimum_generation=5)
+
+    assert excinfo.value.code is AuthorityErrorCode.REFRESH_FAILED
+
+
+@pytest.mark.asyncio
+async def test_refresh_refuses_a_native_account_identity_switch(tmp_path):
+    """Refresh rotates one identity; it cannot silently log into another."""
+    clock = FakeClock()
+
+    async def refresh_runner(account: str, home: Path) -> None:
+        write_auth_json(
+            home,
+            make_access_token(
+                chatgpt_account_id="different-native-account",
+                exp=int(clock.now + 3600),
+                nonce="switched",
+            ),
+        )
+
+    store, authority = _refresh_authority(tmp_path, clock, refresh_runner)
+    await install_sync(authority, record())
+
+    with pytest.raises(AuthorityError) as excinfo:
+        await authority.refresh(ACCOUNT, rejected_generation=1)
+
+    assert excinfo.value.code is AuthorityErrorCode.REFRESH_FAILED
+    assert store.generation(ACCOUNT) == 2
+    assert store.revoked(ACCOUNT) is True
+
+    # The vendor cache now contains the wrong identity. Neither a second refresh
+    # nor a fresh runner request may adopt it as the new baseline.
+    with pytest.raises(AuthorityError) as second:
+        await authority.refresh(ACCOUNT, rejected_generation=1)
+    assert second.value.code is AuthorityErrorCode.REVOKED
+    with pytest.raises(AuthorityError) as fresh_runner:
+        await authority.get_envelope(ACCOUNT)
+    assert fresh_runner.value.code is AuthorityErrorCode.REVOKED
+
+
+@pytest.mark.asyncio
 async def test_refreshing_an_account_with_no_cache_is_login_required(tmp_path):
     clock = FakeClock()
     store = make_store(tmp_path)
@@ -650,6 +755,26 @@ async def test_revoke_bumps_the_fence_drops_the_cache_and_cancels_a_live_refresh
 
 
 @pytest.mark.asyncio
+async def test_revoke_is_durable_and_blocks_envelope_and_refresh_until_login(tmp_path):
+    """The old auth.json must not become issuable after restart or a new sync."""
+    clock = FakeClock()
+    store, authority = _refresh_authority(tmp_path, clock, None)
+    await install_sync(authority, record(), revision=1)
+
+    assert await authority.revoke(ACCOUNT) == 2
+    restarted = make_authority(store, clock=clock)
+    await install_sync(restarted, record(), revision=2)
+
+    for operation in (
+        lambda: restarted.get_envelope(ACCOUNT),
+        lambda: restarted.refresh(ACCOUNT, rejected_generation=1),
+    ):
+        with pytest.raises(AuthorityError) as excinfo:
+            await operation()
+        assert excinfo.value.code is AuthorityErrorCode.REVOKED
+
+
+@pytest.mark.asyncio
 async def test_forget_revokes_and_then_destroys_every_trace(tmp_path):
     clock = FakeClock()
     store, authority = _refresh_authority(tmp_path, clock, None)
@@ -703,6 +828,47 @@ async def test_a_device_login_that_writes_a_cache_becomes_authorized(tmp_path):
     assert seen == [store.home(ACCOUNT)]
     # The envelope is cached in memory and issuable immediately.
     assert (await authority.get_envelope(ACCOUNT)).generation == 1
+
+
+@pytest.mark.asyncio
+async def test_login_and_refresh_never_mutate_one_authority_home_concurrently(tmp_path):
+    clock = FakeClock()
+    active = 0
+    peak = 0
+    mutations = 0
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def mutation(account: str, home: Path) -> None:
+        nonlocal active, peak, mutations
+        active += 1
+        mutations += 1
+        peak = max(peak, active)
+        entered.set()
+        await release.wait()
+        write_auth_json(
+            home,
+            make_access_token(exp=int(clock.now + 3600), nonce=str(mutations)),
+        )
+        active -= 1
+
+    store = make_store(tmp_path)
+    write_auth_json(store.ensure_home(ACCOUNT), make_access_token(exp=int(clock.now + 3600)))
+    store.bump_generation(ACCOUNT)
+    authority = make_authority(
+        store, clock=clock, login_runner=mutation, refresh_runner=mutation
+    )
+    await install_sync(authority, record())
+
+    await authority.login_start(ACCOUNT)
+    await entered.wait()
+    refresh = asyncio.create_task(authority.refresh(ACCOUNT, rejected_generation=1))
+    await asyncio.sleep(0)
+    assert peak == 1
+    release.set()
+    await finish_login(authority, ACCOUNT)
+    await refresh
+    assert peak == 1
 
 
 @pytest.mark.asyncio

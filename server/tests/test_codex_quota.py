@@ -6,21 +6,50 @@ being papered over by a hand-built DTO.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
+from datetime import datetime, timezone
 
 import pytest
 
-from server.codex import protocol, schema
+from tests.helpers import temp_env
+from ccswitch import account_registry
+from ccswitch import accounts as ccswitch_accounts
+from ccswitch.quota import (
+    AUTH_ERROR,
+    AVAILABLE,
+    SCOPE_MODEL,
+    UNKNOWN,
+    UNSUPPORTED,
+    QuotaSnapshot,
+    QuotaWindow,
+)
+from server.codex import protocol, quota as codex_quota, schema
 from server.codex.quota import (
     STALE_CEILING_MULTIPLIER,
     CodexQuotaReader,
-    QuotaSnapshot,
-    QuotaState,
-    QuotaWindow,
     snapshot_from_rate_limits,
 )
 
 NOW = 1_800_000_000.0
+
+
+def test_codex_uses_the_canonical_provider_neutral_quota_dto() -> None:
+    assert codex_quota.QuotaSnapshot is QuotaSnapshot
+    assert codex_quota.QuotaWindow is QuotaWindow
+
+
+def test_codex_quota_feeds_the_canonical_ledger_and_usage_path() -> None:
+    from server.codex.quota import persist_quota_snapshot
+
+    with temp_env():
+        account_registry.register_account(
+            "chatgpt-pro", account_registry.PROVIDER_OPENAI, engine="codex"
+        )
+        snapshot = snapshot_from_rate_limits(_response(), now=NOW)
+        persist_quota_snapshot("chatgpt-pro", snapshot)
+
+        assert ccswitch_accounts.usage_for("chatgpt-pro") == snapshot
 
 
 def _window(
@@ -91,24 +120,25 @@ def test_maps_primary_and_secondary_windows() -> None:
 
     snapshot = snapshot_from_rate_limits(response, now=NOW)
 
-    assert snapshot.state is QuotaState.OK
+    assert snapshot.availability == AVAILABLE
+    assert snapshot.provider == "openai"
     assert snapshot.windows == (
         QuotaWindow(
-            id="primary",
+            key="primary",
             label="Primary",
-            used_percent=42,
-            resets_at=NOW + 3600,
-            window_minutes=300,
+            used_pct=42,
+            resets_at=datetime.fromtimestamp(NOW + 3600, tz=timezone.utc),
+            duration_seconds=300 * 60,
         ),
         QuotaWindow(
-            id="secondary",
+            key="secondary",
             label="Secondary",
-            used_percent=88,
-            resets_at=NOW + 86_400,
-            window_minutes=10_080,
+            used_pct=88,
+            resets_at=datetime.fromtimestamp(NOW + 86_400, tz=timezone.utc),
+            duration_seconds=10_080 * 60,
         ),
     )
-    assert snapshot.age_s == 0.0
+    assert snapshot.fetched_at == datetime.fromtimestamp(NOW, tz=timezone.utc)
 
 
 def test_a_missing_reset_stays_none() -> None:
@@ -119,8 +149,8 @@ def test_a_missing_reset_stays_none() -> None:
     (window,) = snapshot_from_rate_limits(response, now=NOW).windows
 
     assert window.resets_at is None
-    assert window.window_minutes is None
-    assert window.used_percent == 0
+    assert window.duration_seconds is None
+    assert window.used_pct == 0
 
 
 def test_absent_buckets_are_absent_not_fabricated() -> None:
@@ -129,7 +159,7 @@ def test_absent_buckets_are_absent_not_fabricated() -> None:
     snapshot = snapshot_from_rate_limits(response, now=NOW)
 
     assert snapshot.windows == ()
-    assert snapshot.state is QuotaState.OK
+    assert snapshot.availability == AVAILABLE
 
 
 def test_model_scoped_buckets_carry_the_limit_id() -> None:
@@ -146,8 +176,8 @@ def test_model_scoped_buckets_carry_the_limit_id() -> None:
 
     snapshot = snapshot_from_rate_limits(response, now=NOW)
 
-    scoped = [window for window in snapshot.windows if window.model is not None]
-    assert [window.id for window in scoped] == [
+    scoped = [window for window in snapshot.windows if window.scope == SCOPE_MODEL]
+    assert [window.key for window in scoped] == [
         "gpt-5-codex:primary",
         "gpt-5-codex:secondary",
     ]
@@ -155,7 +185,7 @@ def test_model_scoped_buckets_carry_the_limit_id() -> None:
         "GPT-5 Codex (primary)",
         "GPT-5 Codex (secondary)",
     ]
-    assert {window.model for window in scoped} == {"gpt-5-codex"}
+    assert {window.applies_to_models for window in scoped} == {("gpt-5-codex",)}
 
 
 def test_a_model_scoped_bucket_without_a_name_is_labelled_by_id() -> None:
@@ -164,13 +194,13 @@ def test_a_model_scoped_bucket_without_a_name_is_labelled_by_id() -> None:
     scoped = [
         window
         for window in snapshot_from_rate_limits(response, now=NOW).windows
-        if window.model == "o4-mini"
+        if window.applies_to_models == ("o4-mini",)
     ]
 
     assert [window.label for window in scoped] == ["o4-mini (primary)"]
 
 
-def test_plan_credits_and_reached_type_are_carried() -> None:
+def test_native_credits_map_to_provider_extra_usage() -> None:
     response = _response(
         plan_type="pro",
         credits={"hasCredits": True, "unlimited": False, "balance": "12.50"},
@@ -179,18 +209,17 @@ def test_plan_credits_and_reached_type_are_carried() -> None:
 
     snapshot = snapshot_from_rate_limits(response, now=NOW)
 
-    assert snapshot.plan_type == "pro"
-    assert snapshot.has_credits is True
-    assert snapshot.credits_unlimited is False
-    assert snapshot.rate_limit_reached == "rate_limit_reached"
+    assert snapshot.extra_usage_enabled is True
 
 
-def test_an_elapsed_reset_makes_the_snapshot_report_its_own_staleness() -> None:
+def test_an_elapsed_reset_remains_an_aware_timestamp() -> None:
     response = _response(primary=_window(70, resets_at=int(NOW) - 600, minutes=300))
 
     snapshot = snapshot_from_rate_limits(response, now=NOW)
 
-    assert snapshot.age_s == pytest.approx(600.0)
+    assert snapshot.windows[0].resets_at == datetime.fromtimestamp(
+        NOW - 600, tz=timezone.utc
+    )
 
 
 def test_wire_shape_never_carries_the_native_account_id() -> None:
@@ -198,13 +227,12 @@ def test_wire_shape_never_carries_the_native_account_id() -> None:
         credits={"hasCredits": False, "unlimited": True, "balance": None}
     )
 
-    wire = snapshot_from_rate_limits(response, now=NOW).to_wire()
+    wire = snapshot_from_rate_limits(response, now=NOW).to_dict()
 
-    assert wire["state"] == "ok"
-    assert wire["planType"] == "pro"
-    assert wire["creditsUnlimited"] is True
-    assert wire["ageS"] == 0.0
-    assert wire["windows"][0]["usedPercent"] == 42
+    assert wire["availability"] == "available"
+    assert wire["provider"] == "openai"
+    assert wire["extra_usage_enabled"] is True
+    assert wire["windows"][0]["used_pct"] == 42
     assert "acct-0123456789" not in str(wire)
 
 
@@ -220,9 +248,8 @@ async def test_successful_read_is_ok_and_fresh() -> None:
 
     snapshot = await reader.read("acct", client=client)
 
-    assert snapshot.state is QuotaState.OK
-    assert snapshot.age_s == 0.0
-    assert snapshot.detail == ""
+    assert snapshot.availability == AVAILABLE
+    assert snapshot.fetched_at == datetime.fromtimestamp(NOW, tz=timezone.utc)
 
 
 @pytest.mark.asyncio
@@ -238,9 +265,8 @@ async def test_method_not_found_is_unsupported() -> None:
 
     snapshot = await reader.read("acct", client=client)
 
-    assert snapshot.state is QuotaState.UNSUPPORTED
+    assert snapshot.availability == UNSUPPORTED
     assert snapshot.windows == ()
-    assert snapshot.age_s is None
 
 
 @pytest.mark.parametrize("code", [401, 403])
@@ -253,7 +279,7 @@ async def test_auth_shaped_failures_are_auth_error(code: int) -> None:
 
     snapshot = await reader.read("acct", client=client)
 
-    assert snapshot.state is QuotaState.AUTH_ERROR
+    assert snapshot.availability == AUTH_ERROR
 
 
 @pytest.mark.parametrize(
@@ -271,8 +297,28 @@ async def test_everything_else_is_unknown(error: BaseException) -> None:
 
     snapshot = await reader.read("acct", client=FakeRateLimitClient(error))
 
-    assert snapshot.state is QuotaState.UNKNOWN
-    assert snapshot.detail
+    assert snapshot.availability == UNKNOWN
+    assert snapshot.windows == ()
+
+
+@pytest.mark.asyncio
+async def test_directly_constructed_out_of_range_usage_is_unknown() -> None:
+    """Internal fakes cannot bypass the same fail-closed native boundary."""
+    response = _response()
+    assert response.rate_limits.primary is not None
+    malformed = replace(
+        response,
+        rate_limits=replace(
+            response.rate_limits,
+            primary=replace(response.rate_limits.primary, used_percent=-1),
+        ),
+    )
+    reader = CodexQuotaReader(clock=FakeClock())
+
+    snapshot = await reader.read("acct", client=FakeRateLimitClient(malformed))
+
+    assert snapshot.availability == UNKNOWN
+    assert snapshot.windows == ()
 
 
 @pytest.mark.asyncio
@@ -281,10 +327,9 @@ async def test_missing_client_is_unknown_not_an_exception() -> None:
 
     snapshot = await reader.read("acct", client=None)
 
-    assert snapshot == QuotaSnapshot(
-        state=QuotaState.UNKNOWN,
-        detail="no codex app-server connection is available for this account",
-    )
+    assert snapshot.provider == "openai"
+    assert snapshot.availability == UNKNOWN
+    assert snapshot.windows == ()
 
 
 @pytest.mark.asyncio
@@ -296,10 +341,7 @@ async def test_failure_detail_is_scrubbed() -> None:
 
     snapshot = await reader.read("acct", client=client)
 
-    assert "sk-abcdefghijklmnop" not in snapshot.detail
-    # Since #1172 the detail is a fixed category, not a redacted message — a
-    # stronger guarantee, and the one the quota surface renders to operators.
-    assert snapshot.detail == "runtime_error"
+    assert "sk-abcdefghijklmnop" not in repr(snapshot)
 
 
 # ---------------------------------------------------------------------------
@@ -308,7 +350,7 @@ async def test_failure_detail_is_scrubbed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_last_good_is_served_with_its_age_when_a_read_fails() -> None:
+async def test_last_good_display_is_preserved_but_selection_fails_closed() -> None:
     clock = FakeClock()
     client = FakeRateLimitClient(
         _response(), protocol.CodexTransportClosed("stream ended")
@@ -319,9 +361,15 @@ async def test_last_good_is_served_with_its_age_when_a_read_fails() -> None:
     clock.now += 90.0
     snapshot = await reader.read("acct", client=client)
 
-    assert snapshot.state is QuotaState.OK
-    assert snapshot.age_s == pytest.approx(90.0)
-    assert snapshot.windows[0].used_percent == 42
+    # The old windows remain available to the UI, but the CURRENT read state is
+    # unknown so the canonical selector cannot treat this account as usable.
+    assert snapshot.availability == UNKNOWN
+    assert snapshot.fetched_at == datetime.fromtimestamp(NOW, tz=timezone.utc)
+    assert snapshot.windows[0].used_pct == 42
+
+    from ccswitch.selector import usage_known
+
+    assert usage_known(snapshot) is False
 
 
 @pytest.mark.asyncio
@@ -336,9 +384,8 @@ async def test_last_good_expires_at_the_staleness_ceiling() -> None:
     clock.now += 60.0 * STALE_CEILING_MULTIPLIER + 1.0
     snapshot = await reader.read("acct", client=client)
 
-    assert snapshot.state is QuotaState.UNKNOWN
+    assert snapshot.availability == UNKNOWN
     assert snapshot.windows == ()
-    assert snapshot.age_s == pytest.approx(601.0)
 
 
 @pytest.mark.asyncio
@@ -351,8 +398,7 @@ async def test_last_good_is_per_account() -> None:
         "other", client=FakeRateLimitClient(protocol.CodexTransportClosed("gone"))
     )
 
-    assert snapshot.state is QuotaState.UNKNOWN
-    assert snapshot.age_s is None
+    assert snapshot.availability == UNKNOWN
 
 
 @pytest.mark.asyncio
@@ -366,8 +412,8 @@ async def test_cached_returns_the_last_good_read_within_the_ttl() -> None:
     cached = reader.cached("acct")
 
     assert cached is not None
-    assert cached.state is QuotaState.OK
-    assert cached.age_s == pytest.approx(30.0)
+    assert cached.availability == AVAILABLE
+    assert cached.fetched_at == datetime.fromtimestamp(NOW, tz=timezone.utc)
 
     clock.now += 31.0
     assert reader.cached("acct") is None

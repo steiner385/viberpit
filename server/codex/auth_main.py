@@ -18,10 +18,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import signal
 import sys
 
-from server.codex import auth_endpoint
+from server.codex import auth_endpoint, process as codex_process
 from server.codex.auth_authority import CredentialAuthority, InstanceLock
 from server.codex.auth_server import AuthorityServer
 from server.codex.auth_store import CredentialStore
@@ -41,6 +42,25 @@ async def run() -> int:
         logger.error("codex credential authority cannot start: %s", exc)
         return 2
 
+    availability = await codex_process.probe_availability(
+        enabled=True,
+        # The authority itself uses managed auth, but it still depends on the
+        # exact app-server schema containing the external-token methods served to
+        # runners. Reuse the runner's pinned version/schema probe verbatim.
+        external_auth_enabled=True,
+        binary=os.environ.get(
+            "CCSWITCH_CODEX_AUTHORITY_BIN", codex_process.CODEX_EXE
+        ),
+    )
+    if not availability.available or not availability.binary_path:
+        reason = availability.reason.value if availability.reason is not None else "unknown"
+        logger.error(
+            "codex credential authority cannot start: native boundary %s (%s)",
+            reason,
+            availability.detail,
+        )
+        return 4
+
     lock = InstanceLock(state_dir / "authority.lock")
     try:
         lock.acquire()
@@ -49,7 +69,7 @@ async def run() -> int:
         return 3
 
     store = CredentialStore(state_dir)
-    authority = CredentialAuthority(store=store)
+    authority = CredentialAuthority(store=store, binary=availability.binary_path)
     server = AuthorityServer(authority, allowlist=allowlist)
     stop = asyncio.Event()
 

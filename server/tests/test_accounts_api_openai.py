@@ -53,6 +53,8 @@ class _FakeAuthority:
             verification_uri="https://chatgpt.com/device",
         )
         self.revoke_error: Exception | None = None
+        self.authorize_error: Exception | None = None
+        self.forget_error: Exception | None = None
 
     async def health(self) -> AuthorityHealth:
         self.calls.append("health")
@@ -60,6 +62,8 @@ class _FakeAuthority:
 
     async def authorize(self, sync) -> AuthorityHealth:
         self.calls.append(f"authorize:{sync.revision}")
+        if self.authorize_error is not None:
+            raise self.authorize_error
         return AuthorityHealth(reachable=True, sync_revision=sync.revision)
 
     async def login_start(self, account: str) -> LoginSnapshot:
@@ -82,6 +86,8 @@ class _FakeAuthority:
 
     async def forget(self, account: str) -> None:
         self.calls.append(f"forget:{account}")
+        if self.forget_error is not None:
+            raise self.forget_error
 
     async def logout(self, account: str) -> None:
         self.calls.append(f"logout:{account}")
@@ -97,7 +103,24 @@ class _FakeSessions:
         self.live_session_load = AsyncMock(return_value={})
         self.codex_account_status = AsyncMock(
             return_value={
-                "quota": {"state": "ok", "windows": []},
+                "quota": {
+                    "v": 2,
+                    "provider": "openai",
+                    "fetched_at": "2026-09-05T12:00:00+00:00",
+                    "availability": "available",
+                    "extra_usage_enabled": False,
+                    "windows": [
+                        {
+                            "key": "primary",
+                            "label": "Primary",
+                            "used_pct": 10.0,
+                            "resets_at": None,
+                            "duration_seconds": 18_000,
+                            "scope": "account",
+                            "applies_to_models": [],
+                        }
+                    ],
+                },
                 "activeRunners": 1,
                 "degradedReason": None,
             }
@@ -381,6 +404,43 @@ def test_enable_writes_the_manifest_before_syncing(authority):
     assert "revoke:chatgpt-pro" not in authority.calls
 
 
+def test_authorized_status_retries_sync_after_manifest_was_already_enabled(authority):
+    """A failed first sync must not turn the next status poll into false success."""
+    from ccswitch import account_registry
+
+    authority.login_state = LoginSnapshot(state="authorized")
+    authority.authorize_error = AuthorityUnavailable("connection lost")
+    with temp_env():
+        _register_openai("chatgpt-pro", enabled=False)
+        client, _ = _make_client(authority)
+        with client:
+            syncs_before = len(
+                [call for call in authority.calls if call.startswith("authorize:")]
+            )
+            first = client.get(
+                "/api/accounts/add/openai",
+                params={"name": "chatgpt-pro"},
+                headers=IDENTITY_HEADERS,
+            )
+            assert first.status_code == 503
+            assert account_registry.entry("chatgpt-pro").enabled is True
+            assert len(
+                [call for call in authority.calls if call.startswith("authorize:")]
+            ) == syncs_before + 1
+
+            authority.authorize_error = None
+            second = client.get(
+                "/api/accounts/add/openai",
+                params={"name": "chatgpt-pro"},
+                headers=IDENTITY_HEADERS,
+            )
+
+    assert second.status_code == 200
+    assert len(
+        [call for call in authority.calls if call.startswith("authorize:")]
+    ) == syncs_before + 2
+
+
 def test_delete_revokes_and_forgets_before_removing(authority):
     from ccswitch import account_registry
 
@@ -397,6 +457,40 @@ def test_delete_revokes_and_forgets_before_removing(authority):
         "invalidate:chatgpt-pro"
     )
     assert "forget:chatgpt-pro" in authority.calls
+
+
+def test_delete_never_reports_success_when_authority_forget_fails(authority):
+    from ccswitch import account_registry
+
+    authority.forget_error = AuthorityUnavailable("connection lost")
+    with temp_env():
+        _register_openai("chatgpt-pro")
+        client, _ = _make_client(authority)
+        with client:
+            resp = client.delete(
+                "/api/accounts/chatgpt-pro", headers=IDENTITY_HEADERS
+            )
+            assert resp.status_code == 503
+            assert account_registry.has_account("chatgpt-pro")
+
+
+def test_disable_reports_sync_failure_instead_of_success(authority):
+    from ccswitch import account_registry
+
+    authority.authorize_error = AuthorityUnavailable("connection lost")
+    with temp_env():
+        _register_openai("chatgpt-pro")
+        client, _ = _make_client(authority)
+        with client:
+            resp = client.patch(
+                "/api/accounts/chatgpt-pro/enabled",
+                json={"enabled": False},
+                headers=IDENTITY_HEADERS,
+            )
+            assert resp.status_code == 503
+            # Local state is safely disabled and the durable authority revoke already
+            # ran, but the response remains retryable until sync is confirmed.
+            assert account_registry.entry("chatgpt-pro").enabled is False
 
 
 def test_disable_503s_when_the_authority_is_unreachable(authority):
@@ -488,7 +582,8 @@ def test_accounts_list_carries_identity_and_codex_blocks_but_no_secrets(authorit
     assert entry["runnerAuthMode"] == "chatgpt_external_tokens"
     assert entry["credentialAuthority"] == "codex_auth_service"
     assert entry["codex"]["authority"]["reachable"] is True
-    assert entry["codex"]["quota"]["state"] == "ok"
+    assert entry["codex"]["quota"]["availability"] == "available"
+    assert entry["usage"]["provider"] == "openai"
     assert entry["codex"]["activeRunners"] == 1
     # The native ChatGPT account id and any token must never appear.
     blob = resp.text.lower()
@@ -510,6 +605,106 @@ def test_accounts_list_still_renders_when_the_authority_is_down(authority):
     assert resp.status_code == 200
     entry = next(a for a in resp.json() if a["name"] == "chatgpt-pro")
     assert entry["codex"]["authority"] is None
+
+
+def test_codex_status_outage_overrides_prior_available_usage(authority):
+    """A dead status RPC must not leave stale AVAILABLE quota selectable."""
+    from datetime import datetime, timezone
+
+    from ccswitch.quota import QuotaSnapshot, QuotaWindow
+
+    prior = QuotaSnapshot(
+        provider="openai",
+        fetched_at=datetime.now(timezone.utc),
+        windows=(QuotaWindow(key="primary", label="Primary", used_pct=10),),
+    )
+    with temp_env():
+        _register_openai("chatgpt-pro")
+        client, sessions = _make_client(authority)
+        sessions.usage.return_value = prior
+        sessions.codex_account_status.side_effect = AuthorityUnavailable(
+            "primary daemon unavailable"
+        )
+        with client:
+            resp = client.get("/api/accounts", headers=IDENTITY_HEADERS)
+
+    assert resp.status_code == 200
+    entry = next(a for a in resp.json() if a["name"] == "chatgpt-pro")
+    assert entry["usage"]["availability"] == "unknown"
+    assert entry["codex"]["quota"]["availability"] == "unknown"
+    assert entry["rank"] is None
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        {"not": "canonical"},
+        {
+            "v": 2,
+            "provider": "openai",
+            "fetched_at": "2026-09-05T12:00:00+00:00",
+            "availability": "available",
+            "extra_usage_enabled": False,
+            "windows": [],
+        },
+        *[
+            {
+                "v": version,
+                "provider": "openai",
+                "fetched_at": "2026-09-05T12:00:00+00:00",
+                "availability": "available",
+                "extra_usage_enabled": False,
+                "windows": [
+                    {
+                        "key": "primary",
+                        "label": "Primary",
+                        "used_pct": pct,
+                        "scope": "account",
+                        "applies_to_models": [],
+                    }
+                ],
+            }
+            for version, pct in ((2.0, 10.0), (2, 10**400))
+        ],
+        *[
+            {
+                "v": 2,
+                "provider": "openai",
+                "fetched_at": "2026-09-05T12:00:00+00:00",
+                "availability": "available",
+                "extra_usage_enabled": False,
+                "windows": [
+                    {
+                        "key": "primary",
+                        "label": "Primary",
+                        "used_pct": pct,
+                        "scope": "account",
+                        "applies_to_models": [],
+                    }
+                ],
+            }
+            for pct in (float("nan"), float("inf"), -1.0, 101.0)
+        ],
+    ],
+)
+def test_malformed_codex_quota_is_unknown_and_never_ranked(authority, malformed):
+    with temp_env():
+        _register_openai("chatgpt-pro")
+        client, sessions = _make_client(authority)
+        sessions.codex_account_status.return_value = {
+            "quota": malformed,
+            "activeRunners": 1,
+            "degradedReason": None,
+        }
+        with client:
+            resp = client.get("/api/accounts", headers=IDENTITY_HEADERS)
+
+    assert resp.status_code == 200
+    entry = next(a for a in resp.json() if a["name"] == "chatgpt-pro")
+    assert entry["usage"]["provider"] == "openai"
+    assert entry["usage"]["availability"] == "unknown"
+    assert entry["codex"]["quota"]["availability"] == "unknown"
+    assert entry["rank"] is None
 
 
 def test_accounts_list_costs_nothing_when_no_openai_account_exists(authority):

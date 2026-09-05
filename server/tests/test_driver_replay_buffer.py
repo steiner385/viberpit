@@ -242,3 +242,23 @@ def test_events_delegates_to_open_stream_single_implementation():
         assert d._subscribers == set()
 
     asyncio.run(run())
+
+
+def test_turn_buffer_retains_pending_asks_and_their_resolutions():
+    """A mid-turn attach snapshot must carry the turn's asks: the WS bridge no longer
+    re-emits pending permissions/questions ahead of the open-turn resupply (that
+    early copy fabricated the assistant turn above the re-supplied prompt), so the
+    snapshot is the ONLY thing that re-delivers an ask to a reattaching viewer."""
+    from server.sessions import events as ev
+    d = _bare_driver()
+    d._turn_active = True
+    asks = [
+        ev.PermissionRequest("p1", "t1", "Bash", ev.ToolKind.BASH, {"command": "ls"}),
+        ev.PermissionResolved("p1", "t1", True),
+        ev.Question(question_id="q1", turn_id="t1", header="h", question="?",
+                    options=[], multi_select=False),
+        ev.QuestionResolved(question_id="q1", turn_id="t1", selected=["a"]),
+    ]
+    for e in asks:
+        d._emit(e)
+    assert d._turn_buffer == asks

@@ -13,6 +13,8 @@ from typing import Any
 from claude_agent_sdk import SdkMcpTool, tool
 from mcp.types import ToolAnnotations
 
+from server.obs.metrics import assistant_tool_calls_total
+
 from .client import AssistantApi, AssistantApiError
 
 log = logging.getLogger(__name__)
@@ -198,6 +200,8 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
                 ok = False
                 return _err(f"ccswitch tool error: {e.__class__.__name__}")
             finally:
+                assistant_tool_calls_total.labels(
+                    spec.name, spec.tool_class.value, "ok" if ok else "error").inc()
                 await _audit_tool_call(api, spec, ok, (time.monotonic() - t0) * 1000)
         return run
 

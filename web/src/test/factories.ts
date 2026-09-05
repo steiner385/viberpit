@@ -152,6 +152,8 @@ export function appSettings(over: Partial<AppSettings> = {}): AppSettings {
     autoArchiveEnabled: true,
     modelApprovalAction: null,
     modelApprovalDenylist: null,
+    assistantEnabled: null,
+    assistantModel: null,
     acceptedPermissionModes: ['interactive', 'auto', 'allowlist', 'acceptEdits', 'full-auto', 'bypassPermissions'],
     effectiveDefaults: {
       repoRoot: '/home/user/GitHub', archiveHome: null,

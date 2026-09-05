@@ -20,6 +20,7 @@ import pytest
 
 from tests.helpers import temp_env
 from ccswitch.quota import QuotaSnapshot, anthropic_snapshot
+from server.sessions.engine import AgentEngine
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +84,30 @@ def test_sequential_calls_return_different_accounts():
             second = select_account()
 
         assert first.name != second.name, f"expected different accounts, got {first!r} twice"
+
+
+def test_selection_never_crosses_the_requested_engine():
+    """Engine eligibility is applied before quota I/O and optimistic fallback."""
+    from ccswitch import account_registry
+    from server.sessions.selection import select_account
+
+    with temp_env():
+        _seed_account("claude-main")
+        account_registry.register_account(
+            "openai-main",
+            account_registry.PROVIDER_OPENAI,
+            engine=AgentEngine.CODEX.value,
+        )
+
+        with patch("ccswitch.accounts.usage_for", return_value=None) as usage_for:
+            codex = select_account(engine=AgentEngine.CODEX, reserve=False)
+            assert codex.name == "openai-main"
+            usage_for.assert_called_once_with("openai-main")
+
+        with patch("ccswitch.accounts.usage_for", return_value=None) as usage_for:
+            claude = select_account(engine=AgentEngine.CLAUDE_CODE, reserve=False)
+            assert claude.name == "claude-main"
+            usage_for.assert_called_once_with("claude-main")
 
 
 # ---------------------------------------------------------------------------

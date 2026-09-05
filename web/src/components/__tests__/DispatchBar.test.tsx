@@ -449,3 +449,30 @@ describe('DispatchBar Runner dropdown', () => {
     expect(screen.queryByRole('combobox', { name: /runner/i })).not.toBeInTheDocument()
   })
 })
+
+// Inherited from `AccountsNickname.test.tsx`, where these ran against
+// `NewSessionDialog`'s account select. That dialog was retired when creating a
+// session became the dock's job; the bar's select is the surviving one and
+// renders `a.nickname || a.name` the same way, so the coverage moved here with
+// the behaviour rather than being deleted along with its old host.
+describe('DispatchBar — account select uses nickname', () => {
+  it('shows nickname as option label when one is set, and the raw name when not', () => {
+    render(<DispatchBar {...makeProps()} />)
+
+    const select = screen.getByRole('combobox', { name: 'Account' }) as HTMLSelectElement
+    const options = Array.from(select.options).map((o) => ({ value: o.value, label: o.text }))
+
+    expect(options.find((o) => o.value === 'work')?.label).toBe('Work')
+    expect(options.find((o) => o.value === 'personal')?.label).toBe('personal')
+  })
+
+  it('option value stays the real account name even when a nickname is shown', () => {
+    render(<DispatchBar {...makeProps()} />)
+
+    const select = screen.getByRole('combobox', { name: 'Account' }) as HTMLSelectElement
+    const work = Array.from(select.options).find((o) => o.value === 'work')
+    // The dispatch payload keys off `value`, so a nickname must never reach it.
+    expect(work?.text).toBe('Work')
+    expect(work?.value).toBe('work')
+  })
+})
