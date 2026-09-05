@@ -999,6 +999,7 @@ class SessionOrchestrator:
         self._sweep_task: asyncio.Task | None = None
         self._archive_limit_task: asyncio.Task | None = None
         self._janitor_task: asyncio.Task | None = None
+        self._assistant_reap_task: asyncio.Task | None = None
         self._pr_branch_task: asyncio.Task | None = None
         # Primary-lease state (#852): the heartbeat task and the fence acquired at
         # start(). None on workers and on an orchestrator that never start()ed.
@@ -1216,6 +1217,14 @@ class SessionOrchestrator:
         # local cleanup (each daemon owns its own worktrees), so workers run it too.
         self._janitor_task = asyncio.create_task(
             self._worktree_janitor_loop(interval=86400.0), name="worktree-janitor-loop"
+        )
+        # Assistant idle-reap sweep (spec §4.7): closes the driver of any AI-drawer
+        # session idle past CCSWITCH_ASSISTANT_IDLE_S, keeping the row for
+        # resume-on-reopen. Per-host local cleanup like the janitor above — an
+        # assistant's live driver only exists in the `_drivers` of the daemon that
+        # spawned it, so every host (primary or worker) must run its own sweep.
+        self._assistant_reap_task = asyncio.create_task(
+            self._assistant_reap_loop(interval=60.0), name="assistant-reap-loop"
         )
         # Fleet-global automation loops (#919): ONLY the primary daemon may run these.
         # A worker serves dispatched sessions only (#840); a worker that also drove
@@ -1447,7 +1456,7 @@ class SessionOrchestrator:
                      "_sdlc_synth_task",
                      "_autopilot_task", "_mirror_task",
                      "_cicd_task", "_archaudit_task", "_sweep_task",
-                     "_archive_limit_task", "_janitor_task", "_recurring_task",
+                     "_archive_limit_task", "_janitor_task", "_assistant_reap_task", "_recurring_task",
                      "_lease_task", "_hb_task", "_drain_timer"):
             # Default None: stop() must be safe on an orchestrator that never
             # start()ed (tests build one via __new__/without start).
@@ -2526,6 +2535,7 @@ class SessionOrchestrator:
             updated_at=_now, usage_unverified=usage_unverified,
             origin=origin, origin_ref=origin_ref, model=None, host=_host,
             kind=kind, owner_identity=owner_identity,
+            last_activity_at=time.monotonic(),
         )
         self._records[session_id] = _pre_record
         # Track the spawn from the pre-seed until the driver is registered (or the
@@ -2747,6 +2757,76 @@ class SessionOrchestrator:
         # session can start. Tracked via _spawn so stop() can cancel it before it
         # writes into a later test's DB.
         self._spawn(self._maybe_start_queued(), name="queue-drain-on-close")
+
+    async def _reap_idle_assistants_once(self, *, now: float | None = None) -> list[str]:
+        """Close the driver of every assistant idle for > assistant_idle_s whose turn
+        is not live. Spec §4.7: the row stays (status 'ended', claude_session_id kept)
+        so the next ``POST /api/assistant/session`` resumes the same thread.
+
+        This deliberately does NOT call ``close_session`` — that method pops the
+        record out of ``_records`` (only ``archive`` may do that for an assistant;
+        see ``find_assistant``), which would destroy resume-on-reopen. Instead it
+        mirrors close_session's driver-teardown idiom directly and sets
+        ``status='ended'`` itself. It also skips close_session's worktree/scratch-dir
+        cleanup (an assistant never gets one — no ``cwd`` inside the worktree base)
+        and its ``session_queue`` removal (assistants are exempt from the queue; they
+        never occupy an entry — see ``create_session``'s capacity-exempt path — so
+        there is nothing to remove and no #1100 ordering hazard to observe here).
+        """
+        from server.config import get_settings
+        idle = get_settings().assistant_idle_s
+        now = time.monotonic() if now is None else now
+        reaped: list[str] = []
+        for rec in list(self._records.values()):
+            if not is_assistant(rec) or rec.id not in self._drivers:
+                continue
+            driver = self._drivers[rec.id]
+            if driver._turn_live():
+                continue
+            last = rec.last_activity_at or now
+            if now - last < idle:
+                continue
+
+            # Teardown the virtual X11 display first, unconditionally, exactly like
+            # close_session — an assistant has tools=[] so it never uses the display,
+            # but _spawn_session/ensure_driver allocate one for every session kind
+            # regardless, and the pool is finite. start_display is documented
+            # idempotent, so a later resume re-leasing it is a safe no-op.
+            if self._x11 is not None:
+                try:
+                    await self._x11.stop_display(rec.id)
+                except Exception:
+                    log.exception("session.display_cleanup_failed id=%s", rec.id)
+
+            self._drivers.pop(rec.id, None)
+            self._last_prompt.pop(rec.id, None)
+            self._turn_restart_at.pop(rec.id, None)
+            self._self_model_state.pop(rec.id, None)
+            self._handled_model_requests.pop(rec.id, None)
+            self._pending_initial_prompt.pop(rec.id, None)
+            await driver.aclose()
+
+            rec.status = "ended"
+            self._assistant_overlays.pop(rec.id, None)
+            async with db_session() as db:
+                from sqlalchemy import update as sa_update
+                await db.execute(
+                    sa_update(DbSession).where(DbSession.id == rec.id).values(status="ended")
+                )
+            reaped.append(rec.id)
+            log.info("assistant.reap id=%s idle_s=%.0f", rec.id, now - last)
+        return reaped
+
+    async def _assistant_reap_loop(self, interval: float = 60.0) -> None:
+        """Periodic sweep pairing with _reap_idle_assistants_once. Mirrors
+        _worktree_janitor_loop's shape: sleep, sweep, swallow+log any failure so one
+        bad tick never kills the loop."""
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self._reap_idle_assistants_once()
+            except Exception:
+                log.exception("assistant-reap: sweep failed")
 
     async def rename_session(self, session_id: str, name: str) -> None:
         """Update the session name in the DB and in-memory record.
@@ -10304,11 +10384,17 @@ class SessionOrchestrator:
         """Stamp the wall-clock time the user last steered this session (prompt/answer/permission/
         typing ping). Drives autopilot human-deference + the cooldown badge. In-memory ONLY — no DB
         write (a 120s window is meaningless across a restart), so this is safe to call on the WS
-        receive path (never blocks on I/O, cf. the no-DB-write-on-attach rule)."""
+        receive path (never blocks on I/O, cf. the no-DB-write-on-attach rule).
+
+        Also stamps ``last_activity_at`` (a monotonic clock, immune to wall-clock jumps) —
+        the assistant idle-reap sweep's only signal for "has the drawer been touched
+        recently," so this must stay synchronous and side-effect-free beyond the two
+        in-memory field writes."""
         from datetime import datetime
         record = self._records.get(session_id)
         if record is not None:
             record.last_user_interaction_at = datetime.utcnow()
+            record.last_activity_at = time.monotonic()
 
     async def set_autopilot_paused(self, session_id: str, paused: bool) -> None:
         """Pin a session to manual (paused=True) or return it to autopilot governance.
