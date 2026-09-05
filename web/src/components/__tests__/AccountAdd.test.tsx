@@ -197,6 +197,20 @@ describe('AccountsManager — Add account', () => {
     expect(cancelAddMutate).toHaveBeenCalled()
   })
 
+  it('switching provider during a running add calls the cancel mutation', async () => {
+    const user = userEvent.setup()
+    vi.mocked(hooks.useAddAccountStatus).mockImplementation((enabled: boolean) =>
+      queryResult(makeReauthState({ state: enabled ? 'running' : 'idle' })))
+
+    render(<AccountsManager />, { wrapper })
+    await user.click(screen.getByRole('button', { name: /add account/i }))
+    await user.type(screen.getByLabelText(/account name/i), 'work')
+    await user.click(screen.getByRole('button', { name: /^add$/i }))
+    await user.click(screen.getByRole('button', { name: /openai \(chatgpt\)/i }))
+
+    expect(cancelAddMutate).toHaveBeenCalled()
+  })
+
   it('invalidates the accounts query when the add succeeds', async () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useAddAccountStatus).mockImplementation((enabled: boolean) => (queryResult(makeReauthState({ state: enabled ? 'success' : 'idle' }))))

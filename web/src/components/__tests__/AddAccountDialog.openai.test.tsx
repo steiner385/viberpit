@@ -139,6 +139,9 @@ describe('AddAccountDialog — OpenAI (ChatGPT) device flow', () => {
 
   it('switching provider abandons the in-flight OpenAI flow', async () => {
     const user = userEvent.setup()
+    const openaiCancel = vi.fn()
+    vi.mocked(hooks.useCancelOpenAIAdd).mockReturnValue(
+      { mutate: openaiCancel, isPending: false } as unknown as ReturnType<typeof hooks.useCancelOpenAIAdd>)
     mockOpenAIStatus(deviceState({
       state: 'awaiting_authorization', userCode: USER_CODE, verificationUri: VERIFY_URI,
     }))
@@ -149,6 +152,7 @@ describe('AddAccountDialog — OpenAI (ChatGPT) device flow', () => {
     // The code belongs to a flow the user can no longer see — leaving it on
     // screen (or polling behind it) is both confusing and needless exposure.
     expect(screen.queryByText(USER_CODE)).not.toBeInTheDocument()
+    expect(openaiCancel).toHaveBeenCalledWith('chatgpt')
   })
 
   it('never writes the device code or verification URI to localStorage', async () => {
