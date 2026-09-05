@@ -237,6 +237,14 @@ describe('route table — redirects', () => {
     expect(url()).toBe('/sessions/archived?kiosk=1')
   })
 
+  it('the legacy /archived redirect now resolves under sessions, not its own section', () => {
+    renderAt('/archived')
+    const landed = url() ?? ''
+    expect(landed).toBe('/sessions/archived')
+    expect(navDefForPath(landed)?.id).toBe('sessions')
+    expect(screen.getByTestId('page-archived')).toBeInTheDocument()
+  })
+
   it('lands the legacy sub-agent link on that sub-agent', () => {
     renderAt('/session/abc/subagent/x')
     expect(screen.getByTestId('page-subagent')).toHaveTextContent('abc/x')
@@ -365,15 +373,7 @@ describe('route table — pages', () => {
 // ── the drift guard ──────────────────────────────────────────────────────────
 
 describe('route table — every nav destination exists', () => {
-  // `archived` is excluded here, temporarily: `navDefs.ts` still carries its own
-  // `archived` nav entry at `/archived` (Task 14, later in this PR, deletes it —
-  // Archived is now a SCOPE of `sessions` rather than its own section). Until
-  // that lands, `/archived` is a legacy redirect to `/sessions/archived`
-  // (Task 11), so it no longer resolves to its own `archived` id — it resolves
-  // to `sessions`, same as every other archived path. That is asserted
-  // explicitly in the dedicated test below rather than left as a silent
-  // exclusion.
-  it.each(NAV_DEFS.filter((d) => d.id !== 'archived').map((d) => [d.id, d.path] as const))(
+  it.each(NAV_DEFS.map((d) => [d.id, d.path] as const))(
     'the %s rail item (%s) resolves to its own section page',
     (id, path) => {
       renderAt(path)
@@ -386,14 +386,6 @@ describe('route table — every nav destination exists', () => {
       expect(screen.getByTestId(`page-${id}`)).toBeInTheDocument()
     },
   )
-
-  it('the legacy /archived rail entry now resolves under sessions, not its own section', () => {
-    renderAt('/archived')
-    const landed = url() ?? ''
-    expect(landed).toBe('/sessions/archived')
-    expect(navDefForPath(landed)?.id).toBe('sessions')
-    expect(screen.getByTestId('page-archived')).toBeInTheDocument()
-  })
 })
 
 // ── the 44-cell matrix: every route × every layout mode ──────────────────────

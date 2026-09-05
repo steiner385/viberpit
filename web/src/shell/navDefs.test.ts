@@ -10,7 +10,6 @@ describe('navDefs', () => {
       ['automations', 'Automations'],
       ['initiatives', 'Initiatives'],
       ['projects', 'Products'],
-      ['archived', 'Archived'],
       ['insights', 'Insights'],
       ['settings', 'Settings'],
     ])
@@ -66,7 +65,7 @@ describe('navDefs', () => {
   // key useNavBadges actually produces. Kept here (not in useNavBadges.test) so
   // the failure names the offending nav entry.
   it('declares only known badge keys', () => {
-    const known = new Set(['sessions', 'pipeline', 'automations', 'archived', 'settings'])
+    const known = new Set(['sessions', 'pipeline', 'automations', 'settings'])
     for (const d of NAV_DEFS) {
       if (d.badge !== undefined) expect(known.has(d.badge), `${d.id} badge=${d.badge}`).toBe(true)
     }

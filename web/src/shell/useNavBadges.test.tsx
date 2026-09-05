@@ -1,17 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
-import type { Account, ArchivedSession, PullRequestInfo, Session } from '@/api/types'
+import type { Account, PullRequestInfo, Session } from '@/api/types'
 import type { Automation } from '@/api/automations'
 
 const useSessions = vi.fn()
-const useArchivedSessions = vi.fn()
 const useAllPrs = vi.fn()
 const useAutomations = vi.fn()
 const useAccounts = vi.fn()
 
 vi.mock('@/api/hooks', () => ({
   useSessions: () => useSessions(),
-  useArchivedSessions: () => useArchivedSessions(),
   useAllPrs: () => useAllPrs(),
   useAutomations: () => useAutomations(),
   useAccounts: () => useAccounts(),
@@ -42,15 +40,6 @@ function session(over: Partial<Session> = {}): Session {
   }
 }
 
-function archivedSession(over: Partial<ArchivedSession> = {}): ArchivedSession {
-  return {
-    id: 'x', name: 'x', account: 'acct', cwd: '/tmp/x', repo: null,
-    engine: 'claude_code', engineSessionId: null, permissionMode: 'default',
-    createdAt: '2024-01-01T00:00:00Z', archivedAt: '2024-01-02T00:00:00Z',
-    ...over,
-  }
-}
-
 function automation(over: Partial<Automation> = {}): Automation {
   return {
     id: 'a', name: 'a', description: '', enabled: true, mode: null, modes: [],
@@ -63,7 +52,6 @@ function automation(over: Partial<Automation> = {}): Automation {
 describe('useNavBadges', () => {
   beforeEach(() => {
     useSessions.mockReturnValue({ data: [] })
-    useArchivedSessions.mockReturnValue({ data: [] })
     useAllPrs.mockReturnValue({ data: [] })
     useAutomations.mockReturnValue({ data: [] })
     useAccounts.mockReturnValue({ data: [] })
@@ -87,7 +75,6 @@ describe('useNavBadges', () => {
     expect(result.current.sessions).toBeUndefined()
     expect(result.current.pipeline).toBeUndefined()
     expect(result.current.automations).toBeUndefined()
-    expect(result.current.archived).toBeUndefined()
   })
 
   it('settings is boolean-or-undefined, never a number', () => {
@@ -130,16 +117,14 @@ describe('useNavBadges', () => {
     expect(result.current.sessions).toBe(2)
   })
 
-  it('pipeline counts in-flight PRs; archived and automations count their own data', () => {
+  it('pipeline counts in-flight PRs; automations counts its own data', () => {
     const prs: PullRequestInfo[] = [
       { number: 1, url: 'https://example/pr/1', state: 'open', checks: 'pending', title: 't', deployed: false },
     ]
     useAllPrs.mockReturnValue({ data: prs })
-    useArchivedSessions.mockReturnValue({ data: [archivedSession({ id: 'x' })] })
     useAutomations.mockReturnValue({ data: [automation({ activeSessions: 3 })] })
     const { result } = renderHook(() => useNavBadges())
     expect(result.current.pipeline).toBe(1)
-    expect(result.current.archived).toBe(1)
     expect(result.current.automations).toBe(3)
   })
 })

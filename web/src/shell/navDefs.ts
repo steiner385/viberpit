@@ -1,11 +1,11 @@
 import {
   MessagesSquare, GitPullRequest, Workflow, Target,
-  Package, Archive, LineChart, Settings,
+  Package, LineChart, Settings,
   type LucideIcon,
 } from 'lucide-react'
 
 /** Which count `useNavBadges()` supplies for this section, if any. */
-export type NavBadgeKey = 'sessions' | 'pipeline' | 'automations' | 'archived' | 'settings'
+export type NavBadgeKey = 'sessions' | 'pipeline' | 'automations' | 'settings'
 
 /** Shape of a nav entry, before `id` is narrowed to the derived union. */
 interface NavDefShape {
@@ -76,7 +76,7 @@ const DEFS = [
   // is a direct `closeSession.mutate(sessionId)` with no confirm by design, and
   // `SessionBody`'s permission cards approve a pending tool call on one tap.
   { id: 'sessions',    label: 'Sessions',    icon: MessagesSquare,  path: '/sessions',    badge: 'sessions',    showInKiosk: false, hasList: true,
-    help: 'Live sessions. Start one from the prompt; open one to read its transcript and reply.' },
+    help: 'Live sessions. Start one from the prompt; open one to read its transcript and reply. Switch the list to Archived to reread, restore or delete a past session.' },
   // showInKiosk:true — the pre-cutover kiosk section, and the one whose actions
   // consult `useInteractive()` (`StatusStrip` tiles, `PrRow` expansion).
   { id: 'pipeline',    label: 'Pipeline',    icon: GitPullRequest,  path: '/pipeline',    badge: 'pipeline',    showInKiosk: true,  hasList: false,
@@ -94,12 +94,6 @@ const DEFS = [
   // `proposeMap.mutate`/`classify.mutate`.
   { id: 'projects',    label: 'Products',    icon: Package,         path: '/projects',                          showInKiosk: false, hasList: false,
     help: 'The product registry: the repos ccswitch tracks, plus onboarding and triage review.' },
-  // showInKiosk:false — `ArchivedSessionList`'s Unarchive is a direct
-  // `unarchiveSession.mutate(id)`, and bulk unarchive/delete are one click from a
-  // row checkbox. Its Permanent Delete opens a `Dialog`, which kiosk refuses —
-  // so that button would be silently inert, which is its own confusion.
-  { id: 'archived',    label: 'Archived',    icon: Archive,         path: '/archived',    badge: 'archived',    showInKiosk: false, hasList: false,
-    help: 'Past sessions. Reread a transcript, unarchive it, or delete it permanently.' },
   // showInKiosk:true — verified read-only: `InsightsView` is two `<select>`s over
   // local state, two `useQuery` hooks, and `CheckTable`, which renders a table.
   { id: 'insights',    label: 'Insights',    icon: LineChart,       path: '/insights',                          showInKiosk: true,  hasList: false,

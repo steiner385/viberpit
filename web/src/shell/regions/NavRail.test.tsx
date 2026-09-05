@@ -33,7 +33,7 @@ import { NavRail } from './NavRail'
 function navBadges(over: Partial<NavBadges> = {}): NavBadges {
   return {
     sessions: undefined, pipeline: undefined, automations: undefined,
-    archived: undefined, settings: undefined,
+    settings: undefined,
     ...over,
   }
 }
