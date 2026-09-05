@@ -63,7 +63,7 @@ function renderAt(path: string, { live = [], archived = [] }: Fixture = {}) {
         <Routes>
           <Route path="/sessions" element={<div>list</div>} />
           <Route path="/sessions/:id" element={<SessionProbe />} />
-          <Route path="/archived/:id" element={<div>transcript</div>} />
+          <Route path="/sessions/archived/:id" element={<div>transcript</div>} />
         </Routes>
         <LocationSpy />
       </MemoryRouter>
@@ -141,7 +141,7 @@ describe('useArchiveAdvance — the 503/409 fallback effect', () => {
       archived: [archivedSession({ id: 'gone' })],
     })
 
-    await waitFor(() => expect(seen).toContain('/archived/gone'))
+    await waitFor(() => expect(seen).toContain('/sessions/archived/gone'))
     // Never bounced through a live neighbour on the way.
     expect(seen).not.toContain('/sessions/sess-2')
   })

@@ -185,7 +185,9 @@ describe('route table — redirects', () => {
     ['/', '/sessions'],
     ['/session/abc', '/sessions/abc'],
     ['/session/abc/subagent/x', '/sessions/abc/agents/x'],
-    ['/review/abc', '/archived/abc'],
+    ['/archived', '/sessions/archived'],
+    ['/archived/abc', '/sessions/archived/abc'],
+    ['/review/abc', '/sessions/archived/abc'],
     ['/accounts', '/settings/accounts'],
     ['/automation', '/settings/automation'],
     // `/settings` and `/settings?section=X` are NOT redirects any more: they are
@@ -226,6 +228,11 @@ describe('route table — redirects', () => {
   it('lands the legacy review link on the read-only transcript', () => {
     renderAt('/review/abc')
     expect(screen.getByTestId('page-review')).toHaveTextContent('abc')
+  })
+
+  it('keeps the kiosk params across the legacy archived redirect', () => {
+    renderAt('/archived?kiosk=1')
+    expect(url()).toBe('/sessions/archived?kiosk=1')
   })
 
   it('lands the legacy sub-agent link on that sub-agent', () => {
@@ -279,8 +286,8 @@ describe('route table — pages', () => {
     ['/initiatives', 'page-initiatives'],
     ['/projects', 'page-projects'],
     ['/insights', 'page-insights'],
-    ['/archived', 'page-archived'],
-    ['/archived/abc', 'page-review'],
+    ['/sessions/archived', 'page-archived'],
+    ['/sessions/archived/abc', 'page-review'],
     ['/settings/general', 'page-settings'],
     ['/settings', 'page-settings'],
   ])('%s renders %s without redirecting', (path, testid) => {
@@ -325,7 +332,7 @@ describe('route table — pages', () => {
    * the redesign: its scroll owner is `ui/PageContent` rather than a wrapper in
    * this file, and `features/settings/SettingsPage.test.tsx` asserts it there.
    */
-  it.each(['/automations', '/insights', '/archived'])(
+  it.each(['/automations', '/insights', '/sessions/archived'])(
     '%s owns a vertical scroll container',
     (path) => {
       renderAt(path)
@@ -336,11 +343,19 @@ describe('route table — pages', () => {
   )
 
   it('gives an archived transcript the review page, not the session page', () => {
-    // /archived/:id reuses the `:id` param name on purpose (it is what makes
-    // PageHost's section gate load-bearing). If the two ever collapsed into one
-    // route, an archived transcript would open a live session.
-    renderAt('/archived/abc')
+    // /sessions/archived/:archivedId does NOT reuse the `:id` param name (it is
+    // what makes PageHost's section gate load-bearing). If the two ever
+    // collapsed onto one param, an archived transcript would open a live session.
+    renderAt('/sessions/archived/abc')
     expect(screen.getByTestId('page-review')).toHaveTextContent('abc')
+    expect(screen.queryByTestId('page-session-detail')).not.toBeInTheDocument()
+  })
+
+  it('ranks the static archived route above the session detail route', () => {
+    // `/sessions/archived` and `/sessions/:id` are siblings. If the dynamic one
+    // won, the archived list would render as a session whose id is "archived".
+    renderAt('/sessions/archived')
+    expect(screen.getByTestId('page-archived')).toBeInTheDocument()
     expect(screen.queryByTestId('page-session-detail')).not.toBeInTheDocument()
   })
 })
@@ -348,7 +363,15 @@ describe('route table — pages', () => {
 // ── the drift guard ──────────────────────────────────────────────────────────
 
 describe('route table — every nav destination exists', () => {
-  it.each(NAV_DEFS.map((d) => [d.id, d.path] as const))(
+  // `archived` is excluded here, temporarily: `navDefs.ts` still carries its own
+  // `archived` nav entry at `/archived` (Task 14, later in this PR, deletes it —
+  // Archived is now a SCOPE of `sessions` rather than its own section). Until
+  // that lands, `/archived` is a legacy redirect to `/sessions/archived`
+  // (Task 11), so it no longer resolves to its own `archived` id — it resolves
+  // to `sessions`, same as every other archived path. That is asserted
+  // explicitly in the dedicated test below rather than left as a silent
+  // exclusion.
+  it.each(NAV_DEFS.filter((d) => d.id !== 'archived').map((d) => [d.id, d.path] as const))(
     'the %s rail item (%s) resolves to its own section page',
     (id, path) => {
       renderAt(path)
@@ -361,6 +384,14 @@ describe('route table — every nav destination exists', () => {
       expect(screen.getByTestId(`page-${id}`)).toBeInTheDocument()
     },
   )
+
+  it('the legacy /archived rail entry now resolves under sessions, not its own section', () => {
+    renderAt('/archived')
+    const landed = url() ?? ''
+    expect(landed).toBe('/sessions/archived')
+    expect(navDefForPath(landed)?.id).toBe('sessions')
+    expect(screen.getByTestId('page-archived')).toBeInTheDocument()
+  })
 })
 
 // ── the 44-cell matrix: every route × every layout mode ──────────────────────
@@ -405,8 +436,8 @@ const MATRIX_PATHS: ReadonlyArray<readonly [path: string, testid: string]> = [
   ['/initiatives', 'page-initiatives'],
   ['/projects', 'page-projects'],
   ['/insights', 'page-insights'],
-  ['/archived', 'page-archived'],
-  ['/archived/abc', 'page-review'],
+  ['/sessions/archived', 'page-archived'],
+  ['/sessions/archived/abc', 'page-review'],
   ['/settings/general', 'page-settings'],
 ]
 
@@ -426,6 +457,7 @@ const MATRIX_PATHS: ReadonlyArray<readonly [path: string, testid: string]> = [
 const REDIRECT_ROUTE_PATTERNS = new Set([
   '/', '/settings',
   '/session/:sessionId', '/session/:sessionId/subagent/:agentId', '/review/:sessionId',
+  '/archived', '/archived/:sessionId',
   '/accounts', '/automation', '/library',
   '*',
 ])
@@ -507,8 +539,8 @@ describe('every route renders in every layout mode', () => {
    * R9 successor map for the nine kiosk cells that asserted
    * `kiosk · <path> renders <that path's page>` for a section kiosk is not
    * allowed on (`/sessions`, `/sessions/:id`, `/sessions/:id/agents/:agentId`,
-   * `/automations`, `/initiatives`, `/projects`, `/archived`, `/archived/:id`,
-   * `/settings/general`).
+   * `/automations`, `/initiatives`, `/projects`, `/sessions/archived`,
+   * `/sessions/archived/:id`, `/settings/general`).
    *
    * That claim is now false BY DESIGN: `AppShell`'s `KioskPageGuard` redirects a
    * kiosk URL off any section not marked `showInKiosk` (verified read-only), so
@@ -543,7 +575,7 @@ describe('every route renders in every layout mode', () => {
     expect(refused.map(([, path]) => path)).toEqual([
       '/sessions', '/sessions/abc', '/sessions/abc/agents/x',
       '/automations', '/initiatives', '/projects',
-      '/archived', '/archived/abc', '/settings/general',
+      '/sessions/archived', '/sessions/archived/abc', '/settings/general',
     ])
     expect(refused.every(([, , testid, url]) => testid === 'page-pipeline' && url === '/pipeline')).toBe(true)
   })

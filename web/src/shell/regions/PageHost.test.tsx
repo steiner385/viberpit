@@ -166,15 +166,18 @@ interface RenderOpts {
  * The routes this file exercises, and the probe each one renders instead of its
  * real page.
  *
- * Note `/archived/:id`: the canonical read-only review route (umbrella §6,
- * DEC-6) REUSES the `:id` param name that `/sessions/:id` uses, which is exactly
- * what makes the section gate load-bearing rather than defensive.
+ * Note `/sessions/archived/:archivedId`: the canonical read-only review route
+ * (umbrella §6, DEC-6) shares its SECTION with `/sessions/:id` — both resolve to
+ * `sessions` via `navDefForPath` — but does NOT reuse the `:id` param name. The
+ * param name, not the section, is what makes the gate load-bearing rather than
+ * defensive: `useOpenSessionId` reads `useParams().id`, so the archived route's
+ * `archivedId` param is simply invisible to it.
  */
 const PROBE_PAGES: Record<string, string> = {
   '/sessions': 'list',
   '/sessions/:id': 'session',
   '/sessions/:id/agents/:agentId': 'agent',
-  '/archived/:id': 'review',
+  '/sessions/archived/:archivedId': 'review',
   '/pipeline': 'pipeline',
 }
 
@@ -185,9 +188,10 @@ const PROBE_PAGES: Record<string, string> = {
  *
  * This file used to hand-write its own five-route table. That made the section
  * gate agree with an approximation of the app's routing rather than with the
- * app's routing: rename `/archived/:id` in `routes.tsx` and the gate would have
- * gone on passing here while archived transcripts opened live runtimes in the
- * app. The throw below turns that drift into a failure instead.
+ * app's routing: rename `ARCHIVED_SESSION_ROUTE`'s param in `sessionNavState.ts`
+ * and the gate would have gone on passing here while archived transcripts
+ * opened live runtimes in the app. The throw below turns that drift into a
+ * failure instead.
  */
 function probeRoutes(children: RouteObject[], extra: React.ReactNode): RouteObject[] {
   const found = new Set<string>()
@@ -337,13 +341,14 @@ describe('PageHost — session runtime scope (F2.3)', () => {
     expect(screen.getByTestId('probe-page')).toHaveTextContent('a|')
   })
 
-  it('mounts no provider for an :id route in another section (/archived/:id)', () => {
+  it('mounts no provider for an archived transcript (/sessions/archived/:archivedId)', () => {
     // An archived transcript must not attach a live runtime — no socket, no
-    // transcript reducer, no detach-on-unmount. `/archived/:id` is a DIFFERENT
-    // SECTION REUSING THE SAME PARAM NAME under the same layout route, so a
-    // gate on `:id` alone would silently attach one here and nothing would fail.
+    // transcript reducer, no detach-on-unmount. `/sessions/archived/:archivedId`
+    // is the SAME SECTION as `/sessions/:id` (both resolve to `sessions`), so a
+    // gate on the section alone would silently attach one here; the param name
+    // (`archivedId`, not `id`) is what actually keeps it off.
     const spy = silenceExpectedErrorLog()
-    renderAt('/archived/a', { page: <RuntimeProbe at="page" /> })
+    renderAt('/sessions/archived/a', { page: <RuntimeProbe at="page" /> })
     spy.mockRestore()
     expect(screen.getByTestId('route-error')).toHaveTextContent(NO_PROVIDER)
   })

@@ -26,7 +26,7 @@
  * The effect also covers the other way a session can be archived while open —
  * a stale bookmark. If the id was NEVER in the live list (an automation log
  * link to an already-archived session), there is no neighbour to advance to and
- * the right destination is the read-only transcript, `/archived/:id`.
+ * the right destination is the read-only transcript, `/sessions/archived/:id`.
  *
  * ## Why the ordering here is unfiltered
  *
