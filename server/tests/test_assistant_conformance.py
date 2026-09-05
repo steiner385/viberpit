@@ -25,6 +25,7 @@ ARGS: dict[str, dict] = {
     "list_automations": {}, "get_automation_events": {"id": "autopilot"}, "get_deploy_status": {},
     "list_notification_channels": {}, "list_notification_rules": {}, "get_quiet_hours": {},
     "test_notification": {"event_class": "session.done"},
+    "report_gap": {"capability": "x"},
     "create_session": {"prompt": "p"}, "send_prompt": {"id": UUID, "text": "t"},
     "interrupt_session": {"id": UUID},
     "answer_question": {"id": UUID, "question_id": "q1", "selected": ["a"]},
@@ -56,6 +57,11 @@ async def test_every_tool_hits_an_allowed_route(name):
     tools = build_tools(_recording_api(seen))
     tool = next(t for t in tools if t.name == name)
     await tool.handler(ARGS[name])
+    if name == "report_gap":
+        # The sole exemption: the gap it records IS that no endpoint exists, so it
+        # must reach the API zero times. Asserted rather than skipped.
+        assert seen == [], "report_gap must not call the API"
+        return
     assert len(seen) == 1, f"{name} made {len(seen)} calls; a tool is ONE endpoint"
     method, path = seen[0]
     assert route_allowed(method, path), f"{name} hit {method} {path}, not allowlisted"

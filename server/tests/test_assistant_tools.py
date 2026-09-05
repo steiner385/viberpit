@@ -440,3 +440,43 @@ async def test_test_notification_is_read_classed_but_calls_post():
     assert "is_error" not in out
     assert seen == {"method": "POST", "path": "/api/notifications/test",
                     "body": {"eventClass": "session.done", "repo": "o/r"}}
+@pytest.mark.asyncio
+async def test_envelope_carries_now_and_truncated():
+    """`now` is the model's only clock (B6), and `truncated` tells it a list is partial
+    — without which it states a cut-down list as if it were the whole one."""
+    tools = build_tools(_api(lambda r: httpx.Response(200, json=[{"id": "a"}] * 3)))
+    out = await _tool(tools, "list_archived_sessions").handler({"limit": 1})
+    body = json.loads(out["content"][0]["text"])
+    assert body["now"].endswith("Z") or "+00:00" in body["now"]
+    assert body["truncated"] == 2
+    # A handler that dropped nothing must not carry the key at all, so the model
+    # never sees `truncated: 0` and wonders what it means.
+    out2 = await _tool(tools, "list_hosts").handler({})
+    assert "truncated" not in json.loads(out2["content"][0]["text"])
+
+
+@pytest.mark.asyncio
+async def test_report_gap_makes_no_http_call_and_counts():
+    from server.obs.metrics import assistant_gap_reports_total
+
+    calls = []
+    tools = build_tools(_api(lambda r: calls.append(r) or httpx.Response(500)))
+    before = assistant_gap_reports_total.value("deploy")
+    out = await _tool(tools, "report_gap").handler({"capability": "deploy",
+                                                    "detail": "asked to ship"})
+    assert calls == []
+    assert out.get("is_error") is not True
+    assert assistant_gap_reports_total.value("deploy") == before + 1
+
+
+@pytest.mark.asyncio
+async def test_report_gap_slugifies_the_capability_label():
+    """The label is a metric dimension the model supplies freely, so it is coerced to
+    a bounded kebab-case slug — an unbounded label set is a cardinality leak."""
+    from server.obs.metrics import assistant_gap_reports_total
+
+    tools = build_tools(_api(lambda r: httpx.Response(500)))
+    before = assistant_gap_reports_total.value("edit-settings-")
+    out = await _tool(tools, "report_gap").handler({"capability": "Edit Settings!"})
+    assert json.loads(out["content"][0]["text"])["data"] == {"recorded": "edit-settings-"}
+    assert assistant_gap_reports_total.value("edit-settings-") == before + 1

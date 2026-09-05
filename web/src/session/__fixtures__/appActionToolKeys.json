@@ -23,6 +23,7 @@
   "list_prs",
   "list_sessions",
   "ready_merge_pr",
+  "report_gap",
   "resolve_model_approval",
   "resolve_permission",
   "search_sessions",

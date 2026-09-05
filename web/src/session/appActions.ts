@@ -25,6 +25,7 @@ export const APP_ACTION_TITLES: Record<string, string> = {
   list_notification_rules: 'Listed notification rules',
   get_quiet_hours: 'Checked quiet hours',
   test_notification: 'Previewed notification routing',
+  report_gap: 'Recorded a capability gap',
   create_session: 'Started a session',
   send_prompt: 'Sent a prompt',
   interrupt_session: 'Interrupted session',

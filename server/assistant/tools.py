@@ -7,6 +7,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 from urllib.parse import urlparse
@@ -14,7 +15,7 @@ from urllib.parse import urlparse
 from claude_agent_sdk import SdkMcpTool, tool
 from mcp.types import ToolAnnotations
 
-from server.obs.metrics import assistant_tool_calls_total
+from server.obs.metrics import assistant_gap_reports_total, assistant_tool_calls_total
 
 from .client import AssistantApi, AssistantApiError
 
@@ -53,6 +54,9 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("list_notification_rules", ToolClass.READ, "List notification rules"),
     ToolSpec("get_quiet_hours", ToolClass.READ, "Get quiet hours"),
     ToolSpec("test_notification", ToolClass.READ, "Preview notification routing"),
+    # READ because it changes nothing a user can see: it increments a counter and
+    # writes an audit row. The ONE tool that calls no endpoint (see build_tools).
+    ToolSpec("report_gap", ToolClass.READ, "Record a capability gap"),
     ToolSpec("create_session", ToolClass.MUTATION, "Start a session"),
     ToolSpec("send_prompt", ToolClass.MUTATION, "Send a prompt"),
     ToolSpec("interrupt_session", ToolClass.MUTATION, "Interrupt session"),
@@ -113,13 +117,32 @@ def _scrub(v: Any) -> Any:
     return v
 
 
-def wrap_untrusted(data: Any) -> str:
-    return json.dumps({"source": "ccswitch-api", "trust": "untrusted-data",
-                       "data": _scrub(data)}, separators=(",", ":"), ensure_ascii=False)
+@dataclass(frozen=True)
+class Trimmed:
+    """A list a handler cut down: `guarded` reports `dropped` in the envelope so the
+    model knows it is looking at a partial answer and can ask for more, rather than
+    stating a truncated list as if it were the whole one."""
+    data: Any
+    dropped: int
 
 
-def _ok(data: Any) -> dict[str, Any]:
-    return {"content": [{"type": "text", "text": wrap_untrusted(data)}]}
+def wrap_untrusted(data: Any, *, truncated: int = 0) -> str:
+    env: dict[str, Any] = {
+        "source": "ccswitch-api", "trust": "untrusted-data",
+        # B6: the model's ONLY clock. The system prompt is a frozen cache prefix with
+        # no timestamp, and tool results are never part of that prefix, so stamping
+        # every result costs no cache hit and is what makes "in the last hour" or
+        # "today" answerable at all.
+        "now": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "data": _scrub(data),
+    }
+    if truncated:
+        env["truncated"] = truncated
+    return json.dumps(env, separators=(",", ":"), ensure_ascii=False)
+
+
+def _ok(data: Any, truncated: int = 0) -> dict[str, Any]:
+    return {"content": [{"type": "text", "text": wrap_untrusted(data, truncated=truncated)}]}
 
 
 def _err(msg: str) -> dict[str, Any]:
@@ -208,7 +231,8 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
             t0 = time.monotonic()
             ok = True
             try:
-                return _ok(await fn(args or {}))
+                res = await fn(args or {})
+                return _ok(res.data, res.dropped) if isinstance(res, Trimmed) else _ok(res)
             except ToolArgError as e:
                 ok = False
                 return _err(str(e))
@@ -267,7 +291,9 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
                 events.append({"tool": ev.get("name")})
             elif t in ("permissionRequest", "question"):
                 events.append({"pending": t, "tool": ev.get("tool"), "text": ev.get("question")})
-        return {"events": events[-n * 4:], "totalTurns": data.get("totalTurns")}
+        keep = events[-n * 4:]
+        return Trimmed({"events": keep, "totalTurns": data.get("totalTurns")},
+                       len(events) - len(keep))
 
     @spec_tool("search_sessions", "Find sessions whose name or transcript mention all the given "
                "words. Returns ids; call get_session for details.", {"query": str})
@@ -280,7 +306,8 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
     @guarded
     async def list_archived_sessions(args: dict[str, Any]) -> Any:
         rows = await api.get("/api/sessions/archived")
-        return [_trim_archived(s) for s in rows[: max(1, min(int(args.get("limit") or 50), 200))]]
+        lim = max(1, min(int(args.get("limit") or 50), 200))
+        return Trimmed([_trim_archived(s) for s in rows[:lim]], max(0, len(rows) - lim))
 
     @spec_tool("list_accounts", "Accounts with provider, enabled flag, auth status, session/weekly "
                "usage percent and reset times, and how many sessions each is running.", {})
@@ -367,6 +394,29 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
         if args.get("automation") is not None:
             body["automation"] = args["automation"]
         return await api.post("/api/notifications/test", body)
+    # The one tool with NO backing endpoint: the gap it records is precisely that no
+    # endpoint exists. `test_every_tool_hits_an_allowed_route` exempts it by name.
+    @spec_tool("report_gap",
+               "Call this whenever you tell the user that NO tool can do what they asked "
+               "(a deploy, a settings change, a code edit…). capability is a short kebab-case "
+               "label ('deploy', 'edit-settings', 'merge-pr'); detail is one sentence. It "
+               "records the gap for the product team and returns immediately.",
+               _schema(("capability",), capability=str, detail=str))
+    @guarded
+    async def report_gap(args: dict[str, Any]) -> Any:
+        cap = re.sub(r"[^a-z0-9-]", "-", str(args["capability"]).lower())[:40] or "unknown"
+        assistant_gap_reports_total.labels(cap).inc()
+        try:
+            from server.audit import record_audit
+            from server.db import db_session
+            async with db_session() as db:
+                await record_audit(db, "assistant.gap", api.identity,
+                                   {"capability": cap, "detail": str(args.get("detail") or "")[:300]},
+                                   via="assistant")
+                await db.commit()
+        except Exception:  # noqa: BLE001 - telemetry must never fail the answer
+            log.warning("assistant.gap audit failed", exc_info=True)
+        return {"recorded": cap}
 
     # -- Mutations (spec §4.2, class M) ------------------------------------------------
     # Each is a thin adapter over ONE endpoint: rename args to the endpoint's field
@@ -543,6 +593,7 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
             list_automations, get_automation_events, get_deploy_status,
             list_notification_channels, list_notification_rules, get_quiet_hours,
             test_notification,
+            list_automations, get_automation_events, get_deploy_status, report_gap,
             create_session, send_prompt, interrupt_session, answer_question,
             resolve_permission, set_model, set_permission_mode, resolve_model_approval,
             archive_session, unarchive_session, set_autopilot_paused, fix_pr,
