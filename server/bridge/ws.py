@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
+from server.assistant.context import validate_context
 from server.audit import record_audit, redact_event
 from server.auth.identity import verify_identity
 from server.auth.middleware import require_ws_identity
@@ -54,6 +55,7 @@ from server.sessions.commands.catalog import parse_command_line
 from server.sessions.events import ErrorEvent, PermissionRequest, tool_kind
 from server.sessions.facade import call_with_deadline
 from server.sessions.replay import replay_window
+from server.sessions.types import is_assistant
 
 if TYPE_CHECKING:
     from server.sessions.facade import InProcessOrchestratorAdapter
@@ -1076,7 +1078,21 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                         # prompt next instead of queueing it behind the turn. Only
                         # forwarded when set so the plain contract is untouched.
                         interrupt = msg.get("interrupt") is True
-                        extra = {"interrupt": True} if interrupt else {}
+                        extra: dict[str, bool | dict] = {"interrupt": True} if interrupt else {}
+                        # The context chip (spec §4.5): only the assistant drawer sends
+                        # `context`, and only an assistant-kind session may act on one —
+                        # a coding session ignores a supplied context outright.
+                        # get_session is per-session-routed to the owning host in fleet
+                        # mode (unlike a bare `record()`, which is not in
+                        # FleetOrchestrator's _PER_SESSION set and would resolve to
+                        # RemoteOrchestrator, which has no such method at all).
+                        raw_context = msg.get("context")
+                        if raw_context is not None:
+                            rec = await orchestrator.get_session(session_id)
+                            if is_assistant(rec):
+                                validated_context = validate_context(raw_context)
+                                if validated_context is not None:
+                                    extra["context"] = dict(validated_context)
                         status = await orchestrator.send_prompt(
                             session_id, text, attachment_ids, **extra)
                         if status == "no_driver":

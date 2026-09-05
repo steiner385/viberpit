@@ -15,6 +15,7 @@ from claude_agent_sdk._errors import CLIConnectionError
 from ccswitch import copilot as _copilot_mod
 from ccswitch.accounts import provider_of as _provider_of
 from server.aio import bounded_wait
+from server.assistant.context import render_context_header
 from . import events as ev
 from .failure import classify, TurnFailure
 from .translator import Translator
@@ -239,7 +240,12 @@ class SessionDriver:
         self._turn_buffer: list = []
         self._pump: asyncio.Task | None = None
         self._titled: bool = False
-        self._queue: list[tuple[str, list[dict]]] = []
+        self._queue: list[tuple[str, list[dict], dict | None]] = []
+        # The last prompt-context dict (spec §4.5) actually sent to the SDK — never
+        # set for a coding session (it never passes context). Lets send_prompt/
+        # _start_turn skip re-prepending the `<ccswitch-context>` header on
+        # consecutive prompts from the same page.
+        self._last_context: dict | None = None
         self._turn_active: bool = False
         # Epoch seconds of the in-progress turn's start; None whenever no turn is
         # active. Consumed by the WS attach path (→ replay_window.turn_started_at)
@@ -670,10 +676,16 @@ class SessionDriver:
         self._start_listener()
 
     async def send_prompt(self, text: str, images: list[dict] | None = None, *,
-                          interrupt: bool = False):
+                          interrupt: bool = False, context: dict | None = None):
         """Send a prompt. While a turn is live it joins the FIFO queue — unless
         ``interrupt`` is set, in which case the live turn is stopped and this prompt
-        runs NEXT ("interrupt and post"), ahead of anything already queued."""
+        runs NEXT ("interrupt and post"), ahead of anything already queued.
+
+        ``context`` is the "context chip" (spec §4.5) — the page the user was on —
+        forwarded by the orchestrator only for an assistant-kind session. It never
+        touches the ``UserMessage`` text; ``_start_turn`` prepends a rendered header
+        to the copy of the text sent to the SDK only, and only when it differs from
+        ``self._last_context``."""
         if self._client is None:
             raise RuntimeError("SessionDriver.send_prompt called before start()")
         images = images or []
@@ -686,7 +698,7 @@ class SessionDriver:
             # result is consumed reads it as its own and closes the fresh turn.
             # The interrupt also denies any parked permission/question, so the text
             # is a fresh prompt — the answer short-circuit below must not see it.
-            self._queue.insert(0, (text, images))
+            self._queue.insert(0, (text, images, context))
             log.info("driver.send_prompt: interrupt-and-post session=%s queue_depth=%d",
                      self.session_id, len(self._queue))
             await self.interrupt(keep_queue=True)
@@ -708,14 +720,14 @@ class SessionDriver:
                 log.info("driver.send_prompt: delivered prompt as the answer to %d pending "
                          "question(s) session=%s", answered, self.session_id)
                 if images:
-                    self._queue.append(("", images))
+                    self._queue.append(("", images, None))
                     self._emit(ev.QueueUpdate(self.queue_wire()))
                 return
         # C2 — FIFO queue: if a turn is live — a prompt's pump, or a CLI-initiated turn
-        # the idle listener is tracking (`_turn_active`) — enqueue (text, images)
-        # instead of rejecting.
+        # the idle listener is tracking (`_turn_active`) — enqueue (text, images,
+        # context) instead of rejecting.
         if self._turn_live():
-            self._queue.append((text, images))
+            self._queue.append((text, images, context))
             log.debug("driver.send_prompt: queued prompt for session=%s, queue_depth=%d",
                       self.session_id, len(self._queue))
             await self._emit_status()
@@ -726,9 +738,10 @@ class SessionDriver:
             self._titled = True
             first_line = text.splitlines()[0] if text else (text or "attachment")
             self._emit(ev.Title(title=first_line[:50], source="prompt"))
-        await self._start_turn(text, images)
+        await self._start_turn(text, images, context)
 
-    async def _start_turn(self, text: str, images: list[dict] | None = None):
+    async def _start_turn(self, text: str, images: list[dict] | None = None,
+                          context: dict | None = None):
         """Echo the user prompt, emit working status, query the SDK, drain."""
         images = images or []
         # The prompt's pump takes over the SDK cursor: park the idle listener first
@@ -755,12 +768,25 @@ class SessionDriver:
         user_turn = uuid.uuid4().hex
         self._emit(ev.UserMessage(
             turn_id=user_turn, text=text, src_uuid=user_turn,
-            images=wire_images or None))
+            images=wire_images or None, context=context))
         assert self._client is not None  # _start_turn only runs once the client is connected
+        # The context chip (spec §4.5): only ever set by an assistant-kind session's
+        # prompt. Prepend a rendered `<ccswitch-context>` header to the copy of the
+        # text handed to the SDK — never to the UserMessage above, which is what the
+        # transcript bubble renders — and only when the page actually changed since
+        # the last prompt, so every follow-up in the same view doesn't repeat it.
+        sdk_text = text
+        if context is not None and context != self._last_context:
+            # Import here, not at module scope: orchestrator.py imports SessionDriver
+            # from this module, so a top-level import back would be circular. By the
+            # time a prompt is actually sent, orchestrator has long finished importing.
+            from server.sessions.orchestrator import local_host_stamp
+            sdk_text = render_context_header(context, host=local_host_stamp()) + "\n" + text
+            self._last_context = context
         if images:
             content: list[dict] = []
-            if text:
-                content.append({"type": "text", "text": text})
+            if sdk_text:
+                content.append({"type": "text", "text": sdk_text})
             for im in images:
                 with open(im["path"], "rb") as fh:
                     raw = fh.read()
@@ -783,7 +809,7 @@ class SessionDriver:
                        "parent_tool_use_id": None, "session_id": "default"}
             await self._client.query(_aiter_one(message))
         else:
-            await self._client.query(text)
+            await self._client.query(sdk_text)
         self._pump = asyncio.create_task(self._drain())
 
     async def _call_sync_back(self) -> None:
@@ -934,11 +960,11 @@ class SessionDriver:
         self._reset_turn_flags()
         # If queued prompts remain, pop the front and start the next turn.
         if self._queue:
-            next_text, next_images = self._queue.pop(0)
+            next_text, next_images, next_context = self._queue.pop(0)
             log.debug("driver.drain: dequeuing next prompt for session=%s, remaining=%d",
                       self.session_id, len(self._queue))
             self._emit(ev.QueueUpdate(self.queue_wire()))
-            await self._start_turn(next_text, next_images)
+            await self._start_turn(next_text, next_images, next_context)
         else:
             self._turn_active = False
             self._turn_started_at = None
@@ -1022,7 +1048,7 @@ class SessionDriver:
 
     def queued(self) -> list[str]:
         """Return a snapshot of the queued prompt texts."""
-        return [t for t, _ in self._queue]
+        return [t for t, _, _ in self._queue]
 
     def queue_wire(self) -> list[dict]:
         """Structured queue snapshot: text + image refs per queued prompt."""
@@ -1030,7 +1056,7 @@ class SessionDriver:
             {"text": t,
              "images": [{"url": im["url"], "mime": im["mime"], "name": im.get("name", "")}
                         for im in imgs]}
-            for t, imgs in self._queue
+            for t, imgs, _ in self._queue
         ]
 
     async def cancel_queued(self, index: int) -> bool:

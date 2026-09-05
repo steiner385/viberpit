@@ -8774,9 +8774,12 @@ class SessionOrchestrator:
         return self._pending_initial_attachment_ids.pop(session_id, None)
 
     async def send_prompt(self, session_id, text, attachment_ids=None, *,
-                          interrupt: bool = False) -> str:
+                          interrupt: bool = False, context: dict | None = None) -> str:
         """Deliver a prompt to a live driver. ``interrupt`` = "interrupt and post":
-        stop the in-flight turn and run this prompt next instead of queueing it."""
+        stop the in-flight turn and run this prompt next instead of queueing it.
+        ``context`` is the assistant-only "context chip" (spec §4.5); the ws bridge
+        validates it and passes it only for an assistant-kind session — forwarded
+        here as-is."""
         if self._draining:
             # No new turns during a deploy drain. Tell the browser so it re-queues
             # (promptRejected) and shows the hold banner — never silently swallow it.
@@ -8807,9 +8810,9 @@ class SessionOrchestrator:
                     db, session_id, turn_id, ids)
         self._last_prompt[session_id] = text
         if interrupt:
-            await d.send_prompt(text, resolved, interrupt=True)
+            await d.send_prompt(text, resolved, interrupt=True, context=context)
         else:
-            await d.send_prompt(text, resolved)
+            await d.send_prompt(text, resolved, context=context)
         return "sent"
 
     async def interrupt(self, session_id):
