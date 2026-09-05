@@ -489,26 +489,12 @@ def test_reauth_submit_code_404_unknown():
     assert resp.status_code == 404
 
 
-def test_reauth_start_mode_query_param_forwarded():
-    """POST /api/accounts/{name}/reauth?mode=setup_token forwards mode to reauth.start."""
-    fake_rm = FakeReauthManager()
+def test_reauth_start_always_uses_setup_token_mode():
+    """POST /api/accounts/{name}/reauth always drives the PKCE exchange (#1130) —
 
-    with temp_env():
-        _seed_slot("primary")
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
-            client = _make_client(fake_rm)
-        with client:
-            resp = client.post(
-                "/api/accounts/primary/reauth?mode=setup_token",
-                headers=IDENTITY_HEADERS,
-            )
-
-    assert resp.status_code == 202
-    assert fake_rm.last_start_mode == "setup_token"
-
-
-def test_reauth_start_mode_defaults_to_login():
-    """POST /api/accounts/{name}/reauth without mode= defaults to 'login'."""
+    no mode query param, no browser/VNC option. The browser flow (mode="login")
+    is reserved for POST /accounts/add, which needs it to bootstrap a brand-new
+    slot; an existing account's reauth never touches it."""
     fake_rm = FakeReauthManager()
 
     with temp_env():
@@ -522,4 +508,22 @@ def test_reauth_start_mode_defaults_to_login():
             )
 
     assert resp.status_code == 202
-    assert fake_rm.last_start_mode == "login"
+    assert fake_rm.last_start_mode == "setup_token"
+
+
+def test_reauth_start_ignores_a_stray_mode_query_param():
+    """A caller passing ?mode=login (old UI, cached bookmark) still gets setup_token."""
+    fake_rm = FakeReauthManager()
+
+    with temp_env():
+        _seed_slot("primary")
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            client = _make_client(fake_rm)
+        with client:
+            resp = client.post(
+                "/api/accounts/primary/reauth?mode=login",
+                headers=IDENTITY_HEADERS,
+            )
+
+    assert resp.status_code == 202
+    assert fake_rm.last_start_mode == "setup_token"
