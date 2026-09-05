@@ -2675,7 +2675,7 @@ class SessionOrchestrator:
             # doesn't land on an account we already know is struggling.
             picked = select_account(
                 exclude=self._recovery.quarantined(now=self._clock()),
-                load=self.live_session_load())
+                load=self.live_session_load(), engine=selected_engine)
             account = picked.name
             usage_unverified = picked.optimistic
         else:
@@ -8772,7 +8772,9 @@ class SessionOrchestrator:
         now = self._clock()
         exclude = self._recovery.quarantined(now=now) | frozenset({record.account})
         try:
-            new_account = select_account(exclude=exclude, load=self.live_session_load()).name
+            new_account = select_account(
+                exclude=exclude, load=self.live_session_load(), engine=record.engine
+            ).name
         except AllAccountsBusy as e:
             if is_usage_stalled(record.status, record.paused_reason):
                 # Already parked: honour the move request (drop the pin) and refresh
@@ -10668,7 +10670,9 @@ class SessionOrchestrator:
         old = record.account
         exclude = self._recovery.quarantined(now=now) | frozenset({old})
         try:
-            new_account = select_account(exclude=exclude, load=self.live_session_load()).name
+            new_account = select_account(
+                exclude=exclude, load=self.live_session_load(), engine=record.engine
+            ).name
         except AllAccountsBusy as e:
             await self._pause_session(record, reason="all_accounts_busy",
                                       earliest_reset=e.earliest_reset)

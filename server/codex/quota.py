@@ -53,6 +53,14 @@ def _window(
     native: schema.RateLimitWindow,
     model: str | None,
 ) -> QuotaWindow:
+    if not 0 <= native.used_percent <= 100:
+        # The wire parser enforces this too. Keep the conversion boundary
+        # defensive because tests/fakes and future internal callers can construct
+        # the typed response directly; an invalid value must never become an
+        # AVAILABLE ledger snapshot.
+        raise schema.CodexSchemaError(
+            f"rate limit window {key!r} usedPercent must be between 0 and 100"
+        )
     return QuotaWindow(
         key=key,
         label=label,
@@ -173,7 +181,12 @@ class CodexQuotaReader:
                 account, UNKNOWN, redaction.scrub_exception(exc)
             )
         now = self._clock()
-        snapshot = snapshot_from_rate_limits(response, now=now)
+        try:
+            snapshot = snapshot_from_rate_limits(response, now=now)
+        except schema.CodexSchemaError as exc:
+            return self._degraded(
+                account, UNKNOWN, redaction.scrub_exception(exc)
+            )
         self._last_good[account] = _CachedRead(now, snapshot)
         return snapshot
 

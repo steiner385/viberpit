@@ -145,6 +145,33 @@ def test_login_params_rejects_an_envelope_below_the_requested_minimum():
         asyncio.run(go())
 
 
+def test_delayed_login_cannot_rewind_a_concurrent_refresh():
+    client = FakeAuthorityClient()
+    provider = ExternalAuthProvider(client)
+
+    async def go():
+        await provider.login_params("chatgpt-pro")
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def delayed_envelope(account: str, *, minimum_generation: int = 0):
+            stale = _envelope(client.generation)
+            started.set()
+            await release.wait()
+            return stale
+
+        client.envelope = delayed_envelope  # type: ignore[method-assign]
+        delayed_login = asyncio.create_task(provider.login_params("chatgpt-pro"))
+        await started.wait()
+        await provider._refresh("chatgpt-pro", reason="unauthorized")
+        release.set()
+        with pytest.raises(ExternalAuthUnavailable, match="older generation"):
+            await delayed_login
+
+    asyncio.run(go())
+    assert provider.generation_for("chatgpt-pro") == 2
+
+
 def test_login_params_fails_closed_on_a_typed_refusal():
     client = FakeAuthorityClient()
     client.envelope_error = AuthorityError(

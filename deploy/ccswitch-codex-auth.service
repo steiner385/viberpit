@@ -2,6 +2,8 @@
 Description=ccswitch ChatGPT credential authority — the only holder of OpenAI refresh tokens
 After=network-online.target
 Wants=network-online.target
+StartLimitBurst=5
+StartLimitIntervalSec=120
 # Deliberately NOT Requires=/PartOf= ccswitch-daemon.service. The authority is a
 # separate trust domain and a separate failure domain: a daemon restart (which
 # touches every live session) must not restart the process holding every ChatGPT
@@ -26,22 +28,28 @@ Group=ccswitch-auth
 StateDirectory=ccswitch-codex-auth
 StateDirectoryMode=0700
 
-WorkingDirectory=/home/tony/GitHub/cc-account-switcher-deploy
+# The deploy checkout and its shared venv live below /home/tony, which is 0750.
+# Do not grant this service Tony's supplementary group: that would let a
+# compromised authority traverse unrelated home state, including Claude
+# credentials. systemd instead creates two unit-private, read-only bind mounts
+# outside /home before dropping privileges.
+WorkingDirectory=/opt/ccswitch-codex-auth/app
 # Authority-specific configuration ONLY. This file holds
 # CCSWITCH_CODEX_AUTHORITY_LISTEN_ENDPOINT, _TLS_CERT, _TLS_KEY, _TLS_CLIENT_CA and
 # _CLIENT_ALLOWLIST. It must NOT be /etc/ccswitch/ccswitch.env: the authority has
 # no business inheriting the edge's database URL, GitHub credentials or session
 # daemon client key (server/codex/auth_endpoint.py refuses a shared key outright).
 EnvironmentFile=/etc/ccswitch/codex-auth.env
-ExecStart=/home/tony/GitHub/cc-account-switcher-deploy/.venv/bin/python -m server.codex.auth_main
+# /usr/bin/env is the host-visible launcher. systemd resolves the first
+# executable before constructing the unit mount namespace, so the executable
+# itself cannot be the namespace-only /opt/.../venv/bin/python path.
+ExecStart=/usr/bin/env /opt/ccswitch-codex-auth/venv/bin/python -m server.codex.auth_main
 
 # A failed start is almost always a configuration error (missing TLS material, a
 # second authority already holding the lock). Restart, but let the start limiter
 # stop a boot loop rather than hammering the lock.
 Restart=on-failure
 RestartSec=5
-StartLimitBurst=5
-StartLimitIntervalSec=120
 
 # Shutdown is quick: cancel in-flight logins, close the listener, release the
 # lock. No turns are drained here — the authority holds no sessions.
@@ -57,10 +65,13 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectSystem=strict
-ProtectHome=read-only
-# ReadWritePaths must include the checkout only if the venv needs it at import
-# time; the state directory is granted automatically by StateDirectory=.
-ReadOnlyPaths=/home/tony/GitHub/cc-account-switcher-deploy
+ProtectHome=yes
+# The deploy checkout's .venv is a symlink into the main checkout, so bind the
+# resolved venv separately. Both destinations are private to this unit's mount
+# namespace and read-only. The state directory is granted automatically by
+# StateDirectory=.
+BindReadOnlyPaths=/home/tony/GitHub/cc-account-switcher-deploy:/opt/ccswitch-codex-auth/app
+BindReadOnlyPaths=/home/tony/GitHub/ccswitch/.venv:/opt/ccswitch-codex-auth/venv
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes

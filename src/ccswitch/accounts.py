@@ -15,7 +15,7 @@ from .account_names import aliases_store_root
 from .config import Config, load_config
 from .creds import merge_keep_later, read_credentials, read_json, split_credentials, write_credentials, write_json_secure
 from .quota import QuotaSnapshot, unknown_snapshot
-from .selector import AllAccountsBusy, Picked, select_picked
+from .selector import AllAccountsBusy, Picked, eligible_names, select_picked
 
 log = logging.getLogger(__name__)
 
@@ -550,7 +550,9 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
 
 def pick_account_detailed(cfg: Config, exclude: set[str] = frozenset(),
                           load: dict[str, float] | None = None,
-                          *, reserve: bool = True) -> Picked:
+                          *, reserve: bool = True,
+                          require_engine: str | None = None,
+                          default_engine: str | None = None) -> Picked:
     """Select the best available account.
 
     ``reserve`` (default True) writes a soft reservation on the picked account so
@@ -561,6 +563,27 @@ def pick_account_detailed(cfg: Config, exclude: set[str] = frozenset(),
     real spawns and interactive creates for the full reservation TTL.
     """
     names = _account_names()
+    providers: dict[str, str] | None = None
+    engines: dict[str, str | None] | None = None
+    if require_engine is not None:
+        # The selector's engine filter is deliberately metadata-driven. Do not
+        # infer compatibility from which credential artefact happens to exist:
+        # OpenAI accounts have no Claude slot, and a missing map entry must fail
+        # closed rather than becoming an optimistic cross-engine candidate.
+        entries = {entry.name: entry for entry in account_registry.all_entries()}
+        providers = {
+            name: entries[name].provider for name in names if name in entries
+        }
+        engines = {
+            name: entries[name].engine for name in names if name in entries
+        }
+        names = eligible_names(
+            names,
+            providers=providers,
+            engines=engines,
+            require_engine=require_engine,
+            default_engine=default_engine,
+        )
     # Drop disabled accounts up front: they are blocked everywhere (never selected
     # in any fallback tier) and, being paused, must not be polled for usage either.
     with ledger.locked_ledger() as led:
@@ -576,7 +599,10 @@ def pick_account_detailed(cfg: Config, exclude: set[str] = frozenset(),
         def _pick(excl, rsv):
             return select_picked(usages, rsv, cfg, now, excl, load or {},
                                  unhealthy, optimistic_fallback=True, reserves=reserves,
-                                 extra_usage_allowed=extra_allowed)
+                                 extra_usage_allowed=extra_allowed,
+                                 providers=providers, engines=engines,
+                                 require_engine=require_engine,
+                                 default_engine=default_engine)
         try:
             picked = _pick(exclude, reserved)
         except AllAccountsBusy as _first_exc:

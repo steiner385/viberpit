@@ -318,6 +318,16 @@ class ExternalAuthProvider:
             raise ExternalAuthUnavailable(
                 "credential authority returned an envelope for another account alias"
             )
+        current_generation = self._generations.get(account, 0)
+        if envelope.generation < current_generation:
+            # login_params captures its minimum before awaiting the authority.
+            # A concurrent refresh may advance the account while that read is in
+            # flight; never let the delayed response rewind the runner's fence.
+            raise ExternalAuthUnavailable(
+                f"credential authority returned older generation "
+                f"{envelope.generation} for {account}; already accepted "
+                f"{current_generation}"
+            )
         account_id_digest = _identity_digest(envelope.chatgpt_account_id)
         previous_id = self._account_ids.get(account)
         if previous_id is not None and account_id_digest != previous_id:

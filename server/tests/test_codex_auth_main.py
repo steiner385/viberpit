@@ -35,7 +35,30 @@ async def _async_value(value):
     return value
 
 
-def test_systemd_sandbox_keeps_the_checkout_visible_read_only():
+def test_systemd_sandbox_exposes_only_read_only_runtime_mounts_outside_home():
     unit = (Path(__file__).resolve().parents[2] / "deploy/ccswitch-codex-auth.service").read_text()
-    assert "ProtectHome=read-only" in unit
-    assert "ProtectHome=yes" not in unit
+    assert "ProtectHome=yes" in unit
+    assert "ProtectHome=read-only" not in unit
+    assert "SupplementaryGroups=" not in unit
+    assert (
+        "BindReadOnlyPaths=/home/tony/GitHub/cc-account-switcher-deploy:"
+        "/opt/ccswitch-codex-auth/app"
+    ) in unit
+    assert (
+        "BindReadOnlyPaths=/home/tony/GitHub/ccswitch/.venv:"
+        "/opt/ccswitch-codex-auth/venv"
+    ) in unit
+    assert "WorkingDirectory=/opt/ccswitch-codex-auth/app" in unit
+    assert (
+        "ExecStart=/usr/bin/env /opt/ccswitch-codex-auth/venv/bin/python "
+        "-m server.codex.auth_main"
+    ) in unit
+
+
+def test_systemd_start_limit_is_in_unit_section():
+    unit = (Path(__file__).resolve().parents[2] / "deploy/ccswitch-codex-auth.service").read_text()
+    unit_section, service_section = unit.split("[Service]", maxsplit=1)
+    assert "StartLimitBurst=5" in unit_section
+    assert "StartLimitIntervalSec=120" in unit_section
+    assert "StartLimitBurst=" not in service_section
+    assert "StartLimitIntervalSec=" not in service_section

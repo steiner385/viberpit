@@ -6,6 +6,7 @@ being papered over by a hand-built DTO.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 from datetime import datetime, timezone
 
@@ -295,6 +296,26 @@ async def test_everything_else_is_unknown(error: BaseException) -> None:
     reader = CodexQuotaReader(clock=FakeClock())
 
     snapshot = await reader.read("acct", client=FakeRateLimitClient(error))
+
+    assert snapshot.availability == UNKNOWN
+    assert snapshot.windows == ()
+
+
+@pytest.mark.asyncio
+async def test_directly_constructed_out_of_range_usage_is_unknown() -> None:
+    """Internal fakes cannot bypass the same fail-closed native boundary."""
+    response = _response()
+    assert response.rate_limits.primary is not None
+    malformed = replace(
+        response,
+        rate_limits=replace(
+            response.rate_limits,
+            primary=replace(response.rate_limits.primary, used_percent=-1),
+        ),
+    )
+    reader = CodexQuotaReader(clock=FakeClock())
+
+    snapshot = await reader.read("acct", client=FakeRateLimitClient(malformed))
 
     assert snapshot.availability == UNKNOWN
     assert snapshot.windows == ()
