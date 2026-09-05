@@ -143,13 +143,22 @@ cd web && npm run dev      # → http://localhost:5173
 
 The server identifies callers via two mechanisms, in order:
 
-1. **`Tailscale-User-Login` header** — set by any trusted reverse proxy (e.g. nginx with
-   `proxy_set_header Tailscale-User-Login ""` stripping client-supplied values).
-2. **`tailscale whois <X-Real-IP>`** — when the header is absent, the server calls
-   `tailscale whois` using the `X-Real-IP` header value, but **only when the direct TCP
-   peer is loopback (`127.0.0.1` / `::1`)** — preventing `X-Real-IP` spoofing by clients
-   that reach uvicorn directly. The `X-Real-IP` value is validated as a real IP address
-   before use.
+1. **`Tailscale-User-Login` header** — set by a trusted reverse proxy (e.g. nginx with
+   `proxy_set_header Tailscale-User-Login ""` stripping client-supplied values). The
+   header is only believed when the direct TCP peer is itself trusted; asserted by
+   anyone else it is discarded (with a warning) and the request falls through to (2).
+2. **`tailscale whois <X-Real-IP>`** — when the header is absent or was discarded, the
+   server calls `tailscale whois`, which verifies the peer against the local tailscaled
+   rather than believing what the caller wrote. `X-Real-IP` substitutes for the direct
+   peer only when that peer is trusted; otherwise the direct peer is used, so a client
+   reaching uvicorn directly cannot spoof it. The value is validated as a real IP
+   address before use.
+
+A peer is **trusted** when it is loopback (the whole `127.0.0.0/8` block plus `::1`,
+including the IPv4-mapped `::ffff:127.0.0.1` form a dual-stack listener reports), or
+when it falls inside `CCSWITCH_TRUSTED_PROXY_IPS` — a comma-separated list of addresses
+or CIDR ranges for the case where the proxy is not on the same host. Both header classes
+share this one boundary: a proxy is trusted for both or for neither.
 
 This is **only safe when uvicorn is bound to `127.0.0.1`** (the default) and fronted by a
 reverse proxy (nginx, as configured in `deploy/ccswitch-tailnet.nginx`). Binding to
