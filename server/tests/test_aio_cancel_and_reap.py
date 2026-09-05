@@ -133,3 +133,31 @@ def test_reaping_your_own_task_never_cancels_you():
         assert me is not None and not me.cancelling()
 
     asyncio.run(main())
+
+
+def test_does_not_re_cancel_a_task_already_being_cancelled():
+    """A second cancel() ESCALATES: it interrupts cleanup the child started in
+    response to the first one. Callers that cancel before reaping (the Codex
+    manager cancels its supervisor, tears the process down, then reaps) must get
+    the child's full unwind, not a truncated one."""
+    async def main():
+        cleaned_up = False
+
+        async def cleans_up_on_cancel():
+            nonlocal cleaned_up
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.05)   # its own teardown region
+                cleaned_up = True
+                raise
+
+        child = asyncio.create_task(cleans_up_on_cancel())
+        await asyncio.sleep(0)
+        child.cancel()                      # the caller's own cancel, as in stop()
+        await asyncio.sleep(0)
+
+        assert await cancel_and_reap(child, phase="test") is True
+        assert cleaned_up is True, "the reap escalated an in-flight cancellation"
+
+    asyncio.run(main())
