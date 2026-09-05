@@ -6,6 +6,7 @@ import {
 import type { ComponentType } from 'react'
 import { TERMINAL_STATUSES, type SessionStatus } from '@/api/types'
 import { formatResetTime } from '@/lib/formatReset'
+import { type PromptStage, STAGE_PILL_LABEL, isInFlight } from './promptStage'
 
 export type StatusTier = 'busy' | 'needs-you' | 'your-turn' | 'waiting' | 'error' | 'unreachable'
 
@@ -114,6 +115,24 @@ export const PR_CHECKS_FAILING: StatusPresentation = {
   tier: 'error', label: 'Checks failing', Icon: AlertTriangle, textClass: ERROR,
 }
 
+// A prompt the user has sent whose turn has not started yet (lib/promptFlight). The
+// resting statuses below are truthful about the SESSION — it genuinely is not working
+// yet — but they are the wrong thing to show someone who just hit Enter: "Ready" over
+// a prompt in flight reads as "your message went nowhere". Client-side only; this is
+// deliberately not a SessionStatus member (see the test file for why).
+// Exported so the socket clears its flight entry on exactly the statuses this overlay
+// stops applying to — one definition of "the turn has not started yet", not two.
+export const RESTING_BEFORE_TURN = new Set(['idle', 'done', 'complete'])
+
+function promptFlightPresentation(stage: PromptStage): StatusPresentation {
+  const label = STAGE_PILL_LABEL[stage]
+  return isInFlight(stage)
+    ? { tier: 'busy', label, Icon: Loader2, textClass: BUSY }
+    // Nothing acked it and the watchdog gave up: this is the one case where the user
+    // must actually do something (re-send), so it earns the red tier.
+    : { tier: 'error', label, Icon: AlertTriangle, textClass: ERROR }
+}
+
 export interface StatusPresentationOpts {
   /** The session's turn was dropped by a daemon restart (Session.interruptedByRestart). */
   interruptedByRestart?: boolean
@@ -124,6 +143,8 @@ export interface StatusPresentationOpts {
   usageStalled?: boolean
   /** Session.pausedUntil — earliest known reset, for the pill's time suffix. */
   pausedUntil?: string | null
+  /** A prompt sent to this session whose turn has not started yet (lib/promptFlight). */
+  promptStage?: PromptStage
 }
 
 // Permanent instrumentation: any status string not in PRESENTATION renders as the
@@ -145,6 +166,13 @@ export function statusPresentation(
   }
   if (opts?.interruptedByRestart && RESTART_STRANDABLE.has(state)) {
     return INTERRUPTED_BY_RESTART
+  }
+  // AFTER the liveness demotion, deliberately: "Sent — starting…" over a host we
+  // cannot reach is exactly the promise FR-104 forbids. Only overrides the resting
+  // states — a session already working, or already waiting on the user, is telling a
+  // more useful story than the send is.
+  if (opts?.promptStage && RESTING_BEFORE_TURN.has(state)) {
+    return promptFlightPresentation(opts.promptStage)
   }
   if (opts?.usageStalled && USAGE_STALLED_STATUSES.has(state)) {
     return usageStalledPresentation(state, opts.pausedUntil)

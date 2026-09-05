@@ -11,9 +11,12 @@ import type { AccountUsage, Session } from '@/api/types'
 import { QK } from '@/api/hooks'
 import type { SessionEvent, PromptContext } from '@/session/events'
 import { SESSION_EVENT_TYPES } from '@/session/events'
+import type { PromptStage } from '@/session/promptStage'
+import { noteSent, noteStage, noteHeld, clearFlight } from '@/lib/promptFlight'
 import { clientLogger } from '@/obs/logger'
 import { createGapState, handleLiveBatch, catchUpCursor, catchUpEpoch, invalidateCatchUp, type GapState } from './liveBatch'
 import { shouldApplyRev } from '@/session/reconcile'
+import { RESTING_BEFORE_TURN } from '@/session/statusTier'
 
 // ── Inbound message shapes ───────────────────────────────────────────────────
 
@@ -27,6 +30,12 @@ export interface WsCommandResultMsg { type: 'commandResult'; sessionId: string; 
 export interface WsUpdatePendingMsg   { type: 'updatePending' }
 export interface WsUpdateCancelledMsg { type: 'updateCancelled' }
 export interface WsPromptRejectedMsg   { type: 'promptRejected'; sessionId: string; text: string; attachmentIds?: string[]; reason?: string }
+/** Positive receipt for a prompt frame — the counterpart to promptRejected. See
+ *  server/bridge/ws.py; `stage` is the PromptStage vocabulary (session/promptStage.ts). */
+export interface WsPromptAckMsg { type: 'promptAck'; sessionId: string; stage: PromptStage }
+
+/** What `SessionSocket.prompt()` did with the text: put it on the wire, or hold it here. */
+export type PromptSendResult = 'sent' | 'buffered'
 
 export type WsInboundMsg =
   | WsStatusMsg
@@ -39,6 +48,7 @@ export type WsInboundMsg =
   | WsUpdatePendingMsg
   | WsUpdateCancelledMsg
   | WsPromptRejectedMsg
+  | WsPromptAckMsg
 
 // ── Callback registry type ───────────────────────────────────────────────────
 
@@ -52,6 +62,8 @@ type EventMap = {
   commands:      (msg: WsCommandsMsg) => void
   commandResult: (msg: WsCommandResultMsg) => void
   updatePendingChange: (s: { active: boolean; count: number }) => void
+  promptAck:     (msg: WsPromptAckMsg) => void
+  promptHeld:    (msg: WsPromptRejectedMsg) => void
   // Fired when the server sends close code 1012 (daemon epoch change / planned restart).
   // Consumers can show a recovery overlay immediately rather than waiting for a health poll.
   epochRestart: () => void
@@ -225,17 +237,27 @@ export class SessionSocket {
     return this._sendControl({ type: 'interrupt', sessionId })
   }
 
-  prompt(sessionId: string, text: string, attachmentIds?: string[], context?: PromptContext) {
+  /**
+   * Send a prompt. Returns which of the two things actually happened, so the caller
+   * can say so: `'sent'` = the frame left the browser, `'buffered'` = held here until
+   * the next reconnect. Both are safe — input is never dropped — but they are very
+   * different things to be waiting on, and rendering them identically is what left a
+   * held prompt indistinguishable from a slow one.
+   */
+  prompt(sessionId: string, text: string, attachmentIds?: string[], context?: PromptContext): PromptSendResult {
     // Never silently drop input. Buffer whenever it can't be trusted to land — the
     // server is draining (updatePending) OR the socket isn't open — and flush on the
     // next reconnect (after re-attach). Otherwise send straight through.
     if (this._updatePending || this.ws?.readyState !== WebSocket.OPEN) {
       this._enqueuePrompt({ sessionId, text, attachmentIds, context })
-      return
+      noteSent(sessionId, 'buffered')
+      return 'buffered'
     }
     this._send({ type: 'prompt', sessionId, text,
       ...(attachmentIds && attachmentIds.length ? { attachmentIds } : {}),
       ...(context ? { context } : {}) })
+    noteSent(sessionId, 'sent')
+    return 'sent'
   }
 
   sendInterrupt(sessionId: string): boolean {
@@ -458,6 +480,12 @@ export class SessionSocket {
       case 'status':
         this._emit('status', msg)
         this._patchSessionStatus(msg.sessionId, msg.status as Session['status'], msg.updatedAt, msg.revAt, msg.interruptedByRestart, msg)
+        // The send has been superseded by real news about the session — stop narrating
+        // it. This top-level broadcast (unlike the attached event stream) arrives for
+        // sessions the user has navigated away from, which is precisely the case the
+        // list pill exists for: otherwise a prompt fired and left behind would leave a
+        // "Sent — starting…" pill up forever.
+        if (!RESTING_BEFORE_TURN.has(msg.status)) clearFlight(msg.sessionId)
         break
       case 'usage':
         this._emit('usage', msg)
@@ -515,11 +543,21 @@ export class SessionSocket {
       case 'updateCancelled':
         this._flushPending()
         break
+      case 'promptAck':
+        // Both surfaces: the store (session list, mounted or not) and the channel
+        // (the open transcript's reducer).
+        noteStage(msg.sessionId, msg.stage)
+        this._emit('promptAck', msg)
+        break
       case 'promptRejected':
         // Server refused this prompt (deploy drain). Re-queue it so it flushes on
         // the next reconnect/cancel instead of being lost, and enter holding.
         this._updatePending = true
         this._enqueuePrompt({ sessionId: msg.sessionId, text: msg.text, attachmentIds: msg.attachmentIds })
+        // Tell the transcript too: its bubble has been showing "Sending…" for a frame
+        // that came back. Without this the re-queue is correct but invisible.
+        noteHeld(msg.sessionId)
+        this._emit('promptHeld', msg)
         break
       default:
         // Fan out individual session events sent directly (not wrapped in batch)
