@@ -16,8 +16,10 @@ list or None is returned (deny). If empty (dev default), any identity is accepte
 """
 from __future__ import annotations
 
+import ipaddress
 import logging
 import subprocess
+from typing import Union
 from starlette.requests import Request
 from starlette.websockets import WebSocket
 
@@ -25,11 +27,34 @@ from server.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-# The one definition of "this peer is the local host", shared with the assistant-token
-# gate in server/auth/middleware.py (which imports it from here). `::ffff:127.0.0.1` is
-# the IPv4-mapped form a dual-stack listener reports for a v4 loopback connection; it
-# can only originate locally, so it belongs in the set.
-LOOPBACK_PEERS = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
+_AnyAddress = Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
+
+
+def host_is_loopback(host: str | None) -> bool:
+    """True when *host* is a loopback address — the one such check in the codebase.
+
+    Shared with the assistant-token gate in ``server/auth/middleware.py``, which
+    imports it from here rather than keeping a second copy.
+
+    Loopback is the whole ``127.0.0.0/8`` block plus ``::1``, so this asks
+    ``ipaddress`` rather than comparing against a literal set. One wrinkle: for the
+    IPv4-mapped form a dual-stack listener reports (``::ffff:127.0.0.1``) ipaddress
+    returns ``is_loopback=False``, so the mapped v4 address is unwrapped first.
+
+    Fails closed: a host that is not an IP address at all (Starlette's TestClient
+    default, ``"testclient"``) is not loopback.
+    """
+    if not host:
+        return False
+    try:
+        addr: _AnyAddress = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    mapped = getattr(addr, "ipv4_mapped", None)
+    if mapped is not None:
+        addr = mapped
+    return addr.is_loopback
+
 
 # Synthetic identity handed to unidentified clients when LAN-open mode is enabled
 # (CCSWITCH_ALLOW_UNAUTHENTICATED). Recognisable in logs/session authorship as a
@@ -96,9 +121,24 @@ def _peer_is_trusted(request: Request | WebSocket) -> bool:
     peer = request.client.host if request.client else None
     if not peer:
         return False
-    if peer in LOOPBACK_PEERS:
+    if host_is_loopback(peer):
         return True
-    return peer in get_settings().trusted_proxy_ips_items
+    try:
+        addr = ipaddress.ip_address(peer)
+    except ValueError:
+        return False
+    for entry in get_settings().trusted_proxy_ips_items:
+        try:
+            # strict=False so a host address ("10.4.4.4") is accepted alongside a
+            # range ("10.0.0.0/24"); a malformed entry is skipped, never fatal —
+            # one typo in the list must not take the whole gate down.
+            network = ipaddress.ip_network(entry, strict=False)
+        except ValueError:
+            logger.warning("ignoring malformed CCSWITCH_TRUSTED_PROXY_IPS entry %r", entry)
+            continue
+        if addr in network:
+            return True
+    return False
 
 
 def _whois_identity(request: Request | WebSocket) -> str | None:

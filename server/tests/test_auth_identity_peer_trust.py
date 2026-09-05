@@ -101,3 +101,40 @@ def test_untrusted_header_is_logged(caplog):
     assert any("203.0.113.7" in r.getMessage() for r in caplog.records), (
         "expected a warning naming the untrusted peer"
     )
+
+
+# --- address handling (adopted from the parallel work on #1131, PR #1142) ----------
+# Loopback is the whole 127.0.0.0/8 block, not just the .1 host, and the trusted-proxy
+# list takes CIDR ranges. `ipaddress` decides both — with one wrinkle: it reports
+# is_loopback=False for the IPv4-mapped form, so that must be unwrapped first.
+
+
+def test_any_address_in_the_loopback_block_is_trusted():
+    assert verify_identity(_http(("127.0.0.5", 5), Tailscale_User_Login=IDENTITY)) == IDENTITY
+
+
+def test_ipv6_loopback_is_trusted():
+    assert verify_identity(_http(("::1", 5), Tailscale_User_Login=IDENTITY)) == IDENTITY
+
+
+def test_ipv4_mapped_loopback_is_trusted():
+    """ipaddress reports is_loopback=False here; the mapped v4 address must be unwrapped."""
+    assert verify_identity(
+        _http(("::ffff:127.0.0.1", 5), Tailscale_User_Login=IDENTITY)
+    ) == IDENTITY
+
+
+def test_trusted_proxy_list_accepts_a_cidr_range(monkeypatch):
+    monkeypatch.setenv("CCSWITCH_TRUSTED_PROXY_IPS", "10.0.0.0/24")
+    assert verify_identity(_http(("10.0.0.77", 5), Tailscale_User_Login=IDENTITY)) == IDENTITY
+    assert verify_identity(_http(("10.0.1.77", 5), Tailscale_User_Login=IDENTITY)) is None
+
+
+def test_unparseable_peer_host_is_not_trusted():
+    """Fail closed. A peer that is not an IP cannot be placed inside any trusted range."""
+    assert verify_identity(_http(("testclient", 5), Tailscale_User_Login=IDENTITY)) is None
+
+
+def test_malformed_entry_in_the_proxy_list_is_skipped_not_fatal(monkeypatch):
+    monkeypatch.setenv("CCSWITCH_TRUSTED_PROXY_IPS", "not-an-ip, 10.0.0.0/24")
+    assert verify_identity(_http(("10.0.0.77", 5), Tailscale_User_Login=IDENTITY)) == IDENTITY
