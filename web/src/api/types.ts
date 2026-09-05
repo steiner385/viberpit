@@ -217,6 +217,8 @@ export interface Session {
   pending?: boolean
   /** Position in the max-active-sessions queue (1 = next to run); null when not queued. */
   queuePosition?: number | null
+  /** Session kind; 'assistant' marks the singleton AI-drawer session, distinct from ordinary work sessions. */
+  kind?: 'assistant' | null
 }
 
 export interface ArchivedSession {
