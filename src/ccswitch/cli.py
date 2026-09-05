@@ -49,7 +49,10 @@ def _cmd_accounts(args: argparse.Namespace) -> int:
     if args.accounts_cmd == "import":
         try:
             result = account_registry.import_filesystem_accounts()
-        except account_registry.ManifestNotWritable as exc:
+        # AccountRegistryError covers both "this host is a runner"
+        # (ManifestNotWritable) and "the existing file is unreadable, so writing
+        # would destroy it" — both are operator-actionable, not tracebacks.
+        except account_registry.AccountRegistryError as exc:
             print(f"ccswitch: {exc}", file=sys.stderr)
             return 2
         for name in result.added:

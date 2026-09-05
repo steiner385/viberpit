@@ -137,6 +137,20 @@ class ManifestNotWritable(AccountRegistryError):
     """A write was attempted on a host that is not the manifest's writer."""
 
 
+# Keys already warned about, so a per-call fault (an unreadable store on the
+# sshfs mount) logs ONCE instead of once per spawn, per reassign and per poller
+# tick. Purely a log-rate guard; it never changes behaviour.
+_warned: set[str] = set()
+
+
+def warn_once(key: str, msg: str, *args: Any) -> None:
+    """``log.warning`` the first time *key* is seen in this process."""
+    if key in _warned:
+        return
+    _warned.add(key)
+    log.warning(msg, *args, exc_info=True)
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -303,22 +317,44 @@ def assert_no_secrets(payload: Mapping[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def load_manifest() -> Manifest:
-    """Read the manifest. A missing file is an EMPTY manifest, never an error —
-    the importer is what turns an un-migrated store into a populated one."""
+def _read_manifest() -> tuple[Manifest, bool]:
+    """``(manifest, intact)``.
+
+    ``intact`` is False when the file EXISTS but could not be read or parsed. It
+    is the single condition under which a WRITE must not proceed: ``os.replace``
+    would destroy identity state we never managed to read. Reads still degrade to
+    an empty manifest, because the account store lives on the sshfs mount whose
+    transient ``EIO``/``ESTALE`` torn reads are an observed fault (#1005) — a
+    spawn or a rotation must degrade, not abort.
+    """
     path = paths.accounts_manifest_path()
     try:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return Manifest()
+        return Manifest(), True
+    except OSError as e:
+        warn_once(f"read:{e.errno}",
+                  "accounts.json could not be read (%s) — treating as empty for "
+                  "this read and refusing to write over it", e)
+        return Manifest(), False
     if not raw.strip():
-        return Manifest()
+        return Manifest(), True
     try:
-        return Manifest.from_dict(json.loads(raw))
-    except json.JSONDecodeError:
+        return Manifest.from_dict(json.loads(raw)), True
+    except (json.JSONDecodeError, AttributeError, TypeError, ValueError):
         log.error("accounts.json is not valid JSON — treating as empty and NOT "
-                  "overwriting it; repair with `ccswitch accounts import`.")
-        return Manifest()
+                  "overwriting it. Repair it, or move it aside and then run "
+                  "`ccswitch accounts import` to rebuild it from the store.")
+        return Manifest(), False
+
+
+def load_manifest() -> Manifest:
+    """Read the manifest. A missing file is an EMPTY manifest, never an error —
+    the importer is what turns an un-migrated store into a populated one. An
+    unreadable or corrupt one is also empty *for the reader*; ``locked_manifest``
+    is what refuses to overwrite it (so the "NOT overwriting it" promise above is
+    actually kept)."""
+    return _read_manifest()[0]
 
 
 @contextlib.contextmanager
@@ -342,7 +378,15 @@ def locked_manifest() -> Iterator[Manifest]:
     lf = open(lock_path, "a+", encoding="utf-8")
     try:
         fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
-        manifest = load_manifest()
+        manifest, intact = _read_manifest()
+        if not intact:
+            # The publish below is os.replace: writing now would silently discard
+            # every entry the unreadable file still holds.
+            raise AccountRegistryError(
+                f"refusing to write {path}: the existing file could not be read "
+                f"or parsed, and publishing over it would destroy it. Repair it, "
+                f"or move it aside and re-run `ccswitch accounts import` to "
+                f"rebuild it from the credential store.")
         before = manifest.to_dict()["accounts"]
         yield manifest
         after = manifest.to_dict()["accounts"]
@@ -384,9 +428,26 @@ def discover_filesystem_accounts() -> list[tuple[str, str]]:
     answer from the manifest, so a name with no credential artefact AND no
     manifest entry raises :class:`UnknownAccountError` instead of resolving to a
     provider nobody declared.
+
+    Each provider's scan is guarded independently. ``Path.glob``/``Path.iterdir``
+    raise ``OSError`` where the predecessor's ``Path.exists()`` probe swallowed it,
+    and the store is on the sshfs mount that produced torn reads on 2026-09-04
+    (#1005) — a transient ``EIO``/``ESTALE`` must cost us one provider's
+    enumeration for one call, never a spawn or a rotation. Discovery is purely
+    ADDITIVE (see ``ensure_manifest``), so a short scan can only fail to add an
+    entry; it can never remove one.
     """
     from . import accounts as _accounts  # local: accounts imports this module
     from . import copilot
+
+    def _scan(provider: str, names) -> list[tuple[str, str]]:
+        try:
+            return [(n, provider) for n in names()]
+        except OSError as e:
+            warn_once(f"discover:{provider}:{e.errno}",
+                      "account_registry: cannot enumerate %s credential artefacts "
+                      "(%s) — skipping that provider for this scan", provider, e)
+            return []
 
     # Copilot FIRST, deliberately. Account names are globally unique in v1, so a
     # name that has BOTH an Anthropic slot and a Copilot token dir has to resolve
@@ -394,8 +455,8 @@ def discover_filesystem_accounts() -> list[tuple[str, str]]:
     # (it probed the token dir and returned early). Importing in this order keeps
     # that resolution, so an existing dual-artefact install launches exactly as it
     # did before.
-    found = [(n, PROVIDER_COPILOT) for n in copilot.copilot_account_names()]
-    found += [(n, PROVIDER_ANTHROPIC) for n in _accounts._anthropic_account_names()]
+    found = _scan(PROVIDER_COPILOT, copilot.copilot_account_names)
+    found += _scan(PROVIDER_ANTHROPIC, _accounts._anthropic_account_names)
     return found
 
 
@@ -478,11 +539,19 @@ def ensure_manifest() -> Manifest:
     the lock and the write happen only when something is genuinely missing. On a
     RUNNER (writing forbidden) the reconcile is applied in memory and logged.
     """
-    manifest = load_manifest()
+    manifest, intact = _read_manifest()
     discovered = discover_filesystem_accounts()
     missing = [(n, p) for n, p in discovered
                if n not in manifest.accounts and not aliases_store_root(n)]
     if not missing:
+        return manifest
+    if not intact:
+        # Unreadable/corrupt file: reconcile in memory so reads keep working, but
+        # never publish — os.replace would turn a transient EIO into permanent
+        # data loss. Same in-memory degrade as the runner branch below.
+        log.warning("accounts.json is unreadable — reconciling %d account(s) in "
+                    "memory only and NOT writing", len(missing))
+        _import_into(manifest, missing, _utcnow())
         return manifest
     if not is_manifest_writer():
         log.warning("accounts.json on this runner is missing %d account(s) the "

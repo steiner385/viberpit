@@ -610,3 +610,46 @@ def test_no_extra_usage_behavior_unchanged():
     empty, _ = rank_accounts(usages, set(), _cfg(), NOW, extra_usage_allowed=frozenset())
     other, _ = rank_accounts(usages, set(), _cfg(), NOW, extra_usage_allowed={"nobody"})
     assert [r.name for r in base] == [r.name for r in empty] == [r.name for r in other]
+
+
+def test_mixed_provider_tie_break_is_fixed_width_and_provider_independent():
+    """A 1-window Copilot key must not outrank a 2-window Anthropic one for being
+    SHORTER.
+
+    Regression: the tie-break key was ``tuple(w.used_pct for w in u.windows)``,
+    which is VARIABLE-LENGTH. Python orders a prefix first, so with composite and
+    load bit-equal, Copilot's ``(40.0,)`` beat Anthropic's ``(40.0, 0.0)`` purely
+    on window COUNT. A differential sweep over 200k randomised fleets found this
+    in 0.15% of MIXED-provider fleets and in no single-provider fleet — the only
+    ranking divergence the provider-neutral refactor introduced.
+
+    The key is now the binding window's ``used_pct``, then the name: fixed-width,
+    so the number of windows a provider happens to report cannot influence
+    ranking and only the name breaks a genuine tie.
+    """
+    from ccswitch import selector
+    from ccswitch.quota import copilot_snapshot
+
+    def _fleet(copilot_name, anthropic_name):
+        return {
+            copilot_name: copilot_snapshot(40.0, NOW + timedelta(minutes=1),
+                                           fetched_at=NOW),
+            anthropic_name: anthropic_snapshot(40.0, NOW - timedelta(minutes=5),
+                                               0.0, None, fetched_at=NOW),
+        }
+
+    # Premise: the two accounts score an IDENTICAL composite (same binding
+    # used_pct; both resets clamp to the one-minute floor) and carry no load, so
+    # the ordering below is decided by the tie-break key and nothing else.
+    fleet = _fleet("cp", "work")
+    ceiling = _cfg().hard_ceiling * 100.0
+    assert (selector._perishability(fleet["cp"], ceiling, NOW)
+            == selector._perishability(fleet["work"], ceiling, NOW))
+
+    ranked, _ = selector.rank_accounts(fleet, set(), _cfg(), NOW)
+    assert [r.name for r in ranked] == ["cp", "work"]
+
+    # Swap only the NAMES: the order must swap with them. Before the fix the
+    # Copilot account won regardless, because its key stayed the shorter one.
+    ranked, _ = selector.rank_accounts(_fleet("zz", "aa"), set(), _cfg(), NOW)
+    assert [r.name for r in ranked] == ["aa", "zz"]

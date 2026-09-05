@@ -64,7 +64,10 @@ def _proactive_target(name, cfg):
 
     "Loaded" is measured on the BINDING window (whichever allowance the account
     runs out of first), so this reads the same number the selector ranks on
-    instead of assuming a dimension named "session".
+    instead of assuming a dimension named "session". "Usable" is likewise the
+    shared ``selector.at_ceiling`` definition — ANY window at/above the ceiling
+    disqualifies a candidate, so a weekly-exhausted account is never offered as a
+    pre-emption target.
     """
     active = accounts.usage_for(name)
     active_pct = _binding_pct(active)

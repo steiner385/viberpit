@@ -407,7 +407,7 @@ the script's redaction scanner reports zero secret matches; temp homes are remov
   authority, health metadata, a monotonic manifest revision, and non-secret generation/timestamps.
   Account names remain globally unique in v1. *(Plan vocabularies verbatim. `engine` is NULLABLE:
   the engine vocabulary's single definition is `server/sessions/engine.py`, which `src/ccswitch`
-  cannot import — `null` means "resolve through `engine_from_wire`", reusing that one default
+  cannot import — `null` means "resolve through `parse_agent_engine`", reusing that one default
   branch instead of copying the strings. `assert_no_secrets()` runs on every write.)*
 - [x] Add an idempotent importer for existing Anthropic credential slots and Copilot token dirs.
   After import, `all_accounts()` and `provider_of()` read the manifest; filesystem discovery is

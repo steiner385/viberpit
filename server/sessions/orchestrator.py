@@ -6852,10 +6852,21 @@ class SessionOrchestrator:
         return await generate_title(prompts, config_dir=str(compose(account)), cwd=cwd)
 
     def _account_limited(self, account: str) -> bool:
-        """True if *account*'s last-known session usage is at/above the ceiling.
+        """True if *account*'s last-known usage has no headroom left.
 
-        Best-effort: an unknown account (no cached usage) is treated as not
-        limited — a doomed title query would just degrade silently anyway.
+        "No headroom" is the shared ``selector.at_ceiling`` definition — ANY
+        window that meters the model is at/above the ceiling — not the
+        session-only check this used to make. That check was the inconsistency:
+        an account at weekly 100% / session 20% read as NOT limited here while
+        the selector, the rotation monitor and crash recovery all already treated
+        it as dead, because a turn on a weekly-exhausted account 429s exactly
+        like a session-exhausted one. This gates ``_backlog_healthy_account``, so
+        the divergence meant the backlog kept dispatching onto an account whose
+        very next turn would rate-limit.
+
+        Best-effort: an unknown account (no cached usage, or a snapshot whose
+        availability is not ``available``) is treated as not limited — a doomed
+        title query would just degrade silently anyway.
         """
         usage = self._poller.cached(account)
         return usage_known(usage) and at_ceiling(usage, _ROTATION_CEILING)

@@ -8,7 +8,8 @@ import tempfile
 from datetime import datetime
 
 from . import paths
-from .quota import QuotaSnapshot, anthropic_snapshot, copilot_snapshot
+from .quota import (WINDOW_SESSION, WINDOW_WEEKLY, QuotaSnapshot,
+                    anthropic_snapshot, copilot_snapshot)
 
 log = logging.getLogger(__name__)
 
@@ -155,12 +156,63 @@ def clear_usage_fetch_backoff(led: dict, name: str) -> None:
         acct.pop("usageFetchCooldownUntil", None)
 
 
+def _legacy_usage_fields(u: QuotaSnapshot) -> dict:
+    """The pre-v2 ``Usage`` keys, DERIVED from *u*'s canonical windows.
+
+    @deprecated — delete in the interactive-v1 cleanup PR, together with the
+    ``_migrate_legacy_usage`` reader below. This is the one-window rolling-
+    compatibility emit the plan's "Rolling compatibility" constraint allows, and
+    the same shape as ``SessionRecord.to_dict``'s legacy ``claudeSessionId``.
+
+    ``ledger.json`` is explicitly CROSS-HOST (see ``locked_ledger``) and the fleet
+    upgrades host by host — rocky is routinely left a deploy behind. The pre-v2
+    reader does ``Usage(blob["session_pct"], …)`` with no guard, and
+    ``accounts.usage_for`` calls it inside ``locked_ledger`` with no ``try``, so
+    the moment the primary's poller rewrote every blob as v2-only, the lagging
+    host would raise ``KeyError: 'session_pct'`` for EVERY account, its usage
+    cache would go all-``None``, and ``select_picked(optimistic_fallback=False)``
+    would raise ``AllAccountsBusy(kind="no_usable_accounts")`` — no session could
+    spawn there at all.
+
+    There is no second computation path: every value is projected out of the
+    windows the snapshot already carries. A provider that meters a SINGLE
+    allowance (Copilot's ``premium``) fills BOTH legacy dimensions with that one
+    number, reproducing ``copilot.usage_from_proxy``'s old projection exactly, so
+    an old host's selector ranks the account precisely as it did before.
+    """
+    session = u.window(WINDOW_SESSION)
+    weekly = u.window(WINDOW_WEEKLY)
+    if session is None and weekly is None and len(u.windows) == 1:
+        session = weekly = u.windows[0]
+
+    def _pct(w) -> float:
+        return float(w.used_pct) if w is not None else 0.0
+
+    def _reset(w) -> str | None:
+        return w.resets_at.isoformat() if w is not None and w.resets_at else None
+
+    return {
+        "session_pct": _pct(session),
+        "session_resets_at": _reset(session),
+        "weekly_pct": _pct(weekly),
+        "weekly_resets_at": _reset(weekly),
+        "extra_usage_enabled": bool(u.extra_usage_enabled),
+    }
+
+
 def record_usage(led: dict, name: str, u: QuotaSnapshot, now: datetime) -> None:
     """Cache one account's quota snapshot. The blob is VERSIONED (``v``) so a
-    future shape change is a migration rather than a misread."""
+    future shape change is a migration rather than a misread.
+
+    It ALSO carries the legacy ``session_pct`` / ``weekly_pct`` keys for one
+    fleet-upgrade window so a not-yet-deployed host can still read it — see
+    ``_legacy_usage_fields``. ``usage_from_blob`` keys off ``v``, so a current
+    reader never looks at them.
+    """
     # A recorded fetch is by definition a successful one — reset the backoff.
     clear_usage_fetch_backoff(led, name)
-    blob = u.to_dict()
+    blob = _legacy_usage_fields(u)
+    blob.update(u.to_dict())
     blob["fetched_at"] = now.isoformat()
     _acct(led, name)["usage"] = blob
 

@@ -92,9 +92,9 @@ def _local_cached_usage(name: str):
     from ccswitch.config import load_config
 
     with ledger.locked_ledger() as led:
-        # Returns a ccswitch.oauth.Usage (or None) — the SAME type orch.usage()
-        # yields. _safe_usage's callers convert with _usage_to_dict downstream, so
-        # returning a dict here would 500 the accounts page on `.session_pct`.
+        # Returns a ccswitch.quota.QuotaSnapshot (or None) — the SAME type
+        # orch.usage() yields. _safe_usage's callers convert with _usage_to_dict
+        # downstream, so returning a raw dict here would break the accounts page.
         return ledger.cached_usage(led, name, load_config(), datetime.now(timezone.utc))
 
 

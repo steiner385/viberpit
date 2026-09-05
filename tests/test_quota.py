@@ -81,3 +81,29 @@ def test_roundtrip_preserves_every_field():
 def test_serialised_blob_is_versioned():
     blob = anthropic_snapshot(1.0, NOW, 2.0, NOW, fetched_at=NOW).to_dict()
     assert blob["v"] == quota.QUOTA_BLOB_VERSION
+
+
+def test_payload_with_no_windows_key_decodes_as_unknown():
+    """The one place this module could fabricate what it forbids fabricating.
+
+    A payload carrying no ``windows`` key holds no headroom information at all;
+    defaulting it to AVAILABLE would hand the selector an "available account with
+    zero windows", which ``usage_known`` would have to special-case. UNKNOWN is
+    the honest reading, and it is the state the selector already excludes.
+    """
+    u = QuotaSnapshot.from_dict({"provider": "anthropic"})
+    assert u.availability == UNKNOWN
+    assert not u.is_available
+    assert u.windows == ()
+
+
+def test_explicit_availability_and_explicit_windows_still_win():
+    """Only the ABSENT key is unknown: an explicit availability is authoritative,
+    and an explicit (even empty) windows list is a real answer."""
+    assert QuotaSnapshot.from_dict(
+        {"provider": "anthropic", "availability": AVAILABLE}).availability == AVAILABLE
+    assert QuotaSnapshot.from_dict(
+        {"provider": "anthropic", "windows": []}).availability == AVAILABLE
+    assert QuotaSnapshot.from_dict(
+        {"provider": "anthropic", "windows": [], "availability": AUTH_ERROR}
+    ).availability == AUTH_ERROR

@@ -198,10 +198,25 @@ def provider_or_none(name: str) -> str | None:
     ``provider_of`` returning ``"anthropic"`` for an unknown name was not, because
     it made the Claude launch path the silent default for a name nobody had
     declared.
+
+    It also degrades on a manifest FAULT, not just an unknown name. The manifest
+    lives on the account store, which is the sshfs mount that produced torn reads
+    on 2026-09-04 (#1005), and this function sits on hot paths — ``configdir.compose``
+    (every spawn and reassign), the orchestrator's rotation and the driver — where
+    ``Path.exists()`` used to swallow the same faults. A transient ``EIO``/
+    ``ESTALE``/``PermissionError`` therefore answers "no provider-specific
+    machinery" (the safe answer, as above) instead of aborting a spawn.
+    ``provider_of`` stays strict for callers that want the error.
     """
     try:
         return provider_of(name)
     except account_registry.UnknownAccountError:
+        return None
+    except (account_registry.AccountRegistryError, OSError) as e:
+        account_registry.warn_once(
+            f"provider_or_none:{type(e).__name__}",
+            "provider_or_none(%s): the account manifest is unreadable (%s) — "
+            "degrading to 'no provider'", name, e)
         return None
 
 
@@ -622,6 +637,14 @@ def remove_account(name: str) -> None:
     ct = paths.copilot_token_dir(name)
     if ct.exists():
         shutil.rmtree(ct)
+    # Drop the ledger entry FIRST, and unconditionally: the health watchdog alerts
+    # on ledger status, so a removed account left behind at e.g. needs-reauth
+    # alerts forever (2026-07-21: long-deleted primary/secondary paged reauth all
+    # day). The credential slot and copilot dir are already gone by this line, so
+    # a manifest fault below must not be able to strand that ledger row — hence
+    # the ordering, not just the except clause.
+    with ledger.locked_ledger() as led:
+        led["accounts"].pop(name, None)
     # Drop the manifest entry: the manifest is now what `all_accounts()` reads, so
     # leaving it behind would keep listing an account whose credentials are gone.
     # (Reconcile-on-read is additive only and would never remove it.)
@@ -630,11 +653,13 @@ def remove_account(name: str) -> None:
     except account_registry.ManifestNotWritable:
         log.warning("remove_account(%s): runner host cannot edit accounts.json; "
                     "the primary will drop the entry", name)
-    # Drop the ledger entry too: the health watchdog alerts on ledger status,
-    # so a removed account left behind at e.g. needs-reauth alerts forever
-    # (2026-07-21: long-deleted primary/secondary paged reauth all day).
-    with ledger.locked_ledger() as led:
-        led["accounts"].pop(name, None)
+    except (account_registry.AccountRegistryError, OSError):
+        # An unwritable/corrupt manifest or a store-mount fault. The reauth-paging
+        # state is already cleared above; re-running `ccswitch accounts remove`
+        # (or repairing the manifest) drops the leftover entry.
+        log.warning("remove_account(%s): could not drop the accounts.json entry; "
+                    "credentials and ledger state are gone, the entry is not",
+                    name, exc_info=True)
 
 
 def _normalized_usage_blob(name: str, acct: dict) -> dict | None:

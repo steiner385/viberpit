@@ -230,11 +230,19 @@ class QuotaSnapshot:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "QuotaSnapshot":
+        # A payload with NO ``windows`` key carries no headroom information at
+        # all, so it decodes as UNKNOWN. Defaulting it to AVAILABLE would make
+        # this module fabricate exactly the thing its second rule forbids
+        # fabricating: an "available, zero windows" snapshot that the selector
+        # would have to guess about. An EXPLICIT ``availability`` always wins,
+        # and an explicit (even empty) ``windows`` list is a real answer.
+        raw_windows = d.get("windows")
+        default_availability = AVAILABLE if raw_windows is not None else UNKNOWN
         return cls(
             provider=str(d.get("provider") or "anthropic"),
             fetched_at=_parse_dt(d.get("fetched_at")) or datetime.now(timezone.utc),
-            availability=str(d.get("availability") or AVAILABLE),
-            windows=tuple(QuotaWindow.from_dict(w) for w in (d.get("windows") or ())),
+            availability=str(d.get("availability") or default_availability),
+            windows=tuple(QuotaWindow.from_dict(w) for w in (raw_windows or ())),
             extra_usage_enabled=bool(d.get("extra_usage_enabled")),
         )
 
