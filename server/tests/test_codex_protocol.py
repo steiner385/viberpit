@@ -131,8 +131,9 @@ async def test_unsupported_client_request_methods_are_refused() -> None:
     async with FakeCodexAppServer() as fake:
         client = await _ready(fake)
         try:
+            # A real, declared client request that ccswitch does not support.
             with pytest.raises(schema.CodexSchemaError):
-                await client.call("thread/start", {})
+                await client.call("thread/fork", {})
             assert len(fake.client_frames) == 2  # initialize + initialized only
         finally:
             await client.aclose()
@@ -657,15 +658,18 @@ async def test_unknown_notifications_are_counted_and_never_delivered() -> None:
     async with FakeCodexAppServer() as fake:
         client = await _ready(fake, notification_handler=lambda m, p: delivered.append((m, p)))
         try:
-            fake.notify("thread/started", {"threadId": "t"})
-            fake.notify("thread/started", {"threadId": "t"})
+            # `thread/archived` is declared upstream but unsupported here, so it
+            # keeps its name in the counter; a made-up method collapses to one
+            # fixed label so a hostile method string can never become a key.
+            fake.notify("thread/archived", {"threadId": "t"})
+            fake.notify("thread/archived", {"threadId": "t"})
             fake.notify("totally/made/up", {"accessToken": JWT})
             await fake.drained()
             assert delivered == []
             counters = client.counters
             assert counters.unknown_notifications == 3
             assert counters.unknown_notification_methods == {
-                "thread/started": 2,
+                "thread/archived": 2,
                 "<unrecognized>": 1,
             }
         finally:
@@ -796,8 +800,9 @@ async def test_invalid_refresh_params_return_invalid_params_not_a_refresh() -> N
 @pytest.mark.parametrize(
     "method",
     [
-        "item/commandExecution/requestApproval",
-        "item/fileChange/requestApproval",
+        # The permissions approval asks the client to hand back a permissions
+        # grant, which ccswitch has no vocabulary for, so it stays unsupported
+        # even though the other two approval callbacks are now answerable.
         "item/permissions/requestApproval",
         "execCommandApproval",
         "applyPatchApproval",
@@ -805,7 +810,7 @@ async def test_invalid_refresh_params_return_invalid_params_not_a_refresh() -> N
     ],
 )
 async def test_every_other_server_request_fails_closed(method: str) -> None:
-    """No approval surface may be answered — least of all with a default allow."""
+    """No unsupported surface may be answered — least of all with a default allow."""
     async with FakeCodexAppServer() as fake:
         client = await _ready(fake, refresh_handler=_refresh)
         try:
@@ -814,6 +819,33 @@ async def test_every_other_server_request_fails_closed(method: str) -> None:
             assert "result" not in reply
             assert reply["error"]["code"] == protocol.JSONRPC_METHOD_NOT_FOUND
             assert client.counters.unknown_server_requests == 1
+        finally:
+            await client.aclose()
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "item/commandExecution/requestApproval",
+        "item/fileChange/requestApproval",
+    ],
+)
+async def test_a_supported_approval_without_a_handler_is_never_granted(
+    method: str,
+) -> None:
+    """Supported does not mean answerable: with no handler there is no decision."""
+    async with FakeCodexAppServer() as fake:
+        client = await _ready(fake, refresh_handler=_refresh)
+        try:
+            fake.request(
+                method,
+                {"itemId": "i1", "threadId": "t1", "turnId": "u1", "startedAtMs": 1},
+                request_id=94,
+            )
+            reply = await fake.receive_reply(94)
+            assert "result" not in reply
+            assert reply["error"]["code"] == protocol.JSONRPC_METHOD_NOT_FOUND
+            assert client.counters.unhandled_server_requests == 1
         finally:
             await client.aclose()
 

@@ -3,10 +3,18 @@
 Scope. ccswitch speaks a deliberately tiny slice of the app-server protocol: the
 `codex app-server generate-json-schema --experimental` output declares 155 client
 requests, 11 server requests, and 81 server notifications, and this phase supports
-five requests, one client notification, one server request, and four server
-notifications. Everything else is *declared* (recognized by name, counted, never
-acted on) or *unrecognized* (counted under one bucket). `server/codex/protocol.py`
-enforces that split; this module owns the vocabulary and the DTOs.
+thirteen requests, one client notification, three server requests, and fourteen
+server notifications. Everything else is *declared* (recognized by name, counted,
+never acted on) or *unrecognized* (counted under one bucket).
+`server/codex/protocol.py` enforces that split; this module owns the vocabulary
+and the DTOs.
+
+Tolerant inbound, strict outbound. Unknown *fields* are ignored on the way in and
+an unknown thread-item *type* degrades to :class:`UnknownThreadItem` rather than
+raising, because a Codex release that adds a twentieth item variant must not end
+a live session. Everything ccswitch *sends* is rebuilt from a typed DTO and
+re-validated, so a decision or a model name that is not in the pinned vocabulary
+never reaches the wire.
 
 Why the version pin exists. The external-token login variant this integration
 depends on is documented upstream as `[UNSTABLE] FOR OPENAI INTERNAL USE ONLY`.
@@ -38,7 +46,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Final
 
-from server.codex.redaction import Redacted
+from server.codex.redaction import Redacted, contains_secret_shaped_value
 
 # ---------------------------------------------------------------------------
 # The pin
@@ -46,7 +54,7 @@ from server.codex.redaction import Redacted
 
 PINNED_CLI_VERSION: Final = "codex-cli 0.153.2"
 PINNED_CONTRACT_SHA256: Final = (
-    "6d59c753a57e9de96caf066b18e98a8ff9935539f0eea5d755c3c4b22306e336"
+    "cb145bc3b0f3d2885dadc17f41c4bb7f20912b8e30c0cf4540fefc54e87935c3"
 )
 
 #: Schema documents copied verbatim into the fixtures and covered by the hash.
@@ -66,6 +74,37 @@ CURATED_SCHEMA_FILES: Final[tuple[str, ...]] = (
     "v2/AccountLoginCompletedNotification.json",
     "ChatgptAuthTokensRefreshParams.json",
     "ChatgptAuthTokensRefreshResponse.json",
+    # Phase 4 — the interactive thread/turn/item surface.
+    "v2/ThreadStartParams.json",
+    "v2/ThreadStartResponse.json",
+    "v2/ThreadResumeParams.json",
+    "v2/ThreadResumeResponse.json",
+    "v2/ThreadReadParams.json",
+    "v2/ThreadReadResponse.json",
+    "v2/ThreadArchiveParams.json",
+    "v2/ThreadArchiveResponse.json",
+    "v2/TurnStartParams.json",
+    "v2/TurnStartResponse.json",
+    "v2/TurnSteerParams.json",
+    "v2/TurnSteerResponse.json",
+    "v2/TurnInterruptParams.json",
+    "v2/TurnInterruptResponse.json",
+    "v2/TurnSettingsUpdateParams.json",
+    "v2/TurnSettingsUpdateResponse.json",
+    "v2/ThreadStartedNotification.json",
+    "v2/ThreadStatusChangedNotification.json",
+    "v2/ThreadTokenUsageUpdatedNotification.json",
+    "v2/TurnStartedNotification.json",
+    "v2/TurnCompletedNotification.json",
+    "v2/ItemStartedNotification.json",
+    "v2/ItemCompletedNotification.json",
+    "v2/AgentMessageDeltaNotification.json",
+    "v2/ReasoningSummaryTextDeltaNotification.json",
+    "v2/CommandExecutionOutputDeltaNotification.json",
+    "CommandExecutionRequestApprovalParams.json",
+    "CommandExecutionRequestApprovalResponse.json",
+    "FileChangeRequestApprovalParams.json",
+    "FileChangeRequestApprovalResponse.json",
 )
 
 #: Envelope files contributing only their method-name inventory to the hash.
@@ -82,6 +121,35 @@ EXTERNAL_AUTH_UNSTABLE_MARKERS: Final[tuple[str, ...]] = ("UNSTABLE", "INTERNAL 
 MANIFEST_FILENAME: Final = "MANIFEST.json"
 METHOD_INDEX_FILENAME: Final = "method_index.json"
 
+#: Literal substrings of the *generated schema prose* that trip the shared
+#: credential-shape detector without being credentials.
+#:
+#: `server/audit.py` flags any dotted triple with 16/6/20-character segments —
+#: the itsdangerous signed-cookie shape — and one upstream `description` in
+#: `TurnStartParams` names the config path
+#: `collaboration_mode.settings.developer_instructions`, which fits it exactly.
+#: Narrowing the shared pattern would weaken a control that runs over real
+#: runtime text (transcripts, tokens, cookies) to accommodate one sentence of
+#: documentation, so the exception is pinned here as an exact literal instead.
+#: A *new* false positive still blocks a fixture refresh, and a real credential
+#: in any document still does.
+BENIGN_SCHEMA_PROSE: Final[tuple[str, ...]] = (
+    "collaboration_mode.settings.developer_instructions",
+)
+
+
+def contains_unexpected_secret_shape(text: str) -> bool:
+    """Report a credential shape in schema text, ignoring `BENIGN_SCHEMA_PROSE`.
+
+    This is the check the fixture refresher and its tests use. Runtime code must
+    keep calling `redaction.contains_secret_shaped_value` directly: the
+    exceptions here are specific to documentation strings in a pinned schema and
+    have no business relaxing anything that inspects live values.
+    """
+    for benign in BENIGN_SCHEMA_PROSE:
+        text = text.replace(benign, "")
+    return contains_secret_shaped_value(text)
+
 # ---------------------------------------------------------------------------
 # Method vocabulary
 # ---------------------------------------------------------------------------
@@ -94,6 +162,38 @@ METHOD_RATE_LIMITS_READ: Final = "account/rateLimits/read"
 METHOD_MODEL_LIST: Final = "model/list"
 METHOD_AUTH_TOKENS_REFRESH: Final = "account/chatgptAuthTokens/refresh"
 
+# Thread / turn lifecycle (client -> server).
+METHOD_THREAD_START: Final = "thread/start"
+METHOD_THREAD_RESUME: Final = "thread/resume"
+METHOD_THREAD_READ: Final = "thread/read"
+METHOD_THREAD_ARCHIVE: Final = "thread/archive"
+METHOD_TURN_START: Final = "turn/start"
+METHOD_TURN_STEER: Final = "turn/steer"
+METHOD_TURN_INTERRUPT: Final = "turn/interrupt"
+METHOD_TURN_SETTINGS_UPDATE: Final = "turn/settings/update"
+
+# Approvals (server -> client requests). `item/permissions/requestApproval` is
+# deliberately absent: its response hands the server a permissions *grant*, and
+# ccswitch has no vocabulary to describe one, so answering it at all would mean
+# inventing a grant. It stays declared-but-unsupported and takes the -32601 path.
+METHOD_COMMAND_EXECUTION_APPROVAL: Final = "item/commandExecution/requestApproval"
+METHOD_FILE_CHANGE_APPROVAL: Final = "item/fileChange/requestApproval"
+
+# Thread / turn / item stream (server -> client notifications).
+METHOD_THREAD_STARTED: Final = "thread/started"
+METHOD_THREAD_STATUS_CHANGED: Final = "thread/status/changed"
+METHOD_THREAD_TOKEN_USAGE_UPDATED: Final = "thread/tokenUsage/updated"
+METHOD_TURN_STARTED: Final = "turn/started"
+METHOD_TURN_COMPLETED: Final = "turn/completed"
+METHOD_ITEM_STARTED: Final = "item/started"
+METHOD_ITEM_COMPLETED: Final = "item/completed"
+METHOD_ITEM_AGENT_MESSAGE_DELTA: Final = "item/agentMessage/delta"
+#: Only the *summary* delta is supported. `item/reasoning/textDelta` carries raw
+#: chain of thought and is intentionally left unsupported so it can never be
+#: forwarded to a browser or a log.
+METHOD_ITEM_REASONING_SUMMARY_TEXT_DELTA: Final = "item/reasoning/summaryTextDelta"
+METHOD_ITEM_COMMAND_EXECUTION_OUTPUT_DELTA: Final = "item/commandExecution/outputDelta"
+
 SUPPORTED_CLIENT_REQUESTS: Final[frozenset[str]] = frozenset(
     {
         METHOD_INITIALIZE,
@@ -101,25 +201,54 @@ SUPPORTED_CLIENT_REQUESTS: Final[frozenset[str]] = frozenset(
         METHOD_ACCOUNT_READ,
         METHOD_RATE_LIMITS_READ,
         METHOD_MODEL_LIST,
+        METHOD_THREAD_START,
+        METHOD_THREAD_RESUME,
+        METHOD_THREAD_READ,
+        METHOD_THREAD_ARCHIVE,
+        METHOD_TURN_START,
+        METHOD_TURN_STEER,
+        METHOD_TURN_INTERRUPT,
+        METHOD_TURN_SETTINGS_UPDATE,
     }
 )
 #: Methods that only exist on the experimental surface and carry host-supplied
 #: ChatGPT credentials in one direction or the other. A client that did not
 #: advertise `experimentalApi=true` at initialize must neither send nor answer
 #: these, because the peer never negotiated the surface they belong to.
+#:
+#: The thread/turn surface is deliberately NOT in here. It carries prompts and
+#: model output, never a credential, and it exists on the non-experimental
+#: surface too — so a runner configured with `experimentalApi=false` (the
+#: default) must still be able to start threads and turns.
 EXTERNAL_AUTH_ONLY_CLIENT_REQUESTS: Final[frozenset[str]] = frozenset({METHOD_LOGIN_START})
 EXTERNAL_AUTH_ONLY_SERVER_REQUESTS: Final[frozenset[str]] = frozenset(
     {METHOD_AUTH_TOKENS_REFRESH}
 )
 
 SUPPORTED_CLIENT_NOTIFICATIONS: Final[frozenset[str]] = frozenset({METHOD_INITIALIZED})
-SUPPORTED_SERVER_REQUESTS: Final[frozenset[str]] = frozenset({METHOD_AUTH_TOKENS_REFRESH})
+SUPPORTED_SERVER_REQUESTS: Final[frozenset[str]] = frozenset(
+    {
+        METHOD_AUTH_TOKENS_REFRESH,
+        METHOD_COMMAND_EXECUTION_APPROVAL,
+        METHOD_FILE_CHANGE_APPROVAL,
+    }
+)
 SUPPORTED_SERVER_NOTIFICATIONS: Final[frozenset[str]] = frozenset(
     {
         "error",
         "account/updated",
         "account/rateLimits/updated",
         "account/login/completed",
+        METHOD_THREAD_STARTED,
+        METHOD_THREAD_STATUS_CHANGED,
+        METHOD_THREAD_TOKEN_USAGE_UPDATED,
+        METHOD_TURN_STARTED,
+        METHOD_TURN_COMPLETED,
+        METHOD_ITEM_STARTED,
+        METHOD_ITEM_COMPLETED,
+        METHOD_ITEM_AGENT_MESSAGE_DELTA,
+        METHOD_ITEM_REASONING_SUMMARY_TEXT_DELTA,
+        METHOD_ITEM_COMMAND_EXECUTION_OUTPUT_DELTA,
     }
 )
 
@@ -164,6 +293,45 @@ RATE_LIMIT_REACHED_TYPES: Final[frozenset[str]] = frozenset(
         "workspace_owner_usage_limit_reached",
         "workspace_member_usage_limit_reached",
     }
+)
+
+#: `SandboxMode` — the string form ccswitch sets on `thread/start`/`thread/resume`.
+SANDBOX_MODES: Final[frozenset[str]] = frozenset(
+    {"read-only", "workspace-write", "danger-full-access"}
+)
+#: `SandboxPolicy` discriminators, returned (as an object) on the responses.
+SANDBOX_POLICY_TYPES: Final[frozenset[str]] = frozenset(
+    {"dangerFullAccess", "readOnly", "externalSandbox", "workspaceWrite"}
+)
+#: `AskForApproval` — the plain string variants. The union also has an object
+#: `granular` variant that ccswitch never sends; inbound it reduces to the
+#: discriminator so a response carrying one still parses.
+APPROVAL_POLICIES: Final[frozenset[str]] = frozenset({"untrusted", "on-request", "never"})
+GRANULAR_APPROVAL_POLICY: Final = "granular"
+PERSONALITIES: Final[frozenset[str]] = frozenset({"none", "friendly", "pragmatic"})
+THREAD_STATUS_TYPES: Final[frozenset[str]] = frozenset(
+    {"notLoaded", "idle", "systemError", "active"}
+)
+THREAD_ACTIVE_FLAGS: Final[frozenset[str]] = frozenset(
+    {"waitingOnApproval", "waitingOnUserInput"}
+)
+PATCH_CHANGE_KINDS: Final[frozenset[str]] = frozenset({"add", "delete", "update"})
+TURN_SETTINGS_UPDATE_STATUSES: Final[frozenset[str]] = frozenset(
+    {"applied", "targetUnavailable"}
+)
+
+#: The command-approval decisions ccswitch can offer a human. The pinned union
+#: also carries two OBJECT-shaped variants — `acceptWithExecpolicyAmendment` and
+#: `applyNetworkPolicyAmendment` — which persist a policy change beyond the
+#: request being approved. Constitution IV (security-first) says a single click
+#: must not silently widen future permissions, so they are refused outbound and
+#: filtered out of any inbound `availableDecisions` list.
+COMMAND_APPROVAL_DECISIONS: Final[frozenset[str]] = frozenset(
+    {"accept", "acceptForSession", "decline", "cancel"}
+)
+#: `FileChangeApprovalDecision` — all four members are plain strings upstream.
+FILE_CHANGE_APPROVAL_DECISIONS: Final[frozenset[str]] = frozenset(
+    {"accept", "acceptForSession", "decline", "cancel"}
 )
 
 DECLARED_CLIENT_NOTIFICATIONS: Final[frozenset[str]] = frozenset({"initialized"})
@@ -1005,6 +1173,882 @@ def parse_model_list_response(payload: Any) -> ModelListResponse:
     )
 
 
+# ---------------------------------------------------------------------------
+# Thread / turn / item vocabulary
+#
+# This is the surface a live session runs on. Two rules shape every DTO below:
+#
+# * outbound params are rebuilt from typed dataclasses that validate their own
+#   enums, so a model name or an approval policy outside the pinned vocabulary
+#   cannot reach the wire even if a caller constructs one;
+# * inbound objects model only the fields ccswitch translates and tolerate the
+#   rest, and an unrecognized thread-item `type` degrades to
+#   `UnknownThreadItem` instead of raising — an upstream item variant added
+#   after this pin must not end a session that is mid-turn.
+# ---------------------------------------------------------------------------
+
+
+def _string_tuple(payload: Mapping[str, Any], key: str, what: str) -> tuple[str, ...]:
+    """Read an optional array of strings, defaulting to empty."""
+    return _parse_string_tuple(payload, key, what, ())
+
+
+# -- user input --------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class TextUserInput:
+    """A plain text turn input."""
+
+    text: str
+
+    def to_wire(self) -> dict[str, Any]:
+        return {"type": "text", "text": self.text}
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class LocalImageUserInput:
+    """An attachment already materialized on the runner's filesystem."""
+
+    path: str
+
+    def __post_init__(self) -> None:
+        if not self.path:
+            raise CodexSchemaError("localImage user input requires a non-empty path")
+
+    def to_wire(self) -> dict[str, Any]:
+        return {"type": "localImage", "path": self.path}
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class UnknownUserInput:
+    """An inbound user-input variant ccswitch does not model (audio, skill, …).
+
+    Parse-only: it has no `to_wire`, so it can never be echoed back.
+    """
+
+    type: str
+
+
+UserInput = TextUserInput | LocalImageUserInput
+InboundUserInput = TextUserInput | LocalImageUserInput | UnknownUserInput
+
+
+def parse_user_input(payload: Any, what: str = "user input") -> InboundUserInput:
+    """Parse one `UserInput` union member, tolerating variants we do not model."""
+    body = _as_mapping(payload, what)
+    variant = _require_str(body, "type", what)
+    if variant == "text":
+        return TextUserInput(text=_optional_str(body, "text", what) or "")
+    if variant == "localImage":
+        return LocalImageUserInput(path=_require_str(body, "path", what))
+    return UnknownUserInput(type=variant)
+
+
+def _user_input_wire(
+    inputs: Sequence[UserInput], what: str
+) -> list[dict[str, Any]]:
+    if not inputs:
+        raise CodexSchemaError(f"{what} requires at least one input item")
+    return [item.to_wire() for item in inputs]
+
+
+def _parse_outbound_user_input(payload: Any, what: str) -> UserInput:
+    """Re-parse an outbound input item; unmodelled variants are refused."""
+    parsed = parse_user_input(payload, what)
+    if isinstance(parsed, UnknownUserInput):
+        raise CodexSchemaError(f"{what} contains an unsupported input type")
+    return parsed
+
+
+def _parse_outbound_inputs(
+    payload: Mapping[str, Any], what: str
+) -> tuple[UserInput, ...]:
+    raw = payload.get("input")
+    if not isinstance(raw, list):
+        raise CodexSchemaError(f"{what} field 'input' must be an array")
+    return tuple(_parse_outbound_user_input(item, what) for item in raw)
+
+
+# -- thread items ------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class UserMessageItem:
+    id: str
+    content: tuple[InboundUserInput, ...] = ()
+
+    @property
+    def text(self) -> str:
+        """The concatenated text parts — what the replay path renders."""
+        return "".join(
+            part.text for part in self.content if isinstance(part, TextUserInput)
+        )
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class AgentMessageItem:
+    id: str
+    text: str
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ReasoningItem:
+    """Only the model-authored *summary* is modelled.
+
+    The upstream item also carries `content` — raw chain of thought. It is
+    deliberately not read here, so no later code can forward it by accident.
+    """
+
+    id: str
+    summary: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class CommandExecutionItem:
+    id: str
+    command: str
+    cwd: str
+    status: str
+    exit_code: int | None = None
+    aggregated_output: str | None = None
+    duration_ms: int | None = None
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class FileChange:
+    path: str
+    kind: str
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class FileChangeItem:
+    id: str
+    status: str
+    changes: tuple[FileChange, ...] = ()
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class McpToolCallItem:
+    id: str
+    server: str
+    tool: str
+    status: str
+    arguments: Any = None
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class DynamicToolCallItem:
+    id: str
+    tool: str
+    status: str
+    arguments: Any = None
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class FunctionCallOutputItem:
+    id: str
+    name: str
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class WebSearchItem:
+    id: str
+    query: str
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class PlanItem:
+    id: str
+    text: str
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class SubAgentActivityItem:
+    id: str
+    agent_path: str
+    agent_thread_id: str
+    kind: str
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class CollabAgentToolCallItem:
+    """A collab tool call. The upstream item carries `prompt`; it is not read."""
+
+    id: str
+    tool: str
+    status: str
+    model: str | None = None
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ImageViewItem:
+    id: str
+    path: str
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ContextCompactionItem:
+    id: str
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class UnknownThreadItem:
+    """Any item `type` this pin does not model. Counted, never guessed at."""
+
+    type: str
+    id: str = ""
+
+
+ThreadItem = (
+    UserMessageItem
+    | AgentMessageItem
+    | ReasoningItem
+    | CommandExecutionItem
+    | FileChangeItem
+    | McpToolCallItem
+    | DynamicToolCallItem
+    | FunctionCallOutputItem
+    | WebSearchItem
+    | PlanItem
+    | SubAgentActivityItem
+    | CollabAgentToolCallItem
+    | ImageViewItem
+    | ContextCompactionItem
+    | UnknownThreadItem
+)
+
+
+def _parse_file_change(payload: Any, what: str) -> FileChange:
+    body = _as_mapping(payload, what)
+    kind = body.get("kind")
+    if isinstance(kind, Mapping):
+        kind_name = _require_enum(kind, "type", what, PATCH_CHANGE_KINDS)
+    elif isinstance(kind, str):
+        # Tolerate a future flattening of the union to a bare enum.
+        if kind not in PATCH_CHANGE_KINDS:
+            raise CodexSchemaError(f"{what} field 'kind' has an unsupported value")
+        kind_name = kind
+    else:
+        raise CodexSchemaError(f"{what} field 'kind' must be an object or a string")
+    return FileChange(path=_require_str(body, "path", what), kind=kind_name)
+
+
+def parse_thread_item(payload: Any) -> ThreadItem:
+    """Parse one `ThreadItem` union member.
+
+    An unrecognized `type` returns :class:`UnknownThreadItem` and never raises —
+    that is the whole reason this function exists rather than a lookup table.
+    A *known* type with a broken shape still raises :class:`CodexSchemaError`,
+    because that is a contract violation rather than a new variant, and
+    `protocol.py` counts and drops the notification carrying it.
+    """
+    what = "thread item"
+    body = _as_mapping(payload, what)
+    variant = body.get("type")
+    if not isinstance(variant, str):
+        return UnknownThreadItem(type="")
+    identifier = body.get("id")
+    item_id = identifier if isinstance(identifier, str) else ""
+
+    if variant == "userMessage":
+        raw_content = body.get("content")
+        if not isinstance(raw_content, list):
+            raise CodexSchemaError(f"{what} field 'content' must be an array")
+        return UserMessageItem(
+            id=_require_str(body, "id", what),
+            content=tuple(parse_user_input(part, what) for part in raw_content),
+        )
+    if variant == "agentMessage":
+        return AgentMessageItem(
+            id=_require_str(body, "id", what),
+            text=_require_present_optional_str(body, "text", what) or "",
+        )
+    if variant == "reasoning":
+        return ReasoningItem(
+            id=_require_str(body, "id", what),
+            summary=_string_tuple(body, "summary", what),
+        )
+    if variant == "commandExecution":
+        return CommandExecutionItem(
+            id=_require_str(body, "id", what),
+            command=_require_present_optional_str(body, "command", what) or "",
+            cwd=_require_present_optional_str(body, "cwd", what) or "",
+            status=_require_str(body, "status", what),
+            exit_code=_optional_int(body, "exitCode", what),
+            aggregated_output=_optional_str(body, "aggregatedOutput", what),
+            duration_ms=_optional_int(body, "durationMs", what),
+        )
+    if variant == "fileChange":
+        raw_changes = body.get("changes")
+        if not isinstance(raw_changes, list):
+            raise CodexSchemaError(f"{what} field 'changes' must be an array")
+        return FileChangeItem(
+            id=_require_str(body, "id", what),
+            status=_require_str(body, "status", what),
+            changes=tuple(_parse_file_change(change, what) for change in raw_changes),
+        )
+    if variant == "mcpToolCall":
+        if "arguments" not in body:
+            raise CodexSchemaError(f"{what} field 'arguments' is required")
+        return McpToolCallItem(
+            id=_require_str(body, "id", what),
+            server=_require_str(body, "server", what),
+            tool=_require_str(body, "tool", what),
+            status=_require_str(body, "status", what),
+            arguments=body["arguments"],
+        )
+    if variant == "dynamicToolCall":
+        if "arguments" not in body:
+            raise CodexSchemaError(f"{what} field 'arguments' is required")
+        return DynamicToolCallItem(
+            id=_require_str(body, "id", what),
+            tool=_require_str(body, "tool", what),
+            status=_require_str(body, "status", what),
+            arguments=body["arguments"],
+        )
+    if variant == "functionCallOutput":
+        return FunctionCallOutputItem(
+            id=_require_str(body, "id", what),
+            name=_require_str(body, "name", what),
+        )
+    if variant == "webSearch":
+        return WebSearchItem(
+            id=_require_str(body, "id", what),
+            query=_require_present_optional_str(body, "query", what) or "",
+        )
+    if variant == "plan":
+        return PlanItem(
+            id=_require_str(body, "id", what),
+            text=_require_present_optional_str(body, "text", what) or "",
+        )
+    if variant == "subAgentActivity":
+        return SubAgentActivityItem(
+            id=_require_str(body, "id", what),
+            agent_path=_require_str(body, "agentPath", what),
+            agent_thread_id=_require_str(body, "agentThreadId", what),
+            kind=_require_str(body, "kind", what),
+        )
+    if variant == "collabAgentToolCall":
+        return CollabAgentToolCallItem(
+            id=_require_str(body, "id", what),
+            tool=_require_str(body, "tool", what),
+            status=_require_str(body, "status", what),
+            model=_optional_str(body, "model", what),
+        )
+    if variant == "imageView":
+        return ImageViewItem(
+            id=_require_str(body, "id", what),
+            path=_require_str(body, "path", what),
+        )
+    if variant == "contextCompaction":
+        return ContextCompactionItem(id=_require_str(body, "id", what))
+    return UnknownThreadItem(type=variant, id=item_id)
+
+
+# -- thread / turn objects ---------------------------------------------------
+
+
+class TurnStatus(StrEnum):
+    """`TurnStatus` — the lifecycle of one turn."""
+
+    COMPLETED = "completed"
+    INTERRUPTED = "interrupted"
+    FAILED = "failed"
+    IN_PROGRESS = "inProgress"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ThreadStatus:
+    """`ThreadStatus` reduced to its discriminator plus the active flags."""
+
+    type: str
+    active_flags: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class TurnError:
+    message: str
+    codex_error_info: str | None = None
+    additional_details: str | None = None
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class TokenUsageBreakdown:
+    input_tokens: int
+    cached_input_tokens: int
+    output_tokens: int
+    reasoning_output_tokens: int
+    total_tokens: int
+    cache_write_input_tokens: int = 0
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ThreadTokenUsage:
+    total: TokenUsageBreakdown
+    last: TokenUsageBreakdown
+    model_context_window: int | None = None
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class Turn:
+    id: str
+    status: TurnStatus
+    items: tuple[ThreadItem, ...] = ()
+    error: TurnError | None = None
+    started_at: int | None = None
+    completed_at: int | None = None
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class Thread:
+    """The fields of `Thread` ccswitch reads. Everything else is ignored."""
+
+    id: str
+    cwd: str
+    status: ThreadStatus
+    model_provider: str
+    created_at: int
+    updated_at: int
+    preview: str = ""
+    model: str | None = None
+    reasoning_effort: str | None = None
+    name: str | None = None
+    turns: tuple[Turn, ...] = ()
+
+
+def parse_thread_status(payload: Any, what: str = "thread status") -> ThreadStatus:
+    body = _as_mapping(payload, what)
+    return ThreadStatus(
+        type=_require_enum(body, "type", what, THREAD_STATUS_TYPES),
+        active_flags=_string_tuple(body, "activeFlags", what),
+    )
+
+
+def _parse_turn_error(payload: Any, what: str) -> TurnError:
+    body = _as_mapping(payload, what)
+    return TurnError(
+        message=_require_present_optional_str(body, "message", what) or "",
+        codex_error_info=_parse_codex_error_info(body.get("codexErrorInfo"), what),
+        additional_details=_optional_str(body, "additionalDetails", what),
+    )
+
+
+def parse_turn(payload: Any, what: str = "turn") -> Turn:
+    body = _as_mapping(payload, what)
+    status = _require_str(body, "status", what)
+    if status not in set(TurnStatus):
+        raise CodexSchemaError(f"{what} field 'status' has an unsupported value")
+    raw_items = body.get("items")
+    if not isinstance(raw_items, list):
+        raise CodexSchemaError(f"{what} field 'items' must be an array")
+    error = body.get("error")
+    return Turn(
+        id=_require_str(body, "id", what),
+        status=TurnStatus(status),
+        items=tuple(parse_thread_item(item) for item in raw_items),
+        error=None if error is None else _parse_turn_error(error, f"{what} error"),
+        started_at=_optional_int(body, "startedAt", what),
+        completed_at=_optional_int(body, "completedAt", what),
+    )
+
+
+def parse_thread(payload: Any, what: str = "thread") -> Thread:
+    body = _as_mapping(payload, what)
+    raw_turns = body.get("turns")
+    if raw_turns is not None and not isinstance(raw_turns, list):
+        raise CodexSchemaError(f"{what} field 'turns' must be an array")
+    return Thread(
+        id=_require_str(body, "id", what),
+        cwd=_require_str(body, "cwd", what),
+        status=parse_thread_status(body.get("status"), f"{what} status"),
+        model_provider=_require_str(body, "modelProvider", what),
+        created_at=_require_int(body, "createdAt", what),
+        updated_at=_require_int(body, "updatedAt", what),
+        preview=_optional_str(body, "preview", what) or "",
+        model=_optional_str(body, "model", what),
+        reasoning_effort=_optional_str(body, "reasoningEffort", what),
+        name=_optional_str(body, "name", what),
+        turns=tuple(parse_turn(turn, f"{what} turn") for turn in raw_turns or ()),
+    )
+
+
+def _parse_token_usage_breakdown(payload: Any, what: str) -> TokenUsageBreakdown:
+    body = _as_mapping(payload, what)
+    return TokenUsageBreakdown(
+        input_tokens=_require_int(body, "inputTokens", what),
+        cached_input_tokens=_require_int(body, "cachedInputTokens", what),
+        output_tokens=_require_int(body, "outputTokens", what),
+        reasoning_output_tokens=_require_int(body, "reasoningOutputTokens", what),
+        total_tokens=_require_int(body, "totalTokens", what),
+        cache_write_input_tokens=_optional_int(body, "cacheWriteInputTokens", what) or 0,
+    )
+
+
+def parse_thread_token_usage(payload: Any, what: str = "token usage") -> ThreadTokenUsage:
+    body = _as_mapping(payload, what)
+    return ThreadTokenUsage(
+        total=_parse_token_usage_breakdown(body.get("total"), f"{what} total"),
+        last=_parse_token_usage_breakdown(body.get("last"), f"{what} last"),
+        model_context_window=_optional_int(body, "modelContextWindow", what),
+    )
+
+
+def _parse_approval_policy(value: Any, what: str) -> str:
+    """Reduce the `AskForApproval` union to its discriminator."""
+    if isinstance(value, str):
+        if value not in APPROVAL_POLICIES:
+            raise CodexSchemaError(f"{what} field 'approvalPolicy' has an unknown value")
+        return value
+    if isinstance(value, Mapping) and set(value) == {GRANULAR_APPROVAL_POLICY}:
+        return GRANULAR_APPROVAL_POLICY
+    raise CodexSchemaError(f"{what} field 'approvalPolicy' has an unknown shape")
+
+
+def _parse_sandbox_policy(value: Any, what: str) -> str:
+    """Reduce the `SandboxPolicy` union to its discriminator."""
+    body = _as_mapping(value, f"{what} sandbox")
+    return _require_enum(body, "type", f"{what} sandbox", SANDBOX_POLICY_TYPES)
+
+
+# -- outbound thread params --------------------------------------------------
+
+
+def _validate_optional_enum(
+    value: str | None, allowed: frozenset[str], what: str
+) -> None:
+    if value is not None and value not in allowed:
+        raise CodexSchemaError(f"{what} has an unsupported value")
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ThreadStartParams:
+    """`thread/start` — only the knobs ccswitch actually sets.
+
+    `permissions` names a server-side profile and the pinned schema states it
+    cannot be combined with `sandbox`; sending both would let the app-server pick
+    which one wins, so it is refused here instead.
+    """
+
+    cwd: str | None = None
+    model: str | None = None
+    sandbox: str | None = None
+    approval_policy: str | None = None
+    permissions: str | None = None
+    developer_instructions: str | None = None
+    personality: str | None = None
+
+    def __post_init__(self) -> None:
+        _validate_optional_enum(self.sandbox, SANDBOX_MODES, "thread/start 'sandbox'")
+        _validate_optional_enum(
+            self.approval_policy, APPROVAL_POLICIES, "thread/start 'approvalPolicy'"
+        )
+        _validate_optional_enum(
+            self.personality, PERSONALITIES, "thread/start 'personality'"
+        )
+        if self.sandbox is not None and self.permissions is not None:
+            raise CodexSchemaError(
+                "thread/start cannot combine 'sandbox' with a named 'permissions' profile"
+            )
+
+    def to_wire(self) -> dict[str, Any]:
+        wire: dict[str, Any] = {}
+        for key, value in (
+            ("cwd", self.cwd),
+            ("model", self.model),
+            ("sandbox", self.sandbox),
+            ("approvalPolicy", self.approval_policy),
+            ("permissions", self.permissions),
+            ("developerInstructions", self.developer_instructions),
+            ("personality", self.personality),
+        ):
+            if value is not None:
+                wire[key] = value
+        return wire
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ThreadResumeParams:
+    thread_id: str
+    cwd: str | None = None
+    model: str | None = None
+    sandbox: str | None = None
+    approval_policy: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.thread_id:
+            raise CodexSchemaError("thread/resume requires a non-empty threadId")
+        _validate_optional_enum(self.sandbox, SANDBOX_MODES, "thread/resume 'sandbox'")
+        _validate_optional_enum(
+            self.approval_policy, APPROVAL_POLICIES, "thread/resume 'approvalPolicy'"
+        )
+
+    def to_wire(self) -> dict[str, Any]:
+        wire: dict[str, Any] = {"threadId": self.thread_id}
+        for key, value in (
+            ("cwd", self.cwd),
+            ("model", self.model),
+            ("sandbox", self.sandbox),
+            ("approvalPolicy", self.approval_policy),
+        ):
+            if value is not None:
+                wire[key] = value
+        return wire
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ThreadReadParams:
+    thread_id: str
+    include_turns: bool | None = None
+
+    def __post_init__(self) -> None:
+        if not self.thread_id:
+            raise CodexSchemaError("thread/read requires a non-empty threadId")
+
+    def to_wire(self) -> dict[str, Any]:
+        wire: dict[str, Any] = {"threadId": self.thread_id}
+        if self.include_turns is not None:
+            wire["includeTurns"] = self.include_turns
+        return wire
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ThreadArchiveParams:
+    thread_id: str
+
+    def __post_init__(self) -> None:
+        if not self.thread_id:
+            raise CodexSchemaError("thread/archive requires a non-empty threadId")
+
+    def to_wire(self) -> dict[str, Any]:
+        return {"threadId": self.thread_id}
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class TurnStartParams:
+    """`turn/start`.
+
+    `sandboxPolicy` is intentionally not modelled: its `workspaceWrite` variant
+    carries the writable roots, and synthesizing one here would silently narrow
+    or widen what the thread was started with. The sandbox is set once, as a
+    `SandboxMode`, on `thread/start` / `thread/resume`.
+    """
+
+    thread_id: str
+    input: tuple[UserInput, ...]
+    model: str | None = None
+    effort: str | None = None
+    cwd: str | None = None
+    approval_policy: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.thread_id:
+            raise CodexSchemaError("turn/start requires a non-empty threadId")
+        if not self.input:
+            raise CodexSchemaError("turn/start requires at least one input item")
+        _validate_optional_enum(
+            self.approval_policy, APPROVAL_POLICIES, "turn/start 'approvalPolicy'"
+        )
+
+    def to_wire(self) -> dict[str, Any]:
+        wire: dict[str, Any] = {
+            "threadId": self.thread_id,
+            "input": _user_input_wire(self.input, "turn/start"),
+        }
+        for key, value in (
+            ("model", self.model),
+            ("effort", self.effort),
+            ("cwd", self.cwd),
+            ("approvalPolicy", self.approval_policy),
+        ):
+            if value is not None:
+                wire[key] = value
+        return wire
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class TurnSteerParams:
+    """`turn/steer` — `expectedTurnId` is what makes steering race-safe."""
+
+    thread_id: str
+    expected_turn_id: str
+    input: tuple[UserInput, ...]
+
+    def __post_init__(self) -> None:
+        if not self.thread_id or not self.expected_turn_id:
+            raise CodexSchemaError("turn/steer requires threadId and expectedTurnId")
+        if not self.input:
+            raise CodexSchemaError("turn/steer requires at least one input item")
+
+    def to_wire(self) -> dict[str, Any]:
+        return {
+            "threadId": self.thread_id,
+            "expectedTurnId": self.expected_turn_id,
+            "input": _user_input_wire(self.input, "turn/steer"),
+        }
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class TurnInterruptParams:
+    thread_id: str
+    turn_id: str
+
+    def __post_init__(self) -> None:
+        if not self.thread_id or not self.turn_id:
+            raise CodexSchemaError("turn/interrupt requires threadId and turnId")
+
+    def to_wire(self) -> dict[str, Any]:
+        return {"threadId": self.thread_id, "turnId": self.turn_id}
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class TurnSettingsUpdateParams:
+    """`turn/settings/update` — change model/effort for the live turn."""
+
+    thread_id: str
+    turn_id: str
+    model: str | None = None
+    effort: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.thread_id or not self.turn_id:
+            raise CodexSchemaError("turn/settings/update requires threadId and turnId")
+
+    def to_wire(self) -> dict[str, Any]:
+        wire: dict[str, Any] = {"threadId": self.thread_id, "turnId": self.turn_id}
+        if self.model is not None:
+            wire["model"] = self.model
+        if self.effort is not None:
+            wire["effort"] = self.effort
+        return wire
+
+
+# -- thread responses --------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ThreadStartResponse:
+    thread: Thread
+    model: str
+    sandbox: str
+    approval_policy: str
+    reasoning_effort: str | None = None
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ThreadResumeResponse:
+    thread: Thread
+    model: str
+    sandbox: str
+    approval_policy: str
+    reasoning_effort: str | None = None
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ThreadReadResponse:
+    thread: Thread
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ThreadArchiveResponse:
+    """`thread/archive` answers with an empty object."""
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class TurnStartResponse:
+    turn: Turn
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class TurnSteerResponse:
+    turn_id: str
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class TurnInterruptResponse:
+    """`turn/interrupt` answers with an empty object."""
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class TurnSettingsUpdateResponse:
+    status: str
+
+
+def _parse_thread_configuration(
+    payload: Any, what: str
+) -> tuple[Thread, str, str, str, str | None]:
+    body = _as_mapping(payload, what)
+    return (
+        parse_thread(body.get("thread"), f"{what} thread"),
+        _require_str(body, "model", what),
+        _parse_sandbox_policy(body.get("sandbox"), what),
+        _parse_approval_policy(body.get("approvalPolicy"), what),
+        _optional_str(body, "reasoningEffort", what),
+    )
+
+
+def parse_thread_start_response(payload: Any) -> ThreadStartResponse:
+    thread, model, sandbox, policy, effort = _parse_thread_configuration(
+        payload, "thread/start response"
+    )
+    return ThreadStartResponse(
+        thread=thread,
+        model=model,
+        sandbox=sandbox,
+        approval_policy=policy,
+        reasoning_effort=effort,
+    )
+
+
+def parse_thread_resume_response(payload: Any) -> ThreadResumeResponse:
+    thread, model, sandbox, policy, effort = _parse_thread_configuration(
+        payload, "thread/resume response"
+    )
+    return ThreadResumeResponse(
+        thread=thread,
+        model=model,
+        sandbox=sandbox,
+        approval_policy=policy,
+        reasoning_effort=effort,
+    )
+
+
+def parse_thread_read_response(payload: Any) -> ThreadReadResponse:
+    what = "thread/read response"
+    body = _as_mapping(payload, what)
+    return ThreadReadResponse(thread=parse_thread(body.get("thread"), f"{what} thread"))
+
+
+def parse_thread_archive_response(payload: Any) -> ThreadArchiveResponse:
+    _as_mapping(payload, "thread/archive response")
+    return ThreadArchiveResponse()
+
+
+def parse_turn_start_response(payload: Any) -> TurnStartResponse:
+    what = "turn/start response"
+    body = _as_mapping(payload, what)
+    return TurnStartResponse(turn=parse_turn(body.get("turn"), f"{what} turn"))
+
+
+def parse_turn_steer_response(payload: Any) -> TurnSteerResponse:
+    what = "turn/steer response"
+    body = _as_mapping(payload, what)
+    return TurnSteerResponse(turn_id=_require_str(body, "turnId", what))
+
+
+def parse_turn_interrupt_response(payload: Any) -> TurnInterruptResponse:
+    _as_mapping(payload, "turn/interrupt response")
+    return TurnInterruptResponse()
+
+
+def parse_turn_settings_update_response(payload: Any) -> TurnSettingsUpdateResponse:
+    what = "turn/settings/update response"
+    body = _as_mapping(payload, what)
+    return TurnSettingsUpdateResponse(
+        status=_require_enum(body, "status", what, TURN_SETTINGS_UPDATE_STATUSES)
+    )
+
+
 def validate_client_request_params(method: str, payload: Any) -> dict[str, Any]:
     """Validate and rebuild one outbound request using the pinned method schema."""
     what = "client request params"
@@ -1083,6 +2127,102 @@ def validate_client_request_params(method: str, payload: Any) -> dict[str, Any]:
             include_hidden=_optional_bool(body, "includeHidden", what),
             limit=limit,
         ).to_wire()
+    if method == METHOD_THREAD_START:
+        _reject_unknown_fields(
+            body,
+            frozenset(
+                {
+                    "cwd",
+                    "model",
+                    "sandbox",
+                    "approvalPolicy",
+                    "permissions",
+                    "developerInstructions",
+                    "personality",
+                }
+            ),
+            what,
+        )
+        return ThreadStartParams(
+            cwd=_optional_str(body, "cwd", what),
+            model=_optional_str(body, "model", what),
+            sandbox=_optional_enum(body, "sandbox", what, SANDBOX_MODES),
+            approval_policy=_optional_enum(
+                body, "approvalPolicy", what, APPROVAL_POLICIES
+            ),
+            permissions=_optional_str(body, "permissions", what),
+            developer_instructions=_optional_str(body, "developerInstructions", what),
+            personality=_optional_enum(body, "personality", what, PERSONALITIES),
+        ).to_wire()
+    if method == METHOD_THREAD_RESUME:
+        _reject_unknown_fields(
+            body,
+            frozenset({"threadId", "cwd", "model", "sandbox", "approvalPolicy"}),
+            what,
+        )
+        return ThreadResumeParams(
+            thread_id=_require_str(body, "threadId", what),
+            cwd=_optional_str(body, "cwd", what),
+            model=_optional_str(body, "model", what),
+            sandbox=_optional_enum(body, "sandbox", what, SANDBOX_MODES),
+            approval_policy=_optional_enum(
+                body, "approvalPolicy", what, APPROVAL_POLICIES
+            ),
+        ).to_wire()
+    if method == METHOD_THREAD_READ:
+        _reject_unknown_fields(body, frozenset({"threadId", "includeTurns"}), what)
+        return ThreadReadParams(
+            thread_id=_require_str(body, "threadId", what),
+            include_turns=_optional_bool(body, "includeTurns", what),
+        ).to_wire()
+    if method == METHOD_THREAD_ARCHIVE:
+        _reject_unknown_fields(body, frozenset({"threadId"}), what)
+        return ThreadArchiveParams(
+            thread_id=_require_str(body, "threadId", what)
+        ).to_wire()
+    if method == METHOD_TURN_START:
+        _reject_unknown_fields(
+            body,
+            frozenset(
+                {"threadId", "input", "model", "effort", "cwd", "approvalPolicy"}
+            ),
+            what,
+        )
+        return TurnStartParams(
+            thread_id=_require_str(body, "threadId", what),
+            input=_parse_outbound_inputs(body, what),
+            model=_optional_str(body, "model", what),
+            effort=_optional_str(body, "effort", what),
+            cwd=_optional_str(body, "cwd", what),
+            approval_policy=_optional_enum(
+                body, "approvalPolicy", what, APPROVAL_POLICIES
+            ),
+        ).to_wire()
+    if method == METHOD_TURN_STEER:
+        _reject_unknown_fields(
+            body, frozenset({"threadId", "expectedTurnId", "input"}), what
+        )
+        return TurnSteerParams(
+            thread_id=_require_str(body, "threadId", what),
+            expected_turn_id=_require_str(body, "expectedTurnId", what),
+            input=_parse_outbound_inputs(body, what),
+        ).to_wire()
+    if method == METHOD_TURN_INTERRUPT:
+        _reject_unknown_fields(body, frozenset({"threadId", "turnId"}), what)
+        return TurnInterruptParams(
+            thread_id=_require_str(body, "threadId", what),
+            turn_id=_require_str(body, "turnId", what),
+        ).to_wire()
+    if method == METHOD_TURN_SETTINGS_UPDATE:
+        _reject_unknown_fields(
+            body, frozenset({"threadId", "turnId", "model", "effort"}), what
+        )
+        return TurnSettingsUpdateParams(
+            thread_id=_require_str(body, "threadId", what),
+            turn_id=_require_str(body, "turnId", what),
+            model=_optional_str(body, "model", what),
+            effort=_optional_str(body, "effort", what),
+        ).to_wire()
     raise CodexSchemaError("unsupported client request method")
 
 
@@ -1160,6 +2300,156 @@ def parse_chatgpt_auth_tokens_refresh_response(payload: Any) -> (
 
 
 # ---------------------------------------------------------------------------
+# Approvals (server → client requests)
+#
+# These are the only two server-initiated requests ccswitch will ever answer,
+# and it answers them only by relaying a decision a human made. Both directions
+# are deliberately narrow: the inbound params keep just enough to describe the
+# ask, and the outbound decision is restricted to the plain string variants, so
+# no single click can persist an execpolicy or network-policy amendment.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class CommandExecutionApprovalParams:
+    item_id: str
+    thread_id: str
+    turn_id: str
+    started_at_ms: int
+    command: str | None = None
+    cwd: str | None = None
+    reason: str | None = None
+    available_decisions: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class FileChangeApprovalParams:
+    item_id: str
+    thread_id: str
+    turn_id: str
+    started_at_ms: int
+    reason: str | None = None
+    grant_root: str | None = None
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class CommandExecutionApprovalResponse:
+    decision: str
+
+    def __post_init__(self) -> None:
+        if self.decision not in COMMAND_APPROVAL_DECISIONS:
+            raise CodexSchemaError(
+                "command execution approval decision is not an offerable variant"
+            )
+
+    def to_wire(self) -> dict[str, Any]:
+        return {"decision": self.decision}
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class FileChangeApprovalResponse:
+    decision: str
+
+    def __post_init__(self) -> None:
+        if self.decision not in FILE_CHANGE_APPROVAL_DECISIONS:
+            raise CodexSchemaError(
+                "file change approval decision is not an offerable variant"
+            )
+
+    def to_wire(self) -> dict[str, Any]:
+        return {"decision": self.decision}
+
+
+ApprovalParams = CommandExecutionApprovalParams | FileChangeApprovalParams
+ApprovalResponse = CommandExecutionApprovalResponse | FileChangeApprovalResponse
+
+
+def _offerable_decisions(
+    payload: Mapping[str, Any], allowed: frozenset[str], what: str
+) -> tuple[str, ...]:
+    """Keep only the decisions ccswitch can present, preserving server order.
+
+    Object-shaped members (the policy-amendment variants) are dropped rather
+    than raising: the request itself is still answerable with accept/decline,
+    and refusing the whole prompt would strand a turn that is waiting on it.
+    """
+    raw = payload.get("availableDecisions")
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise CodexSchemaError(f"{what} field 'availableDecisions' must be an array")
+    return tuple(item for item in raw if isinstance(item, str) and item in allowed)
+
+
+def parse_command_execution_approval_params(
+    payload: Any,
+) -> CommandExecutionApprovalParams:
+    what = "item/commandExecution/requestApproval params"
+    body = _as_mapping(payload, what)
+    return CommandExecutionApprovalParams(
+        item_id=_require_str(body, "itemId", what),
+        thread_id=_require_str(body, "threadId", what),
+        turn_id=_require_str(body, "turnId", what),
+        started_at_ms=_require_int(body, "startedAtMs", what),
+        command=_optional_str(body, "command", what),
+        cwd=_optional_str(body, "cwd", what),
+        reason=_optional_str(body, "reason", what),
+        available_decisions=_offerable_decisions(
+            body, COMMAND_APPROVAL_DECISIONS, what
+        ),
+    )
+
+
+def parse_file_change_approval_params(payload: Any) -> FileChangeApprovalParams:
+    what = "item/fileChange/requestApproval params"
+    body = _as_mapping(payload, what)
+    return FileChangeApprovalParams(
+        item_id=_require_str(body, "itemId", what),
+        thread_id=_require_str(body, "threadId", what),
+        turn_id=_require_str(body, "turnId", what),
+        started_at_ms=_require_int(body, "startedAtMs", what),
+        reason=_optional_str(body, "reason", what),
+        grant_root=_optional_str(body, "grantRoot", what),
+    )
+
+
+def parse_command_execution_approval_response(
+    payload: Any,
+) -> CommandExecutionApprovalResponse:
+    what = "item/commandExecution/requestApproval response"
+    body = _as_mapping(payload, what)
+    return CommandExecutionApprovalResponse(
+        decision=_require_enum(body, "decision", what, COMMAND_APPROVAL_DECISIONS)
+    )
+
+
+def parse_file_change_approval_response(payload: Any) -> FileChangeApprovalResponse:
+    what = "item/fileChange/requestApproval response"
+    body = _as_mapping(payload, what)
+    return FileChangeApprovalResponse(
+        decision=_require_enum(body, "decision", what, FILE_CHANGE_APPROVAL_DECISIONS)
+    )
+
+
+def parse_approval_params(method: str, payload: Any) -> ApprovalParams:
+    """Parse one supported approval request by method."""
+    if method == METHOD_COMMAND_EXECUTION_APPROVAL:
+        return parse_command_execution_approval_params(payload)
+    if method == METHOD_FILE_CHANGE_APPROVAL:
+        return parse_file_change_approval_params(payload)
+    raise CodexSchemaError("unsupported approval request method")
+
+
+def parse_approval_response(method: str, payload: Any) -> ApprovalResponse:
+    """Re-validate an approval reply immediately before it is written."""
+    if method == METHOD_COMMAND_EXECUTION_APPROVAL:
+        return parse_command_execution_approval_response(payload)
+    if method == METHOD_FILE_CHANGE_APPROVAL:
+        return parse_file_change_approval_response(payload)
+    raise CodexSchemaError("unsupported approval response method")
+
+
+# ---------------------------------------------------------------------------
 # Supported server notifications
 # ---------------------------------------------------------------------------
 
@@ -1192,11 +2482,101 @@ class AccountLoginCompletedParams:
     error: Redacted | None = None
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class ThreadStartedParams:
+    thread: Thread
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ThreadStatusChangedParams:
+    thread_id: str
+    status: ThreadStatus
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ThreadTokenUsageUpdatedParams:
+    thread_id: str
+    turn_id: str
+    token_usage: ThreadTokenUsage
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class TurnStartedParams:
+    thread_id: str
+    turn: Turn
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class TurnCompletedParams:
+    thread_id: str
+    turn: Turn
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ItemStartedParams:
+    thread_id: str
+    turn_id: str
+    item: ThreadItem
+    started_at_ms: int
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ItemCompletedParams:
+    thread_id: str
+    turn_id: str
+    item: ThreadItem
+    completed_at_ms: int
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class AgentMessageDeltaParams:
+    """One streamed chunk of assistant text.
+
+    `delta` is model output. Every DTO in this module is declared `repr=False`
+    precisely so that formatting one — in an f-string, a traceback frame dump,
+    or a log record — cannot spill it.
+    """
+
+    thread_id: str
+    turn_id: str
+    item_id: str
+    delta: str
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ReasoningSummaryTextDeltaParams:
+    """One streamed chunk of the model-authored reasoning *summary*."""
+
+    thread_id: str
+    turn_id: str
+    item_id: str
+    delta: str
+    summary_index: int
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class CommandExecutionOutputDeltaParams:
+    thread_id: str
+    turn_id: str
+    item_id: str
+    delta: str
+
+
 ServerNotificationParams = (
     ErrorNotificationParams
     | AccountUpdatedParams
     | AccountRateLimitsUpdatedParams
     | AccountLoginCompletedParams
+    | ThreadStartedParams
+    | ThreadStatusChangedParams
+    | ThreadTokenUsageUpdatedParams
+    | TurnStartedParams
+    | TurnCompletedParams
+    | ItemStartedParams
+    | ItemCompletedParams
+    | AgentMessageDeltaParams
+    | ReasoningSummaryTextDeltaParams
+    | CommandExecutionOutputDeltaParams
 )
 
 CODEX_ERROR_INFO_CATEGORIES: Final[frozenset[str]] = frozenset(
@@ -1290,6 +2670,83 @@ def parse_server_notification(method: str, payload: Any) -> ServerNotificationPa
             login_id=_optional_redacted(body, "loginId", what),
             error=_optional_redacted(body, "error", what),
         )
+    if method == METHOD_THREAD_STARTED:
+        what = "thread/started notification"
+        body = _as_mapping(payload, what)
+        return ThreadStartedParams(
+            thread=parse_thread(body.get("thread"), f"{what} thread")
+        )
+    if method == METHOD_THREAD_STATUS_CHANGED:
+        what = "thread/status/changed notification"
+        body = _as_mapping(payload, what)
+        return ThreadStatusChangedParams(
+            thread_id=_require_str(body, "threadId", what),
+            status=parse_thread_status(body.get("status"), f"{what} status"),
+        )
+    if method == METHOD_THREAD_TOKEN_USAGE_UPDATED:
+        what = "thread/tokenUsage/updated notification"
+        body = _as_mapping(payload, what)
+        return ThreadTokenUsageUpdatedParams(
+            thread_id=_require_str(body, "threadId", what),
+            turn_id=_require_str(body, "turnId", what),
+            token_usage=parse_thread_token_usage(
+                body.get("tokenUsage"), f"{what} tokenUsage"
+            ),
+        )
+    if method in (METHOD_TURN_STARTED, METHOD_TURN_COMPLETED):
+        what = f"{method} notification"
+        body = _as_mapping(payload, what)
+        thread_id = _require_str(body, "threadId", what)
+        turn = parse_turn(body.get("turn"), f"{what} turn")
+        if method == METHOD_TURN_STARTED:
+            return TurnStartedParams(thread_id=thread_id, turn=turn)
+        return TurnCompletedParams(thread_id=thread_id, turn=turn)
+    if method == METHOD_ITEM_STARTED:
+        what = "item/started notification"
+        body = _as_mapping(payload, what)
+        return ItemStartedParams(
+            thread_id=_require_str(body, "threadId", what),
+            turn_id=_require_str(body, "turnId", what),
+            item=parse_thread_item(body.get("item")),
+            started_at_ms=_require_int(body, "startedAtMs", what),
+        )
+    if method == METHOD_ITEM_COMPLETED:
+        what = "item/completed notification"
+        body = _as_mapping(payload, what)
+        return ItemCompletedParams(
+            thread_id=_require_str(body, "threadId", what),
+            turn_id=_require_str(body, "turnId", what),
+            item=parse_thread_item(body.get("item")),
+            completed_at_ms=_require_int(body, "completedAtMs", what),
+        )
+    if method == METHOD_ITEM_AGENT_MESSAGE_DELTA:
+        what = "item/agentMessage/delta notification"
+        body = _as_mapping(payload, what)
+        return AgentMessageDeltaParams(
+            thread_id=_require_str(body, "threadId", what),
+            turn_id=_require_str(body, "turnId", what),
+            item_id=_require_str(body, "itemId", what),
+            delta=_require_present_optional_str(body, "delta", what) or "",
+        )
+    if method == METHOD_ITEM_REASONING_SUMMARY_TEXT_DELTA:
+        what = "item/reasoning/summaryTextDelta notification"
+        body = _as_mapping(payload, what)
+        return ReasoningSummaryTextDeltaParams(
+            thread_id=_require_str(body, "threadId", what),
+            turn_id=_require_str(body, "turnId", what),
+            item_id=_require_str(body, "itemId", what),
+            delta=_require_present_optional_str(body, "delta", what) or "",
+            summary_index=_require_int(body, "summaryIndex", what),
+        )
+    if method == METHOD_ITEM_COMMAND_EXECUTION_OUTPUT_DELTA:
+        what = "item/commandExecution/outputDelta notification"
+        body = _as_mapping(payload, what)
+        return CommandExecutionOutputDeltaParams(
+            thread_id=_require_str(body, "threadId", what),
+            turn_id=_require_str(body, "turnId", what),
+            item_id=_require_str(body, "itemId", what),
+            delta=_require_present_optional_str(body, "delta", what) or "",
+        )
     raise CodexSchemaError(
         "unsupported server notification: "
         + unknown_notification_label(method)
@@ -1313,6 +2770,14 @@ ClientResponse = (
     | GetAccountResponse
     | GetAccountRateLimitsResponse
     | ModelListResponse
+    | ThreadStartResponse
+    | ThreadResumeResponse
+    | ThreadReadResponse
+    | ThreadArchiveResponse
+    | TurnStartResponse
+    | TurnSteerResponse
+    | TurnInterruptResponse
+    | TurnSettingsUpdateResponse
 )
 
 
@@ -1328,4 +2793,20 @@ def parse_client_response(method: str, payload: Any) -> ClientResponse:
         return parse_rate_limits_response(payload)
     if method == METHOD_MODEL_LIST:
         return parse_model_list_response(payload)
+    if method == METHOD_THREAD_START:
+        return parse_thread_start_response(payload)
+    if method == METHOD_THREAD_RESUME:
+        return parse_thread_resume_response(payload)
+    if method == METHOD_THREAD_READ:
+        return parse_thread_read_response(payload)
+    if method == METHOD_THREAD_ARCHIVE:
+        return parse_thread_archive_response(payload)
+    if method == METHOD_TURN_START:
+        return parse_turn_start_response(payload)
+    if method == METHOD_TURN_STEER:
+        return parse_turn_steer_response(payload)
+    if method == METHOD_TURN_INTERRUPT:
+        return parse_turn_interrupt_response(payload)
+    if method == METHOD_TURN_SETTINGS_UPDATE:
+        return parse_turn_settings_update_response(payload)
     raise CodexSchemaError("unsupported client response method")

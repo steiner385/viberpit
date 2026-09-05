@@ -1222,6 +1222,7 @@ class SessionOrchestrator:
         identity: str,
         resume: str | None,
         on_sync_back: Callable[[], None],
+        reasoning_effort: str | None = None,
         suggester: SuggestionProvider | None = None,
         assistant_api: AsyncCloser | None = None,
     ) -> AgentDriver:
@@ -1234,6 +1235,7 @@ class SessionOrchestrator:
             mode=mode,
             identity=identity,
             resume=resume,
+            reasoning_effort=reasoning_effort,
             on_engine_session_id=self._persist_engine_session_id,
             on_sync_back=on_sync_back,
             on_status=self._persist_status,
@@ -2772,6 +2774,7 @@ class SessionOrchestrator:
                 mode=permission_mode,
                 identity=identity,
                 resume=resume,
+                reasoning_effort=reasoning_effort,
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, account),
                 suggester=self._suggester_for(kind),
                 assistant_api=assistant_api,

@@ -166,6 +166,12 @@ class AgentDriverConfig:
     mode: str
     identity: str
     resume: str | None = None
+    #: Reasoning effort requested at launch, for engines that expose the knob
+    #: (`AgentCapabilities.reasoning_effort`). Already persisted on the session row
+    #: and carried on `SessionRecord`; it reaches the driver here so an engine that
+    #: sets it at thread-start time does not have to re-read the DB. Engines without
+    #: the capability ignore it.
+    reasoning_effort: str | None = None
     on_engine_session_id: Callable[[str, str], Awaitable[None]] | None = None
     on_sync_back: Callable[[], None] | None = None
     on_status: Callable[[str, str], Awaitable[None]] | None = None

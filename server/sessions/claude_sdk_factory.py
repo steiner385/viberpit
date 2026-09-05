@@ -5,22 +5,22 @@ import os
 
 from .account_auth import helper_env
 from .claude_bin import cli_path_kwargs as _cli_path_kwargs
-from .completion import COMPLETION_INSTRUCTION, NO_PR_INSTRUCTION
+from .completion import marker_instructions
 from .permissions import to_sdk_permission_mode
 
 
 def _build_append_string() -> str:
-    """Compose every ccswitch marker instruction into the system-prompt append.
+    """This engine's system-prompt append: the shared marker instructions.
 
-    Single composition point: each marker contract owns its own literal, this owns
-    the order they reach the agent in.
+    Claude is the one engine whose driver implements self-directed model
+    switching (``AgentCapabilities.self_model_switch``), so it is also the one
+    engine that passes the flag through; every other engine asks
+    ``marker_instructions`` for the completion/no-PR pair alone.
     """
     from server.config import get_settings
-    from .model_request import MODEL_REQUEST_INSTRUCTION
-    parts = [COMPLETION_INSTRUCTION, NO_PR_INSTRUCTION]
-    if get_settings().self_model_switch_enabled:
-        parts.append(MODEL_REQUEST_INSTRUCTION)
-    return "\n\n".join(parts)
+    return marker_instructions(
+        self_model_switch=get_settings().self_model_switch_enabled
+    )
 
 # Inline flag-settings payload (--settings layer, highest priority).  Auto-approves any
 # project-scoped `.mcp.json` MCP server so the CLI's trust gate (LX1 → "pending" → prompt)
