@@ -64,7 +64,7 @@ import { WelcomePane } from '@/features/sessions/WelcomePane'
 import { useArchiveAdvance } from '@/features/sessions/useArchiveAdvance'
 import { SubSessionView } from '@/components/session/SubSessionView'
 import { ReviewView } from '@/components/ReviewView'
-import { ArchivedManager } from '@/components/ArchivedManager'
+import { ArchivedSessionList } from '@/components/ArchivedSessionList'
 import { PipelineTab } from '@/pipeline/PipelineTab'
 import { AutomationsTab } from '@/automations/AutomationsTab'
 import { InitiativesTab } from '@/initiatives/InitiativesTab'
@@ -157,7 +157,7 @@ function ArchivedPage() {
   const navigate = useNavigate()
   return (
     <div className="p-4 overflow-y-auto h-full">
-      <ArchivedManager onReviewSession={(id) => navigate(archivedSessionPath(id))} />
+      <ArchivedSessionList onReviewSession={(id) => navigate(archivedSessionPath(id))} />
     </div>
   )
 }

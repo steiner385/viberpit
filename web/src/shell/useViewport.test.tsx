@@ -126,9 +126,15 @@ const EXEMPT = new Set<string>([
   // Takes `query` as a parameter, not a literal, so this never matches the
   // regex above — kept here defensively as the generic subscription primitive.
   'src/lib/useMediaQuery.ts',
-  // SessionCard's swipe-overflow clipping reads 1024px directly. Not part of
-  // this PR's scope; outlives it until a later PR migrates it to useViewport.
-  'src/components/SessionCard.tsx',
+  // CardFrame's swipe-overflow clipping reads 1024px directly (extracted
+  // verbatim out of SessionCard, Task 6). Not part of this PR's scope;
+  // outlives it until a later PR migrates it to useViewport. SessionCard
+  // itself is NOT exempt here: after the extraction its only remaining
+  // `useMediaQuery` is '(prefers-reduced-motion: reduce)', which this guard
+  // does not match — an exemption for it would be dead and would silently
+  // pre-authorise a future min-width read in the largest component in the
+  // tree.
+  'src/components/card/CardFrame.tsx',
 ])
 
 function walk(dir: string, out: string[] = []): string[] {

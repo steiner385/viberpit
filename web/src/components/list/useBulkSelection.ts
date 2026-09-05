@@ -2,7 +2,7 @@
 // Multi-select over a list: the selection set, the shift-range anchor, and the
 // prune that drops ids which have left the list.
 //
-// `SessionList` and `ArchivedManager` each carried their own copy of all three.
+// `SessionList` and `ArchivedSessionList` each carried their own copy of all three.
 // They had already drifted in the one way that matters: which list a
 // selection is allowed to survive in. This hook keeps BOTH lists explicit
 // instead of picking a winner.
@@ -26,7 +26,7 @@ export interface BulkSelection {
  *   ranges and select-all operate over THIS — you can only select what you see.
  * @param presentIds the ids a selection may survive in; defaults to
  *   `visibleIds`. Pass the UNFILTERED list to keep a selection alive while its
- *   group is collapsed or a search hides it (ArchivedManager's behaviour);
+ *   group is collapsed or a search hides it (ArchivedSessionList's behaviour);
  *   omit it to prune against the visible set (SessionList's).
  */
 export function useBulkSelection(
@@ -54,8 +54,12 @@ export function useBulkSelection(
 
   function toggleOne(id: string, shift = false) {
     const anchorIdx = anchorId === null ? -1 : visibleIds.indexOf(anchorId)
-    if (shift && anchorIdx !== -1) {
-      const end = visibleIds.indexOf(id)
+    const end = visibleIds.indexOf(id)
+    // `end === -1` means `id` is not in `visibleIds` at all — e.g. a stale
+    // shift-click racing a row leaving the visible set. Without this guard
+    // `[lo, hi]` becomes `[-1, anchorIdx]` and the range loop reads
+    // `visibleIds[-1]` (`undefined`) into the selection on every such click.
+    if (shift && anchorIdx !== -1 && end !== -1) {
       const [lo, hi] = anchorIdx < end ? [anchorIdx, end] : [end, anchorIdx]
       setSelected((prev) => {
         const next = new Set(prev)
