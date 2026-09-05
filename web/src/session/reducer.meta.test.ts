@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Tests for the status-strip additions to transcriptReducer:
  * current model (sessionMeta) and per-result usage snapshot (turnEnd).

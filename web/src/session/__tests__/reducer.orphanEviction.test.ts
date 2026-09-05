@@ -1,3 +1,4 @@
+// @vitest-environment node
 // web/src/session/__tests__/reducer.orphanEviction.test.ts
 //
 // An orphan toolResult evicted from the bounded FIFO is a result LOST FOREVER (its

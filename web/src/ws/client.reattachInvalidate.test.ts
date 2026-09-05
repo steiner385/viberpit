@@ -1,3 +1,4 @@
+// @vitest-environment node
 // web/src/ws/client.reattachInvalidate.test.ts
 //
 // Incident 2026-07-05, Hole 1 — stale catch-up cursor on reopen into a fresh mount.
