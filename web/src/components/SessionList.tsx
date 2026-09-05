@@ -1,75 +1,18 @@
-import { useState, useRef } from 'react'
+import { useState } from 'react'
 import { Archive, RotateCcw, Shuffle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAutomations, useFixPr, useGenerateSuggestions, useSetAutopilotPaused, useBulkArchiveSessions, useResumeInterrupted, useRotateStalled } from '@/api/hooks'
 import { SessionCard } from './SessionCard'
 import { GroupedList } from './GroupedList'
 import { EmptyState } from './EmptyState'
+import { BulkActionBar } from './list/BulkActionBar'
+import { NoMatchState } from './list/NoMatchState'
+import { SelectableRow } from './list/SelectableRow'
+import { SkeletonCard } from './list/SkeletonCard'
+import { useBulkSelection } from './list/useBulkSelection'
 import { Button } from '@/ui/Button'
 import { ARCHIVABLE_STATUSES, type Session, type Account } from '@/api/types'
 import type { SessionGroup } from '@/session/ordering'
-
-const CHECKBOX_CLS = cn(
-  'h-4 w-4 flex-shrink-0 rounded border-gray-300 text-blue-600',
-  'focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700',
-  'dark:checked:bg-blue-500 cursor-pointer',
-)
-
-interface BulkActionBarProps {
-  count: number
-  archivableDoneCount: number
-  archivePending: boolean
-  onArchive: () => void
-  onArchiveDone: () => void
-  onClear: () => void
-}
-
-function BulkActionBar({ count, archivableDoneCount, archivePending, onArchive, onArchiveDone, onClear }: BulkActionBarProps) {
-  return (
-    <div
-      role="region"
-      aria-label="Bulk actions"
-      className={cn(
-        'flex flex-wrap items-center gap-2 rounded-lg px-3 py-2',
-        'bg-gray-50 dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700',
-      )}
-    >
-      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-        {count > 0 ? `${count} selected` : 'Select sessions to archive'}
-      </span>
-      <div className="flex items-center gap-2 ml-auto flex-wrap">
-        {archivableDoneCount > 0 && (
-          <Button
-            type="button"
-            variant="secondary"
-            onClick={onArchiveDone}
-            disabled={archivePending}
-            className="min-h-[44px] text-xs"
-          >
-            <Archive size={14} className="mr-1" aria-hidden="true" />
-            Archive done ({archivableDoneCount})
-          </Button>
-        )}
-        {count > 0 && (
-          <Button
-            type="button"
-            onClick={onArchive}
-            disabled={archivePending}
-            className={cn(
-              'min-h-[44px] bg-blue-600 hover:bg-blue-700 text-white',
-              'dark:bg-blue-700 dark:hover:bg-blue-600',
-            )}
-          >
-            {archivePending ? 'Archiving…' : `Archive (${count})`}
-          </Button>
-        )}
-        <Button type="button" variant="secondary" onClick={onClear} className="min-h-[44px]">
-          Done
-        </Button>
-      </div>
-    </div>
-  )
-}
 
 interface SessionListProps {
   sessions: Session[]
@@ -95,26 +38,6 @@ interface SessionListProps {
   listMode?: boolean
   onNavigate?: (dir: 'up' | 'down') => void
   onExit?: () => void
-}
-
-function SkeletonCard() {
-  return (
-    <div
-      className={cn(
-        'rounded-lg border border-gray-200 dark:border-gray-700',
-        'bg-white dark:bg-gray-800 p-3 min-h-[44px] animate-pulse',
-      )}
-      aria-hidden="true"
-    >
-      <div className="flex items-center gap-3">
-        <div className="flex-1 space-y-2">
-          <div className="h-3 bg-gray-200 dark:bg-gray-700 rounded w-1/3" />
-          <div className="h-2 bg-gray-200 dark:bg-gray-700 rounded w-1/2" />
-        </div>
-        <div className="h-8 w-8 bg-gray-200 dark:bg-gray-700 rounded" />
-      </div>
-    </div>
-  )
 }
 
 export function SessionList({
@@ -149,58 +72,20 @@ export function SessionList({
   const rotateStalled = useRotateStalled()
 
   const [selectMode, setSelectMode] = useState(false)
-  const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set())
-  const [anchorId, setAnchorId] = useState<string | null>(null)
-  const shiftHeld = useRef(false)
-
-  // Drop stale ids when the session list changes (sessions archived or deleted elsewhere).
-  if (bulkSelected.size > 0) {
-    const present = new Set(sessions.map((s) => s.id))
-    let changed = false
-    const pruned = new Set<string>()
-    for (const id of bulkSelected) {
-      if (present.has(id)) pruned.add(id)
-      else changed = true
-    }
-    if (changed) setBulkSelected(pruned)
-  }
-
-  function toggleOne(id: string, shift = false) {
-    const ids = sessions.map((s) => s.id)
-    const anchorIdx = anchorId === null ? -1 : ids.indexOf(anchorId)
-
-    if (shift && anchorIdx !== -1) {
-      const end = ids.indexOf(id)
-      const [lo, hi] = anchorIdx < end ? [anchorIdx, end] : [end, anchorIdx]
-      setBulkSelected((prev) => {
-        const next = new Set(prev)
-        for (let i = lo; i <= hi; i++) next.add(ids[i])
-        return next
-      })
-      return
-    }
-
-    setBulkSelected((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-    setAnchorId(id)
-  }
+  // The prune list is the visible one: SessionList is handed `orderedSessions`,
+  // which is already collapse-aware, and that is the set today's behaviour
+  // prunes against.
+  const selection = useBulkSelection(sessions.map((s) => s.id))
 
   function clearSelection() {
-    setBulkSelected(new Set())
+    selection.clear()
     setSelectMode(false)
-    setAnchorId(null)
   }
 
   function handleBulkArchive() {
-    const ids = [...bulkSelected]
+    const ids = [...selection.selected]
     if (ids.length === 0) return
-    bulkArchive.mutate(ids, {
-      onSuccess: () => clearSelection(),
-    })
+    bulkArchive.mutate(ids, { onSuccess: () => clearSelection() })
   }
 
   function handleArchiveDone() {
@@ -239,27 +124,17 @@ export function SessionList({
   const isEmpty = groups ? groups.length === 0 : sessions.length === 0
   if (isEmpty) {
     if (isFiltered) {
+      // Copy covers BOTH causes. Task 9 gave the list status/project/
+      // environment filters, so "your search" became a lie for the filter
+      // case — and the reset already clears whichever caused it
+      // (`SessionListColumn` clears the query AND the filters), so the
+      // wording was the only thing that was search-only.
       return (
-        <div
-          className="rounded-lg border border-dashed border-gray-200 dark:border-gray-700 p-6 text-center"
-          role="status"
-        >
-          {/* Copy covers BOTH causes. Task 9 gave the list status/project/
-              environment filters, so "your search" became a lie for the filter
-              case — and the reset below already clears whichever caused it
-              (`SessionListColumn` clears the query AND the filters), so the
-              wording was the only thing that was search-only. */}
-          <p className="text-sm text-gray-500 dark:text-gray-400">No sessions match your search or filters.</p>
-          {onClearSearch && (
-            <button
-              type="button"
-              onClick={onClearSearch}
-              className="mt-2 text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline"
-            >
-              Clear search and filters
-            </button>
-          )}
-        </div>
+        <NoMatchState
+          message="No sessions match your search or filters."
+          actionLabel="Clear search and filters"
+          onClear={() => onClearSearch?.()}
+        />
       )
     }
     return <EmptyState />
@@ -291,17 +166,15 @@ export function SessionList({
     if (!selectMode) return <div key={session.id}>{card}</div>
 
     return (
-      <div key={session.id} className="flex items-center gap-2">
-        <input
-          type="checkbox"
-          checked={bulkSelected.has(session.id)}
-          onClick={(e) => { shiftHeld.current = e.shiftKey }}
-          onChange={() => toggleOne(session.id, shiftHeld.current)}
-          aria-label={`Select ${session.name}`}
-          className={CHECKBOX_CLS}
-        />
-        <div className="flex-1 min-w-0">{card}</div>
-      </div>
+      <SelectableRow
+        key={session.id}
+        id={session.id}
+        name={session.name}
+        checked={selection.isSelected(session.id)}
+        onToggle={selection.toggleOne}
+      >
+        {card}
+      </SelectableRow>
     )
   }
 
@@ -354,13 +227,36 @@ export function SessionList({
 
       {selectMode && (
         <BulkActionBar
-          count={bulkSelected.size}
-          archivableDoneCount={archivableDoneCount}
-          archivePending={bulkArchive.isPending}
-          onArchive={handleBulkArchive}
-          onArchiveDone={handleArchiveDone}
+          label={selection.count > 0 ? `${selection.count} selected` : 'Select sessions to archive'}
+          clearLabel="Done"
           onClear={clearSelection}
-        />
+        >
+          {archivableDoneCount > 0 && (
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={handleArchiveDone}
+              disabled={bulkArchive.isPending}
+              className="min-h-[44px] text-xs"
+            >
+              <Archive size={14} className="mr-1" aria-hidden="true" />
+              Archive done ({archivableDoneCount})
+            </Button>
+          )}
+          {selection.count > 0 && (
+            <Button
+              type="button"
+              onClick={handleBulkArchive}
+              disabled={bulkArchive.isPending}
+              className={cn(
+                'min-h-[44px] bg-blue-600 hover:bg-blue-700 text-white',
+                'dark:bg-blue-700 dark:hover:bg-blue-600',
+              )}
+            >
+              {bulkArchive.isPending ? 'Archiving…' : `Archive (${selection.count})`}
+            </Button>
+          )}
+        </BulkActionBar>
       )}
 
       {/* The `aria-controls` target of the DispatchBar textarea — that textarea is

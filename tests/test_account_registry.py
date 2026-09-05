@@ -290,3 +290,77 @@ def test_malformed_entry_is_dropped_not_fatal():
         m = account_registry.load_manifest()
         assert "good" in m.accounts
         assert isinstance(m.accounts["good"], AccountEntry)
+
+
+# --- enabled mirror -------------------------------------------------------
+#
+# `enabled` lives in TWO places on purpose: the ledger is the operative switch
+# (the selector and every spawn path read it), and the manifest mirrors it so the
+# Codex credential authority's authorization sync has a monotonically-revisioned
+# view. These tests pin the mirror, because a silently-diverging copy of a
+# security-relevant flag is exactly the failure the manifest was introduced to end.
+
+
+def test_set_enabled_mirrors_into_the_manifest_and_bumps_the_revision():
+    with temp_env():
+        _mk_anthropic("work")
+        account_registry.import_filesystem_accounts()
+        before = account_registry.load_manifest().revision
+
+        account_registry.set_enabled("work", False)
+        m = account_registry.load_manifest()
+        assert m.accounts["work"].enabled is False
+        # The revision has to MOVE, or the authority's rollback check protects nothing.
+        assert m.revision > before
+
+
+def test_set_enabled_is_idempotent_and_does_not_churn_the_revision():
+    with temp_env():
+        _mk_anthropic("work")
+        account_registry.import_filesystem_accounts()
+        account_registry.set_enabled("work", False)
+        after_first = account_registry.load_manifest().revision
+
+        account_registry.set_enabled("work", False)
+        assert account_registry.load_manifest().revision == after_first
+
+
+def test_set_enabled_ignores_an_account_that_is_not_registered():
+    with temp_env():
+        paths.ensure_root()
+        account_registry.set_enabled("ghost", False)   # must not raise
+        assert "ghost" not in account_registry.load_manifest().accounts
+
+
+def test_accounts_set_account_enabled_writes_both_stores():
+    """The ledger is operative; the manifest is its mirror. Both, one call."""
+    from ccswitch import ledger
+
+    with temp_env():
+        _mk_anthropic("work")
+        account_registry.import_filesystem_accounts()
+
+        accounts.set_account_enabled("work", False)
+
+        with ledger.locked_ledger() as led:
+            assert ledger.is_account_enabled(led, "work") is False
+        assert account_registry.load_manifest().accounts["work"].enabled is False
+
+
+def test_a_manifest_fault_does_not_block_the_operative_ledger_write(monkeypatch):
+    """Ledger first, deliberately: the mirror failing must not leave an account
+    half-disabled where it actually matters."""
+    from ccswitch import ledger
+
+    with temp_env():
+        _mk_anthropic("work")
+        account_registry.import_filesystem_accounts()
+
+        def _boom(*a, **k):
+            raise account_registry.AccountRegistryError("manifest unwritable")
+
+        monkeypatch.setattr(account_registry, "set_enabled", _boom)
+        accounts.set_account_enabled("work", False)
+
+        with ledger.locked_ledger() as led:
+            assert ledger.is_account_enabled(led, "work") is False

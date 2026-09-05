@@ -310,6 +310,12 @@ def register_orchestrator_rpc(app, orch) -> None:
         "consolidation_candidates", "automation_consolidate",
         "backlog_candidates", "backlog_runner_dispatch",
         "copilot_add_start", "copilot_add_status", "copilot_add_cancel", "copilot_usage",
+        # Codex (OpenAI): model list, quota windows, and the revocation fan-out.
+        # All three return plain dicts of JSON scalars — no credential ever crosses
+        # this transport (the runner gets its envelope from the authority directly,
+        # over its own mTLS connection, never through the edge).
+        "codex_models", "codex_account_status", "codex_invalidate_credentials",
+        "codex_validate_model",
         "session_queue_move", "session_queue_cancel", "session_queue_positions", "maybe_start_queued",
         "git_credential_alerts", "dismiss_git_credential_alert",
         "list_adoptable_candidates", "migrate_archive_home", "cloned_repos",
