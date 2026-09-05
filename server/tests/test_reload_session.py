@@ -24,7 +24,7 @@ class _NewDriver:
         self.account = a[1] if len(a) > 1 else k.get("account")
         self.cwd = "/tmp"; self.mode = "interactive"
         self.identity = k.get("identity")
-        self.claude_session_id = "c1"
+        self.engine_session_id = "c1"
         self.sent: list[str] = []
     async def start(self): pass
     async def send_prompt(self, p): self.sent.append(p)
@@ -32,7 +32,7 @@ class _NewDriver:
 
 
 class _OldDriver:
-    cwd = "/tmp"; mode = "interactive"; identity = SYSTEM_IDENTITY; claude_session_id = "c1"
+    cwd = "/tmp"; mode = "interactive"; identity = SYSTEM_IDENTITY; engine_session_id = "c1"
     def __init__(self):
         self.closed = False
     async def interrupt(self): pass
@@ -47,7 +47,12 @@ def _orch(monkeypatch, rec, old, *, last_prompt=None):
             super().__init__(*a, **k)
             built.append(self)
 
-    monkeypatch.setattr(orch_mod, "SessionDriver", _Factory)
+    monkeypatch.setattr(
+        orch_mod.SessionOrchestrator,
+        "_create_driver",
+        lambda self, **kw: _Factory(
+            account=kw.get("account"), resume=kw.get("resume"), identity=kw.get("identity")),
+    )
     monkeypatch.setattr(orch_mod, "compose", lambda a: "/cfg")
     monkeypatch.setattr(orch_mod.configdir, "trust_project", lambda *a, **k: None)
     monkeypatch.setattr(orch_mod, "db_session", lambda: _NullCtx())

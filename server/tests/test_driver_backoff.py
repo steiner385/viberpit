@@ -5,12 +5,12 @@ extend its timeout so a throttled-but-alive turn is not interrupted as if hung.
 See issue #185 (turns wedge under daemon/account load → watchdog kills them)."""
 from __future__ import annotations
 
-from server.sessions.driver import SessionDriver
+from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.permissions import PermissionRegistry
 
 
-def _driver() -> SessionDriver:
-    return SessionDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+def _driver() -> ClaudeAgentDriver:
+    return ClaudeAgentDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                          sdk_factory=lambda *a, **k: None,
                          registry=PermissionRegistry(), identity="me")
 

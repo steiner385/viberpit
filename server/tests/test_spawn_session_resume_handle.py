@@ -5,7 +5,7 @@ replace it with a fresh one.
 with `preexisting_row=True`. If that row already carries a `claude_session_id`
 (a previously-run session whose row ended up back in the queue) and the call
 site does not thread it through, `_spawn_session` used to build its
-SessionDriver with no resume handle at all: the SDK starts a brand-new
+ClaudeAgentDriver with no resume handle at all: the SDK starts a brand-new
 conversation, and `on_session_id` overwrites the row's pointer to the old
 one, permanently orphaning the real transcript still sitting on disk. This
 is the sibling of #1100 (an undelivered prompt, rather than a whole

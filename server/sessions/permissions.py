@@ -20,8 +20,8 @@ def to_sdk_permission_mode(mode: str) -> str:
     """Map a ccswitch session mode to the Claude Agent SDK ``permission_mode``.
 
     Single source of truth for the mapping: both the initial spawn
-    (``sdk_factory.real_sdk_factory``) and live mode switches
-    (``SessionDriver.set_permission_mode``) route through here so the two can
+    (``claude_sdk_factory.real_sdk_factory``) and live mode switches
+    (``ClaudeAgentDriver.set_permission_mode``) route through here so the two can
     never drift — the bug that motivated issue #750, where the mapping was
     duplicated verbatim and a new mode would have been honoured by one path and
     silently collapsed to ``"default"`` by the other.

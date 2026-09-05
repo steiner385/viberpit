@@ -6,7 +6,7 @@ ContextUsage event."""
 from __future__ import annotations
 import asyncio
 from claude_agent_sdk import TextBlock
-from server.sessions.driver import SessionDriver
+from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.permissions import PermissionRegistry
 from server.sessions import events as ev
 from server.tests.fakes.fake_sdk import FakeSDKClient
@@ -21,7 +21,7 @@ def _factory(msgs, context_usage):
 
 def _run_turn(msgs, context_usage):
     async def run():
-        d = SessionDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory(msgs, context_usage),
                           registry=PermissionRegistry(), identity="me")
         await d.start()

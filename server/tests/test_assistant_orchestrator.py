@@ -72,7 +72,7 @@ def test_overlay_omits_setting_sources():
 def test_overlay_never_overrides_cli_path():
     """The factory resolves the system CLI via claude_bin.cli_path_kwargs(); an overlay
     that replaced it would silently run the SDK's vendored 2.1.183 binary."""
-    from server.sessions.sdk_factory import merge_options_overlay
+    from server.sessions.claude_sdk_factory import merge_options_overlay
 
     ov = assistant_options(server=_server(), max_turns=1, model="sonnet")
     assert "cli_path" not in ov

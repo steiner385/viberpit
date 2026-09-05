@@ -1,7 +1,7 @@
 """Driver surfaces recoverable turn failures (429/401) via on_recoverable_failure."""
 import asyncio
 from claude_agent_sdk import RateLimitEvent, RateLimitInfo
-from server.sessions.driver import SessionDriver
+from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.permissions import PermissionRegistry
 from server.sessions import events as ev
 from server.tests.fakes.fake_sdk import FakeSDKClient
@@ -27,7 +27,7 @@ def _run(msgs, *, clock=None):
     async def on_fail(session_id, kind, retry_after):
         calls.append((session_id, kind, retry_after))
     async def go():
-        d = SessionDriver("s1", "kindash", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s1", "kindash", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory(msgs), registry=PermissionRegistry(),
                           identity="me", on_recoverable_failure=on_fail, clock=clock)
         await d.start()
@@ -94,7 +94,7 @@ def test_drain_exception_with_401_is_classified_auth():
     async def on_fail(session_id, kind, retry_after):
         calls.append((session_id, kind, retry_after))
     async def go():
-        d = SessionDriver("s1", "kindash", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s1", "kindash", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me",
                           on_recoverable_failure=on_fail)
         await d.start(); await d.send_prompt("go")
@@ -129,7 +129,7 @@ def test_subprocess_crash_signals_process_crash():
             yield  # unreachable — makes this an async generator
 
     async def go():
-        d = SessionDriver("s1", "kindash", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s1", "kindash", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=lambda *a, **k: _CrashingClient([]),
                           registry=PermissionRegistry(), identity="me",
                           on_recoverable_failure=on_fail)

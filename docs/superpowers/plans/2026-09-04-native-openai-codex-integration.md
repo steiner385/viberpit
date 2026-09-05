@@ -32,8 +32,11 @@ are represented from day one; automatic OpenAI account rotation is not a v1 requ
 experimental external-token dependency is accepted subject to the release gate below.
 
 **Tracking issues:** created in GitHub Project #26 per Task 0.1. Every phase issue is a sub-issue of
-the epic, listed in the epic in phase order because the backlog runner treats sub-issue list order as
-execution order. PRs reference the epic (`Refs #1146`) and close only their own phase tracker.
+the epic; list order is presentation only after materialization. Native blocked-by relationships are
+the execution source of truth: Phase 1 follows Phase 0; Phases 2 and 3 both follow Phase 1 and may run
+in parallel; Phase 4 follows both; Phases 5–7 then form a chain. Task PRs reference the epic and their
+phase tracker. Only the final PR that satisfies a phase's exit criterion closes that phase tracker;
+the epic remains open through Phase 7.
 
 | Scope | Issue | Plan section |
 | --- | --- | --- |
