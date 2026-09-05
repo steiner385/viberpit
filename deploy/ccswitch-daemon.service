@@ -18,6 +18,18 @@ RuntimeDirectoryPreserve=yes
 StateDirectory=ccswitch
 WorkingDirectory=/home/tony/GitHub/cc-account-switcher-deploy
 EnvironmentFile=/etc/ccswitch/ccswitch.env
+# Where per-account CODEX_HOMEs land: /var/lib/ccswitch/state/ccswitch/codex.
+# `codex app-server` keeps SQLite + WAL, thread state and shell history under
+# CODEX_HOME, and the plan forbids that on a network filesystem — the 2026-09-03
+# sshfs torn-read incident (#1005) is what a shared mount does to a file format
+# that assumes local locking. Pinning it to StateDirectory= makes locality a
+# property of the unit instead of a hope about where $HOME/.local/state resolves
+# on a given runner. XDG_STATE_HOME has exactly ONE reader in this repo
+# (server/codex/manager.py:default_codex_home_base), so this moves nothing else.
+# The daemon refuses to start a runner whose home is not provably local anyway
+# (process.assert_local_filesystem), and `python -m server.codex.doctor` reports
+# it as `runtime_home` before it costs anyone a session.
+Environment=XDG_STATE_HOME=%S/ccswitch/state
 # This entrypoint calls uvicorn.run() programmatically (server/ipc/serve.py) rather
 # than the uvicorn CLI, so --timeout-graceful-shutdown can't be passed here as a
 # flag; it's set as timeout_graceful_shutdown=10 in that call instead (same
@@ -62,6 +74,11 @@ TimeoutStopSec=660
 # daemon; orchestrator.stop() then tears children down in order, and the final
 # SIGKILL phase still sweeps the whole cgroup at TimeoutStopSec.
 KillMode=mixed
+# Shared with every `codex app-server` this daemon supervises (one per ACCOUNT,
+# not per session — server/codex/manager.py ref-counts them and reaps after
+# CCSWITCH_CODEX_IDLE_GRACE_S). Watch codex_threads_active / codex_turns_active
+# before raising this: a climbing app-server count with no turns means the idle
+# reaper is not firing, which is a bug to fix rather than headroom to buy.
 MemoryMax=12G
 # Soft limit below MemoryMax: at 10G the kernel applies reclaim pressure and throttles
 # the cgroup instead of hard-stopping it (OOMPolicy=stop) at 12G. Gives a restart-storm
