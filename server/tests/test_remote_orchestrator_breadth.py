@@ -20,7 +20,34 @@ from server.tests.ipc_harness import serve_daemon_uds
 # `orch` they call is a RemoteOrchestrator RPC proxy, NOT the real SessionOrchestrator,
 # so every method they invoke must be explicitly proxied or it raises AttributeError
 # -> 500 in prod (the #295 `request_pr_fix` incident, 2026-06-25).
-_REQUEST_LAYER_DIRS = ("api", "bridge", "auth")
+#
+# Derived from source (#1199) rather than a hand-maintained allowlist: `server/assistant/`
+# mounts a router straight into app.py exactly like `server/api/`, but the old allowlist
+# here — ("api", "bridge", "auth") — never grew a matching entry, so `find_assistant`
+# shipped unproxied and 500'd on every deployed edge for four builds. Scan every
+# server/ subpackage EXCEPT the few that structurally never run against
+# app.state.sessions:
+#   - sessions/  IS the orchestrator/RemoteOrchestrator being scanned FOR — its own
+#     internals use `orch`/`orchestrator` as unrelated local names, which would
+#     self-pollute the scan.
+#   - ipc/       is the daemon-side RPC surface: it calls the REAL SessionOrchestrator
+#     directly (it's what implements the proxy, never a caller of it).
+#   - db/        is pure persistence, no request handling.
+#   - tests/     is the test suite itself.
+_REQUEST_LAYER_EXCLUDE_DIRS = frozenset({"sessions", "ipc", "db", "tests"})
+
+
+def _request_layer_dirs() -> tuple[str, ...]:
+    root = Path(server.__file__).parent
+    return tuple(sorted(
+        p.name for p in root.iterdir()
+        if p.is_dir() and not p.name.startswith("__")
+        and p.name not in _REQUEST_LAYER_EXCLUDE_DIRS
+        and any(p.rglob("*.py"))
+    ))
+
+
+_REQUEST_LAYER_DIRS = _request_layer_dirs()
 
 # Names bound to an orchestrator at these call sites, by convention.
 _ORCH_VARS = {"orch", "orchestrator"}
@@ -185,6 +212,53 @@ async def test_simple_and_quirk_methods_round_trip():
         finally:
             await ro.aclose()
     orch.resolve_permission.assert_called_once_with(session_id="s1", perm_id="p", decision="deny", identity="me")
+
+
+@pytest.mark.asyncio
+async def test_find_assistant_round_trips():
+    """#1199: find_assistant was never proxied, so GET /api/assistant/status and
+    POST /api/assistant/session AttributeError'd -> 500 on every deployed (daemon-mode)
+    edge. Both the None case and the found-a-record case must survive the RPC."""
+    app, orch = _build()
+    orch.find_assistant = mock.AsyncMock(return_value=_rec("asst-1"))
+
+    async with serve_daemon_uds(app) as sock:
+        ro = RemoteOrchestrator(DaemonClient(sock))
+        try:
+            found = await ro.find_assistant("u@x")
+            assert found is not None and found.id == "asst-1"
+        finally:
+            await ro.aclose()
+    orch.find_assistant.assert_awaited_once_with(owner_identity="u@x")
+
+    app2, orch2 = _build()
+    orch2.find_assistant = mock.AsyncMock(return_value=None)
+    async with serve_daemon_uds(app2) as sock2:
+        ro2 = RemoteOrchestrator(DaemonClient(sock2))
+        try:
+            assert await ro2.find_assistant("nobody@x") is None
+        finally:
+            await ro2.aclose()
+
+
+@pytest.mark.asyncio
+async def test_archive_session_forwards_assistant_reset_kwargs():
+    """#1199 second break: RemoteOrchestrator.archive_session accepted only
+    session_id, but the assistant reset flow calls
+    orch.archive_session(id, archived_by="user", context={...}) — a TypeError -> 500
+    on every assistant reset in daemon mode."""
+    app, orch = _build()
+    orch.archive_session = mock.AsyncMock(return_value=None)
+
+    async with serve_daemon_uds(app) as sock:
+        ro = RemoteOrchestrator(DaemonClient(sock))
+        try:
+            await ro.archive_session(
+                "s1", archived_by="user", context={"reason": "assistant-reset"})
+        finally:
+            await ro.aclose()
+    orch.archive_session.assert_awaited_once_with(
+        session_id="s1", archived_by="user", context={"reason": "assistant-reset"})
 
 
 @pytest.mark.asyncio

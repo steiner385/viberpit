@@ -364,6 +364,10 @@ def register_orchestrator_rpc(app, orch) -> None:
         rec = await orch.unarchive(**params)
         return {"session": rec.to_dict() if rec is not None else None}
 
+    async def find_assistant(params: dict) -> dict:
+        rec = await orch.find_assistant(**params)
+        return {"session": rec.to_dict() if rec is not None else None}
+
     async def adopt_session(params: dict) -> dict:
         rec, metadata = await orch.adopt_session(**params)
         return {"record": rec.to_dict(), "metadata": metadata}
@@ -411,6 +415,7 @@ def register_orchestrator_rpc(app, orch) -> None:
         return {"session": rec.to_dict()}
 
     register_rpc(app, "unarchive", unarchive)
+    register_rpc(app, "find_assistant", find_assistant)
     register_rpc(app, "adopt_session", adopt_session)
     register_rpc(app, "transcript_events", transcript_events)
     register_rpc(app, "transcript_window", transcript_window)

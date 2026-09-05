@@ -644,8 +644,17 @@ class RemoteOrchestrator:
                             turn_active=r.get("turn_active", False),
                             turn_started_at=r.get("turn_started_at"))
 
-    async def archive_session(self, session_id):
-        return await self._client.call("archive_session", session_id=session_id)
+    async def archive_session(self, session_id, *, archived_by: str = "user",
+                              context: dict | None = None):
+        return await self._client.call(
+            "archive_session", session_id=session_id, archived_by=archived_by, context=context)
+
+    async def find_assistant(self, owner_identity: str) -> "SessionRecord | None":
+        """Proxy the owning daemon's find_assistant (#1199: this was never proxied,
+        so the drawer's status/create routes AttributeError'd -> 500 on every daemon-
+        mode edge)."""
+        r = await self._client.call("find_assistant", owner_identity=owner_identity)
+        return SessionRecord.from_dict(r["session"]) if r["session"] is not None else None
 
     async def resume_interrupted(self, session_id: str, identity: str = SYSTEM_IDENTITY) -> str:
         """Proxy the owning daemon's resume_interrupted (re-attach + nudge a
