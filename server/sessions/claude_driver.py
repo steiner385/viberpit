@@ -26,6 +26,7 @@ from .questions import QuestionRegistry
 from .sdk_contract import is_turn_message
 from .status import StatusSignals, derive_status
 from .transcript_repair import repair_resumed_transcript
+from .types import ASSISTANT_KIND, is_assistant_kind
 
 _IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 
@@ -314,7 +315,7 @@ class ClaudeAgentDriver:
         every orchestrator call site that builds a driver passes it exactly when
         the session is assistant-kind — so this is a computed property rather
         than a second, parallel ``kind`` field that could drift from it."""
-        return "assistant" if self._assistant_api is not None else None
+        return ASSISTANT_KIND if self._assistant_api is not None else None
 
     def _turn(self):
         return getattr(self._tr, "_turn_id", None) or "turn"
@@ -675,7 +676,7 @@ class ClaudeAgentDriver:
         turn_id = self._turn()
         if tool_name == "AskUserQuestion":
             return await self._handle_ask_user_question(tool_input, turn_id)
-        if self.kind == "assistant" and not tool_name.startswith("mcp__ccswitch__"):
+        if is_assistant_kind(self.kind) and not tool_name.startswith("mcp__ccswitch__"):
             # An assistant-kind session's model is scoped to the ccswitch MCP
             # server only (spec §4.4) — anything else (Bash, a third-party MCP
             # server, …) is a hard deny with no card: this is a programming
