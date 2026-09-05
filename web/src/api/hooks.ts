@@ -517,15 +517,11 @@ export function useSetAccountEnabled() {
   })
 }
 
-type ReauthAccountInput = string | { name: string; mode?: 'login' | 'setup_token' }
-
+// Always the in-process PKCE/setup-token exchange (issue #1130) — no browser,
+// no virtual display. The account already has a slot, so there is no mode to pick.
 export function useReauthAccount() {
-  return useMutation<ReauthState, ApiRequestError, ReauthAccountInput>({
-    mutationFn: (input) => {
-      const { name, mode } = typeof input === 'string' ? { name: input, mode: undefined } : input
-      const path = `/accounts/${encodeURIComponent(name)}/reauth${mode === 'setup_token' ? '?mode=setup_token' : ''}`
-      return api.post<ReauthState>(path)
-    },
+  return useMutation<ReauthState, ApiRequestError, string>({
+    mutationFn: (name) => api.post<ReauthState>(`/accounts/${encodeURIComponent(name)}/reauth`),
   })
 }
 

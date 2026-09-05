@@ -66,6 +66,31 @@ def _required_contexts(gh_api: Callable[[str], str], branch: str = "master") -> 
     return set(data.get("contexts") or [])
 
 
+def _never_ran(sha: str, gh_api: Callable[[str], str]) -> bool:
+    """True when no further check-run can ever arrive for ``sha``.
+
+    GitHub allows at most ONE *pending* run per concurrency group and cancels the
+    previously pending one; ``cancel-in-progress: false`` only protects a run that has
+    already started. A run cancelled while still pending starts zero jobs, so it
+    contributes no check-run to the commit — ever. On the check-runs endpoint alone that
+    is indistinguishable from "the run has not started yet", which is why a missing
+    required context used to read as a "pending" that could never resolve.
+
+    The workflow-runs endpoint separates them: every run for the sha finished AND at
+    least one was cancelled means the absent context is not coming. Best-effort — any
+    unreadable or ambiguous answer returns False, leaving the caller on the historical
+    "pending". Both verdicts block a deploy; only the wording an operator sees differs.
+    """
+    try:
+        body = json.loads(gh_api(f"repos/{{owner}}/{{repo}}/actions/runs?head_sha={sha}"))
+    except Exception:
+        return False
+    runs = body.get("workflow_runs") or []
+    if not runs or any(r.get("status") != "completed" for r in runs):
+        return False
+    return any((r.get("conclusion") or "") == "cancelled" for r in runs)
+
+
 def ci_verdict(sha: str, gh_api: Callable[[str], str] | None = None) -> str:
     gh_api = gh_api or _default_gh_api
     try:
@@ -80,7 +105,9 @@ def ci_verdict(sha: str, gh_api: Callable[[str], str] | None = None) -> str:
         # (#620). A required context with no run yet is "pending", not "green".
         present = {r.get("name") for r in runs}
         if not required <= present:
-            return "pending"
+            # ...unless it will never report at all, which is "unrun" — a distinct,
+            # terminal verdict. Only this branch pays for the extra round-trip.
+            return "unrun" if _never_ran(sha, gh_api) else "pending"
         runs = [r for r in runs if r.get("name") in required]
     if not runs:
         return "pending"
@@ -137,6 +164,18 @@ RESTARTABLE_UNITS: tuple[str, ...] = (
 _EXEC_PATH_RE = re.compile(r"path=([^\s;]+)")
 
 
+def _checkout_root(path: str) -> str | None:
+    """The checkout directory ``path`` nominally belongs to, or None.
+
+    The convention is ``<checkout>/.venv/bin/python``. A path not shaped like that (e.g.
+    a future service-owned venv artifact) has no notion of "which checkout owns it", so
+    the isolation check has no positive proof to act on and must not fire.
+    """
+    marker = "/.venv/"
+    idx = path.find(marker)
+    return path[:idx] if idx != -1 else None
+
+
 def check_unit_interpreters(units: tuple[str, ...] | None = None,
                             *, run: Run = subprocess.run) -> list[str]:
     """Return one problem string per unit whose ExecStart binary cannot be executed.
@@ -153,6 +192,12 @@ def check_unit_interpreters(units: tuple[str, ...] | None = None,
     preflight that refuses on absent evidence is precisely the failure mode that wedged
     the deploy gate behind a required check which could never report. Fail only on
     positive proof: a path we resolved that is missing or not executable.
+
+    Also reports a unit whose interpreter is *alive* but has escaped its own checkout:
+    ExecStart named ``<checkout>/.venv/bin/python``, yet ``.venv`` resolves (by symlink)
+    into some other checkout entirely (issue #1171 — the coupling #1129 above only
+    detects once the *other* checkout has already broken). That still runs today, but
+    renaming or rebuilding the other checkout takes this unit down with no warning.
     """
     problems: list[str] = []
     for unit in (units if units is not None else RESTARTABLE_UNITS):
@@ -175,6 +220,15 @@ def check_unit_interpreters(units: tuple[str, ...] | None = None,
                 "it cannot restart)")
         elif not os.access(path, os.X_OK):
             problems.append(f"{unit}: ExecStart binary {path} is not executable")
+        else:
+            root = _checkout_root(path)
+            resolved = os.path.realpath(path)
+            if root is not None and resolved != path and not resolved.startswith(root + os.sep):
+                problems.append(
+                    f"{unit}: ExecStart binary {path} (checkout {root}) resolves to "
+                    f"{resolved}, a different checkout entirely — this unit's interpreter "
+                    "is owned by another developer checkout and breaks if that checkout "
+                    "is renamed, rebuilt, or removed")
     return problems
 
 

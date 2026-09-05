@@ -12,12 +12,31 @@ details live in `tasks.md`/code; this is a run + verification guide.
 
 ## Run (local / Tailscale)
 ```bash
-# backend (binds loopback; fronted by `tailscale serve` for the phone)
+# backend (binds loopback; fronted by nginx for TLS termination)
 CCSWITCH_MASTER_KEY=... python -m server.app          # serves API + built web assets
-tailscale serve https / http://127.0.0.1:8000          # expose to the tailnet only
 # dev frontend (optional, hot reload): cd web && npm run dev
 ```
-Open the tailnet URL on the phone.
+
+Open `https://dobby.tail0dd570.ts.net/` on any tailnet device.
+
+> **Production TLS setup (one-time, on dobby):**
+> ```bash
+> # 1. Provision cert
+> sudo tailscale cert \
+>     --cert-file /etc/ccswitch/dobby.tail0dd570.ts.net.crt \
+>     --key-file  /etc/ccswitch/dobby.tail0dd570.ts.net.key \
+>     dobby.tail0dd570.ts.net
+>
+> # 2. Install nginx vhost
+> sudo cp deploy/ccswitch-tailnet.nginx /etc/nginx/sites-available/ccswitch-tailnet
+> sudo ln -sf /etc/nginx/sites-available/ccswitch-tailnet /etc/nginx/sites-enabled/
+> sudo nginx -t && sudo nginx -s reload
+>
+> # 3. Install cert renewal timer (runs weekly, auto-renews before expiry)
+> sudo cp deploy/ccswitch-cert-renew.{service,timer} /etc/systemd/system/
+> sudo systemctl daemon-reload
+> sudo systemctl enable --now ccswitch-cert-renew.timer
+> ```
 
 ## Cross-host daemon (mTLS)
 

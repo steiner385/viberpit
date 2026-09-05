@@ -5,10 +5,16 @@ on:
     branches: [master]
   pull_request:
 
-# One in-flight run per ref: a superseded PR push cancels the stale run.
-# master runs are never cancelled (deploys watch them).
+# One in-flight run per ref for pull requests: a superseded PR push cancels the stale run.
+# master gets a group PER COMMIT. `cancel-in-progress: false` alone does NOT make master
+# runs safe, which is what this comment used to claim: GitHub allows at most one *pending*
+# run per group and cancels the previously pending one, so during a merge burst the middle
+# commits were cancelled before a single job started and carried no check-runs at all.
+# ci_verdict then read them as a "pending" that could never resolve, leaving those commits
+# permanently undeployable (2026-09-05: ed6d9a35 and 15de2a2e). constitution.yml already
+# carries this fix; server/tests/test_workflow_master_concurrency.py keeps them in step.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref == 'refs/heads/master' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:

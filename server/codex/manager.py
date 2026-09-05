@@ -58,6 +58,10 @@ from server.aio import cancel_and_reap
 from server.codex import process as codex_process
 from server.codex import redaction, schema
 from server.codex.capabilities import CodexAvailability, CodexUnavailableReason
+from server.codex.external_auth import (
+    ExternalAuthUnavailable,
+    assert_no_runner_credentials,
+)
 from server.codex.process import CodexProcess, CodexProcessHandle
 from server.codex.protocol import CodexAppServerClient, RefreshHandler
 from server.obs.context import log_event
@@ -134,7 +138,20 @@ class CodexStartError(CodexManagerError):
     """An app-server could not be started, initialized, or logged in."""
 
 
+class CodexRunnerMissingError(CodexManagerError):
+    """A session tried to attach after its ensured runner disappeared."""
+
+
 CredentialSupplier = Callable[[str], Awaitable[schema.ExternalAuthLoginParams]]
+#: Builds the `account/chatgptAuthTokens/refresh` handler for ONE account.
+#:
+#: A factory rather than a handler, because the app-server's refresh callback
+#: carries no ccswitch account name — it is a request on *this* connection, and
+#: which account that connection belongs to is knowledge only the manager has. A
+#: single shared handler would have to guess, and the guess would be "refresh
+#: whichever account 401'd", i.e. exactly the confused-deputy shape the whole
+#: external-token design exists to avoid.
+RefreshHandlerFactory = Callable[[str], RefreshHandler]
 ThreadNotifier = Callable[[RunnerNotice], None]
 ProcessFactory = Callable[..., CodexProcessHandle]
 ClientFactory = Callable[..., CodexAppServerClient]
@@ -194,7 +211,7 @@ class CodexRunnerManager:
         process_factory: ProcessFactory | None = None,
         client_factory: ClientFactory | None = None,
         home_factory: HomeFactory | None = None,
-        refresh_handler: RefreshHandler | None = None,
+        refresh_handler_factory: RefreshHandlerFactory | None = None,
         mounts: codex_process.Mounts | None = None,
         idle_grace_s: float = DEFAULT_IDLE_GRACE_S,
         max_restarts: int = DEFAULT_MAX_RESTARTS,
@@ -214,7 +231,7 @@ class CodexRunnerManager:
         self._process_factory = process_factory or self._default_process_factory
         self._client_factory = client_factory or self._default_client_factory
         self._home_factory = home_factory
-        self._refresh_handler = refresh_handler
+        self._refresh_handler_factory = refresh_handler_factory
         self._mounts = mounts
         self._idle_grace_s = idle_grace_s
         self._max_restarts = max(0, max_restarts)
@@ -240,6 +257,10 @@ class CodexRunnerManager:
         #: At most one armed teardown per account; re-arming cancels the previous.
         self._idle_tasks: dict[str, asyncio.Task[None]] = {}
         self.notify_errors = 0
+        #: Set by ``build_codex_manager`` to the provider backing
+        #: ``credential_supplier``. ``invalidate_credentials`` needs it; nothing
+        #: else in this class does, which is why it is not a constructor argument.
+        self.external_auth: Any = None
 
     def __repr__(self) -> str:
         return (
@@ -291,12 +312,16 @@ class CodexRunnerManager:
         return CodexProcess(binary, home)
 
     def _default_client_factory(
-        self, *, transport: Any, external_auth_enabled: bool
+        self, *, transport: Any, external_auth_enabled: bool, account: str
     ) -> CodexAppServerClient:
         return CodexAppServerClient(
             transport,
             external_auth_enabled=external_auth_enabled,
-            refresh_handler=self._refresh_handler,
+            refresh_handler=(
+                None
+                if self._refresh_handler_factory is None
+                else self._refresh_handler_factory(account)
+            ),
         )
 
     # -- startup -----------------------------------------------------------
@@ -349,14 +374,45 @@ class CodexRunnerManager:
             client = self._client_factory(
                 transport=process.transport,
                 external_auth_enabled=self._external_auth_enabled,
+                account=account,
             )
             await client.start()
             await client.initialize()
             await self._login(account, client)
+            # The claim the whole external-token design rests on, checked at the one
+            # moment it could have been broken: `codex app-server` has just been
+            # given a token and has had a chance to persist one. If it did, this
+            # runner is now holding a credential and must not continue.
+            assert_no_runner_credentials(home)
         except asyncio.CancelledError:
+            # Cancellation is an outcome, not an exemption from ownership cleanup:
+            # process.start/client.start may already have allocated OS resources.
+            await self._discard_startup(account, process, client)
             raise
+        except ExternalAuthUnavailable:
+            # Named separately from the generic failure below because the generic
+            # path reduces its cause to a fixed category ("runtime_error"), and
+            # "this runner is holding a ChatGPT credential" is the one startup
+            # failure whose REASON an operator must be told verbatim — the message
+            # is authored here, contains no native text, and names the remedy.
+            await self._discard_startup(account, process, client)
+            log_event(
+                logger,
+                logging.ERROR,
+                "codex.manager.start_failed",
+                account=account,
+                error="runner_holds_credential",
+            )
+            raise CodexStartError(
+                f"codex app-server for {account} was refused: a credential cache "
+                f"appeared in the runner home. A runner using external-token auth "
+                f"must never hold one; refusing rather than leaving a refresh "
+                f"token on a session host."
+            ) from None
         except Exception as exc:  # noqa: BLE001 -- one typed start failure
-            await self._discard(process, client)
+            # A daemon cancellation arriving while an ordinary startup failure is
+            # being cleaned up has the same ownership rule: finish teardown first.
+            await self._discard_startup(account, process, client)
             detail = redaction.scrub_exception(exc)
             tail = process.stderr_tail()
             log_event(
@@ -416,6 +472,26 @@ class CodexRunnerManager:
             except Exception:  # noqa: BLE001 -- teardown must not raise
                 logger.debug("codex: process stop failed", exc_info=True)
 
+    async def _discard_startup(
+        self,
+        account: str,
+        process: CodexProcessHandle | None,
+        client: CodexAppServerClient | None,
+    ) -> None:
+        """Finish half-built-runner cleanup even if the caller is cancelled."""
+        cleanup = asyncio.create_task(
+            self._discard(process, client), name=f"codex-start-discard-{account}"
+        )
+        cancelled_during_cleanup = False
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                cancelled_during_cleanup = True
+        await cleanup
+        if cancelled_during_cleanup:
+            raise asyncio.CancelledError
+
     # -- ref-counting ------------------------------------------------------
 
     def attach(self, account: str, session_id: str) -> None:
@@ -433,7 +509,9 @@ class CodexRunnerManager:
                 account=account,
                 session=session_id,
             )
-            return
+            raise CodexRunnerMissingError(
+                f"codex runner for {account} disappeared before session {session_id} attached"
+            )
         runner.sessions.add(session_id)
         self._sessions[session_id] = account
 
@@ -704,6 +782,32 @@ class CodexRunnerManager:
                 raise TimeoutError(f"codex runner for {account} did not settle")
             await asyncio.sleep(0.001)
 
+    # -- revocation --------------------------------------------------------
+
+    async def invalidate_credentials(self, account: str) -> None:
+        """Drop *account*'s cached credential state and stop its app-server.
+
+        The runner half of the authority's revocation. Ordering is the whole
+        contract: the provider is invalidated **first**, so that any refresh
+        callback racing the teardown is refused (its handler's epoch is now
+        stale) rather than fetching a credential for an account we are in the
+        middle of stopping.
+
+        Idempotent, and safe for an account that has no runner: the edge fans this
+        out to every host, and most of them will not be running the account.
+        """
+        provider = self.external_auth
+        if provider is not None:
+            try:
+                provider.invalidate(account)
+            except Exception:  # noqa: BLE001 -- teardown must not raise into the fan-out
+                logger.debug("codex: credential invalidate failed", exc_info=True)
+        await self.stop(account)
+        log_event(
+            logger, logging.WARNING, "codex.manager.credentials_invalidated",
+            account=account,
+        )
+
     # -- teardown ----------------------------------------------------------
 
     async def stop(self, account: str) -> None:
@@ -797,9 +901,12 @@ async def build_codex_manager(settings: Any) -> CodexRunnerManager | None:
     ``CCSWITCH_CODEX_ENABLED`` false, the orchestrator's Codex hooks are wired to
     nothing and no other engine's behaviour changes.
 
-    The credential supplier is a placeholder until Phase 3 lands the authority
-    client: it refuses, so a Codex session started before then fails closed with a
-    typed error instead of inventing a credential.
+    Credentials come from the ChatGPT credential authority
+    (:mod:`server.codex.external_auth`). If Codex is enabled but the authority is
+    not configured — or the experimental external-token surface is off — this
+    returns ``None`` rather than a manager with managed runner auth. That is the
+    plan's "do not fall back": a runner authenticating on its own would silently
+    reintroduce the refresh token this phase exists to remove from session hosts.
     """
     availability = await codex_process.probe_availability(
         enabled=bool(getattr(settings, "codex_enabled", False)),
@@ -822,11 +929,21 @@ async def build_codex_manager(settings: Any) -> CodexRunnerManager | None:
         )
         return None
 
-    async def _no_authority(account: str) -> schema.ExternalAuthLoginParams:
-        raise CodexStartError(
-            "no ChatGPT credential authority is configured for "
-            f"{account}: the Phase 3 authority client is not wired yet"
+    from server.codex.external_auth import (
+        ExternalAuthUnavailable,
+        build_external_auth_provider,
+    )
+
+    try:
+        provider = build_external_auth_provider(settings)
+    except ExternalAuthUnavailable as exc:
+        log_event(
+            logger,
+            logging.WARNING,
+            "codex.manager.no_authority",
+            detail=redaction.scrub_text(str(exc)),
         )
+        return None
 
     log_event(
         logger,
@@ -835,12 +952,19 @@ async def build_codex_manager(settings: Any) -> CodexRunnerManager | None:
         cli_version=availability.cli_version,
         binary=availability.binary_path,
     )
-    return CodexRunnerManager(
+    manager = CodexRunnerManager(
         availability=availability,
         codex_home_base=default_codex_home_base(),
-        credential_supplier=_no_authority,
+        credential_supplier=provider.login_params,
+        refresh_handler_factory=provider.refresh_handler_for,
         external_auth_enabled=bool(
             getattr(settings, "codex_external_auth_enabled", False)
         ),
         idle_grace_s=float(getattr(settings, "codex_idle_grace_s", DEFAULT_IDLE_GRACE_S)),
     )
+    # Published so revocation fan-out can reach the provider that actually holds
+    # the per-account generations. Kept as an attribute rather than a constructor
+    # argument because the manager itself has no use for it: it is the *caller's*
+    # handle on the credential side of the same account.
+    manager.external_auth = provider
+    return manager

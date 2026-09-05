@@ -1158,11 +1158,12 @@ class SessionOrchestrator:
         plain Claude Code session with the operator's own MCP servers mounted and no tool
         restrictions at all, while simultaneously losing its ``mcp__ccswitch__*`` tools.
 
-        NOT yet universal: ``_reassign`` (account rotation / 401 recompose / crash
-        recovery) is a THIRD site that builds an AgentDriver and does not go through
-        here, so a rotated assistant carries the closed ``AssistantApi`` of the driver it
-        replaced. That is pre-existing at this branch's merge base and is tracked
-        separately — do not read this helper as covering every driver build.
+        Also called from ``_reassign_locked`` (account rotation / 401 recompose / crash
+        recovery), the THIRD site that builds an AgentDriver: a rotated assistant would
+        otherwise carry the closed ``AssistantApi`` of the driver it replaced (#1125).
+        Every driver build for an assistant goes through here — see
+        ``docs/superpowers/fix-patterns/2026-09-04-per-process-state-armed-only-on-the-create-path.md``
+        before adding a fourth build site.
 
         And it must REBUILD rather than preserve: the MCP tool handlers close over this
         ``AssistantApi``, whose ``httpx.AsyncClient`` ``driver.aclose()`` closes on
@@ -1178,7 +1179,8 @@ class SessionOrchestrator:
         from server.config import get_settings
         cfg = get_settings()
         api = AssistantApi(base_url=f"http://127.0.0.1:{cfg.port}",
-                           token=mint_token(identity, session_id), session_id=session_id)
+                           token=mint_token(identity, session_id), session_id=session_id,
+                           identity=identity)
         self.register_assistant_overlay(session_id, assistant_options(
             server=build_server(api), max_turns=cfg.assistant_max_turns,
             model=model or cfg.assistant_model))
@@ -2748,6 +2750,8 @@ class SessionOrchestrator:
         # must treat it as live-in-progress, not detached.
         spawn_done: asyncio.Future = asyncio.get_running_loop().create_future()
         self._spawning[session_id] = spawn_done
+        driver: AgentDriver | None = None
+        row_persisted = False
         try:
             # An assistant-kind session gets its ClaudeAgentOptions overlay (system
             # prompt, in-process `ccswitch` MCP server, no builtin tools) registered
@@ -2772,18 +2776,11 @@ class SessionOrchestrator:
                 suggester=self._suggester_for(kind),
                 assistant_api=assistant_api,
             )
-            try:
-                await driver.start()
-            except Exception:
-                # driver.start() failed — remove the pre-seeded record so the session
-                # does not appear as a ghost idle card in list_sessions, and release
-                # the overlay/loopback client an assistant spawn registered above
-                # (aclose() never runs for a driver that never started).
-                self._records.pop(session_id, None)
-                if assistant_api is not None:
-                    self._assistant_overlays.pop(session_id, None)
-                    await assistant_api.aclose()
-                raise
+            # Creation transfers cleanup ownership immediately. start() can allocate
+            # its subprocess/client and then block or be cancelled before returning;
+            # the outer BaseException rollback therefore closes `driver` regardless
+            # of whether this await completed.
+            await driver.start()
             # Apply the chosen model before the first prompt runs (initial prompt is
             # deferred until a client attaches, so this always lands on turn one). The
             # "default" alias / empty means "account default" → leave the driver as-is.
@@ -2855,6 +2852,7 @@ class SessionOrchestrator:
                         owner_identity=owner_identity,
                     )
                     db.add(row)
+            row_persisted = True
 
             # Patch the model on the pre-seeded record (resolved by driver.set_model above).
             _pre_record.model = model
@@ -2868,6 +2866,46 @@ class SessionOrchestrator:
             if initial_prompt and origin is not None:
                 await self.send_prompt(session_id, initial_prompt, attachment_ids)
             return record
+        except BaseException:
+            # Before the row is durable, this method owns every resource allocated
+            # for the attempted spawn. In particular CodexRunnerManager.attach()
+            # may register the claim and then raise; at that point the live driver
+            # is already in _drivers. Leaving it there creates an unlisted process,
+            # a stranded runner ref-count, and leaked display/workspace resources.
+            if not row_persisted:
+                async def _rollback() -> None:
+                    registered = await self._teardown_driver_state(session_id)
+                    live_driver = registered or driver
+                    if live_driver is not None:
+                        try:
+                            await live_driver.aclose()
+                        except Exception:
+                            # The real drivers own assistant_api and close it in
+                            # aclose(). Fall back only when driver teardown failed,
+                            # so successful cleanup never double-closes it.
+                            if assistant_api is not None:
+                                with contextlib.suppress(Exception):
+                                    await assistant_api.aclose()
+                    self._assistant_overlays.pop(session_id, None)
+                    rollback_record = (self._records.pop(session_id)
+                                       if session_id in self._records else None)
+                    await self._cleanup_session_paths(session_id, rollback_record)
+
+                # Cleanup has independent ownership. A second cancellation while
+                # driver.aclose() is flushing must not strand the remaining state;
+                # shield until teardown completes, then propagate cancellation.
+                cleanup = asyncio.create_task(
+                    _rollback(), name=f"session-spawn-rollback-{session_id}")
+                cancelled_during_cleanup = False
+                while not cleanup.done():
+                    try:
+                        await asyncio.shield(cleanup)
+                    except asyncio.CancelledError:
+                        cancelled_during_cleanup = True
+                await cleanup
+                if cancelled_during_cleanup:
+                    raise asyncio.CancelledError
+            raise
         finally:
             if self._spawning.get(session_id) is spawn_done:
                 del self._spawning[session_id]
@@ -2942,17 +2980,10 @@ class SessionOrchestrator:
                 log.exception("session.display_cleanup_failed id=%s", session_id)
         return driver
 
-    async def close_session(self, session_id: str) -> None:
-        """Stop the driver, clean up the session worktree, mark the row ended."""
-        driver = await self._teardown_driver_state(session_id)
-        if driver is not None:
-            await driver.aclose()
-        record = self._records.pop(session_id, None)
-
-        # Remove the per-session worktree if we created one (or if the session's
-        # cwd is one of our managed worktree paths — recognised even after a
-        # server restart). Dirty worktrees are kept; remove_worktree never
-        # destroys uncommitted work.
+    async def _cleanup_session_paths(
+        self, session_id: str, record: SessionRecord | None,
+    ) -> None:
+        """Release worktree/scratch paths owned by a session lifecycle."""
         wt = self._worktrees.pop(session_id, None)
         wt_path = wt.path if wt else (
             record.cwd if record and worktrees.is_managed_path(record.cwd, self._repo_root)
@@ -2967,22 +2998,28 @@ class SessionOrchestrator:
                 log.exception("session.worktree_cleanup_failed id=%s path=%s",
                               session_id, wt_path)
 
-        # Remove the no-repo scratch dir if this session used one.  Guard with a
-        # strict containment check so we never rm anything outside the scratch base.
         if record and record.cwd:
             scratch_base = Path(worktrees.worktrees_base(self._repo_root)).parent / "scratch"
             try:
                 cwd_resolved = Path(record.cwd).resolve()
                 scratch_base_resolved = scratch_base.resolve()
-                cwd_resolved.relative_to(scratch_base_resolved)  # raises ValueError if not under base
+                cwd_resolved.relative_to(scratch_base_resolved)
                 if cwd_resolved.is_dir():
                     import shutil
                     await asyncio.to_thread(shutil.rmtree, str(cwd_resolved))
                     log.info("session.scratch_cleanup id=%s path=%s", session_id, cwd_resolved)
             except ValueError:
-                pass  # Not a scratch dir — nothing to do
+                pass
             except Exception:
                 log.exception("session.scratch_cleanup_failed id=%s", session_id)
+
+    async def close_session(self, session_id: str) -> None:
+        """Stop the driver, clean up the session worktree, mark the row ended."""
+        driver = await self._teardown_driver_state(session_id)
+        if driver is not None:
+            await driver.aclose()
+        record = self._records.pop(session_id, None)
+        await self._cleanup_session_paths(session_id, record)
 
         # Persist 'ended' BEFORE dropping any queue entry (#1100 ordering rule, see
         # _maybe_start_queued's failure path). The drain cannot resurrect the session
@@ -8456,6 +8493,168 @@ class SessionOrchestrator:
         """Return the proxy /usage payload for a copilot account, or None."""
         return self._copilot.usage(account) if self._copilot is not None else None
 
+    # ------------------------------------------------------------------
+    # Codex (OpenAI) account surfaces
+    #
+    # These three run HERE, on the host that owns the app-server, because
+    # `model/list` and `account/rateLimits/read` are questions only a live,
+    # logged-in `codex app-server` can answer. The edge reaches them over the
+    # daemon RPC like every other cross-host inspection.
+    # ------------------------------------------------------------------
+
+    async def codex_models(self, account: str, refresh: bool = False) -> dict:
+        """Model options for one OpenAI account, from `model/list`.
+
+        Starting the app-server is a side effect the caller has asked for
+        implicitly: there is no way to enumerate an account's models without a
+        logged-in process for that account. It is ref-counted and idle-reaped like
+        any other, so a model-picker open costs one app-server for the grace
+        period and nothing after.
+        """
+        codex = self._codex
+        if codex is None or not codex.available:
+            return {"state": "unavailable", "models": []}
+        from server.codex.catalog import ModelCatalogError
+
+        try:
+            await codex.ensure(account)
+            client = codex.client_for(account)
+            models = await self._codex_catalog().models(
+                account,
+                client=client,
+                cli_version=codex.availability.cli_version or "",
+                refresh=refresh,
+            )
+        except ModelCatalogError as exc:
+            return {"state": "error", "models": [], "detail": str(exc)}
+        except Exception as exc:  # noqa: BLE001 -- a picker must not 500 the page
+            log.warning("codex_models(%s) failed", account, exc_info=True)
+            from server.codex import redaction
+
+            return {
+                "state": "error",
+                "models": [],
+                "detail": redaction.scrub_exception(exc),
+            }
+        return {"state": "ok", "models": [m.to_wire() for m in models]}
+
+    async def codex_validate_model(
+        self, account: str, model: str | None, effort: str | None
+    ) -> dict:
+        """Validate a (model, effort) PAIR for an OpenAI account before dispatch.
+
+        A pair, not two fields: ``gpt-5.1-codex`` may be valid and ``xhigh`` may be
+        valid and the combination still not exist, so validating them separately
+        would let a request through that the app-server then rejects mid-turn.
+
+        Drift is retried exactly once. The catalog is cached for minutes, so the
+        common cause of a miss is "this account's plan changed" or "the CLI was
+        upgraded" — one forced refresh answers that. Retrying further would turn a
+        genuinely wrong model name into a `model/list` loop.
+        """
+        from server.codex.catalog import ModelCatalogError, ModelEffortMismatch
+
+        codex = self._codex
+        if codex is None or not codex.available:
+            # Nothing to validate against. Let the spawn path produce its own typed
+            # unavailability rather than inventing a second one here.
+            return {"ok": True, "model": model, "effort": effort}
+        catalog = self._codex_catalog()
+        cli_version = codex.availability.cli_version or ""
+        try:
+            await codex.ensure(account)
+            client = codex.client_for(account)
+            for refresh in (False, True):
+                models = await catalog.models(
+                    account, client=client, cli_version=cli_version, refresh=refresh
+                )
+                try:
+                    chosen, chosen_effort = catalog.validate(models, model, effort)
+                except ModelEffortMismatch as mismatch:
+                    if refresh:
+                        return {"ok": False, "error": mismatch.to_wire()}
+                    continue
+                return {"ok": True, "model": chosen, "effort": chosen_effort}
+        except ModelCatalogError as exc:
+            # We could not enumerate the models, so we cannot say the pair is wrong.
+            # Allow it: the app-server is the authority and will reject it if it is.
+            log.warning("codex model validation for %s degraded: %s", account, exc)
+        return {"ok": True, "model": model, "effort": effort}
+
+    async def codex_account_status(self, account: str) -> dict:
+        """Everything host-local the accounts page needs about one OpenAI account.
+
+        One RPC rather than three. Quota, the live runner count and the auth
+        degraded-reason are all answers only this host can give, they are all read
+        on the same page load, and they are all cheap — splitting them would cost
+        three round trips per account per refresh for no gain.
+        """
+        from server.codex.quota import QuotaSnapshot, QuotaState
+
+        codex = self._codex
+        if codex is None or not codex.available:
+            return {
+                "quota": QuotaSnapshot(
+                    state=QuotaState.UNSUPPORTED,
+                    detail="codex is not available on this host",
+                ).to_wire(),
+                "activeRunners": 0,
+                "degradedReason": None,
+            }
+        # Deliberately NOT ensure()d: this is polled by the accounts page, and
+        # starting an app-server on every poll would keep one alive per account
+        # forever, defeating the idle reaper. With nothing running the reader
+        # answers UNKNOWN (or last-good with an age), which is the honest answer.
+        client = codex.client_for(account)
+        snapshot = await self._codex_quota_reader().read(account, client=client)
+        provider = getattr(codex, "external_auth", None)
+        return {
+            "quota": snapshot.to_wire(),
+            "activeRunners": 1 if client is not None else 0,
+            "degradedReason": (
+                None if provider is None else provider.degraded_reason(account)
+            ),
+        }
+
+    async def codex_invalidate_credentials(self, account: str) -> dict:
+        """Drop cached Codex credentials for *account* and stop its app-server.
+
+        The runner half of a revocation. Reported as ``{"invalidated": bool}`` so
+        the edge can tell "this host had nothing to do" from "this host failed",
+        which is the difference between a clean disable and a degraded one.
+        """
+        codex = self._codex
+        if codex is None:
+            return {"invalidated": False, "reason": "codex not enabled on this host"}
+        await codex.invalidate_credentials(account)
+        self._codex_catalog().invalidate(account)
+        self._codex_quota_reader().invalidate(account)
+        return {"invalidated": True}
+
+    def _codex_catalog(self):
+        catalog = getattr(self, "_codex_model_catalog", None)
+        if catalog is None:
+            from server.codex.catalog import CodexModelCatalog
+            from server.config import get_settings
+
+            catalog = CodexModelCatalog(
+                cache_ttl_s=float(getattr(get_settings(), "codex_model_cache_s", 300.0))
+            )
+            self._codex_model_catalog = catalog
+        return catalog
+
+    def _codex_quota_reader(self):
+        reader = getattr(self, "_codex_quota_cache", None)
+        if reader is None:
+            from server.codex.quota import CodexQuotaReader
+            from server.config import get_settings
+
+            reader = CodexQuotaReader(
+                cache_ttl_s=float(getattr(get_settings(), "codex_quota_cache_s", 60.0))
+            )
+            self._codex_quota_cache = reader
+        return reader
+
     def driver(self, session_id: str) -> AgentDriver | None:
         """Return the live AgentDriver for session_id, or None."""
         return self._drivers.get(session_id)
@@ -10975,22 +11174,12 @@ class SessionOrchestrator:
             # above already closed that client (it belonged to old_driver), so every
             # mcp__ccswitch__* call on the rebuilt driver would raise against a dead
             # connection unless a FRESH AssistantApi is minted here and re-registered
-            # under record.id before the new AgentDriver is built — mirroring the
-            # rebuild _spawn_session does on the initial spawn (#1125).
+            # under record.id before the new AgentDriver is built — the same
+            # _setup_assistant_overlay the spawn and the resume use (#1125).
             assistant_api = None
             if is_assistant_kind(getattr(record, "kind", None)):
-                from server.assistant.client import AssistantApi
-                from server.assistant.options import assistant_options
-                from server.assistant.server import build_server
-                from server.assistant.token import mint_token
-                from server.config import get_settings
-                settings = get_settings()
-                assistant_api = AssistantApi(
-                    base_url=f"http://127.0.0.1:{settings.port}",
-                    token=mint_token(identity, record.id), session_id=record.id)
-                self.register_assistant_overlay(record.id, assistant_options(
-                    server=build_server(assistant_api), max_turns=settings.assistant_max_turns,
-                    model=record.model or settings.assistant_model))
+                assistant_api = self._setup_assistant_overlay(
+                    record.id, identity=identity, model=record.model)
             new_driver = self._create_driver(
                 engine=AgentEngine.CLAUDE_CODE,
                 session_id=record.id,

@@ -715,9 +715,26 @@ def set_allow_extra_usage(name: str, allow: bool) -> None:
 
 
 def set_account_enabled(name: str, enabled: bool) -> None:
-    """Enable/disable an account without deleting it (reversible pause)."""
+    """Enable/disable an account without deleting it (reversible pause).
+
+    Writes BOTH stores, ledger first. The ledger is operative — the selector and
+    every spawn path read ``ledger.is_account_enabled`` — so it must land even if
+    the manifest write cannot. The manifest mirror exists so the Codex credential
+    authority's authorization sync has a monotonically-revisioned view of the
+    flag; a manifest fault degrades that sync (it fails closed on a stale lease)
+    rather than leaving the account half-disabled where it matters.
+    """
     with ledger.locked_ledger() as led:
         ledger.set_account_enabled(led, name, enabled)
+    try:
+        account_registry.set_enabled(name, enabled)
+    except account_registry.ManifestNotWritable:
+        log.warning("set_account_enabled(%s): runner host cannot edit "
+                    "accounts.json; the primary owns the mirror", name)
+    except (account_registry.AccountRegistryError, OSError):
+        log.warning("set_account_enabled(%s): ledger updated but the accounts.json "
+                    "mirror did not; Codex authorization sync may lag", name,
+                    exc_info=True)
 
 
 def set_account_defaults(

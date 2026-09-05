@@ -464,19 +464,19 @@ violate the single-source-of-truth rule.
 
 **Work:**
 
-- [ ] Extract the minimal supported request/response/notification/server-request schema from the
+- [x] Extract the minimal supported request/response/notification/server-request schema from the
   real generated app-server schema. Commit curated fixtures and their upstream hash, not secrets or
   user configuration.
-- [ ] Implement one async JSONL client with monotonically unique request ids, response futures,
+- [x] Implement one async JSONL client with monotonically unique request ids, response futures,
   notification dispatch, server-request dispatch, timeout/cancellation, bounded queues, and strict
   EOF/process-exit behavior.
-- [ ] Require `initialize`/`initialized` before calls. Advertise `experimentalApi=true` only when
+- [x] Require `initialize`/`initialized` before calls. Advertise `experimentalApi=true` only when
   external auth is enabled.
-- [ ] Validate every inbound/outbound supported DTO. Unknown notifications are redacted and counted;
+- [x] Validate every inbound/outbound supported DTO. Unknown notifications are redacted and counted;
   unknown server requests fail closed and never auto-approve.
-- [ ] Centralize token/account-id/prompt/output/command redaction. `repr`, exception messages, and
+- [x] Centralize token/account-id/prompt/output/command redaction. `repr`, exception messages, and
   structured logs must be secret-safe.
-- [ ] Test interleaving, partial lines, malformed JSON, duplicate ids, request timeout, cancellation,
+- [x] Test interleaving, partial lines, malformed JSON, duplicate ids, request timeout, cancellation,
   queue pressure, EOF, secret-shaped values, and schema drift.
 
 ### Task 2.2: Per-account runner process manager
@@ -496,17 +496,17 @@ violate the single-source-of-truth rule.
 
 **Work:**
 
-- [ ] Resolve `CCSWITCH_CODEX_BIN`, execute `--version`, compare against the explicit supported
+- [x] Resolve `CCSWITCH_CODEX_BIN`, execute `--version`, compare against the explicit supported
   version set/schema hash, and advertise a typed unavailable reason on mismatch.
-- [ ] Create a local `CODEX_HOME` per runner account with mode 0700. Assert it is not on a network
+- [x] Create a local `CODEX_HOME` per runner account with mode 0700. Assert it is not on a network
   filesystem before starting; never symlink it to the authority home.
-- [ ] Supervise one app-server per `(runner, OpenAI account)` and multiplex thread drivers on it.
+- [x] Supervise one app-server per `(runner, OpenAI account)` and multiplex thread drivers on it.
   Serialize startup/login, ref-count active threads, idle-reap after the grace period, and bound
   crash restart with jitter/backoff.
-- [ ] On restart, reinitialize/relogin and notify thread drivers to recover through `thread/read`;
+- [x] On restart, reinitialize/relogin and notify thread drivers to recover through `thread/read`;
   never claim an in-flight turn succeeded.
-- [ ] Integrate manager drain after driver turns settle and before daemon shutdown completes.
-- [ ] Prove a Codex process crash cannot stop or degrade a Claude driver.
+- [x] Integrate manager drain after driver turns settle and before daemon shutdown completes.
+- [x] Prove a Codex process crash cannot stop or degrade a Claude driver.
 
 **Real read-only smoke:** opt-in initialize, external login, account/read, model/list, and
 rateLimits/read against the supported binary. No turn yet.
@@ -535,44 +535,44 @@ rateLimits/read against the supported binary. No turn yet.
 
 **Work:**
 
-- [ ] Run the authority as its own systemd service on dobby under a dedicated `ccswitch-auth` OS
+- [x] Run the authority as its own systemd service on dobby under a dedicated `ccswitch-auth` OS
   user. Take an exclusive instance lock in its private state directory and fail a second authority
   start loudly; v1 has no automatic authority failover.
-- [ ] Give every OpenAI account an authority-only managed `CODEX_HOME` under
+- [x] Give every OpenAI account an authority-only managed `CODEX_HOME` under
   `/var/lib/ccswitch-codex-auth/accounts/` (directories 0700; auth files 0600), outside the Claude
   account-store export and every runner mount. Prove the session-daemon user cannot traverse it.
-- [ ] Implement device-login start/status/cancel/logout and state transitions without returning
+- [x] Implement device-login start/status/cancel/logout and state transitions without returning
   tokens to the edge/browser.
-- [ ] Implement `get_envelope(account, minimum_generation)` and coalesced `refresh(account,
+- [x] Implement `get_envelope(account, minimum_generation)` and coalesced `refresh(account,
   rejected_generation)`. Exactly one refresh may run per account; stale rejection cannot overwrite
   or downgrade a newer generation.
-- [ ] Read the refreshed managed cache only through `auth_store.py`; validate required fields and
+- [x] Read the refreshed managed cache only through `auth_store.py`; validate required fields and
   immediately form an in-memory `CredentialEnvelope`. Never persist an envelope outside the
   authority cache.
-- [ ] Serve a separate versioned mTLS API whose route table contains only Codex-auth operations—no
+- [x] Serve a separate versioned mTLS API whose route table contains only Codex-auth operations—no
   import or mounting of the session daemon's general `/rpc/{method}` dispatcher. Use distinct
   `codex-edge` and `codex-runner:<host>` client certificates and deny-by-default per-route ACLs:
   edge may administer login; runners may only request envelope/refresh for enabled accounts.
-- [ ] Load the listener only from `CCSWITCH_CODEX_AUTHORITY_LISTEN_ENDPOINT`,
+- [x] Load the listener only from `CCSWITCH_CODEX_AUTHORITY_LISTEN_ENDPOINT`,
   `CCSWITCH_CODEX_AUTHORITY_TLS_CERT`, `CCSWITCH_CODEX_AUTHORITY_TLS_KEY`,
   `CCSWITCH_CODEX_AUTHORITY_TLS_CLIENT_CA`, and
   `CCSWITCH_CODEX_AUTHORITY_CLIENT_ALLOWLIST`. Use authority-specific key material; never reuse the
   session-daemon server key or edge session-RPC client key. Fail startup on missing, unreadable, or
   non-mTLS configuration.
-- [ ] Add an admin-only edge→authority authorization sync containing only account name, provider,
+- [x] Add an admin-only edge→authority authorization sync containing only account name, provider,
   engine, enabled state, and monotonic manifest revision. Persist it as a private non-secret
   projection with a short lease; full-sync on edge startup and periodically. Fail issuance closed
   on expired sync, unknown account, disabled account, or revision rollback. Do not grant the
   authority user read/traverse access to the Claude account store.
-- [ ] Implement explicit revoke before disable/remove. Revoke increments the authority generation,
+- [x] Implement explicit revoke before disable/remove. Revoke increments the authority generation,
   rejects future envelope/refresh calls, and asks the edge to fan out manager invalidation to every
   runner so cached envelopes are dropped and the account's app-servers are stopped. Enable updates
   the canonical manifest first, then syncs authority; a failed sync stays safely unavailable.
-- [ ] Add negative integration tests proving a runner certificate cannot call login/logout, session
+- [x] Add negative integration tests proving a runner certificate cannot call login/logout, session
   create/delete, automation, deployment, or any arbitrary method path.
-- [ ] Audit only account alias, runner identity, action, outcome, generation, and timing. Hash raw
+- [x] Audit only account alias, runner identity, action, outcome, generation, and timing. Hash raw
   native identifiers if correlation is required.
-- [ ] Test concurrent refresh storms, authority restart, duplicate-start/lock loss, expired sync
+- [x] Test concurrent refresh storms, authority restart, duplicate-start/lock loss, expired sync
   lease, disable/remove revocation, stale runner cache invalidation, wrong account, wrong CN,
   untrusted client CA, missing/unreadable TLS material, revision/generation rollback, missing fields,
   401 loop, and log/exception redaction.
@@ -592,21 +592,21 @@ rateLimits/read against the supported binary. No turn yet.
 
 **Work:**
 
-- [ ] Fetch an envelope over the dedicated authority mTLS client, call app-server external login,
+- [x] Fetch an envelope over the dedicated authority mTLS client, call app-server external login,
   and discard request-local token strings after serialization.
-- [ ] Handle `account/chatgptAuthTokens/refresh` only when account, manager instance, and rejected
+- [x] Handle `account/chatgptAuthTokens/refresh` only when account, manager instance, and rejected
   generation match. Ask the authority for a newer generation and return the documented response
   inside `CCSWITCH_CODEX_AUTH_REFRESH_DEADLINE_S` (default 8.0 seconds total, including pool,
   connect, write, and read time).
-- [ ] Deduplicate refresh requests within the runner as well as at the authority. Bound retries and
+- [x] Deduplicate refresh requests within the runner as well as at the authority. Bound retries and
   mark auth degraded after repeated rejection; never loop indefinitely.
-- [ ] Use native client timeout/deadline controls rather than an outer `asyncio.wait_for` that can
+- [x] Use native client timeout/deadline controls rather than an outer `asyncio.wait_for` that can
   strand a pooled connection. A timed-out waiter must detach safely from a shared coalesced refresh;
   the authority's upstream operation is itself bounded. Test a slow authority, pool starvation,
   callback cancellation, and a late response that must not answer an expired app-server request.
-- [ ] Prove no `auth.json` appears in runner homes and tokens are absent from DB, ledger, event ring,
+- [x] Prove no `auth.json` appears in runner homes and tokens are absent from DB, ledger, event ring,
   HTTP payloads, metrics, logs, tracebacks, and process arguments/environment.
-- [ ] Fail startup when experimental auth is disabled, schema capability is absent, or authority
+- [x] Fail startup when experimental auth is disabled, schema capability is absent, or authority
   mTLS config is incomplete. Do not fall back to managed runner auth.
 
 ### Task 3.3: OpenAI account, model, and quota APIs
@@ -630,19 +630,19 @@ rateLimits/read against the supported binary. No turn yet.
 
 **Work:**
 
-- [ ] Add `/api/accounts/add/openai` start/status/cancel, provider-dispatched reauth/logout/remove,
+- [x] Add `/api/accounts/add/openai` start/status/cancel, provider-dispatched reauth/logout/remove,
   and manifest writes only after successful login. Preserve name validation/global uniqueness.
-- [ ] Route OpenAI enable/disable/remove through the safe authority ordering: revoke and fan out
+- [x] Route OpenAI enable/disable/remove through the safe authority ordering: revoke and fan out
   runner-manager invalidation before disabling/removing; manifest-first then authority sync for
   enable. Surface partial failures as degraded and retryable, never as silently enabled.
-- [ ] Return provider, engine, user/runner auth modes, authority health, active runner count, and
+- [x] Return provider, engine, user/runner auth modes, authority health, active runner count, and
   typed quota windows—never native account id or tokens.
-- [ ] Make `GET /api/models?engine=&account=` canonical. Claude delegates to its existing catalog;
+- [x] Make `GET /api/models?engine=&account=` canonical. Claude delegates to its existing catalog;
   Codex calls `model/list` and returns supported efforts/modalities/defaults with a short cache keyed
   by account, CLI version, and effective config.
-- [ ] Map all app-server rate-limit buckets into quota windows, including null resets and
+- [x] Map all app-server rate-limit buckets into quota windows, including null resets and
   model-scoped buckets. Cache last-good with age; distinguish unknown, unsupported, and auth error.
-- [ ] Validate model+effort as one pair at dispatch. Refresh once on drift, then return a typed 409
+- [x] Validate model+effort as one pair at dispatch. Refresh once on drift, then return a typed 409
   with current choices; silently substitute only when the request says engine default.
 
 ---

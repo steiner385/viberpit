@@ -14,6 +14,13 @@ import { useDeployController } from '@/lib/deployController'
 // to "not dismissed", never a crash.
 const DISMISSED_KEY = 'ccswitch.deployFailureDismissed'
 
+// A CI verdict rendered for a human. Only "unrun" needs translating: it means the
+// commit's CI run was cancelled before any job started, so no check will ever arrive.
+// Showing that as "pending" tells the operator to wait for something that is not
+// coming — the one verdict on this banner that never resolves on its own.
+const CI_VERDICT_LABELS: Record<string, string> = { unrun: 'never ran' }
+const ciLabel = (verdict: string): string => CI_VERDICT_LABELS[verdict] ?? verdict
+
 function failureSignature(error: string | null, failed: string[], gaveUp: string[]): string {
   return JSON.stringify({ error, failed: [...failed].sort(), gaveUp: [...gaveUp].sort() })
 }
@@ -79,8 +86,8 @@ export function DeployPanel() {
   if (!behind && !showFailure) return null
   const canDeploy = behind && !running && ci === 'green'
   const reason = running ? 'deploying…'
-    : partial ? `${deployableCount} of ${count} deployable (tip CI ${tipCi})`
-    : ci !== 'green' ? `CI ${ci}` : ''
+    : partial ? `${deployableCount} of ${count} deployable (tip CI ${ciLabel(tipCi)})`
+    : ci !== 'green' ? `CI ${ciLabel(ci)}` : ''
 
   return (
     <Banner

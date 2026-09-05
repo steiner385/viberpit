@@ -55,6 +55,39 @@ def _merge_union(parts: list[dict]) -> dict:
     return out
 
 
+def _merge_codex_status(parts: list[dict]) -> dict:
+    """Reduce per-host Codex account status into one fleet answer.
+
+    ``activeRunners`` genuinely spans the fleet — rocky may be running the
+    account's app-server while dobby is not — so a primary-only read would report
+    0 for an account that is very much in use. That is the #920 shape, which is
+    why this is a merge-all rather than a primary-local read.
+
+    ``quota`` is account-scoped, so every host that answers reports the same
+    windows; the freshest (lowest ``ageS``, preferring a live ``ok``) wins.
+    ``degradedReason`` is per-host and the first one found is surfaced: one
+    degraded runner is worth showing even when the others are healthy.
+    """
+    best: dict | None = None
+    runners = 0
+    degraded: str | None = None
+    for part in parts:
+        runners += int((part or {}).get("activeRunners") or 0)
+        degraded = degraded or (part or {}).get("degradedReason")
+        quota = (part or {}).get("quota")
+        if not isinstance(quota, dict):
+            continue
+        if best is None:
+            best = quota
+            continue
+        # Prefer a live OK over a stale one, then the smaller age.
+        rank = (quota.get("state") != "ok", float(quota.get("ageS") or 0.0))
+        best_rank = (best.get("state") != "ok", float(best.get("ageS") or 0.0))
+        if rank < best_rank:
+            best = quota
+    return {"quota": best, "activeRunners": runners, "degradedReason": degraded}
+
+
 # Aggregate reads whose truthful value spans the WHOLE fleet: the primary's answer
 # only covers sessions IT holds a driver for (live_session_load/counts) or its own
 # queue (session_queue_positions), so a primary-only read silently undercounts every
@@ -63,6 +96,7 @@ _MERGE_ALL_HOSTS: dict[str, object] = {
     "live_session_load": _merge_sum_floats,
     "live_session_counts": _merge_sum_counts,
     "session_queue_positions": _merge_union,
+    "codex_account_status": _merge_codex_status,
 }
 
 # Method names whose FIRST positional arg is session_id and that touch live daemon
@@ -329,6 +363,40 @@ class FleetOrchestrator:
                          "session_id=%s owner=%s (owner answered without it)", sid, owner)
                 del merged[sid]
         return list(merged.values())
+
+    async def codex_invalidate_credentials(self, account: str) -> dict:
+        """Revoke *account*'s Codex credentials on EVERY host, reporting per host.
+
+        Deliberately not routed through ``_MERGE_ALL_HOSTS``. That helper skips an
+        unreachable worker with a warning, which is right for an aggregate *read* —
+        an undercounted session total is cosmetic — and wrong here: a host that did
+        not answer may still be running an app-server with a live envelope, and
+        reporting that as a successful revocation is the difference between
+        "disabled" and "disabled everywhere". So every host's outcome is named, and
+        a caller with a non-empty ``failed`` must surface the account as degraded
+        and retry rather than call it disabled.
+        """
+        async def _one(name: str):
+            try:
+                return name, await self._router.get(name).codex_invalidate_credentials(
+                    account
+                ), None
+            except Exception as e:  # noqa: BLE001 — one host must not block the rest
+                return name, None, e
+
+        invalidated: list[str] = []
+        failed: dict[str, str] = {}
+        for name, _res, exc in await asyncio.gather(
+            *(_one(n) for n in self._router.names())
+        ):
+            if exc is None:
+                invalidated.append(name)
+            else:
+                failed[name] = str(exc)
+                log.error("fleet.codex_invalidate_credentials host=%s account=%s "
+                          "FAILED — the account may still be usable there",
+                          name, account, exc_info=exc)
+        return {"invalidated": invalidated, "failed": failed}
 
     def subscribe(self, session_id: str):
         # Sync per-session iterator. The WS handler calls ensure_driver (async, warms

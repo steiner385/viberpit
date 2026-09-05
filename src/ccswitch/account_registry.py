@@ -641,6 +641,29 @@ def set_health(name: str, state: str, *, detail: str | None = None,
             updated_at=now)
 
 
+def set_enabled(name: str, enabled: bool, *, now: datetime | None = None) -> None:
+    """Mirror an account's enabled flag into the manifest.
+
+    The *operative* switch is still the ledger (``ledger.set_account_enabled``);
+    that is what the selector and every spawn path read, and moving it here would
+    be a behaviour change this task has no business making. What the manifest adds
+    is a **monotonic revision that advances when the flag changes**, which is what
+    the Codex credential authority's rollback check is built on: without it, an
+    out-of-order authorization sync could re-enable an account the operator had
+    just disabled, and the authority would have no way to tell.
+
+    Kept in lockstep by ``accounts.set_account_enabled``, which writes both. A
+    no-op for an account not in the manifest, and a no-op on a runner (only the
+    primary may write) — the runner reads the primary's snapshot.
+    """
+    now = now or _utcnow()
+    with locked_manifest() as manifest:
+        e = manifest.accounts.get(name)
+        if e is None or e.enabled == bool(enabled):
+            return
+        manifest.accounts[name] = replace(e, enabled=bool(enabled), updated_at=now)
+
+
 def bump_generation(name: str, *, now: datetime | None = None) -> int:
     """Record that the credential behind *name* was replaced. Returns the new
     generation. Non-secret: the counter says a rotation happened, not what."""

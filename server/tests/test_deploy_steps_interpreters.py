@@ -99,6 +99,58 @@ def test_unparseable_execstart_is_skipped_not_failed():
     assert steps.check_unit_interpreters(("ccswitch.service",), run=run) == []
 
 
+def test_interpreter_escaping_its_own_checkout_is_reported(tmp_path):
+    """Issue #1171: the exact production coupling — ExecStart's ``.venv`` is a symlink
+    into a *different* developer checkout, not a broken link but a live one. The unit
+    still runs, but renaming or rebuilding that other checkout breaks it, and nothing
+    short of following the symlink to see where it actually leads catches that.
+    """
+    checkout_a = tmp_path / "cc-account-switcher-deploy"
+    checkout_b = tmp_path / "ccswitch"
+    real_exe = checkout_b / "actual-venv" / "bin" / "python"
+    real_exe.parent.mkdir(parents=True)
+    real_exe.write_text("#!/bin/sh\n")
+    real_exe.chmod(0o755)
+    venv_link = checkout_a / ".venv"
+    venv_link.parent.mkdir(parents=True)
+    venv_link.symlink_to(checkout_b / "actual-venv")
+    exe_path = str(checkout_a / ".venv" / "bin" / "python")
+
+    run = _fake_run({"ccswitch-daemon.service": _execstart(exe_path)})
+    problems = steps.check_unit_interpreters(("ccswitch-daemon.service",), run=run)
+
+    assert len(problems) == 1
+    assert exe_path in problems[0] and str(checkout_a) in problems[0]
+    assert str(real_exe) in problems[0], "the resolved target must be named so it is actionable"
+
+
+def test_interpreter_within_its_own_checkout_via_symlink_is_not_reported(tmp_path):
+    """A symlink is fine as long as it stays inside the checkout ExecStart names."""
+    checkout = tmp_path / "ccswitch"
+    real_exe = checkout / "venv-actual" / "bin" / "python"
+    real_exe.parent.mkdir(parents=True)
+    real_exe.write_text("#!/bin/sh\n")
+    real_exe.chmod(0o755)
+    (checkout / ".venv").symlink_to(checkout / "venv-actual")
+    exe_path = str(checkout / ".venv" / "bin" / "python")
+
+    run = _fake_run({"ccswitch.service": _execstart(exe_path)})
+    assert steps.check_unit_interpreters(("ccswitch.service",), run=run) == []
+
+
+def test_path_without_venv_marker_skips_the_isolation_check(tmp_path):
+    """Not every ExecStart follows the ``<checkout>/.venv/bin/python`` convention (e.g.
+    a future service-owned venv path). Without that marker there is no notion of "which
+    checkout this belongs to", so the isolation check has no positive proof to act on.
+    """
+    exe = tmp_path / "opt-style" / "bin" / "python"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    run = _fake_run({"ccswitch.service": _execstart(str(exe))})
+    assert steps.check_unit_interpreters(("ccswitch.service",), run=run) == []
+
+
 def test_every_unit_is_checked_and_all_problems_reported(tmp_path):
     """One bad unit must not mask another — the operator should see every path to fix."""
     good = tmp_path / "python"

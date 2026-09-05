@@ -17,6 +17,9 @@ grows a different answer per call site:
 * **Timeout / cancellation.** Every request has a deadline; both a timeout and a
   cancellation unregister the pending entry, so a late reply is counted as an
   orphan instead of resolving a caller that already gave up.
+* **Bounded outbound requests.** A request reserves a slot before its future is
+  registered or its write queues behind the shared lock. Saturation fails fast
+  with a typed error and counter; timeout and cancellation release the slot.
 * **Malformed frames** are counted and skipped, but
   `MAX_CONSECUTIVE_MALFORMED_FRAMES` in a row is fatal: at that point the stream
   is not a JSONL stream and pending callers must fail rather than wait.
@@ -76,7 +79,7 @@ MAX_CONSECUTIVE_MALFORMED_FRAMES: Final = 5
 DEFAULT_REQUEST_TIMEOUT_S: Final = 30.0
 DEFAULT_MAX_BUFFERED_NOTIFICATIONS: Final = 256
 DEFAULT_MAX_INFLIGHT_SERVER_REQUESTS: Final = 8
-_MAX_ERROR_MESSAGE_CHARS: Final = 200
+DEFAULT_MAX_OUTBOUND_REQUESTS: Final = 32
 
 DEFAULT_CLIENT_INFO: Final = schema.ClientInfo(
     name="ccswitch", version="1", title="ccswitch session manager"
@@ -104,6 +107,10 @@ class CodexRequestTimeout(CodexProtocolError):
     """A request exceeded its deadline; the pending entry was unregistered."""
 
 
+class CodexRequestOverloaded(CodexProtocolError):
+    """The bounded outbound request path had no immediately available slot."""
+
+
 class CodexTransportClosed(CodexProtocolError):
     """The app-server stream ended or failed; every pending request was failed."""
 
@@ -115,25 +122,23 @@ class CodexFramingError(CodexProtocolError):
 class CodexRequestFailed(CodexProtocolError):
     """The app-server answered a request with a JSON-RPC error."""
 
-    def __init__(self, code: int, message: str, *, method: str | None = None) -> None:
+    def __init__(self, code: int, message: str = "", *, method: str | None = None) -> None:
         self.code = code
-        self.method = method
-        where = f" for {method}" if method else ""
-        super().__init__(f"codex app-server request failed{where} ({code}): {message}")
+        self.method = method if method in schema.SUPPORTED_CLIENT_REQUESTS else None
+        where = f" for {self.method}" if self.method else ""
+        super().__init__(
+            f"codex app-server request failed{where} "
+            f"(code={code}, reason=peer_error)"
+        )
 
     @classmethod
     def from_wire(cls, payload: Any, *, method: str | None = None) -> CodexRequestFailed:
         code = 0
-        message = ""
         if isinstance(payload, Mapping):
             raw_code = payload.get("code")
             if type(raw_code) is int:
                 code = raw_code
-            raw_message = payload.get("message")
-            if isinstance(raw_message, str):
-                message = raw_message
-        safe = redaction.scrub_text(message)[:_MAX_ERROR_MESSAGE_CHARS]
-        return cls(code, safe or "no message", method=method)
+        return cls(code, method=method)
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +203,7 @@ class ProtocolCounters:
     unknown_server_requests: int = 0
     unhandled_server_requests: int = 0
     shed_server_requests: int = 0
+    rejected_outbound_requests: int = 0
     malformed_frames: int = 0
     orphan_responses: int = 0
     unknown_notification_methods: Mapping[str, int] = field(default_factory=dict)
@@ -212,6 +218,7 @@ class _MutableCounters:
     unknown_server_requests: int = 0
     unhandled_server_requests: int = 0
     shed_server_requests: int = 0
+    rejected_outbound_requests: int = 0
     malformed_frames: int = 0
     orphan_responses: int = 0
     unknown_notification_methods: dict[str, int] = field(default_factory=dict)
@@ -225,6 +232,7 @@ class _MutableCounters:
             unknown_server_requests=self.unknown_server_requests,
             unhandled_server_requests=self.unhandled_server_requests,
             shed_server_requests=self.shed_server_requests,
+            rejected_outbound_requests=self.rejected_outbound_requests,
             malformed_frames=self.malformed_frames,
             orphan_responses=self.orphan_responses,
             unknown_notification_methods=dict(self.unknown_notification_methods),
@@ -263,6 +271,7 @@ class CodexAppServerClient:
         refresh_handler: RefreshHandler | None = None,
         max_buffered_notifications: int = DEFAULT_MAX_BUFFERED_NOTIFICATIONS,
         max_inflight_server_requests: int = DEFAULT_MAX_INFLIGHT_SERVER_REQUESTS,
+        max_outbound_requests: int = DEFAULT_MAX_OUTBOUND_REQUESTS,
     ) -> None:
         self._transport = transport
         self._external_auth_enabled = external_auth_enabled
@@ -278,6 +287,10 @@ class CodexAppServerClient:
         self._ids = itertools.count(1)
         self._counters = _MutableCounters()
         self._write_lock = asyncio.Lock()
+        self._max_outbound_requests = max(1, max_outbound_requests)
+        self._outbound_requests = 0
+        self._outbound_saturated = False
+        self._active_outbound_tasks: set[asyncio.Future[Any]] = set()
         self._reader_task: asyncio.Task[None] | None = None
         self._reply_tasks: set[asyncio.Task[None]] = set()
         self._max_inflight_server_requests = max(1, max_inflight_server_requests)
@@ -313,6 +326,10 @@ class CodexAppServerClient:
         return len(self._pending)
 
     @property
+    def active_outbound_request_count(self) -> int:
+        return len(self._active_outbound_tasks)
+
+    @property
     def buffered_notification_count(self) -> int:
         return self._notifications.qsize()
 
@@ -332,6 +349,13 @@ class CodexAppServerClient:
 
     async def aclose(self) -> None:
         self._fail_all(CodexTransportClosed("codex app-server client was closed"))
+        outbound = tuple(self._active_outbound_tasks)
+        for request in outbound:
+            request.cancel()
+        if outbound:
+            await asyncio.gather(*outbound, return_exceptions=True)
+            for request in outbound:
+                self._release_outbound_operation(request)
         task, self._reader_task = self._reader_task, None
         if task is not None:
             task.cancel()
@@ -356,8 +380,8 @@ class CodexAppServerClient:
                 experimental_api=self._external_auth_enabled
             ),
         )
-        raw = await self.call(schema.METHOD_INITIALIZE, params.to_wire())
-        response = schema.parse_initialize_response(raw)
+        response = await self.call(schema.METHOD_INITIALIZE, params.to_wire())
+        assert isinstance(response, schema.InitializeResponse)
         await self.notify_initialized()
         self._initialized = True
         self._initialize_response = response
@@ -366,7 +390,6 @@ class CodexAppServerClient:
             logging.INFO,
             "codex.protocol.initialized",
             experimental_api=self._external_auth_enabled,
-            platform_os=response.platform_os,
         )
         return response
 
@@ -381,7 +404,7 @@ class CodexAppServerClient:
         params: Mapping[str, Any] | None = None,
         *,
         timeout: float | None = None,
-    ) -> Any:
+    ) -> schema.ClientResponse:
         """Issue one supported client request and await its result.
 
         This is the one door every outbound request goes through, so the
@@ -390,7 +413,7 @@ class CodexAppServerClient:
         the hole by forgetting its own check.
         """
         if method not in schema.SUPPORTED_CLIENT_REQUESTS:
-            raise schema.CodexSchemaError(f"unsupported client request: {method!r}")
+            raise schema.CodexSchemaError("unsupported client request method")
         if (
             method in schema.EXTERNAL_AUTH_ONLY_CLIENT_REQUESTS
             and not self._external_auth_enabled
@@ -403,13 +426,31 @@ class CodexAppServerClient:
             raise CodexNotInitializedError(
                 f"codex app-server call {method} before the initialize handshake"
             )
-        return await self._request(method, params, timeout)
+        validated = schema.validate_client_request_params(
+            method, {} if params is None else params
+        )
+        if method == schema.METHOD_INITIALIZE:
+            capabilities = validated.get("capabilities", {})
+            if capabilities.get("experimentalApi", False) != self._external_auth_enabled:
+                raise CodexExternalAuthDisabled(
+                    "initialize experimental API does not match client configuration"
+                )
+        raw = await self._run_owned_operation(
+            lambda: self._request(method, validated, timeout), method=method
+        )
+        return schema.parse_client_response(method, raw)
 
     async def notify(self, method: str, params: Mapping[str, Any] | None = None) -> None:
         if method not in schema.SUPPORTED_CLIENT_NOTIFICATIONS:
-            raise schema.CodexSchemaError(f"unsupported client notification: {method!r}")
+            raise schema.CodexSchemaError("unsupported client notification method")
         self._ensure_open()
-        await self._write({"method": method, "params": dict(params or {})})
+        validated = schema.validate_client_notification_params(
+            method, {} if params is None else params
+        )
+        await self._run_owned_operation(
+            lambda: self._write({"method": method, "params": validated}),
+            method=method,
+        )
 
     async def login_with_external_tokens(
         self, params: schema.ExternalAuthLoginParams
@@ -422,28 +463,32 @@ class CodexAppServerClient:
         the wire to a process that never negotiated it. Raises
         `CodexExternalAuthDisabled` in that case.
         """
-        raw = await self.call(schema.METHOD_LOGIN_START, params.to_wire())
-        return schema.parse_login_account_response(raw)
+        response = await self.call(schema.METHOD_LOGIN_START, params.to_wire())
+        assert isinstance(response, schema.LoginAccountResponse)
+        return response
 
     async def read_account(
         self, params: schema.GetAccountParams | None = None
     ) -> schema.GetAccountResponse:
-        raw = await self.call(
+        response = await self.call(
             schema.METHOD_ACCOUNT_READ, (params or schema.GetAccountParams()).to_wire()
         )
-        return schema.parse_get_account_response(raw)
+        assert isinstance(response, schema.GetAccountResponse)
+        return response
 
     async def read_rate_limits(self) -> schema.GetAccountRateLimitsResponse:
-        raw = await self.call(schema.METHOD_RATE_LIMITS_READ, {})
-        return schema.parse_rate_limits_response(raw)
+        response = await self.call(schema.METHOD_RATE_LIMITS_READ, {})
+        assert isinstance(response, schema.GetAccountRateLimitsResponse)
+        return response
 
     async def list_models(
         self, params: schema.ModelListParams | None = None
     ) -> schema.ModelListResponse:
-        raw = await self.call(
+        response = await self.call(
             schema.METHOD_MODEL_LIST, (params or schema.ModelListParams()).to_wire()
         )
-        return schema.parse_model_list_response(raw)
+        assert isinstance(response, schema.ModelListResponse)
+        return response
 
     async def next_notification(
         self, *, timeout: float | None = None
@@ -455,6 +500,59 @@ class CodexAppServerClient:
 
     # -- request plumbing --------------------------------------------------
 
+    async def _run_owned_operation(
+        self, operation_factory: Callable[[], Awaitable[Any]], *, method: str
+    ) -> Any:
+        """Run client I/O in a client-owned task, never the application task.
+
+        Shutdown cancels and awaits only this internal task. The caller waiting
+        on it receives the latched transport error and remains under application
+        ownership, even if it would catch cancellation and continue running.
+        """
+        self._ensure_open()
+        if self._outbound_requests >= self._max_outbound_requests:
+            self._counters.rejected_outbound_requests += 1
+            if not self._outbound_saturated:
+                self._outbound_saturated = True
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "codex.protocol.outbound_requests_saturated",
+                    method=method,
+                    limit=self._max_outbound_requests,
+                )
+            raise CodexRequestOverloaded(
+                f"codex app-server request {method} rejected "
+                "(reason=outbound_limit)"
+            )
+        # This reservation happens before the coroutine or internal task is
+        # created. With no intervening await, concurrent callers cannot exceed
+        # the configured number of client-owned outbound operations.
+        self._outbound_requests += 1
+        try:
+            task = asyncio.ensure_future(operation_factory())
+        except BaseException:
+            self._outbound_requests -= 1
+            self._outbound_saturated = False
+            raise
+        self._active_outbound_tasks.add(task)
+        task.add_done_callback(self._release_outbound_operation)
+        try:
+            return await task
+        except asyncio.CancelledError:
+            if self._closed_error is not None:
+                raise self._closed_copy() from None
+            raise
+
+    def _release_outbound_operation(self, task: asyncio.Future[Any]) -> None:
+        """Release one admitted slot exactly once when its owned task ends."""
+        if task not in self._active_outbound_tasks:
+            return
+        self._active_outbound_tasks.discard(task)
+        self._outbound_requests -= 1
+        if self._outbound_requests < self._max_outbound_requests:
+            self._outbound_saturated = False
+
     async def _request(
         self,
         method: str,
@@ -462,10 +560,11 @@ class CodexAppServerClient:
         timeout: float | None,
     ) -> Any:
         self._ensure_open()
+        frame_params = dict(params or {})
         request_id = next(self._ids)
         future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = _Pending(future, method)
-        frame = {"id": request_id, "method": method, "params": dict(params or {})}
+        frame = {"id": request_id, "method": method, "params": frame_params}
 
         async def _send_and_await() -> Any:
             # The write is INSIDE the deadline: `_write_lock` is shared with the
@@ -480,7 +579,10 @@ class CodexAppServerClient:
             )
         except TimeoutError as exc:
             log_event(
-                logger, logging.WARNING, "codex.protocol.request_timeout", method=method
+                logger,
+                logging.WARNING,
+                "codex.protocol.request_timeout",
+                method=method,
             )
             raise CodexRequestTimeout(
                 f"codex app-server request {method} exceeded its deadline"
@@ -489,6 +591,11 @@ class CodexAppServerClient:
             self._pending.pop(request_id, None)
             if not future.done():
                 future.cancel()
+            elif not future.cancelled():
+                # A close may fail the future while its owner is still
+                # blocked in `_write`; retrieve that exception so shutdown
+                # cannot emit "Future exception was never retrieved".
+                future.exception()
 
     async def _write(self, frame: Mapping[str, Any]) -> None:
         line = json.dumps(frame, separators=(",", ":")).encode("utf-8") + b"\n"
@@ -518,7 +625,7 @@ class CodexAppServerClient:
         except Exception:  # noqa: BLE001 -- a subclass with a richer __init__
             # Never let reconstruction raise: `_fail_all` uses this to resolve
             # pending futures, and a raise there would strand every caller.
-            return CodexProtocolError(str(error))
+            return CodexProtocolError("codex app-server client closed (reason=unknown)")
 
     def _ensure_open(self) -> None:
         if self._closed_error is not None:
@@ -556,7 +663,6 @@ class CodexAppServerClient:
                     if self._count_malformed("not_an_object"):
                         return
                     continue
-                self._consecutive_malformed = 0
                 if self._dispatch(frame):
                     return
         except asyncio.CancelledError:
@@ -611,9 +717,10 @@ class CodexAppServerClient:
             log_event(
                 logger, logging.WARNING, "codex.protocol.orphan_response", reason="invalid_id"
             )
-            return False
+            return self._count_malformed("invalid_response_id")
         if ("result" in frame) == ("error" in frame):
             return self._count_malformed("ambiguous_response")
+        self._consecutive_malformed = 0
         entry = self._pending.pop(request_id, None)
         if entry is None:
             self._counters.orphan_responses += 1
@@ -632,6 +739,7 @@ class CodexAppServerClient:
         return False
 
     def _dispatch_notification(self, method: str, params: Any) -> bool:
+        self._consecutive_malformed = 0
         if method not in schema.SUPPORTED_SERVER_NOTIFICATIONS:
             label = schema.unknown_notification_label(method)
             self._counters.unknown_notifications += 1
@@ -682,6 +790,7 @@ class CodexAppServerClient:
             # Without a usable id there is nothing to answer; failing closed here
             # means the peer never sees a reply, which is the safe direction.
             return self._count_malformed("invalid_server_request_id")
+        self._consecutive_malformed = 0
         if not self._server_request_supported(method):
             label = (
                 method if method in schema.DECLARED_SERVER_REQUESTS else "<unrecognized>"

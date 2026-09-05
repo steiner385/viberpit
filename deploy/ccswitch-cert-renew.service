@@ -1,0 +1,16 @@
+[Unit]
+Description=Renew Tailscale TLS certificate for ccswitch
+Documentation=https://tailscale.com/kb/1153/enabling-https/
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# tailscale cert is idempotent: only fetches a new cert when near expiry.
+# ExecStartPost only runs if ExecStart succeeds, so nginx is not reloaded
+# with a bad or missing cert.
+ExecStart=tailscale cert \
+    --cert-file /etc/ccswitch/dobby.tail0dd570.ts.net.crt \
+    --key-file  /etc/ccswitch/dobby.tail0dd570.ts.net.key \
+    dobby.tail0dd570.ts.net
+ExecStartPost=nginx -s reload

@@ -41,6 +41,7 @@ import logging
 import os
 import shutil
 import stat
+import tempfile
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any, Final, Protocol
@@ -117,6 +118,10 @@ class CodexProcessError(RuntimeError):
 
 class CodexVersionProbeFailed(CodexProcessError):
     """`codex --version` did not produce a usable version string."""
+
+
+class CodexContractProbeFailed(CodexProcessError):
+    """The live generated app-server schema could not be verified."""
 
 
 class CodexHomeRefused(CodexProcessError):
@@ -306,6 +311,10 @@ def ensure_codex_home(
             "and every component of its path must be real local directories, never "
             "links to the authority home or onto a shared mount"
         )
+    # The account directory can itself be an existing nested mount point even
+    # while its base is local. Validate the exact directory Codex will write to,
+    # before chmod/mkdir mutates anything on a refused filesystem.
+    assert_local_filesystem(home, mounts=mounts)
     base_path.mkdir(parents=True, exist_ok=True, mode=0o700)
     home.mkdir(parents=True, exist_ok=True, mode=0o700)
     if not home.is_dir():
@@ -324,6 +333,7 @@ def ensure_codex_home(
 
 CommandRunner = Callable[..., Awaitable[tuple[int, str, str]]]
 BinaryResolver = Callable[[str], "str | None"]
+ContractProbe = Callable[[str], Awaitable[str]]
 
 
 async def _kill_probe_child(child: Any) -> None:
@@ -402,6 +412,67 @@ async def probe_cli_version(
     return version
 
 
+async def probe_contract_schema(
+    binary: str,
+    *,
+    timeout_s: float = DEFAULT_VERSION_PROBE_TIMEOUT_S,
+    spawn: Callable[..., Awaitable[Any]] = asyncio.create_subprocess_exec,
+) -> str:
+    """Generate and hash the live binary's curated schema in an isolated home."""
+    with tempfile.TemporaryDirectory(prefix="ccswitch-codex-probe-") as temp:
+        root = Path(temp)
+        home = root / "home"
+        output = root / "schema"
+        home.mkdir(mode=0o700)
+        environment = {
+            name: os.environ[name]
+            for name in ("HOME", "LANG", "LC_ALL", "PATH", "TERM")
+            if os.environ.get(name)
+        }
+        environment["CODEX_HOME"] = str(home)
+        child: Any | None = None
+        try:
+            child = await spawn(
+                binary,
+                "app-server",
+                "generate-json-schema",
+                "--experimental",
+                "--out",
+                str(output),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=environment,
+            )
+            stdout, stderr = await asyncio.wait_for(child.communicate(), timeout_s)
+        except asyncio.CancelledError:
+            if child is not None:
+                await _kill_probe_child(child)
+            raise
+        except Exception as exc:  # noqa: BLE001 -- converted to one safe probe outcome
+            if child is not None:
+                await _kill_probe_child(child)
+            raise CodexContractProbeFailed(
+                "codex app-server schema contract could not be generated: "
+                f"{redaction.scrub_exception(exc)}"
+            ) from None
+        if child.returncode != 0:
+            detail = redaction.scrub_text(stderr.decode("utf-8", "replace"))[:200]
+            raise CodexContractProbeFailed(
+                "codex app-server schema contract generation failed"
+                + (f": {detail}" if detail else "")
+            )
+        # Consume stdout without retaining or logging it. Current Codex emits no
+        # schema content there, but draining it is part of strict process cleanup.
+        del stdout
+        try:
+            return schema.extract_contract(output).sha256
+        except schema.CodexSchemaError as exc:
+            raise CodexContractProbeFailed(
+                "codex app-server schema contract is incomplete: "
+                f"{redaction.scrub_exception(exc)}"
+            ) from None
+
+
 async def probe_availability(
     *,
     enabled: bool,
@@ -410,6 +481,7 @@ async def probe_availability(
     supported_versions: Iterable[str] = (),
     resolver: BinaryResolver | None = None,
     runner: CommandRunner | None = None,
+    contract_probe: ContractProbe | None = None,
     timeout_s: float = DEFAULT_VERSION_PROBE_TIMEOUT_S,
 ) -> CodexAvailability:
     """Decide whether this runner may offer Codex. Never raises.
@@ -417,9 +489,9 @@ async def probe_availability(
     The version comparison is *not* re-implemented here: it goes through
     :func:`server.codex.schema.check_contract`, whose typed
     :class:`~server.codex.schema.ContractDrift` is the single report for "the
-    boundary moved". ``supported_versions`` widens the pin — an operator may admit
-    a version they have verified themselves — but it can never *remove* the pinned
-    version, which is the one this codebase was written against.
+    boundary moved". ``supported_versions`` may admit another CLI version label,
+    but only when that binary generates the exact pinned schema contract; the
+    operator setting can never waive schema drift or remove the pinned version.
     """
     if not enabled:
         return CodexAvailability.unavailable(
@@ -453,14 +525,34 @@ async def probe_availability(
             CodexUnavailableReason.VERSION_PROBE_FAILED, str(exc), binary_path=path
         )
 
+    inspect_contract = contract_probe
+    if inspect_contract is None:
+        async def inspect_contract(binary_path: str) -> str:
+            return await probe_contract_schema(binary_path, timeout_s=timeout_s)
+    try:
+        observed_contract_sha256 = await inspect_contract(path)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- unverified means unavailable
+        return CodexAvailability.unavailable(
+            CodexUnavailableReason.UNSUPPORTED_VERSION,
+            "Codex app-server contract could not be verified: "
+            f"{redaction.scrub_exception(exc)}",
+            binary_path=path,
+            cli_version=version,
+        )
+
     drift = schema.check_contract(
-        cli_version=version, contract_sha256=schema.PINNED_CONTRACT_SHA256
+        cli_version=version, contract_sha256=observed_contract_sha256
     )
     if drift is None:
         return CodexAvailability.ready(binary_path=path, cli_version=version)
     allowed = {v.strip() for v in supported_versions if v and v.strip()}
     allowed.add(schema.PINNED_CLI_VERSION)
-    if version not in allowed:
+    if (
+        schema.ContractDriftReason.CONTRACT_HASH in drift.reasons
+        or version not in allowed
+    ):
         return CodexAvailability.unavailable(
             CodexUnavailableReason.UNSUPPORTED_VERSION,
             str(drift),

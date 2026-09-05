@@ -37,8 +37,12 @@ def test_bearer_from_loopback_sets_identity_and_via():
     with patch.dict(os.environ, _ENV):
         tok = mint_token("u@example.com", "sess-1")
         c = _client()
-        r = c.get("/api/auth/me", headers={"Authorization": f"Bearer {tok}"})
-        # TestClient's client host is "testclient"; simulate loopback via the scope override:
+        # The token is minted for the daemon on THIS host, so a non-loopback peer must
+        # be refused. conftest defaults TestClient to a loopback peer (matching the
+        # deployed `tailscale serve` -> 127.0.0.1 topology), so this half names its
+        # far-away peer explicitly rather than relying on the default.
+        far = TestClient(c.app, client=("203.0.113.9", 5000))
+        r = far.get("/api/auth/me", headers={"Authorization": f"Bearer {tok}"})
         assert r.status_code == 401  # non-loopback peer must be refused
         c2 = TestClient(c.app, client=("127.0.0.1", 5000))
         r2 = c2.get("/api/auth/me", headers={"Authorization": f"Bearer {tok}"})
