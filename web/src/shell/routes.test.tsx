@@ -61,7 +61,9 @@ vi.mock('@/components/ReviewView', () => ({
     <div data-testid="page-review">{sessionId}</div>
   ),
 }))
-vi.mock('@/components/ArchivedSessionList', () => ({ ArchivedSessionList: stub('archived') }))
+// `/sessions/archived`'s PAGE is the empty state beside the list column — the
+// archived list itself is a scope of that column, not a page.
+vi.mock('@/features/sessions/ArchivedWelcome', () => ({ ArchivedWelcome: stub('archived') }))
 vi.mock('@/pipeline/PipelineTab', () => ({ PipelineTab: stub('pipeline') }))
 vi.mock('@/automations/AutomationsTab', () => ({ AutomationsTab: stub('automations') }))
 vi.mock('@/initiatives/InitiativesTab', () => ({ InitiativesTab: stub('initiatives') }))

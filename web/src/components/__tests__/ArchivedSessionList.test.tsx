@@ -1,8 +1,14 @@
 /**
  * ArchivedSessionList.test.tsx
  *
- * Tests for the ArchivedSessionList component in isolation (now the single archived
- * list, used by both DesktopShell and the Dashboard archived tab):
+ * Tests for the archived scope of the sessions list column. The subject is
+ * `ArchivedScopeBody` — the controls strip plus `ArchivedSessionList` — rather
+ * than the list alone, because the strip now lives in the column's fixed head
+ * and the two share one `useArchivedListState()` handle. Mounting the pair is
+ * mounting the production composition; rebuilding it here would be a second
+ * copy of it.
+ *
+ * Covers:
  * - Controls strip (Group-by / Sort-by selects) renders when sessions exist
  * - Switching Group-by to "Account" shows account group headers
  * - Search filters the list (matchedIds from useSessionSearch)
@@ -15,7 +21,7 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import * as React from 'react'
-import { ArchivedSessionList } from '../ArchivedSessionList'
+import { ArchivedScopeBody } from '@/features/sessions/ArchivedScopeBody'
 import * as hooks from '@/api/hooks'
 import type { ArchivedSession } from '@/api/types'
 import { archivedSession } from '@/test/factories'
@@ -42,7 +48,7 @@ vi.mock('@/api/hooks', () => ({
   useAssessDispatch: vi.fn(() => ({ assess: vi.fn() })),
 }))
 
-// useSessionSearch is called from within ArchivedSessionList; mock it at module level.
+// useSessionSearch is called from within useArchivedListState; mock it at module level.
 // Individual tests override searchState to simulate filtering; both describe blocks
 // reset it in beforeEach so a filtered state never leaks across tests.
 let searchState = { query: '', setQuery: vi.fn(), matchedIds: null as Set<string> | null, isFiltered: false }
@@ -108,7 +114,7 @@ describe('ArchivedSessionList — controls strip', () => {
 
   it('does NOT render controls when there are no archived sessions', () => {
     setupMocks([])
-    render(<ArchivedSessionList onReviewSession={() => {}} />, { wrapper })
+    render(<ArchivedScopeBody onReviewSession={() => {}} />, { wrapper })
 
     expect(screen.queryByLabelText('Group by')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Sort by')).not.toBeInTheDocument()
@@ -116,7 +122,7 @@ describe('ArchivedSessionList — controls strip', () => {
 
   it('renders Group-by and Sort-by controls when sessions exist', () => {
     setupMocks([makeArchived()])
-    render(<ArchivedSessionList onReviewSession={() => {}} />, { wrapper })
+    render(<ArchivedScopeBody onReviewSession={() => {}} />, { wrapper })
 
     expect(screen.getByLabelText('Group by')).toBeInTheDocument()
     expect(screen.getByLabelText('Sort by')).toBeInTheDocument()
@@ -129,7 +135,7 @@ describe('ArchivedSessionList — controls strip', () => {
     // per-row formatter.
     const archivedAt = '2026-06-10T14:37:00Z'
     setupMocks([makeArchived({ id: '1', name: 'Alpha', archivedAt })])
-    render(<ArchivedSessionList onReviewSession={() => {}} />, { wrapper })
+    render(<ArchivedScopeBody onReviewSession={() => {}} />, { wrapper })
 
     expect(screen.getByTestId('archived-at').textContent).toMatch(/Archived .* ago/)
   })
@@ -140,7 +146,7 @@ describe('ArchivedSessionList — controls strip', () => {
       makeArchived({ id: '1', name: 'Alpha', account: 'tony' }),
       makeArchived({ id: '2', name: 'Beta', account: 'work', cwd: '/home/GitHub/infra', archivedAt: '2026-06-12T00:00:00Z' }),
     ])
-    render(<ArchivedSessionList onReviewSession={() => {}} />, { wrapper })
+    render(<ArchivedScopeBody onReviewSession={() => {}} />, { wrapper })
 
     await user.selectOptions(screen.getByLabelText('Group by'), 'account')
 
@@ -168,7 +174,7 @@ describe('ArchivedSessionList — controls strip', () => {
       makeArchived({ id: '1', name: 'Alpha', account: 'tony' }),
       makeArchived({ id: '2', name: 'Beta', account: 'work', cwd: '/home/GitHub/infra', archivedAt: '2026-06-12T00:00:00Z' }),
     ])
-    render(<ArchivedSessionList onReviewSession={() => {}} />, { wrapper })
+    render(<ArchivedScopeBody onReviewSession={() => {}} />, { wrapper })
 
     expect(screen.getByText('Alpha')).toBeInTheDocument()
     expect(screen.queryByText('Beta')).not.toBeInTheDocument()
@@ -184,7 +190,7 @@ describe('ArchivedSessionList — controls strip', () => {
     setupMocks([
       makeArchived({ id: '1', name: 'Alpha', account: 'tony' }),
     ])
-    render(<ArchivedSessionList onReviewSession={() => {}} />, { wrapper })
+    render(<ArchivedScopeBody onReviewSession={() => {}} />, { wrapper })
 
     expect(screen.getByText(/no archived sessions match your search/i)).toBeInTheDocument()
     // The empty-state Clear button has no aria-label; locate via its text content
@@ -201,7 +207,7 @@ describe('ArchivedSessionList — controls strip', () => {
       isFiltered: true,
     }
     setupMocks([makeArchived({ id: '1', name: 'Alpha' })])
-    render(<ArchivedSessionList onReviewSession={() => {}} />, { wrapper })
+    render(<ArchivedScopeBody onReviewSession={() => {}} />, { wrapper })
 
     // Two "Clear"-ish buttons exist: "Clear search" (aria-label) in the search box, and
     // the plain "Clear" text button in the empty-state message. Target the plain-text one.
@@ -225,7 +231,7 @@ describe('ArchivedSessionList — controls strip', () => {
       makeArchived({ id: '1', name: 'Alpha' }),
       makeArchived({ id: '2', name: 'Beta', cwd: '/home/GitHub/infra', archivedAt: '2026-06-12T00:00:00Z' }),
     ])
-    render(<ArchivedSessionList onReviewSession={() => {}} />, { wrapper })
+    render(<ArchivedScopeBody onReviewSession={() => {}} />, { wrapper })
 
     // Before selecting, bulk bar must not be visible
     expect(screen.queryByRole('region', { name: /bulk actions/i })).not.toBeInTheDocument()
@@ -261,7 +267,7 @@ describe('ArchivedSessionList — collapse recoverability', () => {
       makeArchived({ id: '1', name: 'Alpha', cwd: '/home/GitHub/KinDash' }),
       makeArchived({ id: '2', name: 'Beta', cwd: '/home/GitHub/infra', archivedAt: '2026-06-12T00:00:00Z' }),
     ])
-    render(<ArchivedSessionList onReviewSession={() => {}} />, { wrapper })
+    render(<ArchivedScopeBody onReviewSession={() => {}} />, { wrapper })
 
     await user.selectOptions(screen.getByLabelText('Group by'), 'repo')
     expect(headers()).toHaveLength(2)
@@ -293,7 +299,7 @@ describe('ArchivedSessionList — shift-click range selection', () => {
   it('shift-clicking a second row selects the whole range between the two clicks', async () => {
     const user = userEvent.setup()
     setupMocks(fourArchived())
-    render(<ArchivedSessionList onReviewSession={vi.fn()} />, { wrapper })
+    render(<ArchivedScopeBody onReviewSession={vi.fn()} />, { wrapper })
 
     await user.click(screen.getByRole('checkbox', { name: /select alpha/i }))
     await shiftClick(user, screen.getByRole('checkbox', { name: /select gamma/i }))
@@ -308,7 +314,7 @@ describe('ArchivedSessionList — shift-click range selection', () => {
   it('shift-click range works upward (anchor below the shift-clicked row)', async () => {
     const user = userEvent.setup()
     setupMocks(fourArchived())
-    render(<ArchivedSessionList onReviewSession={vi.fn()} />, { wrapper })
+    render(<ArchivedScopeBody onReviewSession={vi.fn()} />, { wrapper })
 
     await user.click(screen.getByRole('checkbox', { name: /select delta/i }))
     await shiftClick(user, screen.getByRole('checkbox', { name: /select beta/i }))
@@ -323,7 +329,7 @@ describe('ArchivedSessionList — shift-click range selection', () => {
   it('shift-clicking with no prior selection just selects the single row', async () => {
     const user = userEvent.setup()
     setupMocks(fourArchived())
-    render(<ArchivedSessionList onReviewSession={vi.fn()} />, { wrapper })
+    render(<ArchivedScopeBody onReviewSession={vi.fn()} />, { wrapper })
 
     await shiftClick(user, screen.getByRole('checkbox', { name: /select gamma/i }))
 
@@ -342,7 +348,7 @@ describe('ArchivedSessionList — bulk delete progress', () => {
   it('keeps the frozen count after the archived list empties mid-delete', async () => {
     const user = userEvent.setup()
     setupMocks(fourArchived())
-    const { rerender } = render(<ArchivedSessionList onReviewSession={vi.fn()} />, { wrapper })
+    const { rerender } = render(<ArchivedScopeBody onReviewSession={vi.fn()} />, { wrapper })
 
     await user.click(screen.getByRole('checkbox', { name: /select all/i }))
     await user.click(screen.getByRole('button', { name: /delete \(4\)/i }))
@@ -350,7 +356,7 @@ describe('ArchivedSessionList — bulk delete progress', () => {
 
     // Simulate the optimistic cache emptying out from under the open dialog.
     vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult([]))
-    rerender(<ArchivedSessionList onReviewSession={vi.fn()} />)
+    rerender(<ArchivedScopeBody onReviewSession={vi.fn()} />)
 
     expect(screen.getByText('Permanently delete 4 sessions')).toBeInTheDocument()
   })
@@ -361,7 +367,7 @@ describe('ArchivedSessionList — bulk delete progress', () => {
     vi.mocked(hooks.useBulkPermanentDeleteSessions).mockReturnValue({
       mutate: vi.fn(), isPending: true, progress: { done: 2, total: 4 }, cancel: vi.fn(),
     } as unknown as ReturnType<typeof hooks.useBulkPermanentDeleteSessions>)
-    render(<ArchivedSessionList onReviewSession={vi.fn()} />, { wrapper })
+    render(<ArchivedScopeBody onReviewSession={vi.fn()} />, { wrapper })
 
     await user.click(screen.getByRole('checkbox', { name: /select all/i }))
     await user.click(screen.getByRole('button', { name: /delete \(4\)/i }))
@@ -380,7 +386,7 @@ describe('ArchivedSessionList — bulk delete progress', () => {
     vi.mocked(hooks.useBulkPermanentDeleteSessions).mockReturnValue({
       mutate: vi.fn(), isPending: true, progress: { done: 1, total: 4 }, cancel,
     } as unknown as ReturnType<typeof hooks.useBulkPermanentDeleteSessions>)
-    render(<ArchivedSessionList onReviewSession={vi.fn()} />, { wrapper })
+    render(<ArchivedScopeBody onReviewSession={vi.fn()} />, { wrapper })
 
     await user.click(screen.getByRole('checkbox', { name: /select all/i }))
     await user.click(screen.getByRole('button', { name: /delete \(4\)/i }))
@@ -411,7 +417,7 @@ describe('ArchivedSessionList — quick-purge shortcuts', () => {
 
   it('renders the four purge-oldest shortcut buttons when sessions exist', () => {
     setupMocks(fourArchived())
-    render(<ArchivedSessionList onReviewSession={vi.fn()} />, { wrapper })
+    render(<ArchivedScopeBody onReviewSession={vi.fn()} />, { wrapper })
 
     for (const n of [25, 50, 100, 200]) {
       expect(
@@ -422,13 +428,13 @@ describe('ArchivedSessionList — quick-purge shortcuts', () => {
 
   it('does NOT render the quick-purge bar when there are no archived sessions', () => {
     setupMocks([])
-    render(<ArchivedSessionList onReviewSession={vi.fn()} />, { wrapper })
+    render(<ArchivedScopeBody onReviewSession={vi.fn()} />, { wrapper })
     expect(screen.queryByRole('region', { name: /quick purge/i })).not.toBeInTheDocument()
   })
 
   it('disables a shortcut when fewer than N archived sessions exist', () => {
     setupMocks(fourArchived()) // only 4 archived
-    render(<ArchivedSessionList onReviewSession={vi.fn()} />, { wrapper })
+    render(<ArchivedScopeBody onReviewSession={vi.fn()} />, { wrapper })
 
     // All four thresholds exceed 4 → every button disabled.
     for (const n of [25, 50, 100, 200]) {
@@ -441,7 +447,7 @@ describe('ArchivedSessionList — quick-purge shortcuts', () => {
   it('enables the 25 shortcut once ≥25 archived exist and it opens the bulk dialog', async () => {
     const user = userEvent.setup()
     setupMocks(manyArchived(30))
-    render(<ArchivedSessionList onReviewSession={vi.fn()} />, { wrapper })
+    render(<ArchivedScopeBody onReviewSession={vi.fn()} />, { wrapper })
 
     const purge25 = screen.getByRole('button', { name: /purge the 25 oldest/i })
     expect(purge25).toBeEnabled()
@@ -459,7 +465,7 @@ describe('ArchivedSessionList — quick-purge shortcuts', () => {
     vi.mocked(hooks.useBulkPermanentDeleteSessions).mockReturnValue({
       mutate, isPending: false, progress: null, cancel: vi.fn(),
     } as unknown as ReturnType<typeof hooks.useBulkPermanentDeleteSessions>)
-    render(<ArchivedSessionList onReviewSession={vi.fn()} />, { wrapper })
+    render(<ArchivedScopeBody onReviewSession={vi.fn()} />, { wrapper })
 
     await user.click(screen.getByRole('button', { name: /purge the 25 oldest/i }))
     await user.click(screen.getByRole('button', { name: /delete permanently/i }))

@@ -70,19 +70,39 @@ const appShell = read('src/shell/AppShell.tsx')
 const mainPaneSession = read('src/features/sessions/MainPaneSession.tsx')
 const settingsDefs = read('src/features/settings/settingsDefs.ts')
 
+/** Every source file under `src/features/sessions`, tests excluded — the same
+ *  discovered-not-listed rule as `shellSources`. */
+function sessionFeatureSources(): { rel: string; text: string }[] {
+  const dir = 'src/features/sessions'
+  return readdirSync(path.resolve(WEB_ROOT, dir))
+    .filter((n) => /\.tsx?$/.test(n) && !/\.test\.tsx?$/.test(n))
+    .map((n) => ({ rel: `${dir}/${n}`, text: read(`${dir}/${n}`) }))
+}
+
 describe('#43 accounts/archived panels — one implementation', () => {
-  it('the route table is the only mount point for the Settings pages and ArchivedSessionList', () => {
+  it('the route table is the only mount point for the Settings pages', () => {
     // Both were mounted by each shell before; both are pages now, and the table
     // is the one place a page is named. `SettingsView` was deleted with the
     // Settings redesign (sub-spec C) and its two successors are named here.
     expect(routes).toMatch(/<SettingsPage\b/)
     expect(routes).toMatch(/<SettingsIndexPage\b/)
-    expect(routes).toMatch(/<ArchivedSessionList\b/)
     for (const { rel, text } of shellSources()) {
       if (rel === 'src/shell/routes.tsx') continue
       expect(text, `${rel} mounts a Settings page`).not.toMatch(/<Settings(Index)?Page\b/)
-      expect(text, `${rel} mounts ArchivedSessionList`).not.toMatch(/<ArchivedSessionList\b/)
     }
+  })
+
+  it('ArchivedScopeBody is the only mount point for ArchivedSessionList', () => {
+    // Archived stopped being a page when it became a SCOPE of the sessions list:
+    // the route table's `/sessions/archived` element is the empty state beside
+    // the column, and the list itself is mounted once, by the scope body. Both
+    // at once would put two archived lists on a desktop screen, each with its
+    // own select-all header over one selection.
+    // `shellSources()` already covers `routes.tsx` (it discovers all of src/shell).
+    const mounts = [...shellSources(), ...sessionFeatureSources()]
+      .filter(({ text }) => /<ArchivedSessionList\b/.test(text))
+      .map((m) => m.rel)
+    expect(mounts).toEqual(['src/features/sessions/ArchivedScopeBody.tsx'])
   })
 
   it('settingsDefs is the single mount point for the shared AccountsManager', () => {

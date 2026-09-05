@@ -1,34 +1,32 @@
 /**
- * ArchivedSessionList — self-contained archived-sessions panel: the archived
- * list (select / review / unarchive / permanent-delete), a bulk action bar
- * for multi-select operations, and the permanent-delete dialog (single or
- * bulk). Owns its own data hooks; `onReviewSession` is called when the user
- * opens a read-only transcript review. Row markup lives in
- * `ArchivedSessionCard` (Task 8) — this component only wires selection and
- * the row's callbacks around it.
+ * ArchivedSessionList — the archived scope's rows and its archived-ONLY
+ * affordances: selection, review / unarchive / permanent-delete, the bulk
+ * action bar, quick purge, and the permanent-delete dialog (single or bulk).
+ * `onReviewSession` is called when the user opens a read-only transcript.
+ * Row markup lives in `ArchivedSessionCard` (Task 8) — this component only
+ * wires selection and the row's callbacks around it.
  *
- * Includes grouping / sorting / search via SessionListControls + GroupedList.
+ * It does NOT own its data: search / ordering / the archived query arrive as
+ * one `ArchivedListState` handle, because the column renders the controls strip
+ * for that handle in its FIXED head while the rows scroll here. Exactly the
+ * split `SessionListColumn` and `SessionList` already make over
+ * `useSessionListState`. `ArchivedScopeBody` is the one place that pairs them.
+ *
+ * Everything here is deliberately archived-only (DEC-6): none of it is lifted
+ * into the shared list chrome, and none of it becomes a prop on the live path.
  */
 
 import { useState, useRef, useEffect } from 'react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/ui/Button'
 import {
-  useArchivedSessions,
   useUnarchiveSession,
   usePermanentDeleteSession,
   useBulkUnarchiveSessions,
   useBulkPermanentDeleteSessions,
 } from '@/api/hooks'
 import type { ArchivedSession, BatchResult } from '@/api/types'
-import { useSessionSearch } from '@/session/useSessionSearch'
-import { useItemOrdering } from '@/session/useSessionOrdering'
-import {
-  ARCHIVED_SPEC,
-  ARCHIVED_GROUP_OPTIONS,
-  ARCHIVED_SORT_OPTIONS,
-} from '@/session/archivedOrdering'
-import { SessionListControls } from '@/components/SessionListControls'
+import type { ArchivedListState } from '@/features/sessions/useArchivedListState'
 import { GroupedList } from '@/components/GroupedList'
 import { PermanentDeleteDialog } from './PermanentDeleteDialog'
 import { BulkActionBar } from './list/BulkActionBar'
@@ -91,16 +89,20 @@ function QuickPurgeBar({ total, onPurge, disabled }: QuickPurgeBarProps) {
 
 // ── ArchivedSessionList ───────────────────────────────────────────────────────
 
-export function ArchivedSessionList({ onReviewSession }: { onReviewSession: (id: string) => void }) {
-  const { data: archivedSessions = [] } = useArchivedSessions()
+export interface ArchivedSessionListProps {
+  /** Archived rows + search + ordering, from `useArchivedListState()`. The
+   *  column's head renders the controls strip from this same handle. */
+  state: ArchivedListState
+  onReviewSession: (id: string) => void
+}
+
+export function ArchivedSessionList({ state, onReviewSession }: ArchivedSessionListProps) {
+  const { sessions: archivedSessions, search, ordering } = state
   const unarchiveSession = useUnarchiveSession()
   const permanentDeleteSession = usePermanentDeleteSession()
   const bulkUnarchive = useBulkUnarchiveSessions()
   const bulkDelete = useBulkPermanentDeleteSessions()
 
-  // Search + ordering
-  const search = useSessionSearch('archived')
-  const ordering = useItemOrdering(archivedSessions, ARCHIVED_SPEC, search.matchedIds)
   // visible = filtered + sorted + collapsed-aware (drives selection / shift-range:
   // you can only select what you can see).
   const visible = ordering.orderedSessions
@@ -220,11 +222,9 @@ export function ArchivedSessionList({ onReviewSession }: { onReviewSession: (id:
   }, [selection.someSelected, selection.allSelected])
 
   return (
+    // No heading: the column is already named by `ContextList`'s `sr-only`
+    // heading, and a second one inside it announced the list twice.
     <div className="space-y-3">
-      <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-        Archived Sessions
-      </h2>
-
       {summary && (
         <p role="status" className="text-xs text-gray-500 dark:text-gray-400">{summary}</p>
       )}
@@ -263,21 +263,9 @@ export function ArchivedSessionList({ onReviewSession }: { onReviewSession: (id:
         </BulkActionBar>
       )}
 
-      {/* Controls strip — only when there are archived sessions at all */}
-      {archivedSessions.length > 0 && (
-        <SessionListControls
-          groupBy={ordering.groupBy}
-          sortBy={ordering.sortBy}
-          onGroupByChange={ordering.setGroupBy}
-          onSortByChange={ordering.setSortBy}
-          groupOptions={ARCHIVED_GROUP_OPTIONS}
-          sortOptions={ARCHIVED_SORT_OPTIONS}
-          searchQuery={search.query}
-          onSearchChange={search.setQuery}
-          searchPlaceholder="Search archived…"
-          searchAriaLabel="Search archived sessions"
-        />
-      )}
+      {/* The controls strip is NOT here: it belongs to the column's fixed head
+          (`ArchivedScopeBody`), so search/group/sort stay put while these rows
+          scroll — the same arrangement the live scope has. */}
 
       {/* Empty state: no archived sessions at all */}
       {archivedSessions.length === 0 && (

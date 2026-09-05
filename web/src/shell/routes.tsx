@@ -66,10 +66,10 @@ import {
 } from '@/session/sessionNavState'
 import { MainPaneSession } from '@/features/sessions/MainPaneSession'
 import { WelcomePane } from '@/features/sessions/WelcomePane'
+import { ArchivedWelcome } from '@/features/sessions/ArchivedWelcome'
 import { useArchiveAdvance } from '@/features/sessions/useArchiveAdvance'
 import { SubSessionView } from '@/components/session/SubSessionView'
 import { ReviewView } from '@/components/ReviewView'
-import { ArchivedSessionList } from '@/components/ArchivedSessionList'
 import { PipelineTab } from '@/pipeline/PipelineTab'
 import { AutomationsTab } from '@/automations/AutomationsTab'
 import { InitiativesTab } from '@/initiatives/InitiativesTab'
@@ -158,11 +158,13 @@ function InsightsPage() {
   return <div className="p-4 overflow-y-auto h-full"><InsightsView /></div>
 }
 
+/** `/sessions/archived` — the archived scope's page slot. The archived LIST is
+ *  the sessions column's archived scope (`ArchivedScopeBody`), not a page, so
+ *  this is the empty state beside it. */
 function ArchivedPage() {
-  const navigate = useNavigate()
   return (
     <div className="p-4 overflow-y-auto h-full">
-      <ArchivedSessionList onReviewSession={(id) => navigate(archivedSessionPath(id))} />
+      <ArchivedWelcome />
     </div>
   )
 }

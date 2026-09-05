@@ -19,7 +19,9 @@ import { isPendingSessionId } from '@/lib/pendingSessions'
 import { setServerSttEnabled } from '@/lib/sttCapability'
 import { textEntryClaimsKey } from '@/lib/detachKeyGuard'
 import { nextSessionAfterClose } from '@/session/nextAfterArchive'
-import { SESSIONS_PATH, sessionPath } from '@/session/sessionNavState'
+import {
+  SESSIONS_PATH, archivedSessionPath, listScopeForPath, sessionPath,
+} from '@/session/sessionNavState'
 import { useDrawerName, useOpenDrawer, type DrawerName } from './drawerParam'
 import { InteractionProvider } from './InteractionContext'
 import { readKioskConfig } from './kiosk'
@@ -356,6 +358,9 @@ function AppShellInner() {
  */
 function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
   const navigate = useNavigate()
+  // Scope is the ROUTE (D1). Derived ONCE, here, through the one function that
+  // knows the archived paths — never re-tested inside the column or the segment.
+  const { pathname } = useLocation()
   const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
   const { data: accounts = [] } = useAccounts()
   const { data: config } = useConfig()
@@ -440,6 +445,7 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
     sessions.find((s) => s.id === id)?.name ?? id.slice(0, 8)
 
   const listProps: SessionListColumnProps = {
+    scope: listScopeForPath(pathname),
     state: list,
     accounts,
     isLoading: sessionsLoading,
@@ -462,6 +468,10 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
     // the mutation runs only on confirm — both old shells did the same.
     onDelete: (id) => setDeleteTarget({ id, name: nameOf(id) }),
     onQuickResume: (id, text) => sendPrompt.mutate({ id, text: text || 'continue' }),
+    // Archived scope: opening a row is a READ, so it goes to the runtime-less
+    // transcript route (its param is `archivedId`, which is what keeps
+    // `PageHost` from mounting a session runtime over a dead session).
+    onReviewSession: (id) => navigate(archivedSessionPath(id)),
     onExitList: () => {
       setListMode(false)
       setPromptFocusKey((n) => n + 1)

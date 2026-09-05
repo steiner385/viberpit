@@ -91,13 +91,22 @@ export function archivedSessionPath(id: string): string {
 }
 
 /**
+ * Which half of the sessions list is on screen. Declared here, beside the paths
+ * it is derived from, so `ScopeSegment`, `SessionListColumn` and `AppShell` all
+ * name one type instead of each restating the union.
+ */
+export type ListScope = 'live' | 'archived'
+
+/**
  * Which scope of the sessions list a route is in.
  *
  * Scope is derived from the URL and nowhere else — not a `?scope=` param (this
  * shell has a history of overlay params leaking onto unrelated URLs) and not
  * localStorage (a bookmark or the Back button must land on the scope it names).
+ * This is the ONLY derivation: every component that needs the scope takes it as
+ * a prop from the shell rather than re-testing the pathname itself.
  */
-export function listScopeForPath(pathname: string): 'live' | 'archived' {
+export function listScopeForPath(pathname: string): ListScope {
   return pathname === ARCHIVED_PATH || pathname.startsWith(`${ARCHIVED_PATH}/`)
     ? 'archived'
     : 'live'
