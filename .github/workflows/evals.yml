@@ -30,7 +30,10 @@ on:
       - ".github/workflows/evals.yml"
 
 concurrency:
-  group: evals-${{ github.workflow }}-${{ github.ref }}
+  # Per-commit on master — see the long note in ci.yml: a shared master group lets a
+  # merge burst cancel the middle commits' runs while they are still pending, leaving
+  # those shas with no check-runs.
+  group: evals-${{ github.workflow }}-${{ github.ref == 'refs/heads/master' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
