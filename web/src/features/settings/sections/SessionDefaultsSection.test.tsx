@@ -76,6 +76,27 @@ describe('SessionDefaultsSection', () => {
     expect(mutateAsync).toHaveBeenCalledWith(expect.objectContaining({ defaultPermissionMode: 'full-auto' }))
   })
 
+  // The next two came from `components/settings/__tests__/ModelApprovalControls.test.tsx`
+  // when task 18 deleted the legacy General form: the global half of that file
+  // asserted the non-null prefill and the null payload, and neither had a
+  // counterpart here. They are re-expressed against the radio group (D11/R14b)
+  // rather than the old `<select>`, but they guard the same two behaviours.
+  it('pre-fills the action from settings when non-null', () => {
+    vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({ modelApprovalAction: 'allow' })))
+    mount()
+    expect(screen.getByRole('radio', { name: 'Allow' })).toBeChecked()
+    expect(screen.getByRole('radio', { name: /^Server default/ })).not.toBeChecked()
+  })
+
+  it('sends null for modelApprovalAction when left on server default', async () => {
+    mount()
+    // Dirty the form without touching approval, so Save is enabled and the
+    // untouched approval field is what reaches the payload.
+    await userEvent.click(screen.getByRole('radio', { name: 'Expand all' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(mutateAsync).toHaveBeenCalledWith(expect.objectContaining({ modelApprovalAction: null }))
+  })
+
   it('saves model approval as null for server default and trims the denylist', async () => {
     mount()
     await userEvent.click(screen.getByRole('radio', { name: 'Block' }))
