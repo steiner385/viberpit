@@ -26,6 +26,9 @@ def make_steps(*, ci="green", healthy=True, changed=None):
     calls = SimpleNamespace(restarted=[], rolled_back=False, published=False)
     mod = SimpleNamespace()
     mod.ci_verdict = lambda sha, gh_api=None: ci
+    # Preflight checks that the units it will restart still have a runnable ExecStart
+    # binary; healthy by default so existing cases exercise the paths they mean to.
+    mod.check_unit_interpreters = lambda units=None, run=None: []
     mod.guard_working_tree = lambda repo, run=None: False
     mod.fast_forward = lambda repo, ref="master", run=None: None
     mod.sync_deps_if_changed = lambda repo, a, b, *, venv_python, run=None: []
