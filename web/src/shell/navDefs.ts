@@ -94,7 +94,7 @@ const DEFS = [
   // `proposeMap.mutate`/`classify.mutate`.
   { id: 'projects',    label: 'Products',    icon: Package,         path: '/projects',                          showInKiosk: false, hasList: false,
     help: 'The product registry: the repos ccswitch tracks, plus onboarding and triage review.' },
-  // showInKiosk:false — `ArchivedManager`'s Unarchive is a direct
+  // showInKiosk:false — `ArchivedSessionList`'s Unarchive is a direct
   // `unarchiveSession.mutate(id)`, and bulk unarchive/delete are one click from a
   // row checkbox. Its Permanent Delete opens a `Dialog`, which kiosk refuses —
   // so that button would be silently inert, which is its own confusion.

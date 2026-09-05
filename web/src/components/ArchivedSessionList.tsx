@@ -1,15 +1,16 @@
 /**
- * ArchivedManager — self-contained archived-sessions panel: the archived list
- * (select / review / unarchive / permanent-delete), a bulk action bar for
- * multi-select operations, and the permanent-delete dialog (single or bulk).
- * Owns its own data hooks; `onReviewSession` is called when the user opens a
- * read-only transcript review.
+ * ArchivedSessionList — self-contained archived-sessions panel: the archived
+ * list (select / review / unarchive / permanent-delete), a bulk action bar
+ * for multi-select operations, and the permanent-delete dialog (single or
+ * bulk). Owns its own data hooks; `onReviewSession` is called when the user
+ * opens a read-only transcript review. Row markup lives in
+ * `ArchivedSessionCard` (Task 8) — this component only wires selection and
+ * the row's callbacks around it.
  *
  * Includes grouping / sorting / search via SessionListControls + GroupedList.
  */
 
 import { useState, useRef, useEffect } from 'react'
-import { Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/ui/Button'
 import {
@@ -34,7 +35,7 @@ import { BulkActionBar } from './list/BulkActionBar'
 import { NoMatchState } from './list/NoMatchState'
 import { SelectableRow, SELECT_CHECKBOX_CLS } from './list/SelectableRow'
 import { useBulkSelection } from './list/useBulkSelection'
-import { displayNameOf } from './ArchivedSessionCard'
+import { ArchivedSessionCard, displayNameOf } from './ArchivedSessionCard'
 
 function summarize(verb: string, res: BatchResult): string {
   const ok = res.succeeded.length
@@ -88,9 +89,9 @@ function QuickPurgeBar({ total, onPurge, disabled }: QuickPurgeBarProps) {
   )
 }
 
-// ── ArchivedManager ──────────────────────────────────────────────────────────
+// ── ArchivedSessionList ───────────────────────────────────────────────────────
 
-export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: string) => void }) {
+export function ArchivedSessionList({ onReviewSession }: { onReviewSession: (id: string) => void }) {
   const { data: archivedSessions = [] } = useArchivedSessions()
   const unarchiveSession = useUnarchiveSession()
   const permanentDeleteSession = usePermanentDeleteSession()
@@ -188,78 +189,24 @@ export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: str
   // Returns a keyed <div> (not <li>) because GroupedList panels are <div role="group">
   // and bare <li> elements inside a <div> are invalid HTML.
   function renderArchivedRow(s: ArchivedSession) {
-    const displayName = displayNameOf(s)
-    const archivedDate = new Date(s.archivedAt).toLocaleString(undefined, {
-      year: 'numeric', month: 'short', day: 'numeric',
-      hour: 'numeric', minute: '2-digit',
-    })
+    const card = (
+      <ArchivedSessionCard
+        session={s}
+        onReview={onReviewSession}
+        onUnarchive={handleUnarchive}
+        onDelete={handlePermanentDelete}
+        unarchiving={unarchivingId === s.id}
+      />
+    )
     return (
       <SelectableRow
         key={s.id}
         id={s.id}
-        name={displayName}
+        name={displayNameOf(s)}
         checked={selection.isSelected(s.id)}
         onToggle={selection.toggleOne}
       >
-        <div
-          className={cn(
-            'flex flex-col gap-2 rounded-lg border border-gray-200 dark:border-gray-700',
-            'bg-white dark:bg-gray-800 px-3 py-2',
-          )}
-        >
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{displayName}</p>
-              <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                {s.account} · Archived {archivedDate}
-              </p>
-            </div>
-            <div className="flex items-center gap-2 flex-shrink-0">
-              <button
-                type="button"
-                onClick={() => onReviewSession(s.id)}
-                className={cn(
-                  'rounded px-2 py-1 text-xs font-medium min-h-[44px]',
-                  'border border-gray-300 dark:border-gray-600',
-                  'text-gray-700 dark:text-gray-300',
-                  'hover:bg-gray-100 dark:hover:bg-gray-700',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-                )}
-                aria-label={`Review ${displayName}`}
-              >
-                Review
-              </button>
-              <button
-                type="button"
-                onClick={() => handleUnarchive(s.id)}
-                disabled={unarchivingId === s.id}
-                className={cn(
-                  'rounded px-2 py-1 text-xs font-medium min-h-[44px]',
-                  'bg-blue-600 hover:bg-blue-700 text-white',
-                  'dark:bg-blue-700 dark:hover:bg-blue-600',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-                  'disabled:opacity-40',
-                )}
-                aria-label={`Unarchive ${displayName}`}
-              >
-                {unarchivingId === s.id ? 'Restoring…' : 'Unarchive'}
-              </button>
-              <button
-                type="button"
-                onClick={() => handlePermanentDelete(s)}
-                className={cn(
-                  'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
-                  'text-red-500 dark:text-red-400',
-                  'hover:bg-red-50 dark:hover:bg-red-900/30',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500',
-                )}
-                aria-label={`Delete ${displayName} permanently`}
-              >
-                <Trash2 size={14} aria-hidden="true" />
-              </button>
-            </div>
-          </div>
-        </div>
+        {card}
       </SelectableRow>
     )
   }

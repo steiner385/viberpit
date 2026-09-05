@@ -345,7 +345,7 @@ describe('kiosk end to end', () => {
    * `/archived?kiosk=1`. `showInKiosk` gates the `?pages=` attract cycle, which
    * says nothing about the URL somebody types into the display — and in kiosk
    * those pages are strictly worse than in desktop, because the rail is gone (no
-   * way to navigate off) and `Dialog` is refused (so `ArchivedManager`'s
+   * way to navigate off) and `Dialog` is refused (so `ArchivedSessionList`'s
    * Permanent Delete goes silently inert) while Archive
    * (`closeSession.mutate`), Unarchive (`unarchiveSession.mutate`) and a pending
    * permission card stay live for any passer-by.

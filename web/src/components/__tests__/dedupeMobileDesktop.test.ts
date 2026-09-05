@@ -69,17 +69,17 @@ const mainPaneSession = read('src/features/sessions/MainPaneSession.tsx')
 const settingsDefs = read('src/features/settings/settingsDefs.ts')
 
 describe('#43 accounts/archived panels — one implementation', () => {
-  it('the route table is the only mount point for the Settings pages and ArchivedManager', () => {
+  it('the route table is the only mount point for the Settings pages and ArchivedSessionList', () => {
     // Both were mounted by each shell before; both are pages now, and the table
     // is the one place a page is named. `SettingsView` was deleted with the
     // Settings redesign (sub-spec C) and its two successors are named here.
     expect(routes).toMatch(/<SettingsPage\b/)
     expect(routes).toMatch(/<SettingsIndexPage\b/)
-    expect(routes).toMatch(/<ArchivedManager\b/)
+    expect(routes).toMatch(/<ArchivedSessionList\b/)
     for (const { rel, text } of shellSources()) {
       if (rel === 'src/shell/routes.tsx') continue
       expect(text, `${rel} mounts a Settings page`).not.toMatch(/<Settings(Index)?Page\b/)
-      expect(text, `${rel} mounts ArchivedManager`).not.toMatch(/<ArchivedManager\b/)
+      expect(text, `${rel} mounts ArchivedSessionList`).not.toMatch(/<ArchivedSessionList\b/)
     }
   })
 
@@ -97,9 +97,10 @@ describe('#43 accounts/archived panels — one implementation', () => {
 
   it('no shell or region re-inlines the extracted account/archived internals', () => {
     // AccountRow / AccountsStrip / DeleteAccountDialog live only in
-    // AccountsManager; the archived list lives only in ArchivedManager.
+    // AccountsManager; the archived list lives only in ArchivedSessionList,
+    // and its row lives only in ArchivedSessionCard.
     // Re-declaring any of them in a host is the tech debt #43 removed.
-    const inlined = /\bfunction\s+(AccountRow|AccountsStrip|DeleteAccountDialog|ArchivedList)\b/
+    const inlined = /\bfunction\s+(AccountRow|AccountsStrip|DeleteAccountDialog|ArchivedList|ArchivedSessionCard)\b/
     for (const { rel, text } of shellSources()) {
       expect(text, `${rel} re-inlines an extracted panel internal`).not.toMatch(inlined)
     }

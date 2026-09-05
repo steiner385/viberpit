@@ -161,7 +161,7 @@ describe('SessionListControls — DEC-7 relabel', () => {
     expect(values).toEqual(['none', 'repo', 'status'])
   })
 
-  it('renders no filter selects at all when `filters` is omitted (ArchivedManager)', () => {
+  it('renders no filter selects at all when `filters` is omitted (ArchivedSessionList)', () => {
     render(
       <SessionListControls
         groupBy="none" sortBy="status"

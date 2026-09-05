@@ -61,7 +61,7 @@ vi.mock('@/components/ReviewView', () => ({
     <div data-testid="page-review">{sessionId}</div>
   ),
 }))
-vi.mock('@/components/ArchivedManager', () => ({ ArchivedManager: stub('archived') }))
+vi.mock('@/components/ArchivedSessionList', () => ({ ArchivedSessionList: stub('archived') }))
 vi.mock('@/pipeline/PipelineTab', () => ({ PipelineTab: stub('pipeline') }))
 vi.mock('@/automations/AutomationsTab', () => ({ AutomationsTab: stub('automations') }))
 vi.mock('@/initiatives/InitiativesTab', () => ({ InitiativesTab: stub('initiatives') }))
