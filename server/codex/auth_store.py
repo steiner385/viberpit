@@ -14,10 +14,10 @@ Claude account store, not exported to any runner mount, and not readable by the
 session-daemon user: a runner's whole point is that it never holds a refresh
 token.
 
-Alongside it, ``<state_dir>/state/<name>.json`` holds one non-secret integer —
-the account's credential generation. It lives outside the managed home so that
-``codex logout`` (which deletes the home's contents) cannot rewind the fence, and
-so that its own contents can never be confused for credential material.
+Alongside it, ``<state_dir>/state/<name>.json`` holds the non-secret credential
+generation and durable revocation bit. It lives outside the managed home so that
+``codex logout`` (which deletes the home's contents) cannot rewind either fence,
+and so that its own contents can never be confused for credential material.
 
 Format note. ``auth.json``'s shape was read from a real 0.153.2 install:
 ``{"OPENAI_API_KEY": null, "tokens": {"id_token", "access_token",
@@ -193,11 +193,44 @@ class CredentialStore:
         is distinguishable from generation 1 — and has to be, because
         :meth:`read_envelope` refuses to build an envelope at generation 0.
         """
+        body = self._generation_state(account)
+        generation = body.get("generation", 0)
+        if isinstance(generation, bool) or not isinstance(generation, int) or generation < 0:
+            raise AuthorityError(
+                AuthorityErrorCode.INTERNAL,
+                "durable credential generation state is invalid",
+                account=account,
+            )
+        return generation
+
+    def revoked(self, account: str) -> bool:
+        """Whether explicit revocation currently fences this account.
+
+        This bit is stored beside the generation so a service restart cannot
+        turn the still-present vendor cache back into an issuable credential.
+        Only a successfully validated device login clears it.
+        """
+        revoked = self._generation_state(account).get("revoked", False)
+        if not isinstance(revoked, bool):
+            raise AuthorityError(
+                AuthorityErrorCode.INTERNAL,
+                "durable credential revocation state is invalid",
+                account=account,
+            )
+        return revoked
+
+    def _generation_state(self, account: str) -> dict[str, Any]:
         path = self._state / f"{account}.json"
         try:
             body = json.loads(path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, ValueError):
-            return 0
+        except FileNotFoundError:
+            return {}
+        except ValueError as exc:
+            raise AuthorityError(
+                AuthorityErrorCode.INTERNAL,
+                "durable credential state is malformed",
+                account=account,
+            ) from exc
         except OSError as exc:
             log_event(
                 logger,
@@ -206,13 +239,20 @@ class CredentialStore:
                 account=account,
                 error=redaction.scrub_exception(exc),
             )
-            return 0
-        try:
-            return max(0, int(body.get("generation") or 0))
-        except (TypeError, ValueError):
-            return 0
+            raise AuthorityError(
+                AuthorityErrorCode.INTERNAL,
+                "durable credential state is unreadable",
+                account=account,
+            ) from exc
+        if not isinstance(body, dict):
+            raise AuthorityError(
+                AuthorityErrorCode.INTERNAL,
+                "durable credential state is malformed",
+                account=account,
+            )
+        return body
 
-    def bump_generation(self, account: str) -> int:
+    def bump_generation(self, account: str, *, revoked: bool | None = None) -> int:
         """Advance and persist the fence. Monotonic across authority restarts.
 
         Persisted (rather than kept in memory) precisely because a restart must
@@ -226,10 +266,23 @@ class CredentialStore:
         nxt = self.generation(account) + 1
         path = self._state / f"{account}.json"
         tmp = path.with_name(f".{account}.json.tmp")
-        tmp.write_text(json.dumps({"generation": nxt}), encoding="utf-8")
+        state = self._generation_state(account)
+        next_revoked = bool(state.get("revoked")) if revoked is None else revoked
+        tmp.write_text(
+            json.dumps({"generation": nxt, "revoked": next_revoked}),
+            encoding="utf-8",
+        )
         os.chmod(tmp, 0o600)
         os.replace(tmp, path)
         return nxt
+
+    def mark_revoked(self, account: str) -> int:
+        """Advance the generation and durably refuse issuance."""
+        return self.bump_generation(account, revoked=True)
+
+    def mark_authenticated(self, account: str) -> int:
+        """Advance the generation and clear revoke after a validated login."""
+        return self.bump_generation(account, revoked=False)
 
     def forget(self, account: str) -> None:
         """Drop every trace of *account* — managed home and generation state.
@@ -240,19 +293,14 @@ class CredentialStore:
         """
         import shutil
 
-        shutil.rmtree(self.home(account), ignore_errors=True)
+        try:
+            shutil.rmtree(self.home(account))
+        except FileNotFoundError:
+            pass
         try:
             (self._state / f"{account}.json").unlink()
         except FileNotFoundError:
             pass
-        except OSError as exc:
-            log_event(
-                logger,
-                logging.WARNING,
-                "codex.auth.forget_partial",
-                account=account,
-                error=redaction.scrub_exception(exc),
-            )
 
     def clear_credentials(self, account: str) -> None:
         """Remove the cached credential without touching the generation."""

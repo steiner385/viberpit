@@ -7,6 +7,8 @@ async behaviour and the @rpc_deadline marker are preserved for free.
 import asyncio
 import logging
 
+from ccswitch.quota import QuotaSnapshot
+from server.codex.quota import persist_quota_snapshot
 from server.sessions.facade import _DEADLINE_ATTR
 from server.sessions.fleet_router import FleetRouter, NoHostAvailable
 from server.sessions.engine import AgentEngine, AgentEngineUnavailable, parse_agent_engine
@@ -64,7 +66,7 @@ def _merge_codex_status(parts: list[dict]) -> dict:
     why this is a merge-all rather than a primary-local read.
 
     ``quota`` is account-scoped, so every host that answers reports the same
-    windows; the freshest (lowest ``ageS``, preferring a live ``ok``) wins.
+    windows; the freshest canonical snapshot (preferring available) wins.
     ``degradedReason`` is per-host and the first one found is surfaced: one
     degraded runner is worth showing even when the others are healthy.
     """
@@ -80,10 +82,11 @@ def _merge_codex_status(parts: list[dict]) -> dict:
         if best is None:
             best = quota
             continue
-        # Prefer a live OK over a stale one, then the smaller age.
-        rank = (quota.get("state") != "ok", float(quota.get("ageS") or 0.0))
-        best_rank = (best.get("state") != "ok", float(best.get("ageS") or 0.0))
-        if rank < best_rank:
+        # ISO UTC timestamps sort chronologically; negate nothing by choosing the
+        # lexically greater timestamp when availability is equal.
+        rank = (quota.get("availability") == "available", str(quota.get("fetched_at") or ""))
+        best_rank = (best.get("availability") == "available", str(best.get("fetched_at") or ""))
+        if rank > best_rank:
             best = quota
     return {"quota": best, "activeRunners": runners, "degradedReason": degraded}
 
@@ -96,7 +99,6 @@ _MERGE_ALL_HOSTS: dict[str, object] = {
     "live_session_load": _merge_sum_floats,
     "live_session_counts": _merge_sum_counts,
     "session_queue_positions": _merge_union,
-    "codex_account_status": _merge_codex_status,
 }
 
 # Method names whose FIRST positional arg is session_id and that touch live daemon
@@ -397,6 +399,39 @@ class FleetOrchestrator:
                           "FAILED — the account may still be usable there",
                           name, account, exc_info=exc)
         return {"invalidated": invalidated, "failed": failed}
+
+    async def codex_account_status(self, account: str) -> dict:
+        """Merge every runner's status, then persist once from the edge."""
+
+        async def _one(host: str):
+            try:
+                result = await self._router.get(host).codex_account_status(
+                    account, persist=False
+                )
+                return host, result, None
+            except Exception as exc:  # noqa: BLE001 -- isolate worker read failure
+                return host, None, exc
+
+        parts: list[dict] = []
+        for host, result, exc in await asyncio.gather(
+            *(_one(name) for name in self._router.names())
+        ):
+            if exc is not None:
+                if host == self._primary:
+                    raise exc
+                log.warning(
+                    "fleet.codex_account_status host=%s unreachable; skipping",
+                    host,
+                    exc_info=exc,
+                )
+                continue
+            parts.append(result or {})
+        merged = _merge_codex_status(parts)
+        raw_quota = merged.get("quota")
+        if isinstance(raw_quota, dict):
+            snapshot = QuotaSnapshot.from_dict(raw_quota)
+            await asyncio.to_thread(persist_quota_snapshot, account, snapshot)
+        return merged
 
     def subscribe(self, session_id: str):
         # Sync per-session iterator. The WS handler calls ensure_driver (async, warms

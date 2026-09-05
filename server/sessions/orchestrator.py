@@ -45,6 +45,7 @@ from ccswitch.account_names import (
 from ccswitch.config import load_config
 from ccswitch.configdir import compose
 from ccswitch.paths import account_cfg_dir, shared_base
+from ccswitch.quota import QuotaSnapshot
 from ccswitch.selector import at_ceiling, exhausted, usage_known
 from server.aio import bounded_wait
 from server.assistant.context import PromptContext
@@ -500,7 +501,7 @@ class SessionOrchestrator:
         suggestion_factory=None,
         work_dir: str | None = None,
         poll_interval: float = 60.0,
-        usage_fn: Callable[[str], object] | None = None,
+        usage_fn: Callable[[str], QuotaSnapshot | None] | None = None,
         repo_root: str | None = None,
         titling_interval: float = 15.0,
         x11=None,
@@ -6949,7 +6950,11 @@ class SessionOrchestrator:
         title query would just degrade silently anyway.
         """
         usage = self._poller.cached(account)
-        return usage_known(usage) and at_ceiling(usage, _ROTATION_CEILING)
+        return (
+            usage is not None
+            and usage_known(usage)
+            and at_ceiling(usage, _ROTATION_CEILING)
+        )
 
     async def _generate_fallback_title(self, rec: SessionRecord, path: str) -> str | None:
         """Summarize the session's user prompts into a title, or ``None``.
@@ -8581,7 +8586,7 @@ class SessionOrchestrator:
             log.warning("codex model validation for %s degraded: %s", account, exc)
         return {"ok": True, "model": model, "effort": effort}
 
-    async def codex_account_status(self, account: str) -> dict:
+    async def codex_account_status(self, account: str, *, persist: bool = True) -> dict:
         """Everything host-local the accounts page needs about one OpenAI account.
 
         One RPC rather than three. Quota, the live runner count and the auth
@@ -8589,15 +8594,14 @@ class SessionOrchestrator:
         on the same page load, and they are all cheap — splitting them would cost
         three round trips per account per refresh for no gain.
         """
-        from server.codex.quota import QuotaSnapshot, QuotaState
+        from ccswitch.quota import UNSUPPORTED, unknown_snapshot
 
         codex = self._codex
         if codex is None or not codex.available:
             return {
-                "quota": QuotaSnapshot(
-                    state=QuotaState.UNSUPPORTED,
-                    detail="codex is not available on this host",
-                ).to_wire(),
+                "quota": unknown_snapshot(
+                    "openai", availability=UNSUPPORTED
+                ).to_dict(),
                 "activeRunners": 0,
                 "degradedReason": None,
             }
@@ -8607,9 +8611,13 @@ class SessionOrchestrator:
         # answers UNKNOWN (or last-good with an age), which is the honest answer.
         client = codex.client_for(account)
         snapshot = await self._codex_quota_reader().read(account, client=client)
+        if persist:
+            from server.codex.quota import persist_quota_snapshot
+
+            await asyncio.to_thread(persist_quota_snapshot, account, snapshot)
         provider = getattr(codex, "external_auth", None)
         return {
-            "quota": snapshot.to_wire(),
+            "quota": snapshot.to_dict(),
             "activeRunners": 1 if client is not None else 0,
             "degradedReason": (
                 None if provider is None else provider.degraded_reason(account)
@@ -10432,7 +10440,7 @@ class SessionOrchestrator:
         rebuilding the driver on the same broken account.
         """
         usage = self._poller.cached(account)
-        if usage_known(usage):
+        if usage is not None and usage_known(usage):
             return exhausted(usage, _ROTATION_CEILING,
                              extra_usage_allowed=self._extra_usage_allowed(account))
         # usage=None: distinguish "not yet polled" from "persistently failing"
@@ -10482,7 +10490,11 @@ class SessionOrchestrator:
                 if not self._owns_record(record, enabled_hosts):
                     continue
                 usage = self._poller.cached(record.account)
-                if not usage_known(usage) or at_ceiling(usage, _ROTATION_CEILING):
+                if (
+                    usage is None
+                    or not usage_known(usage)
+                    or at_ceiling(usage, _ROTATION_CEILING)
+                ):
                     continue
                 log.info("stuck-sweep.limit_reset session=%s account=%s",
                          record.id, record.account)

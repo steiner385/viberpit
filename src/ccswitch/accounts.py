@@ -14,7 +14,7 @@ from . import account_registry, copilot, ledger, oauth, paths
 from .account_names import aliases_store_root
 from .config import Config, load_config
 from .creds import merge_keep_later, read_credentials, read_json, split_credentials, write_credentials, write_json_secure
-from .quota import QuotaSnapshot
+from .quota import QuotaSnapshot, unknown_snapshot
 from .selector import AllAccountsBusy, Picked, select_picked
 
 log = logging.getLogger(__name__)
@@ -384,6 +384,16 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
         return None
     if provider == copilot.PROVIDER:
         return _copilot_usage_for(name)
+    if provider == account_registry.PROVIDER_OPENAI:
+        # Codex quota is read through the daemon's authenticated app-server and
+        # persisted into the canonical ledger path there. This synchronous core
+        # must never look for an Anthropic credential slot that OpenAI accounts
+        # intentionally do not have.
+        cfg = load_config()
+        now = datetime.now(timezone.utc)
+        with ledger.locked_ledger() as led:
+            cached = ledger.cached_usage(led, name, cfg, now)
+        return cached or unknown_snapshot(account_registry.PROVIDER_OPENAI, fetched_at=now)
     if name in _dead_accounts:
         log.debug("usage_for(%s): refresh token known-dead (400) — skipping without network I/O", name)
         return None

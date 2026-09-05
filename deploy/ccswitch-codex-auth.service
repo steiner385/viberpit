@@ -57,7 +57,7 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectSystem=strict
-ProtectHome=yes
+ProtectHome=read-only
 # ReadWritePaths must include the checkout only if the venv needs it at import
 # time; the state directory is granted automatically by StateDirectory=.
 ReadOnlyPaths=/home/tony/GitHub/cc-account-switcher-deploy

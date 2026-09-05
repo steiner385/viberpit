@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import types
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -23,9 +24,10 @@ from fastapi.testclient import TestClient
 REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from tests.helpers import temp_env  # noqa: E402
+from tests.helpers import register_accounts, temp_env  # noqa: E402
 
 from server.codex.catalog import CodexModelCatalog, ModelOption  # noqa: E402
+from server.sessions.engine import AgentEngine  # noqa: E402
 
 IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
 _ENV = {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:", "CCSWITCH_DEV": "1"}
@@ -191,7 +193,32 @@ def test_a_catalog_failure_allows_the_pair_rather_than_blocking_the_spawn():
 class _FakeSessions:
     def __init__(self, verdict: dict) -> None:
         self.codex_validate_model = AsyncMock(return_value=verdict)
-        self.create_session = AsyncMock()
+        self.create_session = AsyncMock(
+            return_value=types.SimpleNamespace(
+                id="session-1",
+                name="Session",
+                account="chatgpt-pro",
+                repo=None,
+                host=None,
+                status="idle",
+                name_is_auto=True,
+                detached=False,
+                adopted_in_place=False,
+                sub_agents=None,
+                created_at=None,
+                last_turn_at=None,
+                account_pinned=True,
+                model=None,
+                active_goal=None,
+                usage_unverified=False,
+                updated_at_iso=None,
+                rev_at=None,
+                cwd=None,
+                engine=AgentEngine.CODEX,
+                engine_session_id="",
+                reasoning_effort=None,
+            )
+        )
         self.usage = AsyncMock(return_value=None)
 
     def daemon_epoch(self):
@@ -219,6 +246,7 @@ def test_a_mismatch_is_a_409_carrying_the_current_choices():
         "choices": [{"id": "gpt-5.1-codex", "label": "GPT-5.1 Codex"}],
     }
     with temp_env():
+        register_accounts("chatgpt-pro", provider="openai")
         client, fake = _client({"ok": False, "error": mismatch})
         with client:
             resp = client.post(
@@ -235,6 +263,55 @@ def test_a_mismatch_is_a_409_carrying_the_current_choices():
     assert resp.status_code == 409
     assert resp.json()["error"]["choices"][0]["id"] == "gpt-5.1-codex"
     fake.create_session.assert_not_awaited()
+
+
+def test_stale_invalid_account_default_is_validated_before_dispatch():
+    mismatch = {
+        "error": "model_effort_mismatch",
+        "model": "retired-codex-model",
+        "effort": None,
+        "choices": [{"id": "gpt-5.1-codex", "label": "GPT-5.1 Codex"}],
+    }
+    with temp_env():
+        register_accounts("chatgpt-pro", provider="openai")
+        from ccswitch import ledger
+
+        with ledger.locked_ledger() as led:
+            ledger.set_account_defaults(
+                led, "chatgpt-pro", default_model="retired-codex-model"
+            )
+        client, fake = _client({"ok": False, "error": mismatch})
+        with client:
+            resp = client.post(
+                "/api/sessions",
+                json={"name": "s", "engine": "codex", "account": "chatgpt-pro"},
+                headers=IDENTITY_HEADERS,
+            )
+
+    assert resp.status_code == 409
+    fake.codex_validate_model.assert_awaited_once_with(
+        "chatgpt-pro", "retired-codex-model", None
+    )
+    fake.create_session.assert_not_awaited()
+
+
+def test_engine_default_substitution_is_the_pair_dispatched():
+    with temp_env():
+        register_accounts("chatgpt-pro", provider="openai")
+        client, fake = _client(
+            {"ok": True, "model": "gpt-5.1-codex", "effort": "medium"}
+        )
+        with client:
+            resp = client.post(
+                "/api/sessions",
+                json={"name": "s", "engine": "codex", "account": "chatgpt-pro"},
+                headers=IDENTITY_HEADERS,
+            )
+
+    assert resp.status_code == 201, resp.text
+    kwargs = fake.create_session.await_args.kwargs
+    assert kwargs["model"] == "gpt-5.1-codex"
+    assert kwargs["reasoning_effort"] == "medium"
 
 
 def test_no_account_means_nothing_to_validate_against():

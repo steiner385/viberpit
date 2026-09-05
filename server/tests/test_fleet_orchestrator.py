@@ -391,7 +391,7 @@ def test_every_remote_method_is_classified():
                 # Fleet-wide method defined on FleetOrchestrator itself: it must
                 # report EVERY host's outcome rather than skip an unreachable one,
                 # so it cannot use the merge-all helper.
-                "codex_invalidate_credentials"}
+                "codex_account_status", "codex_invalidate_credentials"}
     # Global/primary-routed: everything not per-session, fan-out, merge-all, or
     # explicit. Listed so adding a NEW method forces a conscious classification here.
     GLOBAL = {
@@ -408,8 +408,8 @@ def test_every_remote_method_is_classified():
         # Codex: the model list and model+effort validation are account-scoped and
         # give the same answer on any host that can start the app-server, so asking
         # the primary starts ONE app-server instead of one per host.
-        # codex_account_status is a merge-all (activeRunners genuinely spans the
-        # fleet); codex_invalidate_credentials is EXPLICIT above.
+        # codex_account_status has an explicit merge because it also performs one
+        # edge-authoritative quota write; invalidation is EXPLICIT above.
         "codex_models", "codex_validate_model",
         "subscribe_events", "unsubscribe_events", "x11_metrics", "adopt_session",
         "daemon_sha", "daemon_pool_stats", "daemon_epoch", "startup_report",
@@ -433,9 +433,11 @@ def test_every_remote_method_is_classified():
 # the Accounts UI / queuePosition undercounted. These must ask every host and reduce.
 
 class _AggOrch(_FakeOrch):
-    def __init__(self, name, *, load=None, counts=None, positions=None, fail=False):
+    def __init__(self, name, *, load=None, counts=None, positions=None, status=None, fail=False):
         super().__init__(name)
         self._load, self._counts, self._positions, self._fail = load, counts, positions, fail
+        self._status = status or {}
+        self.codex_persist_flags: list[bool] = []
     async def live_session_load(self):
         if self._fail: raise RuntimeError(f"{self.name} down")
         return self._load or {}
@@ -445,6 +447,9 @@ class _AggOrch(_FakeOrch):
     async def session_queue_positions(self):
         if self._fail: raise RuntimeError(f"{self.name} down")
         return self._positions or {}
+    async def codex_account_status(self, account, *, persist=True):
+        self.codex_persist_flags.append(persist)
+        return self._status
 
 
 @pytest.mark.asyncio
@@ -471,6 +476,40 @@ async def test_session_queue_positions_unions_across_hosts():
     rocky = _AggOrch("rocky", positions={"w1": 1})
     fo = FleetOrchestrator(_FakeRouter({"dobby": dobby, "rocky": rocky}), primary="dobby")
     assert await fo.session_queue_positions() == {"s1": 1, "s2": 2, "w1": 1}
+
+
+@pytest.mark.asyncio
+async def test_codex_status_fanout_has_one_edge_writer_and_no_runner_writer(monkeypatch):
+    quota = {
+        "v": 2,
+        "provider": "openai",
+        "fetched_at": "2026-09-05T12:00:00+00:00",
+        "availability": "available",
+        "extra_usage_enabled": False,
+        "windows": [],
+    }
+    dobby = _AggOrch(
+        "dobby", status={"quota": quota, "activeRunners": 0, "degradedReason": None}
+    )
+    rocky = _AggOrch(
+        "rocky", status={"quota": quota, "activeRunners": 1, "degradedReason": None}
+    )
+    writes: list[tuple[str, str]] = []
+
+    def _write(account, snapshot):
+        writes.append((account, snapshot.provider))
+
+    import server.sessions.fleet_orchestrator as fleet_mod
+
+    monkeypatch.setattr(fleet_mod, "persist_quota_snapshot", _write, raising=False)
+    fo = FleetOrchestrator(_FakeRouter({"dobby": dobby, "rocky": rocky}), primary="dobby")
+
+    result = await fo.codex_account_status("chatgpt-pro")
+
+    assert result["activeRunners"] == 1
+    assert dobby.codex_persist_flags == [False]
+    assert rocky.codex_persist_flags == [False]
+    assert writes == [("chatgpt-pro", "openai")]
 
 
 @pytest.mark.asyncio
@@ -527,7 +566,7 @@ def test_api_orchestrator_reads_are_all_classified():
         # app-server is started rather than one per host.
         "codex_models", "codex_validate_model",
     }
-    EXPLICIT = {"create_session", "list_sessions",
+    EXPLICIT = {"create_session", "list_sessions", "codex_account_status",
                 "codex_invalidate_credentials"}  # fleet-wide on FleetOrchestrator
     classified = (_PER_SESSION | _FANOUT_BY_IDS | set(_MERGE_ALL_HOSTS)
                   | PRIMARY_LOCAL | EXPLICIT)

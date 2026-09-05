@@ -483,7 +483,10 @@ async def test_the_runner_provider_retains_no_envelope_after_a_login(caplog):
     from server.codex import schema
 
     response = await handler(
-        schema.ChatgptAuthTokensRefreshParams(reason="unauthorized")
+        schema.ChatgptAuthTokensRefreshParams(
+            reason="unauthorized",
+            previous_account_id=Redacted(CHATGPT_ACCOUNT_ID),
+        )
     )
     assert response.access_token.reveal() == TOKEN
     assert client.refresh_calls == [3]
