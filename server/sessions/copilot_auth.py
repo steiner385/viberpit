@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from server.aio import cancel_and_reap
+
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -158,11 +160,7 @@ class CopilotAuthManager:
                 pass
         task = state._task
         if task is not None and not task.done():
-            task.cancel()
-            try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=3.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
-                pass
+            await cancel_and_reap(task, phase="copilot-auth.reader", timeout=3.0)
 
     async def _reader(self, account: str, proc: Any, token_dir: str) -> None:
         """Background task: read stdout, scrape device prompt, poll for credentials."""

@@ -26,6 +26,8 @@ from ccswitch.accounts import list_accounts
 from ccswitch.accounts import usage_for as _default_usage_fn
 from ccswitch.quota import QuotaSnapshot
 
+from server.aio import cancel_and_reap
+
 log = logging.getLogger(__name__)
 
 
@@ -190,11 +192,7 @@ class UsagePoller:
         socket — the point is that a stalled usage fetch must never delay shutdown.
         """
         if self._task is not None:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
+            await cancel_and_reap(self._task, phase="usage-poller")
             self._task = None
         if self._executor is not None:
             self._executor.shutdown(wait=False, cancel_futures=True)

@@ -14,7 +14,7 @@ from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny, Result
 from claude_agent_sdk._errors import CLIConnectionError
 from ccswitch import copilot as _copilot_mod
 from ccswitch.accounts import provider_or_none as _provider_of
-from server.aio import bounded_wait
+from server.aio import bounded_wait, cancel_and_reap
 from server.assistant.context import PromptContext, render_context_header
 from server.hostname import self_host_name
 from . import events as ev
@@ -1053,9 +1053,9 @@ class ClaudeAgentDriver:
         task, self._listener = self._listener, None
         if task is None or task.done() or task is asyncio.current_task():
             return
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await task
+        # Only the LISTENER's cancellation may be swallowed here; ours (a close racing
+        # the drain) has to keep unwinding — see server.aio.cancel_and_reap (#1164).
+        await cancel_and_reap(task, phase=f"driver.idle-listener:{self.session_id}")
 
     async def _open_autonomous_turn(self) -> None:
         """The CLI started a turn on its own — a background task's <task-notification>
@@ -1472,10 +1472,11 @@ class ClaudeAgentDriver:
                 await bounded_wait(self._client.interrupt(), timeout=grace,
                                    phase=f"driver.interrupt:{self.session_id}",
                                    cancel_grace=grace)
-            try:
-                await asyncio.wait_for(asyncio.shield(self._pump), timeout=grace)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
-                pass
+            # asyncio.wait, not wait_for(shield(...)): both leave the pump running on
+            # overrun, but wait_for's CancelledError is indistinguishable from OUR own
+            # (this close runs inside the drain), and swallowing that stalls the stop
+            # budget (#1164).
+            await asyncio.wait({self._pump}, timeout=grace)
             if not self._pump.done():
                 self._pump.cancel()
                 # The reap must be bounded too: a pump wedged in an uncancellable
