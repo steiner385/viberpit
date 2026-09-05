@@ -1088,7 +1088,18 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                         # RemoteOrchestrator, which has no such method at all).
                         raw_context = msg.get("context")
                         if raw_context is not None:
-                            rec = await orchestrator.get_session(session_id)
+                            # Best-effort: in fleet mode this is a real RPC that can
+                            # raise DaemonTimeout/DaemonUnavailable, and the prompt
+                            # frame had no such dependency before the context chip. A
+                            # transient daemon hiccup must degrade to "no context",
+                            # never cost the user their message.
+                            rec = None
+                            try:
+                                rec = await orchestrator.get_session(session_id)
+                            except Exception:
+                                log.warning("ws.prompt context lookup failed session=%s "
+                                            "— sending without context", session_id,
+                                            exc_info=True)
                             if is_assistant(rec):
                                 validated_context = validate_context(raw_context)
                                 if validated_context is not None:
