@@ -1,118 +1,131 @@
 /**
- * The Automation SECTION of Settings.
+ * The Automations SECTION of Settings — the only place an automation can be
+ * CONFIGURED.
  *
- * Task 18: this file used to mount `Dashboard` twice — once with
- * `activeTab="automations"` and once with `activeTab="settings"` — and assert on
- * `role="tabpanel"` ids. There are no tabpanels any more: `/automations` and
- * `/settings/:section` are routes, and the scroll wrapper each page needs lives
- * in `shell/routes.tsx`. That half moved to `routes.test.tsx`
- * ("gives the scrolling pages their own vertical scroll container"), which
- * asserts it against the REAL wrappers; what stays here is the part that was
- * always about `SettingsView` — that Automation is one of its sections and that
- * `?section=automation` selects it.
+ * ## Why this file still exists, and what it now asserts (R10)
+ *
+ * It used to mount `SettingsView` and assert `role="tab"` ids, and when that
+ * component was deleted the natural reading was that the file went with it —
+ * DEC-10 said Automations had moved to the top-level `/automations` page.
+ *
+ * That reading was wrong, and this file is the guard against making it again:
+ * `automations/AutomationsTab.tsx` is a MONITOR. It renders events, spawned
+ * sessions, actionable items and manual dispatch, and it has no enable switch,
+ * no mode select, no config form and no schedule editor. Those three controls
+ * exist ONLY in `AutomationView` → `AutomationCard` → `ScheduleEditor`, which
+ * this section hosts. So the assertions below are no longer about a tab strip:
+ * they name the controls, so deleting the section again fails here rather than
+ * in a user's hands. PR 6 folds them into the Automations page and retires the
+ * section; until then, this is the room and this is its only door.
+ *
+ * It renders the real page at `/settings/automation` (not the component in
+ * isolation) because "reachable" is half the claim.
  */
-import { describe, it, expect, vi } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { SettingsView } from '../settings/SettingsView'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 
-vi.mock('@/api/hooks', () => ({
-  // "Reload session" (MainPaneSession → SessionHeader → SessionActions).
-  useReloadSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  useConfig: vi.fn(() => ({ data: { adoptionEnabled: false } })),
-  useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
-  useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  useAccounts: vi.fn(() => ({ data: [], isLoading: false })),
-  useSessions: vi.fn(() => ({ data: [], isLoading: false })),
-  useCreateSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
-  useRenameSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
-  useCloseSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
-  useRefreshAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
-  useUpdateAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
-  useDeleteAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
-  useSetAccountEnabled: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  useGithubRepos: vi.fn(() => ({ data: [], isLoading: false, isError: false })),
-  useModels: vi.fn(() => ({ data: [] })),
-  useGithubBranches: vi.fn(() => ({ data: { default: null, branches: [] }, isLoading: false })),
-  useSettings: vi.fn(() => ({ data: { defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null }, isLoading: false })),
-  useUpdateSettings: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
-  useReauthAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
-  useReauthStatus: vi.fn(() => ({ data: { state: 'idle', message: null, startedAt: null }, isLoading: false })),
-  useCancelReauth: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
-  useArchivedSessions: vi.fn(() => ({ data: [], isLoading: false })),
-  useUnarchiveSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
-  usePermanentDeleteSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
-  useBulkUnarchiveSessions: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
-  useBulkPermanentDeleteSessions: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false })),
-  useSendPrompt: () => ({ mutate: vi.fn() }),
-  useSetAutopilotPaused: () => ({ mutate: vi.fn() }),
-  useFixPr: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  useAutomations: vi.fn(() => ({ data: [], isLoading: false })),
-  usePendingDeploy: () => ({ data: { behind: false, commits: [], ci: 'green' } }),
-  useDeployStatus: () => ({ data: { running: false, phases: {} } }),
-  useStartDeploy: () => ({ mutate: vi.fn(), isPending: false }),
-  useAllPrs: vi.fn(() => ({ data: [] })),
-  useStageModels: vi.fn(() => ({ data: {} })),
-  useSessionsViewing: vi.fn(),
-  useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
-  useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  QK: {
-    accounts: ['accounts'],
-    sessions: ['sessions'],
-    archived: ['archived-sessions'],
-    config: ['config'],
-    githubRepos: ['github-repos'],
-    githubBranches: (repo?: string) => ['github-branches', repo],
-    settings: ['settings'],
-  },
-  useAssessDispatch: vi.fn(() => ({ assess: vi.fn() })),
-}))
+const PATCHED: unknown[] = []
 
-vi.mock('@/session/useSessionSearch', () => ({
-  useSessionSearch: () => ({ query: '', setQuery: vi.fn(), matchedIds: null, isFiltered: false }),
-}))
-
-// Stubbed so the "which section is on screen" assertion has something to name.
-// `AutomationView` renders an empty list for `useAutomations() === []`, which is
-// indistinguishable from any other empty section — the trap the old tabpanel-id
-// assertions fell into.
-vi.mock('../AutomationView', () => ({
-  AutomationView: () => <div data-testid="section-automation" />,
-}))
-
-function wrapper({ children }: { children: React.ReactNode }) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
-}
-
-describe('Automation section (Settings)', () => {
-  function renderAutomation() {
-    return render(
-      <MemoryRouter initialEntries={['/settings?section=automation']}>
-        <SettingsView />
-      </MemoryRouter>,
-      { wrapper },
-    )
+vi.mock('@/api/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/client')>()
+  const { appSettings } = await import('@/test/factories')
+  const automation = {
+    id: 'pr-doctor',
+    name: 'PR Doctor',
+    description: 'watches CI',
+    enabled: false,
+    mode: 'propose',
+    modes: ['off', 'auto', 'propose'],
+    status: { text: 'idle', level: 'idle', counts: null },
+    // A schema is what makes the card expandable, which is where the config
+    // form and the schedule editor live.
+    configSchema: [
+      { key: 'draft_only', label: 'Draft PRs only', type: 'bool', default: false, help: '', choices: null },
+    ],
+    config: { draft_only: true },
+    schedule: null,
+    lastActiveAt: null,
+    activeSessions: 0,
   }
+  return {
+    ...actual,
+    api: {
+      get: vi.fn(async (path: string): Promise<unknown> => {
+        if (path === '/automations') return [automation]
+        if (path === '/fleet/hosts') return { hosts: [] }
+        if (path === '/config') return { adoptionEnabled: false }
+        if (path === '/settings') return appSettings()
+        if (path === '/github/repos') return []
+        return []
+      }),
+      post: vi.fn(async () => ({})),
+      put: vi.fn(async () => ({})),
+      patch: vi.fn(async (path: string, body: unknown) => {
+        PATCHED.push({ path, body })
+        return { ...automation, ...(body as object) }
+      }),
+      del: vi.fn(async () => undefined),
+    },
+  }
+})
 
-  it('shows the Automation section tab in the Settings section strip', () => {
-    renderAutomation()
-    const sections = within(screen.getByRole('tablist', { name: /settings sections/i }))
-    expect(sections.getByRole('tab', { name: 'Automation' })).toBeInTheDocument()
+vi.mock('@/ws/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/ws/client')>()
+  return {
+    ...actual,
+    useSessionSocket: () => ({
+      attach: vi.fn(), detach: vi.fn(), interrupt: vi.fn(), prompt: vi.fn(),
+      sendInterrupt: vi.fn(), permissionResponse: vi.fn(), answerQuestion: vi.fn(),
+      setPermissionMode: vi.fn(), cancelQueued: vi.fn(), command: vi.fn(),
+      activity: vi.fn(), on: vi.fn(), off: vi.fn(),
+      connectionState: 'connected' as const, socket: null,
+    }),
+  }
+})
+
+import { renderApp } from '@/test/renderApp'
+
+describe('Automations section (Settings)', () => {
+  beforeEach(() => {
+    PATCHED.length = 0
+    localStorage.clear()
   })
 
-  it('marks the Automation section as selected when ?section=automation', () => {
-    renderAutomation()
-    const sections = within(screen.getByRole('tablist', { name: /settings sections/i }))
-    expect(sections.getByRole('tab', { name: 'Automation' })).toHaveAttribute('aria-selected', 'true')
+  it('is reachable at /settings/automation and is listed in the Settings nav', async () => {
+    const r = renderApp({ path: '/settings/automation', mode: 'desktop' })
+
+    expect(await screen.findByRole('region', { name: 'Automations' })).toBeInTheDocument()
+    expect(r.path()).toBe('/settings/automation')
+    const nav = within(screen.getByRole('navigation', { name: 'Settings sections' }))
+    expect(nav.getByRole('link', { name: 'Automations', current: 'page' })).toBeInTheDocument()
   })
 
-  it('renders the automation view for that section, not the general one', () => {
-    // The lower bound the two assertions above do not have: a section strip that
-    // highlights "Automation" while rendering General would satisfy both.
-    renderAutomation()
-    expect(screen.getByTestId('section-automation')).toBeInTheDocument()
+  it('renders the enable switch and the mode select — the controls the Automations PAGE lacks', async () => {
+    renderApp({ path: '/settings/automation', mode: 'desktop' })
+
+    const toggle = await screen.findByRole('switch', { name: 'PR Doctor enabled' })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByRole('combobox', { name: 'Mode' })).toHaveValue('propose')
+
+    // The switch reaches the server: the section is wired, not decorative.
+    // `mode` is left alone because 'propose' is already an active mode.
+    await userEvent.click(toggle)
+    expect(PATCHED).toEqual([
+      { path: '/automations/pr-doctor', body: { enabled: true } },
+    ])
+  })
+
+  it('expands to the config form and the schedule editor', async () => {
+    renderApp({ path: '/settings/automation', mode: 'desktop' })
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Expand' }))
+
+    // The config form, built from `configSchema`…
+    expect(screen.getByLabelText('Draft PRs only')).toBeInTheDocument()
+    // …and `ScheduleEditor`, the only schedule UI in the app. Named by its own
+    // control rather than by the "Schedule" heading, which the panel and the
+    // editor both render.
+    expect(screen.getByRole('combobox', { name: 'Schedule preset' })).toBeInTheDocument()
   })
 })

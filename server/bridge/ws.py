@@ -37,11 +37,12 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
+from server.assistant.context import validate_context
 from server.audit import record_audit, redact_event
 from server.auth.identity import verify_identity
 from server.auth.middleware import require_ws_identity
@@ -54,6 +55,7 @@ from server.sessions.commands.catalog import parse_command_line
 from server.sessions.events import ErrorEvent, PermissionRequest, tool_kind
 from server.sessions.facade import call_with_deadline
 from server.sessions.replay import replay_window
+from server.sessions.types import is_assistant
 
 if TYPE_CHECKING:
     from server.sessions.facade import InProcessOrchestratorAdapter
@@ -1076,7 +1078,20 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                         # prompt next instead of queueing it behind the turn. Only
                         # forwarded when set so the plain contract is untouched.
                         interrupt = msg.get("interrupt") is True
-                        extra = {"interrupt": True} if interrupt else {}
+                        extra: dict[str, Any] = {"interrupt": True} if interrupt else {}
+                        # Context header (spec §4.5): only assistant sessions may attach
+                        # one — a coding session's prompt frame ignores it even if a
+                        # buggy/malicious client sends it, so it never reaches the SDK.
+                        raw_context = msg.get("context")
+                        if raw_context is not None:
+                            try:
+                                rec = await orchestrator.get_session(session_id)
+                            except DaemonUnavailable:
+                                rec = None
+                            if rec is not None and is_assistant(rec):
+                                validated = validate_context(raw_context)
+                                if validated is not None:
+                                    extra["context"] = validated
                         status = await orchestrator.send_prompt(
                             session_id, text, attachment_ids, **extra)
                         if status == "no_driver":

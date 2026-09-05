@@ -94,6 +94,57 @@ def test_fresh_archives_and_recreates(tmp_path):
         assert c.get("/api/assistant/status", headers=_H).json()["sessionId"] == second["id"]
 
 
+async def _end_row(session_id: str) -> None:
+    """Park the row exactly as the idle reap does (spec §4.7: status=ended, driver
+    closed, CLI transcript kept)."""
+    from sqlalchemy import update as sa_update
+    from server.db import db_session
+    from server.db.models import Session as DbSession
+    async with db_session() as db:
+        await db.execute(sa_update(DbSession).where(DbSession.id == session_id)
+                         .values(status="ended"))
+        await db.commit()
+
+
+def test_reaped_thread_is_reused_after_a_daemon_restart(tmp_path):
+    """#1122: reap (status=ended) + restart used to lose the thread — `rehydrate`
+    skips ended rows, so the drawer created a new assistant and orphaned the old
+    transcript. The endpoint must hand back the SAME session, resumed."""
+    with _client(tmp_path) as c:
+        first = c.post("/api/assistant/session", json={}, headers=_H).json()["id"]
+        # app.state.sessions is the facade; the records live on the real orchestrator.
+        orch = c.app.state.sessions._orch
+        c.portal.call(_end_row, first)
+        orch._records.clear()          # daemon restart: nothing in memory…
+        orch._drivers.clear()
+        c.portal.call(orch.rehydrate)  # …and rehydrate does not bring an ended row back
+        assert first not in orch._records
+
+        again = c.post("/api/assistant/session", json={}, headers=_H).json()
+        assert again["id"] == first and again["state"] == "resumed"
+        assert c.get("/api/assistant/status", headers=_H).json()["sessionId"] == first
+
+
+def test_resume_threads_the_callers_identity(tmp_path):
+    """The resume path must build the driver under the REAL identity.
+
+    ensure_driver defaults to SYSTEM_IDENTITY, and a driver built under "system"
+    registers its questions/permissions as owned by "system" — every answer the
+    real user then sends is rejected ("question no longer pending", #1080). The WS
+    attach re-threads identity moments later, so the window is narrow, but anything
+    the resumed driver asks before the drawer attaches is unanswerable."""
+    from unittest.mock import AsyncMock
+
+    with _client(tmp_path) as c:
+        sid = c.post("/api/assistant/session", json={}, headers=_H).json()["id"]
+        orch = c.app.state.sessions._orch
+        orch._records[sid].status = "ended"
+        with patch.object(SessionOrchestrator, "ensure_driver", new=AsyncMock()) as ed:
+            r = c.post("/api/assistant/session", json={}, headers=_H)
+        assert r.json()["state"] == "resumed"
+        assert ed.await_args.kwargs.get("identity") == "u@example.com"
+
+
 def test_gated_model_is_400(tmp_path):
     with _client(tmp_path, {"CCSWITCH_MODEL_APPROVAL_DENYLIST": "fable"}) as c:
         r = c.post("/api/assistant/session", json={"model": "fable"}, headers=_H)

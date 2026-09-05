@@ -132,9 +132,9 @@ export const NAV_BY_ID: Record<NavId, NavDef> = (() => {
  * `/settings/<section>` — the path form of a Settings section (DEC-14).
  *
  * Lives here, beside the `/settings` it is built from, because three callers
- * need it: the route table's legacy redirects (`/accounts`, `/automation`,
- * `/library`), the `/settings` → `/settings/general` redirect, and
- * `SettingsView`'s own section strip once it is routed by path.
+ * need it: the route table's legacy redirects (`/accounts`, `/library`),
+ * `SettingsIndexPage`'s `?section=` and last-section redirects, and
+ * `SettingsNav`, which builds one link per row of `settingsDefs`.
  *
  * A blank section falls back rather than being passed through. `/settings?section=`
  * is a URL a stale link really can carry, and `/settings/ ` is a page that

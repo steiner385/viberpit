@@ -2,6 +2,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 import time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Typing-only, so this module's runtime imports stay stdlib-only. PromptContext is
+    # a leaf TypedDict (server/assistant/context.py imports nothing from
+    # server.sessions), so this direction can never form a cycle.
+    from server.assistant.context import PromptContext
 
 
 def _now_ms() -> float:
@@ -46,9 +53,9 @@ class TurnModel:
 
 @dataclass
 class SessionMeta:
-    model: str; session_id: str
+    model: str; session_id: str; kind: str | None = None
     def to_wire(self): return {"type": "sessionMeta", "model": self.model,
-                               "sessionId": self.session_id}
+                               "sessionId": self.session_id, "kind": self.kind}
 
 @dataclass
 class TurnEnd:
@@ -229,9 +236,13 @@ class UserMessage:
     # mark to drop boundary copies deterministically on merge, and to detect one left
     # pinned mid-transcript (the page-boundary ordering bug, #1000).
     owner_prefix: bool = False
+    # The page the user was on when they sent this (assistant sessions only,
+    # spec §4.5) — rendered as a chip above the bubble, never sent to the SDK
+    # as-is (see driver.send_prompt, which prepends a header instead).
+    context: PromptContext | None = None
     def to_wire(self): return {"type": "user", "turnId": self.turn_id, "text": self.text, "srcUuid": self.src_uuid,
                                "images": self.images or [], "ts": self.ts,
-                               "ownerPrefix": self.owner_prefix}
+                               "ownerPrefix": self.owner_prefix, "context": self.context}
 
 @dataclass
 class QueueUpdate:

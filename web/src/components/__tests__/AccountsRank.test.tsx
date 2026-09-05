@@ -1,9 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
-import { SettingsView } from '../settings/SettingsView'
+import { AccountsManager } from '../AccountsManager'
 import * as hooks from '@/api/hooks'
 import type { Account } from '@/api/types'
 import { appSettings } from '@/test/factories'
@@ -92,12 +91,6 @@ function wrapper({ children }: { children: React.ReactNode }) {
   )
 }
 
-/** The Accounts section tab is pre-selected by the wrapper's ?section=accounts;
- *  clicking it again is a harmless no-op kept for test readability. */
-async function switchToAccountsTab(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(screen.getByRole('tab', { name: /accounts/i }))
-}
-
 describe('AccountsStrip — session counts & next-pick rank', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -125,10 +118,8 @@ describe('AccountsStrip — session counts & next-pick rank', () => {
   })
 
   async function renderWith(account: Partial<Account>) {
-    const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount(account)]))
-    render(<SettingsView />, { wrapper })
-    await switchToAccountsTab(user)
+    render(<AccountsManager />, { wrapper })
   }
 
   it('shows split active/idle session counts', async () => {

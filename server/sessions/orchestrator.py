@@ -46,6 +46,7 @@ from ccswitch.configdir import compose
 from ccswitch.paths import account_cfg_dir, shared_base
 from ccswitch.selector import at_ceiling, exhausted
 from server.aio import bounded_wait
+from server.assistant.context import PromptContext
 from server.audit import record_audit
 from server.db import db_session
 from server.db.models import AUTO_ARCHIVE_PROVENANCE, CAPACITY_EXEMPT_STATUSES, INACTIVE_SESSION_STATUSES, Session as DbSession
@@ -81,7 +82,7 @@ from server.obs.context import log_event, PROC_EPOCH
 from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
 from server.sessions.types import (
-    SessionRecord, SYSTEM_IDENTITY, RESUME_ELIGIBLE_STATUSES,
+    ASSISTANT_KIND, SessionRecord, SYSTEM_IDENTITY, RESUME_ELIGIBLE_STATUSES,
     is_assistant, is_assistant_kind,
 )
 from server.sessions.usage_stall import is_usage_stalled
@@ -2086,7 +2087,9 @@ class SessionOrchestrator:
                 # the queued→active transition it re-attaches on (incident
                 # 2026-09-04). 'queued' is capacity-exempt, so nothing double-counts.
                 try:
-                    await self._spawn_session(sid, preexisting_row=True, **params)
+                    await self._spawn_session(
+                        sid, preexisting_row=True, resume=row.claude_session_id or None,
+                        **params)
                 except Exception as exc:
                     # A real start failure (as opposed to the process dying): the
                     # session is about to be marked 'ended', so its entry must go —
@@ -2428,6 +2431,7 @@ class SessionOrchestrator:
         kind: str | None = None,
         owner_identity: str | None = None,
         preexisting_row: bool = False,
+        resume: str | None = None,
     ) -> SessionRecord:
         """Start a SessionDriver, persist/update a DB row, return a SessionRecord.
 
@@ -2436,8 +2440,12 @@ class SessionOrchestrator:
         account_name, cwd, branch, model) instead of INSERT-ing a new one.
         Task 4 (_maybe_start_queued) calls this path.
 
-        *kind*/*owner_identity* default to None so a queue entry persisted before the
-        assistant existed still replays cleanly (its params dict has neither key).
+        *resume* is the ``claude_session_id`` to resume, when one exists — the
+        queue-drain call site threads the row's own id through here so a
+        pre-existing conversation is never silently replaced by a fresh one
+        (#1107). *kind*/*owner_identity* default to None so a queue entry
+        persisted before the assistant existed still replays cleanly (its
+        params dict has neither key).
         """
         repo_root = await self._effective_repo_root()
 
@@ -2518,8 +2526,25 @@ class SessionOrchestrator:
         # host stamp); a fresh spawn is born now, on this host (worker) / NULL.
         _prior = self._records.get(session_id)
         _host = getattr(_prior, "host", None) or local_host_stamp()
+        # Belt-and-suspenders for #1107: the queue-drain call site threads the
+        # row's claude_session_id through `resume` explicitly, but if some future
+        # caller passes preexisting_row=True without it, a prior in-memory record
+        # (rebuilt from the row via _record_from_row) still carries the real id —
+        # fall back to resuming it rather than silently starting a fresh
+        # conversation over an existing one. A non-empty prior id that we are
+        # about to abandon anyway is logged so the orphaned transcript can still
+        # be found.
+        _prior_csid = (getattr(_prior, "claude_session_id", None) or None)
+        if resume is None and _prior_csid:
+            log.warning(
+                "session.spawn_over_existing_conversation id=%s prior_csid=%s — "
+                "fresh spawn requested with no resume handle over a row that "
+                "already has one; resuming instead of discarding it",
+                session_id, _prior_csid)
+            resume = _prior_csid
         _pre_record = SessionRecord(
-            id=session_id, name=name, account=account, claude_session_id="",
+            id=session_id, name=name, account=account,
+            claude_session_id=resume or "",
             cols=cols, rows=rows, cwd=cwd, repo=repo, branch=branch_name,
             status="idle", name_is_auto=name_is_auto,
             created_at=getattr(_prior, "created_at", None) or _now,
@@ -2559,7 +2584,7 @@ class SessionOrchestrator:
             driver = SessionDriver(
                 session_id, account, cwd, str(cfg_dir),
                 mode=permission_mode, sdk_factory=self._session_factory(session_id),
-                registry=self._registry, identity=identity,
+                registry=self._registry, identity=identity, resume=resume,
                 on_session_id=self._persist_claude_session_id,
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, account),
                 on_status=self._persist_status,
@@ -7103,11 +7128,64 @@ class SessionOrchestrator:
     async def find_assistant(self, owner_identity: str) -> SessionRecord | None:
         """Return the live (non-archived) assistant thread owned by *owner_identity*,
         or None. The idempotency lookup ``POST /api/assistant/session`` uses before
-        deciding whether to create, resume, or (with ``fresh``) archive-and-recreate."""
+        deciding whether to create, resume, or (with ``fresh``) archive-and-recreate.
+
+        Falls back to ``_adopt_reaped_assistant`` on an in-memory miss: a thread the
+        idle reap already parked on ``ended`` is NOT in ``_records`` after a restart."""
         for r in self._records.values():
             if is_assistant(r) and r.owner_identity == owner_identity and r.status != "archived":
                 return self._sync_detached(r)
-        return None
+        return await self._adopt_reaped_assistant(owner_identity)
+
+    async def _adopt_reaped_assistant(self, owner_identity: str) -> SessionRecord | None:
+        """Load an idle-reaped assistant row back into ``_records`` on demand (#1122).
+
+        The reap parks the thread on ``status="ended"`` (spec §4.7) and ``rehydrate``
+        selects ``status NOT IN INACTIVE_SESSION_STATUSES`` — the two filters disagree
+        on exactly that status. So after "reaped, then a deploy restart" (a common
+        pairing: the reap fires at 15 min idle) the row is in the DB but not in memory,
+        the scan in ``find_assistant`` returns None, and ``POST /api/assistant/session``
+        mints a BRAND-NEW thread. Nothing crashes — the old ``claude_session_id`` and
+        its CLI transcript are intact on disk — but nothing points at them any more,
+        which is the same silently-orphaned-history shape as the 2026-09-04 torn-read
+        incident. This closes the gap so §4.7's "Daemon restart … continues" holds for
+        a reaped thread too, not only one that was live at restart.
+
+        Deliberately narrow (issue #1122 option 1) rather than widening ``rehydrate``:
+        that select is shared with coding sessions, and an ``ended`` exception there
+        would pull every closed coding session back into ``_records`` (dashboard,
+        sweeps, capacity). Here only ``ended`` rows are eligible (the one status
+        rehydrate skips and the one ``POST /api/assistant/session`` already branches on
+        to resume), only for this owner, and only the newest — one row, materialised
+        lazily, from which ``ensure_driver`` resumes exactly as it does for any other
+        detached session.
+        """
+        from sqlalchemy import select as sa_select
+        async with db_session() as db:
+            row = (await db.execute(
+                sa_select(DbSession)
+                .where(DbSession.kind == ASSISTANT_KIND,
+                       DbSession.owner_identity == owner_identity,
+                       DbSession.status == "ended")
+                .order_by(DbSession.created_at.desc())
+                .limit(1))).scalars().first()
+        if row is None:
+            return None
+        # Host partition (#852), same rule as rehydrate: a worker never owns a row
+        # stamped for another host. The assistant is pinned to the primary anyway
+        # (FleetOrchestrator.create_session), so this only guards a misroute.
+        if daemon_role() == "worker" and row.host != self_host_name():
+            return None
+        # Another caller may have adopted (or the owner respawned) it while we awaited
+        # the DB — never overwrite a live record with a stale row.
+        existing = self._records.get(row.id)
+        if existing is not None:
+            return self._sync_detached(existing)
+        rec = self._record_from_row(row)
+        self._records[row.id] = rec
+        log_event(log, logging.INFO, "session.reattach", session_id=row.id,
+                  **{"from": "ended", "to": "ended", "reason": "assistant_adopt"})
+        return self._sync_detached(rec)
 
     def get_session(self, session_id: str) -> SessionRecord | None:
         """Return the in-memory SessionRecord for session_id, or None
@@ -8354,18 +8432,38 @@ class SessionOrchestrator:
                         # No resume to blame — the SDK genuinely can't start (e.g. a
                         # truly dead account token / system problem). Surface it.
                         raise
-                    # Resume failed — almost always because the stored claude_session_id
-                    # can't be resumed from rec.cwd (the original session lived under a
-                    # different project dir, or the claude session was pruned). Fall back
-                    # to a FRESH session so the record stays usable: the prior transcript
-                    # still shows via replay, and new turns get (and persist) a new
-                    # claude_session_id. Only if the fresh start ALSO fails do we error.
-                    log.warning("session.resume id=%s could not resume claude_sid=%s; starting fresh",
-                                session_id, resume, exc_info=True)
-                    try:
+                    # A start() failure is NOT proof that the resume handle is bad, and
+                    # guessing that it is costs the user their conversation: the fresh
+                    # driver below reports a new claude_session_id, _persist_claude_session_id
+                    # overwrites the stored one, and the real transcript is orphaned with
+                    # nothing left pointing at it. That is not hypothetical — on 2026-09-04
+                    # a torn read of the account's `.claude.json` (rocky's account store was
+                    # still mounted with the 600s sshfs attribute cache #1005 replaced) made
+                    # the CLI exit 1 inside the SDK's initialize(), and six sessions were
+                    # permanently detached from transcripts up to 5.8 MB that were intact on
+                    # disk the entire time.
+                    #
+                    # The transcript file is the discriminator, and it is a fact rather than
+                    # a guess about an exception's meaning: if it is STILL THERE the handle
+                    # is fine, so re-raise and let the caller retry once the real fault
+                    # clears (_recover_resume_failures_once already retries and drives the
+                    # "failed to resume" banner). Only when it is genuinely gone — pruned,
+                    # or recorded under a different project dir — is starting fresh the
+                    # right call, and then there is no history left to lose.
+                    transcript = await asyncio.to_thread(
+                        self._find_transcript, str(cfg_dir), resume, rec.cwd)
+                    with contextlib.suppress(Exception):
                         await driver.aclose()
-                    except Exception:
-                        pass
+                    if transcript is not None:
+                        log.warning(
+                            "session.resume id=%s start failed but the transcript for "
+                            "claude_sid=%s is intact at %s — NOT starting fresh (that would "
+                            "orphan it); surfacing the failure instead",
+                            session_id, resume, transcript, exc_info=True)
+                        raise
+                    log.warning("session.resume id=%s could not resume claude_sid=%s "
+                                "(no transcript on disk); starting fresh",
+                                session_id, resume, exc_info=True)
                     driver = _build(None)
                     await driver.start()
                 self._drivers[session_id] = driver
@@ -8754,7 +8852,8 @@ class SessionOrchestrator:
         return self._pending_initial_attachment_ids.pop(session_id, None)
 
     async def send_prompt(self, session_id, text, attachment_ids=None, *,
-                          interrupt: bool = False) -> str:
+                          interrupt: bool = False,
+                          context: PromptContext | None = None) -> str:
         """Deliver a prompt to a live driver. ``interrupt`` = "interrupt and post":
         stop the in-flight turn and run this prompt next instead of queueing it."""
         if self._draining:
@@ -8787,9 +8886,9 @@ class SessionOrchestrator:
                     db, session_id, turn_id, ids)
         self._last_prompt[session_id] = text
         if interrupt:
-            await d.send_prompt(text, resolved, interrupt=True)
+            await d.send_prompt(text, resolved, interrupt=True, context=context)
         else:
-            await d.send_prompt(text, resolved)
+            await d.send_prompt(text, resolved, context=context)
         return "sent"
 
     async def interrupt(self, session_id):
@@ -10413,6 +10512,27 @@ class SessionOrchestrator:
             _copilot = getattr(self, "_copilot", None)
             if _copilot is not None and _provider_of(new_account) == _copilot_mod.PROVIDER:
                 await _copilot.ensure(new_account)
+            # An assistant-kind session's overlay carries an AssistantApi whose MCP
+            # tool handlers close over a live httpx.AsyncClient. old_driver.aclose()
+            # above already closed that client (it belonged to old_driver), so every
+            # mcp__ccswitch__* call on the rebuilt driver would raise against a dead
+            # connection unless a FRESH AssistantApi is minted here and re-registered
+            # under record.id before the new SessionDriver is built — mirroring the
+            # rebuild _spawn_session does on the initial spawn (#1125).
+            assistant_api = None
+            if is_assistant_kind(getattr(record, "kind", None)):
+                from server.assistant.client import AssistantApi
+                from server.assistant.options import assistant_options
+                from server.assistant.server import build_server
+                from server.assistant.token import mint_token
+                from server.config import get_settings
+                settings = get_settings()
+                assistant_api = AssistantApi(
+                    base_url=f"http://127.0.0.1:{settings.port}",
+                    token=mint_token(identity, record.id), session_id=record.id)
+                self.register_assistant_overlay(record.id, assistant_options(
+                    server=build_server(assistant_api), max_turns=settings.assistant_max_turns,
+                    model=record.model or settings.assistant_model))
             new_driver = SessionDriver(
                 record.id, new_account, cwd, str(cfg),
                 mode=mode, sdk_factory=self._session_factory(record.id),
@@ -10426,12 +10546,19 @@ class SessionOrchestrator:
                 get_condense_estimate=self._condense_estimate,
                 on_recoverable_failure=self._handle_recoverable_failure,
                 suggester=self._suggester_for(getattr(record, "kind", None)),
+                assistant_api=assistant_api,
             )
             # Set the record's account BEFORE start(): start() triggers the SDK factory →
             # _oat_env, which reads record.account to pick the setup-token. If left stale, a
             # cross-account reassign injects the old account's token into the new config (#346).
             record.account = new_account
-            await new_driver.start()
+            try:
+                await new_driver.start()
+            except Exception:
+                if assistant_api is not None:
+                    self._assistant_overlays.pop(record.id, None)
+                    await assistant_api.aclose()
+                raise
             self._install_driver(record.id, new_driver)
             if record.model is not None:
                 await new_driver.set_model(record.model)

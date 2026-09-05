@@ -67,12 +67,24 @@ vi.mock('@/automations/AutomationsTab', () => ({ AutomationsTab: stub('automatio
 vi.mock('@/initiatives/InitiativesTab', () => ({ InitiativesTab: stub('initiatives') }))
 vi.mock('@/projects/ProjectsTab', () => ({ ProjectsTab: stub('projects') }))
 vi.mock('@/components/InsightsView', () => ({ InsightsView: stub('insights') }))
-vi.mock('@/components/settings/SettingsView', () => ({
-  // Renders the section it was handed, so `/settings/:section` is asserted to
-  // arrive at the component and not merely to stop redirecting.
-  SettingsView: ({ section }: { section?: string }) => (
-    <div data-testid="page-settings">{section ?? '(none)'}</div>
-  ),
+// The Settings pages are stubbed like every other page, and for one extra
+// reason: both read `useViewport()` (phone and tablet-portrait drill), which
+// `TestLayout` does not provide. Their real behaviour — which mode drills, where
+// a bare `/settings` redirects — is the subject of
+// `features/settings/SettingsPage.test.tsx`, which mounts the real shell.
+vi.mock('@/features/settings/SettingsPage', async () => {
+  const { useParams } = await import('react-router-dom')
+  return {
+    // Renders the section from the path, so `/settings/:section` is asserted to
+    // arrive at the page and not merely to stop redirecting.
+    SettingsPage: () => {
+      const { section } = useParams()
+      return <div data-testid="page-settings">{section ?? '(none)'}</div>
+    },
+  }
+})
+vi.mock('@/features/settings/SettingsIndexPage', () => ({
+  SettingsIndexPage: () => <div data-testid="page-settings">(index)</div>,
 }))
 
 // The shell the matrix mounts needs a daemon. The api CLIENT is faked, not the
@@ -176,15 +188,20 @@ describe('route table — redirects', () => {
     ['/review/abc', '/archived/abc'],
     ['/accounts', '/settings/accounts'],
     ['/automation', '/settings/automation'],
-    ['/settings', '/settings/general'],
-    ['/settings?section=accounts', '/settings/accounts'],
-    // A stale link can carry a blank section. Passed through, `/settings/%20`
-    // is a page that exists, renders General, and leaves a nonsense URL in the
-    // bar. (The empty case self-heals — `/settings/` normalises back to
-    // `/settings`, and the second pass has no search left to misread — so the
-    // whitespace case is the one that pins the guard.)
-    ['/settings?section=', '/settings/general'],
-    ['/settings?section=%20%20', '/settings/general'],
+    // `/settings` and `/settings?section=X` are NOT redirects any more: they are
+    // `SettingsIndexPage`, whose element depends on the layout mode, so they
+    // cannot be asserted under `TestLayout` (no ViewportProvider). Every row
+    // that used to live here moved to `features/settings/SettingsPage.test.tsx`,
+    // which mounts the real shell: a named `?section=` and the two blank-section
+    // cases are rows in its legacy-links loop, and the bare path is its
+    // "redirects to the last visited section, else general" test.
+    //
+    // One assertion could NOT move as a route test and became a unit test
+    // instead: `settingsSectionPath`'s trim guard, now in `navDefs.test.ts`.
+    // `SettingsPage` rejects an unknown `:section` on its own, so at the route
+    // level a lost trim still lands on `/settings/general` — via
+    // `/settings/%20%20`. The landing looks identical; only the function's
+    // return value shows the bug.
     // `/library` has defaulted to Plugins since the Library tab became a
     // Settings section; the bookmark keeps landing there.
     ['/library', '/settings/plugins'],
@@ -265,6 +282,7 @@ describe('route table — pages', () => {
     ['/archived', 'page-archived'],
     ['/archived/abc', 'page-review'],
     ['/settings/general', 'page-settings'],
+    ['/settings', 'page-settings'],
   ])('%s renders %s without redirecting', (path, testid) => {
     renderAt(path)
     expect(url()).toBe(path)
@@ -303,9 +321,11 @@ describe('route table — pages', () => {
    * height comes from `PageHost` rather than from a sibling flex row.)
    *
    * Pipeline, Initiatives and Projects are deliberately absent: each manages its
-   * own inner scrolling and would fail this as written.
+   * own inner scrolling and would fail this as written. So is Settings, since
+   * the redesign: its scroll owner is `ui/PageContent` rather than a wrapper in
+   * this file, and `features/settings/SettingsPage.test.tsx` asserts it there.
    */
-  it.each(['/automations', '/insights', '/archived', '/settings/automation'])(
+  it.each(['/automations', '/insights', '/archived'])(
     '%s owns a vertical scroll container',
     (path) => {
       renderAt(path)
@@ -391,10 +411,17 @@ const MATRIX_PATHS: ReadonlyArray<readonly [path: string, testid: string]> = [
 ]
 
 /**
- * The route patterns that are redirects rather than pages — the complement of
+ * The route patterns the matrix does not cover — the complement of
  * `MATRIX_PATHS` in the table. Hand-listed so a NEW page route added to
  * `routes.tsx` without a matrix row is neither covered nor excused, and the
  * coverage guard below reddens.
+ *
+ * All but one are redirects. The exception is `/settings`, whose ELEMENT depends
+ * on the layout mode — the grouped section list on phone and tablet-portrait, a
+ * redirect to the last-viewed section otherwise. "Renders the same page in every
+ * mode" is the one claim that is deliberately false of it, so a matrix cell for
+ * it would have to be written the other way round; that is what
+ * `features/settings/pageContract.test.tsx` and `SettingsPage.test.tsx` do.
  */
 const REDIRECT_ROUTE_PATTERNS = new Set([
   '/', '/settings',

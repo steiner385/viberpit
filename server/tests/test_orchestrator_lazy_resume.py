@@ -135,6 +135,82 @@ def test_ensure_driver_falls_back_to_fresh_when_resume_fails(tmp_path):
     assert orch.get_session(session_id).detached is False
 
 
+def test_ensure_driver_never_starts_fresh_when_the_transcript_still_exists(tmp_path):
+    """A start() failure with the transcript PRESENT must NOT reincarnate the session empty.
+
+    The fresh-start fallback above assumes a start() failure means the resume handle is
+    bad. It is not the only way start() fails: on 2026-09-04 a torn read of the account's
+    `.claude.json` (rocky's account store was mounted with a 600s sshfs attribute cache)
+    made the `claude` CLI exit 1 inside the SDK's initialize(), so the fallback fired,
+    built a driver with resume=None, and `_persist_claude_session_id` then OVERWROTE the
+    good `claude_session_id` with the empty session's id. Six sessions were permanently
+    detached from multi-megabyte transcripts that were sitting intact on disk the whole
+    time, and each came back reporting it had no idea what it was working on.
+
+    The transcript file itself is the discriminator: if it is still there, the resume
+    handle is fine and the failure is something else, so the pointer must survive.
+    """
+    from server.tests.fakes.fake_sdk import FakeSDKClient
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
+    cwd = str(tmp_path)
+    session_id = "s-transcript-alive"
+    good_csid = "csid-with-a-real-transcript"
+    resume_calls = []
+
+    def factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
+        resume_calls.append(resume)
+        c = FakeSDKClient([], on_can_use_tool=can_use_tool)
+
+        # Fails for BOTH resume values: the CLI cannot read its config at all, which is
+        # exactly why blaming the resume handle is wrong.
+        async def _boom():
+            raise RuntimeError("Command failed with exit code 1")
+        c.__aenter__ = lambda: _boom()
+        return c
+
+    async def _run():
+        await init_db(db_url=db_url)
+        async with db_session() as db:
+            db.add(DbSession(
+                id=session_id, name="t", account_name="acct1",
+                claude_session_id=good_csid, status="idle", cwd=cwd,
+            ))
+        orch = SessionOrchestrator(sdk_factory=factory)
+        await orch.rehydrate()
+
+        cfg_dir = tmp_path / "cfg" / "acct1"
+        # The transcript the pointer refers to is present and readable.
+        transcript_dir = cfg_dir / "projects" / orch.project_dir_name(cwd)
+        transcript_dir.mkdir(parents=True)
+        (transcript_dir / f"{good_csid}.jsonl").write_text('{"type":"user"}\n')
+
+        with patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
+             patch("server.sessions.orchestrator.configdir"):
+            try:
+                driver = await orch.ensure_driver(session_id)
+            except Exception:
+                driver = None
+
+        async with db_session() as db:
+            row = await db.get(DbSession, session_id)
+            persisted = row.claude_session_id
+        return orch, driver, resume_calls, persisted
+
+    orch, driver, resume_calls, persisted = asyncio.run(_run())
+
+    assert resume_calls == [good_csid], (
+        "with the transcript intact the failure is not a bad resume handle, so "
+        f"ensure_driver must NOT retry with resume=None; got {resume_calls}"
+    )
+    assert driver is None, "a session that could not be resumed must not come back empty"
+    assert orch.driver(session_id) is None, "no half-built driver may stay registered"
+    # The whole point: the pointer to the real conversation survives.
+    assert persisted == good_csid, (
+        f"claude_session_id must still point at the intact transcript, got {persisted!r}"
+    )
+    assert orch.get_session(session_id).claude_session_id == good_csid
+
+
 # -----------------------------------------------------------------------
 # Test 2: ensure_driver handles claude_session_id=None (fresh start)
 # -----------------------------------------------------------------------
