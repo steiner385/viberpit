@@ -23,6 +23,8 @@ ARGS: dict[str, dict] = {
     "search_sessions": {"query": "x"}, "list_archived_sessions": {}, "list_accounts": {},
     "list_hosts": {}, "list_prs": {}, "get_pipeline_health": {"repo": "o/n"},
     "list_automations": {}, "get_automation_events": {"id": "autopilot"}, "get_deploy_status": {},
+    "list_notification_channels": {}, "list_notification_rules": {}, "get_quiet_hours": {},
+    "test_notification": {"event_class": "session.done"},
     "create_session": {"prompt": "p"}, "send_prompt": {"id": UUID, "text": "t"},
     "interrupt_session": {"id": UUID},
     "answer_question": {"id": UUID, "question_id": "q1", "selected": ["a"]},
@@ -32,6 +34,8 @@ ARGS: dict[str, dict] = {
     "archive_session": {"id": UUID}, "unarchive_session": {"id": UUID},
     "set_autopilot_paused": {"id": UUID, "paused": True}, "fix_pr": {"id": UUID, "number": 1},
     "set_automation_enabled": {"id": "autopilot", "enabled": False},
+    "create_notification_rule": {"event_class": "session.done", "action": "push"},
+    "delete_notification_rule": {"id": "rule-1"}, "set_quiet_hours": {"start": "22:00"},
     "delete_session": {"id": UUID}, "cancel_queued_session": {"id": UUID},
     "ready_merge_pr": {"repo": "o/n", "number": 1},
 }
