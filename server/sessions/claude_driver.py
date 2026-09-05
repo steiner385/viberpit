@@ -26,6 +26,7 @@ from .questions import QuestionRegistry
 from .sdk_contract import is_turn_message
 from .status import StatusSignals, derive_status
 from .transcript_repair import repair_resumed_transcript
+from .types import ASSISTANT_KIND, is_assistant_kind
 
 _IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 
@@ -305,6 +306,16 @@ class ClaudeAgentDriver:
     def engine_session_id(self) -> str | None:
         """The Claude conversation id through the provider-neutral driver contract."""
         return self._engine_session_id
+
+    @property
+    def kind(self) -> str | None:
+        """"assistant" for an AI-drawer session, None for an ordinary coding
+        session. ``self._assistant_api`` (the loopback HTTP client the ccswitch
+        MCP tools call through) is the sole, pre-existing signal for this fact —
+        every orchestrator call site that builds a driver passes it exactly when
+        the session is assistant-kind — so this is a computed property rather
+        than a second, parallel ``kind`` field that could drift from it."""
+        return ASSISTANT_KIND if self._assistant_api is not None else None
 
     def _turn(self):
         return getattr(self._tr, "_turn_id", None) or "turn"
@@ -665,13 +676,22 @@ class ClaudeAgentDriver:
         turn_id = self._turn()
         if tool_name == "AskUserQuestion":
             return await self._handle_ask_user_question(tool_input, turn_id)
-        perm_id, fut = await self._reg.request(
+        if is_assistant_kind(self.kind) and not tool_name.startswith("mcp__ccswitch__"):
+            # An assistant-kind session's model is scoped to the ccswitch MCP
+            # server only (spec §4.4) — anything else (Bash, a third-party MCP
+            # server, …) is a hard deny with no card: this is a programming
+            # error / prompt-injection surface, not a user decision, so it never
+            # touches the registry or emits a PermissionRequest event.
+            log.warning("driver._can_use_tool: assistant session=%s attempted non-ccswitch "
+                        "tool=%s", self.session_id, tool_name)
+            return PermissionResultDeny(message="assistant sessions may only use ccswitch tools")
+        perm_id, fut, always_allowed = await self._reg.request(
             self.session_id, turn_id, tool_name, tool_input,
             mode=self.mode, denylist=self.denylist, allowlist=True, identity=self.identity)
         if perm_id is not None:
             self._emit(ev.PermissionRequest(
                 perm_id, turn_id, tool_name, ev.tool_kind(tool_name),
-                tool_input, plan=(tool_name == "ExitPlanMode")))
+                tool_input, plan=(tool_name == "ExitPlanMode"), always_allowed=always_allowed))
             # A prompt is now pending for the user → waiting_input / ready_review.
             await self._emit_status()
         allowed = await fut

@@ -126,18 +126,59 @@ class PermissionRegistry:
 
     async def request(self, session_id, turn_id, tool, input, *, mode, denylist, allowlist, identity):
         now = time.time()
+        # ccswitch's own MCP server (`mcp__ccswitch__*`) is the app talking to
+        # itself, not a third-party integration trusted unconditionally like the
+        # generic `mcp__` branch below — spec §4.4. Its cards are gated on the
+        # tool's ANNOTATION (read/mutation/destructive), not on session mode, so
+        # this branch sits ABOVE both the full-auto/bypassPermissions shortcut and
+        # the generic mcp__ auto-allow: a destructive ccswitch tool must prompt
+        # even in full-auto. Local import avoids a module-load-order cycle with
+        # server.assistant.tools (which itself does not import server.sessions,
+        # but keeping this import lazy is cheap insurance).
+        if tool.startswith("mcp__ccswitch__"):
+            from server.assistant import tools as assistant_tools
+            ann = assistant_tools.annotation_for(tool)
+            if ann is not None and ann.tool_class == assistant_tools.ToolClass.READ:
+                return None, _resolved(True), True
+            if ann is not None and ann.tool_class == assistant_tools.ToolClass.DESTRUCTIVE:
+                # Never consults the grant cache, in ANY mode — a destructive
+                # ccswitch action always surfaces a card, and that card never
+                # offers "Always allow" (always_allowed=False on the pending
+                # record; resolve() below refuses to persist a grant for it).
+                pid = _uuid.uuid4().hex
+                fut = asyncio.get_running_loop().create_future()
+                self._pending[pid] = {"future": fut, "identity": identity, "session_id": session_id,
+                                      "tool": tool, "input": input, "turn_id": turn_id,
+                                      "always_allowed": False}
+                return pid, fut, False
+            # MUTATION, or an unknown/not-yet-registered ccswitch tool (treated
+            # conservatively as mutation-like rather than raising on a None
+            # annotation — forward-compatible with tools Task 3.3 adds later).
+            # Grant cache is honoured in EVERY mode, INCLUDING "interactive" —
+            # unlike the generic grant-cache check below, which deliberately
+            # skips "interactive" for ordinary tools. This is deliberate here:
+            # the operator granting "always allow" on a ccswitch mutation tool
+            # is trusting the APP, not accepting session-mode risk.
+            if self.is_granted(session_id, tool, input, now):
+                return None, _resolved(True), True
+            pid = _uuid.uuid4().hex
+            fut = asyncio.get_running_loop().create_future()
+            self._pending[pid] = {"future": fut, "identity": identity, "session_id": session_id,
+                                  "tool": tool, "input": input, "turn_id": turn_id,
+                                  "always_allowed": True}
+            return pid, fut, True
         if mode in ("full-auto", "bypassPermissions"):
             # Full auto / bypass-permissions — incl. shell: approve everything
             # without a prompt. ``bypassPermissions`` mirrors the SDK's own name
             # (the SDK bypasses its checks too), but the registry stays the
             # authority so the outcome is identical whether or not the SDK routes
             # the call through can_use_tool.
-            return None, _resolved(True)
+            return None, _resolved(True), True
         # Grant-cache bypass ("Always allow this exact command/file") is honoured in all
         # modes EXCEPT "interactive" ("Ask each time").  A user who chose interactive
         # explicitly wants approval every time, so previous "always" grants are ignored.
         if mode != "interactive" and allowlist and self.is_granted(session_id, tool, input, now):
-            return None, _resolved(True)
+            return None, _resolved(True), True
         # Auto-allow the agent's own auto-memory writes (managed-account memory dir).
         # Honoured in EVERY mode, including "interactive": these writes are sandboxed
         # to cfg_root() (see _is_account_memory_path) and can never reach a real repo,
@@ -146,34 +187,37 @@ class PermissionRegistry:
         # there is no user-facing action to ask about.
         if tool in _FILE_WRITE_TOOLS and _is_account_memory_path(
                 input.get("file_path") or input.get("notebook_path")):
-            return None, _resolved(True)
+            return None, _resolved(True), True
         # Auto-allow MCP tools (`mcp__<server>__<tool>`) in EVERY mode, including
         # "interactive".  The operator opted into trusting MCP unconditionally, so a
         # configured MCP server's tools are never gated here.  (The binary's separate
         # project-`.mcp.json` server-trust gate is suppressed in sdk_factory via
         # enableAllProjectMcpServers — this only governs ccswitch's own per-tool card.)
+        # ccswitch's own `mcp__ccswitch__*` tools are intercepted above and never
+        # reach this branch.
         if tool.startswith("mcp__"):
-            return None, _resolved(True)
+            return None, _resolved(True), True
         if mode == "auto" and tool not in denylist:
             # Auto-approve safe tools: approve anything not on the dangerous denylist.
-            return None, _resolved(True)
+            return None, _resolved(True), True
         if mode == "allowlist" and tool in self.READ_ONLY:
             # Allowlist read-only, prompt the rest: only strictly read-only tools are
             # auto-approved; write-capable tools (TodoWrite, etc.) must prompt even if
             # they are not on the DANGEROUS denylist.
-            return None, _resolved(True)
+            return None, _resolved(True), True
         if mode == "acceptEdits" and tool in _FILE_WRITE_TOOLS:
             # Auto-accept file edits (Edit/Write/MultiEdit/NotebookEdit); every other
             # tool still prompts. Mirrors the SDK's acceptEdits semantics and is the
             # default for unattended automation sessions (issue #750): an agent editing
             # its own worktree proceeds without a human, while shell/network calls — a
             # materially larger blast radius — remain gated.
-            return None, _resolved(True)
+            return None, _resolved(True), True
         pid = _uuid.uuid4().hex
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending[pid] = {"future": fut, "identity": identity, "session_id": session_id,
-                              "tool": tool, "input": input, "turn_id": turn_id}
-        return pid, fut
+                              "tool": tool, "input": input, "turn_id": turn_id,
+                              "always_allowed": True}
+        return pid, fut, True
 
     def resolve(self, perm_id, decision, identity) -> bool:
         rec = self._pending.get(perm_id)
@@ -181,8 +225,11 @@ class PermissionRegistry:
             return False
         del self._pending[perm_id]
         if decision == "always":
-            fp = self.fingerprint(rec["tool"], rec["input"])
-            self._grants[(rec["session_id"], fp)] = time.time() + self.GRANT_TTL
+            if rec.get("always_allowed", True):
+                fp = self.fingerprint(rec["tool"], rec["input"])
+                self._grants[(rec["session_id"], fp)] = time.time() + self.GRANT_TTL
+            # else: a destructive ccswitch tool — allow this ONE call but never
+            # persist a grant, so the next request() for the same tool asks again.
             decision = "allow"
         if not rec["future"].done():
             rec["future"].set_result(decision == "allow")
