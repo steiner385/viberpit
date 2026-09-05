@@ -63,14 +63,13 @@ export interface PageHostProps {
  * each session gets a fresh reducer and a clean attach/detach cycle. That reset
  * now stops at this region's own root instead of taking the shell with it.
  *
- * ## Why the runtime is gated on the section, not just on `:id`
+ * ## Why the runtime is gated on `useOpenSessionId`, not on `:id`
  *
- * `:id` alone is the wrong question. `/archived/:id` is an ARCHIVED transcript and
- * must not attach a live runtime, and any future detail route (an initiative, a
- * product) would silently do the same. The section comes from `navDefForPath`,
- * the same map the route table is built from, so there is no second list of
- * "paths that own a session runtime" to drift. Task 12 moved that derivation to
- * `shell/openSessionId` so the dock branches on the identical value.
+ * `:id` alone is the wrong question — see `shell/openSessionId`'s docstring for
+ * the full contract (an archived transcript at `/sessions/archived/:archivedId`
+ * must not attach a live runtime, and any future detail route would silently do
+ * the same). That module is the one place the derivation lives; `PageHost`,
+ * `PromptDock` and `AppShell` all read it rather than restating it here.
  *
  * ## Landmark
  *

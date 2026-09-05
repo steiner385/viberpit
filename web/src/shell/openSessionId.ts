@@ -1,36 +1,60 @@
 // web/src/shell/openSessionId.ts
 //
-// "Which session does the current route have open?" — asked in exactly one place.
+// "What does the current route have open?" — asked in exactly one place.
 //
-// Two regions need the answer and they must never disagree:
+// Three consumers need the answer and they must never disagree:
 //
 //   · `PageHost` uses it to decide whether to mount `SessionRuntimeProvider`.
 //   · `PromptDock` uses it to decide between `SessionComposer` (which reads that
 //     provider) and `DispatchBar` (which does not).
+//   · `AppShell` uses it to decide whether SOMETHING is open, for the region
+//     matrix's `itemOpen` — a phone gives its one content band to either the
+//     list or the page.
 //
-// If those two ever computed it differently, the failure is not cosmetic: the
-// dock would render `SessionComposer` with no provider above it and
-// `useSessionRuntimeContext()` would throw, taking the whole route down. Making
-// it one function is a guarantee; a test that both happen to agree today is not.
+// If the first two ever computed it differently, the failure is not cosmetic:
+// the dock would render `SessionComposer` with no provider above it and
+// `useSessionRuntimeContext()` would throw, taking the whole route down. If the
+// third disagreed, a phone would show the list on top of a page that has
+// nothing behind it to fall back to. Making it one function is a guarantee; a
+// test that both happen to agree today is not.
 //
-// `:id` alone is the wrong question — an archived transcript must not attach a
-// live runtime. Archived used to be its own nav section, so checking the
-// section (via `navDefForPath`, the same map the route table is built from)
-// was what excluded it. Since the archived routes moved under `/sessions`
-// (`/sessions/archived/:archivedId`), that route resolves to the SAME section
-// as a live session, so the section check no longer does the excluding — the
-// gate is now the PARAM NAME. The archived route's param is `archivedId`, not
-// `id`, so `useParams().id` is simply undefined there; `sessionNavState`'s
-// `ARCHIVED_SESSION_ROUTE` is the one place that name is decided, and reusing
-// it here would silently attach a live runtime to a dead session.
+// `:id` alone is the wrong question for any of the three — an archived
+// transcript must not attach a live runtime, but it IS something the phone must
+// show instead of the list. Archived used to be its own nav section, so
+// checking the section (via `navDefForPath`, the same map the route table is
+// built from) was what excluded it from a live runtime. Since the archived
+// routes moved under `/sessions` (`/sessions/archived/:archivedId`), that route
+// resolves to the SAME section as a live session, so the section check no
+// longer does the excluding — the gate is now the PARAM NAME. The archived
+// route's param is `archivedId`, not `id`, so `useParams().id` is simply
+// undefined there; `sessionNavState`'s `ARCHIVED_SESSION_ROUTE` is the one place
+// that name is decided, and reusing it here would silently attach a live
+// runtime to a dead session.
 // The section check stays: it still excludes every OTHER `:id`-shaped detail
 // route that isn't Sessions.
 import { useLocation, useParams } from 'react-router-dom'
 import { navDefForPath } from './navDefs'
 
-/** The open session's id, or null when the route has none. */
-export function useOpenSessionId(): string | null {
-  const { id } = useParams()
+/** What the current route has open, if anything. */
+export type OpenItem =
+  | { kind: 'session'; id: string }
+  | { kind: 'archived'; id: string }
+
+/**
+ * The open item, or null. See the module docstring for why one function must
+ * answer for all three consumers.
+ */
+export function useOpenItem(): OpenItem | null {
+  const { id, archivedId } = useParams()
   const { pathname } = useLocation()
-  return id && navDefForPath(pathname)?.id === 'sessions' ? id : null
+  if (archivedId) return { kind: 'archived', id: archivedId }
+  if (id && navDefForPath(pathname)?.id === 'sessions') return { kind: 'session', id }
+  return null
+}
+
+/** The open LIVE session's id, or null — unchanged signature/behaviour, now
+ *  re-derived from `useOpenItem` rather than a parallel computation. */
+export function useOpenSessionId(): string | null {
+  const item = useOpenItem()
+  return item?.kind === 'session' ? item.id : null
 }

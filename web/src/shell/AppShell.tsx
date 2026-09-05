@@ -3,7 +3,7 @@
    them would put the layout and the rule that decides what the layout contains
    in two files, which is the drift this module exists to prevent. */
 import * as React from 'react'
-import { Navigate, useLocation, useNavigate, useParams } from 'react-router-dom'
+import { Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { DeployControllerProvider } from '@/lib/deployController'
 import { BannerStack, type BannerStackItem } from '@/ui/BannerStack'
@@ -24,7 +24,7 @@ import { useDrawerName, useOpenDrawer, type DrawerName } from './drawerParam'
 import { InteractionProvider } from './InteractionContext'
 import { readKioskConfig } from './kiosk'
 import { NAV_BY_ID, navDefForPath } from './navDefs'
-import { useOpenSessionId } from './openSessionId'
+import { useOpenItem, useOpenSessionId } from './openSessionId'
 import { SessionGestureProvider, useSessionGestureHandle } from './sessionGestures'
 import { overlayIsOpen } from './useOverlayState'
 import { useShortcuts } from './useShortcuts'
@@ -83,7 +83,7 @@ export interface RegionContext {
   mode: LayoutMode
   /** `navDefForPath(pathname)?.hasList` — never a hardcoded list of sections. */
   hasList: boolean
-  /** The route has an `:id` — a detail view is open. */
+  /** `useOpenItem() !== null` — a detail view (live or archived) is open. */
   itemOpen: boolean
   /** The current section is Sessions (DEC-10 gates the dock on it). */
   inSessions: boolean
@@ -209,8 +209,9 @@ function AppShellInner() {
   const { pathname } = useLocation()
   // Layout-route `useParams()` sees the child route's params (react-router
   // shares one params object across a matched branch) — the same read
-  // `useOpenSessionId` makes from `PageHost`, which is mounted the same way.
-  const { id } = useParams()
+  // `useOpenItem` makes from `PageHost`/`PromptDock`, which are mounted the
+  // same way.
+  const openItem = useOpenItem()
   const drawer = useDrawerName()
   const openDrawer = useOpenDrawer()
 
@@ -218,7 +219,9 @@ function AppShellInner() {
   const region: RegionContext = {
     mode,
     hasList: def?.hasList ?? false,
-    itemOpen: id !== undefined,
+    // "Is something open", not "is there an `:id`" — the archived reader has no
+    // `:id` and must still take the phone's single content band.
+    itemOpen: openItem !== null,
     inSessions: def?.id === 'sessions',
     drawer,
   }

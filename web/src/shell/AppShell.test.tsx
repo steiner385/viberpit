@@ -311,6 +311,20 @@ describe('AppShell — the conditional regions', () => {
     expect(regionCounts().get('app.list')).toBe(1)
   })
 
+  it('hides the list behind the archived reader on a phone', async () => {
+    // A phone gives its one content band to EITHER the list or the page, and
+    // the reader is a page. Before `useOpenItem` the shell asked whether there
+    // was an `:id`; the reader has `:archivedId`, so the list stayed up on top
+    // of the transcript.
+    renderShell({ path: '/sessions/archived/abc', mode: 'phone' })
+    await waitFor(() => expect(presentAppRegions()).not.toContain('app.list'))
+  })
+
+  it('keeps the list beside the archived reader on desktop', async () => {
+    renderShell({ path: '/sessions/archived/abc', mode: 'desktop' })
+    await waitFor(() => expect(presentAppRegions()).toContain('app.list'))
+  })
+
   it('shows the list and the dock together on phone, with the page hidden behind them', async () => {
     renderShell({ path: '/sessions', mode: 'phone' })
     await screen.findByTestId('page-sessions')
