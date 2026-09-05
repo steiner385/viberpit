@@ -25,6 +25,7 @@ vi.mock('@/api/hooks', () => ({
   useSettings: vi.fn(),
   useUpdateSettings: vi.fn(),
   useArchivedSessions: vi.fn(),
+  useModels: vi.fn(),
 }))
 
 function mount() {
@@ -43,6 +44,9 @@ describe('GeneralSection', () => {
     })))
     vi.mocked(hooks.useUpdateSettings).mockReturnValue(mutationResult({ mutateAsync }))
     vi.mocked(hooks.useArchivedSessions).mockReturnValue(queryResult(Array.from({ length: 3 }, (_, i) => ({ id: `s${i}` })) as never))
+    vi.mocked(hooks.useModels).mockReturnValue(queryResult([
+      { id: 'sonnet', label: 'Sonnet' }, { id: 'opus', label: 'Opus' },
+    ] as never))
   })
 
   it('shows effective defaults as placeholders and a Reset that clears to default', async () => {
@@ -118,7 +122,28 @@ describe('GeneralSection', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(mutateAsync).toHaveBeenCalledWith({
       repoRoot: null, archiveHome: '', maxArchivedSessions: 0, maxActiveSessions: 7, autoArchiveEnabled: false,
+      assistantEnabled: true, assistantModel: null,
     }))
+  })
+
+  it('renders the AI assistant group and PUTs {assistantEnabled: false} when the switch is toggled off', async () => {
+    mount()
+    const assistantSwitch = screen.getByRole('checkbox', { name: 'Enable AI assistant' })
+    expect(assistantSwitch).toBeChecked()
+    await userEvent.click(assistantSwitch)
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ assistantEnabled: false }),
+    ))
+  })
+
+  it('lets the assistant model be set from the models fed by useModels()', async () => {
+    mount()
+    await userEvent.selectOptions(screen.getByLabelText('Assistant model'), 'opus')
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ assistantModel: 'opus' }),
+    ))
   })
 
   it('changing the archive path asks for a typed confirmation naming the archive count (S16)', async () => {

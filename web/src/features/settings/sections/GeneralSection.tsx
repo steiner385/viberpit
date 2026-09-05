@@ -1,9 +1,10 @@
 import * as React from 'react'
-import { useSettings, useUpdateSettings, useArchivedSessions, type AppSettings } from '@/api/hooks'
+import { useSettings, useUpdateSettings, useArchivedSessions, useModels, type AppSettings } from '@/api/hooks'
 import { Input } from '@/ui/Input'
 import { Banner } from '@/ui/Banner'
 import { Button } from '@/ui/Button'
 import { Checkbox } from '@/ui/Checkbox'
+import { Select } from '@/ui/Select'
 import { Skeleton } from '@/ui/Skeleton'
 import { ConfirmDialog } from '@/ui/ConfirmDialog'
 import { SETTINGS_BY_ID } from '../settingsDefs'
@@ -24,6 +25,13 @@ interface GeneralDraft {
   autoArchiveEnabled: boolean
   maxArchived: string
   maxActive: string
+  // Unlike modelApprovalAction/Denylist (SessionDefaultsSection), there is no server
+  // "effective default" surfaced for these two, so the draft treats a null server
+  // value as the CCSWITCH_ASSISTANT_ENABLED launch default (on) — a plain switch, not
+  // a tri-state "server default" control.
+  assistantEnabled: boolean
+  // '' = server default (CCSWITCH_ASSISTANT_MODEL); payload turns it back into null.
+  assistantModel: string
 }
 
 function toDraft(s: AppSettings): GeneralDraft {
@@ -33,6 +41,8 @@ function toDraft(s: AppSettings): GeneralDraft {
     autoArchiveEnabled: s.autoArchiveEnabled,
     maxArchived: s.maxArchivedSessions != null ? String(s.maxArchivedSessions) : '',
     maxActive: s.maxActiveSessions != null ? String(s.maxActiveSessions) : '',
+    assistantEnabled: s.assistantEnabled ?? true,
+    assistantModel: s.assistantModel ?? '',
   }
 }
 
@@ -57,6 +67,8 @@ function toPayload(d: GeneralDraft): Partial<AppSettings> {
     maxArchivedSessions: Number.isFinite(archived) && archived > 0 ? archived : 0, // 0 = unlimited
     maxActiveSessions: Number.isFinite(active) && active > 0 ? active : null,
     autoArchiveEnabled: d.autoArchiveEnabled,
+    assistantEnabled: d.assistantEnabled,
+    assistantModel: d.assistantModel.trim() || null,
   }
 }
 
@@ -126,6 +138,7 @@ export function GeneralSection() {
   const { data: settings, isError, error } = useSettings()
   const update = useUpdateSettings()
   const { data: archived = [] } = useArchivedSessions()
+  const { data: models = [] } = useModels()
   // The gate is a PROMISE handed to `useSettingsForm`: the dialog is what
   // resolves it, so Save is genuinely suspended (not fired-and-forgotten) until
   // the user answers. `useSettingsForm`'s in-flight latch (R8) is what keeps a
@@ -275,6 +288,38 @@ export function GeneralSection() {
             value={draft.maxActive}
             onChange={(e) => set('maxActive', e.target.value)}
           />
+        </SettingRow>
+      </SettingsGroup>
+
+      <SettingsGroup legend="AI assistant" description="A conversational assistant that can see and act on your sessions.">
+        <SettingRow
+          label="Assistant"
+          htmlFor="general-assistant-enabled"
+          description="Adds an assistant drawer that can list, inspect and act on sessions on your behalf."
+          selfLabelled
+        >
+          <Checkbox
+            id="general-assistant-enabled"
+            label="Enable AI assistant"
+            checked={draft.assistantEnabled}
+            onChange={(v) => set('assistantEnabled', v)}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Assistant model"
+          htmlFor="general-assistant-model"
+          description="Model the assistant drawer uses. Server default applies when unset."
+        >
+          <Select
+            id="general-assistant-model"
+            value={draft.assistantModel}
+            onChange={(e) => set('assistantModel', e.target.value)}
+          >
+            <option value="">Server default</option>
+            {models.map((m) => (
+              <option key={m.id} value={m.id}>{m.label}</option>
+            ))}
+          </Select>
         </SettingRow>
       </SettingsGroup>
 
