@@ -1,11 +1,12 @@
 import pytest
 
 from server.sessions.orchestrator import SessionOrchestrator, RESUME_NUDGE
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord, RESUME_ELIGIBLE_STATUSES, SYSTEM_IDENTITY
 
 
 def _rec(**kw) -> SessionRecord:
-    base = dict(id="s1", name="n", account="a", claude_session_id="c",
+    base = dict(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c",
                 cols=80, rows=24, cwd="/tmp", repo=None)
     base.update(kw)
     return SessionRecord(**base)  # type: ignore[arg-type]

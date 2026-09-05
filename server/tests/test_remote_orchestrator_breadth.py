@@ -11,6 +11,7 @@ from server.ipc.orchestrator_rpc import register_orchestrator_rpc
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.remote import RemoteOrchestrator
 from server.sessions.replay import ReplayWindow
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 from server.tests.ipc_harness import serve_daemon_uds
 
@@ -136,7 +137,7 @@ def test_request_layer_never_touches_private_orchestrator_attrs():
 
 
 def _rec(sid="s1"):
-    return SessionRecord(id=sid, name="S", account="a", claude_session_id="cs",
+    return SessionRecord(id=sid, name="S", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="cs",
                          cols=80, rows=24, cwd="/tmp")
 
 
@@ -170,7 +171,12 @@ async def test_simple_and_quirk_methods_round_trip():
             assert await ro.resolve_permission("s1", "p", "deny", "me") is False
             assert await ro.answer_question("s1", "q", ["opt"], "me") is True
             assert await ro.rename_session("s1", "New") is None
-            assert await ro.list_archived() == [{"id": "old"}]
+            assert await ro.list_archived() == [{
+                "id": "old",
+                "engine": "claude_code",
+                "engineSessionId": None,
+                "reasoningEffort": None,
+            }]
             un = await ro.unarchive("u1")
             assert un.id == "u1"
             rec, meta = await ro.adopt_session("cs", "me")

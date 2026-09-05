@@ -1,7 +1,7 @@
 """Task 1.8: idle reap of an assistant drawer session, with resume-on-reopen.
 
 Spec §4.7: an assistant idle for CCSWITCH_ASSISTANT_IDLE_S with no live turn gets its
-driver closed (status -> 'ended'), but the row and its claude_session_id survive so the
+driver closed (status -> 'ended'), but the row and its engine_session_id survive so the
 next POST /api/assistant/session can resume the same thread. A turn that is still live
 must NOT be reaped regardless of how long the record has been idle.
 """
@@ -104,8 +104,8 @@ async def test_reap_after_idle_keeps_row_and_resume_id(isolated_db, tmp_path, mo
 
     clients: list[FakeSDKClient] = []
     # Script one real turn (SystemMessage subtype=init + a ResultMessage carrying the
-    # same session id) so the driver actually captures a claude_session_id via
-    # on_session_id (driver.py:929-939) — with no turn ever sent, claude_session_id
+    # same session id) so the driver actually captures an engine_session_id via
+    # on_session_id — with no turn ever sent, engine_session_id
     # stays "" for the whole test and the resume-on-reopen assertion below would prove
     # nothing (spec §4.7's actual contract is that a REAL id survives the reap).
     scripted = [f.sys_init("claude-abc"), f.result(session_id="claude-abc")]
@@ -121,13 +121,13 @@ async def test_reap_after_idle_keeps_row_and_resume_id(isolated_db, tmp_path, mo
         # skipped by the turn-live guard, which is not what this test is checking.
         for _ in range(200):
             d = orch._drivers[a.id]
-            if (orch.get_session(a.id).claude_session_id
+            if (orch.get_session(a.id).engine_session_id
                     and not (d.turn_active or d.drain_alive)):
                 break
             await asyncio.sleep(0.01)
         else:
-            raise AssertionError("claude_session_id never captured or turn never finished draining")
-        sid_before = orch.get_session(a.id).claude_session_id
+            raise AssertionError("engine_session_id never captured or turn never finished draining")
+        sid_before = orch.get_session(a.id).engine_session_id
         assert sid_before == "claude-abc"
 
         orch.note_user_interaction(a.id)
@@ -138,7 +138,7 @@ async def test_reap_after_idle_keeps_row_and_resume_id(isolated_db, tmp_path, mo
         assert rec.status == "ended" and rec.detached is True
         # The actual spec §4.7 contract: the id needed to resume (`resume=`) survives
         # the reap unchanged, not merely "the row wasn't deleted".
-        assert rec.claude_session_id == sid_before
+        assert rec.engine_session_id == sid_before
         assert await orch.find_assistant("u@x") is not None     # thread survives
     finally:
         await _teardown(orch, patches)

@@ -205,7 +205,7 @@ class _RecordingDriver:
         self.calls: list = []
         # Present so the drain-time transcript scan (_snapshot_open_tasks) treats
         # this fake as a live-but-transcript-less driver instead of raising.
-        self.claude_session_id = None
+        self.engine_session_id = None
 
     async def interrupt(self):
         self.calls.append("interrupt")
@@ -225,9 +225,11 @@ def _running_orch(orch, driver, *, session_id="s-live", model="opus"):
     harness (so db_session() targets the harness DB). Persist a matching DbSession
     row so the require_approval UPDATE has a row to hit."""
     from datetime import datetime
+    from server.sessions.engine import AgentEngine
     from server.sessions.types import SessionRecord
     rec = SessionRecord(id=session_id, name="n", account="alpha",
-                        claude_session_id="c1", cols=80, rows=24, cwd="/tmp",
+                        engine=AgentEngine.CLAUDE_CODE,
+                        engine_session_id="c1", cols=80, rows=24, cwd="/tmp",
                         model=model, updated_at=datetime.utcnow())
     orch._records[session_id] = rec
     orch._drivers[session_id] = driver
@@ -246,7 +248,7 @@ def test_gated_set_model_holds(tmp_path):
                 sid = "s-live"
                 async with db_session() as db:
                     db.add(DbSession(id=sid, name="n", account_name="alpha",
-                                     claude_session_id="c1", status="idle",
+                                     engine_session_id="c1", status="idle",
                                      cwd="/tmp", model="opus"))
                 driver = _RecordingDriver(turn_active=False)
                 rec = _running_orch(orch, driver, session_id=sid, model="opus")
@@ -314,7 +316,7 @@ def test_allowed_set_model_applies(tmp_path):
                 sid = "s-live"
                 async with db_session() as db:
                     db.add(DbSession(id=sid, name="n", account_name="alpha",
-                                     claude_session_id="c1", status="idle",
+                                     engine_session_id="c1", status="idle",
                                      cwd="/tmp", model="opus"))
                 driver = _RecordingDriver(turn_active=False)
                 rec = _running_orch(orch, driver, session_id=sid, model="opus")
@@ -507,7 +509,7 @@ def test_approve_midsession_applies(tmp_path):
                 sid = "s-live"
                 async with db_session() as db:
                     db.add(DbSession(id=sid, name="n", account_name="alpha",
-                                     claude_session_id="c1", status="idle",
+                                     engine_session_id="c1", status="idle",
                                      cwd="/tmp", model="opus"))
                 driver = _RecordingDriver(turn_active=False)
                 rec = _running_orch(orch, driver, session_id=sid, model="opus")
@@ -547,7 +549,7 @@ def test_deny_midsession_clears(tmp_path):
                 sid = "s-live"
                 async with db_session() as db:
                     db.add(DbSession(id=sid, name="n", account_name="alpha",
-                                     claude_session_id="c1", status="idle",
+                                     engine_session_id="c1", status="idle",
                                      cwd="/tmp", model="opus"))
                 driver = _RecordingDriver(turn_active=False)
                 rec = _running_orch(orch, driver, session_id=sid, model="opus")
@@ -597,7 +599,7 @@ def test_deny_midsession_clears_reason(tmp_path):
                 sid = "s-live"
                 async with db_session() as db:
                     db.add(DbSession(id=sid, name="n", account_name="alpha",
-                                     claude_session_id="c1", status="idle",
+                                     engine_session_id="c1", status="idle",
                                      cwd="/tmp", model="opus"))
                 driver = _RecordingDriver(turn_active=False)
                 rec = _running_orch(orch, driver, session_id=sid, model="opus")

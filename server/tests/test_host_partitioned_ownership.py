@@ -23,6 +23,7 @@ import pytest
 from server.db import db_session, init_db
 from server.db.models import Host, Session as DbSession
 from server.sessions.orchestrator import SessionOrchestrator, daemon_role, self_host_name
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
@@ -44,12 +45,12 @@ def _new_orch():
 
 
 def _row(sid, host):
-    return dict(id=sid, name=sid, account_name="acct", claude_session_id=f"c-{sid}",
+    return dict(id=sid, name=sid, account_name="acct", engine_session_id=f"c-{sid}",
                 status="idle", cwd=f"/repo/{sid}", host=host)
 
 
 def _record(sid, host, status="needs_attention"):
-    return SessionRecord(id=sid, name=sid, account="acct", claude_session_id=f"c-{sid}",
+    return SessionRecord(id=sid, name=sid, account="acct", engine=AgentEngine.CLAUDE_CODE, engine_session_id=f"c-{sid}",
                          cols=80, rows=24, cwd=f"/repo/{sid}", detached=True,
                          status=status, host=host)
 

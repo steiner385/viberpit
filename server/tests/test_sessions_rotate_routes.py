@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from server.app import create_app
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
@@ -18,7 +19,7 @@ _ENV = {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:", "CCSWITCH_DEV": "1",
 
 
 def _rec(sid="s1", **kw):
-    base = dict(id=sid, name="n", account="a", claude_session_id="c", cols=80, rows=24,
+    base = dict(id=sid, name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c", cols=80, rows=24,
                 cwd="/tmp", status="needs_attention")
     base.update(kw)
     return SessionRecord(**base)

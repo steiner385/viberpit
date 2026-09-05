@@ -14,6 +14,7 @@ REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 from server.usage.poller import UsagePoller
 
@@ -23,7 +24,7 @@ from server.usage.poller import UsagePoller
 # ---------------------------------------------------------------------------
 
 def _rec(o, account, *, status="idle"):
-    rec = SessionRecord(id="s1", name="n", account=account, claude_session_id="c1",
+    rec = SessionRecord(id="s1", name="n", account=account, engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                         cols=80, rows=24, cwd="/tmp", status=status)
     o._records["s1"] = rec
     o._drivers["s1"] = object()

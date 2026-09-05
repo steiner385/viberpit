@@ -33,7 +33,7 @@ def test_rehydrated_session_reports_real_status_and_created_at(tmp_path):
                 id=session_id,
                 name="rehydrated-api-session",
                 account_name="acct1",
-                claude_session_id=None,
+                engine_session_id=None,
                 status="idle",
                 cwd=cwd,
                 created_at=created_at,

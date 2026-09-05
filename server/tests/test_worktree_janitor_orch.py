@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from server.db import db_session, dispose_db, init_db
 from server.db.models import Session as DbSession
+from server.sessions.engine import AgentEngine
 from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
@@ -27,10 +28,12 @@ class TestJanitorLoop:
 
         orch = await _build_orch(tmp_path)
         # Fake a record (rehydrated idle, no driver)
+        from server.sessions.engine import AgentEngine
         from server.sessions.types import SessionRecord
         orch._records["idle-1"] = SessionRecord(
             id="idle-1", name="idle", account="acct1",
-            claude_session_id="c1", cols=80, rows=24,
+            engine=AgentEngine.CLAUDE_CODE,
+            engine_session_id="c1", cols=80, rows=24,
             cwd="/repo/idle-wt", status="idle",
         )
         # Fake a live worktree entry
@@ -67,7 +70,8 @@ class TestJanitorLoop:
         from server.sessions.types import SessionRecord
         orch._records["rel-1"] = SessionRecord(
             id="rel-1", name="r", account="acct1",
-            claude_session_id="c2", cols=80, rows=24,
+            engine=AgentEngine.CLAUDE_CODE,
+            engine_session_id="c2", cols=80, rows=24,
             cwd="relative/path", status="idle",
         )
 
@@ -126,7 +130,7 @@ class TestJanitorLoop:
         async with db_session() as db:
             db.add(DbSession(
                 id="archived-1", name="Archived", account_name="acc1",
-                claude_session_id=None, status="archived",
+                engine_session_id=None, status="archived",
                 cwd=archived_cwd, archived_at=datetime(2026, 1, 1),
             ))
 

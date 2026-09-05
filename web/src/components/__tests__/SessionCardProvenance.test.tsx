@@ -8,6 +8,8 @@ const base: Session = {
   id: '1',
   name: 'Fix login bug',
   accountName: 'work',
+  engine: 'claude_code',
+  engineSessionId: null,
   status: 'idle',
   createdAt: '2026-06-22T11:00:00Z',
   updatedAt: '2026-06-22T11:58:00Z',

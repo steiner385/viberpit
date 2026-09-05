@@ -18,6 +18,7 @@ import types
 from dataclasses import replace
 
 from server.github.pr_status import PullRequestInfo
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
@@ -46,7 +47,8 @@ def _make_record(session_id="sess1", name="test-session", repo="o/r",
         id=session_id,
         name=name,
         account="acct-a",
-        claude_session_id="",
+        engine=AgentEngine.CLAUDE_CODE,
+        engine_session_id="",
         cols=80,
         rows=24,
         cwd="/tmp",
