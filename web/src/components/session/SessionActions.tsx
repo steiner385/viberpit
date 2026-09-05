@@ -231,7 +231,7 @@ export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark
 
       {confirmOpen && (
         <PermanentDeleteDialog
-          sessionName={sessionName}
+          names={[sessionName]}
           onClose={() => setConfirmOpen(false)}
           onConfirm={handleDeleteConfirm}
           isPending={deletePending}

@@ -11,7 +11,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { Dialog } from '@/ui/Dialog'
 import { Button } from '@/ui/Button'
 import {
   useArchivedSessions,
@@ -20,7 +19,6 @@ import {
   useBulkUnarchiveSessions,
   useBulkPermanentDeleteSessions,
 } from '@/api/hooks'
-import type { BulkDeleteProgress } from '@/api/hooks'
 import type { ArchivedSession, BatchResult } from '@/api/types'
 import { useSessionSearch } from '@/session/useSessionSearch'
 import { useItemOrdering } from '@/session/useSessionOrdering'
@@ -31,12 +29,11 @@ import {
 } from '@/session/archivedOrdering'
 import { SessionListControls } from '@/components/SessionListControls'
 import { GroupedList } from '@/components/GroupedList'
-import { prefersReducedMotion } from './session/brailleSpinner'
-
-const CHECKBOX_CLS = cn(
-  'h-4 w-4 rounded border-gray-300 dark:border-gray-600',
-  'text-blue-600 focus-visible:ring-2 focus-visible:ring-blue-500',
-)
+import { PermanentDeleteDialog } from './PermanentDeleteDialog'
+import { BulkActionBar } from './list/BulkActionBar'
+import { NoMatchState } from './list/NoMatchState'
+import { SelectableRow, SELECT_CHECKBOX_CLS } from './list/SelectableRow'
+import { useBulkSelection } from './list/useBulkSelection'
 
 function displayNameOf(s: ArchivedSession): string {
   return s.name || s.id.slice(0, 8)
@@ -46,78 +43,6 @@ function summarize(verb: string, res: BatchResult): string {
   const ok = res.succeeded.length
   const bad = res.failed.length
   return bad > 0 ? `${verb} ${ok} · ${bad} failed` : `${verb} ${ok}`
-}
-
-// ── Permanent Delete Dialog (single or bulk) ───────────────────────────────────
-
-interface PermanentDeleteDialogProps {
-  names: string[]            // 1 = single delete, >1 = bulk delete
-  onClose: () => void
-  onConfirm: () => void
-  isPending: boolean
-  progress?: BulkDeleteProgress | null   // bulk only: drives the progress bar
-  onCancel?: () => void                  // bulk only: abort mid-run
-}
-
-function PermanentDeleteDialog({ names, onClose, onConfirm, isPending, progress, onCancel }: PermanentDeleteDialogProps) {
-  const cancelRef = useRef<HTMLButtonElement>(null)
-  const count = names.length
-  const title = count === 1 ? 'Permanently delete session' : `Permanently delete ${count} sessions`
-
-  return (
-    <Dialog open onClose={onClose} title={title} size="sm" initialFocus={cancelRef} dismissable={!isPending}>
-      {isPending && progress ? (
-        <div className="space-y-2">
-          <div className="flex items-center justify-between text-sm text-ink-muted">
-            <span>Deleting…</span>
-            <span className="tabular-nums">{progress.done} of {progress.total}</span>
-          </div>
-          <div
-            role="progressbar"
-            aria-valuemin={0}
-            aria-valuemax={progress.total}
-            aria-valuenow={progress.done}
-            aria-valuetext={`Deleting ${progress.done} of ${progress.total}`}
-            className="h-2 w-full overflow-hidden rounded bg-surface-raised"
-          >
-            <div
-              className={cn('h-full rounded bg-danger-strong', !prefersReducedMotion() && 'transition-[width] duration-200 ease-linear')}
-              style={{ width: `${progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0}%` }}
-            />
-          </div>
-        </div>
-      ) : (
-        <p className="text-sm text-ink-muted">
-          {count === 1 ? (
-            <>
-              Permanently delete <span className="font-medium text-ink">&lsquo;{names[0]}&rsquo;</span>? This removes the
-              session folder and all its data. This can&rsquo;t be undone.
-            </>
-          ) : (
-            <>
-              Permanently delete <span className="font-medium text-ink">{count} sessions</span>? This removes their
-              session folders and all their data. This can&rsquo;t be undone.
-            </>
-          )}
-        </p>
-      )}
-
-      <div className="flex gap-3 justify-end pt-2">
-        <Button
-          ref={cancelRef}
-          type="button"
-          variant="secondary"
-          onClick={isPending ? onCancel : onClose}
-          disabled={isPending && !onCancel}
-        >
-          Cancel
-        </Button>
-        <Button type="button" variant="danger" size="lg" onClick={onConfirm} loading={isPending}>
-          {isPending ? 'Deleting…' : 'Delete permanently'}
-        </Button>
-      </div>
-    </Dialog>
-  )
 }
 
 // ── Quick Purge Bar ─────────────────────────────────────────────────────────────
@@ -166,55 +91,6 @@ function QuickPurgeBar({ total, onPurge, disabled }: QuickPurgeBarProps) {
   )
 }
 
-// ── Bulk Action Bar ─────────────────────────────────────────────────────────────
-
-interface BulkActionBarProps {
-  count: number
-  onUnarchive: () => void
-  onDelete: () => void
-  onClear: () => void
-  unarchivePending: boolean
-}
-
-function BulkActionBar({ count, onUnarchive, onDelete, onClear, unarchivePending }: BulkActionBarProps) {
-  return (
-    <div
-      role="region"
-      aria-label="Bulk actions"
-      className={cn(
-        'flex flex-wrap items-center gap-2 rounded-lg px-3 py-2',
-        'bg-gray-50 dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700',
-      )}
-    >
-      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{count} selected</span>
-      <div className="flex items-center gap-2 ml-auto">
-        <Button
-          type="button"
-          onClick={onUnarchive}
-          disabled={unarchivePending}
-          className={cn(
-            'min-h-[44px] bg-blue-600 hover:bg-blue-700 text-white',
-            'dark:bg-blue-700 dark:hover:bg-blue-600',
-          )}
-        >
-          {unarchivePending ? 'Unarchiving…' : `Unarchive (${count})`}
-        </Button>
-        <Button
-          type="button"
-          onClick={onDelete}
-          className={cn(
-            'min-h-[44px] bg-red-600 hover:bg-red-700 text-white',
-            'dark:bg-red-700 dark:hover:bg-red-600 focus-visible:ring-red-500',
-          )}
-        >
-          Delete ({count})
-        </Button>
-        <Button type="button" variant="secondary" onClick={onClear}>Clear</Button>
-      </div>
-    </div>
-  )
-}
-
 // ── ArchivedManager ──────────────────────────────────────────────────────────
 
 export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: string) => void }) {
@@ -239,68 +115,17 @@ export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: str
 
   const [permDeleteTarget, setPermDeleteTarget] = useState<ArchivedSession | null>(null)
   const [unarchivingId, setUnarchivingId] = useState<string | null>(null)
-  const [selected, setSelected] = useState<Set<string>>(new Set())
-  // Last row toggled without shift — the pivot for shift-click range selection.
-  const [anchorId, setAnchorId] = useState<string | null>(null)
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
   const [bulkSnapshot, setBulkSnapshot] = useState<{ ids: string[]; names: string[] } | null>(null)
   const [summary, setSummary] = useState<string | null>(null)
 
-  // Drop selected ids that no longer exist after a refetch.
-  // Done at render time (not in an effect) to avoid the set-state-in-effect lint rule —
-  // React re-renders synchronously when state set during render differs from current value.
-  if (selected.size > 0) {
-    const present = new Set(archivedSessions.map((s) => s.id))
-    let changed = false
-    const pruned = new Set<string>()
-    for (const id of selected) {
-      if (present.has(id)) pruned.add(id)
-      else changed = true
-    }
-    if (changed) setSelected(pruned)
-  }
-
-  function toggleOne(id: string, shiftKey = false) {
-    // Range over the VISIBLE (grouped/sorted/filtered) order — a shift-click range
-    // must follow what the user sees, not the raw archived list. A click whose anchor
-    // is currently hidden (anchorIdx === -1) falls through to a plain toggle.
-    const ids = visible.map((s) => s.id)
-    const anchorIdx = anchorId === null ? -1 : ids.indexOf(anchorId)
-
-    if (shiftKey && anchorIdx !== -1) {
-      // Shift-click: select the inclusive range from the anchor to this row.
-      const end = ids.indexOf(id)
-      const [lo, hi] = anchorIdx < end ? [anchorIdx, end] : [end, anchorIdx]
-      setSelected((prev) => {
-        const next = new Set(prev)
-        for (let i = lo; i <= hi; i++) next.add(ids[i])
-        return next
-      })
-      // Anchor stays put so the range can be re-extended in either direction.
-      return
-    }
-
-    setSelected((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-    setAnchorId(id)
-  }
-
-  // toggleAll operates on the VISIBLE (filtered) set, not the raw list
-  function toggleAll() {
-    setSelected((prev) => {
-      const visibleIds = visible.map((s) => s.id)
-      const everySelected = visibleIds.length > 0 && visibleIds.every((id) => prev.has(id))
-      return everySelected ? new Set() : new Set(visibleIds)
-    })
-  }
-
-  function clearSelection() {
-    setSelected(new Set())
-  }
+  // Range + select-all follow the VISIBLE order; a selection survives in the
+  // RAW list, so collapsing a group or typing in the search box does not
+  // silently drop rows the user has already ticked.
+  const selection = useBulkSelection(
+    visible.map((s) => s.id),
+    archivedSessions.map((s) => s.id),
+  )
 
   function handleUnarchive(id: string) {
     setUnarchivingId(id)
@@ -322,15 +147,15 @@ export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: str
   }
 
   function handleBulkUnarchive() {
-    const ids = [...selected]
+    const ids = [...selection.selected]
     if (ids.length === 0) return
     bulkUnarchive.mutate(ids, {
-      onSuccess: (res) => { setSummary(summarize('Unarchived', res)); setSelected(new Set()) },
+      onSuccess: (res) => { setSummary(summarize('Unarchived', res)); selection.clear() },
     })
   }
 
   function openBulkDelete() {
-    const sel = archivedSessions.filter((s) => selected.has(s.id))
+    const sel = archivedSessions.filter((s) => selection.isSelected(s.id))
     if (sel.length === 0) return
     setBulkSnapshot({ ids: sel.map((s) => s.id), names: sel.map(displayNameOf) })
     setBulkDeleteOpen(true)
@@ -354,7 +179,7 @@ export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: str
     bulkDelete.mutate(ids, {
       onSuccess: (res) => {
         setSummary(summarize('Deleted', res))
-        setSelected(new Set())
+        selection.clear()
         setBulkDeleteOpen(false)
         setBulkSnapshot(null)
       },
@@ -372,90 +197,83 @@ export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: str
       hour: 'numeric', minute: '2-digit',
     })
     return (
-      <div
+      <SelectableRow
         key={s.id}
-        className={cn(
-          'flex flex-col gap-2 rounded-lg border border-gray-200 dark:border-gray-700',
-          'bg-white dark:bg-gray-800 px-3 py-2',
-        )}
+        id={s.id}
+        name={displayName}
+        checked={selection.isSelected(s.id)}
+        onToggle={selection.toggleOne}
       >
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex items-start gap-3 flex-1 min-w-0">
-            <input
-              type="checkbox"
-              checked={selected.has(s.id)}
-              onClick={(e) => { shiftHeld.current = e.shiftKey }}
-              onChange={() => toggleOne(s.id, shiftHeld.current)}
-              aria-label={`Select ${displayName}`}
-              className={cn(CHECKBOX_CLS, 'mt-0.5')}
-            />
+        <div
+          className={cn(
+            'flex flex-col gap-2 rounded-lg border border-gray-200 dark:border-gray-700',
+            'bg-white dark:bg-gray-800 px-3 py-2',
+          )}
+        >
+          <div className="flex items-start justify-between gap-3">
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{displayName}</p>
               <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
                 {s.account} · Archived {archivedDate}
               </p>
             </div>
-          </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <button
-              type="button"
-              onClick={() => onReviewSession(s.id)}
-              className={cn(
-                'rounded px-2 py-1 text-xs font-medium min-h-[44px]',
-                'border border-gray-300 dark:border-gray-600',
-                'text-gray-700 dark:text-gray-300',
-                'hover:bg-gray-100 dark:hover:bg-gray-700',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-              )}
-              aria-label={`Review ${displayName}`}
-            >
-              Review
-            </button>
-            <button
-              type="button"
-              onClick={() => handleUnarchive(s.id)}
-              disabled={unarchivingId === s.id}
-              className={cn(
-                'rounded px-2 py-1 text-xs font-medium min-h-[44px]',
-                'bg-blue-600 hover:bg-blue-700 text-white',
-                'dark:bg-blue-700 dark:hover:bg-blue-600',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-                'disabled:opacity-40',
-              )}
-              aria-label={`Unarchive ${displayName}`}
-            >
-              {unarchivingId === s.id ? 'Restoring…' : 'Unarchive'}
-            </button>
-            <button
-              type="button"
-              onClick={() => handlePermanentDelete(s)}
-              className={cn(
-                'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
-                'text-red-500 dark:text-red-400',
-                'hover:bg-red-50 dark:hover:bg-red-900/30',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500',
-              )}
-              aria-label={`Delete ${displayName} permanently`}
-            >
-              <Trash2 size={14} aria-hidden="true" />
-            </button>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <button
+                type="button"
+                onClick={() => onReviewSession(s.id)}
+                className={cn(
+                  'rounded px-2 py-1 text-xs font-medium min-h-[44px]',
+                  'border border-gray-300 dark:border-gray-600',
+                  'text-gray-700 dark:text-gray-300',
+                  'hover:bg-gray-100 dark:hover:bg-gray-700',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+                )}
+                aria-label={`Review ${displayName}`}
+              >
+                Review
+              </button>
+              <button
+                type="button"
+                onClick={() => handleUnarchive(s.id)}
+                disabled={unarchivingId === s.id}
+                className={cn(
+                  'rounded px-2 py-1 text-xs font-medium min-h-[44px]',
+                  'bg-blue-600 hover:bg-blue-700 text-white',
+                  'dark:bg-blue-700 dark:hover:bg-blue-600',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+                  'disabled:opacity-40',
+                )}
+                aria-label={`Unarchive ${displayName}`}
+              >
+                {unarchivingId === s.id ? 'Restoring…' : 'Unarchive'}
+              </button>
+              <button
+                type="button"
+                onClick={() => handlePermanentDelete(s)}
+                className={cn(
+                  'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
+                  'text-red-500 dark:text-red-400',
+                  'hover:bg-red-50 dark:hover:bg-red-900/30',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500',
+                )}
+                aria-label={`Delete ${displayName} permanently`}
+              >
+                <Trash2 size={14} aria-hidden="true" />
+              </button>
+            </div>
           </div>
         </div>
-      </div>
+      </SelectableRow>
     )
   }
 
   // ── Select-all header state — operates on the VISIBLE (filtered) set ──────────
   const selectAllRef = useRef<HTMLInputElement>(null)
-  // A checkbox's `change` event doesn't carry modifier keys, but its `click` does — and click
-  // always fires first (even for keyboard/space toggles). Capture shift here, read it in onChange.
-  const shiftHeld = useRef(false)
-  const allSelected = visible.length > 0 && visible.every((s) => selected.has(s.id))
-  const someSelected = visible.some((s) => selected.has(s.id))
-
   useEffect(() => {
-    if (selectAllRef.current) selectAllRef.current.indeterminate = someSelected && !allSelected
-  }, [someSelected, allSelected])
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = selection.someSelected && !selection.allSelected
+    }
+  }, [selection.someSelected, selection.allSelected])
 
   return (
     <div className="space-y-3">
@@ -475,14 +293,30 @@ export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: str
         />
       )}
 
-      {selected.size > 0 && (
-        <BulkActionBar
-          count={selected.size}
-          onUnarchive={handleBulkUnarchive}
-          onDelete={openBulkDelete}
-          onClear={clearSelection}
-          unarchivePending={bulkUnarchive.isPending}
-        />
+      {selection.count > 0 && (
+        <BulkActionBar label={`${selection.count} selected`} onClear={selection.clear}>
+          <Button
+            type="button"
+            onClick={handleBulkUnarchive}
+            disabled={bulkUnarchive.isPending}
+            className={cn(
+              'min-h-[44px] bg-blue-600 hover:bg-blue-700 text-white',
+              'dark:bg-blue-700 dark:hover:bg-blue-600',
+            )}
+          >
+            {bulkUnarchive.isPending ? 'Unarchiving…' : `Unarchive (${selection.count})`}
+          </Button>
+          <Button
+            type="button"
+            onClick={openBulkDelete}
+            className={cn(
+              'min-h-[44px] bg-red-600 hover:bg-red-700 text-white',
+              'dark:bg-red-700 dark:hover:bg-red-600 focus-visible:ring-red-500',
+            )}
+          >
+            Delete ({selection.count})
+          </Button>
+        </BulkActionBar>
       )}
 
       {/* Controls strip — only when there are archived sessions at all */}
@@ -510,22 +344,11 @@ export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: str
 
       {/* Empty state: search active but no matches */}
       {archivedSessions.length > 0 && search.isFiltered && !hasFilteredSessions && (
-        <div className="py-6 text-center space-y-2">
-          <p className="text-sm text-gray-500 dark:text-gray-400">
-            No archived sessions match your search.
-          </p>
-          <button
-            type="button"
-            onClick={() => search.setQuery('')}
-            className={cn(
-              'text-xs text-blue-600 dark:text-blue-400 underline',
-              'hover:text-blue-700 dark:hover:text-blue-300',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded',
-            )}
-          >
-            Clear
-          </button>
-        </div>
+        <NoMatchState
+          message="No archived sessions match your search."
+          actionLabel="Clear"
+          onClear={() => search.setQuery('')}
+        />
       )}
 
       {/* List with grouping — render whenever any session survives the search
@@ -538,10 +361,10 @@ export function ArchivedManager({ onReviewSession }: { onReviewSession: (id: str
             <input
               ref={selectAllRef}
               type="checkbox"
-              checked={allSelected}
-              onChange={toggleAll}
+              checked={selection.allSelected}
+              onChange={selection.toggleAll}
               aria-label="Select all"
-              className={CHECKBOX_CLS}
+              className={SELECT_CHECKBOX_CLS}
             />
             <span className="text-xs text-gray-500 dark:text-gray-400">Select all</span>
           </div>

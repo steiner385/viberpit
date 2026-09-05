@@ -501,7 +501,7 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
       )}
       {deleteTarget && (
         <PermanentDeleteDialog
-          sessionName={deleteTarget.name}
+          names={[deleteTarget.name]}
           onClose={() => setDeleteTarget(null)}
           isPending={permanentDelete.isPending}
           onConfirm={() => {
