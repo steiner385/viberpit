@@ -202,8 +202,9 @@ export const SHORTCUTS: Shortcut[] = [
   //     future PR adds one, its order must come from
   //     `useSessionListState().ordering.orderedSessions`, the same order the
   //     list renders, or cycling will navigate to a filtered-out session.
-  //   · `?dialog=new` is still reachable without a chord: the rail's New button
-  //     is a `<Link>` to `/sessions?dialog=new`, and detach is still Esc / ←.
+  //   · Starting a session is still reachable without a chord: the New Session
+  //     button at the foot of the list column clears the open session, which
+  //     puts the dispatch bar in `app.dock`. Detach is still Esc / ←.
   // Pinned by "the un-bindable Desktop chords bind nothing" in shortcuts.test.ts.
   //
   // ── List mode — WIRED ────────────────────────────────────────────────

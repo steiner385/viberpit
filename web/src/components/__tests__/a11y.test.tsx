@@ -82,7 +82,7 @@ describe('a11y: AllLimitedBanner', () => {
 
 describe('a11y: EmptyState', () => {
   it('has no axe violations', async () => {
-    const { container } = render(<EmptyState onNew={vi.fn()} />)
+    const { container } = render(<EmptyState />)
     const results = await axe(container)
     expect(results).toHaveNoViolations()
   })
@@ -92,7 +92,6 @@ describe('a11y: EmptyState', () => {
 
 describe('a11y: SessionList', () => {
   const handlers = {
-    onNew: vi.fn(),
     onOpen: vi.fn(),
     onRename: vi.fn(),
     onClose: vi.fn(),

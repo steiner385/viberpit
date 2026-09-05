@@ -80,7 +80,6 @@ interface SessionListProps {
   selectedId?: string | null
   isFiltered?: boolean
   onClearSearch?: () => void
-  onNew: () => void
   onOpen: (id: string) => void
   onRename: (id: string) => void
   onClose: (id: string) => void
@@ -126,7 +125,6 @@ export function SessionList({
   selectedId,
   isFiltered,
   onClearSearch,
-  onNew,
   onOpen,
   onRename,
   onClose,
@@ -264,7 +262,7 @@ export function SessionList({
         </div>
       )
     }
-    return <EmptyState onNew={onNew} />
+    return <EmptyState />
   }
 
   const accountMap = new Map(accounts.map((a) => [a.name, a]))

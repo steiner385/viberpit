@@ -247,6 +247,23 @@ describe('SessionListColumn — gates and structure', () => {
     expect(scroll.contains(screen.getByTestId('daemon-health'))).toBe(false)
   })
 
+  // The button's placement is load-bearing, not cosmetic. It sits at the FOOT so
+  // it is adjacent to `app.dock` — the surface it operates, since `onNew` clears
+  // the open session and that is what flips the dock to the DispatchBar. And it
+  // sits BELOW the daemon indicator so it holds the bottom edge: both are
+  // `shrink-0` at the end of a flex column, so the other order would shift the
+  // button by a row every time the daemon readout appeared or collapsed.
+  it('pins New Session to the foot of the column, below the daemon indicator', () => {
+    renderColumn({ sessions: [session()] })
+    const button = screen.getByRole('button', { name: /new session/i })
+    const health = screen.getByTestId('daemon-health')
+    const scroll = screen.getByTestId('session-list-scroll')
+
+    // DOCUMENT_POSITION_FOLLOWING === 4: the button comes after both.
+    expect(scroll.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(health.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
   it('marks the New Session button when the new-session slot is the target', async () => {
     const onNew = vi.fn()
     const user = userEvent.setup()

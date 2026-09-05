@@ -46,7 +46,6 @@ function wrapper({ children }: { children: React.ReactNode }) {
 const baseProps = {
   sessions: SESSIONS,
   accounts: ACCOUNTS,
-  onNew: vi.fn(),
   onOpen: vi.fn(),
   onRename: vi.fn(),
   onClose: vi.fn(),
@@ -55,7 +54,6 @@ const baseProps = {
 }
 
 describe('SessionList', () => {
-  const onNew = vi.fn()
   const onOpen = vi.fn()
   const onRename = vi.fn()
   const onClose = vi.fn()
@@ -71,7 +69,6 @@ describe('SessionList', () => {
       <SessionList
         sessions={SESSIONS}
         accounts={ACCOUNTS}
-        onNew={onNew}
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
@@ -92,7 +89,6 @@ describe('SessionList', () => {
       <SessionList
         sessions={SESSIONS}
         accounts={ACCOUNTS}
-        onNew={onNew}
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
@@ -112,7 +108,6 @@ describe('SessionList', () => {
       <SessionList
         sessions={SESSIONS}
         accounts={ACCOUNTS}
-        onNew={onNew}
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
@@ -132,7 +127,6 @@ describe('SessionList', () => {
       <SessionList
         sessions={SESSIONS}
         accounts={ACCOUNTS}
-        onNew={onNew}
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
@@ -154,7 +148,6 @@ describe('SessionList', () => {
         sessions={SESSIONS}
         accounts={ACCOUNTS}
         selectedId="sess-2"
-        onNew={onNew}
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
@@ -185,7 +178,6 @@ describe('SessionList', () => {
         sessions={SESSIONS}
         accounts={ACCOUNTS}
         selectedId="sess-1"
-        onNew={onNew}
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
@@ -206,7 +198,6 @@ describe('SessionList', () => {
       <SessionList
         sessions={[]}
         accounts={ACCOUNTS}
-        onNew={onNew}
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
@@ -217,7 +208,10 @@ describe('SessionList', () => {
     )
 
     expect(screen.getByText(/no sessions/i)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /new session/i })).toBeInTheDocument()
+    // The zero state is copy, not a call to action: `SessionListColumn` pins a
+    // New Session button to the foot of this same column, and the two sat a few
+    // pixels apart firing the same handler.
+    expect(screen.queryByRole('button', { name: /new session/i })).not.toBeInTheDocument()
   })
 
   it('shows loading skeletons when isLoading is true', () => {
@@ -226,7 +220,6 @@ describe('SessionList', () => {
         sessions={[]}
         accounts={[]}
         isLoading={true}
-        onNew={onNew}
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
@@ -246,7 +239,6 @@ describe('SessionList', () => {
       <SessionList
         sessions={[SESSIONS[0]]}
         accounts={ACCOUNTS}
-        onNew={onNew}
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
@@ -268,7 +260,6 @@ describe('SessionList', () => {
       <SessionList
         sessions={[SESSIONS[0]]}
         accounts={ACCOUNTS}
-        onNew={onNew}
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
@@ -289,7 +280,6 @@ describe('SessionList', () => {
       <SessionList
         sessions={[SESSIONS[0]]}
         accounts={ACCOUNTS}
-        onNew={onNew}
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
@@ -310,7 +300,6 @@ describe('SessionList', () => {
       <SessionList
         sessions={[SESSIONS[0]]}
         accounts={ACCOUNTS}
-        onNew={onNew}
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
@@ -335,7 +324,6 @@ describe('SessionList', () => {
         sessions={SESSIONS}
         groups={groups}
         accounts={ACCOUNTS}
-        onNew={() => {}}
         onOpen={() => {}}
         onRename={() => {}}
         onClose={() => {}}
@@ -385,7 +373,6 @@ describe('SessionList', () => {
         sessions={SESSIONS}
         groups={groups}
         accounts={ACCOUNTS}
-        onNew={() => {}}
         onOpen={() => {}}
         onRename={() => {}}
         onClose={() => {}}
@@ -428,7 +415,6 @@ describe('SessionList', () => {
 })
 
 describe('SessionList — repo label', () => {
-  const onNew = vi.fn()
   const onOpen = vi.fn()
   const onRename = vi.fn()
   const onClose = vi.fn()
@@ -448,7 +434,6 @@ describe('SessionList — repo label', () => {
       <SessionList
         sessions={sessions}
         accounts={ACCOUNTS}
-        onNew={onNew}
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
@@ -464,7 +449,6 @@ describe('SessionList — repo label', () => {
 })
 
 describe('SessionList — pure renderer (no internal sort)', () => {
-  const onNew = vi.fn()
   const onOpen = vi.fn()
   const onRename = vi.fn()
   const onClose = vi.fn()
@@ -508,7 +492,6 @@ describe('SessionList — pure renderer (no internal sort)', () => {
       <SessionList
         sessions={sessions}
         accounts={[]}
-        onNew={onNew}
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
@@ -559,7 +542,7 @@ describe('SessionList — group header keyboard nav', () => {
         onCollapse={vi.fn()}
         onNavigate={vi.fn()}
         onExit={vi.fn()}
-        onNew={vi.fn()} onOpen={vi.fn()} onRename={vi.fn()}
+        onOpen={vi.fn()} onRename={vi.fn()}
         onClose={vi.fn()} onDelete={vi.fn()} onQuickResume={vi.fn()}
       />,
       { wrapper },
@@ -593,7 +576,7 @@ describe('SessionList — group panel ARIA disclosure', () => {
         groups={groups}
         accounts={[]}
         collapsedKeys={new Set()}
-        onNew={vi.fn()} onOpen={vi.fn()} onRename={vi.fn()}
+        onOpen={vi.fn()} onRename={vi.fn()}
         onClose={vi.fn()} onDelete={vi.fn()} onQuickResume={vi.fn()}
       />,
       { wrapper },
@@ -614,7 +597,7 @@ describe('SessionList — group panel ARIA disclosure', () => {
         groups={groups}
         accounts={[]}
         collapsedKeys={new Set()}
-        onNew={vi.fn()} onOpen={vi.fn()} onRename={vi.fn()}
+        onOpen={vi.fn()} onRename={vi.fn()}
         onClose={vi.fn()} onDelete={vi.fn()} onQuickResume={vi.fn()}
       />,
       { wrapper },
@@ -635,7 +618,6 @@ describe('SessionList — no-matches state', () => {
         accounts={[]}
         isFiltered
         onClearSearch={onClearSearch}
-        onNew={() => {}}
         onOpen={() => {}}
         onRename={() => {}}
         onClose={() => {}}
@@ -659,7 +641,6 @@ describe('SessionList — no-matches state', () => {
       <SessionList
         sessions={[]}
         accounts={[]}
-        onNew={() => {}}
         onOpen={() => {}}
         onRename={() => {}}
         onClose={() => {}}
@@ -676,7 +657,6 @@ describe('SessionCard — null usage guard (needs-reauth account)', () => {
   // Regression: before the fix, a session whose account has usage:null
   // crashed SessionCard with "Cannot read properties of null (reading 'session')".
 
-  const onNew = vi.fn()
   const onOpen = vi.fn()
   const onRename = vi.fn()
   const onClose = vi.fn()
@@ -708,7 +688,6 @@ describe('SessionCard — null usage guard (needs-reauth account)', () => {
         <SessionList
           sessions={[nullUsageSession]}
           accounts={[nullUsageAccount]}
-          onNew={onNew}
           onOpen={onOpen}
           onRename={onRename}
           onClose={onClose}
@@ -740,7 +719,6 @@ describe('SessionCard — null usage guard (needs-reauth account)', () => {
       <SessionList
         sessions={[nullUsageSession]}
         accounts={[nullUsageAccount]}
-        onNew={onNew}
         onOpen={onOpen}
         onRename={onRename}
         onClose={onClose}
@@ -762,7 +740,6 @@ describe('SessionCard — null usage guard (needs-reauth account)', () => {
 describe('SessionList — Resume interrupted button', () => {
   const sharedProps = {
     accounts: ACCOUNTS,
-    onNew: vi.fn(),
     onOpen: vi.fn(),
     onRename: vi.fn(),
     onClose: vi.fn(),
@@ -802,7 +779,7 @@ describe('SessionList — Resume interrupted button', () => {
 
 describe('SessionList — Rotate stalled button', () => {
   const sharedProps = {
-    accounts: ACCOUNTS, onNew: vi.fn(), onOpen: vi.fn(), onRename: vi.fn(),
+    accounts: ACCOUNTS, onOpen: vi.fn(), onRename: vi.fn(),
     onClose: vi.fn(), onDelete: vi.fn(), onQuickResume: vi.fn(),
   }
   beforeEach(() => vi.clearAllMocks())

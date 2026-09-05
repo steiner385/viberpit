@@ -163,10 +163,14 @@ describe('NavBar', () => {
     }
     // Derived from the same array NavBar slices: bar links + sheet links cover
     // every section exactly once, so a section can never become unreachable.
-    expect(within(sheet).getAllByRole('link')).toHaveLength(OVERFLOW.length + 1) // + New session
-    for (const name of ['New session', 'Assistant', 'Help', 'Theme']) {
-      expect(within(sheet).getByRole(name === 'New session' ? 'link' : 'button', { name })).toBeInTheDocument()
+    // Exactly `OVERFLOW.length` — no "+ 1": New session, the one global action
+    // that was a link, moved to the foot of the Sessions list column, so every
+    // remaining global action is a button.
+    expect(within(sheet).getAllByRole('link')).toHaveLength(OVERFLOW.length)
+    for (const name of ['Assistant', 'Help', 'Theme']) {
+      expect(within(sheet).getByRole('button', { name })).toBeInTheDocument()
     }
+    expect(within(sheet).queryByRole('link', { name: /new session/i })).not.toBeInTheDocument()
   })
 
   it('marks the active section with aria-current, including a nested route', () => {

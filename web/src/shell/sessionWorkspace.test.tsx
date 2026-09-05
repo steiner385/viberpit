@@ -53,7 +53,6 @@ vi.mock('@/api/hooks', () => ({
   useSetAccountEnabled: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useGithubRepos: vi.fn(() => ({ data: [], isLoading: false, isError: false })),
   useModels: vi.fn(() => ({ data: [] })),
-  useGithubBranches: vi.fn(() => ({ data: { default: null, branches: [] }, isLoading: false })),
   useSettings: vi.fn(() => ({ data: { defaultPermissionMode: 'interactive', thinkingCollapsed: false, repoRoot: null }, isLoading: false })),
   useUpdateSettings: vi.fn(() => NOOP),
   useSetAutopilotPaused: () => ({ mutate: vi.fn() }),
@@ -253,7 +252,12 @@ describe('the shell drives the session list controls', () => {
 
 describe('the all-limited banner', () => {
   /** Raise the banner the way the app does: a 409 out of the create flow. The
-   *  error is the REAL class — the host's triage narrows on `instanceof`. */
+   *  error is the REAL class — the host's triage narrows on `instanceof`.
+   *
+   *  Dispatched from the DOCK, not a dialog. The New Session dialog that used to
+   *  submit this was retired when creating a session became `app.dock`'s job, so
+   *  the bar's Enter-to-dispatch is now the only path that can produce the 409
+   *  this banner reports — which makes it the right one to raise it from. */
   async function raiseBanner(user: ReturnType<typeof userEvent.setup>) {
     let onError: ((e: ApiRequestError) => void) | undefined
     vi.mocked(hooks.useCreateSession).mockReturnValue({
@@ -263,8 +267,9 @@ describe('the all-limited banner', () => {
       isPending: false,
     } as unknown as ReturnType<typeof hooks.useCreateSession>)
 
-    const app = renderApp({ path: '/sessions?dialog=new', mode: 'desktop' })
-    await user.click(await screen.findByRole('button', { name: /^create$/i }))
+    const app = renderApp({ path: '/sessions', mode: 'desktop' })
+    await user.type(await screen.findByLabelText(/new session prompt/i), 'ship it')
+    await user.keyboard('{Enter}')
     act(() => onError?.(new ApiRequestError(409, { error: { code: 'all_accounts_limited' }, earliestReset: null })))
     return app
   }
@@ -275,20 +280,21 @@ describe('the all-limited banner', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(/all accounts at limit/i)
   })
 
-  it('clears when the user opens the New Session dialog — but not before', async () => {
+  // There used to be a third exit here: opening the New Session dialog cleared
+  // the banner, on the reading that the user was already acting on it. It went
+  // with the dialog, and is deliberately NOT re-pointed at the dock's dispatch —
+  // that submit is what RAISES the banner, so clearing on it would set and wipe
+  // the alert in one interaction and the user would never learn why nothing
+  // started. This asserts that absence: dispatching again re-raises, and never
+  // silently swallows, the 409.
+  it('does not clear itself when the user dispatches again', async () => {
     const user = userEvent.setup()
-    const app = await raiseBanner(user)
-    // The 409 that raised it arrived while the dialog was still open, so
-    // "dialog open ⇒ no banner" must NOT be a standing rule.
+    await raiseBanner(user)
     expect(screen.getByRole('alert')).toBeInTheDocument()
 
-    // Close it (the host does this itself on a 409; here we assert the URL edge).
-    await act(async () => { await app.router.navigate('/sessions') })
+    await user.type(screen.getByLabelText(/new session prompt/i), 'try again')
+    await user.keyboard('{Enter}')
     expect(screen.getByRole('alert')).toBeInTheDocument()
-
-    // Re-opening is the user acting on the banner: it stops shouting.
-    await act(async () => { await app.router.navigate('/sessions?dialog=new') })
-    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
   })
 
   it('auto-clears once an account becomes selectable again', async () => {
