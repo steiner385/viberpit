@@ -121,7 +121,8 @@ def test_interpreter_escaping_its_own_checkout_is_reported(tmp_path):
 
     assert len(problems) == 1
     assert exe_path in problems[0] and str(checkout_a) in problems[0]
-    assert str(real_exe) in problems[0], "the resolved target must be named so it is actionable"
+    assert str(real_exe.parent.parent) in problems[0], (
+        "the resolved venv target must be named so it is actionable")
 
 
 def test_interpreter_within_its_own_checkout_via_symlink_is_not_reported(tmp_path):
@@ -135,6 +136,27 @@ def test_interpreter_within_its_own_checkout_via_symlink_is_not_reported(tmp_pat
     exe_path = str(checkout / ".venv" / "bin" / "python")
 
     run = _fake_run({"ccswitch.service": _execstart(exe_path)})
+    assert steps.check_unit_interpreters(("ccswitch.service",), run=run) == []
+
+
+def test_standard_venv_system_interpreter_symlink_is_not_reported(tmp_path):
+    """A venv-owned launcher may normally resolve to the host Python executable.
+
+    The isolation boundary is the ``.venv`` directory, not ``bin/python``: standard
+    virtualenvs leave the directory inside the checkout while symlinking the launcher
+    to a system interpreter such as ``/usr/bin/python3.12``.
+    """
+    checkout = tmp_path / "ccswitch"
+    bin_dir = checkout / ".venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    system_python = tmp_path / "usr" / "bin" / "python3.12"
+    system_python.parent.mkdir(parents=True)
+    system_python.write_text("#!/bin/sh\n")
+    system_python.chmod(0o755)
+    launcher = bin_dir / "python"
+    launcher.symlink_to(system_python)
+
+    run = _fake_run({"ccswitch.service": _execstart(str(launcher))})
     assert steps.check_unit_interpreters(("ccswitch.service",), run=run) == []
 
 
