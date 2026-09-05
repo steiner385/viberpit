@@ -38,6 +38,32 @@ _CANCEL_RE = re.compile(
 )
 
 
+def marker_instructions(*, self_model_switch: bool) -> str:
+    """Compose every ccswitch marker instruction into one system-prompt append.
+
+    Engine-neutral on purpose. The markers are a ccswitch contract, not a Claude
+    one: a Codex thread is told about them through ``thread/start``'s
+    ``developerInstructions`` exactly as a Claude session is told through the
+    SDK's system-prompt append, and both halves of each marker (the instruction
+    the agent reads and the literal the translator scans for) already live in
+    this module. Composing the append here too means an engine added later
+    cannot ship a session that is scanned for a marker it was never told about.
+
+    ``self_model_switch`` is a parameter rather than a settings read because it
+    is BOTH a deployment flag and an engine capability: the caller is the only
+    one that knows whether this engine's driver can act on a model request at
+    all (``AgentCapabilities.self_model_switch``). Asking an agent to emit a
+    marker nothing will honour is worse than silence — it burns turns on a
+    request that is dropped without explanation.
+    """
+    from .model_request import MODEL_REQUEST_INSTRUCTION
+
+    parts = [COMPLETION_INSTRUCTION, NO_PR_INSTRUCTION]
+    if self_model_switch:
+        parts.append(MODEL_REQUEST_INSTRUCTION)
+    return "\n\n".join(parts)
+
+
 def strip_markers(text: str) -> str:
     """Remove the completion / no-PR / model-request marker from *text* so prose heuristics judge
     the real tail. The marker trails the message, so an unanswered closing question

@@ -656,28 +656,32 @@ rateLimits/read against the supported binary. No turn yet.
 **Files:**
 
 - Create: `server/codex/translator.py`
-- Modify: `server/sessions/events.py`
-- Modify: `server/sessions/status.py`
-- Modify: `web/src/session/events.ts`
-- Modify: `web/src/session/reducer.ts`
-- Modify: transcript block components only where the normalized vocabulary expands
+- Modify: `server/codex/schema.py` (the thread/turn/item vocabulary the translator parses)
 - Create: `server/tests/fixtures/codex_app_server/transcripts/*.jsonl`
 - Test: `server/tests/test_codex_translator.py`
-- Test: `web/src/session/reducer.codex.test.ts`
-- Test: affected transcript component suites
+- *Not modified, as it turned out:* `server/sessions/events.py`, `server/sessions/status.py`,
+  `web/src/session/events.ts`, `web/src/session/reducer.ts`, transcript components and
+  `web/src/session/reducer.codex.test.ts` — the normalized vocabulary did not expand, so there was
+  nothing for the web to learn. See the Work outcome below.
 
 **Work:**
 
-- [ ] Golden-map thread/turn notifications and supported items to `TurnStart`, `TextDelta`,
+- [x] Golden-map thread/turn notifications and supported items to `TurnStart`, `TextDelta`,
   `ThinkingDelta` (summary only), `ToolCall`, `ToolResult`, `PermissionRequest`, `Status`, `Error`,
   and `TurnEnd`.
-- [ ] Add only genuinely new normalized activity kinds needed for command executions, file changes,
+- [x] Add only genuinely new normalized activity kinds needed for command executions, file changes,
   MCP calls, web searches, and collaboration items. Do not expose Codex wire names to React.
-- [ ] Deduplicate deltas versus final items, preserve ordering/correlation, and redact raw commands,
-  patches, paths, prompts, output, and native ids from ordinary logs.
-- [ ] Map token usage, context window, completion/no-PR markers, rate limits, cancellation, and
-  failures without Anthropic-specific messages.
-- [ ] Unknown item types create a safe adapter notice/metric and do not crash the session. Unknown
+  **Outcome: none were needed.** Every Codex item maps onto an existing `events.py` member and an
+  existing `ToolKind`, usually a `ToolCall`/`ToolResult` pair whose `name` is the Claude tool name
+  the presenter already renders. The web reducer therefore needed no change in this phase.
+- [x] Deduplicate deltas versus final items, preserve ordering/correlation, and redact raw commands,
+  patches, paths, prompts, output, and native ids from ordinary logs. The translator has no logger,
+  no I/O and no clock at all, which is a stronger guarantee than per-call-site redaction.
+- [x] Map token usage, context window, completion/no-PR markers, rate limits, cancellation, and
+  failures without Anthropic-specific messages. `turn/completed` carries no usage, so `TurnEnd.usage`
+  comes from the last `thread/tokenUsage/updated` **keyed by its own turn id** — a frame naming
+  another turn is not billed to the live one.
+- [x] Unknown item types create a safe adapter notice/metric and do not crash the session. Unknown
   approval requests fail closed.
 
 ### Task 4.2: Codex thread driver and approval bridge
@@ -687,29 +691,38 @@ rateLimits/read against the supported binary. No turn yet.
 **Files:**
 
 - Create: `server/codex/driver.py`
-- Create: `server/codex/approvals.py`
 - Create: `server/codex/permissions.py`
-- Modify: `server/sessions/engine.py`
-- Modify: `server/sessions/permissions.py`
-- Modify: `server/sessions/completion.py`
-- Test: `server/tests/test_codex_driver.py`
-- Test: `server/tests/test_codex_approvals.py`
-- Test: `server/tests/test_codex_permissions.py`
+- Create: `server/sessions/driver_stream.py` (`DriverStream` extracted from `claude_driver.py`;
+  both engines need its atomic-open semantics and a second copy would drift)
+- Modify: `server/sessions/engine.py`, `server/sessions/permissions.py`,
+  `server/sessions/completion.py`, `server/codex/manager.py` (per-thread stream routing)
+- Test: `server/tests/test_codex_driver.py`, `test_codex_approvals.py`,
+  `test_codex_permissions.py`, `test_permission_registry_external.py`,
+  `test_codex_manager_routing.py`
+- *Not created:* `server/codex/approvals.py` — see the Work note on reusing `PermissionRegistry`.
 
 **Work:**
 
-- [ ] Implement thread start/read/resume, turn start/steer/interrupt, event fan-out, model/effort
-  settings, and clean stop against the shared per-account manager.
-- [ ] Map common permission profiles to documented Codex sandbox/approval policy. Keep engine
-  descriptions explicit; never claim exact semantic parity with Claude modes.
-- [ ] Register every server-initiated approval by `(ccswitch session, native thread, request id,
-  authenticated user, expiry)`. Validate ownership/pending/decision before replying.
-- [ ] Support allow/decline and command amendment only where offered. “Always allow” is allowed only
-  for a native session-scoped decision; never create a persistent global exception.
-- [ ] Decline/cancel pending requests during stop, crash, auth loss, or session archive so no future
+- [x] Implement thread start/read/resume, turn start/steer/interrupt, event fan-out, model/effort
+  settings, and clean stop against the shared per-account manager. A mid-turn prompt is a
+  `turn/steer` fenced by `expectedTurnId`, falling back to the queue only if the turn ended first.
+- [x] Map common permission profiles to documented Codex sandbox/approval policy. Keep engine
+  descriptions explicit; never claim exact semantic parity with Claude modes. The three tool-scoped
+  middle modes (`allowlist`/`auto`/`acceptEdits`) are inexpressible in Codex's per-command model and
+  collapse onto the strict profile rather than widening to `on-request`.
+- [x] Register every server-initiated approval by `(ccswitch session, native thread, request id,
+  authenticated user, expiry)`. Validate ownership/pending/decision before replying. **Deviation:
+  no `server/codex/approvals.py`.** `PermissionRegistry` already owns exactly this, and the whole
+  pipeline above it is engine-neutral, so it gained `request_external` instead of growing a second
+  registry with a second set of WebSocket frames and a second UI card.
+- [x] Support allow/decline and command amendment only where offered. “Always allow” is allowed only
+  for a native session-scoped decision; never create a persistent global exception. `request_external`
+  writes NO entry in the ccswitch grant cache: that cache is never consulted for an engine that
+  enforces approvals itself, so an entry there would be a second, invisible policy.
+- [x] Decline/cancel pending requests during stop, crash, auth loss, or session archive so no future
   remains stranded.
-- [ ] Satisfy the canonical `AgentDriver` contract and capability tests without engine conditionals
-  in shared UI/session code.
+- [x] Satisfy the canonical `AgentDriver` contract and capability tests without engine conditionals
+  in shared UI/session code. Members Codex cannot support are documented refusals, not silent stubs.
 
 ### Task 4.3: Orchestrator lifecycle, replay, and recovery
 

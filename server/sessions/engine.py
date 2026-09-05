@@ -35,6 +35,14 @@ class AgentCapabilities:
     self_model_switch: bool = False
     subagents: bool = False
     attachments: bool = False
+    #: The session can be moved to a DIFFERENT account under a live conversation
+    #: and resumed there (usage-ceiling rotation, manual account switch, 401
+    #: recompose). That machinery is credential-authority work — it composes the
+    #: target account's config dir, re-trusts the project and syncs credentials
+    #: back — so it is a property of the engine, not something every engine gets
+    #: for free. An engine that leaves this False must be REFUSED by the rotation
+    #: path rather than rebuilt as some other engine's driver.
+    account_rotation: bool = False
 
 
 @runtime_checkable
@@ -140,6 +148,12 @@ class AgentDriverConfig:
     mode: str
     identity: str
     resume: str | None = None
+    #: Reasoning effort requested at launch, for engines that expose the knob
+    #: (`AgentCapabilities.reasoning_effort`). Already persisted on the session row
+    #: and carried on `SessionRecord`; it reaches the driver here so an engine that
+    #: sets it at thread-start time does not have to re-read the DB. Engines without
+    #: the capability ignore it.
+    reasoning_effort: str | None = None
     on_engine_session_id: Callable[[str, str], Awaitable[None]] | None = None
     on_sync_back: Callable[[], None] | None = None
     on_status: Callable[[str, str], Awaitable[None]] | None = None
@@ -171,6 +185,26 @@ class AgentDriverRegistry:
         if parsed not in self._factories:
             raise AgentEngineUnavailable(parsed)
         return parsed
+
+    def capabilities_for(self, engine: AgentEngine | str) -> AgentCapabilities | None:
+        """Capabilities of the driver this registry WOULD build for *engine*.
+
+        Lets orchestration ask "can this session be adopted / rotated?" without
+        holding a live driver — the question is asked precisely on the paths that
+        are about to build one. ``None`` means "unknown": either no factory is
+        registered for the engine (it cannot run here at all) or the factory does
+        not declare capabilities (a test double). Callers must treat ``None`` as
+        NOT capable — an unknown engine getting the Claude-only treatment by
+        default is exactly the mis-handling this exists to stop.
+
+        The value is read off the factory, which publishes its driver class's own
+        ``capabilities`` attribute rather than restating it, so there is still one
+        declaration per engine.
+        """
+        parsed = parse_agent_engine(engine)
+        factory = self._factories.get(parsed)
+        caps = getattr(factory, "capabilities", None)
+        return caps if isinstance(caps, AgentCapabilities) else None
 
     def create(
         self,

@@ -56,8 +56,19 @@ def test_supported_method_sets_are_subsets_of_the_declared_inventory() -> None:
     assert schema.SUPPORTED_CLIENT_NOTIFICATIONS <= schema.DECLARED_CLIENT_NOTIFICATIONS
     # `error` is the minimum supported notification for this phase.
     assert "error" in schema.SUPPORTED_SERVER_NOTIFICATIONS
-    # The whole external-auth posture rests on exactly this one server request.
+    # Server requests stay an explicit, tiny enumeration. Phase 4 adds the two
+    # approval callbacks a human can actually answer; `item/permissions/
+    # requestApproval` is deliberately excluded because its response hands the
+    # app-server a permissions grant ccswitch has no vocabulary to describe.
     assert schema.SUPPORTED_SERVER_REQUESTS == frozenset(
+        {
+            "account/chatgptAuthTokens/refresh",
+            "item/commandExecution/requestApproval",
+            "item/fileChange/requestApproval",
+        }
+    )
+    # Only the credential-bearing refresh is gated on the experimental surface.
+    assert schema.EXTERNAL_AUTH_ONLY_SERVER_REQUESTS == frozenset(
         {"account/chatgptAuthTokens/refresh"}
     )
 
@@ -71,9 +82,27 @@ def test_external_token_login_still_carries_the_unstable_markers() -> None:
 
 def test_fixtures_contain_no_secret_shaped_values() -> None:
     for path in sorted(FIXTURE_ROOT.glob("*.json")):
-        assert not redaction.contains_secret_shaped_value(
+        assert not schema.contains_unexpected_secret_shape(
             path.read_text(encoding="utf-8")
         ), path.name
+
+
+def test_every_benign_prose_exception_is_still_earning_its_place() -> None:
+    """An allowlisted false positive must still occur, and still be a false one."""
+    corpus = "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted(FIXTURE_ROOT.glob("*.json"))
+    )
+    for benign in schema.BENIGN_SCHEMA_PROSE:
+        assert benign in corpus, benign
+        # It is only listed because the shared detector flags it.
+        assert redaction.contains_secret_shaped_value(benign), benign
+
+
+def test_the_benign_prose_exception_does_not_hide_a_real_credential() -> None:
+    secret = "sk-ant-api03-" + "A" * 40
+    assert schema.contains_unexpected_secret_shape(
+        f"{schema.BENIGN_SCHEMA_PROSE[0]} {secret}"
+    )
 
 
 # ---------------------------------------------------------------------------

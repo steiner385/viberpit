@@ -28,7 +28,16 @@ def test_capability_set_covers_every_declared_field():
     assert declared == {
         "models", "reasoning_effort", "steer", "interrupt", "approvals",
         "questions", "fork", "adopt", "self_model_switch", "subagents", "attachments",
+        "account_rotation",
     }
+
+
+def test_the_driver_binds_this_declaration_rather_than_restating_it():
+    """One declaration per engine. A second literal on the driver class is how the
+    availability report and the running driver drifted apart on ``questions``."""
+    from server.codex.driver import CodexAgentDriver
+
+    assert CodexAgentDriver.capabilities is CODEX_CAPABILITIES
 
 
 def test_codex_advertises_the_planned_controls():
@@ -40,6 +49,10 @@ def test_codex_advertises_the_planned_controls():
     assert not CODEX_CAPABILITIES.adopt
     assert not CODEX_CAPABILITIES.self_model_switch
     assert not CODEX_CAPABILITIES.subagents
+    # No interactive-question channel on the app-server, and rotation composes the
+    # target account's CLAUDE config dir — a Codex session is refused by that path.
+    assert not CODEX_CAPABILITIES.questions
+    assert not CODEX_CAPABILITIES.account_rotation
 
 
 def test_no_capabilities_is_all_false():

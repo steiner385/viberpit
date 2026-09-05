@@ -3,6 +3,7 @@ import dataclasses, json, asyncio, logging, os, time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 from server.assistant.context import strip_context_header
 from server.config import env_float
 from . import events as ev
@@ -603,3 +604,73 @@ def last_question_events(path: str) -> list["ev.Question"]:
     for q in latest:
         q.orphaned = True
     return latest
+
+
+# ---------------------------------------------------------------------------
+# Engine facade
+# ---------------------------------------------------------------------------
+#
+# Replay is now a facade over per-engine adapters rather than "the JSONL
+# reader". Claude keeps everything above verbatim — the sub-agent
+# reconstruction, the page-boundary owner prefix, the in-progress trim — because
+# those are properties of ITS transcript format, not of replay in general. Codex
+# has no transcript file at all: its history is read back over `thread/read`
+# (`server/codex/replay.py`).
+#
+# What the two adapters must agree on is only what crosses the browser boundary:
+# `ReplayWindow.events`, and `before`/`limit`/`earliest_turn`/`total_turns` as
+# ORDINALS IN ONE TURN SPACE. The client's scrollback pager is written against
+# that contract and knows nothing about engines, so an adapter that redefined
+# the cursor space would break paging without breaking a single test that only
+# looks at events.
+
+
+@runtime_checkable
+class EngineReplay(Protocol):
+    """One engine's read-back of a session's history."""
+
+    async def window(
+        self,
+        *,
+        before: int | None = None,
+        limit: int | None = 20,
+        drop_incomplete_turn: bool = False,
+        turn_started_at: float | None = None,
+    ) -> ReplayWindow: ...
+
+    async def events(self, *, max_turns: int | None = 20) -> list: ...
+
+
+class ClaudeTranscriptReplay:
+    """`EngineReplay` over a Claude session's transcript ``.jsonl``.
+
+    A thin adapter on purpose: it delegates to the module functions above rather
+    than reimplementing or re-tuning them, so the disk reader keeps exactly one
+    implementation and the direct callers of `replay_window` / `replay_events`
+    (the WS attach path, the sub-agent summariser, the export) stay on the same
+    code the facade runs.
+    """
+
+    __slots__ = ("path",)
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+
+    async def window(
+        self,
+        *,
+        before: int | None = None,
+        limit: int | None = 20,
+        drop_incomplete_turn: bool = False,
+        turn_started_at: float | None = None,
+    ) -> ReplayWindow:
+        return await replay_window(
+            self.path,
+            before=before,
+            limit=limit,
+            drop_incomplete_turn=drop_incomplete_turn,
+            turn_started_at=turn_started_at,
+        )
+
+    async def events(self, *, max_turns: int | None = 20) -> list:
+        return await replay_events(self.path, max_turns=max_turns)
