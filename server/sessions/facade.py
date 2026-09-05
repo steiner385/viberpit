@@ -188,6 +188,11 @@ class InProcessOrchestratorAdapter:
     async def copilot_add_status(self, *a, **k): return await _maybe_await(self._orch.copilot_add_status(*a, **k))
     async def copilot_add_cancel(self, *a, **k): return await _maybe_await(self._orch.copilot_add_cancel(*a, **k))
     async def copilot_usage(self, *a, **k): return await _maybe_await(self._orch.copilot_usage(*a, **k))
+    # --- codex (OpenAI) account surfaces: answered by the host that owns the app-server ---
+    async def codex_models(self, *a, **k): return await _maybe_await(self._orch.codex_models(*a, **k))
+    async def codex_account_status(self, *a, **k): return await _maybe_await(self._orch.codex_account_status(*a, **k))
+    async def codex_validate_model(self, *a, **k): return await _maybe_await(self._orch.codex_validate_model(*a, **k))
+    async def codex_invalidate_credentials(self, *a, **k): return await _maybe_await(self._orch.codex_invalidate_credentials(*a, **k))
     # --- pipeline / merge-queue methods (GET /api/pipeline/events and siblings) ---
     async def latest_queue_entries(self, *a, **k): return await _maybe_await(self._orch.latest_queue_entries(*a, **k))
     async def all_merge_trains(self, *a, **k): return await _maybe_await(self._orch.all_merge_trains(*a, **k))

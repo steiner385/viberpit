@@ -66,6 +66,31 @@ def _required_contexts(gh_api: Callable[[str], str], branch: str = "master") -> 
     return set(data.get("contexts") or [])
 
 
+def _never_ran(sha: str, gh_api: Callable[[str], str]) -> bool:
+    """True when no further check-run can ever arrive for ``sha``.
+
+    GitHub allows at most ONE *pending* run per concurrency group and cancels the
+    previously pending one; ``cancel-in-progress: false`` only protects a run that has
+    already started. A run cancelled while still pending starts zero jobs, so it
+    contributes no check-run to the commit — ever. On the check-runs endpoint alone that
+    is indistinguishable from "the run has not started yet", which is why a missing
+    required context used to read as a "pending" that could never resolve.
+
+    The workflow-runs endpoint separates them: every run for the sha finished AND at
+    least one was cancelled means the absent context is not coming. Best-effort — any
+    unreadable or ambiguous answer returns False, leaving the caller on the historical
+    "pending". Both verdicts block a deploy; only the wording an operator sees differs.
+    """
+    try:
+        body = json.loads(gh_api(f"repos/{{owner}}/{{repo}}/actions/runs?head_sha={sha}"))
+    except Exception:
+        return False
+    runs = body.get("workflow_runs") or []
+    if not runs or any(r.get("status") != "completed" for r in runs):
+        return False
+    return any((r.get("conclusion") or "") == "cancelled" for r in runs)
+
+
 def ci_verdict(sha: str, gh_api: Callable[[str], str] | None = None) -> str:
     gh_api = gh_api or _default_gh_api
     try:
@@ -80,7 +105,9 @@ def ci_verdict(sha: str, gh_api: Callable[[str], str] | None = None) -> str:
         # (#620). A required context with no run yet is "pending", not "green".
         present = {r.get("name") for r in runs}
         if not required <= present:
-            return "pending"
+            # ...unless it will never report at all, which is "unrun" — a distinct,
+            # terminal verdict. Only this branch pays for the extra round-trip.
+            return "unrun" if _never_ran(sha, gh_api) else "pending"
         runs = [r for r in runs if r.get("name") in required]
     if not runs:
         return "pending"

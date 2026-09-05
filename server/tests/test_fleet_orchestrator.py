@@ -387,7 +387,11 @@ def test_every_remote_method_is_classified():
     from server.sessions.fleet_orchestrator import (
         _PER_SESSION, _FANOUT_BY_IDS, _MERGE_ALL_HOSTS)
 
-    EXPLICIT = {"create_session", "subscribe", "aclose", "__init__"}
+    EXPLICIT = {"create_session", "subscribe", "aclose", "__init__",
+                # Fleet-wide method defined on FleetOrchestrator itself: it must
+                # report EVERY host's outcome rather than skip an unreachable one,
+                # so it cannot use the merge-all helper.
+                "codex_invalidate_credentials"}
     # Global/primary-routed: everything not per-session, fan-out, merge-all, or
     # explicit. Listed so adding a NEW method forces a conscious classification here.
     GLOBAL = {
@@ -401,6 +405,12 @@ def test_every_remote_method_is_classified():
         "list_adoptable_candidates", "migrate_archive_home", "cloned_repos", "usage",
         "active_session_count",
         "copilot_add_start", "copilot_add_status", "copilot_add_cancel", "copilot_usage",
+        # Codex: the model list and model+effort validation are account-scoped and
+        # give the same answer on any host that can start the app-server, so asking
+        # the primary starts ONE app-server instead of one per host.
+        # codex_account_status is a merge-all (activeRunners genuinely spans the
+        # fleet); codex_invalidate_credentials is EXPLICIT above.
+        "codex_models", "codex_validate_model",
         "subscribe_events", "unsubscribe_events", "x11_metrics", "adopt_session",
         "daemon_sha", "daemon_pool_stats", "daemon_epoch", "startup_report",
         "maybe_start_queued",
@@ -513,8 +523,12 @@ def test_api_orchestrator_reads_are_all_classified():
         "copilot_add_start", "copilot_add_status", "copilot_add_cancel",
         "pm_onboarding_counts", "pm_onboard_spawn_map", "pm_classify_run",
         "pm_advance_map_merged",
+        # Account-scoped and identical on every host: the primary answers, and one
+        # app-server is started rather than one per host.
+        "codex_models", "codex_validate_model",
     }
-    EXPLICIT = {"create_session", "list_sessions"}  # fleet-wide methods on FleetOrchestrator
+    EXPLICIT = {"create_session", "list_sessions",
+                "codex_invalidate_credentials"}  # fleet-wide on FleetOrchestrator
     classified = (_PER_SESSION | _FANOUT_BY_IDS | set(_MERGE_ALL_HOSTS)
                   | PRIMARY_LOCAL | EXPLICIT)
 

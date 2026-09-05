@@ -253,9 +253,9 @@ def test_red_verdicts_expire_after_the_ttl(monkeypatch):
     ci_fn, calls = _counting_ci({"c2": "green"})       # c3 red, c2 green
     assert detect._cached_ci("c3", ci_fn) == "red"
     assert detect._cached_ci("c2", ci_fn) == "green"
-    clock["t"] = detect._RED_TTL_S - 1
+    clock["t"] = detect._NONGREEN_TTL_S - 1
     assert detect._cached_ci("c3", ci_fn) == "red"      # inside TTL: cached
-    clock["t"] = detect._RED_TTL_S + 1
+    clock["t"] = detect._NONGREEN_TTL_S + 1
     ci_fn2, calls2 = _counting_ci({"c3": "green"})      # the re-run went green
     assert detect._cached_ci("c3", ci_fn2) == "green"   # TTL passed: re-queried
     assert detect._cached_ci("c2", ci_fn2) == "green"   # green: cached forever
@@ -399,3 +399,41 @@ async def test_success_resets_failure_escalation(caplog):
 
     errors = [r for r in caplog.records if r.levelno == logging.ERROR]
     assert errors == [], "a success between failures must prevent escalation"
+
+
+# --- "unrun": a tip whose CI was cancelled before it ever started ---
+
+def test_unrun_tip_surfaces_while_the_frontier_still_deploys():
+    """An "unrun" tip must reach the UI as its own verdict rather than be laundered
+    into the generic "pending": pending resolves on its own, unrun never does, and the
+    operator needs to know which one they are staring at."""
+    g = FakeGit("d0", "c3", _commits("c3", "c2", "c1"))
+    ci_fn, calls = _counting_ci({"c3": "unrun", "c2": "green"})
+    st = detect.compute_pending("/r", git_mod=g, ci_fn=ci_fn)
+    assert st.tip_ci == "unrun"
+    assert st.ci == "green", "the green frontier is still deployable"
+    assert st.deployable_sha == "c2" and st.deployable_count == 2
+    assert st.to_dict()["tipCi"] == "unrun"
+
+
+def test_unrun_tip_with_no_frontier_reports_unrun_not_pending():
+    g = FakeGit("d0", "c1", _commits("c1"))
+    ci_fn, calls = _counting_ci({}, default="unrun")
+    st = detect.compute_pending("/r", git_mod=g, ci_fn=ci_fn)
+    assert st.ci == "unrun" and st.tip_ci == "unrun"
+    assert st.deployable_sha == "" and st.deployable_count == 0
+
+
+def test_unrun_verdicts_are_cached_with_the_nongreen_ttl(monkeypatch):
+    """unrun costs an extra actions-API probe, so it must not be re-queried on every
+    30s tick — but a manual re-run turns the sha green, so it must age out like red."""
+    clock = {"t": 0.0}
+    monkeypatch.setattr(detect, "_now", lambda: clock["t"])
+    ci_fn, calls = _counting_ci({}, default="unrun")
+    assert detect._cached_ci("c3", ci_fn) == "unrun"
+    assert detect._cached_ci("c3", ci_fn) == "unrun"
+    assert calls == ["c3"], "inside the TTL the verdict is served from cache"
+    clock["t"] = detect._NONGREEN_TTL_S + 1
+    ci_fn2, calls2 = _counting_ci({"c3": "green"})      # a re-run finally produced checks
+    assert detect._cached_ci("c3", ci_fn2) == "green"
+    assert calls2 == ["c3"], "past the TTL the verdict is re-queried"
