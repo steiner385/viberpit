@@ -517,13 +517,22 @@ describe('AppShell — accessibility', () => {
     // (`findByTestId`, then `withSessionRows` for the dock's `aria-controls`
     // target), so there is nothing left for a retry to fix.
     expect(await axe(document.body, AXE_OPTIONS)).toHaveNoViolations()
-    // …and the same reasoning applies one level out, to the CASE timeout. A full
-    // shell now renders the scope segment too, and under a parallel full-suite
-    // run the phone pass has measured 5.1s against vitest's 5s default — while
-    // taking ~1s in isolation. That is scheduler contention, not a slow render,
-    // and letting the default trip turns a contended machine into a red
-    // accessibility test that says nothing about accessibility. CI is slower
-    // than a dev box, so the default is the wrong bound here.
+    // …and the same reasoning applies one level out, to the CASE timeout.
+    //
+    // Under a parallel full-suite run the phone pass measured 5.1s against
+    // vitest's 5s default. It is NOT a render that got slower: measured in
+    // isolation, phone is ~0.7s here and was ~3.1s before the scope segment
+    // landed. What it is, is run-to-run noise — two consecutive isolated runs
+    // put the same desktop case at 2797ms and then 460ms, a 6x swing from JIT
+    // warm-up landing on whichever axe case happens to run first. A 5s bound
+    // sits inside that swing, so it decides on scheduling luck.
+    //
+    // 20s is ~6x the slowest pass measured anywhere here. The bound is wall
+    // clock only; the assertion is still `toHaveNoViolations`, so nothing is
+    // weakened — the same argument this file already makes one level in for the
+    // `waitFor`. Letting the default trip turns a contended machine (or CI,
+    // slower than a dev box) into a red accessibility test that says nothing
+    // about accessibility.
   }, 20_000)
 
   /**
