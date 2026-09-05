@@ -66,12 +66,11 @@ up to date with `master` before merging. `allow_update_branch` auto-rebases an o
 re-runs CI, so a green `--auto` PR lands without manual "Update branch" clicks. Branches are deleted
 server-side on merge — don't pass `--delete-branch` (the `master` deploy worktree makes the local
 delete fail). Merge queue is unavailable (user-owned repo); auto-merge + strict required checks
-only *approximates* one, and only while master is quiet. A queue tests the prospective merge
-result and holds a serialized position, so a PR at the front lands from that tested state.
-`--auto` + strict instead re-tests the PR against a master that's free to move during the run, with
-no position held — under a busy cadence (master advancing faster than a CI cycle takes) a PR can
-be marked `BEHIND`, get rebased by `allow_update_branch`, and lose the race again, needing several
-rebase-and-recheck cycles before it lands; each cycle is also a fresh exposure to any flaky check.
+only *approximates* one, and only while master is quiet: a queue holds a serialized position and
+lands the PR from that tested state, whereas `--auto` re-tests against a master free to move. Under
+a busy cadence (master advancing faster than a CI cycle) a PR goes `BEHIND`, is rebased by
+`allow_update_branch`, and may need several rebase-and-recheck cycles — each a fresh flaky-check
+exposure — before it lands.
 Admins may push directly in emergencies.
 
 ## Dev / testing
@@ -103,11 +102,10 @@ Admins may push directly in emergencies.
   tz-aware and SQLite-only tests hide it — the last slip marked every prod session "Status unknown"
   (2026-09-03, #964).
 - **Cancel rule:** never hand-roll `task.cancel()` + `await task` in a teardown path; use
-  `server/aio.py:cancel_and_reap()`. A hand-rolled `except (asyncio.CancelledError, Exception)`
-  (or `suppress(asyncio.CancelledError, …)`) swallows the *caller's* cancellation as readily as
-  the child's, so a SIGTERM drain keeps running instead of unwinding and eventually eats the
-  unit's `TimeoutStopSec` SIGKILL with live sessions attached (#1164). Both shapes are blocked by
-  `server/tests/test_no_swallowed_outer_cancellation.py`.
+  `server/aio.py:cancel_and_reap()`. `except (asyncio.CancelledError, Exception)` and
+  `suppress(asyncio.CancelledError, …)` swallow the *caller's* cancellation as readily as the child's,
+  so a SIGTERM drain keeps running instead of unwinding and eats the unit's `TimeoutStopSec` SIGKILL
+  with live sessions attached (#1164). Blocked by `server/tests/test_no_swallowed_outer_cancellation.py`.
 - A fresh git worktree has no built env (network blocks `uv sync` of the ~70MB claude-agent-sdk).
   Run against the main checkout's prebuilt env (`<main-checkout>/.venv/bin/python -m pytest …`) and
   symlink `web/node_modules` from the main checkout.
@@ -169,6 +167,25 @@ but is wrong, fix it in place — adding a parallel "correct" copy *is* the anti
 - Web: search `web/src/` (utils, lib, components, design tokens) before adding a new util or token.
 
 Skill: `eliminating-parallel-implementations`.
+
+### Before implementing, check whether the same work is already in flight
+
+The rule above has a multi-agent twin: several sessions work this repo at once, so the duplicate
+may not be *in* the codebase yet — it may be an open PR. Check **before writing code**; the global
+"list in-flight PRs" rule fires at `gh pr create`, too late to prevent the wasted cycle. Search by
+the **files you are about to touch** and by the issue number, never by branch name — on 2026-09-05
+#1142 and #1145 independently implemented #1131 nine minutes apart, same gate and same file.
+
+```bash
+gh api graphql -f query='{repository(owner:"steiner385",name:"ccswitch"){
+  pullRequests(states:OPEN,first:40,orderBy:{field:UPDATED_AT,direction:DESC}){
+    nodes{number title headRefName files(first:60){nodes{path}}}}}}' \
+  --jq '.data.repository.pullRequests.nodes[] | select([.files.nodes[].path] | any(test("<path regex>"))) | "\(.number)\t\(.headRefName)\t\(.title)"'
+```
+
+Found one? **Review and extend it** rather than starting over. If yours is better in parts, combine
+into one PR and close the other, crediting what you took and saying plainly which came first — the
+session that duplicated owns the mistake, not the one it landed on.
 
 ### Purge replaced code in the same change — no half-dead code
 
