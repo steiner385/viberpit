@@ -65,7 +65,8 @@ export interface CodexAuthorityHealth {
   /** Revision of the authorization projection in force, or null when none. */
   syncRevision?: number | null
   syncExpiresInS?: number | null
-  accounts?: string[]
+  /** Number of account credential slots held by the authority. */
+  accounts?: number
   detail?: string | null
 }
 
