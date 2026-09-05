@@ -63,8 +63,14 @@ Only hold off if the user said it's a prototype/WIP, or if verification is faili
 up to date with `master` before merging. `allow_update_branch` auto-rebases an out-of-date PR and
 re-runs CI, so a green `--auto` PR lands without manual "Update branch" clicks. Branches are deleted
 server-side on merge — don't pass `--delete-branch` (the `master` deploy worktree makes the local
-delete fail). Merge queue is unavailable (user-owned repo), so auto-merge + strict required checks
-is the equivalent. Admins may push directly in emergencies.
+delete fail). Merge queue is unavailable (user-owned repo); auto-merge + strict required checks
+only *approximates* one, and only while master is quiet. A queue tests the prospective merge
+result and holds a serialized position, so a PR at the front lands from that tested state.
+`--auto` + strict instead re-tests the PR against a master that's free to move during the run, with
+no position held — under a busy cadence (master advancing faster than a CI cycle takes) a PR can
+be marked `BEHIND`, get rebased by `allow_update_branch`, and lose the race again, needing several
+rebase-and-recheck cycles before it lands; each cycle is also a fresh exposure to any flaky check.
+Admins may push directly in emergencies.
 
 ## Dev / testing
 
