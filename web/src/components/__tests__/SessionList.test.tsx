@@ -813,7 +813,7 @@ describe('SessionList — Rotate stalled button', () => {
 
 describe('SessionList — select mode (live list bulk archive)', () => {
   const sharedProps = {
-    accounts: ACCOUNTS, onNew: vi.fn(), onOpen: vi.fn(), onRename: vi.fn(),
+    accounts: ACCOUNTS, onOpen: vi.fn(), onRename: vi.fn(),
     onClose: vi.fn(), onDelete: vi.fn(), onQuickResume: vi.fn(),
   }
 
