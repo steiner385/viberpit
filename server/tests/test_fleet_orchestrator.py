@@ -468,6 +468,10 @@ def test_every_remote_method_is_classified():
         "maybe_start_queued",
         "pm_onboarding_counts", "pm_onboard_spawn_map", "pm_classify_run",
         "pm_advance_map_merged",
+        # The assistant is pinned to the primary (create_session forces prefer=primary
+        # for ASSISTANT_KIND, see FleetOrchestrator.create_session) — the lookup that
+        # precedes creation belongs on the primary too, same as any other unrouted read.
+        "find_assistant",
     }
     public = {n for n, _ in inspect.getmembers(RemoteOrchestrator, callable)
               if not n.startswith("_")}
