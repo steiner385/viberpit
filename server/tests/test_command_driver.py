@@ -1,6 +1,6 @@
 # server/tests/test_command_driver.py
 import pytest
-from server.sessions.driver import SessionDriver
+from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.permissions import PermissionRegistry
 from server.tests.fakes import fake_sdk
 
@@ -9,7 +9,7 @@ def _driver(client):
     def factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
         client.last_resume = resume
         return client
-    return SessionDriver(
+    return ClaudeAgentDriver(
         "sess-1", "acct", "/tmp", "/tmp/cfg",
         mode="interactive", sdk_factory=factory,
         registry=PermissionRegistry(), identity="tester",
@@ -61,7 +61,7 @@ async def test_reconnect_calls_sync_back():
         client.last_resume = resume
         return client
 
-    d = SessionDriver(
+    d = ClaudeAgentDriver(
         "sess-sync", "acct", "/tmp", "/tmp/cfg",
         mode="interactive", sdk_factory=factory,
         registry=PermissionRegistry(), identity="tester",

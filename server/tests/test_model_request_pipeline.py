@@ -33,20 +33,20 @@ def test_translator_returns_none_without_a_marker():
 
 
 def test_driver_latches_the_request_with_its_turn_id():
-    from server.sessions.driver import SessionDriver
-    d = SessionDriver.__new__(SessionDriver)          # no __init__: pure latch test
+    from server.sessions.claude_driver import ClaudeAgentDriver
+    d = ClaudeAgentDriver.__new__(ClaudeAgentDriver)          # no __init__: pure latch test
     d._last_model_request = None
     e = ev.TurnEnd("turn-7", model_request={"model": "fable", "reason": "refactor"})
-    SessionDriver._latch_model_request(d, e)
+    ClaudeAgentDriver._latch_model_request(d, e)
     assert d.last_model_request == {
         "turn_id": "turn-7", "model": "fable", "reason": "refactor"}
 
 
 def test_driver_latch_ignores_a_turn_without_a_request():
-    from server.sessions.driver import SessionDriver
-    d = SessionDriver.__new__(SessionDriver)
+    from server.sessions.claude_driver import ClaudeAgentDriver
+    d = ClaudeAgentDriver.__new__(ClaudeAgentDriver)
     d._last_model_request = None
-    SessionDriver._latch_model_request(d, ev.TurnEnd("turn-8"))
+    ClaudeAgentDriver._latch_model_request(d, ev.TurnEnd("turn-8"))
     assert d.last_model_request is None
 
 

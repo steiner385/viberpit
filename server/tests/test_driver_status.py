@@ -5,7 +5,7 @@ import pytest
 from claude_agent_sdk import TextBlock
 
 from server.sessions.completion import COMPLETION_MARKER as _MARK
-from server.sessions.driver import SessionDriver
+from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions import events as ev
 from server.sessions.events import TurnEnd
 from server.sessions.permissions import PermissionRegistry
@@ -25,7 +25,7 @@ class _OneTurnClient(PerQueryScript, FakeSDKClient):
 def _make_driver():
     def factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
         return _OneTurnClient([], on_can_use_tool=can_use_tool)
-    return SessionDriver(
+    return ClaudeAgentDriver(
         "sid", "alpha", "/tmp", "/tmp/cfg", mode="default",
         sdk_factory=factory, registry=PermissionRegistry(),
         identity="wstest@example.com",
@@ -88,7 +88,7 @@ def test_status_progresses_in_progress_then_done():
         captured.append(status)
 
     async def run():
-        d = SessionDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory(msgs), registry=PermissionRegistry(),
                           identity="me", on_status=on_status)
         await d.start()
@@ -114,7 +114,7 @@ def _run_capture(msgs):
         captured.append(status)
 
     async def run():
-        d = SessionDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory(msgs), registry=PermissionRegistry(),
                           identity="me", on_status=on_status)
         await d.start()
@@ -153,7 +153,7 @@ def test_status_needs_attention_when_stream_raises():
         captured.append(status)
 
     async def run():
-        d = SessionDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(),
                           identity="me", on_status=on_status)
         await d.start()
@@ -189,7 +189,7 @@ def test_last_progress_advances_only_on_meaningful_events():
         def __call__(self): self.t += 1.0; return self.t
     def factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
         return _OneTurnClient([], on_can_use_tool=can_use_tool)
-    d = SessionDriver("sid", "alpha", "/tmp", "/tmp/cfg", mode="default",
+    d = ClaudeAgentDriver("sid", "alpha", "/tmp", "/tmp/cfg", mode="default",
                       sdk_factory=factory, registry=PermissionRegistry(),
                       identity="t", clock=_Clock())
     base = d.last_progress_at

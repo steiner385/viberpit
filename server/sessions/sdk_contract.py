@@ -1,4 +1,4 @@
-"""The exact slice of claude-agent-sdk that SessionDriver depends on.
+"""The exact slice of claude-agent-sdk that ClaudeAgentDriver depends on.
 
 Confirmed live in the Phase 0 spike (see docs/superpowers/spikes/2026-06-20-phase0-verdicts.md).
 This Protocol is what the fake SDK client (tests) and the real client must both satisfy,
@@ -30,7 +30,7 @@ def is_turn_message(msg: Any) -> bool:
 
 @runtime_checkable
 class SDKClientProtocol(Protocol):
-    """Surface SessionDriver calls on the SDK client.
+    """Surface ClaudeAgentDriver calls on the SDK client.
 
     The real implementation is `claude_agent_sdk.ClaudeSDKClient`, constructed with
     `ClaudeAgentOptions(cwd=..., env={...,'CLAUDE_CONFIG_DIR':cfg}, permission_mode=...,

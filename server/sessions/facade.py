@@ -16,6 +16,8 @@ so callers need no per-method native-deadline classification either.
 import asyncio
 import inspect
 
+from server.sessions.engine import parse_agent_engine
+
 
 async def _maybe_await(result):
     if inspect.isawaitable(result):
@@ -99,6 +101,9 @@ class InProcessOrchestratorAdapter:
         # not apply here. Pop it before forwarding so the underlying orchestrator
         # (which does not accept prefer=) never sees it. (Ruling D)
         k.pop("prefer", None)
+        if "engine" in k:
+            engine = parse_agent_engine(k["engine"])
+            k["engine"] = engine
         return await _maybe_await(self._orch.create_session(*a, **k))
     async def send_prompt(self, *a, **k): return await _maybe_await(self._orch.send_prompt(*a, **k))
     async def ensure_driver(self, *a, **k): return await _maybe_await(self._orch.ensure_driver(*a, **k))

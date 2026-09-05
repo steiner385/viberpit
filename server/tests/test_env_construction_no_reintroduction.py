@@ -4,7 +4,8 @@ Nine LLM helper call sites used to each build their own SDK env by hand
 (``{**os.environ, "CLAUDE_CONFIG_DIR": config_dir}`` or ``dict(os.environ,
 CLAUDE_CONFIG_DIR=config_dir)``), which silently dropped an account's setup-token whenever its
 browser-OAuth refresh was dead. The sweep collapsed all nine onto ``account_auth.helper_env``
-(and, for session launch, ``account_auth.oauth_env_for`` via ``sdk_factory``'s ``extra_env``).
+(and, for session launch, ``account_auth.oauth_env_for`` via ``claude_sdk_factory``'s
+``extra_env``).
 
 Before this test, the only thing enforcing "route through helper_env instead of building the
 dict yourself" was a one-off grep pasted into a planning report — nothing would fail if a tenth
@@ -21,13 +22,13 @@ _SERVER_ROOT = Path(__file__).resolve().parent.parent
 
 # Files allowed to construct the SDK env directly, and why:
 #   account_auth.py — the shared helper itself (helper_env/oauth_env_for live here).
-#   sdk_factory.py   — session launch's own env (extra_env, built by orchestrator's _oat_env,
-#                       which already calls oauth_env_for) plus the two SDK factories
-#                       (real_suggestion_factory/real_summary_factory) that call
-#                       account_auth.oauth_env_for directly rather than through helper_env.
+#   claude_sdk_factory.py — session launch's own env (extra_env, built by orchestrator's
+#                           _oat_env, which already calls oauth_env_for) plus the two SDK
+#                           factories (real_suggestion_factory/real_summary_factory) that
+#                           call account_auth.oauth_env_for directly rather than helper_env.
 _ALLOWLIST = {
     _SERVER_ROOT / "sessions" / "account_auth.py",
-    _SERVER_ROOT / "sessions" / "sdk_factory.py",
+    _SERVER_ROOT / "sessions" / "claude_sdk_factory.py",
 }
 
 # Both forms of the bare construction this sweep replaced:

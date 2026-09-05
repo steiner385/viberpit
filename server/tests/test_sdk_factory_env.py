@@ -1,4 +1,4 @@
-from server.sessions import sdk_factory
+from server.sessions import claude_sdk_factory
 
 
 def test_extra_env_merged(monkeypatch):
@@ -13,9 +13,9 @@ def test_extra_env_merged(monkeypatch):
             self.env = kw["env"]
 
     monkeypatch.setattr(
-        sdk_factory, "_import_sdk", lambda: (FakeClient, FakeOpts), raising=False
+        claude_sdk_factory, "_import_sdk", lambda: (FakeClient, FakeOpts), raising=False
     )
-    sdk_factory.real_sdk_factory(
+    claude_sdk_factory.real_sdk_factory(
         "/tmp",
         "/cfg",
         None,

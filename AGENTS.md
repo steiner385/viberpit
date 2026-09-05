@@ -14,8 +14,9 @@ binary/API, not assumptions (III); security-first, exposure-conditional auth (IV
 gates (V); single source of truth / no dead code (VI); modern vetted deps (VII).
 
 Stack: Python FastAPI/Uvicorn + SQLAlchemy (SQLite in dev/tests, Postgres in prod) · React+Vite+TS
-+ Tailwind/shadcn frontend · each session is a `claude` CLI driven through `claude-agent-sdk`
-(`server/sessions/driver.py`), its events bridged to the browser over WebSocket · Tailscale-identity
++ Tailwind/shadcn frontend · session engines implement the provider-neutral contract in
+`server/sessions/engine.py`; Claude runs through `claude-agent-sdk`
+(`server/sessions/claude_driver.py`), with normalized events bridged over WebSocket · Tailscale-identity
 auth. Specs live under `specs/` (`001-ccswitch-web` is the base feature, `002-*` session continuity /
 X display, `003-gh-projects-integration`); design notes and plans under `docs/`.
 
@@ -28,8 +29,9 @@ X display, `003-gh-projects-integration`); design notes and plans under `docs/`.
 - `server/ipc/` — the **session daemon** (`python -m server.ipc`, `ccswitch-daemon.service`). It owns
   every live `claude` process; the edge talks to it over mTLS RPC. Remote hosts (e.g. rocky) run the
   same daemon in worker role (`CCSWITCH_DAEMON_ROLE`).
-- `server/sessions/` — `SessionOrchestrator` (`orchestrator.py`) + per-session `driver.py` (SDK
-  client, permissions, model switching). In remote mode the lifespan swaps `app.state.sessions` for
+- `server/sessions/` — `SessionOrchestrator` (`orchestrator.py`) + canonical engine registry
+  (`engine.py`) + Claude adapter (`claude_driver.py`: SDK client, permissions, model switching). In
+  remote mode the lifespan swaps `app.state.sessions` for
   `FleetOrchestrator` (`fleet_orchestrator.py`, routes via `fleet_router.py`) **after** routers are
   built — capture it lazily, never at router construction.
 - `server/db/` — models, `init_db` reconcile, `clock.py` (see DB clock rule), `migrations/`.

@@ -70,7 +70,7 @@ def test_generate_swallows_errors():
 
 
 def test_real_suggestion_factory_builds_isolated_oneshot(monkeypatch):
-    import server.sessions.sdk_factory as sf
+    import server.sessions.claude_sdk_factory as sf
 
     captured = {}
 
@@ -93,7 +93,7 @@ def test_real_suggestion_factory_builds_isolated_oneshot(monkeypatch):
 
 
 def test_real_suggestion_factory_empty_model_env_uses_account_default(monkeypatch):
-    import server.sessions.sdk_factory as sf
+    import server.sessions.claude_sdk_factory as sf
 
     captured = {}
 

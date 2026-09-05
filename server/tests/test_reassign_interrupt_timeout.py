@@ -11,7 +11,7 @@ before ``aclose()`` or the relaunch, the wedged driver stayed installed, and the
 session re-paused as ``reassign_failed:*`` once a minute until a human killed the CLI.
 
 The pre-close interrupt is a courtesy to the driver being REPLACED. It must be
-best-effort and bounded, like ``SessionDriver.aclose`` already is (#846).
+best-effort and bounded, like ``ClaudeAgentDriver.aclose`` already is (#846).
 """
 import asyncio
 from pathlib import Path
@@ -54,7 +54,7 @@ def _stub_env(monkeypatch):
 
 def _new_driver_cls(started):
     class _NewDriver:
-        claude_session_id = None
+        engine_session_id = None
         mode = "interactive"
 
         def __init__(self, *a, **kw): pass
@@ -68,7 +68,7 @@ def _new_driver_cls(started):
 
 def _old_driver(tmp_path, closed, *, interrupt):
     class _OldDriver:
-        claude_session_id = "old-csid"
+        engine_session_id = "old-csid"
         cwd = str(tmp_path)
         mode = "interactive"
         identity = "user@example.com"
@@ -82,7 +82,12 @@ def _old_driver(tmp_path, closed, *, interrupt):
 async def _run(o, rec, monkeypatch, tmp_path, *, interrupt):
     closed, started, events = [], [], []
     o._drivers[rec.id] = _old_driver(tmp_path, closed, interrupt=interrupt)
-    monkeypatch.setattr(orch_mod, "SessionDriver", _new_driver_cls(started))
+    driver_cls = _new_driver_cls(started)
+    monkeypatch.setattr(
+        orch_mod.SessionOrchestrator,
+        "_create_driver",
+        lambda self, **kw: driver_cls(resume=kw.get("resume"), identity=kw.get("identity")),
+    )
     o._publish_event = events.append
     _stub_env(monkeypatch)
     await o._reassign(rec, "b", reason="session limit reached")
@@ -121,7 +126,7 @@ async def test_reassign_proceeds_when_interrupt_hangs(monkeypatch, tmp_path):
     bounded grace, not block it forever."""
     o = _make_orch()
     rec = _rec(o, tmp_path)
-    monkeypatch.setattr(orch_mod, "_CLOSE_GRACE_SEC", 0.05)
+    monkeypatch.setattr(orch_mod, "_DRIVER_CONTROL_TIMEOUT_S", 0.05)
 
     async def _hang():
         await asyncio.Event().wait()
