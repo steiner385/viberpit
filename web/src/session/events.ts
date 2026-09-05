@@ -4,11 +4,16 @@ export type ToolKind = 'edit' | 'write' | 'read' | 'bash' | 'todo' | 'search' | 
 // One attached image on a user turn. `url` is ready to use directly as an <img> src:
 // `/api/attachments/{id}` for a live turn, or a `data:` URL reconstructed on replay.
 export interface EvUserImage     { url: string; mime: string; name: string }
+// The page/session the prompt was sent FROM — e.g. the AI assistant drawer's composer
+// stamps the route it was open on, and the session it had open (if any), so the
+// transcript can show "on <session title>" or a route label beside the prompt.
+// Mirrors `UserMessage.context` (server/sessions/events.py, landed in #1118/#1126).
+export interface PromptContext   { route: string; sessionId?: string }
 // `ownerPrefix` marks the server's boundary copy of a prompt: the window's owning
 // UserMessage, re-sent at the head of a page that starts mid-logical-turn so the turn's
 // content arrives with its prompt. It is NOT the prompt's real transcript position —
 // see `UserMessage.owner_prefix` (server/sessions/events.py).
-export interface EvUser          { type: 'user';          turnId: string; text: string; images?: EvUserImage[]; srcUuid?: string | null; ts?: number; ownerPrefix?: boolean }
+export interface EvUser          { type: 'user';          turnId: string; text: string; images?: EvUserImage[]; srcUuid?: string | null; ts?: number; ownerPrefix?: boolean; context?: PromptContext }
 export interface EvTurnStart     { type: 'turnStart';     turnId: string; srcUuid?: string | null; parentToolUseId?: string | null; turnIndex?: number | null }
 export interface EvTurnEnd       { type: 'turnEnd';       turnId: string; usage?: Record<string, unknown> | null; costUsd?: number | null; srcUuid?: string | null; parentToolUseId?: string | null }
 export interface EvTextDelta     { type: 'textDelta';     turnId: string; text: string; srcUuid?: string | null; parentToolUseId?: string | null; ts?: number }

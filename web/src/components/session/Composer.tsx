@@ -9,13 +9,13 @@ import { AttachmentChips } from './AttachmentChips'
 import { CommandPalette, type CommandPaletteHandle } from './CommandPalette'
 import { MicButton } from './MicButton'
 import { useDictationField } from '@/lib/useDictationField'
-import type { Command, QueuedItem } from '@/session/events'
+import type { Command, QueuedItem, PromptContext } from '@/session/events'
 import { statusTier } from '@/session/statusTier'
 import { caretLineEdges } from '@/lib/caretLineEdges'
 
 interface Props {
   status: { state: string; count: number }
-  onPrompt: (text: string, attachmentIds: string[]) => void
+  onPrompt: (text: string, attachmentIds: string[], context?: PromptContext) => void
   onInterrupt: () => void
   /** "Send now" while busy: stop the live turn and run this draft next instead of
    *  queueing it. Returns false when the frame could not be sent (draft is kept). */

@@ -9,7 +9,7 @@
 import type { QueryClient } from '@tanstack/react-query'
 import type { Session } from '@/api/types'
 import { QK } from '@/api/hooks'
-import type { SessionEvent } from '@/session/events'
+import type { SessionEvent, PromptContext } from '@/session/events'
 import { SESSION_EVENT_TYPES } from '@/session/events'
 import { clientLogger } from '@/obs/logger'
 import { createGapState, handleLiveBatch, catchUpCursor, catchUpEpoch, invalidateCatchUp, type GapState } from './liveBatch'
@@ -85,7 +85,7 @@ export class SessionSocket {
   private _queryClient: QueryClient | null = null
   private readonly url: string
   private _updatePending = false
-  private _pendingPrompts: { sessionId: string; text: string; attachmentIds?: string[] }[] = []
+  private _pendingPrompts: { sessionId: string; text: string; attachmentIds?: string[]; context?: PromptContext }[] = []
   private static readonly MAX_PENDING = 50
   private _gap: GapState = createGapState()
   private _lastHealAt = 0
@@ -225,15 +225,17 @@ export class SessionSocket {
     return this._sendControl({ type: 'interrupt', sessionId })
   }
 
-  prompt(sessionId: string, text: string, attachmentIds?: string[]) {
+  prompt(sessionId: string, text: string, attachmentIds?: string[], context?: PromptContext) {
     // Never silently drop input. Buffer whenever it can't be trusted to land — the
     // server is draining (updatePending) OR the socket isn't open — and flush on the
     // next reconnect (after re-attach). Otherwise send straight through.
     if (this._updatePending || this.ws?.readyState !== WebSocket.OPEN) {
-      this._enqueuePrompt({ sessionId, text, attachmentIds })
+      this._enqueuePrompt({ sessionId, text, attachmentIds, context })
       return
     }
-    this._send({ type: 'prompt', sessionId, text, ...(attachmentIds && attachmentIds.length ? { attachmentIds } : {}) })
+    this._send({ type: 'prompt', sessionId, text,
+      ...(attachmentIds && attachmentIds.length ? { attachmentIds } : {}),
+      ...(context ? { context } : {}) })
   }
 
   sendInterrupt(sessionId: string): boolean {
@@ -303,7 +305,7 @@ export class SessionSocket {
     this._emit('updatePendingChange', { active: this._updatePending, count: this._pendingPrompts.length })
   }
 
-  private _enqueuePrompt(p: { sessionId: string; text: string; attachmentIds?: string[] }) {
+  private _enqueuePrompt(p: { sessionId: string; text: string; attachmentIds?: string[]; context?: PromptContext }) {
     if (this._pendingPrompts.length >= SessionSocket.MAX_PENDING) {
       const dropped = this._pendingPrompts.shift()
       // No silent caps — tell the user a held message was lost rather than dropping it quietly.
@@ -324,7 +326,8 @@ export class SessionSocket {
     this._updatePending = false
     for (const p of pending) {
       this._send({ type: 'prompt', sessionId: p.sessionId, text: p.text,
-        ...(p.attachmentIds && p.attachmentIds.length ? { attachmentIds: p.attachmentIds } : {}) })
+        ...(p.attachmentIds && p.attachmentIds.length ? { attachmentIds: p.attachmentIds } : {}),
+        ...(p.context ? { context: p.context } : {}) })
     }
     this._emitUpdatePending()
   }
@@ -656,7 +659,7 @@ export function useSessionSocket(channel: SocketChannel = 'route') {
   const attach              = useCallback((sessionId: string) => socket.attach(sessionId), [socket])
   const detach              = useCallback((sessionId: string) => socket.detach(sessionId), [socket])
   const interrupt           = useCallback((sessionId: string) => socket.interrupt(sessionId), [socket])
-  const prompt              = useCallback((sessionId: string, text: string, attachmentIds?: string[]) => socket.prompt(sessionId, text, attachmentIds), [socket])
+  const prompt              = useCallback((sessionId: string, text: string, attachmentIds?: string[], context?: PromptContext) => socket.prompt(sessionId, text, attachmentIds, context), [socket])
   const sendInterrupt       = useCallback((sessionId: string) => socket.sendInterrupt(sessionId), [socket])
   const interruptAndPrompt  = useCallback((sessionId: string, text: string, attachmentIds?: string[]) => socket.interruptAndPrompt(sessionId, text, attachmentIds), [socket])
   const permissionResponse  = useCallback((sessionId: string, permId: string, decision: 'allow' | 'deny' | 'always') => socket.permissionResponse(sessionId, permId, decision), [socket])

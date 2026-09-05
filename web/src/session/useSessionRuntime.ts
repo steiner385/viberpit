@@ -14,7 +14,7 @@ import { useSessionSocket } from '@/ws/client'
 import type { ConnectionState, SocketChannel, WsRotatedMsg, WsErrorMsg } from '@/ws/client'
 import { transcriptReducer, initialTranscript } from '@/session/reducer'
 import type { TranscriptState } from '@/session/reducer'
-import type { SessionEvent, Command } from '@/session/events'
+import type { SessionEvent, Command, PromptContext } from '@/session/events'
 import { selectSubAgents, selectVisibleTurns, selectVisibleSubAgents } from '@/session/selectors'
 import { remainingContextPct, remainingFromContextUsage } from '@/lib/contextWindow'
 import { useSessions, useAccounts, useSettings } from '@/api/hooks'
@@ -67,7 +67,7 @@ export interface SessionRuntime {
   onAnswer: (questionId: string, selected: string[], mode?: 'option' | 'freeform' | 'chat') => void
   /** Set/clear the chat-armed question (toggles off if the same id is passed again). */
   onChat: (questionId: string) => void
-  onPrompt: (text: string, attachmentIds: AttachmentIds) => void
+  onPrompt: (text: string, attachmentIds: AttachmentIds, context?: PromptContext) => void
   /** Fire while the user is typing/steering (before send) — refreshes autopilot's human-deference window. */
   onActivity: () => void
   onInterrupt: () => void
@@ -272,7 +272,7 @@ export function useSessionRuntime(
   // that question (mode='chat') and unblocks the turn; otherwise it's a normal prompt.
   // (Chat replies go through the answer channel, which carries no attachments.)
   const onPrompt = useCallback(
-    (text: string, attachmentIds: AttachmentIds) => {
+    (text: string, attachmentIds: AttachmentIds, context?: PromptContext) => {
       if (armedQuestionId) {
         // A chat reply is delivered through the answer channel — route it through the
         // same gated path as onAnswer so a closed socket REJECTS (visible error, card
@@ -283,7 +283,11 @@ export function useSessionRuntime(
       // Track the sent prompt so a reconnect whose replayReset outruns the
       // transcript-file write can re-assert it instead of dropping it silently.
       dispatch({ type: '_trackSentPrompt', text })
-      prompt(sessionId, text, attachmentIds)
+      // Omit the trailing arg entirely when there's no context, rather than passing an
+      // explicit `undefined` — callers (and their test mocks) that assert the prompt
+      // was sent with exactly 3 args must keep seeing exactly 3.
+      if (context) prompt(sessionId, text, attachmentIds, context)
+      else prompt(sessionId, text, attachmentIds)
     },
     [sessionId, prompt, onAnswer, armedQuestionId],
   )
