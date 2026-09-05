@@ -2126,7 +2126,9 @@ class SessionOrchestrator:
                 # the queued→active transition it re-attaches on (incident
                 # 2026-09-04). 'queued' is capacity-exempt, so nothing double-counts.
                 try:
-                    await self._spawn_session(sid, preexisting_row=True, **params)
+                    await self._spawn_session(
+                        sid, preexisting_row=True, resume=row.claude_session_id or None,
+                        **params)
                 except Exception as exc:
                     # A real start failure (as opposed to the process dying): the
                     # session is about to be marked 'ended', so its entry must go —
@@ -2468,6 +2470,7 @@ class SessionOrchestrator:
         kind: str | None = None,
         owner_identity: str | None = None,
         preexisting_row: bool = False,
+        resume: str | None = None,
     ) -> SessionRecord:
         """Start a SessionDriver, persist/update a DB row, return a SessionRecord.
 
@@ -2476,8 +2479,12 @@ class SessionOrchestrator:
         account_name, cwd, branch, model) instead of INSERT-ing a new one.
         Task 4 (_maybe_start_queued) calls this path.
 
-        *kind*/*owner_identity* default to None so a queue entry persisted before the
-        assistant existed still replays cleanly (its params dict has neither key).
+        *resume* is the ``claude_session_id`` to resume, when one exists — the
+        queue-drain call site threads the row's own id through here so a
+        pre-existing conversation is never silently replaced by a fresh one
+        (#1107). *kind*/*owner_identity* default to None so a queue entry
+        persisted before the assistant existed still replays cleanly (its
+        params dict has neither key).
         """
         repo_root = await self._effective_repo_root()
 
@@ -2558,8 +2565,25 @@ class SessionOrchestrator:
         # host stamp); a fresh spawn is born now, on this host (worker) / NULL.
         _prior = self._records.get(session_id)
         _host = getattr(_prior, "host", None) or local_host_stamp()
+        # Belt-and-suspenders for #1107: the queue-drain call site threads the
+        # row's claude_session_id through `resume` explicitly, but if some future
+        # caller passes preexisting_row=True without it, a prior in-memory record
+        # (rebuilt from the row via _record_from_row) still carries the real id —
+        # fall back to resuming it rather than silently starting a fresh
+        # conversation over an existing one. A non-empty prior id that we are
+        # about to abandon anyway is logged so the orphaned transcript can still
+        # be found.
+        _prior_csid = (getattr(_prior, "claude_session_id", None) or None)
+        if resume is None and _prior_csid:
+            log.warning(
+                "session.spawn_over_existing_conversation id=%s prior_csid=%s — "
+                "fresh spawn requested with no resume handle over a row that "
+                "already has one; resuming instead of discarding it",
+                session_id, _prior_csid)
+            resume = _prior_csid
         _pre_record = SessionRecord(
-            id=session_id, name=name, account=account, claude_session_id="",
+            id=session_id, name=name, account=account,
+            claude_session_id=resume or "",
             cols=cols, rows=rows, cwd=cwd, repo=repo, branch=branch_name,
             status="idle", name_is_auto=name_is_auto,
             created_at=getattr(_prior, "created_at", None) or _now,
@@ -2591,7 +2615,7 @@ class SessionOrchestrator:
             driver = SessionDriver(
                 session_id, account, cwd, str(cfg_dir),
                 mode=permission_mode, sdk_factory=self._session_factory(session_id),
-                registry=self._registry, identity=identity,
+                registry=self._registry, identity=identity, resume=resume,
                 on_session_id=self._persist_claude_session_id,
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, account),
                 on_status=self._persist_status,
