@@ -7,11 +7,12 @@ import pytest
 
 from server.api.sessions import _enrich_batch
 from server.github.pr_status import PullRequestInfo
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
 def _rec(sid):
-    return SessionRecord(id=sid, name=sid, account="a", claude_session_id="",
+    return SessionRecord(id=sid, name=sid, account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
                          cols=80, rows=24, cwd="/tmp/wt", repo="o/r", branch="b")
 
 

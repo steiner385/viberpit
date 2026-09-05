@@ -10,7 +10,7 @@ vi.mock('./client', () => ({ api: { del: vi.fn(), post: vi.fn() }, ApiRequestErr
 vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
 import { toast } from 'sonner'
 
-const arch: ArchivedSession = { id: 'a-1', name: 'Bar', account: 'a', cwd: '/x', repo: null, claudeSessionId: null, permissionMode: 'interactive', createdAt: 'x', archivedAt: 'y' }
+const arch: ArchivedSession = { id: 'a-1', name: 'Bar', account: 'a', cwd: '/x', repo: null, engine: 'claude_code', engineSessionId: null, permissionMode: 'interactive', createdAt: 'x', archivedAt: 'y' }
 
 describe('usePermanentDeleteSession — optimistic', () => {
   let qc: QueryClient
@@ -70,7 +70,7 @@ describe('usePermanentDeleteSession — dual-cache rollback', () => {
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={qc}>{children}</QueryClientProvider>
 
   it('rolls back both sessions and archived caches on failure', async () => {
-    const liveSess: Session = { id: 'a-1', name: 'Bar', accountName: 'a', status: 'idle', createdAt: 'x', updatedAt: 'x', prs: [] }
+    const liveSess: Session = { id: 'a-1', name: 'Bar', accountName: 'a', engine: 'claude_code', engineSessionId: null, status: 'idle', createdAt: 'x', updatedAt: 'x', prs: [] }
     qc.setQueryData(QK.archived, [arch])
     qc.setQueryData(QK.sessions, [liveSess])
     vi.mocked(api.del).mockRejectedValue(new Error('500'))

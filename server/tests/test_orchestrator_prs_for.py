@@ -3,6 +3,7 @@ from unittest import mock
 
 from server.github.pr_status import PullRequestInfo
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
@@ -18,7 +19,7 @@ def _pr(n, state="open"):
 def test_prs_for_gathers_dedups_and_orders():
     orch = _orch()
     orch._records["s1"] = SessionRecord(
-        id="s1", name="n", account="a", claude_session_id="", cols=80, rows=24,
+        id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="", cols=80, rows=24,
         cwd="/tmp", repo="o/r", authored_branches=["feat/a", "feat/b", "feat/c"],
     )
     cache = {
@@ -39,7 +40,7 @@ def test_prs_for_includes_live_branch():
     hid the PR badge until the session checked out something else."""
     orch = _orch()
     orch._records["s1"] = SessionRecord(
-        id="s1", name="n", account="a", claude_session_id="", cols=80, rows=24,
+        id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="", cols=80, rows=24,
         cwd="/tmp", repo="o/r", branch="fix/current",
         authored_branches=["ccswitch/master-s1"],
     )
@@ -51,7 +52,7 @@ def test_prs_for_includes_live_branch():
 def test_prs_for_empty_when_no_repo_or_cache():
     orch = _orch()
     orch._records["s1"] = SessionRecord(
-        id="s1", name="n", account="a", claude_session_id="", cols=80, rows=24,
+        id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="", cols=80, rows=24,
         cwd="/tmp", repo=None, authored_branches=["feat/a"],
     )
     assert orch.prs_for("s1") == []
@@ -61,7 +62,7 @@ def test_prs_for_empty_when_no_repo_or_cache():
 async def test_pr_pairs_unions_authored_branches():
     orch = _orch()
     orch._records["s1"] = SessionRecord(
-        id="s1", name="n", account="a", claude_session_id="", cols=80, rows=24,
+        id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="", cols=80, rows=24,
         cwd="/tmp", repo="o/r", authored_branches=["feat/a", "feat/b"],
     )
     assert set(await orch._pr_pairs()) == {("o/r", "feat/a"), ("o/r", "feat/b")}
@@ -71,7 +72,7 @@ async def test_pr_pairs_unions_authored_branches():
 async def test_refresh_authored_branches_unions_and_keeps_existing(monkeypatch):
     orch = _orch()
     rec = SessionRecord(
-        id="s1", name="n", account="a", claude_session_id="", cols=80, rows=24,
+        id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="", cols=80, rows=24,
         cwd="/tmp/wt", repo="o/r", branch="ccswitch/master-s1",
         authored_branches=["feat/old"],
     )

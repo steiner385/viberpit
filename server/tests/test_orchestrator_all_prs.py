@@ -5,6 +5,7 @@ import pytest
 
 from server.github.pr_status import PipelinePr, PullRequestInfo
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
@@ -15,7 +16,7 @@ def _orch():
 
 def _make_record(orch, *, session_id, name, repo, authored_branches):
     rec = SessionRecord(
-        id=session_id, name=name, account="a", claude_session_id="", cols=80, rows=24,
+        id=session_id, name=name, account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="", cols=80, rows=24,
         cwd="/tmp", repo=repo, authored_branches=authored_branches,
     )
     orch._records[session_id] = rec

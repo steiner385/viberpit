@@ -10,12 +10,13 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from server.api.sessions import _SNAPSHOT_FAILED, _record_to_dict
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 from server.sessions.host_heartbeat import HeartbeatState
 
 
 def _make_record(**kw):
-    d = dict(id="s1", name="t", account="a", claude_session_id="c1", status="in_progress",
+    d = dict(id="s1", name="t", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1", status="in_progress",
              created_at=None, detached=False, cols=80, rows=24, cwd="/tmp")
     d.update(kw)
     return SessionRecord(**d)

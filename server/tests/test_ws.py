@@ -985,7 +985,7 @@ def test_frame_too_large_rejected(ws_env):
 # ---------------------------------------------------------------------------
 
 @contextlib.contextmanager
-def _rehydrated_detached_client(tmp_path, msgs, *, claude_session_id="resume-me"):
+def _rehydrated_detached_client(tmp_path, msgs, *, engine_session_id="resume-me"):
     """Build an app rehydrated from a seeded DETACHED session row.
 
     Yields ``(orch, client, session_id)`` with the patches and lifespan active.
@@ -1005,7 +1005,7 @@ def _rehydrated_detached_client(tmp_path, msgs, *, claude_session_id="resume-me"
         async with _db_session() as db:
             db.add(_DbSession(
                 id=session_id, name="rehydrated-ws-session",
-                account_name="alpha", claude_session_id=claude_session_id,
+                account_name="alpha", engine_session_id=engine_session_id,
                 status="idle", cwd=cwd,
             ))
     _asyncio.run(_seed())

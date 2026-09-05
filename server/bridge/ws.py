@@ -469,7 +469,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             except Exception:
                 # A resumed/rehydrated session can fail to start its SDK subprocess —
                 # most commonly because the account's token is dead (needs re-auth) or
-                # the stored claude_session_id can no longer be resumed. Letting that
+                # the stored engine_session_id can no longer be resumed. Letting that
                 # propagate would crash the WS handler, closing the socket and making
                 # the client reconnect-loop forever on a blank screen. Report it and
                 # keep the socket alive (replayComplete clears the loading state).

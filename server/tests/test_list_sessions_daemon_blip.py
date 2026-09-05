@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from server.app import create_app
 from server.ipc.client import DaemonUnavailable
+from server.sessions.engine import AgentEngine
 from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
@@ -25,7 +26,8 @@ _ENV = {
 
 def _make_fake_record():
     return types.SimpleNamespace(
-        id="s1", name="Test Session", account="acct1", repo=None,
+        id="s1", name="Test Session", account="acct1", engine=AgentEngine.CLAUDE_CODE,
+        engine_session_id=None, reasoning_effort=None, repo=None,
         status="idle", name_is_auto=True, detached=False, adopted_in_place=False,
         sub_agents=None, created_at=None, account_pinned=False,
         model=None, active_goal=None, usage_unverified=False,

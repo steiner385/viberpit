@@ -19,6 +19,7 @@ from unittest import mock
 import pytest
 
 from server.db.models import CAPACITY_EXEMPT_STATUSES
+from server.sessions.engine import AgentEngine
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.types import SessionRecord
 
@@ -38,7 +39,8 @@ def _fixed_host_identity():
 def _record(sid: str, account: str, status: str, host: str | None) -> SessionRecord:
     now = datetime.utcnow()
     return SessionRecord(
-        id=sid, name=sid, account=account, claude_session_id="",
+        id=sid, name=sid, account=account,
+        engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
         cols=80, rows=24, cwd="/tmp", status=status,
         created_at=now, updated_at=now, host=host)
 

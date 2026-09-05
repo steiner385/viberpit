@@ -1,5 +1,7 @@
 import contextlib
+import importlib.util
 import os
+from pathlib import Path
 import pytest
 
 pytestmark = pytest.mark.skipif(
@@ -20,6 +22,69 @@ async def test_full_schema_builds_on_postgres(pg_engine):
     expected = {t.name for t in Base.metadata.sorted_tables}
     missing = expected - names
     assert not missing, f"tables absent on Postgres: {sorted(missing)}"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_session_engine_migration_preserves_values_and_indexes_on_postgres(pg_engine):
+    """The managed migration keeps exact native ids and unrelated indexes."""
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy import inspect as sa_inspect, text
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from server.db.models import Session
+
+    migration_path = (
+        Path(__file__).resolve().parents[1]
+        / "db/migrations/versions/0024_session_engine.py"
+    )
+    spec = importlib.util.spec_from_file_location("pg_session_engine_migration", migration_path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    async with pg_engine.begin() as conn:
+        await conn.execute(text(
+            "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS claude_session_id VARCHAR"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_sessions_status_migration_test ON sessions (status)"
+        ))
+
+    session_factory = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with session_factory() as session:
+        session.add(Session(
+            id="engine-migration-pg", name="migration", account_name="acct",
+            cwd="/tmp/engine-migration", engine=None, engine_session_id=None,
+        ))
+        await session.commit()
+
+    async with pg_engine.begin() as conn:
+        await conn.execute(text(
+            "UPDATE sessions SET claude_session_id = 'native:exact/pg' "
+            "WHERE id = 'engine-migration-pg'"
+        ))
+
+        def _upgrade(sync_conn):
+            context = MigrationContext.configure(sync_conn)
+            with Operations.context(context):
+                migration.upgrade()
+                migration.upgrade()
+
+        await conn.run_sync(_upgrade)
+        row = (await conn.execute(text(
+            "SELECT engine, engine_session_id, reasoning_effort FROM sessions "
+            "WHERE id = 'engine-migration-pg'"
+        ))).one()
+        assert row == ("claude_code", "native:exact/pg", None)
+        indexes = await conn.run_sync(
+            lambda sync_conn: {
+                index["name"] for index in sa_inspect(sync_conn).get_indexes("sessions")
+            }
+        )
+        assert "ix_sessions_status_migration_test" in indexes
+
+        await conn.execute(text("DELETE FROM sessions WHERE id = 'engine-migration-pg'"))
+        await conn.execute(text("DROP INDEX ix_sessions_status_migration_test"))
 
 
 @pytest.mark.asyncio(loop_scope="session")

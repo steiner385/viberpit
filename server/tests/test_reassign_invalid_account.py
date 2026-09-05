@@ -22,6 +22,7 @@ import pytest
 
 import server.sessions.orchestrator as orch_mod
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
@@ -42,7 +43,8 @@ def _make_orch():
 
 def _rec(o, cwd, session_id="s1", account="tonystein85_gmail.com"):
     rec = SessionRecord(id=session_id, name="n", account=account,
-                        claude_session_id="c1", cols=80, rows=24, cwd=str(cwd))
+                        engine=AgentEngine.CLAUDE_CODE,
+                        engine_session_id="c1", cols=80, rows=24, cwd=str(cwd))
     o._records[session_id] = rec
     return rec
 

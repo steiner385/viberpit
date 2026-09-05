@@ -1,5 +1,6 @@
 # server/tests/test_command_orchestrator.py
 import pytest
+from server.sessions.engine import AgentEngine
 from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.fakes import fake_sdk
 
@@ -20,11 +21,12 @@ async def test_command_catalog_empty_when_no_driver():
 async def test_command_catalog_serves_cached_when_detached():
     """A detached session (record present, no live driver) serves its last-known
     catalog so the slash-command palette works on view without a driver resume."""
+    from server.sessions.engine import AgentEngine
     from server.sessions.types import SessionRecord
     orch, _ = _orch_with_driver()
     cached = [{"name": "review", "description": "Review a PR", "argumentHint": "<pr>", "kind": "passthrough"}]
     orch._records["det"] = SessionRecord(
-        id="det", name="Detached", account="a", claude_session_id="c",
+        id="det", name="Detached", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c",
         cols=80, rows=24, cwd="/tmp", detached=True, command_catalog=cached,
     )
     assert await orch.command_catalog("det") == cached
@@ -39,7 +41,7 @@ async def test_command_catalog_persists_live_build_onto_record():
     from server.sessions.types import SessionRecord
     orch, client = _orch_with_driver(server_info={"commands": [{"name": "review", "description": "Review a PR"}]})
     orch._records["s1"] = SessionRecord(
-        id="s1", name="Live", account="a", claude_session_id="c",
+        id="s1", name="Live", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c",
         cols=80, rows=24, cwd="/tmp",
     )
     d = ClaudeAgentDriver("s1", "a", "/tmp", "/tmp/c", mode="interactive",

@@ -1,11 +1,12 @@
 from server.api.sessions import _record_to_dict
 from server.github.pr_status import CheckGroup, CheckRow, PullRequestInfo
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
 def _rec():
     return SessionRecord(
-        id="s1", name="n", account="a", claude_session_id="", cols=80, rows=24,
+        id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="", cols=80, rows=24,
         cwd="/tmp/wt", repo="o/r", branch="ccswitch/main-abcd",
     )
 

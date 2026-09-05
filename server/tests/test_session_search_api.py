@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 H = {"Tailscale-User-Login": "testuser@example.com"}
@@ -24,7 +25,7 @@ def _client():
 
 
 def _rec(sid, name):
-    return SessionRecord(id=sid, name=name, account="kindash", claude_session_id=sid,
+    return SessionRecord(id=sid, name=name, account="kindash", engine=AgentEngine.CLAUDE_CODE, engine_session_id=sid,
                          cols=80, rows=24, cwd="/home/u/repo")
 
 

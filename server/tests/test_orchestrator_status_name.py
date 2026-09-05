@@ -19,7 +19,7 @@ async def _build_orch(tmp_path, **row):
     db_url = f"sqlite+aiosqlite:///{tmp_path/'ccswitch.db'}"
     await init_db(db_url=db_url)
     base = dict(id="s1", name="New Session", account_name="acct1",
-                claude_session_id="claude-s1", status="idle", cwd="/repo/s1")
+                engine_session_id="claude-s1", status="idle", cwd="/repo/s1")
     base.update(row)
     await _seed([base])
     orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
@@ -165,7 +165,7 @@ async def _seed_and_rehydrate(tmp_path, transcript_factory, **row):
     from sqlalchemy import select as sa_select
     db_url = f"sqlite+aiosqlite:///{tmp_path/'ccswitch.db'}"
     await init_db(db_url=db_url)
-    base = dict(id="s1", name="x", account_name="a", claude_session_id="cs1",
+    base = dict(id="s1", name="x", account_name="a", engine_session_id="cs1",
                 status="waiting_external", cwd="/repo/s1", name_is_auto=False)
     base.update(row)
     await _seed([base])

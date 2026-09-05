@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 import server.sessions.orchestrator as orch_mod
 
@@ -95,7 +96,7 @@ async def _run(o, rec, monkeypatch, tmp_path, *, interrupt):
 
 
 def _rec(o, tmp_path):
-    rec = SessionRecord(id="s1", name="n", account="a", claude_session_id="c1",
+    rec = SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                         cols=80, rows=24, cwd=str(tmp_path))
     o._records[rec.id] = rec
     return rec

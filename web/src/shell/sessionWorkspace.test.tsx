@@ -122,7 +122,8 @@ vi.mock('@/ws/client', async (importOriginal) => {
 /** Typed factories — real values, never `as unknown as T` (R10). */
 function session(over: Partial<Session> = {}): Session {
   return {
-    id: 's1', name: 'One', accountName: 'alice', status: 'idle',
+    id: 's1', name: 'One', accountName: 'alice', engine: 'claude_code',
+    engineSessionId: null, status: 'idle',
     createdAt: '2026-06-19T10:00:00Z', prs: [],
     ...over,
   }

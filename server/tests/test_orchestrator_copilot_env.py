@@ -15,6 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
@@ -83,7 +84,7 @@ def test_factory_closure_injects_copilot_env(tmp_path):
         # Seed a minimal SessionRecord so _oat_env can find the account
         sid = "test-sid-001"
         orch._records[sid] = SessionRecord(
-            id=sid, name="Test", account=account, claude_session_id="",
+            id=sid, name="Test", account=account, engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
             cols=80, rows=24, cwd=str(tmp_path),
         )
         closure = orch._session_factory(sid)
@@ -185,7 +186,7 @@ async def test_latest_suggestions_skipped_for_copilot(tmp_path):
         orch = SessionOrchestrator(sdk_factory=lambda *a, **k: None, copilot=proxy)
         sid = "test-sid-002"
         orch._records[sid] = SessionRecord(
-            id=sid, name="Test", account=account, claude_session_id="",
+            id=sid, name="Test", account=account, engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
             cols=80, rows=24, cwd=str(tmp_path),
         )
         result = await orch.latest_suggestions(sid)
@@ -271,7 +272,7 @@ async def test_latest_summary_skipped_for_copilot(tmp_path):
         orch = SessionOrchestrator(sdk_factory=lambda *a, **k: None, copilot=proxy)
         sid = "test-sid-003"
         orch._records[sid] = SessionRecord(
-            id=sid, name="Test", account=account, claude_session_id="",
+            id=sid, name="Test", account=account, engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
             cols=80, rows=24, cwd=str(tmp_path),
         )
         result = await orch.latest_summary(sid, viewing=True)

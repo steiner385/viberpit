@@ -6,13 +6,15 @@ from fastapi.testclient import TestClient
 
 from server.api.sessions import _record_to_dict
 from server.app import create_app
+from server.sessions.engine import AgentEngine
 from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
 
 def test_record_to_dict_includes_summary():
     rec = types.SimpleNamespace(
-        id="s1", name="n", account="a", repo=None, status="in_progress",
+        id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE,
+        engine_session_id=None, reasoning_effort=None, repo=None, status="in_progress",
         name_is_auto=True, detached=False, adopted_in_place=False, sub_agents=None,
         created_at=None, last_turn_at=None, account_pinned=False, model=None,
         active_goal=None, usage_unverified=False, updated_at_iso=None, rev_at=None,
@@ -23,7 +25,8 @@ def test_record_to_dict_includes_summary():
 
 def test_record_to_dict_summary_defaults_empty():
     rec = types.SimpleNamespace(
-        id="s1", name="n", account="a", repo=None, status="idle",
+        id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE,
+        engine_session_id=None, reasoning_effort=None, repo=None, status="idle",
         name_is_auto=True, detached=False, adopted_in_place=False, sub_agents=None,
         created_at=None, last_turn_at=None, account_pinned=False, model=None,
         active_goal=None, usage_unverified=False, updated_at_iso=None, rev_at=None,
@@ -47,7 +50,8 @@ _ENV = {
 def _make_fake_record():
     """Minimal record SimpleNamespace that satisfies _record_to_dict and _resolve_repo."""
     return types.SimpleNamespace(
-        id="s1", name="Test Session", account="acct1", repo=None,
+        id="s1", name="Test Session", account="acct1", engine=AgentEngine.CLAUDE_CODE,
+        engine_session_id=None, reasoning_effort=None, repo=None,
         status="idle", name_is_auto=True, detached=False, adopted_in_place=False,
         sub_agents=None, created_at=None, last_turn_at=None, account_pinned=False,
         model=None, active_goal=None, usage_unverified=False, updated_at_iso=None,

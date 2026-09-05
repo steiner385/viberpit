@@ -1,6 +1,7 @@
 import asyncio
 import pytest
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.permissions import PermissionRegistry
@@ -16,7 +17,8 @@ async def _orch_with_goal_session():
     await d.start()
     orch._drivers["s1"] = d
     orch._records["s1"] = SessionRecord(id="s1", name="n", account="a",
-                                        claude_session_id="c1", cols=80, rows=24, cwd="/tmp")
+                                        engine=AgentEngine.CLAUDE_CODE,
+                                        engine_session_id="c1", cols=80, rows=24, cwd="/tmp")
 
     async def _noop_persist(sid, goal):
         pass

@@ -264,6 +264,8 @@ export interface CreateSessionInput {
   permissionMode?: string
   attachmentIds?: string[]
   model?: string
+  engine?: 'claude_code' | 'codex'
+  reasoningEffort?: string | null
   /** Optional runner preference. null → auto-rank; a name → that host first. */
   host?: string | null
 }
@@ -282,6 +284,8 @@ export function useCreateSession() {
       const tempId = addPendingSession({
         name: input.name?.trim() || input.initialPrompt?.trim().slice(0, 60) || 'New session',
         accountName: input.account ?? '',
+        engine: input.engine ?? 'claude_code',
+        engineSessionId: null,
         status: 'in_progress',
         createdAt: new Date().toISOString(),
         repo: input.repo ?? null,

@@ -10,6 +10,7 @@ import pytest
 
 from server.sessions import orchestrator as orch_mod
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord, SYSTEM_IDENTITY
 
 
@@ -66,7 +67,7 @@ def _orch(monkeypatch, rec, old, *, last_prompt=None):
     orch._registry = None
     orch._suggester = None
     orch._session_factory = lambda sid: None
-    orch._persist_claude_session_id = lambda *a, **k: None
+    orch._persist_engine_session_id = lambda *a, **k: None
     orch._persist_status = lambda *a, **k: None
     orch._handle_recoverable_failure = lambda *a, **k: None
     orch._publish_event = lambda e: None
@@ -74,7 +75,7 @@ def _orch(monkeypatch, rec, old, *, last_prompt=None):
 
 
 def _rec(status: str) -> SessionRecord:
-    return SessionRecord(id="s1", name="n", account="a", claude_session_id="c1",
+    return SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                          cols=80, rows=24, cwd="/tmp", status=status)
 
 

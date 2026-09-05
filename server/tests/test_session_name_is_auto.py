@@ -1,10 +1,12 @@
 from server.db.models import Session as DbSession
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
 def test_record_defaults_name_is_auto_true():
     r = SessionRecord(id="i", name="New Session", account="a",
-                      claude_session_id="c", cols=80, rows=24, cwd="/tmp")
+                      engine=AgentEngine.CLAUDE_CODE,
+                      engine_session_id="c", cols=80, rows=24, cwd="/tmp")
     assert r.name_is_auto is True
 
 

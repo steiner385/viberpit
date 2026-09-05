@@ -10,7 +10,7 @@ vi.mock('./client', () => ({ api: { del: vi.fn(), post: vi.fn() }, ApiRequestErr
 vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
 import { toast } from 'sonner'
 
-const s: Session = { id: 'sess-1', name: 'Foo', accountName: 'a', status: 'idle', createdAt: 'x', prs: [] }
+const s: Session = { id: 'sess-1', name: 'Foo', accountName: 'a', engine: 'claude_code', engineSessionId: null, status: 'idle', createdAt: 'x', prs: [] }
 
 describe('useCloseSession — optimistic archive', () => {
   let qc: QueryClient

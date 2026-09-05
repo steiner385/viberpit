@@ -10,7 +10,7 @@ vi.mock('./client', () => ({ api: { post: vi.fn() }, ApiRequestError: class exte
 vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
 import { toast } from 'sonner'
 
-const mk = (id: string): ArchivedSession => ({ id, name: id, account: 'a', cwd: '/x', repo: null, claudeSessionId: null, permissionMode: 'interactive', createdAt: 'x', archivedAt: 'y' })
+const mk = (id: string): ArchivedSession => ({ id, name: id, account: 'a', cwd: '/x', repo: null, engine: 'claude_code', engineSessionId: null, permissionMode: 'interactive', createdAt: 'x', archivedAt: 'y' })
 
 describe('useBulkUnarchiveSessions — optimistic', () => {
   let qc: QueryClient
