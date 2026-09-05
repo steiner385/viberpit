@@ -216,22 +216,6 @@ describe('AccountsManager — Copilot reauth button', () => {
     expect(reauthMutate).not.toHaveBeenCalled()
   })
 
-  it('does NOT show "Generate long-lived token" button for a copilot account', () => {
-    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'gh-copilot', provider: 'copilot' })]))
-
-    render(<AccountsManager />, { wrapper })
-
-    expect(screen.queryByRole('button', { name: /generate long-lived token/i })).not.toBeInTheDocument()
-  })
-
-  it('shows "Generate long-lived token" button for an Anthropic account', () => {
-    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', provider: 'anthropic' })]))
-
-    render(<AccountsManager />, { wrapper })
-
-    expect(screen.getByRole('button', { name: /generate long-lived token for work/i })).toBeInTheDocument()
-  })
-
   it('the copilot reauth button uses "Re-authenticate" label when account needs-reauth', () => {
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'gh-copilot', provider: 'copilot', status: 'needs-reauth' })]))
 

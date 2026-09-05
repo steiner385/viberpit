@@ -276,6 +276,50 @@ def _cmd_clones(args: argparse.Namespace) -> int:
     return 1
 
 
+def _cmd_reauth(args: argparse.Namespace) -> int:
+    """Recover a broken account via the URL/paste-code PKCE exchange (issue #1130).
+
+    No browser, no display, no daemon required — this is the supported recovery
+    path when the web UI itself is down. Mirrors server/reauth.py's
+    ReauthManager.submit_code (same setup_token_oauth calls, same crypto guard),
+    but runs synchronously in the terminal instead of over the reauth state
+    machine.
+    """
+    from . import crypto, accounts, setup_token_oauth
+
+    if not crypto.key_available():
+        print(
+            "ccswitch reauth: no encryption key configured — refusing to store "
+            "plaintext credentials. Run `ccswitch crypto init` first.",
+            file=sys.stderr,
+        )
+        return 1
+
+    challenge = setup_token_oauth.begin()
+    print(f"Open this URL, approve, then paste the resulting code below:\n\n  {challenge.authorize_url}\n")
+    pasted = input("Code (format: code#state): ")
+
+    try:
+        token = setup_token_oauth.exchange(pasted, challenge)
+    except setup_token_oauth.SetupTokenStateMismatch:
+        print("ccswitch reauth: code didn't match this request — restart and try again.", file=sys.stderr)
+        return 1
+    except setup_token_oauth.SetupTokenInvalidCode:
+        print("ccswitch reauth: code invalid or expired — generate a new one.", file=sys.stderr)
+        return 1
+    except setup_token_oauth.SetupTokenTransient as exc:
+        print(f"ccswitch reauth: couldn't reach the token service: {exc}", file=sys.stderr)
+        return 1
+    except setup_token_oauth.SetupTokenError as exc:
+        print(f"ccswitch reauth: token service returned no token: {exc}", file=sys.stderr)
+        return 1
+
+    crypto.store_oauth_token(args.name, token)
+    accounts.mark_reauthenticated(args.name)
+    print(f"ccswitch reauth: account {args.name!r} recovered — status ok.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ccswitch")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -286,6 +330,10 @@ def main(argv: list[str] | None = None) -> int:
     p_add.add_argument("--email", default=None, help="pre-populate the login page email for this account")
     p_rm = sub.add_parser("remove"); p_rm.add_argument("name")
     p_link = sub.add_parser("link"); p_link.add_argument("name", nargs="?")
+    p_reauth = sub.add_parser(
+        "reauth",
+        help="recover a broken account via the URL/paste-code flow (no browser/UI needed)")
+    p_reauth.add_argument("name", help="existing account slot to recover")
     p_use = sub.add_parser("use", help="compose a config dir for an account and print its export line")
     p_use.add_argument("name", nargs="?", help="account to pin (default: most-headroom account)")
     p_use.add_argument("--dir", action="store_true", help="print only the config dir path (no 'export ')")
@@ -362,6 +410,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "accounts":
         return _cmd_accounts(args)
+    if args.cmd == "reauth":
+        return _cmd_reauth(args)
     if args.cmd == "crypto":
         return _cmd_crypto(args)
     if args.cmd == "clones":
