@@ -7,7 +7,7 @@ import { AccountsManager } from '../AccountsManager'
 import * as hooks from '@/api/hooks'
 import type { Account } from '@/api/types'
 import type { ReauthState } from '@/api/types'
-import { appSettings } from '@/test/factories'
+import { anthropicUsage, appSettings } from '@/test/factories'
 import { queryResult } from '@/test/reactQuery'
 
 vi.mock('../ReauthBrowserPanel', () => ({
@@ -164,7 +164,7 @@ describe('AccountRow — Re-authenticate button', () => {
   })
 
   it('shows a subtle reauth icon button (not the amber label) for ok account', async () => {
-    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'ok', usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 50, resetsAt: null } } })]))
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'ok', usage: anthropicUsage(20, 50) })]))
 
     render(<AccountsManager />, { wrapper })
 
@@ -302,7 +302,7 @@ describe('AccountRow — Generate long-lived token / awaiting_code flow', () => 
   })
 
   it('"Generate long-lived token" button renders on an ok (healthy) account row', async () => {
-    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'ok', usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 50, resetsAt: null } } })]))
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'ok', usage: anthropicUsage(20, 50) })]))
 
     render(<AccountsManager />, { wrapper })
 
@@ -311,7 +311,7 @@ describe('AccountRow — Generate long-lived token / awaiting_code flow', () => 
 
   it('clicking "Generate long-lived token" calls reauth mutate with setup_token mode', async () => {
     const user = userEvent.setup()
-    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'ok', usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 50, resetsAt: null } } })]))
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'ok', usage: anthropicUsage(20, 50) })]))
 
     render(<AccountsManager />, { wrapper })
 
@@ -325,7 +325,7 @@ describe('AccountRow — Generate long-lived token / awaiting_code flow', () => 
 
   it('awaiting_code state renders authUrl anchor, Copy button, and code input', async () => {
     const authUrl = 'https://claude.com/cai/oauth/authorize?x=1'
-    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'ok', usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 50, resetsAt: null } } })]))
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'ok', usage: anthropicUsage(20, 50) })]))
     vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult(makeReauthState({ state: 'awaiting_code', authUrl } as Partial<ReauthState>)))
 
     render(<AccountsManager />, { wrapper })
@@ -345,7 +345,7 @@ describe('AccountRow — Generate long-lived token / awaiting_code flow', () => 
   it('typing a code and clicking Submit calls submitCode mutate with the entered code', async () => {
     const user = userEvent.setup()
     const authUrl = 'https://claude.com/cai/oauth/authorize?x=1'
-    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'ok', usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 50, resetsAt: null } } })]))
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'ok', usage: anthropicUsage(20, 50) })]))
     vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult(makeReauthState({ state: 'awaiting_code', authUrl } as Partial<ReauthState>)))
 
     render(<AccountsManager />, { wrapper })
@@ -362,7 +362,7 @@ describe('AccountRow — Generate long-lived token / awaiting_code flow', () => 
   })
 
   it('"Generate long-lived token" button is disabled while awaiting_code', async () => {
-    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'ok', usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 50, resetsAt: null } } })]))
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'ok', usage: anthropicUsage(20, 50) })]))
     vi.mocked(hooks.useReauthStatus).mockReturnValue(queryResult(makeReauthState({ state: 'awaiting_code', authUrl: 'https://claude.com/cai/oauth/authorize?x=1' } as Partial<ReauthState>)))
 
     render(<AccountsManager />, { wrapper })

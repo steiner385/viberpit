@@ -2,18 +2,17 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { SessionMeta } from '../SessionMeta'
 import type { SubAgent } from '@/session/selectors'
+import type { UsageWindow } from '@/api/types'
 
 const baseProps = {
   account: 'work-max',
   model: 'claude-sonnet-4-5',
   mode: 'default',
   contextPct: 78,
-  quota: {
-    sessionPct: 42,
-    weeklyPct: 18,
-    sessionResetsAt: '2026-06-19T14:30:00.000Z',
-    weeklyResetsAt: null,
-  },
+  quota: [
+    { key: 'session', label: 'session', pct: 42, resetsAt: '2026-06-19T14:30:00.000Z', durationSeconds: 18000 },
+    { key: 'weekly', label: 'weekly', pct: 18, resetsAt: null, durationSeconds: 604800 },
+  ] as UsageWindow[],
   subAgents: [] as SubAgent[],
   models: [{ id: 'claude-sonnet-4-5', label: 'Sonnet' }],
   accounts: [{ name: 'work-max' }],
@@ -119,6 +118,18 @@ describe('SessionMeta', () => {
   it('omits the quota segment when quota is null', () => {
     render(<SessionMeta {...baseProps} quota={null} />)
     expect(screen.queryByLabelText(/account quota/i)).toBeNull()
+  })
+
+  it('renders exactly one readout for a single-window provider', () => {
+    // Copilot meters ONE premium-request allowance. The previous two-field shape
+    // forced it to be shown twice, under two labels, from one number.
+    render(<SessionMeta {...baseProps} quota={[
+      { key: 'premium', label: 'premium-req', pct: 20, resetsAt: null },
+    ]} />)
+    const quota = screen.getByLabelText(/account quota/i)
+    expect(quota).toHaveTextContent('prem 20%')
+    expect(screen.queryByText(/sess /i)).toBeNull()
+    expect(screen.queryByText(/wk /i)).toBeNull()
   })
 
   it('plan mode toggle shows aria-checked=false when not in plan mode', () => {

@@ -24,7 +24,7 @@ from typing import Any, Callable
 
 from ccswitch.accounts import list_accounts
 from ccswitch.accounts import usage_for as _default_usage_fn
-from ccswitch.oauth import Usage
+from ccswitch.quota import QuotaSnapshot
 
 log = logging.getLogger(__name__)
 
@@ -34,14 +34,14 @@ class UsagePoller:
 
     Args:
         poll_interval: Seconds between background sweeps (default 60).
-        usage_fn: Callable ``(account: str) -> Usage | None``.  Defaults to
+        usage_fn: Callable ``(account: str) -> QuotaSnapshot | None``.  Defaults to
             ``ccswitch.accounts.usage_for``; replace in tests with a fake.
     """
 
     def __init__(
         self,
         poll_interval: float = 60.0,
-        usage_fn: Callable[[str], Usage | None] | None = None,
+        usage_fn: Callable[[str], QuotaSnapshot | None] | None = None,
         *,
         jitter_frac: float = 0.1,
         rng: Callable[[], float] = random.random,
@@ -63,12 +63,12 @@ class UsagePoller:
         self._fail_count: dict[str, int] = {}
 
         # Last-known usage per account
-        self._cache: dict[str, Usage | None] = {}
+        self._cache: dict[str, QuotaSnapshot | None] = {}
 
         # Per-account lock so only one coroutine fetches a given account at a time
         self._fetch_locks: dict[str, asyncio.Lock] = {}
 
-        # Subscriber queues — receive {"account": str, "usage": Usage | None}
+        # Subscriber queues — receive {"account": str, "usage": QuotaSnapshot | None}
         self._subscribers: list[asyncio.Queue[dict]] = []
 
         # Background task handle
@@ -87,7 +87,7 @@ class UsagePoller:
     # Public API
     # ------------------------------------------------------------------
 
-    async def get(self, account: str) -> Usage | None:
+    async def get(self, account: str) -> QuotaSnapshot | None:
         """Return usage for *account*, fetching only if no in-flight request exists.
 
         Concurrent callers for the same account share a single in-flight request:
@@ -127,7 +127,7 @@ class UsagePoller:
                 self._publish(account, result)
             return result
 
-    def cached(self, account: str) -> Usage | None:
+    def cached(self, account: str) -> QuotaSnapshot | None:
         """Return the last-known usage for *account* without fetching, or ``None``.
 
         A read-only accessor over the poller's cache — used by callers (e.g. the
@@ -146,14 +146,14 @@ class UsagePoller:
         """
         return self._fail_count.get(account, 0)
 
-    async def all(self) -> dict[str, Usage | None]:
+    async def all(self) -> dict[str, QuotaSnapshot | None]:
         """Fetch usage for every registered account and return the full mapping."""
         names = [a["name"] for a in list_accounts() if a.get("enabled", True)]
         results = await asyncio.gather(*(self.get(n) for n in names))
         return dict(zip(names, results))
 
     def subscribe(self) -> "asyncio.Queue[dict]":
-        """Return a new queue that receives ``{"account": str, "usage": Usage|None}`` events."""
+        """Return a new queue that receives ``{"account": str, "usage": QuotaSnapshot|None}`` events."""
         q: asyncio.Queue[dict] = asyncio.Queue()
         self._subscribers.append(q)
         return q
@@ -208,7 +208,7 @@ class UsagePoller:
         """Poll interval plus up to ``jitter_frac`` extra — never less than the interval."""
         return self._poll_interval * (1.0 + self._jitter_frac * self._rng())
 
-    def _note_outcome(self, account: str, result: Usage | None) -> None:
+    def _note_outcome(self, account: str, result: QuotaSnapshot | None) -> None:
         """Track consecutive failures per account (rotation-monitor input only).
 
         The fetch-rate backoff itself is usage_for's ledger cooldown; nothing
@@ -228,7 +228,7 @@ class UsagePoller:
                 log.exception("UsagePoller: error during sweep")
             await asyncio.sleep(self._next_delay())
 
-    def _publish(self, account: str, usage: Usage | None) -> None:
+    def _publish(self, account: str, usage: QuotaSnapshot | None) -> None:
         event = {"account": account, "usage": usage}
         for q in list(self._subscribers):
             q.put_nowait(event)

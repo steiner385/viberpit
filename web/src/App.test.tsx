@@ -27,7 +27,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { Session, Account } from './api/types'
-import { session } from '@/test/factories'
+import { anthropicUsage, session } from '@/test/factories'
 import { api } from './api/client'
 import { renderApp } from './test/renderApp'
 
@@ -75,7 +75,7 @@ const MOCK_ACCOUNTS: Account[] = [
   {
     name: 'alice',
     status: 'ok',
-    usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 30, resetsAt: null } },
+    usage: anthropicUsage(20, 30),
     liveSessions: { active: 0, idle: 0 },
     rank: null,
     rankReason: null,

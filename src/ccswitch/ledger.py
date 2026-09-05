@@ -8,7 +8,7 @@ import tempfile
 from datetime import datetime
 
 from . import paths
-from .oauth import Usage
+from .quota import QuotaSnapshot, anthropic_snapshot, copilot_snapshot
 
 log = logging.getLogger(__name__)
 
@@ -155,33 +155,80 @@ def clear_usage_fetch_backoff(led: dict, name: str) -> None:
         acct.pop("usageFetchCooldownUntil", None)
 
 
-def record_usage(led: dict, name: str, u: Usage, now: datetime) -> None:
+def record_usage(led: dict, name: str, u: QuotaSnapshot, now: datetime) -> None:
+    """Cache one account's quota snapshot. The blob is VERSIONED (``v``) so a
+    future shape change is a migration rather than a misread."""
     # A recorded fetch is by definition a successful one — reset the backoff.
     clear_usage_fetch_backoff(led, name)
-    _acct(led, name)["usage"] = {
-        "session_pct": u.session_pct,
-        "session_resets_at": u.session_resets_at.isoformat() if u.session_resets_at else None,
-        "weekly_pct": u.weekly_pct,
-        "weekly_resets_at": u.weekly_resets_at.isoformat() if u.weekly_resets_at else None,
-        "extra_usage_enabled": u.extra_usage_enabled,
-        "fetched_at": now.isoformat(),
-    }
+    blob = u.to_dict()
+    blob["fetched_at"] = now.isoformat()
+    _acct(led, name)["usage"] = blob
 
 
-def cached_usage(led: dict, name: str, cfg, now: datetime) -> Usage | None:
+def _provider_hint(name: str) -> str:
+    """Best-effort provider for an account, for legacy-blob migration only.
+
+    Local import + broad except on purpose: ``accounts`` imports this module, and
+    a manifest that has not been reconciled yet must degrade to the historical
+    default rather than break every cached read.
+    """
+    try:
+        from . import account_registry
+        return account_registry.provider_of(name)
+    except Exception:  # noqa: BLE001 — see docstring
+        return "anthropic"
+
+
+def _migrate_legacy_usage(name: str, blob: dict) -> QuotaSnapshot:
+    """Read a PRE-VERSIONING usage blob as a QuotaSnapshot.
+
+    Live ledgers on dobby and rocky hold the old ``Usage`` encoding
+    (``session_pct`` / ``session_resets_at`` / ``weekly_pct`` /
+    ``weekly_resets_at`` / ``extra_usage_enabled``). Dropping those entries would
+    blank every account's usage for a full cache TTL right after a deploy, and
+    misreading them would feed the selector garbage — so they are migrated in
+    place, on read, without a rewrite.
+
+    Copilot entries in that shape are the fabricated duplicate this change
+    removes: both dimensions hold the SAME premium-request number. They are
+    migrated back to the single ``premium`` window they always were, so the
+    duplicate does not survive the upgrade in cached form.
+    """
+    def _dt(key: str) -> datetime | None:
+        v = blob.get(key)
+        return datetime.fromisoformat(v) if v else None
+
+    fetched = datetime.fromisoformat(blob["fetched_at"])
+    if _provider_hint(name) == "copilot":
+        return copilot_snapshot(float(blob.get("session_pct") or 0.0),
+                                _dt("session_resets_at"), fetched_at=fetched)
+    return anthropic_snapshot(
+        float(blob.get("session_pct") or 0.0), _dt("session_resets_at"),
+        float(blob.get("weekly_pct") or 0.0), _dt("weekly_resets_at"),
+        bool(blob.get("extra_usage_enabled")), fetched_at=fetched,
+    )
+
+
+def usage_from_blob(name: str, blob: dict) -> QuotaSnapshot:
+    """Decode a stored usage blob of EITHER shape. The single reader."""
+    if blob.get("v"):
+        return QuotaSnapshot.from_dict(blob)
+    return _migrate_legacy_usage(name, blob)
+
+
+def cached_usage(led: dict, name: str, cfg, now: datetime) -> QuotaSnapshot | None:
     blob = _acct(led, name).get("usage")
     if not blob:
         return None
     fetched = datetime.fromisoformat(blob["fetched_at"])
     if (now - fetched).total_seconds() > cfg.usage_cache_ttl_sec:
         return None
-    sr = blob.get("session_resets_at")
-    wr = blob.get("weekly_resets_at")
-    return Usage(
-        blob["session_pct"], datetime.fromisoformat(sr) if sr else None,
-        blob["weekly_pct"], datetime.fromisoformat(wr) if wr else None,
-        blob["extra_usage_enabled"],
-    )
+    try:
+        return usage_from_blob(name, blob)
+    except (KeyError, TypeError, ValueError):
+        log.warning("ledger: unreadable cached usage for %s — treating as unknown",
+                    name, exc_info=True)
+        return None
 
 
 def set_status(led: dict, name: str, status: str) -> None:

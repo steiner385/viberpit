@@ -9,7 +9,7 @@ import logging
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from ccswitch.oauth import Usage
+from ccswitch.quota import QuotaSnapshot
 from server.assistant.context import PromptContext
 from server.ipc.client import DaemonError, DaemonUnavailable
 from server.sessions.facade import rpc_deadline
@@ -838,7 +838,7 @@ class RemoteOrchestrator:
             # Wedged/slow daemon → treat as unknown usage rather than 500 the caller.
             log.warning("usage RPC for %s unavailable — returning None", name)
             return None
-        return Usage.from_dict(r["usage"]) if r["usage"] is not None else None
+        return QuotaSnapshot.from_dict(r["usage"]) if r["usage"] is not None else None
 
     async def pending_permissions(self, session_id):
         return await self._client.call("pending_permissions", session_id=session_id)

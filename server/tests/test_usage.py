@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from ccswitch.oauth import Usage
+from ccswitch.quota import QuotaSnapshot, anthropic_snapshot
 from server.usage.poller import UsagePoller
 
 
@@ -20,9 +20,9 @@ from server.usage.poller import UsagePoller
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_usage(session_pct: float = 10.0, weekly_pct: float = 20.0) -> Usage:
+def _make_usage(session_pct: float = 10.0, weekly_pct: float = 20.0) -> QuotaSnapshot:
     reset = datetime.now(timezone.utc) + timedelta(hours=5)
-    return Usage(session_pct, reset, weekly_pct, reset, False)
+    return anthropic_snapshot(session_pct, reset, weekly_pct, reset, False)
 
 
 # ---------------------------------------------------------------------------
@@ -34,7 +34,7 @@ async def test_get_returns_mocked_usage():
     u = _make_usage(session_pct=42.0)
     calls: list[str] = []
 
-    def fake_usage_fn(account: str) -> Usage:
+    def fake_usage_fn(account: str) -> QuotaSnapshot:
         calls.append(account)
         return u
 
@@ -66,7 +66,7 @@ async def test_get_deduplicates_concurrent_fetches():
     gate = threading.Event()
     arrived = threading.Event()
 
-    def slow_usage_fn(account: str) -> Usage:
+    def slow_usage_fn(account: str) -> QuotaSnapshot:
         nonlocal call_count
         call_count += 1
         arrived.set()       # tell the test thread we've started
@@ -110,7 +110,7 @@ async def test_get_call_count_sequential():
     """Sequential (non-overlapping) calls each invoke the usage_fn."""
     call_count = 0
 
-    def counting_fn(account: str) -> Usage:
+    def counting_fn(account: str) -> QuotaSnapshot:
         nonlocal call_count
         call_count += 1
         return _make_usage()
@@ -134,7 +134,7 @@ async def test_subscriber_receives_event_on_change():
     values = [u1, u2]
     call_count = 0
 
-    def changing_fn(account: str) -> Usage:
+    def changing_fn(account: str) -> QuotaSnapshot:
         nonlocal call_count
         result = values[min(call_count, len(values) - 1)]
         call_count += 1
@@ -181,7 +181,7 @@ async def test_start_stop_lifecycle():
     """start() launches a background task; stop() cancels it cleanly."""
     call_count = 0
 
-    def counting_fn(account: str) -> Usage:
+    def counting_fn(account: str) -> QuotaSnapshot:
         nonlocal call_count
         call_count += 1
         return _make_usage()
@@ -220,7 +220,7 @@ async def test_start_idempotent():
 async def test_all_isolates_a_single_account_failure():
     good = _make_usage(session_pct=42.0)
 
-    def usage_fn(account: str) -> Usage:
+    def usage_fn(account: str) -> QuotaSnapshot:
         if account == "bad":
             raise KeyError("refreshToken")  # the exact incident exception
         return good
@@ -235,7 +235,7 @@ async def test_all_isolates_a_single_account_failure():
 
 @pytest.mark.asyncio
 async def test_get_returns_none_when_usage_fn_raises():
-    def boom(account: str) -> Usage:
+    def boom(account: str) -> QuotaSnapshot:
         raise RuntimeError("unexpected")
 
     poller = UsagePoller(usage_fn=boom)

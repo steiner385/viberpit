@@ -13,7 +13,7 @@ from typing import Callable
 from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny, ResultMessage
 from claude_agent_sdk._errors import CLIConnectionError
 from ccswitch import copilot as _copilot_mod
-from ccswitch.accounts import provider_of as _provider_of
+from ccswitch.accounts import provider_or_none as _provider_of
 from server.aio import bounded_wait
 from server.assistant.context import PromptContext, render_context_header
 from server.hostname import self_host_name
