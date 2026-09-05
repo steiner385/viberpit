@@ -47,9 +47,9 @@ _IDENTITY_HEADERS = {"Tailscale-User-Login": "wstest@example.com"}
 
 def _fake_usage(account: str):
     from datetime import datetime, timedelta, timezone
-    from ccswitch.oauth import Usage
+    from ccswitch.quota import anthropic_snapshot
     reset = datetime.now(timezone.utc) + timedelta(hours=5)
-    return Usage(10.0, reset, 10.0, reset, False)
+    return anthropic_snapshot(10.0, reset, 10.0, reset, False)
 
 
 def _seed_account(name: str) -> None:
@@ -985,7 +985,7 @@ def test_frame_too_large_rejected(ws_env):
 # ---------------------------------------------------------------------------
 
 @contextlib.contextmanager
-def _rehydrated_detached_client(tmp_path, msgs, *, claude_session_id="resume-me"):
+def _rehydrated_detached_client(tmp_path, msgs, *, engine_session_id="resume-me"):
     """Build an app rehydrated from a seeded DETACHED session row.
 
     Yields ``(orch, client, session_id)`` with the patches and lifespan active.
@@ -1005,7 +1005,7 @@ def _rehydrated_detached_client(tmp_path, msgs, *, claude_session_id="resume-me"
         async with _db_session() as db:
             db.add(_DbSession(
                 id=session_id, name="rehydrated-ws-session",
-                account_name="alpha", claude_session_id=claude_session_id,
+                account_name="alpha", engine_session_id=engine_session_id,
                 status="idle", cwd=cwd,
             ))
     _asyncio.run(_seed())

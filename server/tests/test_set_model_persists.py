@@ -1,6 +1,7 @@
 import time
 
 import pytest
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
@@ -25,7 +26,7 @@ def orchestrator_with_session():
     # Build a minimal orchestrator instance without starting drivers/db.
     from server.sessions.orchestrator import SessionOrchestrator
     orch = SessionOrchestrator.__new__(SessionOrchestrator)
-    rec = SessionRecord(id="s1", name="n", account="a", claude_session_id="c1",
+    rec = SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                         cols=80, rows=24, cwd="/tmp")
     driver = _FakeDriver()
     orch._records = {"s1": rec}

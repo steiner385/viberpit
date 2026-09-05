@@ -28,8 +28,8 @@ import {
 } from '@/api/hooks'
 import type { AccountUpdate } from '@/api/hooks'
 import { AddAccountDialog } from './AddAccountDialog'
-import { ReauthBrowserPanel } from './ReauthBrowserPanel'
 import type { Account, LiveSessionCounts, Session } from '@/api/types'
+import { reserveWindow, usageWindows } from '@/lib/usageWindows'
 
 // ── Sessions + Rank Badges ───────────────────────────────────────────────────
 
@@ -481,29 +481,32 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
           )}
           <SessionsBadge counts={account.liveSessions} />
           <RankBadge rank={account.rank} reason={account.rankReason} />
-          {account.weeklyReservePct != null && account.usage != null &&
-            account.usage.weekly.pct >= account.weeklyReservePct && <OverReserveChip />}
+          {account.weeklyReservePct != null &&
+            (reserveWindow(account.usage)?.pct ?? -1) >= account.weeklyReservePct &&
+            <OverReserveChip />}
           {account.allowExtraUsage === true && <ExtraUsageChip />}
           {/* Opted in, but the provider has extra usage off — the toggle cannot
               take effect, so say so rather than let it look armed. Usage is only
               checked when known: a failed fetch is not evidence it is disabled. */}
           {account.allowExtraUsage === true && account.usage != null &&
             account.usage.extraUsageEnabled === false && <ExtraUsageUnavailableChip />}
-          {account.usage && (
-            <>
-              <UsageBadge
-                pct={account.usage.session.pct}
-                label={account.provider === 'copilot' ? 'premium-req' : 'session'}
-                resetsAt={account.usage.session.resetsAt}
-              />
-              <UsageBadge
-                pct={account.usage.weekly.pct}
-                label="weekly"
-                resetsAt={account.usage.weekly.resetsAt}
-                markerPct={account.weeklyReservePct ?? null}
-              />
-            </>
-          )}
+          {/* One badge per window the provider actually reported. A Copilot
+              account has ONE (premium requests); it used to render that same
+              number twice, as "premium-req" and again as "weekly". The reserve
+              marker rides on whichever window the reserve is measured against. */}
+          {usageWindows(account.usage).map((w) => (
+            <UsageBadge
+              key={w.key}
+              pct={w.pct}
+              label={w.label}
+              resetsAt={w.resetsAt}
+              markerPct={
+                w.key === reserveWindow(account.usage)?.key
+                  ? account.weeklyReservePct ?? null
+                  : null
+              }
+            />
+          ))}
           {account.provider === 'copilot' ? (
             !isReauthRunning && !isAwaitingCode && (
               <button
@@ -556,52 +559,11 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
         </div>
       )}
 
-      {/* Generate long-lived (setup-token) — Anthropic accounts only */}
-      {!editing && account.provider !== 'copilot' && (
-        <div className="flex justify-end">
-          <button
-            type="button"
-            className={cn(
-              'rounded px-2 py-1 text-xs min-h-[44px]',
-              'text-gray-500 dark:text-gray-400',
-              'hover:text-gray-700 dark:hover:text-gray-200',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-              'disabled:opacity-40',
-            )}
-            aria-label={`Generate long-lived token for ${account.name}`}
-            onClick={() => {
-              setReauthOptimisticIdle(false)
-              setReauthStarted(true)
-              reauthAccount.mutate(
-                { name: account.name, mode: 'setup_token' },
-                { onError: () => setReauthStarted(false) },
-              )
-            }}
-            disabled={isReauthRunning || isAwaitingCode}
-          >
-            Generate long-lived token
-          </button>
-        </div>
-      )}
-
       {/* Reauth status line */}
       {!editing && isReauthRunning && (
-        reauthStatus?.vncSession ? (
-          <>
-            <p className="text-xs text-amber-600 dark:text-amber-400">
-              Sign in to Claude in the window below…
-            </p>
-            <ReauthBrowserPanel vncSession={reauthStatus.vncSession} />
-          </>
-        ) : (
-          // Before the virtual display exists there is nothing to render, and the
-          // wait (profile copy, Xvfb spawn, Chrome cold start) is several seconds.
-          // The backend publishes a step label so this window isn't silent — and so
-          // it doesn't claim "on the host screen" while a virtual display is starting.
-          <p className="text-xs text-amber-600 dark:text-amber-400">
-            {reauthStatus?.message ?? 'Opening Chrome on the host screen — sign in there…'}
-          </p>
-        )
+        <p className="text-xs text-amber-600 dark:text-amber-400">
+          {reauthStatus?.message ?? 'Verifying the pasted code…'}
+        </p>
       )}
       {!editing && isAwaitingCode && reauthStatus?.authUrl && (
         <div className="flex flex-col gap-2 mt-1">

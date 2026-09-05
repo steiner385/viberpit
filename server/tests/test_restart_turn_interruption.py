@@ -25,6 +25,7 @@ from pathlib import Path
 
 from server.sessions.failure import classify
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
@@ -68,7 +69,7 @@ def test_negative_signal_exit_still_classifies_as_process_crash():
 
 def _record(sid: str, status: str) -> SessionRecord:
     return SessionRecord(
-        id=sid, name=sid, account="acct", claude_session_id="c",
+        id=sid, name=sid, account="acct", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c",
         cols=80, rows=24, cwd="/tmp", status=status,
     )
 
@@ -87,7 +88,7 @@ def _seed_row(db_url: str, sid: str, status: str, cwd: str) -> None:
         await init_db(db_url=db_url)
         async with db_session() as db:
             db.add(DbSession(id=sid, name=sid, account_name="acct",
-                             claude_session_id="c", status=status, cwd=cwd))
+                             engine_session_id="c", status=status, cwd=cwd))
     asyncio.run(seed())
 
 

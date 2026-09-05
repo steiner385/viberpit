@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest'
 import { anyChecksFailing } from '../prStatus'
 import type { PullRequestInfo } from '@/api/types'

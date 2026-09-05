@@ -221,11 +221,11 @@ def test_attach_delivers_in_progress_turn_even_if_it_settles_during_replay(monke
     the replay path is slow and the turn settles (buffer cleared, turn_active
     flipped) before it returns. The attach must still deliver the in-progress
     turn's events — open_stream() captured them before the replay awaited."""
-    from server.sessions.driver import SessionDriver
+    from server.sessions.claude_driver import ClaudeAgentDriver
     from server.sessions import events as ev
     from server.sessions.permissions import PermissionRegistry
 
-    driver = SessionDriver(
+    driver = ClaudeAgentDriver(
         "s1", "acct", "/tmp", "/tmp/cfg", mode="interactive",
         sdk_factory=lambda *a, **k: None, registry=PermissionRegistry(),
         identity="wstest@example.com")

@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest'
 import { NAV_DEFS, NAV_BY_ID, navDefForPath, settingsSectionPath } from './navDefs'
 

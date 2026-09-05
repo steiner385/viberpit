@@ -22,6 +22,7 @@ import { ApiRequestError } from '@/api/client'
 import type { Account, Session } from '@/api/types'
 import { loadingQueryResult, queryResult } from '@/test/reactQuery'
 import { getServerSttEnabled, setServerSttEnabled } from '@/lib/sttCapability'
+import { anthropicUsage } from '@/test/factories'
 
 const NOOP = { mutate: vi.fn(), isPending: false, isSuccess: false }
 
@@ -122,7 +123,8 @@ vi.mock('@/ws/client', async (importOriginal) => {
 /** Typed factories — real values, never `as unknown as T` (R10). */
 function session(over: Partial<Session> = {}): Session {
   return {
-    id: 's1', name: 'One', accountName: 'alice', status: 'idle',
+    id: 's1', name: 'One', accountName: 'alice', engine: 'claude_code',
+    engineSessionId: null, status: 'idle',
     createdAt: '2026-06-19T10:00:00Z', prs: [],
     ...over,
   }
@@ -131,7 +133,7 @@ function session(over: Partial<Session> = {}): Session {
 function account(over: Partial<Account> = {}): Account {
   return {
     name: 'alice', status: 'ok',
-    usage: { session: { pct: 10, resetsAt: null }, weekly: { pct: 10, resetsAt: null } },
+    usage: anthropicUsage(10, 10),
     liveSessions: { active: 0, idle: 0 }, rank: null, rankReason: null,
     ...over,
   }

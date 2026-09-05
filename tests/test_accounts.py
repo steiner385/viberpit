@@ -37,7 +37,7 @@ class TestAccounts(unittest.TestCase):
             with mock.patch.object(oauth, "fetch_usage", return_value=usage(session=33.0)) as fu:
                 u1 = accounts.usage_for("alpha")
                 u2 = accounts.usage_for("alpha")  # second call served from cache
-                self.assertEqual(u1.session_pct, 33.0)
+                self.assertEqual(u1.window("session").used_pct, 33.0)
                 self.assertEqual(fu.call_count, 1)
 
     def test_usage_for_autherror_marks_needs_reauth(self):
@@ -233,6 +233,8 @@ def test_usage_for_emits_auth_failure_on_dead_token(monkeypatch, tmp_path):
                                   body='{"error":"invalid_grant"}')
         monkeypatch.setattr(accounts, "acquire_valid_token", boom)
         with temp_env():
+            from tests.helpers import register_accounts
+            register_accounts("primary")
             accounts.usage_for("primary", path="poller-idle")
     finally:
         accounts.set_auth_failure_sink(None)
@@ -414,7 +416,7 @@ class TestUsageForSetupTokenFallback(unittest.TestCase):
                  mock.patch.object(oauth, "fetch_usage", return_value=usage(session=42.0)) as fu:
                 u = accounts.usage_for("alpha")
             self.assertIsNotNone(u)
-            self.assertEqual(u.session_pct, 42.0)
+            self.assertEqual(u.window("session").used_pct, 42.0)
             self.assertEqual(accounts.list_accounts()[0]["status"], "ok")
             # Usage was fetched with the setup-token, not the dead slot token.
             fu.assert_called_once_with(self.OAT, max_retries=mock.ANY, max_total_sec=mock.ANY)

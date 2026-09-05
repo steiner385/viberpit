@@ -14,12 +14,35 @@ The reaper cancels repeatedly, peeling one absorb layer per round.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 
 import aiosqlite
+import aiosqlite.core
 import pytest
 
 from server.aio import reap_lingering_db_tasks
+from server.db.aiosqlite_guard import upstream_worker
+
+
+@contextlib.contextmanager
+def _upstream_aiosqlite_worker():
+    """Open connections with aiosqlite's OWN worker thread for the duration.
+
+    ``server/db/aiosqlite_guard.py`` (issue #1134) replaces that worker process-
+    wide from ``_make_engine``, so a connection opened through this suite's
+    engines can no longer be killed the way ``_kill_worker`` kills one — and
+    whether the guard is installed yet depends on which other file this worker
+    ran first. The reaper still has to survive a dead worker (the SQLAlchemy
+    shield layer below, and any aiosqlite connection opened outside our engine
+    factory), so build the scenario against the unguarded worker explicitly.
+    """
+    saved = aiosqlite.core._connection_worker_thread
+    aiosqlite.core._connection_worker_thread = upstream_worker()
+    try:
+        yield
+    finally:
+        aiosqlite.core._connection_worker_thread = saved
 
 
 def _kill_worker(conn: aiosqlite.Connection) -> None:
@@ -29,7 +52,8 @@ def _kill_worker(conn: aiosqlite.Connection) -> None:
     ``future.get_loop().call_soon_threadsafe(...)``; when the future's loop is
     already CLOSED that raises, its ``except`` handler raises again trying to
     set the exception, and the thread exits without draining the queue.
-    (aiosqlite 0.22.x ``core._connection_worker_thread``.)
+    (aiosqlite 0.22.x ``core._connection_worker_thread``.) Requires a connection
+    built inside ``_upstream_aiosqlite_worker()``.
     """
     dead_loop = asyncio.new_event_loop()
     fut = dead_loop.create_future()
@@ -38,8 +62,9 @@ def _kill_worker(conn: aiosqlite.Connection) -> None:
 
 
 async def _wedged_close_task(tmp_path) -> tuple[asyncio.Task, aiosqlite.Connection]:
-    conn = await aiosqlite.connect(str(tmp_path / "reap-test.sqlite"))
-    await conn.execute("select 1")
+    with _upstream_aiosqlite_worker():
+        conn = await aiosqlite.connect(str(tmp_path / "reap-test.sqlite"))
+        await conn.execute("select 1")
     _kill_worker(conn)
     deadline = time.monotonic() + 5.0
     while conn._thread.is_alive() and time.monotonic() < deadline:

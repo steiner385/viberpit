@@ -11,13 +11,14 @@ from __future__ import annotations
 import asyncio
 
 from server.automations.autopilot_policy import Decision, DecisionContext
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 _NOW = 1000.0
 
 
 def _rec(sid, status="waiting_input"):
-    return SessionRecord(id=sid, name="n", account="a", claude_session_id="",
+    return SessionRecord(id=sid, name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
                          cols=80, rows=24, cwd="/tmp", status=status)
 
 

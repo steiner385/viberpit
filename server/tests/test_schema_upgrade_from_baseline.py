@@ -19,6 +19,7 @@ _LEGACY_SESSIONS_DDL = (
     " id TEXT PRIMARY KEY,"
     " name TEXT NOT NULL,"
     " account_name TEXT NOT NULL,"
+    " claude_session_id TEXT,"
     " status TEXT NOT NULL,"
     " cwd TEXT NOT NULL)"
 )
@@ -29,11 +30,13 @@ def test_reconcile_upgrades_legacy_db_and_preserves_row(tmp_path):
     con = sqlite3.connect(db_file)
     con.execute(_LEGACY_SESSIONS_DDL)
     con.execute(
-        "INSERT INTO sessions (id, name, account_name, status, cwd)"
-        " VALUES ('legacy1', 'My Session', 'acct1', 'idle', '/home/x')"
+        "INSERT INTO sessions (id, name, account_name, claude_session_id, status, cwd)"
+        " VALUES ('legacy1', 'My Session', 'acct1', 'native-exact-01', 'idle', '/home/x')"
     )
     con.commit(); con.close()
 
+    asyncio.run(init_db(db_url=f"sqlite+aiosqlite:///{db_file}"))
+    # Startup reconciliation is intentionally safe to repeat across every restart.
     asyncio.run(init_db(db_url=f"sqlite+aiosqlite:///{db_file}"))
 
     async def _check():
@@ -49,8 +52,14 @@ def test_reconcile_upgrades_legacy_db_and_preserves_row(tmp_path):
         # (b) the pre-existing row still reads back (round-trip against real data)
         async with db_session() as db:
             row = (await db.execute(
-                sa_text("SELECT id, name, account_name, status, cwd FROM sessions WHERE id='legacy1'"))).first()
-        assert row == ("legacy1", "My Session", "acct1", "idle", "/home/x")
+                sa_text(
+                    "SELECT id, name, account_name, engine, engine_session_id, "
+                    "reasoning_effort, status, cwd FROM sessions WHERE id='legacy1'"
+                ))).first()
+        assert row == (
+            "legacy1", "My Session", "acct1", "claude_code", "native-exact-01",
+            None, "idle", "/home/x",
+        )
 
         # (c) the ORM can load the row — the EXACT incident query shape — and the
         # reconciled JSON/datetime columns deserialize correctly.
@@ -58,6 +67,8 @@ def test_reconcile_upgrades_legacy_db_and_preserves_row(tmp_path):
         async with db_session() as db:
             obj = (await db.execute(_select(Session).limit(1))).scalars().first()
         assert obj is not None
+        assert obj.engine == "claude_code"
+        assert obj.engine_session_id == "native-exact-01"
         assert obj.tool_allowlist == []       # JSON '[]' literal → []
         assert obj.created_at is not None      # epoch sentinel datetime
 

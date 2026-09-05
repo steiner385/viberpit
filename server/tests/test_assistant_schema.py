@@ -6,11 +6,12 @@ from sqlalchemy import select
 
 from server.audit import record_audit
 from server.db.models import AppSettings, AuditEvent, Session
+from server.sessions.engine import AgentEngine
 from server.sessions.types import ASSISTANT_KIND, SessionRecord, is_assistant
 
 
 def test_session_record_kind_defaults_to_coding():
-    rec = SessionRecord(id="s1", name="n", account="a", claude_session_id="", cols=80, rows=24, cwd="/tmp")
+    rec = SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="", cols=80, rows=24, cwd="/tmp")
     assert rec.kind is None
     assert rec.owner_identity is None
     assert rec.last_activity_at is None
@@ -18,7 +19,7 @@ def test_session_record_kind_defaults_to_coding():
 
 
 def test_is_assistant_true_for_kind():
-    rec = SessionRecord(id="s1", name="Assistant", account="a", claude_session_id="", cols=80,
+    rec = SessionRecord(id="s1", name="Assistant", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="", cols=80,
                         rows=24, cwd="/tmp", kind=ASSISTANT_KIND, owner_identity="u@example.com")
     assert is_assistant(rec) is True
 

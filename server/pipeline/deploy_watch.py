@@ -22,12 +22,12 @@ Design (see task-5 brief):
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
+from server.aio import cancel_and_reap
 from server.db import db_session
 from server.db.models import RepoDeployConfig
 from server.github.deploy_envs import classify_env
@@ -283,9 +283,7 @@ class DeployWatcher:
 
     async def stop(self) -> None:
         if self._task is not None:
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
+            await cancel_and_reap(self._task, phase="deploy-watcher")
             self._task = None
 
     async def run(self) -> None:

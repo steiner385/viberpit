@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+from server.sessions.engine import AgentEngine
 from server.sessions.orchestrator import SessionOrchestrator
 
 
@@ -152,12 +153,13 @@ def test_poller_closure_passes_allow_refresh_true_when_no_live_session():
 # ---------------------------------------------------------------------------
 
 def _plant(orch, sid, account, status):
+    from server.sessions.engine import AgentEngine
     from server.sessions.types import SessionRecord
     driver = MagicMock()
     driver.account = account
     orch._drivers[sid] = driver
     orch._records[sid] = SessionRecord(
-        id=sid, name=sid, account=account, claude_session_id="c",
+        id=sid, name=sid, account=account, engine=AgentEngine.CLAUDE_CODE, engine_session_id="c",
         cols=80, rows=24, cwd="/tmp", status=status)
 
 
@@ -178,7 +180,7 @@ def test_live_session_load_ignores_driverless_records():
     from server.sessions.types import SessionRecord
     # A record with no live driver (detached/rehydrated) must not count.
     orch._records["dead"] = SessionRecord(
-        id="dead", name="dead", account="acct1", claude_session_id="c",
+        id="dead", name="dead", account="acct1", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c",
         cols=80, rows=24, cwd="/tmp", status="working")
     assert orch.live_session_load() == {}
 

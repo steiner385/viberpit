@@ -63,7 +63,7 @@ def test_remote_driver_covers_every_ws_reachable_driver_member():
     """Lock the daemon-mode driver surface to the in-process one (#164).
 
     In remote mode ws.py drives a RemoteDriver shim instead of the in-process
-    SessionDriver. Any ``driver.*`` call site in ws.py (or a helper it hands the
+    ClaudeAgentDriver. Any ``driver.*`` call site in ws.py (or a helper it hands the
     driver to) that RemoteDriver doesn't implement explodes with AttributeError
     ONLY in remote mode — the confirmed instance was seed_idle_suggestions, silently
     breaking idle suggestions in prod. This scans the real call sites and fails if a
@@ -93,7 +93,7 @@ def test_remote_driver_queue_wire_matches_local_shape():
         {"text": "first prompt", "images": []},
         {"text": "second prompt", "images": []},
     ]
-    # Empty queue → empty wire (mirrors local SessionDriver.queue_wire).
+    # Empty queue → empty wire (mirrors local ClaudeAgentDriver.queue_wire).
     assert RemoteDriver(_FakeClient([]), "s2").queue_wire() == []
 
 

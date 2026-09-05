@@ -17,7 +17,7 @@ from server.sessions.orchestrator import SessionOrchestrator
 class _Driver:
     def __init__(self, account, *, hang):
         self.account = account
-        self._turn_active = True
+        self.turn_active = True
         self.drain_alive = False
         self.in_api_backoff = False
         self.awaiting_user_input = False
@@ -33,7 +33,7 @@ class _Driver:
 
 @pytest.mark.asyncio
 async def test_wedged_interrupt_does_not_block_the_rest_of_the_tick(monkeypatch):
-    monkeypatch.setattr(orch_mod, "_CLOSE_GRACE_SEC", 0.05)
+    monkeypatch.setattr(orch_mod, "_DRIVER_CONTROL_TIMEOUT_S", 0.05)
     o = SessionOrchestrator(sdk_factory=lambda *a, **k: None)
     o._clock = lambda: 1000.0
     wedged = _Driver("a", hang=True)

@@ -17,9 +17,10 @@ import pytest
 from server.sessions import orchestrator as orch_mod
 from server.sessions import recovery as R
 from server.sessions.orchestrator import SessionOrchestrator, _ROTATION_CEILING
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 from server.usage.poller import UsagePoller
-from ccswitch.oauth import Usage
+from ccswitch.quota import QuotaSnapshot, anthropic_snapshot
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +68,7 @@ def _make_orch():
 
 
 def _rec(o, account="copilot_acct", *, with_driver=True, status="idle"):
-    rec = SessionRecord(id="s1", name="n", account=account, claude_session_id="c1",
+    rec = SessionRecord(id="s1", name="n", account=account, engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                         cols=80, rows=24, cwd="/tmp/x", status=status)
     o._records["s1"] = rec
     if with_driver:
@@ -193,7 +194,7 @@ async def test_rotation_monitor_rotates_at_usage_ceiling():
     o = _make_orch()
     _rec(o, account="copilot_acct")
     o._poller = _poller_with_failures(0)
-    usage = Usage(session_pct=100.0, session_resets_at=None,
+    usage = anthropic_snapshot(session_pct=100.0, session_resets_at=None,
                   weekly_pct=50.0, weekly_resets_at=None, extra_usage_enabled=False)
 
     await _run_monitor_one_event(o, {"account": "copilot_acct", "usage": usage})
@@ -207,7 +208,7 @@ async def test_rotation_monitor_skips_below_ceiling():
     o = _make_orch()
     _rec(o, account="copilot_acct")
     o._poller = _poller_with_failures(0)
-    usage = Usage(session_pct=80.0, session_resets_at=None,
+    usage = anthropic_snapshot(session_pct=80.0, session_resets_at=None,
                   weekly_pct=20.0, weekly_resets_at=None, extra_usage_enabled=False)
 
     await _run_monitor_one_event(o, {"account": "copilot_acct", "usage": usage})
@@ -224,7 +225,8 @@ async def test_rotation_monitor_skips_ended_sessions():
         fail_count=orch_mod._UNREACHABLE_ROTATION_THRESHOLD)
     for status in list(INACTIVE_SESSION_STATUSES)[:2]:
         rec = SessionRecord(id=f"s-{status}", name="n", account="copilot_acct",
-                            claude_session_id="c1", cols=80, rows=24, cwd="/tmp",
+                            engine=AgentEngine.CLAUDE_CODE,
+                            engine_session_id="c1", cols=80, rows=24, cwd="/tmp",
                             status=status)
         o._records[rec.id] = rec
         o._drivers[rec.id] = object()
@@ -260,7 +262,7 @@ def _orch_with_poller(cached_usage, fail_count=0):
 
 def test_process_crash_retries_same_account_when_healthy():
     """Healthy account → existing behaviour: rebuild driver on same account."""
-    usage = Usage(session_pct=50.0, session_resets_at=None,
+    usage = anthropic_snapshot(session_pct=50.0, session_resets_at=None,
                   weekly_pct=20.0, weekly_resets_at=None, extra_usage_enabled=False)
     o = _orch_with_poller(cached_usage=usage)
     rec = _rec(o)
@@ -271,7 +273,7 @@ def test_process_crash_retries_same_account_when_healthy():
 
 def test_process_crash_rotates_when_account_at_ceiling():
     """session_pct=100 at crash time → quarantine + rotate to a new account."""
-    usage = Usage(session_pct=_ROTATION_CEILING, session_resets_at=None,
+    usage = anthropic_snapshot(session_pct=_ROTATION_CEILING, session_resets_at=None,
                   weekly_pct=50.0, weekly_resets_at=None, extra_usage_enabled=False)
     o = _orch_with_poller(cached_usage=usage)
     rec = _rec(o)
@@ -303,7 +305,7 @@ def test_process_crash_retries_same_when_transient_unreachable():
 
 def test_process_crash_cap_still_pauses_even_on_dead_account():
     """Crash cap takes priority over dead-account detection — prevents thrash."""
-    usage = Usage(session_pct=_ROTATION_CEILING, session_resets_at=None,
+    usage = anthropic_snapshot(session_pct=_ROTATION_CEILING, session_resets_at=None,
                   weekly_pct=50.0, weekly_resets_at=None, extra_usage_enabled=False)
     o = _orch_with_poller(cached_usage=usage)
     rec = _rec(o)
@@ -324,7 +326,7 @@ async def test_rotation_monitor_rotates_at_weekly_ceiling():
     o = _make_orch()
     _rec(o, account="copilot_acct")
     o._poller = _poller_with_failures(0)
-    usage = Usage(session_pct=0.0, session_resets_at=None,
+    usage = anthropic_snapshot(session_pct=0.0, session_resets_at=None,
                   weekly_pct=100.0, weekly_resets_at=None, extra_usage_enabled=False)
 
     await _run_monitor_one_event(o, {"account": "copilot_acct", "usage": usage})
@@ -333,14 +335,14 @@ async def test_rotation_monitor_rotates_at_weekly_ceiling():
 
 
 def test_account_is_dead_on_weekly_ceiling():
-    usage = Usage(session_pct=10.0, session_resets_at=None,
+    usage = anthropic_snapshot(session_pct=10.0, session_resets_at=None,
                   weekly_pct=100.0, weekly_resets_at=None, extra_usage_enabled=False)
     o = _orch_with_poller(cached_usage=usage)
     assert o._account_is_dead("copilot_acct") is True
 
 
 def test_account_is_alive_below_both_ceilings():
-    usage = Usage(session_pct=99.0, session_resets_at=None,
+    usage = anthropic_snapshot(session_pct=99.0, session_resets_at=None,
                   weekly_pct=99.0, weekly_resets_at=None, extra_usage_enabled=False)
     o = _orch_with_poller(cached_usage=usage)
     assert o._account_is_dead("copilot_acct") is False
@@ -359,7 +361,7 @@ async def test_rotation_monitor_triggers_recovery_sweep_below_ceiling():
     o._poller = _poller_with_failures(0)
     fired = []
     o._maybe_sweep_on_recovery = lambda: fired.append(True) or True
-    usage = Usage(session_pct=20.0, session_resets_at=None,
+    usage = anthropic_snapshot(session_pct=20.0, session_resets_at=None,
                   weekly_pct=20.0, weekly_resets_at=None, extra_usage_enabled=False)
 
     await _run_monitor_one_event(o, {"account": "copilot_acct", "usage": usage})
@@ -373,8 +375,8 @@ async def test_rotation_monitor_triggers_recovery_sweep_below_ceiling():
 # still hand the account out (its final "extra_paid" tier).
 # ---------------------------------------------------------------------------
 
-def _at_ceiling_usage(extra_enabled: bool) -> Usage:
-    return Usage(session_pct=_ROTATION_CEILING, session_resets_at=None,
+def _at_ceiling_usage(extra_enabled: bool) -> QuotaSnapshot:
+    return anthropic_snapshot(session_pct=_ROTATION_CEILING, session_resets_at=None,
                  weekly_pct=20.0, weekly_resets_at=None,
                  extra_usage_enabled=extra_enabled)
 

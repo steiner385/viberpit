@@ -264,6 +264,8 @@ export interface CreateSessionInput {
   permissionMode?: string
   attachmentIds?: string[]
   model?: string
+  engine?: 'claude_code' | 'codex'
+  reasoningEffort?: string | null
   /** Optional runner preference. null → auto-rank; a name → that host first. */
   host?: string | null
 }
@@ -282,6 +284,8 @@ export function useCreateSession() {
       const tempId = addPendingSession({
         name: input.name?.trim() || input.initialPrompt?.trim().slice(0, 60) || 'New session',
         accountName: input.account ?? '',
+        engine: input.engine ?? 'claude_code',
+        engineSessionId: null,
         status: 'in_progress',
         createdAt: new Date().toISOString(),
         repo: input.repo ?? null,
@@ -513,15 +517,11 @@ export function useSetAccountEnabled() {
   })
 }
 
-type ReauthAccountInput = string | { name: string; mode?: 'login' | 'setup_token' }
-
+// Always the in-process PKCE/setup-token exchange (issue #1130) — no browser,
+// no virtual display. The account already has a slot, so there is no mode to pick.
 export function useReauthAccount() {
-  return useMutation<ReauthState, ApiRequestError, ReauthAccountInput>({
-    mutationFn: (input) => {
-      const { name, mode } = typeof input === 'string' ? { name: input, mode: undefined } : input
-      const path = `/accounts/${encodeURIComponent(name)}/reauth${mode === 'setup_token' ? '?mode=setup_token' : ''}`
-      return api.post<ReauthState>(path)
-    },
+  return useMutation<ReauthState, ApiRequestError, string>({
+    mutationFn: (name) => api.post<ReauthState>(`/accounts/${encodeURIComponent(name)}/reauth`),
   })
 }
 

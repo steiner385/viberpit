@@ -14,7 +14,7 @@ import asyncio
 
 from claude_agent_sdk import SystemMessage, TextBlock
 
-from server.sessions.driver import SessionDriver, _MessageSource, _EOF
+from server.sessions.claude_driver import ClaudeAgentDriver, _MessageSource, _EOF
 from server.sessions.events import TurnEnd, Status, QueueUpdate
 from server.sessions.permissions import PermissionRegistry
 from server.tests.fakes import fake_sdk as f
@@ -42,16 +42,16 @@ async def _wait_until(pred, timeout: float = 2.0) -> None:
         await asyncio.sleep(0.005)
 
 
-def _build(client, statuses: list[str] | None = None) -> SessionDriver:
+def _build(client, statuses: list[str] | None = None) -> ClaudeAgentDriver:
     async def on_status(sid, status):
         if statuses is not None:
             statuses.append(status)
-    return SessionDriver("s-auto", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+    return ClaudeAgentDriver("s-auto", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                          sdk_factory=lambda *a, **k: client, registry=PermissionRegistry(),
                          identity="me", on_status=on_status)
 
 
-def _collector(d: SessionDriver):
+def _collector(d: ClaudeAgentDriver):
     seen: list = []
 
     async def collect():

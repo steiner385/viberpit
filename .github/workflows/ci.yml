@@ -78,15 +78,63 @@ jobs:
           echo "py=$py" >> "$GITHUB_OUTPUT"
           echo "web=$web py=$py ($(wc -l <<<"$changed") changed files)"
 
-  lint-and-test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    # Same contract as `frontend`: this is a REQUIRED check, so the job always runs and
-    # always reports — a required check that is `skip`ped never reports at all and leaves
-    # the PR pending forever (the trap `constitution.yml` documents, and the one that
-    # wedged the deploy gate in #1127). It therefore stays in the job list and gates its
-    # own expensive steps on `needs.changes.outputs.py` instead of using a `paths:` filter.
+  # lint-and-test used to run everything (ruff, mypy, core tests, server tests)
+  # in one job. Measured on run 33938129932: server/tests/ was 648s of the
+  # 742s total (87%), and the private repo's ubuntu-latest runner has only 2
+  # vCPUs, so `-n auto` resolved to 2 workers, not the ~7x the old comment
+  # here claimed (#1137). server-tests below shards that step across 4 jobs
+  # instead (~8 effective workers); lint-and-test-core keeps the cheap ~60s of
+  # ruff/mypy/core-tests. lint-and-test itself is now a thin aggregator (see
+  # its comment) that preserves the required-context name.
+  #
+  # Same contract as `frontend`: both jobs below are REQUIRED (via the
+  # lint-and-test aggregator further down), so they always run and always
+  # report — a required check that is `skip`ped never reports at all and
+  # leaves the PR pending forever (the trap `constitution.yml` documents, and
+  # the one that wedged the deploy gate in #1127). They therefore stay in the
+  # job list and gate their own expensive steps on `needs.changes.outputs.py`
+  # instead of using a `paths:` filter.
+  lint-and-test-core:
     needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - if: needs.changes.outputs.py == 'true'
+        uses: actions/checkout@v7
+      - if: needs.changes.outputs.py == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install deps
+        if: needs.changes.outputs.py == 'true'
+        run: pip install -e ".[server]"
+      - name: Ruff check
+        if: needs.changes.outputs.py == 'true'
+        run: ruff check src/ server/
+      - name: Mypy
+        if: needs.changes.outputs.py == 'true'
+        run: mypy server/ --ignore-missing-imports
+      - name: Core unit tests
+        if: needs.changes.outputs.py == 'true'
+        run: python -m pytest tests/ -q --junitxml=test-results/core.xml
+      - name: Upload test results
+        if: always() && needs.changes.outputs.py == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-python-core
+          path: test-results/*.xml
+          retention-days: 30
+
+  server-tests:
+    needs: changes
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:16
@@ -110,27 +158,32 @@ jobs:
       - name: Install deps
         if: needs.changes.outputs.py == 'true'
         run: pip install -e ".[server]"
-      - name: Ruff check
+      - name: CPU diagnostics
+        # Confirms the 2-worker hypothesis in #1137 on the record, per its
+        # suggested first step, each time this job runs.
         if: needs.changes.outputs.py == 'true'
-        run: ruff check src/ server/
-      - name: Mypy
-        if: needs.changes.outputs.py == 'true'
-        run: mypy server/ --ignore-missing-imports
-      - name: Core unit tests
-        if: needs.changes.outputs.py == 'true'
-        run: python -m pytest tests/ -q --junitxml=test-results/core.xml
-      - name: Server tests
+        run: |
+          echo "nproc: $(nproc)"
+          python -c "import os; print('os.cpu_count():', os.cpu_count())"
+      - name: Server tests (shard ${{ matrix.shard }}/4)
         if: needs.changes.outputs.py == 'true'
         env:
           CCSWITCH_TEST_PG_URL: postgresql+asyncpg://ccswitch_test:test@127.0.0.1:5432/ccswitch_test
-        # -n auto --dist loadfile: the suite is I/O-bound (~28% CPU serial), so
-        # process parallelism is a ~7x wall-clock win (#728). loadfile keeps each
-        # file on one worker — required, since some files share per-file DB or
-        # Postgres state (test_postgres_compat must stay serialized on one worker).
-        # pytest-timeout converts a hung test into a NAMED failure after 300s
-        # (a bad shuffle once ate the whole 45-min job budget silently and held
-        # up the deploy controller); the outer `timeout` guard is the backstop.
-        run: timeout --signal=SIGTERM 1500 python -m pytest server/tests/ -q -n auto --dist loadfile --timeout=300 --junitxml=test-results/server.xml
+        # scripts/ci_shard_tests.py buckets whole FILES (never individual
+        # tests) by a hash of their path, so --dist loadfile's per-file worker
+        # pinning still holds — files that share DB/Postgres state (e.g.
+        # test_postgres_compat) stay serialized, now within one shard job
+        # instead of within the single runner. pytest-timeout converts a hung
+        # test into a NAMED failure after 300s (a bad shuffle once ate the
+        # whole job budget silently and held up the deploy controller); the
+        # outer `timeout` guard is the backstop.
+        run: |
+          files="$(python scripts/ci_shard_tests.py --shard ${{ matrix.shard }} --total 4)"
+          echo "Shard ${{ matrix.shard }}/4: $files"
+          # $files is a space-separated list of repo-relative paths (no spaces in
+          # path names) and must word-split into separate pytest args.
+          # shellcheck disable=SC2086
+          timeout --signal=SIGTERM 1500 python -m pytest $files -q -n auto --dist loadfile --timeout=300 --junitxml=test-results/server-shard-${{ matrix.shard }}.xml
       - name: Upload test results
         # always() so a FAILING run still uploads its junit — but only when the tests
         # actually ran, or a gated-out run would try to upload a directory that was
@@ -138,9 +191,36 @@ jobs:
         if: always() && needs.changes.outputs.py == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: junit-python
+          name: junit-python-server-shard-${{ matrix.shard }}
           path: test-results/*.xml
           retention-days: 30
+
+  lint-and-test:
+    # REQUIRED check: branch protection and server/deploy/steps.py:ci_verdict
+    # key off a context literally named "lint-and-test". Now that the real
+    # work is split across lint-and-test-core and the sharded server-tests
+    # matrix, this job is a thin aggregator that owns that name and fails if
+    # either failed — the same "always report the context" shape as the
+    # amendment-context shim in #1127. It must run unconditionally: a skipped
+    # required check wedges branch protection and the self-update preflight
+    # (#1137), so `if: always()` rather than a default `needs`-gated skip. A
+    # gated-out (no python changes) lint-and-test-core/server-tests run is
+    # still a "success" — their steps skip, the jobs don't fail — so this
+    # aggregator passes through that same green in ~seconds.
+    needs: [lint-and-test-core, server-tests]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check shard results
+        run: |
+          core="${{ needs.lint-and-test-core.result }}"
+          tests="${{ needs.server-tests.result }}"
+          echo "lint-and-test-core: $core"
+          echo "server-tests: $tests"
+          if [ "$core" != "success" ] || [ "$tests" != "success" ]; then
+            echo "::error::lint-and-test-core=$core server-tests=$tests"
+            exit 1
+          fi
 
   frontend:
     # REQUIRED check: always runs so it always reports. When no web/ file changed

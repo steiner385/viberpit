@@ -1,3 +1,4 @@
+// @vitest-environment node
 // web/src/ws/client.catchup.test.ts
 // Wave-3 cursor catch-up (audit W2.3) — the SessionSocket attach-frame behavior on heal and
 // on reconnect re-attach: include `sinceSrcSeq` ONLY when the source stream stayed

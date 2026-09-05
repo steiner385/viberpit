@@ -12,6 +12,7 @@ import pytest
 from server.db import init_db, db_session
 from server.db.models import Session as DbSession
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
@@ -45,7 +46,7 @@ async def _init_mini_db():
 def _mini_orch(driver=None, last_prompt=None, session_id="s1"):
     """Minimal orchestrator: record + optional driver, persistence patched to memory."""
     orch = SessionOrchestrator.__new__(SessionOrchestrator)
-    rec = SessionRecord(id=session_id, name="n", account="a", claude_session_id="c1",
+    rec = SessionRecord(id=session_id, name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                         cols=80, rows=24, cwd="/tmp")
     orch._records = {session_id: rec}
     orch._drivers = {session_id: driver} if driver is not None else {}
@@ -132,7 +133,7 @@ def test_run_command_model_on_detached_session_persists(tmp_path):
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name="t", account_name="acct1",
-                claude_session_id="csid", status="idle", cwd=cwd,
+                engine_session_id="csid", status="idle", cwd=cwd,
             ))
         from server.tests.fakes.fake_factory import fake_sdk_factory
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
@@ -208,7 +209,7 @@ def test_ensure_driver_reapplies_persisted_model(tmp_path):
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name="t", account_name="acct1",
-                claude_session_id="csid", status="idle", cwd=cwd,
+                engine_session_id="csid", status="idle", cwd=cwd,
                 model="opus",
             ))
         orch = SessionOrchestrator(sdk_factory=factory)
@@ -248,7 +249,7 @@ def test_ensure_driver_no_persisted_model_skips_set_model(tmp_path):
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name="t", account_name="acct1",
-                claude_session_id="csid", status="idle", cwd=cwd,
+                engine_session_id="csid", status="idle", cwd=cwd,
             ))
         orch = SessionOrchestrator(sdk_factory=factory)
         await orch.rehydrate()
@@ -359,7 +360,7 @@ async def test_run_command_model_default_alias_means_account_default():
 
 
 def test_record_roundtrips_model_pending():
-    rec = SessionRecord(id="s1", name="n", account="a", claude_session_id="c1",
+    rec = SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                         cols=80, rows=24, cwd="/tmp", model="opus", model_pending=True)
     d = rec.to_dict()
     assert d["modelPending"] is True

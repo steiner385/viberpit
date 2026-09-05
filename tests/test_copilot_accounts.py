@@ -13,7 +13,7 @@ def test_usage_for_copilot_uses_registered_reader(tmp_path, monkeypatch):
     accounts.set_copilot_usage_reader(
         lambda name: {"premium": {"used": 750, "limit": 1500, "resets_at": None}})
     u = accounts.usage_for("c1")
-    assert u is not None and u.session_pct == 50.0
+    assert u is not None and u.window("premium").used_pct == 50.0
     accounts.set_copilot_usage_reader(None)
 
 

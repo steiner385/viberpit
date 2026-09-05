@@ -23,6 +23,7 @@ from typing import Callable, Protocol
 from ccswitch import accounts, configdir, paths
 from ccswitch.config import load_config
 from ccswitch.creds import write_json_secure
+from server.aio import cancel_and_reap
 from server.library import scan
 from server.library.scan import read_json_safe
 
@@ -220,11 +221,7 @@ class McpAuthManager:
             task = self._task
         self._terminate_session()
         if task is not None and not task.done():
-            task.cancel()
-            try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=3.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
-                pass
+            await cancel_and_reap(task, phase="mcp-auth.runner", timeout=3.0)
         async with self._lock:
             if self._state.state not in TERMINAL:
                 self._state = McpAuthState(state="cancelled", server=server,

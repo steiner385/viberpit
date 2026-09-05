@@ -1,3 +1,4 @@
+// @vitest-environment node
 // Ported from plotroom@5166b52 frontend/src/__tests__/format.test.ts; edits: import path fixed to ../format
 import { describe, it, expect } from 'vitest';
 import { formatDur, formatEta, formatSince, stageLabel } from '../format';

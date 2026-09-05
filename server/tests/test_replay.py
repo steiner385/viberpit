@@ -303,3 +303,31 @@ def test_replay_skips_cli_local_command_records(tmp_path):
     out = _parse(str(p), 20)
     user_evs = [e for e in out if e.to_wire()["type"] == "user"]
     assert [e.text for e in user_evs] == ["audit the landing page"]
+
+
+def test_replay_strips_the_ccswitch_context_header_and_recovers_the_chip(tmp_path):
+    """An assistant prompt is journalled by the CLI with the `<ccswitch-context …/>`
+    header the driver prepends for the model (driver._start_turn decorates only the
+    SDK-bound copy, never the live UserMessage). Replay rebuilds UserMessage straight
+    from that JSONL, so without stripping, every reload showed the user a literal
+    marker line above their own words — the #1000 owner-prefix artifact class — with no
+    `context` field for the client to render the chip from instead.
+    """
+    from server.assistant.context import render_context_header
+
+    ctx = {"route": "/sessions/abc-123", "sessionId": "abc-123-def-456"}
+    header = render_context_header(ctx, host="dobby")
+    rows = [
+        {"type": "user", "uuid": "u1", "message": {"role": "user", "content":
+            header + "\nwhat is this session doing?"}},
+        # A coding session's prompt is untouched — no header, no context.
+        {"type": "user", "uuid": "u2", "message": {"role": "user", "content": "run the tests"}},
+    ]
+    p = tmp_path / "assistant.jsonl"
+    p.write_text("\n".join(json.dumps(r) for r in rows))
+
+    user_evs = [e for e in _parse(str(p), 20) if e.to_wire()["type"] == "user"]
+    assert [e.text for e in user_evs] == ["what is this session doing?", "run the tests"]
+    assert "ccswitch-context" not in user_evs[0].text
+    assert user_evs[0].to_wire()["context"] == ctx
+    assert user_evs[1].to_wire()["context"] is None

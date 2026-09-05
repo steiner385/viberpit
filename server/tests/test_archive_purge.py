@@ -45,7 +45,7 @@ def _archived(idx: int, *, archived_at: datetime | None, created_at: datetime | 
     """An archived row with a controllable archived_at (and optional created_at/origin)."""
     row = dict(
         id=f"arch{idx}", name=f"A{idx}", account_name="acc1",
-        claude_session_id=None, status="archived", cwd=f"/old/{idx}",
+        engine_session_id=None, status="archived", cwd=f"/old/{idx}",
         archived_at=archived_at,
     )
     if created_at is not None:
@@ -262,13 +262,15 @@ def test_archive_session_enforces_cap(tmp_path):
             await _seed([
                 _archived(0, archived_at=_BASE),  # oldest — should be purged
                 dict(id="live1", name="Live", account_name="acc1",
-                     claude_session_id=None, status="idle", cwd=str(cwd)),
+                     engine_session_id=None, status="idle", cwd=str(cwd)),
             ])
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            from server.sessions.engine import AgentEngine
             from server.sessions.types import SessionRecord
             orch._records["live1"] = SessionRecord(
                 id="live1", name="Live", account="acc1",
-                claude_session_id="", cols=80, rows=24, cwd=str(cwd),
+                engine=AgentEngine.CLAUDE_CODE,
+                engine_session_id="", cols=80, rows=24, cwd=str(cwd),
             )
             await orch.archive_session("live1")
             # Cap enforcement runs as a fire-and-forget task off the request
@@ -377,7 +379,7 @@ def test_purge_keeps_row_when_archive_rmtree_fails_then_poisons(tmp_path):
             arch_root = tmp_path / "arch"
             (arch_root / "arch0").mkdir(parents=True)  # the (undeletable) archive dir
             await _seed([dict(
-                id="arch0", name="A0", account_name="acc1", claude_session_id=None,
+                id="arch0", name="A0", account_name="acc1", engine_session_id=None,
                 status="archived", cwd="/old/0", archive_root=str(arch_root),
                 archived_at=_BASE,
             )])

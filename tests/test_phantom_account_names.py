@@ -19,6 +19,8 @@ Two independent defects, both covered here:
 """
 import json
 
+import pytest
+
 from ccswitch import accounts, paths
 
 
@@ -57,14 +59,44 @@ def test_dot_and_dotdot_slots_are_not_accounts(tmp_path, monkeypatch):
 
 
 def test_provider_of_blank_name_is_not_copilot(tmp_path, monkeypatch):
-    """provider_of('') must not resolve to the Copilot store ROOT."""
+    """provider_of('') must not resolve to the Copilot store ROOT.
+
+    It no longer resolves to ``"anthropic"`` either. A name that aliases the store
+    root is not an account at all, and the manifest says so out loud: the caller
+    gets ``UnknownAccountError`` rather than a plausible-looking provider it can
+    act on. ``provider_or_none`` is the degrade-gracefully door, and it answers
+    None — never a default provider.
+    """
+    from ccswitch.account_registry import UnknownAccountError
+
     monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
     _mk_copilot("copilot1")
     assert paths.copilot_store_dir().exists()
 
-    assert accounts.provider_of("") == "anthropic"
-    assert accounts.provider_of(".") == "anthropic"
-    assert accounts.provider_of("..") == "anthropic"
+    for bad in ("", ".", ".."):
+        with pytest.raises(UnknownAccountError):
+            accounts.provider_of(bad)
+        assert accounts.provider_or_none(bad) is None
+
+
+def test_provider_of_unknown_name_does_not_fall_back_to_anthropic(tmp_path, monkeypatch):
+    """The silent default this change removes.
+
+    ``provider_of`` used to answer ``"anthropic"`` for ANY unrecognised name, so a
+    typo or a stale session row routed straight to the Claude OAuth launch path
+    with a credential directory that belonged to nobody.
+    """
+    from ccswitch.account_registry import UnknownAccountError
+
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    _mk_anthropic("work")
+
+    with pytest.raises(UnknownAccountError):
+        accounts.provider_of("typo")
+    assert accounts.provider_or_none("typo") is None
+    # …and the usage sweep degrades to "unknown" rather than refreshing a token
+    # family that does not exist.
+    assert accounts.usage_for("typo") is None
 
 
 def test_provider_of_still_detects_real_copilot_accounts(tmp_path, monkeypatch):

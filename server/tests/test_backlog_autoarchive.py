@@ -13,11 +13,12 @@ from __future__ import annotations
 
 import asyncio
 
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
 def _rec(sid="s1", *, origin="backlog-runner"):
-    r = SessionRecord(id=sid, name="run", account="a", claude_session_id="",
+    r = SessionRecord(id=sid, name="run", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
                       cols=80, rows=24, cwd="/tmp", repo="o/r", branch="feat/x")
     r.origin = origin
     return r

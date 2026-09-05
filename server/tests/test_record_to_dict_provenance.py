@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from server.api.sessions import _record_to_dict
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
@@ -10,7 +11,8 @@ def _make_record(**kwargs):
         id="s1",
         name="test",
         account="acct-a",
-        claude_session_id="cs1",
+        engine=AgentEngine.CLAUDE_CODE,
+        engine_session_id="cs1",
         status="idle",
         created_at=None,
         detached=False,

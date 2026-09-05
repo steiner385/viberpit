@@ -101,6 +101,7 @@ def test_archive_returns_204_when_op_succeeds_but_response_lost():
             # And it really is archived.
             arch = client.get("/api/sessions/archived", headers=IDENTITY_HEADERS).json()
             assert any(a["id"] == sid for a in arch)
+            assert all("claudeSessionId" not in a for a in arch)
 
 
 def test_archive_returns_503_when_op_did_not_take_effect():

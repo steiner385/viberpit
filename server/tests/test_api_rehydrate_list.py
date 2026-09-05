@@ -33,7 +33,7 @@ def test_rehydrated_session_reports_real_status_and_created_at(tmp_path):
                 id=session_id,
                 name="rehydrated-api-session",
                 account_name="acct1",
-                claude_session_id=None,
+                engine_session_id=None,
                 status="idle",
                 cwd=cwd,
                 created_at=created_at,
@@ -82,9 +82,9 @@ def test_create_session_status_reflects_initial_prompt(tmp_path):
 
     def _fake_usage(account):
         from datetime import timedelta, timezone
-        from ccswitch.oauth import Usage
+        from ccswitch.quota import anthropic_snapshot
         reset = datetime.now(timezone.utc) + timedelta(hours=5)
-        return Usage(10.0, reset, 10.0, reset, False)
+        return anthropic_snapshot(10.0, reset, 10.0, reset, False)
 
     env = {
         "CCSWITCH_HOME": str(store_home),

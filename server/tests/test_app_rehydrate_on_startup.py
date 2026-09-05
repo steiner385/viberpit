@@ -22,7 +22,7 @@ def test_startup_rehydrates_sessions_into_list(tmp_path):
         await init_db(db_url=db_url)
         async with db_session() as db:
             db.add(DbSession(id="restored", name="Restored", account_name="acct",
-                             claude_session_id="claude-x", status="working",
+                             engine_session_id="claude-x", status="working",
                              cwd=str(tmp_path)))
     asyncio.run(seed())
 
@@ -45,7 +45,7 @@ def test_rehydrate_normalizes_condensing_to_idle(tmp_path):
         await init_db(db_url=db_url)
         async with db_session() as db:
             db.add(DbSession(id="condensing-crashed", name="Condensing", account_name="acct",
-                             claude_session_id="claude-y", status="condensing",
+                             engine_session_id="claude-y", status="condensing",
                              cwd=str(tmp_path)))
     asyncio.run(seed())
 

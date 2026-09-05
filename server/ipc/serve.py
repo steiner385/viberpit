@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 
+from server.aio import cancel_and_reap
 from server.config import get_settings
 from server.db import init_db
 from server.ipc.daemon import create_daemon_app
@@ -105,6 +106,27 @@ async def daemon_lifespan(app, orchestrator):
     at startup, so a daemon start does not respawn every session at once."""
     db_url = os.environ.get("CCSWITCH_DB_URL", "sqlite+aiosqlite:///:memory:")
     await init_db(db_url=db_url)
+    # Wire the Codex app-server manager BEFORE anything can spawn a session
+    # (rehydrate/auto_resume below both can). It is built here rather than in
+    # build_daemon() because deciding availability probes the real binary, which is
+    # async I/O. It stays None when Codex is disabled, unsupported or absent — the
+    # orchestrator's two Codex hooks are then no-ops and nothing else changes. The
+    # guard is deliberate: no Codex probe may prevent a daemon that serves Claude
+    # sessions from starting.
+    from server.codex.manager import build_codex_manager
+    try:
+        orchestrator._codex = await build_codex_manager(get_settings())
+    except Exception:
+        log.warning("daemon startup: codex manager build failed — codex disabled",
+                    exc_info=True)
+        orchestrator._codex = None
+    if orchestrator._codex is not None:
+        try:
+            reaped = orchestrator._codex.sweep_orphans()
+            if reaped:
+                log.info("daemon startup: reaped %d orphaned codex app-server(s)", reaped)
+        except Exception:
+            log.warning("daemon startup: codex orphan reap failed", exc_info=True)
     try:
         await orchestrator.rehydrate()
     except Exception as exc:
@@ -172,6 +194,20 @@ async def daemon_lifespan(app, orchestrator):
         yield
     finally:
         uninstall_drain_on_sigterm()
+        # Drain the Codex app-servers first. By the time this runs, install_drain_on_sigterm
+        # has already let in-flight turns settle, so no thread is mid-turn — which is the
+        # ordering the plan requires ("after driver turns settle and before daemon shutdown
+        # completes"), and the reason it is not safe to stop these any earlier: killing an
+        # app-server under a live turn is exactly the crash the manager has to treat as
+        # indeterminate. stop_all() tears them down CONCURRENTLY under the same wait_for cap
+        # as the x11 sweep, so the whole shutdown stays inside systemd's TimeoutStopSec.
+        codex = getattr(orchestrator, "_codex", None)
+        if codex is not None:
+            try:
+                await asyncio.wait_for(
+                    codex.stop_all(), timeout=_DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S)
+            except Exception:
+                log.warning("daemon shutdown: codex teardown failed", exc_info=True)
         # Tear down every virtual display before stopping (issue #206, daemon half).
         # orchestrator.stop() only cancels background tasks — it never freed displays,
         # so the daemon (which owns sessions in remote mode) leaked Xvfb/x11vnc/chrome
@@ -196,11 +232,7 @@ async def daemon_lifespan(app, orchestrator):
         except Exception:
             loop_lag_task = None
         if loop_lag_task is not None:
-            loop_lag_task.cancel()
-            try:
-                await loop_lag_task
-            except asyncio.CancelledError:
-                pass
+            await cancel_and_reap(loop_lag_task, phase="daemon.loop-lag")
         await orchestrator.stop()
 
 

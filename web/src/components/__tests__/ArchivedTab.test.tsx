@@ -88,7 +88,7 @@ const makeArchived = (overrides: Partial<ArchivedSession> = {}): ArchivedSession
     name: 'My Archived Session',
     account: 'work',
     cwd: '/home/user/project',
-    claudeSessionId: 'claude-abc',
+    engineSessionId: 'claude-abc',
     createdAt: '2026-06-01T10:00:00Z',
     archivedAt: '2026-06-20T12:00:00Z',
     ...overrides,

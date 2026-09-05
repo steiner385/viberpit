@@ -1,3 +1,4 @@
+// @vitest-environment node
 // web/src/ws/liveBatch.catchup.test.ts
 // Wave-3 cursor catch-up (audit W2.3) — the srcContiguous gate + resumeOk handling in the
 // WS-client layer. catchUpCursor(state, sid) returns the srcSeq to send as `sinceSrcSeq`
