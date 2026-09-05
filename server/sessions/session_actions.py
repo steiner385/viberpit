@@ -117,7 +117,6 @@ async def set_model(
     its own ``when``) — the notice-string / after_turn composition for that command
     stays in ``run_command``, reading this call's ``restarted`` result; this helper
     owns the single apply-and-audit path both entry points share."""
-    from server.sessions.model_policy import resolve_model_policy  # noqa: PLC0415
     from server.sessions.orchestrator import ModelBlockedError  # noqa: PLC0415
     from server.sessions.types import is_assistant  # noqa: PLC0415
 
@@ -127,13 +126,17 @@ async def set_model(
     # up front instead, with the same MODEL_GATED code POST /api/assistant/session
     # already returns when it creates one (server/assistant/api.py).
     #
-    # Ordered so the common case pays nothing: the policy read is a local DB hit, and
-    # only a NON-allow answer costs the `get_session` round-trip (an RPC in remote mode).
     # Sits here rather than in the route so the WS `/model` slash command, which reaches
     # this same helper via run_command, is gated too.
-    if await resolve_model_policy(db, model=model) != "allow":
-        rec = await orch.get_session(session_id)
-        if rec is not None and is_assistant(rec):
+    #
+    # Asks "is this the assistant?" BEFORE consulting policy, so an ordinary session
+    # never pays a policy read this function does not use — `set_model_for_session`
+    # re-runs `resolve_model_policy` itself, and doing it here first would just be the
+    # same query twice on every model switch.
+    rec = await orch.get_session(session_id)
+    if rec is not None and is_assistant(rec):
+        from server.sessions.model_policy import resolve_model_policy  # noqa: PLC0415
+        if await resolve_model_policy(db, model=model) != "allow":
             raise ActionError(
                 "MODEL_GATED", f"{model} needs approval and cannot run the assistant", 400,
             )
