@@ -13,7 +13,8 @@ F1.3, F2.1, F2.2, F2.3, F3.1, F3.2, F3.3, F3.4, F4.5, F6.2, F6.3.
 - PR 4: the Sessions workspace — `SessionHeader`, composer row, shortcuts registry, list filters,
   `PromptDock`.
 - PR 10 (shell half): `useAttractCycle`, wake-lock, cursor hiding, Playwright viewport projects.
-- PR 12: `AssistantSheet` against the assistant API (after the backend spec).
+- PR 12: `AssistantSheet` against the assistant API (after the backend spec). **Landed as #1160**
+  (`docs/product/features/ai-assistant.md`).
 
 ## 2. Files
 
@@ -113,8 +114,8 @@ is open. `dock?` renders when the current section is `sessions` (D10). `drawer?`
 - **`PromptDock`** — `DispatchBar` when no session is open, `SessionComposer` (from the runtime
   context) when one is. Safe-area bottom padding on phone; hidden in kiosk.
 - **`DrawerHost`** — one `Sheet`; content by `?drawer=`: `help` → `HelpSheet` (today's `HelpDrawer`
-  content rendered from `shortcuts.ts` + `navDefs`), `assistant` → `AssistantSheet` (PR 12; until
-  then a static "Assistant is coming" sheet with no controls). Persisted width at
+  content rendered from `shortcuts.ts` + `navDefs`), `assistant` → `AssistantSheet` (PR 12, landed
+  as #1160). Persisted width at
   `ccswitch.drawerWidth`. The drawer element stays mounted while `?drawer=` is set across route
   changes; `AppShell` keeps the param when navigating sections.
 - **`Overlays`** — the portal target for `Dialog`/`Sheet`/`Menu`, plus `Toaster`, `DeployOverlay`,
@@ -273,13 +274,13 @@ Filters: **Status** (tier), **Project** (repo), **Environment** (host); **Group 
 **Project**; search stays. Persisted at `ccswitch.listFilters`. Hover on a row reveals the archive
 `IconButton` (desktop); swipe actions unchanged on touch.
 
-## 7. Assistant drawer API (reserved; PR 12 consumes)
+## 7. Assistant drawer API (landed, PR 12 = #1160; backend: `2026-09-04-ai-assistant-design.md`)
 
 `AssistantSheet` expects: `POST /api/assistant/session` → `{ id }` (idempotent per user; returns the
 existing assistant session), and the normal session WebSocket for `id`. It renders `TranscriptView`
 + `SessionComposer` from the runtime, with a context chip `{ route, sessionId? }` sent as a hidden
-prefix on each prompt. The backend spec defines the tool surface; until it merges, the sheet shows a
-static explanation and no composer.
+prefix on each prompt. See `docs/product/features/ai-assistant.md` for the shipped feature (state:
+live) and its full PR list.
 
 ## 8. Tests
 
