@@ -232,6 +232,11 @@ There is **no failover in v1.** A second authority sharing the state directory
 would be a second writer of the per-account generation counter, so the second start
 takes an exclusive lock or exits 3.
 
+> **Host procedures live in `docs/runbooks/codex-credential-authority.md`**: minting
+> this service's own PKI (it must not share the session-daemon CA), onboarding a
+> runner, reauth, backup/restore, Codex CLI upgrades, rollback, and the kill switch.
+> This section is the architecture and the env reference.
+
 ### Install
 
 ```bash
@@ -282,6 +287,16 @@ off on that host. It does **not** fall back to managed runner credentials — th
 fallback would put a refresh token back on a session host, which is the property
 this service exists to remove.
 
+**`CCSWITCH_CODEX_AUTOMATIONS_ENABLED` is a third, separate flag** (default `false`),
+set on the host that runs the automation loops. `CCSWITCH_CODEX_ENABLED` governs
+sessions a human dispatched and is watching; this one governs sessions an automation
+dispatches into `full-auto` with git/gh/pytest and nobody watching, so the two are
+not the same decision. Turning it off forces every automation origin back to Claude
+immediately, with no per-origin config to unwind — the fastest kill switch if a Codex
+automation misbehaves. Which origins may use it at all is a code-declared ceiling
+(`server/automations/engine_policy.py`), not an env var; as of Phase 7 Task 7.1 every
+origin is `claude_only`, so this flag currently changes nothing on its own.
+
 ### Verifying the isolation
 
 The claim is that the session user cannot reach the credential store. Check it:
@@ -305,10 +320,48 @@ Restarting the authority is cheap: it holds no sessions, cancels in-flight devic
 logins, and the persisted generation counter means a restart cannot re-mint a number
 an in-flight runner is still fencing against.
 
+### Installing the Codex CLI on a runner
+
+```bash
+bash scripts/fetch-codex.sh          # download, verify, install
+bash scripts/fetch-codex.sh --record # pin a new release's digest (trusted host, once)
+```
+
+Three independent checks, so no single one can be waived into running the wrong
+bytes: the artefact's SHA-256 must match `scripts/codex-cli.sha256`;
+`codex --version` must equal `server/codex/schema.py:PINNED_CLI_VERSION`, which the
+script *reads* from that module rather than restating; and the daemon separately
+re-generates and hashes the app-server JSON schema before offering Codex at all.
+Until a digest is recorded the script fails closed rather than installing
+unverified bytes — see the header of `scripts/codex-cli.sha256` for why a
+placeholder digest would be worse than none.
+
+Point the daemon at it with `CCSWITCH_CODEX_BIN`. A host without Codex is not a
+broken host: `probe_availability` reports `binary_not_found` and the daemon keeps
+serving Claude sessions.
+
+### Startup doctor
+
+```bash
+python -m server.codex.doctor        # JSON report; exit 0 when nothing failed
+```
+
+Six named verdicts for the six independent ways a Codex runner can be
+misconfigured — `external_auth`, `binary`, `runtime_home`, `authority`,
+`mtls_identity`, `manifest` — so "Codex isn't offered" stops being one symptom
+with six causes. The daemon runs it once at every boot and logs it as a single
+`codex.doctor.report` record; it runs as a supervised background task and can
+never delay or fail a boot. It never prints a token-bearing value.
+
+Metrics are in `server/obs/metrics.py` (`codex_*`) — the runbook's § 8 lists what
+each one is worth alerting on. No label carries a native thread id, prompt,
+command, or token.
+
 ### "Codex isn't offered" — where to look
 
-Codex is offered only when the edge has an authority **and** some enabled, healthy
-runner advertises a usable Codex boundary. Each daemon reports its own verdict on
+`python -m server.codex.doctor` on the runner answers most of this directly. When
+you need the fleet-level view instead: Codex is offered only when the edge has an
+authority **and** some enabled, healthy runner advertises a usable Codex boundary. Each daemon reports its own verdict on
 `GET /info` under `engines`, the fleet probe stores it on the host row, and both the
 Fleet settings table and `GET /api/config` render it. Work down in this order:
 

@@ -64,6 +64,10 @@ DEFAULT_STOP_TIMEOUT_S: Final = 5.0
 #: post-mortem hint, not a log sink, and it is held per live runner.
 STDERR_TAIL_BYTES: Final = 4096
 
+#: Cap on the reported CLI version. A real one is ~18 characters; this bounds what
+#: a misbehaving binary can push into `/info`, the host row, and the Fleet table.
+MAX_CLI_VERSION_CHARS: Final = 120
+
 #: Filesystem types that must never hold Codex runtime state. Any ``fuse*`` type is
 #: refused wholesale: sshfs (the mount that caused #1005) reports ``fuse.sshfs``,
 #: and every other FUSE backend shares the same "locking and mtime are a polite
@@ -393,7 +397,16 @@ async def probe_cli_version(
     runner: CommandRunner | None = None,
     timeout_s: float = DEFAULT_VERSION_PROBE_TIMEOUT_S,
 ) -> str:
-    """Execute ``<binary> --version`` and return the trimmed version line."""
+    """Execute ``<binary> --version`` and return the trimmed version line.
+
+    The returned string is **native output** — but unlike the rest of this
+    module's native text it cannot be scrubbed wholesale, because it is compared
+    against the pin, rendered on ``/info``, stored on the host row, and shown in
+    the Fleet table. So it gets the narrow treatment instead: credential SHAPES
+    removed, and a hard length cap. ``/info`` is polled every 30s per host and
+    fanned out to the edge, so an odd or hostile binary printing a token on its
+    version line would otherwise be replicated and persisted fleet-wide.
+    """
     run = runner or _default_runner
     try:
         code, out, err = await asyncio.wait_for(run(binary, "--version"), timeout_s)
@@ -409,7 +422,7 @@ async def probe_cli_version(
             f"codex --version exited {code}: "
             f"{redaction.scrub_text(err.strip() or version)[:200] or 'no output'}"
         )
-    return version
+    return redaction.scrub_secret_shapes(version)[:MAX_CLI_VERSION_CHARS]
 
 
 async def probe_contract_schema(

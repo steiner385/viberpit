@@ -1,17 +1,27 @@
 """Pure prompt builder for the Backlog Runner implementation sessions.
 
 ``build_implement_prompt`` constructs the seed prompt that is passed to a
-spawned Claude session instructing it to implement a batch of issues in one
-PR, following the repository's completion workflow.  It is PURE — no I/O, no
+spawned session instructing it to implement a batch of issues in one PR,
+following the repository's completion workflow.  It is PURE — no I/O, no
 model calls, no side effects — so it can be unit-tested without any
 infrastructure.
+
+Engine-neutral by construction (Phase 7): every instruction is a git/gh fact
+that holds for any native agent.  The one engine-specific detail, the commit
+attribution trailer, comes from ``server.sessions.completion.commit_trailer`` —
+a Codex session must not be told to co-author its commits as Claude.
 """
 from __future__ import annotations
+
+from ccswitch.engines import AgentEngine
+
+from server.sessions.completion import commit_trailer
 
 from .backlog_selection import Batch
 
 
-def build_implement_prompt(batch: Batch, default_branch: str = "master") -> str:
+def build_implement_prompt(batch: Batch, default_branch: str = "master", *,
+                           engine: AgentEngine | str = AgentEngine.CLAUDE_CODE) -> str:
     """Return the seed prompt for a session that implements ``batch``.
 
     The prompt instructs the agent to:
@@ -25,7 +35,7 @@ def build_implement_prompt(batch: Batch, default_branch: str = "master") -> str:
     invoking — do NOT hardcode ``"master"`` (many repos use ``"main"``).
 
     Pure: no I/O, no model calls.  The returned string may be passed directly
-    as the first user prompt of a spawned claude-agent-sdk session.
+    as the first user prompt of a spawned session on any engine.
     """
     # Build a numbered list of issue refs and their human-readable numbers.
     issue_lines: list[str] = []
@@ -51,5 +61,5 @@ def build_implement_prompt(batch: Batch, default_branch: str = "master") -> str:
         "   is the finished state.\n"
         f"6. Branch off `origin/{default_branch}` (never local `{default_branch}`).\n"
         "7. End every commit message with:\n"
-        "   `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`\n"
+        f"   `{commit_trailer(engine)}`\n"
     )

@@ -144,6 +144,40 @@ also declares `Requires=tailscaled.service`, so it won't even start before the t
 manual remount above is for the case where the mount has actually gone away (e.g. dobby rebooted,
 or the sshfs process itself died) rather than just stalled.
 
+### 4.1 Codex state must never live on these mounts
+
+`codex app-server` keeps SQLite + WAL, thread state and shell history under
+`CODEX_HOME`. Those two sshfs mounts are the exact conditions that format cannot
+survive — #1005 (the attr-cache torn reads that clipped `.claude.json`) is what a
+FUSE mount does to a file format that assumes local locking, and a database is far
+less forgiving than a JSON file.
+
+Rocky's daemon unit therefore pins Codex homes to systemd's host-local state
+directory:
+
+```
+Environment=XDG_STATE_HOME=%S/ccswitch/state
+# → per-account homes under /var/lib/ccswitch/state/ccswitch/codex/<account>/
+```
+
+This is belt-and-braces, not the only guard: `assert_local_filesystem` refuses a
+known network fstype **and** one it cannot prove local, and `ensure_codex_home`
+refuses a symlink anywhere in the path — so a home aimed at a mount fails closed
+rather than corrupting. But failing closed still costs a session, so keep the
+locality explicit.
+
+```bash
+# Both must hold on rocky. Expect a local fstype, and no credential cache.
+ssh tony@rocky 'findmnt -no FSTYPE -T /var/lib/ccswitch/state'   # ext4/xfs, never fuse.*
+ssh tony@rocky 'find /var/lib/ccswitch/state/ccswitch/codex -name auth.json'   # no output
+ssh tony@rocky 'cd /home/tony/GitHub/ccswitch && .venv/bin/python -m server.codex.doctor'
+```
+
+Rocky is a **worker** (`CCSWITCH_DAEMON_ROLE`), and Codex changes nothing about
+that: it obtains short-lived envelopes from dobby's credential authority over
+mutual TLS as `codex-runner:rocky` and never holds a refresh token. Full procedure
+in `docs/runbooks/codex-credential-authority.md`.
+
 ## 5. Deploy
 
 A deploy fans out to **every** host in the fleet registry (`Settings → Fleet`), local and

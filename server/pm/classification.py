@@ -12,7 +12,10 @@ import json
 import re
 from dataclasses import dataclass
 
+from ccswitch.engines import AgentEngine
+
 from server.db.models import FEATURE_LIFECYCLE_STATES, FEATURE_LINK_KINDS, WORK_ITEM_KINDS
+from server.sessions.completion import commit_trailer
 
 # One place defining the feature-doc directory + path (single source of truth,
 # mirrors sdlc.prompts.SDLC_DOCS_DIR / artifact_path). The map-synthesis session
@@ -104,6 +107,7 @@ def build_map_synthesis_prompt(
     scope: str = "initial",
     suggestion: str | None = None,
     item_numbers: tuple[int, ...] = (),
+    engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
 ) -> str:
     """Seed prompt for the map-synthesis session (spec §5 Step 1 / §6 drift).
 
@@ -136,7 +140,7 @@ def build_map_synthesis_prompt(
             "3. Open exactly ONE NON-draft PR, marked ready for review.\n"
             "4. Do NOT arm auto-merge — the merge is the human curation gate.\n"
             "5. End every commit message with:\n"
-            "   `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`\n"
+            f"   `{commit_trailer(engine)}`\n"
         )
     repo_clause = f" in repository `{repo}`" if repo else ""
     return (
@@ -241,7 +245,7 @@ def build_map_synthesis_prompt(
         "4. Do NOT arm auto-merge: the merge is the human curation gate; PR "
         "review comments are where the map is argued with.\n"
         "5. End every commit message with:\n"
-        "   `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`\n"
+        f"   `{commit_trailer(engine)}`\n"
     )
 
 

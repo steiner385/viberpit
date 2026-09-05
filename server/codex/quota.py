@@ -31,6 +31,7 @@ from server.codex.protocol import (
     CodexRequestFailed,
 )
 from server.obs.context import log_event
+from server.obs.metrics import codex_quota_last_read_timestamp_s
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +189,9 @@ class CodexQuotaReader:
                 account, UNKNOWN, redaction.scrub_exception(exc)
             )
         self._last_good[account] = _CachedRead(now, snapshot)
+        # Read TIME, not age: a gauge nothing re-sets between reads would be stale
+        # by construction, so the consumer computes `now - value` instead.
+        codex_quota_last_read_timestamp_s.labels(account).set(now)
         return snapshot
 
     def cached(self, account: str) -> QuotaSnapshot | None:

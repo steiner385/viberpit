@@ -11,6 +11,7 @@ from .autopilot_policy import (
     Decision, DecisionContext, fingerprint, post_validate, pre_decide,
 )
 from .base import AutomationStatus, ConfigField
+from .engine_policy import EnginePolicy
 
 log = logging.getLogger(__name__)
 
@@ -22,6 +23,10 @@ class Autopilot:
     name = "Autopilot"
     description = "Continuously advances every governed session toward its goal."
     modes: tuple[str, ...] = ("off", "propose", "auto")
+    # Audited engine ceiling (Phase 7, Task 7.1). This origin has no Codex
+    # acceptance evidence, so it launches Claude only. Widening it is a
+    # reviewable one-line change gated on its acceptance suite passing.
+    engine_policy: EnginePolicy = EnginePolicy.CLAUDE_ONLY
     config_schema = [
         ConfigField(key="allow_tool_approvals", label="Approve tool permissions", type="bool",
                     default=True, help="If off, autopilot never approves permissions (only "

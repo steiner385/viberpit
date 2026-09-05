@@ -62,3 +62,27 @@ async def read_automation_config(automation_id: str, schema: ConfigSchema, *,
     if mode is not None and mode in modes:
         return mode, config
     return default_mode or "off", config
+
+
+async def read_effective_config(automation_id: str) -> dict:
+    """The validated config for a REGISTERED automation, schema resolved for you.
+
+    ``read_automation_config`` above is for a control loop that already holds its
+    own schema and mode vocabulary. The spawn helper does not — it knows only an
+    ``automation_id`` — so it needs the registry's answer for both, including the
+    engine fields the origin's audited ceiling adds (Phase 7, Task 7.1).
+
+    Same invariant as its sibling: any failure resolves to pure defaults, which
+    for the engine fields means ``claude_code``. An unregistered id (a caller
+    passing an ad-hoc origin) answers ``{}`` rather than raising into a spawn.
+    """
+    from .engine_policy import effective_config_schema
+    from .registry import registry
+
+    try:
+        automation = registry.get(automation_id)
+    except KeyError:
+        return {}
+    _mode, config = await read_automation_config(
+        automation_id, effective_config_schema(automation), modes=automation.modes)
+    return config

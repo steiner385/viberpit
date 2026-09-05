@@ -9,6 +9,7 @@ import logging
 from typing import Any, Awaitable, Callable
 
 from .base import AutomationStatus, ConfigField
+from .engine_policy import EnginePolicy
 
 log = logging.getLogger(__name__)
 
@@ -26,6 +27,10 @@ class CicdDoctor:
     description = ("Watches CI health across repos: flaky tests, advisory-check "
                    "stability and graduation, and workflow waste.")
     modes: tuple[str, ...] = ("off", "propose")
+    # Audited engine ceiling (Phase 7, Task 7.1). This origin has no Codex
+    # acceptance evidence, so it launches Claude only. Widening it is a
+    # reviewable one-line change gated on its acceptance suite passing.
+    engine_policy: EnginePolicy = EnginePolicy.CLAUDE_ONLY
     config_schema = [
         ConfigField(key="enabled_repos", label="Repositories", type="repo-multiselect",
                     default=[], help="Limit to these repos (empty = all ccswitch-managed)."),

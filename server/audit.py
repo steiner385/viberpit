@@ -22,6 +22,23 @@ from server.db.models import AuditEvent
 _REDACT_PATTERNS: list[re.Pattern[str]] = [
     # Anthropic API keys:  sk-ant-api03-...  sk-ant-...
     re.compile(r"sk-ant-[A-Za-z0-9_-]+"),
+    # OpenAI-style keys:  sk-...  sk-proj-...  sk-svcacct-...
+    # Kept SEPARATE from (rather than merged into) the rule above so the Anthropic
+    # shape keeps its unbounded tail: this one needs a length floor to avoid eating
+    # ordinary hyphenated words, and `sk-ant-x` is shorter than that floor.
+    #
+    # This lives in the SHARED list, not in server/codex/redaction.py, because the
+    # surfaces that need it are shared: audit rows (retained far longer than logs)
+    # and RedactingFilter (every log record in the process). It was Codex-only
+    # until the Task 6.1 secrets sweep drove a bare `sk-` key through
+    # `redact_detail` and watched it come out intact — no Codex module is on that
+    # path. One owner per shape: server/codex/redaction.py now delegates it here.
+    re.compile(r"sk-[A-Za-z0-9_-]{12,}"),
+    # JWT: three base64url segments behind the `eyJ` header marker (base64 of `{"`).
+    # The itsdangerous rule below needs 16/6/20-char segments, so a JWT with a short
+    # payload or signature — which an OpenAI access token can have — slips past it.
+    # The literal prefix keeps this cheap and effectively free of false positives.
+    re.compile(r"\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"),
     # ccswitch envelope-encrypted token prefix
     re.compile(r"ccenc1:[A-Za-z0-9+/=]+"),
     # Generic long base64 blobs that are clearly padded secrets (≥60 chars + mandatory

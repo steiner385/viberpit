@@ -745,15 +745,34 @@ def test_no_authority_means_no_background_sync_task():
     lifespan-budget tests — for a feature that is switched off.
     """
     from server.app import create_app
+    from server.codex.auth_client import reset_edge_authority_client
     from server.sessions.orchestrator import SessionOrchestrator
     from server.tests.fakes.fake_factory import fake_sdk_factory
 
     with temp_env():
+        # "Without a credential authority" is this test's PREMISE, so establish it
+        # rather than assume it. `temp_env()` manages four variables and none of
+        # them is `CCSWITCH_CODEX_AUTHORITY_*`, so on any host whose shell
+        # configures a real authority — which is every Codex operator, and the
+        # deployed fleet — the edge would correctly start the task and this would
+        # read as a regression in whatever change happened to be in flight.
+        #
+        # The scope matters too: the task is created in the LIFESPAN, not in
+        # `create_app()`, so the patch has to cover the `TestClient` block. That
+        # also puts `_ENV`'s in-memory DB URL in force while `init_db` runs, which
+        # is what the fixture was always for.
         with patch.dict(os.environ, _ENV):
+            for _var in [v for v in os.environ if v.startswith("CCSWITCH_CODEX_AUTHORITY_")]:
+                os.environ.pop(_var, None)
+            # The edge's authority client is a process-wide cache, so a neighbouring
+            # test that built one would otherwise decide this assertion for us.
+            reset_edge_authority_client()
             app = create_app(
                 orchestrator=SessionOrchestrator(
                     sdk_factory=fake_sdk_factory(), poll_interval=9999.0
                 )
             )
-        with TestClient(app):
-            assert app.state.codex_auth_sync_task is None
+            with TestClient(app):
+                assert app.state.codex_auth_sync_task is None
+    # Leave no client built from the temp environment behind for the next test.
+    reset_edge_authority_client()

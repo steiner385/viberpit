@@ -4133,19 +4133,31 @@ class SessionOrchestrator:
         cwd = await asyncio.to_thread(
             gitrepos.ensure_clone, await self._effective_repo_root(), batch.repo, url)
         _mode, config = await self._backlog_read_config()
-        model, model_source = await resolve_model(config, "\n".join(
-            f"{ref}  {batch.titles.get(ref) or '(no title)'}" for ref in batch.issues))
-        detail: dict = {"issues": batch.issues}
-        if model is not None:
-            detail.update(model=model, model_source=model_source)
+        # Engine first: the seed prompt states a commit trailer, so it has to be
+        # built for the engine that will actually run (Phase 7, Task 7.1).
+        plan = await self._backlog_ctx.launch_plan_or_refuse(batch.primary)
+        if plan is None:                       # out of policy — the ctx recorded why
+            return None
+        engine, _launch_config = plan
+        detail: dict = {"issues": batch.issues, "engine": engine.value}
+        model = model_source = None
+        if engine is AgentEngine.CLAUDE_CODE:
+            # `resolve_model` is a Claude complexity assessor returning Claude
+            # catalog aliases. Skipping it for another engine is the audit Task
+            # 7.1 asks for: not a wasted Haiku call whose answer is then dropped.
+            model, model_source = await resolve_model(config, "\n".join(
+                f"{ref}  {batch.titles.get(ref) or '(no title)'}" for ref in batch.issues))
+            if model is not None:
+                detail.update(model=model, model_source=model_source)
         return await self._backlog_ctx.spawn_session(
             origin_ref=batch.primary,
             dedupe_key=batch.primary,
             repo=batch.repo,
             cwd=cwd,
             account=account,
+            engine=engine,
             name=f"backlog {batch.primary}",
-            initial_prompt=build_implement_prompt(batch, default_branch),
+            initial_prompt=build_implement_prompt(batch, default_branch, engine=engine),
             model=model,
             detail=detail,
         )
@@ -5411,27 +5423,41 @@ class SessionOrchestrator:
         default_branch = await self._sdlc_default_branch(repo)
         upstream = artifact_path(slug, "intent" if kind == "spec" else "spec")
 
+        # Engine before the prompt: the artifact instructions state a commit
+        # trailer, which is the one engine-specific line in them (Phase 7).
+        plan = await self._sdlc_synth_ctx.launch_plan_or_refuse(f"{slug}:{kind}")
+        if plan is None:
+            return None
+        engine, _launch_config = plan
+
         def build(cwd: str, default_branch: str) -> str:
             content = self._sdlc_show_committed_file(
                 cwd, f"origin/{default_branch}", upstream)
             if kind == "spec":
                 return build_spec_prompt(
-                    content, [], slug=slug, repo=repo, default_branch=default_branch)
+                    content, [], slug=slug, repo=repo, default_branch=default_branch,
+                    engine=engine)
             return build_plan_prompt(
-                content, slug=slug, repo=repo, default_branch=default_branch)
+                content, slug=slug, repo=repo, default_branch=default_branch,
+                engine=engine)
 
         prompt = await asyncio.to_thread(build, cwd, default_branch)
-        model, model_source = await resolve_model(
-            config, f"{ini.get('title') or slug}  ({kind})")
-        detail: dict = {"initiative": slug, "kind": kind}
-        if model is not None:
-            detail.update(model=model, model_source=model_source)
+        detail: dict = {"initiative": slug, "kind": kind, "engine": engine.value}
+        model = model_source = None
+        if engine is AgentEngine.CLAUDE_CODE:
+            # Claude-only complexity assessor picking Claude catalog aliases —
+            # not consulted for another engine (Task 7.1 helper-call audit).
+            model, model_source = await resolve_model(
+                config, f"{ini.get('title') or slug}  ({kind})")
+            if model is not None:
+                detail.update(model=model, model_source=model_source)
         return await self._sdlc_synth_ctx.spawn_session(
             origin_ref=f"{slug}:{kind}",
             dedupe_key=f"{slug}:{kind}",
             repo=repo,
             cwd=cwd,
             account=account,
+            engine=engine,
             name=f"sdlc {kind} {slug}",
             initial_prompt=prompt,
             model=model,

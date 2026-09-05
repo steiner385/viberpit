@@ -1,7 +1,7 @@
 """Pure per-stage seed-prompt builders for the SDLC front chain.
 
 Mirrors ``backlog_prompt.build_implement_prompt``: each function returns the first
-user prompt for a spawned, non-interactive Claude session that produces one
+user prompt for a spawned, non-interactive session that produces one
 committed artifact PR. All builders are PURE — no I/O, no model calls — so they
 are unit-tested without infrastructure.
 
@@ -13,6 +13,10 @@ edit the upstream artifacts it reads — v1 is propose-only, so the artifact PR 
 the proposal and a human advance is the gate.
 """
 from __future__ import annotations
+
+from ccswitch.engines import AgentEngine
+
+from server.sessions.completion import commit_trailer
 
 # One place defining the committed-artifact directory (single source of truth).
 SDLC_DOCS_DIR = "docs/sdlc"
@@ -29,7 +33,8 @@ def artifact_path(slug: str, kind: str) -> str:
 _artifact_path = artifact_path
 
 
-def _common_instructions(slug: str, kind: str, repo: str, default_branch: str) -> str:
+def _common_instructions(slug: str, kind: str, repo: str, default_branch: str,
+                         engine: AgentEngine | str = AgentEngine.CLAUDE_CODE) -> str:
     """The shared trailer every stage session must obey. Keeping it in one helper
     avoids N parallel copies drifting apart (constitution VI)."""
     path = _artifact_path(slug, kind)
@@ -44,7 +49,7 @@ def _common_instructions(slug: str, kind: str, repo: str, default_branch: str) -
         "5. NEVER edit the upstream artifacts you were given — they are read-only inputs.\n"
         "   Add a new file; do not modify intent.md/spec.md from an earlier stage.\n"
         "6. End every commit message with:\n"
-        "   `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`\n"
+        f"   `{commit_trailer(engine)}`\n"
     )
 
 
@@ -54,6 +59,7 @@ def build_intent_prompt(
     slug: str,
     repo: str = "",
     default_branch: str = "master",
+    engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
 ) -> str:
     """Seed prompt for the Intake session: a brainstorm/triage *trigger* → ``intent.md``.
 
@@ -72,7 +78,7 @@ def build_intent_prompt(
         "- **Affected systems** — components/services this likely touches.\n"
         "- **Constraints** — governance, security, compatibility, scope limits.\n"
         "- **Open questions** — what must be resolved before a spec is written.\n\n"
-        + _common_instructions(slug, "intent", repo, default_branch)
+        + _common_instructions(slug, "intent", repo, default_branch, engine)
     )
 
 
@@ -83,6 +89,7 @@ def build_spec_prompt(
     slug: str,
     repo: str = "",
     default_branch: str = "master",
+    engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
 ) -> str:
     """Seed prompt for the Synthesizer (Design): ``intent.md`` → ``spec.md``.
 
@@ -106,7 +113,7 @@ def build_spec_prompt(
         "acceptance criteria, data/API surface, and non-goals. Explicitly **flag "
         "any policy concerns** (security, governance, ToS, data handling) as called-"
         "out spec constraints so a human can resolve them at the gate.\n\n"
-        + _common_instructions(slug, "spec", repo, default_branch)
+        + _common_instructions(slug, "spec", repo, default_branch, engine)
     )
 
 
@@ -116,6 +123,7 @@ def build_plan_prompt(
     slug: str,
     repo: str = "",
     default_branch: str = "master",
+    engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
 ) -> str:
     """Seed prompt for the Synthesizer (Plan, plan mode): ``spec.md`` → ``plan.md``.
 
@@ -134,5 +142,5 @@ def build_plan_prompt(
         "- **Order** — the sequence of steps (what must land before what).\n"
         "- **Tests** — the tests that prove each step, TDD-first where possible.\n"
         "- **Risks** — what could go wrong and the mitigation for each.\n\n"
-        + _common_instructions(slug, "plan", repo, default_branch)
+        + _common_instructions(slug, "plan", repo, default_branch, engine)
     )

@@ -9,6 +9,7 @@ from server.sessions.pr_fix import VALID_AUTOFIX_MODES
 
 from .base import AutomationStatus, ConfigField
 from .model_pick import AUTOMATION_MODEL_CHOICES
+from .engine_policy import EnginePolicy
 
 
 def _ordered_modes() -> tuple[str, ...]:
@@ -22,6 +23,10 @@ class PrDoctor:
     name = "PR Doctor"
     description = "Watches CI on PRs created via ccswitch and restores failing ones."
     modes = _ordered_modes()
+    # Audited engine ceiling (Phase 7, Task 7.1). This origin has no Codex
+    # acceptance evidence, so it launches Claude only. Widening it is a
+    # reviewable one-line change gated on its acceptance suite passing.
+    engine_policy: EnginePolicy = EnginePolicy.CLAUDE_ONLY
     config_schema = [
         ConfigField(key="enabled_repos", label="Repositories",
                     type="repo-multiselect", default=[],

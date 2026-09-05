@@ -15,6 +15,7 @@ from ccswitch import gitrepos
 
 from .base import AutomationStatus, ConfigField
 from .completion_bar import BarVerdict, PrFact, PrFacts, _is_code_goal, met_bar
+from .engine_policy import EnginePolicy
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -28,6 +29,10 @@ class ArchiveAudit:
     description = ("Re-audits recently archived sessions against the completion bar and "
                    "auto-unarchives ones archived prematurely (no merged/armed PR).")
     modes: tuple[str, ...] = ("off", "act")
+    # Audited engine ceiling (Phase 7, Task 7.1). This origin has no Codex
+    # acceptance evidence, so it launches Claude only. Widening it is a
+    # reviewable one-line change gated on its acceptance suite passing.
+    engine_policy: EnginePolicy = EnginePolicy.CLAUDE_ONLY
     config_schema = [
         ConfigField(key="window_days", label="Recency window (days)", type="int", default=7,
                     help="Re-audit sessions archived within this many days."),
