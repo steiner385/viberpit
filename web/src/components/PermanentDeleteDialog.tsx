@@ -3,7 +3,7 @@
  * one session or many.
  *
  * There were two of these: this one (single session; AppShell's card menu and
- * the in-session SessionActions) and a private copy inside ArchivedManager that
+ * the in-session SessionActions) and a private copy inside ArchivedSessionList that
  * had grown the bulk copy, a progress bar and a cancel. One dialog now, because
  * the difference between them was never the dialog — it was how many names the
  * caller had.

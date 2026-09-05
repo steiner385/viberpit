@@ -11968,7 +11968,10 @@ class SessionOrchestrator:
                 "reasoningEffort": getattr(row, "reasoning_effort", None),
                 "permissionMode": row.permission_mode,
                 "createdAt": iso_utc(row.created_at),
-                "archivedAt": iso_utc(row.updated_at),
+                # `archived_at` is the lifecycle fact; `updated_at` bumps on every
+                # incidental row write and only stands in for rows archived before
+                # that column existed (it is NULL on those).
+                "archivedAt": iso_utc(row.archived_at or row.updated_at),
             }
             for row in rows
         ]
