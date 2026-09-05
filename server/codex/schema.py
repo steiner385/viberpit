@@ -103,6 +103,15 @@ SUPPORTED_CLIENT_REQUESTS: Final[frozenset[str]] = frozenset(
         METHOD_MODEL_LIST,
     }
 )
+#: Methods that only exist on the experimental surface and carry host-supplied
+#: ChatGPT credentials in one direction or the other. A client that did not
+#: advertise `experimentalApi=true` at initialize must neither send nor answer
+#: these, because the peer never negotiated the surface they belong to.
+EXTERNAL_AUTH_ONLY_CLIENT_REQUESTS: Final[frozenset[str]] = frozenset({METHOD_LOGIN_START})
+EXTERNAL_AUTH_ONLY_SERVER_REQUESTS: Final[frozenset[str]] = frozenset(
+    {METHOD_AUTH_TOKENS_REFRESH}
+)
+
 SUPPORTED_CLIENT_NOTIFICATIONS: Final[frozenset[str]] = frozenset({METHOD_INITIALIZED})
 SUPPORTED_SERVER_REQUESTS: Final[frozenset[str]] = frozenset({METHOD_AUTH_TOKENS_REFRESH})
 SUPPORTED_SERVER_NOTIFICATIONS: Final[frozenset[str]] = frozenset(

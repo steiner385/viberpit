@@ -892,3 +892,164 @@ async def test_repeated_calls_on_a_closed_client_do_not_grow_one_traceback() -> 
             assert len(set(depths)) == 1, depths
         finally:
             await client.aclose()
+
+
+# ---------------------------------------------------------------------------
+# External-auth gating in both directions (review round 2)
+# ---------------------------------------------------------------------------
+
+
+def _assert_no_credentials_on_the_wire(fake: FakeCodexAppServer) -> None:
+    """No frame the client wrote may carry a token- or JWT-shaped value."""
+    for frame in fake.client_frames:
+        rendered = json.dumps(frame)
+        assert JWT not in rendered, frame.get("method") or frame.get("id")
+        assert not redaction.contains_secret_shaped_value(rendered), frame
+
+
+async def test_a_refresh_request_is_unsupported_without_the_experimental_api() -> None:
+    """The default config installs a handler but disables external auth."""
+    calls: list[schema.ChatgptAuthTokensRefreshParams] = []
+
+    async def handler(
+        params: schema.ChatgptAuthTokensRefreshParams,
+    ) -> schema.ChatgptAuthTokensRefreshResponse:
+        calls.append(params)
+        return await _refresh(params)
+
+    async with FakeCodexAppServer() as fake:
+        client = await _ready(fake, external_auth_enabled=False, refresh_handler=handler)
+        try:
+            assert fake.client_frames[0]["params"]["capabilities"]["experimentalApi"] is False
+            fake.request(
+                "account/chatgptAuthTokens/refresh",
+                {"reason": "unauthorized"},
+                request_id=77,
+            )
+            reply = await fake.receive_reply(77)
+            assert "result" not in reply
+            assert reply["error"]["code"] == protocol.JSONRPC_METHOD_NOT_FOUND
+            # Reported unsupported, not merely unhandled: one fail-closed path.
+            assert client.counters.unknown_server_requests == 1
+            assert client.counters.unhandled_server_requests == 0
+            assert calls == []
+            _assert_no_credentials_on_the_wire(fake)
+        finally:
+            await client.aclose()
+
+
+async def test_a_refresh_request_is_still_answered_when_external_auth_is_on() -> None:
+    """The gate must not break the configuration the feature actually needs."""
+    async with FakeCodexAppServer() as fake:
+        client = await _ready(fake, external_auth_enabled=True, refresh_handler=_refresh)
+        try:
+            fake.request(
+                "account/chatgptAuthTokens/refresh",
+                {"reason": "unauthorized"},
+                request_id=78,
+            )
+            reply = await fake.receive_reply(78)
+            assert reply["result"]["accessToken"] == JWT
+            assert client.counters.unknown_server_requests == 0
+        finally:
+            await client.aclose()
+
+
+async def test_the_raw_call_door_is_gated_for_external_token_methods() -> None:
+    """`login_with_external_tokens` must not be the only gated door."""
+    async with FakeCodexAppServer() as fake:
+        client = await _ready(fake, external_auth_enabled=False)
+        try:
+            params = schema.ExternalAuthLoginParams(
+                access_token=Redacted(JWT), chatgpt_account_id=Redacted(ACCOUNT_ID)
+            )
+            with pytest.raises(protocol.CodexExternalAuthDisabled):
+                await client.call(schema.METHOD_LOGIN_START, params.to_wire())
+            with pytest.raises(protocol.CodexExternalAuthDisabled):
+                await client.login_with_external_tokens(params)
+            assert fake.frames_for("account/login/start") == []
+            assert ACCOUNT_ID not in json.dumps(fake.client_frames)
+            _assert_no_credentials_on_the_wire(fake)
+        finally:
+            await client.aclose()
+
+
+async def test_the_raw_call_door_still_works_when_external_auth_is_on() -> None:
+    async with FakeCodexAppServer() as fake:
+        client = await _ready(fake, external_auth_enabled=True)
+        try:
+            fake.rule("account/login/start", result={"type": "chatgptAuthTokens"})
+            fake.start_autopilot()
+            params = schema.ExternalAuthLoginParams(
+                access_token=Redacted(JWT), chatgpt_account_id=Redacted(ACCOUNT_ID)
+            )
+            await client.call(schema.METHOD_LOGIN_START, params.to_wire())
+            assert fake.frames_for("account/login/start")[0]["params"]["accessToken"] == JWT
+        finally:
+            await client.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Write deadlines (review round 2)
+# ---------------------------------------------------------------------------
+
+
+async def test_a_stalled_transport_cannot_outlive_the_request_deadline() -> None:
+    """The outbound write is inside the deadline, not before it."""
+    async with FakeCodexAppServer() as fake:
+        client = await _ready(fake, request_timeout_s=0.2)
+        try:
+            fake.transport.stall_writes(True)
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            with pytest.raises(protocol.CodexRequestTimeout):
+                await asyncio.wait_for(client.list_models(), 2.0)
+            elapsed = loop.time() - started
+            assert elapsed < 1.5, elapsed
+            assert client.pending_request_count == 0
+        finally:
+            fake.transport.stall_writes(False)
+            await client.aclose()
+
+
+async def test_a_reply_blocked_on_a_stalled_transport_cannot_starve_a_call() -> None:
+    """A stuck reply task holds the write lock; the deadline must still fire."""
+    async with FakeCodexAppServer() as fake:
+        client = await _ready(fake, request_timeout_s=0.2)
+        try:
+            fake.transport.stall_writes(True)
+            fake.request("execCommandApproval", {}, request_id=79)
+            await fake.drained()
+            assert client.inflight_server_request_count == 1
+
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            with pytest.raises(protocol.CodexRequestTimeout):
+                await asyncio.wait_for(client.list_models(), 2.0)
+            assert loop.time() - started < 1.5
+
+            # The stuck reply task is itself bounded and eventually released.
+            for _ in range(100):
+                if client.inflight_server_request_count == 0:
+                    break
+                await asyncio.sleep(0.01)
+            assert client.inflight_server_request_count == 0
+            assert fake.replies == {}
+        finally:
+            fake.transport.stall_writes(False)
+            await client.aclose()
+
+
+async def test_closed_copy_survives_a_subclass_with_a_richer_init() -> None:
+    """`_fail_all` uses this; a raise here would strand every pending caller."""
+    async with FakeCodexAppServer() as fake:
+        client = await _ready(fake)
+        try:
+            client._fail_all(  # noqa: SLF001 -- exercising the latch directly
+                protocol.CodexRequestFailed(-32000, "boom", method="account/read")
+            )
+            for _ in range(3):
+                with pytest.raises(protocol.CodexProtocolError):
+                    await client.list_models()
+        finally:
+            await client.aclose()

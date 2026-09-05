@@ -40,6 +40,17 @@ grows a different answer per call site:
   episode/method rather than once per frame, so a spamming peer cannot flood the
   journal of a daemon that is also serving Claude sessions.
 
+* **External-auth gate.** `external_auth_enabled` is not just an initialize
+  capability flag: it gates every frame that can carry host ChatGPT credentials,
+  in **both** directions. Outbound, `EXTERNAL_AUTH_ONLY_CLIENT_REQUESTS` is
+  refused at `call()` — the single door every request passes through — so no
+  wrapper can be the only gated path. Inbound, an experimental-only server
+  request is reported *unsupported* and takes the ordinary `-32601` path, so a
+  client that advertised `experimentalApi=false` can never answer a refresh with
+  a live token. Both gates matter in the default configuration, where the
+  process manager installs a refresh handler unconditionally and
+  `CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED` defaults to false.
+
 Nothing here reads the environment: `external_auth_enabled` is passed in.
 """
 from __future__ import annotations
@@ -257,6 +268,7 @@ class CodexAppServerClient:
         self._external_auth_enabled = external_auth_enabled
         self._client_info = client_info
         self._request_timeout_s = request_timeout_s
+        self._reply_timeout_s = request_timeout_s
         self._notification_handler = notification_handler
         self._refresh_handler = refresh_handler
         self._notifications: asyncio.Queue[
@@ -370,9 +382,23 @@ class CodexAppServerClient:
         *,
         timeout: float | None = None,
     ) -> Any:
-        """Issue one supported client request and await its result."""
+        """Issue one supported client request and await its result.
+
+        This is the one door every outbound request goes through, so the
+        external-auth gate lives here rather than on individual wrappers: a
+        method added to `EXTERNAL_AUTH_ONLY_CLIENT_REQUESTS` later cannot reopen
+        the hole by forgetting its own check.
+        """
         if method not in schema.SUPPORTED_CLIENT_REQUESTS:
             raise schema.CodexSchemaError(f"unsupported client request: {method!r}")
+        if (
+            method in schema.EXTERNAL_AUTH_ONLY_CLIENT_REQUESTS
+            and not self._external_auth_enabled
+        ):
+            raise CodexExternalAuthDisabled(
+                f"refusing {method}: this client did not negotiate the experimental "
+                "app-server API, so it must not put external credentials on the wire"
+            )
         if method != schema.METHOD_INITIALIZE and not self._initialized:
             raise CodexNotInitializedError(
                 f"codex app-server call {method} before the initialize handshake"
@@ -390,16 +416,12 @@ class CodexAppServerClient:
     ) -> schema.LoginAccountResponse:
         """Send host-supplied ChatGPT tokens over `account/login/start`.
 
-        Gated on `external_auth_enabled`: the external-token variant only exists
-        on the experimental surface, so a client that advertised
+        Gated on `external_auth_enabled` by `call()`: the external-token variant
+        only exists on the experimental surface, so a client that advertised
         `experimentalApi=false` at initialize must never put a raw access token on
-        the wire to a process that never negotiated it.
+        the wire to a process that never negotiated it. Raises
+        `CodexExternalAuthDisabled` in that case.
         """
-        if not self._external_auth_enabled:
-            raise CodexExternalAuthDisabled(
-                "refusing external-token login: this client did not negotiate the "
-                "experimental app-server API"
-            )
         raw = await self.call(schema.METHOD_LOGIN_START, params.to_wire())
         return schema.parse_login_account_response(raw)
 
@@ -443,16 +465,18 @@ class CodexAppServerClient:
         request_id = next(self._ids)
         future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = _Pending(future, method)
-        try:
-            await self._write(
-                {"id": request_id, "method": method, "params": dict(params or {})}
-            )
-        except BaseException:
-            self._pending.pop(request_id, None)
-            raise
+        frame = {"id": request_id, "method": method, "params": dict(params or {})}
+
+        async def _send_and_await() -> Any:
+            # The write is INSIDE the deadline: `_write_lock` is shared with the
+            # inbound reply path, so a reply task blocked on a stalled transport
+            # would otherwise starve this call forever, with no timeout to save it.
+            await self._write(frame)
+            return await future
+
         try:
             return await asyncio.wait_for(
-                asyncio.shield(future), timeout or self._request_timeout_s
+                _send_and_await(), timeout or self._request_timeout_s
             )
         except TimeoutError as exc:
             log_event(
@@ -487,8 +511,14 @@ class CodexAppServerClient:
         on every raise and pins each frame's locals, so a long-lived closed
         client leaks memory proportional to how often callers keep trying.
         """
-        assert self._closed_error is not None
-        return type(self._closed_error)(*self._closed_error.args)
+        error = self._closed_error
+        assert error is not None
+        try:
+            return type(error)(*error.args)
+        except Exception:  # noqa: BLE001 -- a subclass with a richer __init__
+            # Never let reconstruction raise: `_fail_all` uses this to resolve
+            # pending futures, and a raise there would strand every caller.
+            return CodexProtocolError(str(error))
 
     def _ensure_open(self) -> None:
         if self._closed_error is not None:
@@ -652,7 +682,7 @@ class CodexAppServerClient:
             # Without a usable id there is nothing to answer; failing closed here
             # means the peer never sees a reply, which is the safe direction.
             return self._count_malformed("invalid_server_request_id")
-        if method not in schema.SUPPORTED_SERVER_REQUESTS:
+        if not self._server_request_supported(method):
             label = (
                 method if method in schema.DECLARED_SERVER_REQUESTS else "<unrecognized>"
             )
@@ -679,6 +709,27 @@ class CodexAppServerClient:
             request_id, self._handle_refresh_request(request_id, frame.get("params"))
         )
         return False
+
+    def _server_request_supported(self, method: str) -> bool:
+        """Decide whether this connection may answer a server-initiated request.
+
+        A method that only exists on the experimental surface is treated as
+        *unsupported* — not merely unhandled — when this client advertised
+        `experimentalApi=false`, so it takes the same `-32601` path an unknown
+        method takes. That keeps the fail-closed behaviour on one code path, and
+        it matters because Task 2.2's manager installs a `refresh_handler`
+        unconditionally while external auth defaults to disabled: without this,
+        the DEFAULT configuration would answer an unsolicited refresh with a live
+        access token.
+        """
+        if method not in schema.SUPPORTED_SERVER_REQUESTS:
+            return False
+        if (
+            method in schema.EXTERNAL_AUTH_ONLY_SERVER_REQUESTS
+            and not self._external_auth_enabled
+        ):
+            return False
+        return True
 
     def _spawn_reply(self, request_id: int, coroutine: Any) -> None:
         """Start one bounded reply task, or shed the request without answering it.
@@ -722,17 +773,31 @@ class CodexAppServerClient:
                 error=redaction.scrub_exception(failure),
             )
 
-    async def _reply_error(self, request_id: int, code: int, message: str) -> None:
+    async def _write_reply(self, frame: Mapping[str, Any], event: str) -> None:
+        """Write one reply under a bounded deadline.
+
+        A reply task that blocks forever on a stalled transport holds the shared
+        write lock and one of the bounded in-flight slots, so every reply write
+        gets the same deadline an outbound request gets.
+        """
         try:
-            await self._write({"id": request_id, "error": {"code": code, "message": message}})
+            await asyncio.wait_for(self._write(frame), self._reply_timeout_s)
+        except TimeoutError:
+            log_event(logger, logging.WARNING, event, reason="write_deadline")
         except CodexProtocolError:
-            log_event(logger, logging.WARNING, "codex.protocol.reply_error_undeliverable")
+            log_event(logger, logging.WARNING, event, reason="transport_closed")
+
+    async def _reply_error(self, request_id: int, code: int, message: str) -> None:
+        await self._write_reply(
+            {"id": request_id, "error": {"code": code, "message": message}},
+            "codex.protocol.reply_error_undeliverable",
+        )
 
     async def _reply_result(self, request_id: int, result: Mapping[str, Any]) -> None:
-        try:
-            await self._write({"id": request_id, "result": dict(result)})
-        except CodexProtocolError:
-            log_event(logger, logging.WARNING, "codex.protocol.reply_result_undeliverable")
+        await self._write_reply(
+            {"id": request_id, "result": dict(result)},
+            "codex.protocol.reply_result_undeliverable",
+        )
 
     async def _handle_refresh_request(self, request_id: int, params: Any) -> None:
         """Answer `account/chatgptAuthTokens/refresh` — the only supported callback."""
