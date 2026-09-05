@@ -39,7 +39,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from server.codex import schema  # noqa: E402 -- repo root added for direct execution
-from server.codex.redaction import contains_secret_shaped_value  # noqa: E402
+from server.codex.schema import contains_unexpected_secret_shape  # noqa: E402
 
 CODEX_BIN_ENV = "CCSWITCH_CODEX_BIN"
 FIXTURE_PARENT = _REPO_ROOT / "server" / "tests" / "fixtures" / "codex_app_server"
@@ -93,15 +93,20 @@ def generate_contract(codex_bin: str) -> tuple[str, schema.Contract]:
 
 
 def assert_no_secrets(version: str, contract: schema.Contract) -> None:
-    """Refuse to write anything that looks like it carries a credential."""
-    if contains_secret_shaped_value(version):
+    """Refuse to write anything that looks like it carries a credential.
+
+    Uses `schema.contains_unexpected_secret_shape`, not the raw redactor: the
+    generated schema's prose contains one dotted config path that matches the
+    shared signed-cookie shape (see `schema.BENIGN_SCHEMA_PROSE`).
+    """
+    if contains_unexpected_secret_shape(version):
         raise RefreshError("refusing to write: the CLI version string looks secret-shaped")
     for relative, document in contract.documents.items():
-        if contains_secret_shaped_value(json.dumps(document)):
+        if contains_unexpected_secret_shape(json.dumps(document)):
             raise RefreshError(f"refusing to write: {relative} contains a secret-shaped value")
     for key, methods in contract.method_index.items():
         for method in methods:
-            if contains_secret_shaped_value(method):
+            if contains_unexpected_secret_shape(method):
                 raise RefreshError(
                     f"refusing to write: a {key} method name is secret-shaped"
                 )

@@ -66,12 +66,13 @@ PrivateTmp=yes
 PrivateDevices=yes
 ProtectSystem=strict
 ProtectHome=yes
-# The deploy checkout's .venv is a symlink into the main checkout, so bind the
-# resolved venv separately. Both destinations are private to this unit's mount
-# namespace and read-only. The state directory is granted automatically by
-# StateDirectory=.
+# Bind the deploy checkout's self-contained venv separately. Both destinations
+# are private to this unit's mount namespace and read-only. The deployment
+# preflight rejects a .venv symlink into a developer checkout because rebuilding
+# or removing that checkout would otherwise take this authority down too. The
+# state directory is granted automatically by StateDirectory=.
 BindReadOnlyPaths=/home/tony/GitHub/cc-account-switcher-deploy:/opt/ccswitch-codex-auth/app
-BindReadOnlyPaths=/home/tony/GitHub/ccswitch/.venv:/opt/ccswitch-codex-auth/venv
+BindReadOnlyPaths=/home/tony/GitHub/cc-account-switcher-deploy/.venv:/opt/ccswitch-codex-auth/venv
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes

@@ -45,7 +45,7 @@ def test_systemd_sandbox_exposes_only_read_only_runtime_mounts_outside_home():
         "/opt/ccswitch-codex-auth/app"
     ) in unit
     assert (
-        "BindReadOnlyPaths=/home/tony/GitHub/ccswitch/.venv:"
+        "BindReadOnlyPaths=/home/tony/GitHub/cc-account-switcher-deploy/.venv:"
         "/opt/ccswitch-codex-auth/venv"
     ) in unit
     assert "WorkingDirectory=/opt/ccswitch-codex-auth/app" in unit

@@ -32,10 +32,15 @@ grows a different answer per call site:
   value supersedes older ones (rate limits, account state), so dropping the
   oldest keeps the freshest state; unbounded growth is a memory DoS.
 * **Fail closed inbound.** Unknown notifications are counted and dropped, never
-  delivered. Every server-initiated request except the one supported credential
-  refresh is answered with a JSON-RPC ``method not found`` error. There is no
-  generic server-request dispatch table, so no approval request can ever be
-  auto-answered by construction.
+  delivered. Every server-initiated request outside
+  `schema.SUPPORTED_SERVER_REQUESTS` is answered with a JSON-RPC ``method not
+  found`` error. There is no generic server-request dispatch table: the three
+  supported methods are routed by name to one explicit handler each, and each
+  handler answers only from an *installed* callback. With no callback there is
+  no reply value to invent, so an approval is `-32601` rather than a default
+  allow — and `item/permissions/requestApproval` stays unsupported entirely,
+  because its response hands the server a permissions grant ccswitch has no
+  vocabulary to describe.
 * **Bounded server requests.** In-flight reply tasks are capped at
   `max_inflight_server_requests`; over the cap a request is *shed* — no task, no
   reply — which is the fail-closed direction, since an unanswered approval is
@@ -250,6 +255,11 @@ RefreshHandler = Callable[
     [schema.ChatgptAuthTokensRefreshParams],
     Awaitable[schema.ChatgptAuthTokensRefreshResponse],
 ]
+#: Answers one approval request. Takes the method so a single handler can route
+#: both supported kinds without re-deriving it from the params type.
+ApprovalHandler = Callable[
+    [str, schema.ApprovalParams], Awaitable[schema.ApprovalResponse]
+]
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +279,7 @@ class CodexAppServerClient:
         request_timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S,
         notification_handler: NotificationHandler | None = None,
         refresh_handler: RefreshHandler | None = None,
+        approval_handler: ApprovalHandler | None = None,
         max_buffered_notifications: int = DEFAULT_MAX_BUFFERED_NOTIFICATIONS,
         max_inflight_server_requests: int = DEFAULT_MAX_INFLIGHT_SERVER_REQUESTS,
         max_outbound_requests: int = DEFAULT_MAX_OUTBOUND_REQUESTS,
@@ -280,6 +291,7 @@ class CodexAppServerClient:
         self._reply_timeout_s = request_timeout_s
         self._notification_handler = notification_handler
         self._refresh_handler = refresh_handler
+        self._approval_handler = approval_handler
         self._notifications: asyncio.Queue[
             tuple[str, schema.ServerNotificationParams]
         ] = asyncio.Queue(maxsize=max(1, max_buffered_notifications))
@@ -488,6 +500,72 @@ class CodexAppServerClient:
             schema.METHOD_MODEL_LIST, (params or schema.ModelListParams()).to_wire()
         )
         assert isinstance(response, schema.ModelListResponse)
+        return response
+
+    # -- thread / turn -----------------------------------------------------
+    #
+    # Typed conveniences only: every one goes through `call()`, so the gate,
+    # the bounded outbound path, and the response validation are shared with
+    # every other request rather than re-implemented per method.
+
+    async def start_thread(
+        self, params: schema.ThreadStartParams | None = None
+    ) -> schema.ThreadStartResponse:
+        response = await self.call(
+            schema.METHOD_THREAD_START, (params or schema.ThreadStartParams()).to_wire()
+        )
+        assert isinstance(response, schema.ThreadStartResponse)
+        return response
+
+    async def resume_thread(
+        self, params: schema.ThreadResumeParams
+    ) -> schema.ThreadResumeResponse:
+        response = await self.call(schema.METHOD_THREAD_RESUME, params.to_wire())
+        assert isinstance(response, schema.ThreadResumeResponse)
+        return response
+
+    async def read_thread(
+        self, params: schema.ThreadReadParams
+    ) -> schema.ThreadReadResponse:
+        response = await self.call(schema.METHOD_THREAD_READ, params.to_wire())
+        assert isinstance(response, schema.ThreadReadResponse)
+        return response
+
+    async def archive_thread(
+        self, params: schema.ThreadArchiveParams
+    ) -> schema.ThreadArchiveResponse:
+        response = await self.call(schema.METHOD_THREAD_ARCHIVE, params.to_wire())
+        assert isinstance(response, schema.ThreadArchiveResponse)
+        return response
+
+    async def start_turn(
+        self, params: schema.TurnStartParams, *, timeout: float | None = None
+    ) -> schema.TurnStartResponse:
+        response = await self.call(
+            schema.METHOD_TURN_START, params.to_wire(), timeout=timeout
+        )
+        assert isinstance(response, schema.TurnStartResponse)
+        return response
+
+    async def steer_turn(
+        self, params: schema.TurnSteerParams
+    ) -> schema.TurnSteerResponse:
+        response = await self.call(schema.METHOD_TURN_STEER, params.to_wire())
+        assert isinstance(response, schema.TurnSteerResponse)
+        return response
+
+    async def interrupt_turn(
+        self, params: schema.TurnInterruptParams
+    ) -> schema.TurnInterruptResponse:
+        response = await self.call(schema.METHOD_TURN_INTERRUPT, params.to_wire())
+        assert isinstance(response, schema.TurnInterruptResponse)
+        return response
+
+    async def update_turn_settings(
+        self, params: schema.TurnSettingsUpdateParams
+    ) -> schema.TurnSettingsUpdateResponse:
+        response = await self.call(schema.METHOD_TURN_SETTINGS_UPDATE, params.to_wire())
+        assert isinstance(response, schema.TurnSettingsUpdateResponse)
         return response
 
     async def next_notification(
@@ -814,6 +892,15 @@ class CodexAppServerClient:
                 ),
             )
             return False
+        if method in (
+            schema.METHOD_COMMAND_EXECUTION_APPROVAL,
+            schema.METHOD_FILE_CHANGE_APPROVAL,
+        ):
+            self._spawn_reply(
+                request_id,
+                self._handle_approval_request(request_id, method, frame.get("params")),
+            )
+            return False
         self._spawn_reply(
             request_id, self._handle_refresh_request(request_id, frame.get("params"))
         )
@@ -958,4 +1045,78 @@ class CodexAppServerClient:
             )
             return
         log_event(logger, logging.INFO, "codex.protocol.refresh_answered")
+        await self._reply_result(request_id, wire)
+
+    async def _handle_approval_request(
+        self, request_id: int, method: str, params: Any
+    ) -> None:
+        """Answer one supported approval request through the installed handler.
+
+        The failure modes mirror `_handle_refresh_request` exactly, because the
+        stakes are the same shape: no handler is `-32601`, unparseable params
+        are `-32602`, and a raising handler is `-32603`. None of those paths can
+        produce an *allow*, which is the only property that matters here — an
+        approval ccswitch cannot service must never be granted by default.
+        """
+        handler = self._approval_handler
+        if handler is None:
+            self._counters.unhandled_server_requests += 1
+            log_event(
+                logger, logging.WARNING, "codex.protocol.approval_unhandled", method=method
+            )
+            await self._reply_error(
+                request_id,
+                JSONRPC_METHOD_NOT_FOUND,
+                "no approval handler is configured",
+            )
+            return
+        try:
+            parsed = schema.parse_approval_params(method, params)
+        except schema.CodexSchemaError as exc:
+            log_event(
+                logger,
+                logging.WARNING,
+                "codex.protocol.approval_invalid_params",
+                method=method,
+                error=redaction.scrub_exception(exc),
+            )
+            await self._reply_error(
+                request_id, JSONRPC_INVALID_PARAMS, "invalid approval request"
+            )
+            return
+        expected = (
+            schema.CommandExecutionApprovalResponse
+            if method == schema.METHOD_COMMAND_EXECUTION_APPROVAL
+            else schema.FileChangeApprovalResponse
+        )
+        try:
+            response = await handler(method, parsed)
+            if not isinstance(response, expected):
+                raise schema.CodexSchemaError(
+                    "approval handler answered with the wrong response type"
+                )
+            wire = response.to_wire()
+            # Re-parse against the same contract used inbound: the handler is
+            # external code, and this is the last point before a decision that
+            # can run a command goes on the wire. A file-change request answered
+            # with a command decision (or an object-shaped amendment variant)
+            # fails here rather than being written.
+            schema.parse_approval_response(method, wire)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 -- a handler failure must stay closed
+            log_event(
+                logger,
+                logging.ERROR,
+                "codex.protocol.approval_failed",
+                method=method,
+                error=redaction.scrub_exception(exc),
+            )
+            await self._reply_error(
+                request_id, JSONRPC_INTERNAL_ERROR, "approval handling failed"
+            )
+            return
+        log_event(
+            logger, logging.INFO, "codex.protocol.approval_answered", method=method
+        )
         await self._reply_result(request_id, wire)

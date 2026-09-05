@@ -222,13 +222,21 @@ def check_unit_interpreters(units: tuple[str, ...] | None = None,
             problems.append(f"{unit}: ExecStart binary {path} is not executable")
         else:
             root = _checkout_root(path)
-            resolved = os.path.realpath(path)
-            if root is not None and resolved != path and not resolved.startswith(root + os.sep):
-                problems.append(
-                    f"{unit}: ExecStart binary {path} (checkout {root}) resolves to "
-                    f"{resolved}, a different checkout entirely — this unit's interpreter "
-                    "is owned by another developer checkout and breaks if that checkout "
-                    "is renamed, rebuilt, or removed")
+            # A normal venv commonly makes ``bin/python`` a symlink to the system
+            # interpreter (for example /usr/bin/python3.12).  That does not couple the
+            # service to another checkout.  The production incident this guard catches
+            # was the *venv directory itself* being a symlink to another checkout, so
+            # resolve and fence that directory rather than the interpreter inside it.
+            if root is not None:
+                venv_path = os.path.join(root, ".venv")
+                resolved_venv = os.path.realpath(venv_path)
+                if (resolved_venv != venv_path
+                    and not resolved_venv.startswith(root + os.sep)):
+                    problems.append(
+                        f"{unit}: ExecStart binary {path} uses venv {venv_path}, which "
+                        f"resolves to {resolved_venv}, outside checkout {root} — the venv "
+                        "is owned by another developer checkout and breaks if that checkout "
+                        "is renamed, rebuilt, or removed")
     return problems
 
 

@@ -219,20 +219,61 @@ class PermissionRegistry:
                               "always_allowed": True}
         return pid, fut, True
 
+    async def request_external(self, session_id, turn_id, tool, input, *, identity,
+                               always_allowed: bool = True):
+        """Register a prompt an ENGINE already decided needs a human, and return
+        ``(perm_id, future)`` where the future settles to the raw ccswitch
+        decision string (``"allow"`` / ``"deny"`` / ``"always"``) — or ``False``
+        if it was dismissed by :meth:`deny_all`.
+
+        Two differences from :meth:`request`, both forced by who is deciding:
+
+        * **No auto-approval, in any mode.** ``request`` re-derives "does this
+          need a human?" from the ccswitch mode because the Claude SDK asks about
+          every tool. An external engine asks only when *its own* policy already
+          concluded a human is required, and that policy was itself derived from
+          the same ccswitch mode (``server/codex/permissions.py``). Re-applying
+          the mode here would auto-answer a question the engine only raises in
+          the modes where ccswitch wanted the prompt — and it would answer it
+          ``allow``.
+        * **The future carries the decision, not a boolean, and "always" never
+          writes a local grant.** ``self._grants`` is ccswitch's own cache, and
+          it is never consulted for an engine that enforces approvals itself, so
+          an entry there would be a second, invisible policy that no longer
+          matches what the engine was told. The caller maps ``"always"`` onto the
+          engine's own SESSION-SCOPED accept instead — never a persistent global
+          exception (plan, Task 4.2).
+
+        Everything else is deliberately shared with ordinary prompts: the same
+        ``perm_id`` namespace, the same identity ownership check in
+        :meth:`resolve`, the same :meth:`pending` / :meth:`rethread_identity` /
+        :meth:`deny_all` semantics, and therefore the same WebSocket frames, REST
+        route and UI card. There is no parallel approval registry.
+        """
+        pid = _uuid.uuid4().hex
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._pending[pid] = {"future": fut, "identity": identity, "session_id": session_id,
+                              "tool": tool, "input": input, "turn_id": turn_id,
+                              "always_allowed": always_allowed, "raw_decision": True}
+        return pid, fut
+
     def resolve(self, perm_id, decision, identity) -> bool:
         rec = self._pending.get(perm_id)
         if rec is None or rec["identity"] != identity:
             return False
         del self._pending[perm_id]
+        raw = rec.get("raw_decision", False)
         if decision == "always":
-            if rec.get("always_allowed", True):
+            if rec.get("always_allowed", True) and not raw:
                 fp = self.fingerprint(rec["tool"], rec["input"])
                 self._grants[(rec["session_id"], fp)] = time.time() + self.GRANT_TTL
-            # else: a destructive ccswitch tool — allow this ONE call but never
-            # persist a grant, so the next request() for the same tool asks again.
-            decision = "allow"
+            # else: a destructive ccswitch tool, or an engine-enforced prompt whose
+            # "always" is honoured natively — allow this ONE call but never persist a
+            # ccswitch grant, so the next request() for the same tool asks again.
+            if not raw:
+                decision = "allow"
         if not rec["future"].done():
-            rec["future"].set_result(decision == "allow")
+            rec["future"].set_result(decision if raw else decision == "allow")
         return True
 
     def pending(self, session_id) -> list[dict]:
