@@ -58,15 +58,28 @@ in. The rest can be omitted unless you need to change them.
 > **Display range conflict:** ensure `CCSWITCH_REAUTH_DISPLAY` (default `:0`) does not
 > fall within `[CCSWITCH_DISPLAY_START, CCSWITCH_DISPLAY_START + CCSWITCH_DISPLAY_COUNT)`.
 
-> **Login profile fidelity:** the reauth Chrome is a temp copy of `CCSWITCH_CHROME_PROFILE`
-> with the Claude cookies stripped, so Google stays signed in and 1Password is available.
-> Two things make that work from a systemd service: `capture_login` injects the user's
-> `DBUS_SESSION_BUS_ADDRESS` (found at `$XDG_RUNTIME_DIR/bus`, default `/run/user/<uid>/bus`)
-> so Chrome can reach gnome-keyring, and `CCSWITCH_REAUTH_EXTENSIONS` (comma-separated
-> extension ids; default = 1Password `aeblfdkhhhdcdjpifhhbdiojplfjncoa`; set to an empty
-> string to carry none) selects which extensions are copied. If Google shows a password
-> prompt anyway, check that `/run/user/<uid>/bus` exists for the service user
-> (`loginctl enable-linger <user>` keeps the user session bus alive without a desktop login).
+> **Login profile contents:** the reauth Chrome runs on a temp copy of
+> `CCSWITCH_CHROME_PROFILE`, which defaults to a dedicated ccswitch-owned profile
+> (`~/.claude-accounts/chrome-profile/Default`), **not** your everyday one. By default the
+> copy carries no cookies, no `Local State` and no saved passwords — only the extensions
+> named by `CCSWITCH_REAUTH_EXTENSIONS` (comma-separated ids; default = 1Password
+> `aeblfdkhhhdcdjpifhhbdiojplfjncoa`; empty string = none). You therefore sign in to
+> Google inside the reauth window; do it once in the dedicated profile and it persists
+> there. Two opt-ins widen the copy, both with a real cost:
+> `CCSWITCH_REAUTH_COOKIE_HOSTS` (comma-separated domains — an allowlist; Claude and
+> Anthropic rows are always dropped so the login starts signed out) re-presents those
+> sessions from a throwaway profile with a different fingerprint, which is what got an
+> unrelated Google session repeatedly invalidated (#1105); and
+> `CCSWITCH_REAUTH_COPY_LOGIN_DATA=true` copies Chrome's saved-password database, which
+> an OAuth login never needs. Either opt-in also copies `Local State` (the key that
+> decrypts them), so a leaked profile then holds real credentials.
+>
+> Carried cookies additionally need gnome-keyring: `capture_login` injects the user's
+> `DBUS_SESSION_BUS_ADDRESS` (found at `$XDG_RUNTIME_DIR/bus`, default
+> `/run/user/<uid>/bus`) so Chrome can decrypt the v11 rows. If a carried Google session
+> shows a password prompt anyway, check that `/run/user/<uid>/bus` exists for the service
+> user (`loginctl enable-linger <user>` keeps the user session bus alive without a
+> desktop login).
 
 Restart the service after editing:
 

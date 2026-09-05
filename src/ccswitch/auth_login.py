@@ -24,6 +24,18 @@ _STRIP_SQL = "DELETE FROM cookies WHERE host_key LIKE '%claude%' OR host_key LIK
 # window instead of typing credentials by hand. Override: CCSWITCH_REAUTH_EXTENSIONS.
 REAUTH_EXTENSION_IDS: tuple[str, ...] = ("aeblfdkhhhdcdjpifhhbdiojplfjncoa",)
 
+# Registrable domains whose cookies are carried into the temp login profile, as an
+# ALLOWLIST — empty by default, i.e. no cookies travel at all (#1105).
+#
+# The OAuth login starts signed out, so it needs no cookies of its own. Carrying the
+# source jar re-presented the operator's live Google/Gmail session from a fresh
+# profile with a new fingerprint, several times within a couple of minutes, which is
+# exactly the shape session-risk heuristics score as a hijack — and the observed
+# result was their unrelated Google session being invalidated. An allowlist also
+# fails safe: a domain nobody enumerated is dropped, where the old `%claude%`
+# denylist carried it over. Opt in per domain with CCSWITCH_REAUTH_COOKIE_HOSTS.
+REAUTH_COOKIE_HOSTS: tuple[str, ...] = ()
+
 
 def _reauth_root() -> Path:
     """Ensure and return the reauth-tmp root directory (mode 0700)."""
@@ -67,6 +79,35 @@ def session_bus_env(
     if "XDG_RUNTIME_DIR" not in env:
         out["XDG_RUNTIME_DIR"] = runtime_dir
     return out
+
+
+def _filter_cookies(db: Path, allow_hosts: Sequence[str]) -> None:
+    """Reduce a copied cookie jar to *allow_hosts*, minus Claude/Anthropic.
+
+    A host matches when ``host_key`` equals it or is a dot-suffixed subdomain of it,
+    so ``google.com`` keeps ``.google.com`` and ``accounts.google.com`` but not
+    ``evilgoogle.com``. Claude/Anthropic rows are dropped even when allowlisted —
+    the whole point of the temp profile is to be signed OUT of Claude so
+    ``claude auth login`` presents a fresh login.
+
+    VACUUMs afterwards: a plain DELETE leaves the row bytes in SQLite freelist
+    pages, so a "stripped" copy would still hand over the cookies it dropped.
+    """
+    conn = sqlite3.connect(str(db))
+    try:
+        if not allow_hosts:
+            conn.execute("DELETE FROM cookies")
+        else:
+            clauses = " OR ".join(["(host_key = ? OR host_key LIKE ?)"] * len(allow_hosts))
+            params: list[str] = []
+            for host in allow_hosts:
+                params += [host, f"%.{host}"]
+            conn.execute(f"DELETE FROM cookies WHERE NOT ({clauses})", params)
+            conn.execute(_STRIP_SQL)
+        conn.commit()
+        conn.execute("VACUUM")
+    finally:
+        conn.close()
 
 
 def _copy_extensions(src: Path, default: Path, extension_ids: Sequence[str]) -> None:
@@ -146,26 +187,43 @@ def prepare_reauth_profile(
     source_profile_dir: str,
     *,
     extension_ids: Sequence[str] | None = None,
+    cookie_hosts: Sequence[str] | None = None,
+    copy_login_data: bool = False,
 ) -> str:
-    """Copy a Chrome profile's login state to a temp location and strip Claude cookies.
+    """Build a throwaway Chrome profile for one login, carrying as little as possible.
 
-    Copies Cookies + Local State (always), Login Data (if present) and the curated
-    extension set (see _copy_extensions). Google stays signed in, Claude is signed out,
-    1Password is available.
+    Nothing sensitive travels by default (#1105): no cookies, no ``Local State`` key
+    material, no saved passwords. Only the curated extension set is copied (see
+    ``_copy_extensions``), and Claude is signed out either way. Each sensitive
+    artifact is opt-in and pulls in only what it needs:
+
+    * ``cookie_hosts`` non-empty → the source jar is copied, reduced to those hosts
+      (``_filter_cookies``), and ``Local State`` comes along so Chrome can decrypt
+      the v11 rows.
+    * ``copy_login_data`` → the saved-password database is copied, which also needs
+      ``Local State``. An OAuth login does not require it; it exists only for
+      operators who fill the form from Chrome's own password manager.
 
     Args:
-        source_profile_dir: Path to a Chrome profile directory (e.g. ~/.config/google-chrome/Default)
+        source_profile_dir: Path to a Chrome profile directory. Defaults to the
+            dedicated ccswitch profile, NOT the operator's everyday one.
         extension_ids: Extension ids to carry over. None → REAUTH_EXTENSION_IDS; () → none.
+        cookie_hosts: Domains whose cookies to carry. None → REAUTH_COOKIE_HOSTS
+            (empty, i.e. none); () → none.
+        copy_login_data: Copy the source's saved-password database.
 
     Returns:
         Path to the temp profile directory (under reauth-tmp)
 
     Raises:
-        FileNotFoundError: If the source Cookies database is missing
+        FileNotFoundError: If cookies were requested but the source Cookies database
+            is missing. With no cookies requested a missing/absent source profile is
+            fine — the temp profile simply starts empty.
     """
     src = Path(source_profile_dir)
+    hosts = list(REAUTH_COOKIE_HOSTS if cookie_hosts is None else cookie_hosts)
     src_cookies = src / "Cookies"
-    if not src_cookies.exists():
+    if hosts and not src_cookies.exists():
         raise FileNotFoundError(f"chrome profile Cookies not found: {src_cookies}")
 
     # Create temp dir under reauth-tmp with 0700 perms
@@ -179,38 +237,41 @@ def prepare_reauth_profile(
     os.chmod(temp, 0o700)
     os.chmod(default, 0o700)
 
-    # Copy Cookies database (0600)
-    dst_cookies = default / "Cookies"
-    shutil.copy(src_cookies, dst_cookies)
-    os.chmod(dst_cookies, 0o600)
-
-    # Copy Local State from parent directory if it exists (0600)
-    local_state = src.parent / "Local State"
-    if local_state.exists():
-        dst_ls = Path(temp) / "Local State"
-        shutil.copy(local_state, dst_ls)
-        os.chmod(dst_ls, 0o600)
-
-    # Strip Claude/Anthropic cookies from the copied database
-    conn = sqlite3.connect(str(dst_cookies))
+    # Anything that raises past this point has already created a directory holding
+    # whatever was copied so far, and the caller gets no path to clean up — so own
+    # the teardown here rather than leaving a partial profile behind (#1106).
     try:
-        conn.execute(_STRIP_SQL)
-        conn.commit()
-    finally:
-        conn.close()
+        if hosts:
+            dst_cookies = default / "Cookies"
+            shutil.copy(src_cookies, dst_cookies)
+            os.chmod(dst_cookies, 0o600)
+            _filter_cookies(dst_cookies, hosts)
 
-    # Saved passwords (v11-encrypted like Cookies; same keyring, same trust class).
-    login_data = src / "Login Data"
-    if login_data.exists():
-        dst_ld = default / "Login Data"
-        shutil.copy(login_data, dst_ld)
-        os.chmod(dst_ld, 0o600)
-    else:
-        log.info("reauth profile: no Login Data in source; skipping")
+        # Saved passwords (v11-encrypted like Cookies; same keyring, same trust class).
+        if copy_login_data:
+            login_data = src / "Login Data"
+            if login_data.exists():
+                dst_ld = default / "Login Data"
+                shutil.copy(login_data, dst_ld)
+                os.chmod(dst_ld, 0o600)
+            else:
+                log.info("reauth profile: no Login Data in source; skipping")
 
-    _copy_extensions(
-        src, default, REAUTH_EXTENSION_IDS if extension_ids is None else extension_ids
-    )
+        # Local State holds the key that decrypts the two artifacts above; with
+        # neither copied there is nothing for it to unlock, so it stays behind.
+        if hosts or copy_login_data:
+            local_state = src.parent / "Local State"
+            if local_state.exists():
+                dst_ls = Path(temp) / "Local State"
+                shutil.copy(local_state, dst_ls)
+                os.chmod(dst_ls, 0o600)
+
+        _copy_extensions(
+            src, default, REAUTH_EXTENSION_IDS if extension_ids is None else extension_ids
+        )
+    except BaseException:
+        cleanup_reauth_profile(temp)
+        raise
 
     return temp
 

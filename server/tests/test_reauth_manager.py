@@ -133,7 +133,7 @@ async def test_prepare_reauth_profile_runs_off_the_event_loop(monkeypatch):
     loop_thread_ident = threading.get_ident()
     seen: dict = {}
 
-    def fake_prepare(profile, *, extension_ids=None):
+    def fake_prepare(profile, *, extension_ids=None, **kw):
         seen["thread_ident"] = threading.get_ident()
         try:
             asyncio.get_running_loop()
@@ -166,7 +166,7 @@ async def test_runner_forwards_configured_extension_ids(monkeypatch):
     unset → None so the core default (1Password) applies."""
     seen = []
 
-    def fake_prepare(profile, *, extension_ids=None):
+    def fake_prepare(profile, *, extension_ids=None, **kw):
         seen.append(extension_ids)
         return "/tmp/reauth-tmp-z"
 
@@ -186,6 +186,97 @@ async def test_runner_forwards_configured_extension_ids(monkeypatch):
     await mgr.start("primary", "me@example.com")
     await asyncio.sleep(0.05)
     assert seen[-1] is None
+
+
+@pytest.mark.asyncio
+async def test_runner_carries_no_cookies_or_passwords_by_default(monkeypatch):
+    """#1105: with nothing configured the runner asks for no cookies and no saved
+    passwords, and sources from the dedicated profile rather than the operator's."""
+    seen: list[dict] = []
+
+    def fake_prepare(profile, **kw):
+        seen.append({"profile": profile, **kw})
+        return "/tmp/reauth-tmp-cookies"
+
+    monkeypatch.delenv("CCSWITCH_CHROME_PROFILE", raising=False)
+    monkeypatch.delenv("CCSWITCH_REAUTH_COOKIE_HOSTS", raising=False)
+    monkeypatch.delenv("CCSWITCH_REAUTH_COPY_LOGIN_DATA", raising=False)
+    monkeypatch.setattr("ccswitch.auth_login.prepare_reauth_profile", fake_prepare)
+    monkeypatch.setattr("ccswitch.auth_login.capture_login", lambda name, env_extra=None: True)
+    monkeypatch.setattr("ccswitch.auth_login.cleanup_reauth_profile", lambda t: None)
+    monkeypatch.setattr("ccswitch.accounts.mark_reauthenticated", lambda n: None)
+
+    mgr = ReauthManager(x11=None, key_available=lambda: True, timeout_s=30)
+    await mgr.start("primary", "me@example.com")
+    await asyncio.sleep(0.05)
+
+    assert seen, "prepare_reauth_profile must have been called"
+    assert seen[-1]["cookie_hosts"] is None, "unset → the core default (no cookies)"
+    assert seen[-1]["copy_login_data"] is False
+    assert "google-chrome" not in seen[-1]["profile"], (
+        "must not default to the operator's everyday Chrome profile"
+    )
+
+
+@pytest.mark.asyncio
+async def test_runner_forwards_configured_cookie_hosts_and_login_data(monkeypatch):
+    """The two opt-ins reach prepare_reauth_profile when explicitly configured."""
+    seen: list[dict] = []
+
+    def fake_prepare(profile, **kw):
+        seen.append(kw)
+        return "/tmp/reauth-tmp-optin"
+
+    monkeypatch.setattr("ccswitch.auth_login.prepare_reauth_profile", fake_prepare)
+    monkeypatch.setattr("ccswitch.auth_login.capture_login", lambda name, env_extra=None: True)
+    monkeypatch.setattr("ccswitch.auth_login.cleanup_reauth_profile", lambda t: None)
+    monkeypatch.setattr("ccswitch.accounts.mark_reauthenticated", lambda n: None)
+    monkeypatch.setenv("CCSWITCH_REAUTH_COOKIE_HOSTS", "google.com, example.com")
+    monkeypatch.setenv("CCSWITCH_REAUTH_COPY_LOGIN_DATA", "true")
+
+    mgr = ReauthManager(x11=None, key_available=lambda: True, timeout_s=30)
+    await mgr.start("primary", "me@example.com")
+    await asyncio.sleep(0.05)
+
+    assert seen[-1]["cookie_hosts"] == ["google.com", "example.com"]
+    assert seen[-1]["copy_login_data"] is True
+
+
+@pytest.mark.asyncio
+async def test_runner_cleans_the_profile_when_the_display_fails(tmp_path, monkeypatch):
+    """#1106: a virtual display that fails to start is the exact shape that left
+    profile copies on disk — the profile must be removed on that path too."""
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+
+    from ccswitch.paths import reauth_tmp_dir
+
+    rtd = reauth_tmp_dir()
+    rtd.mkdir(parents=True, exist_ok=True)
+    leaked = rtd / "reauth-displayfail"
+    leaked.mkdir()
+
+    monkeypatch.setattr(
+        "ccswitch.auth_login.prepare_reauth_profile", lambda p, **kw: str(leaked)
+    )
+
+    class BrokenX11:
+        async def start_display(self, key):
+            raise RuntimeError("Xvfb died")
+
+        async def stop_display(self, key):
+            return None
+
+    mgr = ReauthManager(
+        x11=lambda: BrokenX11(), key_available=lambda: True, timeout_s=30
+    )
+    await mgr.start("primary", "me@example.com")
+    for _ in range(50):
+        if mgr.status("primary").state == "error":
+            break
+        await asyncio.sleep(0.02)
+
+    assert mgr.status("primary").state == "error"
+    assert not leaked.exists(), "temp profile must not survive a failed display start"
 
 
 # ---------------------------------------------------------------------------
@@ -354,6 +445,77 @@ def test_sweep_stale_removes_old_dirs(tmp_path, monkeypatch):
 
     assert not old_dir.exists(), "stale dir should have been removed"
     assert fresh_dir.exists(), "fresh dir should have been kept"
+
+
+def test_sweep_stale_covers_capture_dirs(tmp_path, monkeypatch):
+    """#1106: capture-* CLAUDE_CONFIG_DIRs leak the same way reauth-* profiles do
+    (a SIGKILLed run never reaches capture_login's finally), so they must age out too."""
+    import os, time
+
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    from ccswitch.paths import reauth_tmp_dir
+
+    rtd = reauth_tmp_dir()
+    rtd.mkdir(parents=True, exist_ok=True)
+    capture = rtd / "capture-ba2bhhhx"
+    capture.mkdir()
+    (capture / ".credentials.json").write_text("{}")
+    old = time.time() - 700
+    os.utime(capture, (old, old))
+
+    m = ReauthManager(runner=lambda n: True, key_available=lambda: True, timeout_s=5)
+    m.sweep_stale()
+
+    assert not capture.exists(), "stale capture dir should have been removed"
+
+
+def test_sweep_stale_spares_the_in_flight_profile(tmp_path, monkeypatch):
+    """A login that outlives the TTL must not have its profile swept out from under it."""
+    import os, time
+
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    from ccswitch.paths import reauth_tmp_dir
+
+    rtd = reauth_tmp_dir()
+    rtd.mkdir(parents=True, exist_ok=True)
+    active = rtd / "reauth-active"
+    active.mkdir()
+    old = time.time() - 700
+    os.utime(active, (old, old))
+
+    m = ReauthManager(runner=lambda n: True, key_available=lambda: True, timeout_s=5)
+    m._state._temp_profile = str(active)
+    m.sweep_stale()
+
+    assert active.exists(), "the in-flight profile must be spared"
+
+
+def test_start_sweeps_before_creating_a_new_profile(tmp_path, monkeypatch):
+    """#1106: boot-only sweeping let leaks accumulate for the daemon's whole uptime.
+    Each start() reclaims aged leftovers first."""
+    import os, time
+
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
+    from ccswitch.paths import reauth_tmp_dir
+
+    rtd = reauth_tmp_dir()
+    rtd.mkdir(parents=True, exist_ok=True)
+    stale = rtd / "reauth-frombefore"
+    stale.mkdir()
+    old = time.time() - 700
+    os.utime(stale, (old, old))
+
+    async def runner(name):
+        await asyncio.sleep(0.01)
+        return True
+
+    m = ReauthManager(runner=runner, key_available=lambda: True, timeout_s=5)
+
+    async def run():
+        await m.start("primary", "me@example.com")
+
+    asyncio.run(run())
+    assert not stale.exists(), "start() must reclaim aged leftovers"
 
 
 def test_busy_exception_carries_identity():
