@@ -65,7 +65,7 @@ async def test_reassign_builds_driver_when_no_old_driver(monkeypatch, tmp_path):
     started = []
 
     class _FakeDriver:
-        claude_session_id = None
+        engine_session_id = None
         mode = "interactive"
 
         def __init__(self, *a, **kw):
@@ -78,7 +78,7 @@ async def test_reassign_builds_driver_when_no_old_driver(monkeypatch, tmp_path):
         async def aclose(self): pass
         async def set_model(self, m): pass
 
-    monkeypatch.setattr(orch_mod, "SessionDriver", _FakeDriver)
+    monkeypatch.setattr(orch_mod.SessionOrchestrator, "_create_driver", lambda self, **kw: _FakeDriver(resume=kw.get("resume"), identity=kw.get("identity")))
 
     events = []
     o._publish_event = events.append
@@ -122,7 +122,7 @@ async def test_reassign_with_live_driver_closes_old_and_starts_new(monkeypatch, 
     started = []
 
     class _OldDriver:
-        claude_session_id = "old-csid"
+        engine_session_id = "old-csid"
         cwd = str(tmp_path)
         mode = "interactive"
         identity = "user@example.com"
@@ -131,7 +131,7 @@ async def test_reassign_with_live_driver_closes_old_and_starts_new(monkeypatch, 
         async def aclose(self): closed.append(True)
 
     class _NewDriver:
-        claude_session_id = None
+        engine_session_id = None
         mode = "interactive"
 
         def __init__(self, *a, **kw): pass
@@ -141,7 +141,7 @@ async def test_reassign_with_live_driver_closes_old_and_starts_new(monkeypatch, 
         async def set_model(self, m): pass
 
     o._drivers["s1"] = _OldDriver()
-    monkeypatch.setattr(orch_mod, "SessionDriver", _NewDriver)
+    monkeypatch.setattr(orch_mod.SessionOrchestrator, "_create_driver", lambda self, **kw: _NewDriver(resume=kw.get("resume"), identity=kw.get("identity")))
     o._publish_event = lambda e: None
     o._install_driver = lambda sid, drv: o._drivers.__setitem__(sid, drv)
     monkeypatch.setattr(orch_mod, "compose", lambda acct: Path("/fake/cfg"))

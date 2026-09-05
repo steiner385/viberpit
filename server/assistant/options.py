@@ -1,7 +1,7 @@
 """``ClaudeAgentOptions`` kwargs overlay for an assistant-kind session (spec §4.1).
 
 Returned as a plain dict rather than a built ``ClaudeAgentOptions`` so it can be merged
-over the options ``server/sessions/sdk_factory.real_sdk_factory`` already builds: the
+over the options ``server/sessions/claude_sdk_factory.real_sdk_factory`` already builds: the
 factory owns the env, the permission plumbing and — critically — the resolved
 ``cli_path`` (see ``server/sessions/claude_bin.py``); this overlay owns only what makes
 the session an assistant rather than a coding agent.

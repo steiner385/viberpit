@@ -1,6 +1,6 @@
-"""Tests for issue #9 fixes: sync_back wiring in SessionDriver + orchestrator.
+"""Tests for issue #9 fixes: sync_back wiring in ClaudeAgentDriver + orchestrator.
 
-Fix 1: SessionDriver gains on_sync_back callback invoked after each turn (in
+Fix 1: ClaudeAgentDriver gains on_sync_back callback invoked after each turn (in
 _drain's finally) and in aclose().  A crash in on_sync_back must not break the
 session or stream.
 
@@ -16,7 +16,7 @@ import json
 import time
 
 
-from server.sessions.driver import SessionDriver
+from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.permissions import PermissionRegistry
 from server.tests.fakes import fake_sdk as f
 from server.tests.fakes.fake_sdk import PerQueryScript
@@ -48,7 +48,7 @@ def test_on_sync_back_called_after_turn():
     from server.sessions.events import Status
 
     async def run():
-        d = SessionDriver(
+        d = ClaudeAgentDriver(
             "sb1", "acct1", "/tmp/r", "/tmp/cfg",
             mode="interactive",
             sdk_factory=_factory(msgs),
@@ -78,7 +78,7 @@ def test_on_sync_back_called_on_aclose_without_turn():
         calls.append("sync")
 
     async def run():
-        d = SessionDriver(
+        d = ClaudeAgentDriver(
             "sb2", "acct1", "/tmp/r", "/tmp/cfg",
             mode="interactive",
             sdk_factory=_factory([]),
@@ -106,7 +106,7 @@ def test_on_sync_back_failure_does_not_crash_session():
     from server.sessions.events import Status
 
     async def run():
-        d = SessionDriver(
+        d = ClaudeAgentDriver(
             "sb3", "acct1", "/tmp/r", "/tmp/cfg",
             mode="interactive",
             sdk_factory=_factory(msgs),
@@ -190,7 +190,7 @@ def test_on_sync_back_sdk_rotation_captured_in_slot(tmp_path):
     from server.sessions.events import Status
 
     async def run():
-        d = SessionDriver(
+        d = ClaudeAgentDriver(
             "sb4", "acct1", str(config_dir), str(config_dir),
             mode="interactive",
             sdk_factory=sdk_factory,

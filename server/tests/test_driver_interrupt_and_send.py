@@ -1,4 +1,4 @@
-"""SessionDriver.send_prompt(..., interrupt=True) — "interrupt and post".
+"""ClaudeAgentDriver.send_prompt(..., interrupt=True) — "interrupt and post".
 
 A prompt sent while a turn is live normally joins the FIFO queue and waits. With
 ``interrupt=True`` the driver stops the live turn first and runs the new prompt as
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 
-from server.sessions.driver import SessionDriver
+from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.permissions import PermissionRegistry
 from server.sessions.events import QueueUpdate
 from server.tests.fakes import fake_sdk as f
@@ -31,11 +31,11 @@ class _StuckThenQuick(FakeSDKClient):
 def _make(sdk):
     def factory(cwd, cfg, can_use_tool, mode, resume, *, on_pre_compact=None):
         return sdk
-    return SessionDriver("ias", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+    return ClaudeAgentDriver("ias", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                          sdk_factory=factory, registry=PermissionRegistry(), identity="me")
 
 
-async def _settle(d: SessionDriver, timeout: float = 3.0) -> None:
+async def _settle(d: ClaudeAgentDriver, timeout: float = 3.0) -> None:
     """Wait until no prompt turn is running and the queue has drained."""
     deadline = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < deadline:
