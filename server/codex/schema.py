@@ -123,6 +123,49 @@ SUPPORTED_SERVER_NOTIFICATIONS: Final[frozenset[str]] = frozenset(
     }
 )
 
+PLAN_TYPES: Final[frozenset[str]] = frozenset(
+    {
+        "free",
+        "go",
+        "plus",
+        "pro",
+        "prolite",
+        "team",
+        "self_serve_business_prolite",
+        "self_serve_business_usage_based",
+        "business",
+        "ent26",
+        "enterprise_cbp_automation",
+        "enterprise_cbp_usage_based",
+        "enterprise",
+        "edu",
+        "edu_plus",
+        "edu_pro",
+        "unknown",
+    }
+)
+AUTH_MODES: Final[frozenset[str]] = frozenset(
+    {
+        "apikey",
+        "chatgpt",
+        "chatgptAuthTokens",
+        "headers",
+        "agentIdentity",
+        "personalAccessToken",
+        "bedrockApiKey",
+        "bedrockAccessKeys",
+    }
+)
+RATE_LIMIT_REACHED_TYPES: Final[frozenset[str]] = frozenset(
+    {
+        "rate_limit_reached",
+        "workspace_owner_credits_depleted",
+        "workspace_member_credits_depleted",
+        "workspace_owner_usage_limit_reached",
+        "workspace_member_usage_limit_reached",
+    }
+)
+
 DECLARED_CLIENT_NOTIFICATIONS: Final[frozenset[str]] = frozenset({"initialized"})
 DECLARED_SERVER_REQUESTS: Final[frozenset[str]] = frozenset(
     {
@@ -237,7 +280,7 @@ class CodexSchemaError(ValueError):
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class Contract:
     """One observed or committed app-server schema contract."""
 
@@ -366,7 +409,7 @@ class ContractDriftReason(StrEnum):
     CONTRACT_HASH = "contract_hash_mismatch"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class ContractDrift:
     """A structured, non-raising report that the boundary moved under us."""
 
@@ -380,14 +423,7 @@ class ContractDrift:
         return tuple(reason.value for reason in self.reasons)
 
     def __str__(self) -> str:
-        return (
-            "codex app-server contract drift ("
-            + ", ".join(self.reason_codes())
-            + f"): expected {self.expected_cli_version}"
-            f" schema {self.expected_contract_sha256[:12]},"
-            f" observed {self.observed_cli_version}"
-            f" schema {self.observed_contract_sha256[:12]}"
-        )
+        return "codex app-server contract drift (" + ", ".join(self.reason_codes()) + ")"
 
 
 def check_contract(*, cli_version: str, contract_sha256: str) -> ContractDrift | None:
@@ -445,6 +481,30 @@ def _optional_str(payload: Mapping[str, Any], key: str, what: str) -> str | None
     return value
 
 
+def _optional_enum(
+    payload: Mapping[str, Any],
+    key: str,
+    what: str,
+    allowed: frozenset[str],
+) -> str | None:
+    value = _optional_str(payload, key, what)
+    if value is not None and value not in allowed:
+        raise CodexSchemaError(f"{what} field {key!r} has an unsupported value")
+    return value
+
+
+def _require_enum(
+    payload: Mapping[str, Any],
+    key: str,
+    what: str,
+    allowed: frozenset[str],
+) -> str:
+    value = _require_str(payload, key, what)
+    if value not in allowed:
+        raise CodexSchemaError(f"{what} field {key!r} has an unsupported value")
+    return value
+
+
 def _require_present_optional_str(
     payload: Mapping[str, Any], key: str, what: str
 ) -> str | None:
@@ -493,12 +553,19 @@ def _optional_redacted(
     return None if value is None else Redacted(value)
 
 
+def _reject_unknown_fields(
+    payload: Mapping[str, Any], allowed: frozenset[str], what: str
+) -> None:
+    if any(not isinstance(key, str) or key not in allowed for key in payload):
+        raise CodexSchemaError(f"{what} contains unsupported fields")
+
+
 # ---------------------------------------------------------------------------
 # initialize
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class ClientInfo:
     name: str
     version: str
@@ -511,7 +578,7 @@ class ClientInfo:
         return wire
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class InitializeCapabilities:
     """Client-declared capabilities.
 
@@ -534,7 +601,7 @@ class InitializeCapabilities:
         return wire
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class InitializeParams:
     client_info: ClientInfo
     capabilities: InitializeCapabilities = field(default_factory=InitializeCapabilities)
@@ -546,7 +613,7 @@ class InitializeParams:
         }
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class InitializeResponse:
     codex_home: str
     platform_family: str
@@ -572,7 +639,7 @@ def parse_initialize_response(payload: Any) -> InitializeResponse:
 EXTERNAL_AUTH_LOGIN_TYPE: Final = "chatgptAuthTokens"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class ExternalAuthLoginParams:
     """`account/login/start` with host-supplied ChatGPT tokens.
 
@@ -591,9 +658,9 @@ class ExternalAuthLoginParams:
             raise CodexSchemaError(
                 "account/login/start requires a non-empty chatgptAccountId"
             )
-        if self.chatgpt_plan_type is not None and not self.chatgpt_plan_type:
+        if self.chatgpt_plan_type is not None and self.chatgpt_plan_type not in PLAN_TYPES:
             raise CodexSchemaError(
-                "account/login/start chatgptPlanType must be null or non-empty"
+                "account/login/start chatgptPlanType has an unsupported value"
             )
 
     def to_wire(self) -> dict[str, Any]:
@@ -607,7 +674,7 @@ class ExternalAuthLoginParams:
         return wire
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class LoginAccountResponse:
     type: str
 
@@ -628,19 +695,19 @@ def parse_login_account_response(payload: Any) -> LoginAccountResponse:
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class ApiKeyAccount:
     type: str = "apiKey"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class ChatgptAccount:
     plan_type: str
     email: Redacted | None
     type: str = "chatgpt"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class AmazonBedrockAccount:
     uses_codex_managed_credentials: bool = False
     type: str = "amazonBedrock"
@@ -649,7 +716,7 @@ class AmazonBedrockAccount:
 Account = ApiKeyAccount | ChatgptAccount | AmazonBedrockAccount
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class GetAccountParams:
     refresh_token: bool | None = None
 
@@ -659,7 +726,7 @@ class GetAccountParams:
         return {"refreshToken": self.refresh_token}
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class GetAccountResponse:
     requires_openai_auth: bool
     account: Account | None = None
@@ -674,7 +741,7 @@ def _parse_account(payload: Any) -> Account:
     if variant == "chatgpt":
         email = _require_present_optional_str(body, "email", what)
         return ChatgptAccount(
-            plan_type=_require_str(body, "planType", what),
+            plan_type=_require_enum(body, "planType", what, PLAN_TYPES),
             email=None if email is None else Redacted(email),
         )
     if variant == "amazonBedrock":
@@ -699,21 +766,21 @@ def parse_get_account_response(payload: Any) -> GetAccountResponse:
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class RateLimitWindow:
     used_percent: int
     resets_at: int | None = None
     window_duration_mins: int | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class CreditsSnapshot:
     has_credits: bool
     unlimited: bool
     balance: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class SpendControlLimitSnapshot:
     limit: str
     used: str
@@ -721,7 +788,7 @@ class SpendControlLimitSnapshot:
     resets_at: int
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class RateLimitSnapshot:
     primary: RateLimitWindow | None = None
     secondary: RateLimitWindow | None = None
@@ -734,7 +801,7 @@ class RateLimitSnapshot:
     spend_control_reached: bool | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class GetAccountRateLimitsResponse:
     rate_limits: RateLimitSnapshot
     account_id: Redacted | None = None
@@ -782,14 +849,16 @@ def parse_rate_limit_snapshot(payload: Any, what: str = "rate limit snapshot") -
     return RateLimitSnapshot(
         primary=None if primary is None else _parse_rate_limit_window(primary, what),
         secondary=None if secondary is None else _parse_rate_limit_window(secondary, what),
-        plan_type=_optional_str(body, "planType", what),
+        plan_type=_optional_enum(body, "planType", what, PLAN_TYPES),
         limit_id=_optional_str(body, "limitId", what),
         limit_name=_optional_str(body, "limitName", what),
         credits=None if credits is None else _parse_credits(credits, what),
         individual_limit=(
             None if individual is None else _parse_spend_control(individual, what)
         ),
-        rate_limit_reached_type=_optional_str(body, "rateLimitReachedType", what),
+        rate_limit_reached_type=_optional_enum(
+            body, "rateLimitReachedType", what, RATE_LIMIT_REACHED_TYPES
+        ),
         spend_control_reached=_optional_bool(body, "spendControlReached", what),
     )
 
@@ -818,15 +887,16 @@ def parse_rate_limits_response(payload: Any) -> GetAccountRateLimitsResponse:
 # ---------------------------------------------------------------------------
 
 DEFAULT_INPUT_MODALITIES: Final[tuple[str, ...]] = ("text", "image")
+INPUT_MODALITIES: Final[frozenset[str]] = frozenset({"text", "image", "audio"})
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class ReasoningEffortOption:
     reasoning_effort: str
     description: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class Model:
     id: str
     model: str
@@ -841,7 +911,7 @@ class Model:
     default_service_tier: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class ModelListParams:
     cursor: str | None = None
     include_hidden: bool | None = None
@@ -858,7 +928,7 @@ class ModelListParams:
         return wire
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class ModelListResponse:
     data: tuple[Model, ...]
     next_cursor: str | None = None
@@ -903,6 +973,11 @@ def parse_model(payload: Any) -> Model:
             _require_str(_as_mapping(tier, f"{what} service tier"), "id", f"{what} service tier")
             for tier in raw_tiers
         )
+    input_modalities = _parse_string_tuple(
+        body, "inputModalities", what, DEFAULT_INPUT_MODALITIES
+    )
+    if any(modality not in INPUT_MODALITIES for modality in input_modalities):
+        raise CodexSchemaError(f"{what} field 'inputModalities' has an unsupported value")
     return Model(
         id=_require_str(body, "id", what),
         model=_require_str(body, "model", what),
@@ -912,9 +987,7 @@ def parse_model(payload: Any) -> Model:
         is_default=_require_bool(body, "isDefault", what),
         default_reasoning_effort=_require_str(body, "defaultReasoningEffort", what),
         supported_reasoning_efforts=tuple(efforts),
-        input_modalities=_parse_string_tuple(
-            body, "inputModalities", what, DEFAULT_INPUT_MODALITIES
-        ),
+        input_modalities=input_modalities,
         service_tier_ids=tier_ids,
         default_service_tier=_optional_str(body, "defaultServiceTier", what),
     )
@@ -932,6 +1005,96 @@ def parse_model_list_response(payload: Any) -> ModelListResponse:
     )
 
 
+def validate_client_request_params(method: str, payload: Any) -> dict[str, Any]:
+    """Validate and rebuild one outbound request using the pinned method schema."""
+    what = "client request params"
+    body = _as_mapping(payload, what)
+    if method == METHOD_INITIALIZE:
+        _reject_unknown_fields(body, frozenset({"clientInfo", "capabilities"}), what)
+        client = _as_mapping(body.get("clientInfo"), "initialize clientInfo")
+        _reject_unknown_fields(client, frozenset({"name", "version", "title"}), what)
+        info = ClientInfo(
+            name=_require_str(client, "name", what),
+            version=_require_str(client, "version", what),
+            title=_optional_str(client, "title", what),
+        )
+        raw_capabilities = body.get("capabilities")
+        if raw_capabilities is None:
+            return {"clientInfo": info.to_wire()}
+        capabilities = _as_mapping(raw_capabilities, "initialize capabilities")
+        _reject_unknown_fields(
+            capabilities,
+            frozenset(
+                {"experimentalApi", "requestAttestation", "optOutNotificationMethods"}
+            ),
+            what,
+        )
+        raw_opt_out = capabilities.get("optOutNotificationMethods")
+        if raw_opt_out is not None and (
+            not isinstance(raw_opt_out, list)
+            or not all(isinstance(item, str) for item in raw_opt_out)
+        ):
+            raise CodexSchemaError(
+                "client request params field 'optOutNotificationMethods' "
+                "must be an array of strings or null"
+            )
+        parsed_capabilities = InitializeCapabilities(
+            experimental_api=bool(
+                _optional_bool(capabilities, "experimentalApi", what)
+            ),
+            request_attestation=bool(
+                _optional_bool(capabilities, "requestAttestation", what)
+            ),
+            opt_out_notification_methods=(
+                None if raw_opt_out is None else tuple(raw_opt_out)
+            ),
+        )
+        return InitializeParams(info, parsed_capabilities).to_wire()
+    if method == METHOD_LOGIN_START:
+        _reject_unknown_fields(
+            body,
+            frozenset({"type", "accessToken", "chatgptAccountId", "chatgptPlanType"}),
+            what,
+        )
+        if _require_str(body, "type", what) != EXTERNAL_AUTH_LOGIN_TYPE:
+            raise CodexSchemaError("client request params has unsupported login type")
+        params = ExternalAuthLoginParams(
+            access_token=Redacted(_require_str(body, "accessToken", what)),
+            chatgpt_account_id=Redacted(_require_str(body, "chatgptAccountId", what)),
+            chatgpt_plan_type=_optional_enum(body, "chatgptPlanType", what, PLAN_TYPES),
+        )
+        return params.to_wire()
+    if method == METHOD_ACCOUNT_READ:
+        _reject_unknown_fields(body, frozenset({"refreshToken"}), what)
+        refresh = _optional_bool(body, "refreshToken", what)
+        return GetAccountParams(refresh_token=refresh).to_wire()
+    if method == METHOD_RATE_LIMITS_READ:
+        _reject_unknown_fields(body, frozenset(), what)
+        return {}
+    if method == METHOD_MODEL_LIST:
+        _reject_unknown_fields(
+            body, frozenset({"cursor", "includeHidden", "limit"}), what
+        )
+        limit = _optional_int(body, "limit", what)
+        if limit is not None and not 0 <= limit <= (2**32 - 1):
+            raise CodexSchemaError("client request params field 'limit' is out of range")
+        return ModelListParams(
+            cursor=_optional_str(body, "cursor", what),
+            include_hidden=_optional_bool(body, "includeHidden", what),
+            limit=limit,
+        ).to_wire()
+    raise CodexSchemaError("unsupported client request method")
+
+
+def validate_client_notification_params(method: str, payload: Any) -> dict[str, Any]:
+    """Validate and rebuild one outbound notification using the pinned schema."""
+    if method != METHOD_INITIALIZED:
+        raise CodexSchemaError("unsupported client notification method")
+    body = _as_mapping(payload, "client notification params")
+    _reject_unknown_fields(body, frozenset(), "client notification params")
+    return {}
+
+
 # ---------------------------------------------------------------------------
 # account/chatgptAuthTokens/refresh (server → client request)
 # ---------------------------------------------------------------------------
@@ -939,13 +1102,13 @@ def parse_model_list_response(payload: Any) -> ModelListResponse:
 REFRESH_REASON_UNAUTHORIZED: Final = "unauthorized"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class ChatgptAuthTokensRefreshParams:
     reason: str
     previous_account_id: Redacted | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class ChatgptAuthTokensRefreshResponse:
     access_token: Redacted
     chatgpt_account_id: Redacted
@@ -992,7 +1155,7 @@ def parse_chatgpt_auth_tokens_refresh_response(payload: Any) -> (
     return ChatgptAuthTokensRefreshResponse(
         access_token=Redacted(_require_str(body, "accessToken", what)),
         chatgpt_account_id=Redacted(_require_str(body, "chatgptAccountId", what)),
-        chatgpt_plan_type=_optional_str(body, "chatgptPlanType", what),
+        chatgpt_plan_type=_optional_enum(body, "chatgptPlanType", what, PLAN_TYPES),
     )
 
 
@@ -1001,7 +1164,7 @@ def parse_chatgpt_auth_tokens_refresh_response(payload: Any) -> (
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class ErrorNotificationParams:
     message: Redacted
     thread_id: Redacted
@@ -1011,18 +1174,18 @@ class ErrorNotificationParams:
     additional_details: Redacted | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class AccountUpdatedParams:
     auth_mode: str | None = None
     plan_type: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class AccountRateLimitsUpdatedParams:
     snapshot: RateLimitSnapshot
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class AccountLoginCompletedParams:
     success: bool
     login_id: Redacted | None = None
@@ -1036,6 +1199,29 @@ ServerNotificationParams = (
     | AccountLoginCompletedParams
 )
 
+CODEX_ERROR_INFO_CATEGORIES: Final[frozenset[str]] = frozenset(
+    {
+        "contextWindowExceeded",
+        "sessionBudgetExceeded",
+        "usageLimitExceeded",
+        "rateLimitExceeded",
+        "serverOverloaded",
+        "cyberPolicy",
+        "misalignmentPolicyViolation",
+        "internalServerError",
+        "unauthorized",
+        "badRequest",
+        "threadRollbackFailed",
+        "sandboxError",
+        "other",
+        "httpConnectionFailed",
+        "responseStreamConnectionFailed",
+        "responseStreamDisconnected",
+        "responseTooManyFailedAttempts",
+        "activeTurnNotSteerable",
+    }
+)
+
 
 def _parse_codex_error_info(value: Any, what: str) -> str | None:
     """Reduce the CodexErrorInfo union to its variant name.
@@ -1046,10 +1232,14 @@ def _parse_codex_error_info(value: Any, what: str) -> str | None:
     if value is None:
         return None
     if isinstance(value, str):
-        return value
-    if isinstance(value, Mapping) and len(value) == 1:
-        return str(next(iter(value)))
-    raise CodexSchemaError(f"{what} field 'codexErrorInfo' has an unknown shape")
+        category = value
+    elif isinstance(value, Mapping) and len(value) == 1:
+        category = str(next(iter(value)))
+    else:
+        raise CodexSchemaError(f"{what} field 'codexErrorInfo' has an unknown shape")
+    if category not in CODEX_ERROR_INFO_CATEGORIES:
+        raise CodexSchemaError(f"{what} field 'codexErrorInfo' has an unknown category")
+    return category
 
 
 def _parse_error_notification(payload: Any) -> ErrorNotificationParams:
@@ -1081,8 +1271,8 @@ def parse_server_notification(method: str, payload: Any) -> ServerNotificationPa
         what = "account/updated notification"
         body = _as_mapping(payload, what)
         return AccountUpdatedParams(
-            auth_mode=_optional_str(body, "authMode", what),
-            plan_type=_optional_str(body, "planType", what),
+            auth_mode=_optional_enum(body, "authMode", what, AUTH_MODES),
+            plan_type=_optional_enum(body, "planType", what, PLAN_TYPES),
         )
     if method == "account/rateLimits/updated":
         what = "account/rateLimits/updated notification"
@@ -1115,3 +1305,27 @@ def unknown_notification_label(method: str, declared: Iterable[str] | None = Non
     """
     known = DECLARED_SERVER_NOTIFICATIONS if declared is None else frozenset(declared)
     return method if method in known else "<unrecognized>"
+
+
+ClientResponse = (
+    InitializeResponse
+    | LoginAccountResponse
+    | GetAccountResponse
+    | GetAccountRateLimitsResponse
+    | ModelListResponse
+)
+
+
+def parse_client_response(method: str, payload: Any) -> ClientResponse:
+    """Validate one supported response at the public protocol boundary."""
+    if method == METHOD_INITIALIZE:
+        return parse_initialize_response(payload)
+    if method == METHOD_LOGIN_START:
+        return parse_login_account_response(payload)
+    if method == METHOD_ACCOUNT_READ:
+        return parse_get_account_response(payload)
+    if method == METHOD_RATE_LIMITS_READ:
+        return parse_rate_limits_response(payload)
+    if method == METHOD_MODEL_LIST:
+        return parse_model_list_response(payload)
+    raise CodexSchemaError("unsupported client response method")

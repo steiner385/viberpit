@@ -1,12 +1,15 @@
 """Centralized redaction for the Codex app-server boundary.
 
 This module is the **only** place `server/codex/` decides what may reach a log,
-an exception message, a `repr`, or a support bundle. It deliberately does not
-implement its own credential regexes for shapes the application already knows:
-`scrub_text()` delegates to `server.audit.redact_text` (the canonical redactor
-installed on the root logger by `server.obs.jsonlog.configure_logging`) and then
-applies only the two extra shapes that the Codex boundary introduces and the
-shared patterns do not already cover end to end:
+an exception message, a `repr`, or a support bundle. Native strings are opaque:
+they may contain account identifiers, prompts, commands, paths, or model output
+without looking like credentials, so the general scrubbers replace them
+wholesale. Diagnostic call sites retain usefulness by logging only fixed
+categories, reason codes, supported method names, and numeric protocol codes.
+
+Credential-shape detection remains separate. It delegates to
+`server.audit.redact_text` (the canonical application redactor) and adds only the
+two shapes introduced at the Codex boundary:
 
 * bare `sk-`-prefixed OpenAI keys (the shared list covers `sk-ant-` only), and
 * short JWTs whose segments fall under the shared 3-part cookie pattern's
@@ -19,18 +22,12 @@ triples — is already handled upstream, so there is exactly one owner per shape
 `__str__`, and `__format__` all return `[REDACTED]`, so a dataclass holding one
 is safe under the default dataclass `repr` and under `logging`'s `%s`.
 
-Caller note. `scrub_text`, `scrub_exception`, and `Redacted` are used throughout
-`protocol.py` and `schema.py`. `scrub_value`, `SECRET_FIELD_NAMES`, and
-`CONTENT_FIELD_NAMES` deliberately have no caller yet: they exist for the two
-places that will log whole wire payloads — the process supervisor's crash/stderr
-diagnostics (Task 2.2) and the event translator's unknown-item notice (Task 4.1).
-They are covered by tests and must be deleted rather than left orphaned if those
-tasks end up not needing them.
+`scrub_text` is therefore the safe primitive for Task 2.2 stderr: it never
+attempts to infer which portions of native text are harmless.
 """
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
 from server.audit import redact_text as _shared_redact_text
@@ -47,69 +44,6 @@ _CODEX_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     # a short payload or signature segment would slip past it.
     re.compile(r"\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"),
 )
-
-# Wire field names whose values are credentials or native identifiers.
-SECRET_FIELD_NAMES: Final[frozenset[str]] = frozenset(
-    {
-        "accessToken",
-        "access_token",
-        "refreshToken",
-        "refresh_token",
-        "idToken",
-        "id_token",
-        "apiKey",
-        "api_key",
-        "secretAccessKey",
-        "sessionToken",
-        "chatgptAccountId",
-        "chatgpt_account_id",
-        "accountId",
-        "account_id",
-        "previousAccountId",
-        "previous_account_id",
-        "loginId",
-        "login_id",
-        "threadId",
-        "thread_id",
-        "turnId",
-        "turn_id",
-        "itemId",
-        "item_id",
-        "email",
-        "authUrl",
-        "userCode",
-        "verificationUrl",
-    }
-)
-
-# Wire field names whose values are user or model content.
-CONTENT_FIELD_NAMES: Final[frozenset[str]] = frozenset(
-    {
-        "prompt",
-        "input",
-        "text",
-        "delta",
-        "message",
-        "output",
-        "stdout",
-        "stderr",
-        "content",
-        "command",
-        "cmd",
-        "argv",
-        "patch",
-        "diff",
-        "changes",
-        "path",
-        "cwd",
-        "developerInstructions",
-        "instructions",
-        "additionalDetails",
-        "summary",
-        "reasoning",
-    }
-)
-
 
 class Redacted:
     """An opaque holder whose value never renders in logs, reprs, or f-strings."""
@@ -148,48 +82,35 @@ class Redacted:
 
 
 def scrub_text(text: str) -> str:
-    """Redact credential-shaped material from arbitrary diagnostic text."""
+    """Replace arbitrary native diagnostic text without inspecting its content."""
+    return REDACTED
+
+
+def scrub_value(value: Any) -> str:
+    """Replace an arbitrary native value, including its peer-controlled keys."""
+    return REDACTED
+
+
+def _scrub_secret_shapes(text: str) -> str:
     scrubbed = _shared_redact_text(text)
     for pattern in _CODEX_PATTERNS:
         scrubbed = pattern.sub(REDACTED, scrubbed)
     return scrubbed
 
 
-def scrub_value(value: Any) -> Any:
-    """Return a log-safe copy of a wire value.
-
-    Secret- and content-named keys collapse to ``[REDACTED]`` wholesale; every
-    other string is still passed through :func:`scrub_text` so a token that
-    arrives under an unexpected key is caught too.
-    """
-    if isinstance(value, Redacted):
-        return REDACTED
-    if isinstance(value, Mapping):
-        scrubbed: dict[str, Any] = {}
-        for raw_key, item in value.items():
-            key = str(raw_key)
-            if key in SECRET_FIELD_NAMES or key in CONTENT_FIELD_NAMES:
-                scrubbed[key] = REDACTED
-            else:
-                scrubbed[key] = scrub_value(item)
-        return scrubbed
-    if isinstance(value, str):
-        return scrub_text(value)
-    if isinstance(value, (bytes, bytearray)):
-        return REDACTED
-    if isinstance(value, Sequence):
-        return [scrub_value(item) for item in value]
-    return value
-
-
 def contains_secret_shaped_value(text: str) -> bool:
     """Report whether text carries anything the redactors would have to remove."""
-    return scrub_text(text) != text
+    return _scrub_secret_shapes(text) != text
 
 
 def scrub_exception(exc: BaseException) -> str:
-    """Render an exception as one safe single-line ``Type: message`` string."""
-    message = scrub_text(str(exc)).replace("\r", " ").replace("\n", " ").strip()
-    if not message:
-        return type(exc).__name__
-    return f"{type(exc).__name__}: {message}"
+    """Reduce an exception to a fixed diagnostic category, never its message."""
+    if isinstance(exc, TimeoutError):
+        return "timeout"
+    if isinstance(exc, OSError):
+        return "transport_error"
+    if isinstance(exc, ValueError):
+        return "validation_error"
+    if isinstance(exc, RuntimeError):
+        return "runtime_error"
+    return "internal_error"

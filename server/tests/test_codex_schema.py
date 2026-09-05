@@ -118,7 +118,10 @@ def test_check_contract_reports_both_reasons_together() -> None:
         schema.ContractDriftReason.CLI_VERSION,
         schema.ContractDriftReason.CONTRACT_HASH,
     )
-    assert "codex-cli 9.9.9" in str(drift)
+    assert str(drift) == (
+        "codex app-server contract drift "
+        "(cli_version_mismatch, contract_hash_mismatch)"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +173,38 @@ def test_parse_initialize_response_tolerates_unknown_fields() -> None:
     assert parsed.platform_os == "linux"
 
 
+def test_native_paths_and_model_content_never_leak_through_dto_reprs() -> None:
+    initialized = schema.parse_initialize_response(
+        {
+            "codexHome": "/private/account/project",
+            "platformFamily": "unix",
+            "platformOs": "linux",
+            "userAgent": "native-output-from-account",
+        }
+    )
+    model = schema.parse_model(
+        {
+            "id": "account-owned-model-id",
+            "model": "native-model-name",
+            "displayName": "private display text",
+            "description": "model output containing a prompt",
+            "hidden": False,
+            "isDefault": True,
+            "defaultReasoningEffort": "medium",
+            "supportedReasoningEfforts": [],
+        }
+    )
+    rendered = f"{initialized!r} {model!r}"
+    for fragment in (
+        "/private/account/project",
+        "native-output-from-account",
+        "account-owned-model-id",
+        "private display text",
+        "model output containing a prompt",
+    ):
+        assert fragment not in rendered
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -216,7 +251,7 @@ def test_external_auth_login_params_never_expose_secrets_through_repr() -> None:
     for rendered in (repr(params), str(params)):
         assert "eyJhbGciOiJIUzI1NiJ9" not in rendered
         assert "acct-123456789" not in rendered
-        assert redaction.REDACTED in rendered
+        assert "ExternalAuthLoginParams" in rendered
 
 
 def test_external_auth_login_params_reject_empty_material() -> None:
@@ -292,6 +327,36 @@ def test_parse_get_account_response_never_leaks_the_email_through_repr() -> None
     assert "a@example.com" not in repr(parsed)
 
 
+@pytest.mark.parametrize("plan_type", ["enterprise", "unknown", "pro"])
+def test_account_plan_type_accepts_pinned_values(plan_type: str) -> None:
+    parsed = schema.parse_get_account_response(
+        {
+            "requiresOpenaiAuth": False,
+            "account": {
+                "type": "chatgpt",
+                "email": None,
+                "planType": plan_type,
+            },
+        }
+    )
+    assert isinstance(parsed.account, schema.ChatgptAccount)
+    assert parsed.account.plan_type == plan_type
+
+
+def test_account_plan_type_rejects_unpinned_values() -> None:
+    with pytest.raises(CodexSchemaError):
+        schema.parse_get_account_response(
+            {
+                "requiresOpenaiAuth": False,
+                "account": {
+                    "type": "chatgpt",
+                    "email": None,
+                    "planType": "prompt=/private/project",
+                },
+            }
+        )
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -358,6 +423,20 @@ def test_parse_rate_limits_response_allows_an_empty_snapshot() -> None:
     assert parsed.rate_limits_by_limit_id == {}
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("planType", "not-a-plan"),
+        ("rateLimitReachedType", "prompt=/private/project"),
+    ],
+)
+def test_rate_limit_snapshot_rejects_unpinned_enum_values(
+    field: str, value: str
+) -> None:
+    with pytest.raises(CodexSchemaError):
+        schema.parse_rate_limits_response({"rateLimits": {field: value}})
+
+
 def test_parse_rate_limits_response_rejects_a_bool_used_percent() -> None:
     """`bool` is an `int` subclass; a naive isinstance check would accept True."""
     with pytest.raises(CodexSchemaError):
@@ -415,6 +494,19 @@ def test_parse_model_list_response_reads_the_catalog() -> None:
         "medium",
     ]
     assert model.input_modalities == ("text", "image")
+
+
+@pytest.mark.parametrize("modalities", [["text"], ["image", "audio"], []])
+def test_model_input_modalities_accept_only_pinned_values(
+    modalities: list[str],
+) -> None:
+    parsed = schema.parse_model(_model_wire(inputModalities=modalities))
+    assert parsed.input_modalities == tuple(modalities)
+
+
+def test_model_input_modalities_reject_an_unpinned_value() -> None:
+    with pytest.raises(CodexSchemaError):
+        schema.parse_model(_model_wire(inputModalities=["text", "video"]))
 
 
 def test_parse_model_list_response_tolerates_unknown_model_fields() -> None:
@@ -517,6 +609,22 @@ def test_parse_error_notification_keeps_its_message_out_of_repr() -> None:
     assert "secret-bearing failure detail" not in repr(parsed)
 
 
+def test_error_notification_rejects_peer_controlled_error_categories() -> None:
+    with pytest.raises(CodexSchemaError):
+        schema.parse_server_notification(
+            "error",
+            {
+                "error": {
+                    "message": "ordinary native text",
+                    "codexErrorInfo": "prompt=/private/project",
+                },
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "willRetry": False,
+            },
+        )
+
+
 def test_parse_account_notifications() -> None:
     updated = schema.parse_server_notification(
         "account/updated", {"authMode": "chatgptAuthTokens", "planType": "pro"}
@@ -536,6 +644,15 @@ def test_parse_account_notifications() -> None:
     assert isinstance(completed, schema.AccountLoginCompletedParams)
     assert completed.success is False
     assert "l1" not in repr(completed)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("authMode", "arbitrary-mode"), ("planType", "arbitrary-plan")],
+)
+def test_account_updated_rejects_unpinned_enum_values(field: str, value: str) -> None:
+    with pytest.raises(CodexSchemaError):
+        schema.parse_server_notification("account/updated", {field: value})
 
 
 def test_parse_server_notification_rejects_an_unsupported_method() -> None:
@@ -567,12 +684,11 @@ def test_scrub_text_redacts_jwt_and_sk_shaped_values() -> None:
     jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVP"
     scrubbed_jwt = redaction.scrub_text(f"login failed for {jwt}")
     assert jwt not in scrubbed_jwt
-    # Assert the replacement happened rather than the whole string vanishing.
-    assert scrubbed_jwt == f"login failed for {redaction.REDACTED}"
+    assert scrubbed_jwt == redaction.REDACTED
 
     scrubbed_key = redaction.scrub_text("key sk-proj-0123456789abcdef")
     assert "sk-proj-0123456789abcdef" not in scrubbed_key
-    assert scrubbed_key == f"key {redaction.REDACTED}"
+    assert scrubbed_key == redaction.REDACTED
 
     # The shared server.audit patterns must still apply through this module.
     shared = redaction.scrub_text("sk-ant-api03-zzzz")
@@ -580,10 +696,30 @@ def test_scrub_text_redacts_jwt_and_sk_shaped_values() -> None:
     assert redaction.REDACTED in shared
 
 
-def test_scrub_text_leaves_ordinary_diagnostics_intact() -> None:
-    assert redaction.scrub_text("account/read failed with code -32603") == (
-        "account/read failed with code -32603"
-    )
+def test_general_redaction_never_relays_arbitrary_native_text() -> None:
+    native = "acct plain prompt=delete cwd=/private/project output=completed"
+    assert redaction.scrub_text(native) == redaction.REDACTED
+    assert redaction.scrub_value({"unexpected": native}) == redaction.REDACTED
+
+
+def test_exception_redaction_returns_only_a_fixed_category() -> None:
+    native = "acct plain prompt=delete cwd=/private/project output=completed"
+    assert redaction.scrub_exception(RuntimeError(native)) == "runtime_error"
+
+
+@pytest.mark.parametrize(
+    ("exc", "category"),
+    [
+        (TimeoutError("native output"), "timeout"),
+        (OSError("/private/project"), "transport_error"),
+        (ValueError("account-id"), "validation_error"),
+        (Exception("prompt text"), "internal_error"),
+    ],
+)
+def test_exception_redaction_categories_are_fixed(
+    exc: BaseException, category: str
+) -> None:
+    assert redaction.scrub_exception(exc) == category
 
 
 def test_scrub_value_redacts_secret_and_content_bearing_fields() -> None:
@@ -598,21 +734,11 @@ def test_scrub_value_redacts_secret_and_content_bearing_fields() -> None:
             "nested": [{"refreshToken": "r"}],
         }
     )
-    assert scrubbed == {
-        "accessToken": redaction.REDACTED,
-        "chatgptAccountId": redaction.REDACTED,
-        "prompt": redaction.REDACTED,
-        "command": redaction.REDACTED,
-        "text": redaction.REDACTED,
-        "method": "account/read",
-        "nested": [{"refreshToken": redaction.REDACTED}],
-    }
+    assert scrubbed == redaction.REDACTED
 
 
 def test_scrub_value_unwraps_redacted_holders() -> None:
-    assert redaction.scrub_value({"any": redaction.Redacted("x")}) == {
-        "any": redaction.REDACTED
-    }
+    assert redaction.scrub_value({"any": redaction.Redacted("x")}) == redaction.REDACTED
 
 
 def test_contains_secret_shaped_value_detects_tokens_but_not_schema_text() -> None:
@@ -628,9 +754,7 @@ def test_contains_secret_shaped_value_detects_tokens_but_not_schema_text() -> No
 def test_scrub_exception_returns_a_safe_single_line_message() -> None:
     exc = RuntimeError("token eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIn0.abcdefghijkl\nrejected")
     message = redaction.scrub_exception(exc)
-    assert "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" not in message
-    assert "\n" not in message
-    assert message.startswith("RuntimeError: ")
+    assert message == "runtime_error"
 
 
 # ---------------------------------------------------------------------------

@@ -2748,6 +2748,8 @@ class SessionOrchestrator:
         # must treat it as live-in-progress, not detached.
         spawn_done: asyncio.Future = asyncio.get_running_loop().create_future()
         self._spawning[session_id] = spawn_done
+        driver: AgentDriver | None = None
+        row_persisted = False
         try:
             # An assistant-kind session gets its ClaudeAgentOptions overlay (system
             # prompt, in-process `ccswitch` MCP server, no builtin tools) registered
@@ -2772,18 +2774,11 @@ class SessionOrchestrator:
                 suggester=self._suggester_for(kind),
                 assistant_api=assistant_api,
             )
-            try:
-                await driver.start()
-            except Exception:
-                # driver.start() failed — remove the pre-seeded record so the session
-                # does not appear as a ghost idle card in list_sessions, and release
-                # the overlay/loopback client an assistant spawn registered above
-                # (aclose() never runs for a driver that never started).
-                self._records.pop(session_id, None)
-                if assistant_api is not None:
-                    self._assistant_overlays.pop(session_id, None)
-                    await assistant_api.aclose()
-                raise
+            # Creation transfers cleanup ownership immediately. start() can allocate
+            # its subprocess/client and then block or be cancelled before returning;
+            # the outer BaseException rollback therefore closes `driver` regardless
+            # of whether this await completed.
+            await driver.start()
             # Apply the chosen model before the first prompt runs (initial prompt is
             # deferred until a client attaches, so this always lands on turn one). The
             # "default" alias / empty means "account default" → leave the driver as-is.
@@ -2855,6 +2850,7 @@ class SessionOrchestrator:
                         owner_identity=owner_identity,
                     )
                     db.add(row)
+            row_persisted = True
 
             # Patch the model on the pre-seeded record (resolved by driver.set_model above).
             _pre_record.model = model
@@ -2868,6 +2864,46 @@ class SessionOrchestrator:
             if initial_prompt and origin is not None:
                 await self.send_prompt(session_id, initial_prompt, attachment_ids)
             return record
+        except BaseException:
+            # Before the row is durable, this method owns every resource allocated
+            # for the attempted spawn. In particular CodexRunnerManager.attach()
+            # may register the claim and then raise; at that point the live driver
+            # is already in _drivers. Leaving it there creates an unlisted process,
+            # a stranded runner ref-count, and leaked display/workspace resources.
+            if not row_persisted:
+                async def _rollback() -> None:
+                    registered = await self._teardown_driver_state(session_id)
+                    live_driver = registered or driver
+                    if live_driver is not None:
+                        try:
+                            await live_driver.aclose()
+                        except Exception:
+                            # The real drivers own assistant_api and close it in
+                            # aclose(). Fall back only when driver teardown failed,
+                            # so successful cleanup never double-closes it.
+                            if assistant_api is not None:
+                                with contextlib.suppress(Exception):
+                                    await assistant_api.aclose()
+                    self._assistant_overlays.pop(session_id, None)
+                    rollback_record = (self._records.pop(session_id)
+                                       if session_id in self._records else None)
+                    await self._cleanup_session_paths(session_id, rollback_record)
+
+                # Cleanup has independent ownership. A second cancellation while
+                # driver.aclose() is flushing must not strand the remaining state;
+                # shield until teardown completes, then propagate cancellation.
+                cleanup = asyncio.create_task(
+                    _rollback(), name=f"session-spawn-rollback-{session_id}")
+                cancelled_during_cleanup = False
+                while not cleanup.done():
+                    try:
+                        await asyncio.shield(cleanup)
+                    except asyncio.CancelledError:
+                        cancelled_during_cleanup = True
+                await cleanup
+                if cancelled_during_cleanup:
+                    raise asyncio.CancelledError
+            raise
         finally:
             if self._spawning.get(session_id) is spawn_done:
                 del self._spawning[session_id]
@@ -2942,17 +2978,10 @@ class SessionOrchestrator:
                 log.exception("session.display_cleanup_failed id=%s", session_id)
         return driver
 
-    async def close_session(self, session_id: str) -> None:
-        """Stop the driver, clean up the session worktree, mark the row ended."""
-        driver = await self._teardown_driver_state(session_id)
-        if driver is not None:
-            await driver.aclose()
-        record = self._records.pop(session_id, None)
-
-        # Remove the per-session worktree if we created one (or if the session's
-        # cwd is one of our managed worktree paths — recognised even after a
-        # server restart). Dirty worktrees are kept; remove_worktree never
-        # destroys uncommitted work.
+    async def _cleanup_session_paths(
+        self, session_id: str, record: SessionRecord | None,
+    ) -> None:
+        """Release worktree/scratch paths owned by a session lifecycle."""
         wt = self._worktrees.pop(session_id, None)
         wt_path = wt.path if wt else (
             record.cwd if record and worktrees.is_managed_path(record.cwd, self._repo_root)
@@ -2967,22 +2996,28 @@ class SessionOrchestrator:
                 log.exception("session.worktree_cleanup_failed id=%s path=%s",
                               session_id, wt_path)
 
-        # Remove the no-repo scratch dir if this session used one.  Guard with a
-        # strict containment check so we never rm anything outside the scratch base.
         if record and record.cwd:
             scratch_base = Path(worktrees.worktrees_base(self._repo_root)).parent / "scratch"
             try:
                 cwd_resolved = Path(record.cwd).resolve()
                 scratch_base_resolved = scratch_base.resolve()
-                cwd_resolved.relative_to(scratch_base_resolved)  # raises ValueError if not under base
+                cwd_resolved.relative_to(scratch_base_resolved)
                 if cwd_resolved.is_dir():
                     import shutil
                     await asyncio.to_thread(shutil.rmtree, str(cwd_resolved))
                     log.info("session.scratch_cleanup id=%s path=%s", session_id, cwd_resolved)
             except ValueError:
-                pass  # Not a scratch dir — nothing to do
+                pass
             except Exception:
                 log.exception("session.scratch_cleanup_failed id=%s", session_id)
+
+    async def close_session(self, session_id: str) -> None:
+        """Stop the driver, clean up the session worktree, mark the row ended."""
+        driver = await self._teardown_driver_state(session_id)
+        if driver is not None:
+            await driver.aclose()
+        record = self._records.pop(session_id, None)
+        await self._cleanup_session_paths(session_id, record)
 
         # Persist 'ended' BEFORE dropping any queue entry (#1100 ordering rule, see
         # _maybe_start_queued's failure path). The drain cannot resurrect the session
