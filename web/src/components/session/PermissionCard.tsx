@@ -40,11 +40,15 @@ export function PermissionCard({ block, mode, onDecision }: Props) {
   const summary = keyArgSummary(block)
   const toolLabel = summary ? `${block.tool}: ${summary}` : block.tool
   const isInteractive = mode === 'interactive'
+  // Destructive app-action tools (spec §4.4) never offer "Always allow", in
+  // every mode — the server marks this on the request rather than the client
+  // inferring it from toolKind, since a MUTATION app_action IS grantable.
+  const canAlwaysAllow = block.alwaysAllowed !== false
 
   // Ordered actions matching the rendered buttons; digit/arrow indices map here.
   const actions: Decision[] = block.plan
     ? ['allow', 'deny']
-    : isInteractive
+    : isInteractive || !canAlwaysAllow
       ? ['allow', 'deny']
       : ['allow', 'deny', 'always']
 
@@ -88,7 +92,7 @@ export function PermissionCard({ block, mode, onDecision }: Props) {
               aria-label={`Deny ${toolLabel}`} className={secondaryBtn}>
               No
             </button>
-            {!isInteractive && (
+            {!isInteractive && canAlwaysAllow && (
               <button type="button" {...kb.itemProps(2)} onClick={() => onDecision(block.permId, 'always')}
                 aria-label={`Always allow ${toolLabel}`} className={primaryBtn}>
                 Yes, always

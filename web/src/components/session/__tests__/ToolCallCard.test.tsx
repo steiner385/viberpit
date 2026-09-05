@@ -46,12 +46,27 @@ const editBlockWithResult: ToolBlock = {
   },
 }
 
+const appActionBlock: ToolBlock = {
+  kind: 'tool',
+  id: 'tool-3',
+  toolId: 'tool-3',
+  name: 'mcp__ccswitch__list_sessions',
+  toolKind: 'app_action',
+  input: {},
+}
+
 describe('ToolCallCard', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
   it('shows tool name', () => {
     render(<ToolCallCard block={bashBlock} density="card" />)
     expect(screen.getByText('Bash')).toBeInTheDocument()
+  })
+
+  it('renders an app_action row as its title, not the raw mcp__ name', () => {
+    render(<ToolCallCard block={appActionBlock} density="card" />)
+    expect(screen.getByText('Listed sessions')).toBeInTheDocument()
+    expect(screen.queryByText('mcp__ccswitch__list_sessions')).not.toBeInTheDocument()
   })
 
   it('shows key arg for bash (command)', () => {

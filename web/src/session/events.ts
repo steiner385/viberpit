@@ -1,5 +1,5 @@
 // Server → client session events (the backend's normalized event wire shapes).
-export type ToolKind = 'edit' | 'write' | 'read' | 'bash' | 'todo' | 'search' | 'web' | 'task' | 'mcp' | 'unknown'
+export type ToolKind = 'edit' | 'write' | 'read' | 'bash' | 'todo' | 'search' | 'web' | 'task' | 'mcp' | 'app_action' | 'unknown'
 
 // One attached image on a user turn. `url` is ready to use directly as an <img> src:
 // `/api/attachments/{id}` for a live turn, or a `data:` URL reconstructed on replay.
@@ -20,7 +20,9 @@ export interface EvTextDelta     { type: 'textDelta';     turnId: string; text: 
 export interface EvThinkingDelta { type: 'thinkingDelta'; turnId: string; text: string; srcUuid?: string | null; parentToolUseId?: string | null; ts?: number }
 export interface EvToolCall      { type: 'toolCall';      turnId: string; toolId: string; name: string; toolKind: ToolKind; input: Record<string, unknown>; srcUuid?: string | null; parentToolUseId?: string | null; ts?: number }
 export interface EvToolResult    { type: 'toolResult';    toolId: string; ok: boolean; payload: Record<string, unknown>; srcUuid?: string | null; parentToolUseId?: string | null; ts?: number }
-export interface EvPermissionRequest { type: 'permissionRequest'; permId: string; turnId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean; ts?: number }
+// `alwaysAllowed` is false only for destructive `mcp__ccswitch__*` tools (spec §4.4);
+// mirrors PermissionRequest.always_allowed (server/sessions/events.py), default true.
+export interface EvPermissionRequest { type: 'permissionRequest'; permId: string; turnId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean; alwaysAllowed?: boolean; ts?: number }
 // A permission's future settled server-side (allowed or denied). Rides the same stream
 // as the request frame so a mid-turn reattach (ring resupply re-delivers the request)
 // clears the recreated card instead of resurrecting an already-decided permission.

@@ -17,7 +17,7 @@ def _now_ms() -> float:
 class ToolKind(str, Enum):
     EDIT = "edit"; WRITE = "write"; READ = "read"; BASH = "bash"
     TODO = "todo"; SEARCH = "search"; WEB = "web"; TASK = "task"
-    MCP = "mcp"; UNKNOWN = "unknown"
+    MCP = "mcp"; APP_ACTION = "app_action"; UNKNOWN = "unknown"
 
 _TOOL_KIND = {
     "Edit": ToolKind.EDIT, "MultiEdit": ToolKind.EDIT, "NotebookEdit": ToolKind.EDIT,
@@ -26,9 +26,18 @@ _TOOL_KIND = {
     "LS": ToolKind.SEARCH, "WebFetch": ToolKind.WEB, "WebSearch": ToolKind.WEB,
     "Task": ToolKind.TASK,
 }
+# The ccswitch MCP server (server/assistant/tools.py) is the app talking to
+# itself, not a third-party integration — it gets its own kind so the web
+# presenter can render "Listed sessions" instead of the raw mcp__ name and the
+# permission card can apply its non-grantable-destructive rule (spec §4.4).
+# Checked before the generic "mcp__" branch so it wins the more specific match.
+_APP_ACTION_PREFIX = "mcp__ccswitch__"
+
 def tool_kind(name: str) -> ToolKind:
     # MCP tools are namespaced `mcp__<server>__<tool>`; the server/tool parts are
     # open-ended, so match the prefix rather than enumerate every name.
+    if name.startswith(_APP_ACTION_PREFIX):
+        return ToolKind.APP_ACTION
     if name.startswith("mcp__"):
         return ToolKind.MCP
     return _TOOL_KIND.get(name, ToolKind.UNKNOWN)
@@ -113,10 +122,14 @@ class ToolResult:
 @dataclass
 class PermissionRequest:
     perm_id: str; turn_id: str; tool: str; kind: ToolKind; input: dict; plan: bool = False
+    # False only for destructive `mcp__ccswitch__*` tools (spec §4.4) — those
+    # cards never offer "Always allow", so the client must hide the button
+    # rather than infer it from toolKind (a mutation app_action IS grantable).
+    always_allowed: bool = True
     ts: float | None = field(default_factory=_now_ms)
     def to_wire(self): return {"type": "permissionRequest", "permId": self.perm_id, "turnId": self.turn_id,
                                "tool": self.tool, "toolKind": self.kind.value, "input": self.input, "plan": self.plan,
-                               "ts": self.ts}
+                               "alwaysAllowed": self.always_allowed, "ts": self.ts}
 
 @dataclass
 class PermissionResolved:
