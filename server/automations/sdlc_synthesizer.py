@@ -19,6 +19,7 @@ from server.sdlc.prompts import artifact_path
 
 from .base import AutomationStatus, ConfigField
 from .model_pick import AUTOMATION_MODEL_CHOICES
+from .engine_policy import EnginePolicy
 
 log = logging.getLogger(__name__)
 
@@ -53,6 +54,10 @@ class SdlcSynthesizer:
     name = "SDLC Synthesizer"
     description = "Carries initiatives intent→spec→plan as artifact PRs (propose-only v1)."
     modes: tuple[str, ...] = ("off", "propose", "auto")
+    # Audited engine ceiling (Phase 7, Task 7.1). This origin has no Codex
+    # acceptance evidence, so it launches Claude only. Widening it is a
+    # reviewable one-line change gated on its acceptance suite passing.
+    engine_policy: EnginePolicy = EnginePolicy.CLAUDE_ONLY
     config_schema = [
         ConfigField(key="default_model", label="Model", type="enum",
                     default="default", choices=list(AUTOMATION_MODEL_CHOICES),

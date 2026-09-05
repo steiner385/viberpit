@@ -287,6 +287,16 @@ off on that host. It does **not** fall back to managed runner credentials — th
 fallback would put a refresh token back on a session host, which is the property
 this service exists to remove.
 
+**`CCSWITCH_CODEX_AUTOMATIONS_ENABLED` is a third, separate flag** (default `false`),
+set on the host that runs the automation loops. `CCSWITCH_CODEX_ENABLED` governs
+sessions a human dispatched and is watching; this one governs sessions an automation
+dispatches into `full-auto` with git/gh/pytest and nobody watching, so the two are
+not the same decision. Turning it off forces every automation origin back to Claude
+immediately, with no per-origin config to unwind — the fastest kill switch if a Codex
+automation misbehaves. Which origins may use it at all is a code-declared ceiling
+(`server/automations/engine_policy.py`), not an env var; as of Phase 7 Task 7.1 every
+origin is `claude_only`, so this flag currently changes nothing on its own.
+
 ### Verifying the isolation
 
 The claim is that the session user cannot reach the credential store. Check it:

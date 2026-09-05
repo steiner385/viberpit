@@ -127,6 +127,12 @@ class Automation(Protocol):
     description: str
     modes: tuple[str, ...]
     config_schema: ConfigSchema
+    #: The audited agent-engine ceiling for this origin (Phase 7, Task 7.1).
+    #: Typed loosely here because ``engine_policy`` imports this module for
+    #: ``ConfigField``; ``server.automations.engine_policy.policy_for`` is the
+    #: accessor, and it answers ``claude_only`` for an automation that declares
+    #: nothing — an oversight must fail closed, never open.
+    engine_policy: Any
 
     def status(self, ctx: "Any") -> AutomationStatus: ...
     async def on_state_change(self, *, enabled: bool, mode: str | None,
