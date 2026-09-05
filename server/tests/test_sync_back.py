@@ -274,7 +274,7 @@ def test_usage_for_allow_refresh_true_default_unchanged():
     with temp_env():
         from ccswitch import accounts, oauth, paths
         from ccswitch.creds import write_json_secure
-        from ccswitch.oauth import Usage
+        from ccswitch.quota import anthropic_snapshot
 
         write_json_secure(paths.slot_path("beta"), {
             "accessToken": "expired-access",
@@ -289,7 +289,7 @@ def test_usage_for_allow_refresh_true_default_unchanged():
             "refreshToken": "fresh-refresh",
             "expiresAt": int(time.time() * 1000) + 9_000_000,
         }
-        fake_usage = Usage(50.0, datetime.now(timezone.utc) + timedelta(hours=1),
+        fake_usage = anthropic_snapshot(50.0, datetime.now(timezone.utc) + timedelta(hours=1),
                            60.0, datetime.now(timezone.utc) + timedelta(hours=1), False)
 
         with mock.patch.object(oauth, "refresh_access_token",

@@ -106,7 +106,7 @@ class TestUsageFetchBackoff(unittest.TestCase):
             _expire_cooldown("alpha")
             with mock.patch.object(oauth, "fetch_usage", return_value=usage(session=33.0)):
                 u = accounts.usage_for("alpha")
-            self.assertEqual(u.session_pct, 33.0)
+            self.assertEqual(u.window("session").used_pct, 33.0)
             fails, until = _cooldown("alpha")
             self.assertIsNone(fails)
             self.assertIsNone(until)
@@ -175,14 +175,19 @@ class TestUsageFetchBackoff(unittest.TestCase):
                 led["accounts"]["alpha"]["usageFetchCooldownUntil"] = time.time() + 600
             with mock.patch.object(oauth, "fetch_usage") as fu:
                 u = accounts.usage_for("alpha")
-                self.assertEqual(u.session_pct, 42.0)
+                self.assertEqual(u.window("session").used_pct, 42.0)
                 fu.assert_not_called()
 
 
 class TestCopilotUsageFetchBackoff(unittest.TestCase):
     def _seed_copilot(self, name):
         from ccswitch import paths
-        paths.copilot_token_dir(name).mkdir(parents=True, exist_ok=True)
+        d = paths.copilot_token_dir(name)
+        d.mkdir(parents=True, exist_ok=True)
+        # A token dir without credentials.json is not a Copilot ACCOUNT — it is a
+        # half-finished device flow. The manifest importer (like the discovery it
+        # replaced) only registers dirs that hold credentials.
+        (d / "credentials.json").write_text("{}")
 
     def test_copilot_fetch_failure_sets_cooldown_and_skips_reader(self):
         with temp_env():

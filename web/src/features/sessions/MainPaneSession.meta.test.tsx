@@ -14,6 +14,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MainPaneSession } from './MainPaneSession'
 import { SessionRuntimeProvider } from '@/components/session/SessionRuntimeProvider'
 import type { SessionEvent } from '@/session/events'
+import { anthropicUsage } from '@/test/factories'
 
 let capturedHandlers: Record<string, ((...args: unknown[]) => void)[]> = {}
 
@@ -45,7 +46,7 @@ vi.mock('@/api/hooks', () => ({
   useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
   useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSessions: () => ({ data: [{ id: 's1', name: 'Fix OAuth login bug', accountName: 'work-max', status: 'idle', createdAt: '', updatedAt: '' }] }),
-  useAccounts: () => ({ data: [{ name: 'work-max', status: 'ok', usage: { session: { pct: 42, resetsAt: null }, weekly: { pct: 18, resetsAt: null } } }] }),
+  useAccounts: () => ({ data: [{ name: 'work-max', status: 'ok', usage: anthropicUsage(42, 18) }] }),
   useSettings: () => ({ data: undefined }),
   useModels: () => ({ data: [] }),
   useCloseSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),

@@ -19,6 +19,8 @@ import { selectSubAgents, selectVisibleTurns, selectVisibleSubAgents } from '@/s
 import { remainingContextPct, remainingFromContextUsage } from '@/lib/contextWindow'
 import { useSessions, useAccounts, useSettings } from '@/api/hooks'
 import { isPreSpawnStatus } from '@/api/types'
+import type { UsageWindow } from '@/api/types'
+import { usageWindows } from '@/lib/usageWindows'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { fetchOlderTurns } from '@/api/transcript'
 
@@ -48,12 +50,10 @@ export interface SessionRuntime {
   /** The model actually producing (SDK id, e.g. "claude-opus-4-8") — launch model,
    *  refreshed per turn. Read-only: after a switch it lags `model` by one turn. */
   liveModel: string | null
-  quota: {
-    sessionPct: number
-    weeklyPct: number
-    sessionResetsAt: string | null
-    weeklyResetsAt: string | null
-  } | null
+  /** The account's quota WINDOWS, in provider order. Null when the read failed
+   *  or no account is attached; an empty list is impossible (an unavailable
+   *  snapshot has no windows, so it reads as null here). */
+  quota: UsageWindow[] | null
   contextPct: number | null
   subAgents: ReturnType<typeof selectSubAgents>
   hasOpenAction: boolean
@@ -420,14 +420,8 @@ export function useSessionRuntime(
   const liveModel = state.model
 
   const accountUsage = accounts?.find((a) => a.name === account)?.usage ?? null
-  const quota = accountUsage
-    ? {
-        sessionPct: accountUsage.session.pct,
-        weeklyPct: accountUsage.weekly.pct,
-        sessionResetsAt: accountUsage.session.resetsAt,
-        weeklyResetsAt: accountUsage.weekly.resetsAt,
-      }
-    : null
+  const accountWindows = usageWindows(accountUsage)
+  const quota = accountWindows.length > 0 ? accountWindows : null
 
   // Prefer the SDK's exact context occupancy (the `/context` data) when a live turn
   // has reported it; fall back to the per-call usage approximation for historic or

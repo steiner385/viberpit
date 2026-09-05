@@ -9,9 +9,39 @@ export interface ReauthState {
   authUrl?: string | null
 }
 
+/** One metered allowance on one account.
+ *
+ *  A provider reports the windows it ACTUALLY meters — Anthropic sends a session
+ *  (5-hour) and a weekly (7-day) window; Copilot sends one premium-request
+ *  window. It used to send that single number twice, under two labels, because
+ *  the wire shape had two fixed fields. Render the list, never a fixed pair. */
 export interface UsageWindow {
+  /** Stable machine key: 'session' | 'weekly' | 'premium' | … */
+  key: string
+  /** Human label the provider chose for this window, e.g. 'premium-req'. */
+  label: string
   pct: number        // 0–100
-  resetsAt: string | null  // ISO timestamp or null
+  resetsAt: string | null  // ISO timestamp, or null when no window is active
+  durationSeconds?: number | null
+  /** 'account' (meters everything) or 'model' (meters `appliesToModels` only). */
+  scope?: string
+  appliesToModels?: string[]
+}
+
+/** How much a snapshot's windows can be trusted. Anything other than 'available'
+ *  means the read failed — the windows array is then EMPTY rather than holding a
+ *  fabricated 0%. */
+export type UsageAvailability = 'available' | 'unknown' | 'auth_error'
+
+export interface AccountUsage {
+  provider: string
+  fetchedAt: string | null
+  availability: UsageAvailability
+  windows: UsageWindow[]
+  // Whether the PROVIDER has extra usage enabled — read-only, set in the
+  // Anthropic console. Distinct from `allowExtraUsage` below, which is this
+  // app's opt-in. Optional: older payloads predate the field.
+  extraUsageEnabled?: boolean
 }
 
 export interface LiveSessionCounts {
@@ -22,15 +52,11 @@ export interface LiveSessionCounts {
 export interface Account {
   name: string
   status: AccountStatus
-  provider?: 'anthropic' | 'copilot'
-  usage: {
-    session: UsageWindow
-    weekly: UsageWindow
-    // Whether the PROVIDER has extra usage enabled — read-only, set in the
-    // Anthropic console. Distinct from `allowExtraUsage` below, which is this
-    // app's opt-in. Optional: older payloads predate the field.
-    extraUsageEnabled?: boolean
-  } | null
+  /** 'unknown' when the account is not in the accounts.json manifest — the API
+   *  says so rather than defaulting to 'anthropic' and offering the wrong
+   *  recovery action. */
+  provider?: 'anthropic' | 'copilot' | 'openai' | 'unknown'
+  usage: AccountUsage | null
   nickname?: string | null
   weeklyReservePct?: number | null
   // Opt-in to spending paid extra-usage credits on this account once it is at

@@ -16,9 +16,9 @@ from server.tests.fakes.fake_factory import fake_sdk_factory
 
 def _fake_usage(account: str):
     from datetime import datetime, timedelta, timezone
-    from ccswitch.oauth import Usage
+    from ccswitch.quota import anthropic_snapshot
     reset = datetime.now(timezone.utc) + timedelta(hours=5)
-    return Usage(10.0, reset, 10.0, reset, False)
+    return anthropic_snapshot(10.0, reset, 10.0, reset, False)
 
 
 def _seed_account(name: str) -> None:

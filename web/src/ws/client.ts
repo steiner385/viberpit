@@ -7,7 +7,7 @@
  */
 
 import type { QueryClient } from '@tanstack/react-query'
-import type { Session } from '@/api/types'
+import type { AccountUsage, Session } from '@/api/types'
 import { QK } from '@/api/hooks'
 import type { SessionEvent, PromptContext } from '@/session/events'
 import { SESSION_EVENT_TYPES } from '@/session/events'
@@ -18,7 +18,7 @@ import { shouldApplyRev } from '@/session/reconcile'
 // ── Inbound message shapes ───────────────────────────────────────────────────
 
 export interface WsStatusMsg       { type: 'status';        sessionId: string; status: string; updatedAt?: string; revAt?: string; interruptedByRestart?: boolean; pausedReason?: string | null; pausedUntil?: string | null; usageStalled?: boolean }
-export interface WsUsageMsg        { type: 'usage';         account: string; session: { pct: number; resetsAt: string | null }; weekly: { pct: number; resetsAt: string | null } }
+export interface WsUsageMsg        { type: 'usage';         account: string; usage: AccountUsage }
 export interface WsRotatedMsg      { type: 'rotated';       sessionId: string; fromAccount: string; toAccount: string; reason?: string; turnRestarted?: boolean; revAt?: string }
 export interface WsErrorMsg        { type: 'error';         sessionId?: string; code: string; message: string; resetsAt?: string | null }
 export interface WsBatchMsg        { type: 'batch';         events: SessionEvent[] }
@@ -584,14 +584,13 @@ export class SessionSocket {
     const qc = this._queryClient
     if (!qc) return
     // Import Account type inline to avoid circular imports
-    type AccountLike = { name: string; usage: { session: { pct: number; resetsAt: string | null }; weekly: { pct: number; resetsAt: string | null } } }
+    type AccountLike = { name: string; usage: AccountUsage | null }
     qc.setQueryData<AccountLike[]>(QK.accounts, (old) => {
       if (!old) return old
-      return old.map((a) =>
-        a.name === msg.account
-          ? { ...a, usage: { session: { pct: msg.session.pct, resetsAt: msg.session.resetsAt }, weekly: { pct: msg.weekly.pct, resetsAt: msg.weekly.resetsAt } } }
-          : a,
-      )
+      // Replace the whole snapshot: the number of windows is provider-dependent,
+      // so merging field-by-field would leave a stale window behind when a
+      // provider reports fewer than it did before.
+      return old.map((a) => (a.name === msg.account ? { ...a, usage: msg.usage } : a))
     })
   }
 }

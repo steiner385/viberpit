@@ -22,6 +22,7 @@ import { ApiRequestError } from '@/api/client'
 import type { Account, Session } from '@/api/types'
 import { loadingQueryResult, queryResult } from '@/test/reactQuery'
 import { getServerSttEnabled, setServerSttEnabled } from '@/lib/sttCapability'
+import { anthropicUsage } from '@/test/factories'
 
 const NOOP = { mutate: vi.fn(), isPending: false, isSuccess: false }
 
@@ -132,7 +133,7 @@ function session(over: Partial<Session> = {}): Session {
 function account(over: Partial<Account> = {}): Account {
   return {
     name: 'alice', status: 'ok',
-    usage: { session: { pct: 10, resetsAt: null }, weekly: { pct: 10, resetsAt: null } },
+    usage: anthropicUsage(10, 10),
     liveSessions: { active: 0, idle: 0 }, rank: null, rankReason: null,
     ...over,
   }

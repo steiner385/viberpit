@@ -6,7 +6,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { AccountsManager } from '../AccountsManager'
 import * as hooks from '@/api/hooks'
 import type { Account } from '@/api/types'
-import { appSettings } from '@/test/factories'
+import { anthropicUsage, appSettings } from '@/test/factories'
 import { queryResult } from '@/test/reactQuery'
 
 vi.mock('@/api/hooks', () => ({
@@ -73,10 +73,7 @@ function makeAccount(overrides: Partial<Account> = {}): Account {
   return {
     name: 'work',
     status: 'ok',
-    usage: {
-      session: { pct: 30, resetsAt: null },
-      weekly: { pct: 50, resetsAt: null },
-    },
+    usage: anthropicUsage(30, 50),
     liveSessions: { active: 0, idle: 0 },
     rank: null,
     rankReason: null,
@@ -188,7 +185,7 @@ describe('AccountRow — weekly reserve', () => {
     vi.mocked(hooks.useAccounts).mockReturnValue({
       data: [makeAccount({
         name: 'work', weeklyReservePct: 90,
-        usage: { session: { pct: 10, resetsAt: null }, weekly: { pct: 95, resetsAt: null } },
+        usage: anthropicUsage(10, 95),
       })],
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
@@ -202,9 +199,9 @@ describe('AccountRow — weekly reserve', () => {
     vi.mocked(hooks.useAccounts).mockReturnValue({
       data: [
         makeAccount({ name: 'below', weeklyReservePct: 90,
-          usage: { session: { pct: 10, resetsAt: null }, weekly: { pct: 50, resetsAt: null } } }),
+          usage: anthropicUsage(10, 50) }),
         makeAccount({ name: 'unset', weeklyReservePct: null,
-          usage: { session: { pct: 10, resetsAt: null }, weekly: { pct: 99, resetsAt: null } } }),
+          usage: anthropicUsage(10, 99) }),
       ],
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)

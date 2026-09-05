@@ -47,6 +47,7 @@ import { ViewportProvider } from '@/shell/useViewport'
 import { SIDEBAR_MAX, SIDEBAR_STORAGE_KEY } from '@/lib/sidebarWidth'
 import { useSessionListState } from '@/features/sessions/useSessionListState'
 import { ContextList } from './ContextList'
+import { anthropicUsage } from '@/test/factories'
 
 // ── typed factories (R10: real values, never `as unknown as T`) ───────────────
 
@@ -68,7 +69,7 @@ function account(over: Partial<Account> = {}): Account {
   return {
     name: 'alice',
     status: 'ok',
-    usage: { session: { pct: 10, resetsAt: null }, weekly: { pct: 20, resetsAt: null } },
+    usage: anthropicUsage(10, 20),
     liveSessions: { active: 0, idle: 0 },
     rank: 1,
     rankReason: null,

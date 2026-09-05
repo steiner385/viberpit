@@ -22,7 +22,7 @@
  */
 import type { FleetHost } from '@/api/fleet'
 import type { AppSettings, GithubRepo } from '@/api/hooks'
-import type { Account, ArchivedSession, PullRequestInfo, Session } from '@/api/types'
+import type { Account, AccountUsage, ArchivedSession, PullRequestInfo, Session } from '@/api/types'
 
 /** A `Session` with every required field filled in. */
 export function session(over: Partial<Session> = {}): Session {
@@ -47,12 +47,51 @@ export function mkSession(id: string, over: Partial<Session> = {}): Session {
   return session({ id, name: id, ...over })
 }
 
+/**
+ * An Anthropic quota snapshot: the TWO windows that provider really meters.
+ *
+ * One factory per provider shape, because "how many windows does this provider
+ * have?" is exactly the thing hand-rolled fixtures got wrong — the old wire
+ * format had two fixed fields, so a Copilot fixture duplicated its single
+ * premium-request number into both of them and the suites asserted on the
+ * duplicate.
+ */
+export function anthropicUsage(
+  sessionPct = 10,
+  weeklyPct = 20,
+  over: Partial<AccountUsage> = {},
+): AccountUsage {
+  return {
+    provider: 'anthropic',
+    fetchedAt: '2026-06-19T10:00:00Z',
+    availability: 'available',
+    windows: [
+      { key: 'session', label: 'session', pct: sessionPct, resetsAt: null, durationSeconds: 18000, scope: 'account', appliesToModels: [] },
+      { key: 'weekly', label: 'weekly', pct: weeklyPct, resetsAt: null, durationSeconds: 604800, scope: 'account', appliesToModels: [] },
+    ],
+    ...over,
+  }
+}
+
+/** A Copilot quota snapshot: exactly ONE premium-request window. */
+export function copilotUsage(pct = 10, over: Partial<AccountUsage> = {}): AccountUsage {
+  return {
+    provider: 'copilot',
+    fetchedAt: '2026-06-19T10:00:00Z',
+    availability: 'available',
+    windows: [
+      { key: 'premium', label: 'premium-req', pct, resetsAt: null, scope: 'account', appliesToModels: [] },
+    ],
+    ...over,
+  }
+}
+
 /** An `Account` with every required field filled in. */
 export function account(over: Partial<Account> = {}): Account {
   return {
     name: 'alice',
     status: 'ok',
-    usage: { session: { pct: 10, resetsAt: null }, weekly: { pct: 20, resetsAt: null } },
+    usage: anthropicUsage(),
     liveSessions: { active: 0, idle: 0 },
     rank: 1,
     rankReason: null,
