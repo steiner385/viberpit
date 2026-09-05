@@ -51,11 +51,18 @@ class PendingState:
 _VERDICT_CACHE_MAX = 64
 _verdict_cache: OrderedDict[str, tuple[str, float]] = OrderedDict()
 
-# A "red" verdict is NOT immutable in this repo: flaky master runs are routinely
-# re-run to green (the #846 teardown hang reddened several). Cache red only this
-# long so a re-run's green verdict surfaces within minutes; green stays cached
-# for the process lifetime (a completed green run never turns red).
-_RED_TTL_S = 600.0
+# A non-green completed verdict is NOT immutable in this repo. "red" is routinely
+# re-run to green (the #846 teardown hang reddened several), and "unrun" — a commit
+# whose CI run was cancelled before any job started — goes green the moment someone
+# re-runs it. Cache both only this long so the re-run's verdict surfaces within
+# minutes; green stays cached for the process lifetime (a completed green never
+# turns red). Caching "unrun" at all matters: unlike red it costs an extra actions-API
+# probe in ci_verdict, which would otherwise repeat on every 30s tick.
+_NONGREEN_TTL_S = 600.0
+
+# Verdicts worth caching: completed judgements. "pending"/"unavailable" are transient
+# by definition and must be re-queried every tick.
+_CACHEABLE_VERDICTS = ("green", "red", "unrun")
 
 
 def _now() -> float:
@@ -71,12 +78,12 @@ def _cached_ci(sha: str, ci_fn: Callable[[str], str]) -> str:
     cached = _verdict_cache.get(sha)
     if cached is not None:
         verdict, stored_at = cached
-        if verdict == "green" or _now() - stored_at < _RED_TTL_S:
+        if verdict == "green" or _now() - stored_at < _NONGREEN_TTL_S:
             _verdict_cache.move_to_end(sha)
             return verdict
-        del _verdict_cache[sha]   # red past its TTL: re-query (re-runs go green)
+        del _verdict_cache[sha]   # past its TTL: re-query (re-runs go green)
     verdict = ci_fn(sha)
-    if verdict in ("green", "red"):
+    if verdict in _CACHEABLE_VERDICTS:
         _verdict_cache[sha] = (verdict, _now())
         while len(_verdict_cache) > _VERDICT_CACHE_MAX:
             _verdict_cache.popitem(last=False)
