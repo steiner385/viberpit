@@ -7,16 +7,11 @@ without looking like credentials, so the general scrubbers replace them
 wholesale. Diagnostic call sites retain usefulness by logging only fixed
 categories, reason codes, supported method names, and numeric protocol codes.
 
-Credential-shape detection remains separate. It delegates to
-`server.audit.redact_text` (the canonical application redactor) and adds only the
-two shapes introduced at the Codex boundary:
-
-* bare `sk-`-prefixed OpenAI keys (the shared list covers `sk-ant-` only), and
-* short JWTs whose segments fall under the shared 3-part cookie pattern's
-  minimum segment lengths.
-
-Everything else — `sk-ant-*`, `ccenc1:*`, padded base64 blobs, long signed
-triples — is already handled upstream, so there is exactly one owner per shape.
+Credential-shape detection is separate, and is NOT reimplemented here: it
+delegates to `server.audit.redact_text`, the canonical application redactor, which
+owns every shape — `sk-*` (Anthropic and OpenAI), JWTs, `ccenc1:*`, padded base64
+blobs, long signed triples. `scrub_secret_shapes` is the narrow public entry point
+for the rare value that must stay readable.
 
 `Redacted` is the carrier for values that must never render: its `__repr__`,
 `__str__`, and `__format__` all return `[REDACTED]`, so a dataclass holding one
@@ -27,23 +22,25 @@ attempts to infer which portions of native text are harmless.
 """
 from __future__ import annotations
 
-import re
 from typing import Any, Final
 
 from server.audit import redact_text as _shared_redact_text
 
 REDACTED: Final = "[REDACTED]"
 
-# Shapes the shared server.audit patterns do not fully cover. Keep this list
-# minimal — a shape that belongs to the whole application belongs in server/audit.py.
-_CODEX_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
-    # OpenAI-style keys: sk-..., sk-proj-..., sk-svcacct-... (sk-ant-* is shared).
-    re.compile(r"sk-[A-Za-z0-9_-]{12,}"),
-    # JWT: three base64url segments starting with the `eyJ` header marker. The
-    # shared itsdangerous pattern needs 16/6/20-char segments; access tokens with
-    # a short payload or signature segment would slip past it.
-    re.compile(r"\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"),
-)
+# NOTE: this module no longer carries credential-shape patterns of its own.
+#
+# The bare `sk-` OpenAI key and the short-JWT shapes used to live here, on the
+# stated rule "a shape that belongs to the whole application belongs in
+# server/audit.py". The Task 6.1 secrets sweep showed that both do: it drove each
+# through `audit.redact_detail` and watched them survive, because audit rows and
+# `RedactingFilter` are shared surfaces that no Codex module sits on. A
+# Codex-local pattern could never have protected them, so both moved upstream and
+# there is again exactly one owner per shape.
+#
+# If a shape ever appears that is genuinely specific to this boundary, add it back
+# here — but check first whether an audit row or a log record could carry it, in
+# which case it belongs in server/audit.py instead.
 
 class Redacted:
     """An opaque holder whose value never renders in logs, reprs, or f-strings."""
@@ -91,16 +88,21 @@ def scrub_value(value: Any) -> str:
     return REDACTED
 
 
-def _scrub_secret_shapes(text: str) -> str:
-    scrubbed = _shared_redact_text(text)
-    for pattern in _CODEX_PATTERNS:
-        scrubbed = pattern.sub(REDACTED, scrubbed)
-    return scrubbed
+def scrub_secret_shapes(text: str) -> str:
+    """Remove credential-SHAPED substrings, keeping the rest of the text.
+
+    The narrow counterpart to :func:`scrub_text`, for the rare value that must
+    stay readable and cannot simply be replaced — currently the CLI version
+    string, which is native output from ``codex --version`` yet is rendered on
+    ``/info`` and in the Fleet table. Prefer ``scrub_text`` everywhere else:
+    pattern matching cannot know that an unrecognised native string is harmless.
+    """
+    return _shared_redact_text(text)
 
 
 def contains_secret_shaped_value(text: str) -> bool:
     """Report whether text carries anything the redactors would have to remove."""
-    return _scrub_secret_shapes(text) != text
+    return scrub_secret_shapes(text) != text
 
 
 def scrub_exception(exc: BaseException) -> str:

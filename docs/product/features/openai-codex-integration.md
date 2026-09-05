@@ -1,12 +1,20 @@
 ---
 slug: openai-codex-integration
 title: Native OpenAI / Codex Integration
-state: discovery
+state: delivering
 links:
   specs:
     - docs/superpowers/specs/2026-09-04-native-openai-codex-integration-design.md
   project: https://github.com/users/steiner385/projects/26
+  acceptance: docs/superpowers/spikes/2026-09-04-codex-interactive-acceptance.md
 ---
+
+> **State.** Phases 1–6 have landed behind fail-closed flags:
+> `CCSWITCH_CODEX_ENABLED` and `CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED` are both
+> `false` everywhere, and `CCSWITCH_CODEX_AUTOMATIONS_ENABLED` stays false until
+> Phase 7. This becomes `live` only when Part 2 of the acceptance record —
+> the real-boundary runs on dobby and rocky — passes and the owner enables the
+> flags. Operator procedures: `docs/runbooks/codex-credential-authority.md`.
 
 # Native OpenAI / Codex Integration
 
