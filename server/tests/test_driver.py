@@ -262,6 +262,66 @@ def test_queued_prompt_runs_after_first_turn():
     assert queries == ["prompt-one", "prompt-two"]
 
 
+def test_send_prompt_context_header_prepended_once_per_change():
+    """A context header is prepended to the text sent to the SDK the first time
+    (or whenever) the context changes, but the UserMessage event keeps the
+    original, unprefixed text — the chip and the SDK-visible text are independent
+    (spec §4.5)."""
+    import asyncio
+
+    class QuickFakeSDK(PerQueryScript):
+        def __init__(self):
+            self.queries: list[str] = []
+            self._call = 0
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        async def query(self, prompt: str): self.queries.append(prompt)
+        async def receive_response(self):
+            self._call += 1
+            yield f.result(uuid=f"t{self._call}")
+        async def interrupt(self): pass
+        async def set_permission_mode(self, mode): pass
+
+    sdk = QuickFakeSDK()
+
+    def factory(cwd, cfg, can_use_tool, mode, resume, *, on_pre_compact=None):
+        return sdk
+
+    async def run():
+        d = SessionDriver("sctx1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=factory, registry=PermissionRegistry(), identity="me")
+        await d.start()
+        events = []
+
+        async def drain_until_idle():
+            async for e in d.events():
+                events.append(e)
+                if isinstance(e, Status) and e.state in ("idle", "done", "complete",
+                                                          "needs_attention"):
+                    break
+
+        await d.send_prompt("hi", context={"route": "/pipeline"})
+        await drain_until_idle()
+        # Same context again — no new header.
+        await d.send_prompt("again", context={"route": "/pipeline"})
+        await drain_until_idle()
+        # Context changed — header re-sent.
+        await d.send_prompt("third", context={"route": "/sessions"})
+        await drain_until_idle()
+        await d.aclose()
+        return sdk.queries, [e for e in events if isinstance(e, UserMessage)]
+
+    queries, user_msgs = asyncio.run(run())
+    assert queries[0].startswith('<ccswitch-context route="/pipeline"')
+    assert queries[0].endswith("\nhi")
+    assert queries[1] == "again"
+    assert queries[2].startswith('<ccswitch-context route="/sessions"')
+    assert queries[2].endswith("\nthird")
+    assert [m.text for m in user_msgs] == ["hi", "again", "third"]
+    assert [m.context for m in user_msgs] == [
+        {"route": "/pipeline"}, {"route": "/pipeline"}, {"route": "/sessions"}]
+
+
 def test_interrupt_clears_queue():
     """interrupt() clears the queue and emits an idle status."""
     import asyncio

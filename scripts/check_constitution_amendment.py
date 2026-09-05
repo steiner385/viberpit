@@ -26,7 +26,10 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO_ROOT))
 
-from server.sdlc.constitution_gate import check_amendment  # noqa: E402
+from server.sdlc.constitution_gate import (  # noqa: E402
+    check_amendment,
+    check_guardrail_change,
+)
 
 _CONSTITUTION = ".specify/memory/constitution.md"
 
@@ -40,6 +43,18 @@ def _git_show(ref: str, path: str) -> str | None:
     return proc.stdout if proc.returncode == 0 else None
 
 
+def _changed_paths(base_ref: str) -> list[str]:
+    """Repo-relative paths differing from the merge base with *base_ref*."""
+    proc = subprocess.run(
+        ["git", "diff", "--name-only", f"{base_ref}...HEAD"],
+        capture_output=True, text=True, cwd=str(_REPO_ROOT),
+    )
+    if proc.returncode != 0:
+        # Fail closed: if we cannot see the diff we cannot clear it.
+        raise SystemExit(f"could not diff against {base_ref}: {proc.stderr.strip()}")
+    return [line for line in proc.stdout.splitlines() if line]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-ref", default="origin/master")
@@ -51,27 +66,35 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{args.path} does not exist at HEAD — refusing to pass silently")
         return 1
     head_text = head_file.read_text()
+    pr_body = os.environ.get("PR_BODY", "")
 
     base_text = _git_show(args.base_ref, args.path)
-    if base_text is None:
-        print(f"{args.path} is new on this branch; treating as an amendment")
-        base_text = ""
-    elif base_text == head_text:
-        print(f"{args.path} unchanged vs {args.base_ref} — nothing to check")
-        return 0
+    constitution_changed = base_text is None or base_text != head_text
 
-    violations = check_amendment(base_text, head_text, os.environ.get("PR_BODY", ""))
+    violations: list[str] = []
+    if constitution_changed:
+        if base_text is None:
+            print(f"{args.path} is new on this branch; treating as an amendment")
+            base_text = ""
+        violations += check_amendment(base_text, head_text, pr_body)
+    else:
+        # Only guardrail files are in play; an amendment implies its own
+        # acknowledgment, so this branch avoids reporting the same thing twice.
+        violations += check_guardrail_change(_changed_paths(args.base_ref), pr_body)
+
     if not violations:
-        print(f"constitution amendment OK ({args.path} changed, all checks passed)")
+        scope = "amendment" if constitution_changed else "guardrails"
+        print(f"governance gate OK ({scope} checked, nothing to report)")
         return 0
 
-    print(f"constitution amendment gate FAILED — {len(violations)} problem(s):\n")
+    print(f"governance gate FAILED — {len(violations)} problem(s):\n")
     for violation in violations:
         print(f"  - {violation}")
     print(
         "\nAn amendment must bump the version, record the transition in the Sync "
         "Impact Report, move Last Amended, and carry an owner acknowledgment in the "
-        "pull request description (constitution Governance)."
+        "pull request description. A change to governance enforcement needs the "
+        "acknowledgment alone (constitution Governance)."
     )
     return 1
 

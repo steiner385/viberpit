@@ -301,6 +301,152 @@ def test_assistant_kind_persists_to_the_db_row(tmp_path):
     asyncio.run(run())
 
 
+async def _park_as_reaped(session_id: str, claude_session_id: str = "cli-abc") -> None:
+    """Put a row in the exact state the idle reap leaves behind: status='ended' with
+    the CLI resume handle still on the row (spec §4.7 'Idle reap … kept (CLI JSONL)')."""
+    from sqlalchemy import update as sa_update
+    from server.db import db_session
+    from server.db.models import Session as DbSession
+    async with db_session() as db:
+        await db.execute(sa_update(DbSession).where(DbSession.id == session_id)
+                         .values(status="ended", claude_session_id=claude_session_id))
+        await db.commit()
+
+
+async def _backdate(session_id: str, *, hours: int) -> None:
+    """Move a row's created_at back so 'newest first' is deterministic."""
+    from datetime import datetime, timedelta
+    from sqlalchemy import update as sa_update
+    from server.db import db_session
+    from server.db.models import Session as DbSession
+    async with db_session() as db:
+        await db.execute(sa_update(DbSession).where(DbSession.id == session_id)
+                         .values(created_at=datetime.utcnow() - timedelta(hours=hours)))
+        await db.commit()
+
+
+def test_reaped_assistant_survives_a_daemon_restart(tmp_path):
+    """#1122: the reap parks the thread on 'ended', which `rehydrate` deliberately
+    skips (INACTIVE_SESSION_STATUSES) — so without an on-demand DB adoption
+    `find_assistant` returns None after a restart and the drawer silently starts a
+    NEW thread, stranding the previous claude_session_id and its transcript."""
+    async def run():
+        orch = await _make_orch(db_url=f"sqlite+aiosqlite:///{tmp_path / 'reap.db'}",
+                                tmp_path=tmp_path)
+        try:
+            a = await orch.create_session(name="Assistant", cwd=str(tmp_path),
+                                          identity="u@x", kind=ASSISTANT_KIND,
+                                          owner_identity="u@x")
+            await _park_as_reaped(a.id)
+            # Daemon restart: in-memory state is gone, and rehydrate does not bring
+            # an 'ended' row back (that part is deliberate — see the method).
+            orch._records.clear()
+            orch._drivers.clear()
+            await orch.rehydrate()
+            assert a.id not in orch._records
+
+            found = await orch.find_assistant("u@x")
+            assert found is not None and found.id == a.id
+            assert found.status == "ended"          # POST /session branches on this to resume
+            assert found.kind == ASSISTANT_KIND and found.owner_identity == "u@x"
+            assert found.claude_session_id == "cli-abc"   # the resume handle survives
+            # Adopted into _records, so ensure_driver can resume it like any detached row.
+            assert a.id in orch._records
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
+def test_adoption_is_scoped_to_the_owner_and_never_resurrects_coding_sessions(tmp_path):
+    """The DB fallback must not widen into a general 'load ended rows' path: another
+    identity's thread is not mine, an archived thread is gone for good, and an ended
+    CODING session must stay out of _records (it would re-appear on the dashboard)."""
+    async def run():
+        orch = await _make_orch(db_url=f"sqlite+aiosqlite:///{tmp_path / 'scope.db'}",
+                                tmp_path=tmp_path)
+        try:
+            mine = await orch.create_session(name="Assistant", cwd=str(tmp_path),
+                                             identity="u@x", kind=ASSISTANT_KIND,
+                                             owner_identity="u@x")
+            coder = await orch.create_session(name="Coder", cwd=str(tmp_path))
+            await _park_as_reaped(mine.id)
+            await _park_as_reaped(coder.id)
+            orch._records.clear()
+            orch._drivers.clear()
+            await orch.rehydrate()
+
+            assert await orch.find_assistant("someone-else@x") is None
+            assert orch._records == {}                  # a miss adopts nothing
+
+            found = await orch.find_assistant("u@x")
+            assert found is not None and found.id == mine.id
+            assert coder.id not in orch._records        # ended coding row stays out
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
+def test_archived_assistant_is_never_adopted(tmp_path):
+    """'New chat' archives the old thread; adopting it back would resurrect a thread
+    the user explicitly replaced."""
+    async def run():
+        orch = await _make_orch(db_url=f"sqlite+aiosqlite:///{tmp_path / 'arch.db'}",
+                                tmp_path=tmp_path)
+        try:
+            a = await orch.create_session(name="Assistant", cwd=str(tmp_path),
+                                          identity="u@x", kind=ASSISTANT_KIND,
+                                          owner_identity="u@x")
+            from sqlalchemy import update as sa_update
+            from server.db import db_session
+            from server.db.models import Session as DbSession
+            async with db_session() as db:
+                await db.execute(sa_update(DbSession).where(DbSession.id == a.id)
+                                 .values(status="archived"))
+                await db.commit()
+            orch._records.clear()
+            orch._drivers.clear()
+            await orch.rehydrate()
+
+            assert await orch.find_assistant("u@x") is None
+            assert orch._records == {}
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
+def test_adoption_picks_the_newest_reaped_thread(tmp_path):
+    """A pre-fix daemon could leave several 'ended' assistant rows for one identity
+    (each restart minted another). The newest one is the user's real conversation."""
+    async def run():
+        orch = await _make_orch(db_url=f"sqlite+aiosqlite:///{tmp_path / 'newest.db'}",
+                                tmp_path=tmp_path)
+        try:
+            old = await orch.create_session(name="Assistant", cwd=str(tmp_path),
+                                            identity="u@x", kind=ASSISTANT_KIND,
+                                            owner_identity="u@x")
+            await _park_as_reaped(old.id, claude_session_id="cli-old")
+            await _backdate(old.id, hours=1)   # deterministic ordering, no clock race
+            orch._records.clear()
+            orch._drivers.clear()
+            new = await orch.create_session(name="Assistant", cwd=str(tmp_path),
+                                            identity="u@x", kind=ASSISTANT_KIND,
+                                            owner_identity="u@x")
+            await _park_as_reaped(new.id, claude_session_id="cli-new")
+            orch._records.clear()
+            orch._drivers.clear()
+
+            found = await orch.find_assistant("u@x")
+            assert found is not None and found.id == new.id
+            assert found.claude_session_id == "cli-new"
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
 def test_assistant_session_never_queues_even_at_the_cap(tmp_path):
     async def run():
         orch = await _make_orch(db_url=f"sqlite+aiosqlite:///{tmp_path / 'c.db'}",
