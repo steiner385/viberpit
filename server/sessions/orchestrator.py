@@ -47,6 +47,7 @@ from ccswitch.configdir import compose
 from ccswitch.paths import account_cfg_dir, shared_base
 from ccswitch.selector import at_ceiling, exhausted
 from server.aio import bounded_wait
+from server.assistant.context import PromptContext
 from server.audit import record_audit
 from server.db import db_session
 from server.db.models import AUTO_ARCHIVE_PROVENANCE, CAPACITY_EXEMPT_STATUSES, INACTIVE_SESSION_STATUSES, Session as DbSession
@@ -9077,7 +9078,8 @@ class SessionOrchestrator:
         return self._pending_initial_attachment_ids.pop(session_id, None)
 
     async def send_prompt(self, session_id, text, attachment_ids=None, *,
-                          interrupt: bool = False, context: dict | None = None) -> str:
+                          interrupt: bool = False,
+                          context: PromptContext | None = None) -> str:
         """Deliver a prompt to a live driver. ``interrupt`` = "interrupt and post":
         stop the in-flight turn and run this prompt next instead of queueing it.
         ``context`` is the assistant-only "context chip" (spec §4.5); the ws bridge

@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from ccswitch.oauth import Usage
+from server.assistant.context import PromptContext
 from server.ipc.client import DaemonError, DaemonUnavailable
 from server.sessions.facade import rpc_deadline
 from server.sessions.orchestrator import ModelBlockedError
@@ -498,13 +499,17 @@ class RemoteOrchestrator:
         return SessionRecord.from_dict(r["session"])
 
     async def send_prompt(self, session_id: str, text: str, images=None, *,
-                          interrupt: bool = False, context: dict | None = None) -> str | None:
-        # `context` is the assistant-only "context chip" (spec §4.5); ws.py only
-        # ever sets it for an assistant-kind session, so it is almost always None
-        # here — forwarded unconditionally (like `interrupt`) so the daemon-side
-        # handler sees the real value either way.
+                          interrupt: bool = False,
+                          context: PromptContext | None = None) -> str | None:
+        # This is the hop the deployed edge actually takes (app.state.sessions is a
+        # RemoteOrchestrator, or a FleetOrchestrator whose _make_per_session splats
+        # **kwargs into one), so every optional send_prompt kwarg has to exist here or
+        # it raises TypeError in production while every in-process test passes.
+        # `context` is only forwarded when set: a newer edge talking to an older
+        # daemon then sends the exact pre-chip payload.
+        extra = {"context": context} if context is not None else {}
         r = await self._client.call("send_prompt", session_id=session_id, text=text,
-                                    images=images, interrupt=interrupt, context=context)
+                                    images=images, interrupt=interrupt, **extra)
         return (r or {}).get("status")
 
     def daemon_sha(self) -> str | None:

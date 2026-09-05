@@ -2,6 +2,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 import time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Typing-only, so this module's runtime imports stay stdlib-only. PromptContext is
+    # a leaf TypedDict (server/assistant/context.py imports nothing from
+    # server.sessions), so this direction can never form a cycle.
+    from server.assistant.context import PromptContext
 
 
 def _now_ms() -> float:
@@ -236,10 +243,10 @@ class UserMessage:
     # The page (route/sessionId) the user was on when they sent this prompt — the
     # "context chip" (spec §4.5). Only ever set on an assistant-kind session; a
     # coding session's UserMessage always carries None. Always the ORIGINAL user
-    # text/context pair: the `<ccswitch-context>` header the driver prepends before
-    # handing the prompt to the SDK never appears here — this is what the transcript
-    # bubble renders.
-    context: dict | None = None
+    # text/context pair: the `<ccswitch-context>` header the driver prepends in
+    # _start_turn before handing the prompt to the SDK never appears here — this is
+    # what the transcript bubble renders.
+    context: PromptContext | None = None
     def to_wire(self): return {"type": "user", "turnId": self.turn_id, "text": self.text, "srcUuid": self.src_uuid,
                                "images": self.images or [], "ts": self.ts,
                                "ownerPrefix": self.owner_prefix, "context": self.context}

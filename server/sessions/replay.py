@@ -239,9 +239,12 @@ def _build_events(path: str) -> tuple[list, object | None]:
                 # the marker never renders as part of the user's own words and the chip
                 # (spec §4.5) survives a reload instead of only existing live.
                 text, ctx = strip_context_header(text)
+                # Passed through as-is, NOT copied via dict(): UserMessage.context is
+                # typed PromptContext, and a dict() copy widens it back to
+                # dict[str, object]. validate_context already built ctx fresh per call,
+                # so there is nothing to defend against by copying.
                 out.append(ev.UserMessage(turn_id=uuid, text=text, src_uuid=uuid,
-                                          images=imgs or None, ts=ts,
-                                          context=dict(ctx) if ctx else None))
+                                          images=imgs or None, ts=ts, context=ctx))
             out.extend(_tool_result_events(content, uuid, ts, None))
         elif typ == "assistant":
             # Reconstruct the model once (status strip needs it after re-attach).
