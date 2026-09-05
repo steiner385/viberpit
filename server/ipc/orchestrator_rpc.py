@@ -162,9 +162,15 @@ def register_orchestrator_rpc(app, orch) -> None:
         return {"session": rec.to_dict()}
 
     async def send_prompt(params: dict) -> dict:
-        # `interrupt` (interrupt-and-post) is only forwarded when set, so an edge
-        # that predates the flag keeps the plain queued-send contract.
-        extra = {"interrupt": True} if params.get("interrupt") is True else {}
+        # `interrupt` (interrupt-and-post) and `context` (the assistant's route chip,
+        # spec §4.5) are only forwarded when set, so an edge that predates either
+        # keeps the plain queued-send contract — and an older edge's payload never
+        # grows keys this orchestrator would reject. There is no `**params` splat to
+        # lean on here: an unlisted key is silently dropped, which is how the chip
+        # went missing on the deployed edge→daemon path.
+        extra: dict[str, object] = {"interrupt": True} if params.get("interrupt") is True else {}
+        if params.get("context") is not None:
+            extra["context"] = params["context"]
         status = await orch.send_prompt(params["session_id"], params["text"],
                                         params.get("images"), **extra)
         return {"status": status}
