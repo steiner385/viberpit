@@ -375,6 +375,15 @@ mutation cards, destructive tools never auto-allowed, `max_turns`, rate limit, a
 | "New chat" | archived; new row | new | fresh |
 | Account rotation | `account_name` updated | respawned with `resume=` on the new account | continues (transcripts are shared per constitution II allowlist) |
 | Daemon restart | rehydrated like any session; assistant is excluded from `pending_prompt` re-send | lazy | continues |
+| Restart AFTER a reap | adopted from the DB on demand by `find_assistant` | lazy | continues |
+
+"Rehydrated like any session" is not enough for a thread the reap already ended: `rehydrate`
+loads only rows whose status is outside `INACTIVE_SESSION_STATUSES`, so a reaped
+(`status=ended`) row never reaches `_records` and the identity lookup behind
+`POST /api/assistant/session` would miss it — creating a second thread while the first one's
+`claude_session_id` (and its CLI transcript) is stranded. `find_assistant` therefore falls
+back to a scoped DB lookup — newest `ended` assistant row for that owner, one row, loaded
+lazily — and the existing resume path takes it from there (issue #1122).
 
 ### 4.8 Events and streaming
 
