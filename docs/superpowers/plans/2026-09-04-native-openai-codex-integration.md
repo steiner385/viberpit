@@ -464,19 +464,19 @@ violate the single-source-of-truth rule.
 
 **Work:**
 
-- [ ] Extract the minimal supported request/response/notification/server-request schema from the
+- [x] Extract the minimal supported request/response/notification/server-request schema from the
   real generated app-server schema. Commit curated fixtures and their upstream hash, not secrets or
   user configuration.
-- [ ] Implement one async JSONL client with monotonically unique request ids, response futures,
+- [x] Implement one async JSONL client with monotonically unique request ids, response futures,
   notification dispatch, server-request dispatch, timeout/cancellation, bounded queues, and strict
   EOF/process-exit behavior.
-- [ ] Require `initialize`/`initialized` before calls. Advertise `experimentalApi=true` only when
+- [x] Require `initialize`/`initialized` before calls. Advertise `experimentalApi=true` only when
   external auth is enabled.
-- [ ] Validate every inbound/outbound supported DTO. Unknown notifications are redacted and counted;
+- [x] Validate every inbound/outbound supported DTO. Unknown notifications are redacted and counted;
   unknown server requests fail closed and never auto-approve.
-- [ ] Centralize token/account-id/prompt/output/command redaction. `repr`, exception messages, and
+- [x] Centralize token/account-id/prompt/output/command redaction. `repr`, exception messages, and
   structured logs must be secret-safe.
-- [ ] Test interleaving, partial lines, malformed JSON, duplicate ids, request timeout, cancellation,
+- [x] Test interleaving, partial lines, malformed JSON, duplicate ids, request timeout, cancellation,
   queue pressure, EOF, secret-shaped values, and schema drift.
 
 ### Task 2.2: Per-account runner process manager
@@ -496,17 +496,17 @@ violate the single-source-of-truth rule.
 
 **Work:**
 
-- [ ] Resolve `CCSWITCH_CODEX_BIN`, execute `--version`, compare against the explicit supported
+- [x] Resolve `CCSWITCH_CODEX_BIN`, execute `--version`, compare against the explicit supported
   version set/schema hash, and advertise a typed unavailable reason on mismatch.
-- [ ] Create a local `CODEX_HOME` per runner account with mode 0700. Assert it is not on a network
+- [x] Create a local `CODEX_HOME` per runner account with mode 0700. Assert it is not on a network
   filesystem before starting; never symlink it to the authority home.
-- [ ] Supervise one app-server per `(runner, OpenAI account)` and multiplex thread drivers on it.
+- [x] Supervise one app-server per `(runner, OpenAI account)` and multiplex thread drivers on it.
   Serialize startup/login, ref-count active threads, idle-reap after the grace period, and bound
   crash restart with jitter/backoff.
-- [ ] On restart, reinitialize/relogin and notify thread drivers to recover through `thread/read`;
+- [x] On restart, reinitialize/relogin and notify thread drivers to recover through `thread/read`;
   never claim an in-flight turn succeeded.
-- [ ] Integrate manager drain after driver turns settle and before daemon shutdown completes.
-- [ ] Prove a Codex process crash cannot stop or degrade a Claude driver.
+- [x] Integrate manager drain after driver turns settle and before daemon shutdown completes.
+- [x] Prove a Codex process crash cannot stop or degrade a Claude driver.
 
 **Real read-only smoke:** opt-in initialize, external login, account/read, model/list, and
 rateLimits/read against the supported binary. No turn yet.

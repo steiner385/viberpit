@@ -134,6 +134,10 @@ class CodexStartError(CodexManagerError):
     """An app-server could not be started, initialized, or logged in."""
 
 
+class CodexRunnerMissingError(CodexManagerError):
+    """A session tried to attach after its ensured runner disappeared."""
+
+
 CredentialSupplier = Callable[[str], Awaitable[schema.ExternalAuthLoginParams]]
 ThreadNotifier = Callable[[RunnerNotice], None]
 ProcessFactory = Callable[..., CodexProcessHandle]
@@ -354,9 +358,14 @@ class CodexRunnerManager:
             await client.initialize()
             await self._login(account, client)
         except asyncio.CancelledError:
+            # Cancellation is an outcome, not an exemption from ownership cleanup:
+            # process.start/client.start may already have allocated OS resources.
+            await self._discard_startup(account, process, client)
             raise
         except Exception as exc:  # noqa: BLE001 -- one typed start failure
-            await self._discard(process, client)
+            # A daemon cancellation arriving while an ordinary startup failure is
+            # being cleaned up has the same ownership rule: finish teardown first.
+            await self._discard_startup(account, process, client)
             detail = redaction.scrub_exception(exc)
             tail = process.stderr_tail()
             log_event(
@@ -416,6 +425,26 @@ class CodexRunnerManager:
             except Exception:  # noqa: BLE001 -- teardown must not raise
                 logger.debug("codex: process stop failed", exc_info=True)
 
+    async def _discard_startup(
+        self,
+        account: str,
+        process: CodexProcessHandle | None,
+        client: CodexAppServerClient | None,
+    ) -> None:
+        """Finish half-built-runner cleanup even if the caller is cancelled."""
+        cleanup = asyncio.create_task(
+            self._discard(process, client), name=f"codex-start-discard-{account}"
+        )
+        cancelled_during_cleanup = False
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                cancelled_during_cleanup = True
+        await cleanup
+        if cancelled_during_cleanup:
+            raise asyncio.CancelledError
+
     # -- ref-counting ------------------------------------------------------
 
     def attach(self, account: str, session_id: str) -> None:
@@ -433,7 +462,9 @@ class CodexRunnerManager:
                 account=account,
                 session=session_id,
             )
-            return
+            raise CodexRunnerMissingError(
+                f"codex runner for {account} disappeared before session {session_id} attached"
+            )
         runner.sessions.add(session_id)
         self._sessions[session_id] = account
 

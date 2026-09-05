@@ -240,6 +240,27 @@ def test_a_failed_login_tears_the_process_back_down():
     asyncio.run(go())
 
 
+def test_cancelling_startup_discards_the_half_started_client_and_process():
+    async def go():
+        entered_supplier = asyncio.Event()
+
+        async def blocked_credentials(account: str):
+            entered_supplier.set()
+            await asyncio.Event().wait()
+
+        manager, spawned = _manager(credential_supplier=blocked_credentials)
+        startup = asyncio.create_task(manager.ensure("a"))
+        await asyncio.wait_for(entered_supplier.wait(), 1.0)
+        startup.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await startup
+
+        assert spawned[0].stopped
+        assert manager.client_for("a") is None
+
+    asyncio.run(go())
+
+
 def test_no_credential_is_ever_logged(caplog):
     async def go():
         with caplog.at_level(logging.DEBUG):
@@ -270,6 +291,12 @@ def test_the_runner_home_holds_no_credential(tmp_path):
 # ---------------------------------------------------------------------------
 # ref-counting and idle teardown
 # ---------------------------------------------------------------------------
+
+
+def test_attach_without_a_live_runner_raises_a_typed_failure():
+    manager, _ = _manager()
+    with pytest.raises(mgr_mod.CodexRunnerMissingError):
+        manager.attach("a", "session-1")
 
 
 def test_detach_of_the_last_session_reaps_after_the_grace():
@@ -370,7 +397,8 @@ def test_attach_without_a_runner_is_logged(caplog):
 
     async def go():
         manager, _ = _manager()
-        manager.attach("a", "s1")
+        with pytest.raises(mgr_mod.CodexRunnerMissingError):
+            manager.attach("a", "s1")
 
     with caplog.at_level(logging.WARNING):
         asyncio.run(go())

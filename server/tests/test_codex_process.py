@@ -11,6 +11,7 @@ import pytest
 from server.codex import capabilities as caps
 from server.codex import process as proc
 from server.codex import schema
+from server.codex.redaction import REDACTED
 
 LOCAL_MOUNTS = (("/", "ext4"), ("/tmp", "tmpfs"))
 
@@ -182,6 +183,17 @@ def test_ensure_codex_home_refuses_a_network_filesystem(tmp_path):
     assert not (tmp_path / "codex").exists()  # refused BEFORE anything was created
 
 
+def test_ensure_codex_home_refuses_an_existing_nested_network_mount(tmp_path):
+    """The account directory can be a mount point even when its parent is local."""
+    base = tmp_path / "codex"
+    home = base / "acct"
+    home.mkdir(parents=True)
+    mounts = (("/", "ext4"), (str(base), "ext4"), (str(home), "nfs4"))
+
+    with pytest.raises(proc.CodexHomeRefused, match="nfs4"):
+        proc.ensure_codex_home(base, "acct", mounts=mounts)
+
+
 def test_ensure_codex_home_rejects_a_traversing_account_name(tmp_path):
     with pytest.raises(proc.CodexHomeRefused):
         proc.ensure_codex_home(tmp_path / "codex", "../escape", mounts=LOCAL_MOUNTS)
@@ -214,13 +226,59 @@ def test_probe_cli_version_raises_on_empty_output():
         asyncio.run(proc.probe_cli_version("/usr/bin/codex", runner=_runner(out="  ")))
 
 
+def test_contract_probe_returns_the_observed_generated_schema_hash(monkeypatch):
+    observed = "observed-contract-hash"
+    call: dict[str, object] = {}
+
+    class Child:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def spawn(*argv, **kwargs):
+        call["argv"] = argv
+        call["environment"] = kwargs["env"]
+        return Child()
+
+    class Contract:
+        sha256 = observed
+
+    monkeypatch.setattr(schema, "extract_contract", lambda output: Contract())
+    got = asyncio.run(proc.probe_contract_schema("/usr/bin/codex", spawn=spawn))
+
+    assert got == observed
+    argv = call["argv"]
+    assert isinstance(argv, tuple)
+    assert argv[:4] == (
+        "/usr/bin/codex",
+        "app-server",
+        "generate-json-schema",
+        "--experimental",
+    )
+    environment = call["environment"]
+    assert isinstance(environment, dict)
+    isolated_home = Path(environment["CODEX_HOME"])
+    assert not isolated_home.exists()  # disposable temp home was cleaned up
+
+
 def _probe(**kw):
     kw.setdefault("enabled", True)
     kw.setdefault("external_auth_enabled", True)
     kw.setdefault("binary", "codex")
     kw.setdefault("resolver", lambda name: "/usr/bin/codex")
     kw.setdefault("runner", _runner())
+    kw.setdefault("contract_probe", _contract_probe())
     return asyncio.run(proc.probe_availability(**kw))
+
+
+def _contract_probe(
+    contract_sha256: str = schema.PINNED_CONTRACT_SHA256,
+):
+    async def probe(binary: str) -> str:
+        return contract_sha256
+
+    return probe
 
 
 def test_probe_reports_disabled_when_the_flag_is_off():
@@ -245,10 +303,10 @@ def test_probe_reports_a_failed_version_probe():
     assert got.reason is caps.CodexUnavailableReason.VERSION_PROBE_FAILED
 
 
-def test_probe_reports_unsupported_version_with_the_typed_drift_report():
+def test_probe_reports_unsupported_version_without_native_drift_detail():
     got = _probe(runner=_runner(out="codex-cli 0.999.0"))
     assert got.reason is caps.CodexUnavailableReason.UNSUPPORTED_VERSION
-    assert schema.ContractDriftReason.CLI_VERSION.value in got.detail
+    assert got.detail == REDACTED
     assert got.cli_version == "codex-cli 0.999.0"
     assert got.capabilities == caps.AgentCapabilities()
 
@@ -267,6 +325,33 @@ def test_an_operator_may_widen_the_supported_version_set():
     assert got.available
     assert got.accepted_drift is not None
     assert got.accepted_drift.reasons == (schema.ContractDriftReason.CLI_VERSION,)
+
+
+def test_widened_version_still_requires_the_verified_contract_schema():
+    got = _probe(
+        runner=_runner(out="codex-cli 0.154.0"),
+        supported_versions=("codex-cli 0.154.0",),
+        contract_probe=_contract_probe("0" * 64),
+    )
+    assert not got.available
+    assert got.reason is caps.CodexUnavailableReason.UNSUPPORTED_VERSION
+    assert got.detail == REDACTED
+
+
+def test_pinned_version_with_schema_drift_fails_closed():
+    got = _probe(contract_probe=_contract_probe("f" * 64))
+    assert not got.available
+    assert got.reason is caps.CodexUnavailableReason.UNSUPPORTED_VERSION
+
+
+def test_contract_probe_failure_is_unavailable_not_an_exception():
+    async def broken_probe(binary: str) -> str:
+        raise proc.CodexContractProbeFailed("schema generator failed")
+
+    got = _probe(contract_probe=broken_probe)
+    assert not got.available
+    assert got.reason is caps.CodexUnavailableReason.UNSUPPORTED_VERSION
+    assert got.capabilities == caps.AgentCapabilities()
 
 
 def test_widening_never_removes_the_pinned_version():
