@@ -285,6 +285,54 @@ def test_hook_protected_paths_match_governance_core():
     )
 
 
+def test_codeowners_covers_guardrails():
+    """Every guardrail path is claimed in CODEOWNERS.
+
+    CODEOWNERS mirrors ``GUARDRAIL_PATHS``; a path in one and not the other means
+    a file whose change alters enforcement is unowned, or an owned file the gate
+    does not check.
+    """
+    from server.sdlc.governance import GUARDRAIL_PATHS
+
+    codeowners = _REPO_ROOT / ".github" / "CODEOWNERS"
+    patterns = [
+        line.split()[0].lstrip("/")
+        for line in codeowners.read_text().splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+    def claimed(path: str) -> bool:
+        return any(
+            path.startswith(pattern) if pattern.endswith("/") else path == pattern
+            for pattern in patterns
+        )
+
+    unclaimed = [p for p in (*GUARDRAIL_PATHS, *PROTECTED_EDIT_PATHS) if not claimed(p)]
+    assert not unclaimed, f"paths not claimed in CODEOWNERS: {unclaimed}"
+
+
+def test_constitution_workflow_has_no_paths_filter():
+    """A required check that is skipped leaves unrelated PRs pending forever."""
+    workflow = (_REPO_ROOT / ".github" / "workflows" / "constitution.yml").read_text()
+    pull_request_block = workflow.split("on:", 1)[1].split("jobs:", 1)[0]
+    assert "paths:" not in pull_request_block, (
+        "constitution.yml must run on every pull request — it is a required check, "
+        "and a skipped required check never reports a conclusion"
+    )
+
+
+def test_constitution_workflow_reruns_on_body_edit():
+    """The acknowledgment lives in the PR body, so `edited` must be a trigger.
+
+    GitHub's default ``pull_request`` types are opened/synchronize/reopened. Without
+    ``edited``, adding the acknowledgment to a failing pull request would not re-run
+    the gate and the only remedy would be an empty commit.
+    """
+    text = (_REPO_ROOT / ".github" / "workflows" / "constitution.yml").read_text()
+    trigger = text.split("on:", 1)[1].split("permissions:", 1)[0]
+    assert "edited" in trigger, "constitution.yml must re-run when the PR body is edited"
+
+
 def test_managed_deny_covers_every_protected_path():
     """Every protected path gets both a Write and an Edit deny pattern."""
     patterns = set(managed_deny_patterns())

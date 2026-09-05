@@ -68,7 +68,7 @@ def test_sanitize_protocol_value_redacts_secret_fields_and_nested_values():
     )
     encoded = json.dumps(sanitized, sort_keys=True)
 
-    assert secrets.find_leaks(encoded) == ()
+    assert secrets.redaction_values.find_leaks(encoded) == ()
     assert "thread-secret-id" not in encoded
     assert sanitized["params"]["accessToken"] == "[REDACTED]"
     assert sanitized["params"]["chatgptAccountId"] == "[REDACTED]"
@@ -82,9 +82,83 @@ def test_build_login_frame_keeps_secrets_only_in_stdin_payload():
     frame = spike.build_external_login_frame(7, secrets)
 
     process_metadata = " ".join(command) + json.dumps(environment, sort_keys=True)
-    assert secrets.find_leaks(process_metadata) == ()
+    assert secrets.redaction_values.find_leaks(process_metadata) == ()
     assert frame["params"]["accessToken"] == secrets.access_token
     assert frame["params"]["chatgptAccountId"] == secrets.account_id
+
+
+def test_model_turn_request_builders_require_second_exact_opt_in(tmp_path: Path):
+    with pytest.raises(spike.SpikeConfigurationError):
+        spike.build_model_thread_params(tmp_path, model_turn_enabled=False)
+    with pytest.raises(spike.SpikeConfigurationError):
+        spike.build_model_turn_params("thread-secret-id", model_turn_enabled=False)
+
+
+def test_model_turn_request_builders_are_minimal_and_tool_free(tmp_path: Path):
+    thread_params = spike.build_model_thread_params(
+        tmp_path,
+        model_turn_enabled=True,
+    )
+    turn_params = spike.build_model_turn_params(
+        "thread-secret-id",
+        model_turn_enabled=True,
+    )
+
+    assert thread_params == {
+        "approvalPolicy": "never",
+        "config": {
+            "agents": {"enabled": False},
+            "apps": {"_default": {"enabled": False}},
+            "features": {
+                "apps": False,
+                "browser_use": False,
+                "browser_use_external": False,
+                "browser_use_full_cdp_access": False,
+                "code_mode": False,
+                "computer_use": False,
+                "enable_request_compression": False,
+                "goals": False,
+                "hooks": False,
+                "image_generation": False,
+                "multi_agent": False,
+                "multi_agent_v2": False,
+                "plugin_sharing": False,
+                "plugins": False,
+                "recommended_plugins": False,
+                "remote_plugin": False,
+                "shell_tool": False,
+                "skill_mcp_dependency_install": False,
+                "skill_search": False,
+                "sleep_tool": False,
+                "tool_suggest": False,
+                "unified_exec": False,
+                "view_image": False,
+                "workspace_dependencies": False,
+            },
+            "mcp_servers": {},
+            "orchestrator": {"skills": {"enabled": False}},
+            "skills": {
+                "bundled": {"enabled": False},
+                "include_instructions": False,
+            },
+            "tools": {
+                "experimental_request_user_input": {"enabled": False},
+            },
+            "web_search": "disabled",
+        },
+        "cwd": str(tmp_path),
+        "developerInstructions": spike.MODEL_TURN_DEVELOPER_INSTRUCTIONS,
+        "dynamicTools": [],
+        "environments": [],
+        "ephemeral": True,
+        "experimentalRawEvents": False,
+        "model": spike.MODEL_TURN_MODEL,
+        "sandbox": "read-only",
+    }
+    assert turn_params == {
+        "threadId": "thread-secret-id",
+        "input": [{"type": "text", "text": spike.MODEL_TURN_PROMPT}],
+    }
 
 
 def test_build_ssh_command_preserves_multiline_python_program_as_one_argument():
@@ -117,6 +191,101 @@ def test_build_ssh_command_rejects_empty_or_nul_remote_argv():
         spike.build_ssh_command("runner.example", ["printf", "unsafe\0argument"])
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("target", "is_remote"),
+    [
+        (spike.RunnerTarget("local-runner", None), False),
+        (spike.RunnerTarget("runner.example", "runner.example"), True),
+    ],
+)
+async def test_empty_tool_catalog_preflight_uses_runner_local_fake_provider(
+    monkeypatch,
+    target,
+    is_remote,
+):
+    captured = {}
+
+    async def successful_preflight(command, *, stdin, timeout):
+        captured["command"] = command
+        captured["stdin"] = stdin
+        captured["timeout"] = timeout
+        return 0, b'{"empty":true}', b"discarded child diagnostic"
+
+    monkeypatch.setattr(spike, "_run_command", successful_preflight)
+
+    await spike.verify_empty_tool_catalog(target, codex_bin="codex-pinned")
+
+    command = captured["command"]
+    if is_remote:
+        assert command[:6] == [
+            "ssh",
+            "-T",
+            "-o",
+            "BatchMode=yes",
+            "runner.example",
+            "--",
+        ]
+        preflight_argv = shlex.split(command[-1])
+    else:
+        preflight_argv = command
+    assert preflight_argv == [
+        "python3",
+        "-c",
+        spike._TOOL_CATALOG_PREFLIGHT_PROGRAM,
+        "codex-pinned",
+    ]
+    request = json.loads(captured["stdin"])
+    assert request["thread"] == spike.build_model_thread_params(
+        Path("/tmp/ccswitch-codex-tool-preflight.placeholder"),
+        model_turn_enabled=True,
+    )
+    assert request["turn"] == spike.build_model_turn_params(
+        "ccswitch-tool-preflight-placeholder",
+        model_turn_enabled=True,
+    )
+    assert captured["timeout"] == spike.TOOL_CATALOG_PREFLIGHT_TIMEOUT_S
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    [
+        (1, b'{"empty":true}', b"native detail"),
+        (0, b'{"empty":false}', b"native detail"),
+        (0, b"invalid", b"native detail"),
+        TimeoutError("native timeout detail"),
+    ],
+)
+async def test_empty_tool_catalog_preflight_failure_is_fixed_and_sanitized(
+    monkeypatch,
+    failure,
+):
+    async def failing_preflight(*_args, **_kwargs):
+        if isinstance(failure, BaseException):
+            raise failure
+        return failure
+
+    monkeypatch.setattr(spike, "_run_command", failing_preflight)
+
+    with pytest.raises(spike.ProtocolError) as raised:
+        await spike.verify_empty_tool_catalog(
+            spike.RunnerTarget("local-runner", None),
+            codex_bin="codex-pinned",
+        )
+
+    assert str(raised.value) == (
+        "runner could not prove an empty outgoing model tool catalog"
+    )
+    assert json.loads(spike.failure_json(raised.value)) == {
+        "error": "runner could not prove an empty outgoing model tool catalog",
+        "method": "turn/start",
+        "release_gate": "fail",
+        "role": "runner",
+        "stage": "tool_catalog_preflight",
+    }
+
+
 def test_remote_runner_process_quotes_shell_and_app_server_argv_without_injection():
     target = spike.RunnerTarget(name="runner-one", ssh_host="runner.example")
     home = Path("/tmp/ccswitch-codex-spike." + "a" * 32)
@@ -146,15 +315,46 @@ def test_scan_home_flags_auth_json_and_exact_secret_bytes(tmp_path: Path):
     )
     (tmp_path / "auth.json").write_text("{}")
 
-    result = spike.scan_home(tmp_path, secrets)
+    result = spike.scan_home(tmp_path, secrets.runner_home_auth_values)
 
     assert result.auth_json_present is True
     assert result.secret_file_count == 1
 
 
+def test_scan_home_allows_native_runtime_ids_but_still_detects_auth_material(
+    tmp_path: Path,
+):
+    secrets = _secrets().with_native_id("native-thread-id-that-is-expected-in-runtime-db")
+    runtime_db = tmp_path / "runtime.db"
+    runtime_db.write_text("native-thread-id-that-is-expected-in-runtime-db")
+
+    native_only = spike.scan_home(tmp_path, secrets.runner_home_auth_values)
+
+    assert native_only.clean is True
+    assert "native-thread-id-that-is-expected-in-runtime-db" in (
+        secrets.redaction_values.exact_values
+    )
+    runtime_db.write_text(
+        "native-thread-id-that-is-expected-in-runtime-db\n" + secrets.account_id
+    )
+    with_account_material = spike.scan_home(
+        tmp_path,
+        secrets.runner_home_auth_values,
+    )
+    assert with_account_material.secret_file_count == 1
+    assert with_account_material.clean is False
+
+
 @pytest.mark.asyncio
 async def test_remote_scan_secrets_use_only_authenticated_ssh_stdin(monkeypatch):
-    secrets = _secrets()
+    initial = _secrets().with_native_id("native-thread-id-that-must-not-be-scanned")
+    newer = spike.SecretValues(
+        access_token="new-access-token-that-is-long-enough",
+        refresh_token="new-refresh-token-that-must-stay-authority-only",
+        account_id=initial.account_id,
+        invalid_access_token="new-invalid-token-that-is-long-enough",
+    ).with_native_id("native-turn-id-that-must-not-be-scanned")
+    secrets = initial.merge(newer)
     captured = {}
 
     async def capture_command(command, *, stdin=None, timeout=30.0):
@@ -167,19 +367,34 @@ async def test_remote_scan_secrets_use_only_authenticated_ssh_stdin(monkeypatch)
     target = spike.RunnerTarget("runner.example", "runner.example")
     home = Path("/tmp/ccswitch-codex-spike." + "a" * 32)
 
-    result = await spike.scan_remote_home(target, home, secrets)
+    result = await spike.scan_remote_home(
+        target,
+        home,
+        secrets.runner_home_auth_values,
+    )
 
     assert result.clean is True
     stdin_values = tuple(json.loads(captured["stdin"]))
-    assert stdin_values == secrets.runner_values
+    assert stdin_values == secrets.runner_home_auth_values.exact_values
     assert secrets.access_token in stdin_values
     assert secrets.account_id in stdin_values
     assert secrets.refresh_token not in stdin_values
+    assert initial.access_token in stdin_values
+    assert initial.invalid_access_token in stdin_values
+    assert newer.invalid_access_token in stdin_values
+    assert "native-thread-id-that-must-not-be-scanned" not in stdin_values
+    assert "native-turn-id-that-must-not-be-scanned" not in stdin_values
+    assert "native-thread-id-that-must-not-be-scanned" in (
+        secrets.redaction_values.exact_values
+    )
+    assert "native-turn-id-that-must-not-be-scanned" in (
+        secrets.redaction_values.exact_values
+    )
     process_metadata = json.dumps(captured["command"]) + json.dumps(
         spike._minimal_environment(),
         sort_keys=True,
     )
-    assert secrets.find_leaks(process_metadata) == ()
+    assert secrets.redaction_values.find_leaks(process_metadata) == ()
 
 
 def test_safe_evidence_never_serializes_secret_values():
@@ -199,13 +414,19 @@ def test_safe_evidence_never_serializes_secret_values():
         redaction_clean=True,
         cleanup_complete=True,
         release_gate="pass",
+        model_turn_trigger_used=True,
+        empty_model_tool_catalog_preflight=True,
+        tool_free_exact_ok_turns_completed=True,
     )
 
     serialized = evidence.to_json(secrets)
 
-    assert secrets.find_leaks(serialized) == ()
+    assert secrets.redaction_values.find_leaks(serialized) == ()
     assert "access_token" not in serialized
     assert "account_id" not in serialized
+    assert json.loads(serialized)["model_turn_trigger_used"] is True
+    assert json.loads(serialized)["empty_model_tool_catalog_preflight"] is True
+    assert json.loads(serialized)["tool_free_exact_ok_turns_completed"] is True
 
 
 @pytest.mark.asyncio
@@ -255,7 +476,7 @@ async def test_native_error_response_reports_only_allowlisted_request_context(mo
         "stage": "initial_read_only",
     }
     for forbidden in (
-        *secrets.values,
+        *secrets.redaction_values.exact_values,
         "-32000",
         "token rejected",
         "dobby.internal",
@@ -743,7 +964,7 @@ def _refresh_coalescer(*, callback_count=1, refresh_calls=1, generation=1):
 
 @pytest.mark.asyncio
 async def test_refresh_trigger_prefers_sanitized_callback_root_failure():
-    downstream = spike.ProtocolError(
+    downstream = spike.NativeRequestError(
         "app-server request returned an error",
         method="account/rateLimits/read",
         stage="refresh_trigger",
@@ -803,7 +1024,7 @@ async def test_refresh_trigger_with_successful_callback_keeps_success():
     ],
 )
 async def test_refresh_trigger_classifies_only_post_checkpoint_coalescer_transition(after, message):
-    downstream = spike.ProtocolError(
+    downstream = spike.NativeRequestError(
         "app-server request returned an error",
         method="account/rateLimits/read",
         stage="refresh_trigger",
@@ -1009,6 +1230,14 @@ def test_opt_in_accepts_exact_flag_and_account_alias():
     assert spike.require_opt_in(flag="1", account="openai-main") == "openai-main"
 
 
+@pytest.mark.parametrize(
+    ("flag", "expected"),
+    [(None, False), ("0", False), ("true", False), ("1", True)],
+)
+def test_model_turn_opt_in_accepts_only_exact_one(flag: str | None, expected: bool):
+    assert spike.model_turn_opted_in(flag) is expected
+
+
 def test_secret_values_reject_empty_or_too_short_values():
     with pytest.raises(ValueError):
         spike.SecretValues(
@@ -1019,21 +1248,49 @@ def test_secret_values_reject_empty_or_too_short_values():
         )
 
 
-def test_runner_scan_values_never_include_current_or_historical_refresh_tokens():
+def test_runner_home_auth_values_exclude_refresh_tokens_and_native_ids_across_merges():
     initial = _secrets()
-    newer = spike.SecretValues(
+    second = spike.SecretValues(
         access_token="new-access-token-that-is-long-enough",
         refresh_token="new-refresh-token-that-must-stay-authority-only",
-        account_id=initial.account_id,
+        account_id="second-account-id-that-is-long-enough",
         invalid_access_token="new-invalid-token-that-is-long-enough",
     )
+    third = spike.SecretValues(
+        access_token="third-access-token-that-is-long-enough",
+        refresh_token="third-refresh-token-that-must-stay-authority-only",
+        account_id="third-account-id-that-is-long-enough",
+        invalid_access_token="third-invalid-token-that-is-long-enough",
+    )
 
-    merged = initial.merge(newer)
+    merged = initial.with_native_id("initial-native-thread-id").merge(
+        second.with_native_id("second-native-turn-id")
+    ).merge(
+        third.with_native_id("third-native-turn-id")
+    )
+    home_values = merged.runner_home_auth_values.exact_values
 
-    assert initial.refresh_token not in merged.runner_values
-    assert newer.refresh_token not in merged.runner_values
-    assert initial.access_token in merged.runner_values
-    assert newer.access_token in merged.runner_values
+    assert set(home_values) == {
+        initial.access_token,
+        initial.account_id,
+        initial.invalid_access_token,
+        second.access_token,
+        second.account_id,
+        second.invalid_access_token,
+        third.access_token,
+        third.account_id,
+        third.invalid_access_token,
+    }
+    for forbidden in (
+        initial.refresh_token,
+        second.refresh_token,
+        third.refresh_token,
+        "initial-native-thread-id",
+        "second-native-turn-id",
+        "third-native-turn-id",
+    ):
+        assert forbidden not in home_values
+        assert forbidden in merged.redaction_values.exact_values
 
 
 def test_invalid_token_mutates_a_significant_signature_character_only():
@@ -1095,12 +1352,12 @@ def _valid_account_response():
     }
 
 
-def _valid_model_response():
+def _valid_model_response(model: str = "codex-model"):
     return {
         "data": [
             {
-                "id": "codex-model",
-                "model": "codex-model",
+                "id": model,
+                "model": model,
                 "displayName": "Codex Model",
                 "description": "A model for coding tasks",
                 "isDefault": True,
@@ -1165,6 +1422,19 @@ def test_model_list_validation_accepts_nonempty_catalog():
     spike.validate_model_response(_valid_model_response())
 
 
+def test_model_list_validation_requires_exact_selected_model_when_requested():
+    spike.validate_model_response(
+        _valid_model_response(spike.MODEL_TURN_MODEL),
+        required_model=spike.MODEL_TURN_MODEL,
+    )
+    with pytest.raises(spike.ProtocolError) as raised:
+        spike.validate_model_response(
+            _valid_model_response(),
+            required_model=spike.MODEL_TURN_MODEL,
+        )
+    assert str(raised.value) == "model/list did not include the required model"
+
+
 @pytest.mark.parametrize(
     "response",
     [
@@ -1221,6 +1491,440 @@ async def test_read_only_verification_validates_all_three_authenticated_response
     )
 
 
+def _turn(
+    turn_id: str = "turn-secret-id",
+    *,
+    status: str = "completed",
+    items=None,
+):
+    return {
+        "id": turn_id,
+        "status": status,
+        "items": items
+        if items is not None
+        else [
+            {"id": "user-item-id", "type": "userMessage", "content": []},
+            {"id": "reasoning-item-id", "type": "reasoning", "summary": []},
+            {
+                "id": "assistant-item-id",
+                "type": "agentMessage",
+                "text": "OK",
+                "phase": None,
+            },
+        ],
+    }
+
+
+def _turn_completed(
+    *,
+    thread_id: str = "thread-secret-id",
+    turn=None,
+):
+    return {
+        "threadId": thread_id,
+        "turn": turn if turn is not None else _turn(),
+    }
+
+
+@pytest.mark.asyncio
+async def test_turn_completion_before_start_response_is_retained_as_bounded_state(monkeypatch):
+    observer = spike.ModelTurnObserver()
+    observer.arm("thread-secret-id")
+    client = spike.JsonRpcProcess(
+        ["codex"],
+        {},
+        role="runner",
+        notification_handler=observer.observe,
+    )
+    stdout = spike.asyncio.StreamReader()
+    stdout.feed_data(
+        json.dumps(
+            {"method": "turn/completed", "params": _turn_completed()},
+            separators=(",", ":"),
+        ).encode()
+        + b"\n"
+        + json.dumps(
+            {"id": 1, "result": {"turn": _turn()}},
+            separators=(",", ":"),
+        ).encode()
+        + b"\n"
+    )
+    stdout.feed_eof()
+    client._process = SimpleNamespace(stdout=stdout)
+
+    async def discard_write(_frame):
+        return None
+
+    monkeypatch.setattr(client, "_write", discard_write)
+    response_task = spike.asyncio.create_task(
+        client.request("turn/start", {}, stage="refresh_trigger")
+    )
+    await spike.asyncio.sleep(0)
+    await client._read_stdout()
+    response = await response_task
+
+    observer.bind_turn_response(response)
+    result = await observer.wait_for_completion()
+
+    assert result.tool_free_exact_ok is True
+    assert result.native_ids == ("thread-secret-id", "turn-secret-id")
+    assert not hasattr(observer, "frames")
+
+
+@pytest.mark.asyncio
+async def test_turn_response_cannot_contradict_an_early_completion_notification():
+    observer = spike.ModelTurnObserver()
+    observer.arm("thread-secret-id")
+    observer.observe("turn/completed", _turn_completed())
+
+    with pytest.raises(spike.ProtocolError) as raised:
+        observer.bind_turn_response(
+            {"turn": _turn(turn_id="different-turn-secret-id", status="inProgress")}
+        )
+
+    assert json.loads(spike.failure_json(raised.value)) == {
+        "error": "turn/start returned an invalid or inconsistent response",
+        "method": "turn/start",
+        "release_gate": "fail",
+        "role": "runner",
+        "stage": "refresh_trigger",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("items", "message"),
+    [
+        (
+            [{"id": "assistant-item-id", "type": "agentMessage", "text": "NOT OK"}],
+            "model turn assistant output was not exactly OK",
+        ),
+        (
+            [
+                {"id": "assistant-item-id", "type": "agentMessage", "text": "OK"},
+                {"id": "tool-item-id", "type": "commandExecution"},
+            ],
+            "model turn emitted a prohibited tool or activity item",
+        ),
+    ],
+)
+async def test_turn_completion_rejects_non_exact_output_and_tool_activity(items, message):
+    observer = spike.ModelTurnObserver()
+    observer.arm("thread-secret-id")
+
+    observer.observe(
+        "turn/completed",
+        _turn_completed(turn=_turn(items=items)),
+    )
+
+    with pytest.raises(spike.ProtocolError) as raised:
+        await observer.wait_for_completion()
+
+    assert json.loads(spike.failure_json(raised.value)) == {
+        "error": message,
+        "method": "turn/completed",
+        "release_gate": "fail",
+        "role": "runner",
+        "stage": "refresh_trigger",
+    }
+    assert "NOT OK" not in spike.failure_json(raised.value)
+    assert "commandExecution" not in spike.failure_json(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_item_notification_rejects_tool_before_turn_completion():
+    observer = spike.ModelTurnObserver()
+    observer.arm("thread-secret-id")
+
+    observer.observe(
+        "item/started",
+        {
+            "threadId": "thread-secret-id",
+            "turnId": "turn-secret-id",
+            "startedAtMs": 1,
+            "item": {"id": "tool-item-id", "type": "webSearch"},
+        },
+    )
+
+    with pytest.raises(spike.ProtocolError) as raised:
+        await observer.wait_for_completion()
+
+    assert str(raised.value) == "model turn emitted a prohibited tool or activity item"
+    assert raised.value.method == "item/started"
+
+
+@pytest.mark.asyncio
+async def test_turn_completion_timeout_is_sanitized_and_bounded(monkeypatch):
+    observer = spike.ModelTurnObserver()
+    observer.arm("thread-secret-id")
+    monkeypatch.setattr(spike, "MODEL_TURN_TIMEOUT_S", 0.001)
+
+    with pytest.raises(spike.ProtocolError) as raised:
+        await observer.wait_for_completion()
+
+    assert json.loads(spike.failure_json(raised.value)) == {
+        "error": "model turn completion timed out",
+        "method": "turn/completed",
+        "release_gate": "fail",
+        "role": "runner",
+        "stage": "refresh_trigger",
+    }
+
+
+@pytest.mark.asyncio
+async def test_disabled_model_turn_setup_makes_no_protocol_requests():
+    class FailingRuntime:
+        @property
+        def process(self):
+            raise AssertionError("default no-turn path touched a runner process")
+
+    observers, native_ids = await spike._start_model_turn_threads(
+        [FailingRuntime(), FailingRuntime()],
+        model_turn_enabled=False,
+    )
+
+    assert observers == ()
+    assert native_ids == ()
+
+
+@pytest.mark.asyncio
+async def test_enabled_model_turn_refuses_before_thread_without_empty_catalog_proof():
+    class FailingRuntime:
+        @property
+        def process(self):
+            raise AssertionError("failed-open preflight touched a runner process")
+
+    with pytest.raises(spike.ProtocolError) as raised:
+        await spike._start_model_turn_threads(
+            [FailingRuntime(), FailingRuntime()],
+            model_turn_enabled=True,
+            empty_tool_catalog_verified=False,
+        )
+
+    assert str(raised.value) == (
+        "refusing model thread before empty tool catalog preflight"
+    )
+
+
+@pytest.mark.asyncio
+async def test_enabled_model_turn_setup_starts_one_ephemeral_thread_per_runner(tmp_path):
+    class FakeProcess:
+        def __init__(self, thread_id):
+            self.thread_id = thread_id
+            self.calls = []
+            self.notification_handler = None
+
+        def set_notification_handler(self, handler):
+            self.notification_handler = handler
+
+        async def request(self, method, params, *, stage):
+            self.calls.append((method, params, stage))
+            return {
+                "approvalPolicy": "never",
+                "cwd": params["cwd"],
+                "sandbox": {"type": "readOnly"},
+                "thread": {
+                    "id": self.thread_id,
+                    "cwd": params["cwd"],
+                    "ephemeral": True,
+                    "model": spike.MODEL_TURN_MODEL,
+                },
+            }
+
+    processes = [FakeProcess("thread-secret-one"), FakeProcess("thread-secret-two")]
+    runtimes = [
+        SimpleNamespace(process=process, home=tmp_path / f"runner-{index}")
+        for index, process in enumerate(processes)
+    ]
+
+    observers, native_ids = await spike._start_model_turn_threads(
+        runtimes,
+        model_turn_enabled=True,
+        empty_tool_catalog_verified=True,
+    )
+
+    assert len(observers) == 2
+    assert native_ids == ("thread-secret-one", "thread-secret-two")
+    for runtime, process in zip(runtimes, processes, strict=True):
+        assert process.notification_handler is not None
+        assert process.calls == [
+            (
+                "thread/start",
+                spike.build_model_thread_params(
+                    runtime.home,
+                    model_turn_enabled=True,
+                ),
+                "model_thread_start",
+            )
+        ]
+
+
+@pytest.mark.asyncio
+async def test_model_turn_refresh_trigger_starts_exactly_one_turn_per_runner():
+    class FakeProcess:
+        def __init__(self, observer, thread_id, turn_id):
+            self.observer = observer
+            self.thread_id = thread_id
+            self.turn_id = turn_id
+            self.calls = []
+
+        def callback_checkpoint(self):
+            return 0
+
+        async def callback_failures_after_quiescence(self, checkpoint):
+            assert checkpoint == 0
+            return ()
+
+        async def request(self, method, params, *, stage):
+            self.calls.append((method, params, stage))
+            self.observer.observe(
+                "turn/completed",
+                _turn_completed(
+                    thread_id=self.thread_id,
+                    turn=_turn(turn_id=self.turn_id),
+                ),
+            )
+            return {"turn": _turn(turn_id=self.turn_id, status="inProgress", items=[])}
+
+    observers = [spike.ModelTurnObserver(), spike.ModelTurnObserver()]
+    thread_ids = ["thread-secret-one", "thread-secret-two"]
+    turn_ids = ["turn-secret-one", "turn-secret-two"]
+    for observer, thread_id in zip(observers, thread_ids, strict=True):
+        observer.arm(thread_id)
+    processes = [
+        FakeProcess(observer, thread_id, turn_id)
+        for observer, thread_id, turn_id in zip(
+            observers,
+            thread_ids,
+            turn_ids,
+            strict=True,
+        )
+    ]
+    runtimes = [SimpleNamespace(process=process) for process in processes]
+
+    results = await spike._run_model_turn_refresh_triggers(
+        runtimes,
+        observers,
+        coalescer=_refresh_coalescer(callback_count=2),
+        model_turn_enabled=True,
+        empty_tool_catalog_verified=True,
+    )
+
+    assert len(results) == 2
+    assert all(result.tool_free_exact_ok for result in results)
+    for process, thread_id in zip(processes, thread_ids, strict=True):
+        assert process.calls == [
+            (
+                "turn/start",
+                spike.build_model_turn_params(
+                    thread_id,
+                    model_turn_enabled=True,
+                ),
+                "refresh_trigger",
+            )
+        ]
+
+
+@pytest.mark.asyncio
+async def test_model_turn_refresh_refuses_before_turn_without_empty_catalog_proof():
+    with pytest.raises(spike.ProtocolError) as raised:
+        await spike._run_model_turn_refresh_triggers(
+            [SimpleNamespace(process=object())],
+            [spike.ModelTurnObserver()],
+            coalescer=_refresh_coalescer(),
+            model_turn_enabled=True,
+            empty_tool_catalog_verified=False,
+        )
+
+    assert str(raised.value) == (
+        "refusing model turn before empty tool catalog preflight"
+    )
+
+
+@pytest.mark.asyncio
+async def test_model_turn_trigger_failure_uses_sanitized_turn_method_context():
+    runners = [
+        _RefreshTriggerRunner(outcome={"unused": True}, callback_failure=None),
+    ]
+
+    async def fail_turn():
+        raise spike.NativeRequestError("native turn failure detail")
+
+    with pytest.raises(spike.ProtocolError) as raised:
+        await spike._run_refresh_triggers(
+            runners,
+            coalescer=_refresh_coalescer(),
+            trigger_operations=(fail_turn(),),
+            trigger_method="turn/start",
+        )
+
+    assert json.loads(spike.failure_json(raised.value)) == {
+        "error": "refresh trigger failed before any runner callback",
+        "method": "turn/start",
+        "release_gate": "fail",
+        "role": "runner",
+        "stage": "refresh_trigger",
+    }
+    assert "native turn failure detail" not in spike.failure_json(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_model_turn_safety_error_survives_after_callback_refresh_advanced():
+    precise = spike.ProtocolError(
+        "model turn emitted a prohibited tool or activity item",
+        method="item/started",
+        stage="refresh_trigger",
+        role="runner",
+    )
+    runners = [
+        _RefreshTriggerRunner(outcome={"unused": True}, callback_failure=None),
+    ]
+    coalescer = _refresh_coalescer(callback_count=4, refresh_calls=2, generation=2)
+
+    async def fail_safety_check():
+        coalescer.callback_count += 1
+        coalescer.refresh_calls += 1
+        coalescer.generation += 1
+        raise precise
+
+    with pytest.raises(spike.ProtocolError) as raised:
+        await spike._run_refresh_triggers(
+            runners,
+            coalescer=coalescer,
+            trigger_operations=(fail_safety_check(),),
+            trigger_method="turn/start",
+        )
+
+    assert raised.value is precise
+    assert json.loads(spike.failure_json(raised.value)) == {
+        "error": "model turn emitted a prohibited tool or activity item",
+        "method": "item/started",
+        "release_gate": "fail",
+        "role": "runner",
+        "stage": "refresh_trigger",
+    }
+
+
+def test_pinned_schema_subset_covers_model_turn_contracts():
+    assert {
+        "v2/ThreadStartParams.json",
+        "v2/ThreadStartResponse.json",
+        "v2/TurnStartParams.json",
+        "v2/TurnStartResponse.json",
+        "v2/TurnCompletedNotification.json",
+        "v2/ItemStartedNotification.json",
+        "v2/ItemCompletedNotification.json",
+        "ServerNotification.json",
+    }.issubset(spike._RELEVANT_SCHEMA_FILES)
+    assert {
+        "thread/start",
+        "turn/start",
+        "turn/completed",
+        "item/started",
+        "item/completed",
+    }.issubset(spike._REQUIRED_SCHEMA_MARKERS)
+
+
 class _FakeAuthority:
     def __init__(self):
         self.calls = 0
@@ -1249,12 +1953,15 @@ async def test_refresh_generation_does_not_advance_when_access_token_is_unchange
     initial = _secrets()
     authority = _FakeAuthority()
     coalescer = spike.RefreshCoalescer(authority, tmp_path, initial)
+    handler = coalescer.register_runner()
     monkeypatch.setattr(spike, "load_managed_secrets", lambda _home: initial)
 
     with pytest.raises(spike.ProtocolError):
-        await coalescer.handle(_refresh_frame())
+        await handler(_refresh_frame())
 
     assert coalescer.generation == 0
+    assert coalescer.callback_count == 0
+    assert coalescer.has_exact_callback_coverage(expected_runner_count=1) is False
     assert coalescer.current.access_token == initial.access_token
 
 
@@ -1269,19 +1976,53 @@ async def test_concurrent_refresh_callbacks_share_one_advanced_access_token(monk
     )
     authority = _FakeAuthority()
     coalescer = spike.RefreshCoalescer(authority, tmp_path, initial)
+    first_runner_handler = coalescer.register_runner()
+    second_runner_handler = coalescer.register_runner()
     monkeypatch.setattr(spike, "load_managed_secrets", lambda _home: newer)
 
     first, second = await spike.asyncio.gather(
-        coalescer.handle(_refresh_frame()),
-        coalescer.handle(_refresh_frame()),
+        first_runner_handler(_refresh_frame()),
+        second_runner_handler(_refresh_frame()),
     )
 
     assert authority.calls == 1
+    assert coalescer.callback_count == 2
     assert coalescer.refresh_calls == 1
     assert coalescer.generation == 1
+    assert coalescer.has_exact_callback_coverage(expected_runner_count=2) is True
     assert first["accessToken"] == newer.access_token
     assert second["accessToken"] == newer.access_token
     assert first["accessToken"] != initial.access_token
+
+
+@pytest.mark.asyncio
+async def test_duplicate_callbacks_from_one_runner_do_not_cover_missing_runner(
+    monkeypatch,
+    tmp_path,
+):
+    initial = _secrets()
+    newer = spike.SecretValues(
+        access_token="header.payload.new-advanced-signature",
+        refresh_token="new-refresh-token-that-stays-authority-only",
+        account_id=initial.account_id,
+        invalid_access_token="header.payload.new-invalid-signature",
+    )
+    authority = _FakeAuthority()
+    coalescer = spike.RefreshCoalescer(authority, tmp_path, initial)
+    first_runner_handler = coalescer.register_runner()
+    coalescer.register_runner()
+    monkeypatch.setattr(spike, "load_managed_secrets", lambda _home: newer)
+
+    await spike.asyncio.gather(
+        first_runner_handler(_refresh_frame()),
+        first_runner_handler(_refresh_frame()),
+    )
+
+    assert authority.calls == 1
+    assert coalescer.callback_count == 2
+    assert coalescer.refresh_calls == 1
+    assert coalescer.generation == 1
+    assert coalescer.has_exact_callback_coverage(expected_runner_count=2) is False
 
 
 @pytest.mark.asyncio
@@ -1564,3 +2305,35 @@ async def test_failure_json_omits_cleanup_field_and_arbitrary_notes(monkeypatch,
         "release_gate": "fail",
     }
     assert note_secret not in output
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("flag", "expected"),
+    [(None, False), ("true", False), ("1", True)],
+)
+async def test_async_main_passes_only_exact_model_turn_opt_in(
+    monkeypatch,
+    capsys,
+    flag,
+    expected,
+):
+    observed = []
+
+    async def capture_run_spike(**kwargs):
+        observed.append(kwargs["model_turn_enabled"])
+        raise spike.SpikeError("bounded test stop")
+
+    monkeypatch.setenv(spike.OPT_IN_FLAG, "1")
+    monkeypatch.setenv(spike.ACCOUNT_ALIAS_ENV, "test-account")
+    monkeypatch.setenv(spike.RUNNERS_ENV, "local,rocky")
+    if flag is None:
+        monkeypatch.delenv(spike.MODEL_TURN_OPT_IN_FLAG, raising=False)
+    else:
+        monkeypatch.setenv(spike.MODEL_TURN_OPT_IN_FLAG, flag)
+    monkeypatch.setattr(spike, "run_spike", capture_run_spike)
+
+    assert await spike.async_main() == 1
+
+    assert observed == [expected]
+    assert json.loads(capsys.readouterr().out)["error"] == "bounded test stop"

@@ -1,19 +1,40 @@
 name: Constitution
 
-# Enforces the Governance section's amendment requirements on the resulting diff,
-# rather than on which tool produced it. Method-based controls (MANAGED_DENY, the
-# PreToolUse hook) cannot see a human's editor or a github.com web commit; this can.
+# Enforces the Governance section on the resulting diff rather than on which tool
+# or which person produced it. Method-based controls (MANAGED_DENY, the PreToolUse
+# hook) cannot see a human's editor or a github.com web commit; a review-based
+# control degenerates with a single maintainer, because GitHub will not let an
+# author approve their own pull request. A status check has neither problem.
+#
+# NOTE: this workflow deliberately has NO `paths:` filter. It is a *required*
+# status check, and a required check that is skipped leaves every unrelated pull
+# request permanently pending. The script exits 0 in a few seconds when the diff
+# touches nothing governed.
 
 on:
   pull_request:
-    paths:
-      - '.specify/memory/constitution.md'
-      - 'server/sdlc/constitution_gate.py'
-      - 'scripts/check_constitution_amendment.py'
-      - '.github/workflows/constitution.yml'
+    # `edited` is essential and NOT in the default set (opened, synchronize,
+    # reopened): the acknowledgment lives in the pull request body, so adding one
+    # to a failing PR must re-run the check. Without this the only way to clear a
+    # missing acknowledgment is an empty commit.
+    types: [opened, synchronize, reopened, edited]
+  # `amendment` is a REQUIRED status check, and server/deploy/steps.py:ci_verdict
+  # treats a required context with no run on the commit as "pending" — not "green".
+  # Without a push trigger no master commit ever carries this context, so the deploy
+  # preflight wedges permanently. Enforcement still happens on the pull request; this
+  # trigger exists so the context is REPORTED on master.
+  push:
+    branches: [master]
 
 permissions:
   contents: read
+
+concurrency:
+  # pull_request.number is EMPTY on push: without the sha fallback every master push
+  # shares the group `constitution-` and cancels its predecessor, leaving the earlier
+  # commit with a cancelled (absent) check — which is the wedge this patch removes.
+  group: constitution-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
 
 jobs:
   amendment:
@@ -23,10 +44,23 @@ jobs:
         with:
           # The gate diffs against the base branch, so it needs real history.
           fetch-depth: 0
-      - name: Check amendment record
+      - name: Check governance record
         # PR_BODY is passed through the environment, never interpolated into the
         # run command — a title or body is attacker-controlled text.
+        #
+        # pull_request only: on push, github.base_ref is empty, so this would run
+        # --base-ref "origin/", fail to diff, treat the constitution as new, find no
+        # acknowledgment in an empty PR_BODY and exit 1 — turning the wedge from
+        # permanent-pending into permanent-red.
+        if: github.event_name == 'pull_request'
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
           BASE_REF: ${{ github.base_ref }}
         run: python3 scripts/check_constitution_amendment.py --base-ref "origin/${BASE_REF}"
+      - name: Report required context on master
+        # The acknowledgment was already enforced on the pull request that produced
+        # this commit; master is a fast-forward of reviewed work. This step exists so
+        # the REQUIRED `amendment` context is present on the commit, which is what
+        # ci_verdict needs to return "green".
+        if: github.event_name == 'push'
+        run: echo "governance gate enforced at pull-request time; reporting required context on master"

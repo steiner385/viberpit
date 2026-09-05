@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Opt-in, read-only Codex external-auth compatibility spike.
+"""Opt-in Codex external-auth compatibility spike.
 
 The harness starts one managed-auth authority app-server locally and two runner
 app-servers with separate temporary ``CODEX_HOME`` directories. Access tokens
@@ -9,8 +9,9 @@ enter one short-lived authenticated SSH scanner through stdin; the refresh
 token never does. Raw protocol frames and child stderr are never forwarded to
 this script's stdout/stderr.
 
-No thread or model turn is created. The only network-backed calls are account,
-model, rate-limit, and managed token refresh operations exposed by app-server.
+By default no thread or model turn is created. A second exact opt-in can use one
+minimal, tool-free model turn per runner as the refresh trigger when the
+read-only rate-limit endpoint does not exercise the host refresh callback.
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ from server.deploy.steps import SSH_HOST_RE  # noqa: E402
 
 
 OPT_IN_FLAG = "CCSWITCH_TEST_CODEX_EXTERNAL_AUTH"
+MODEL_TURN_OPT_IN_FLAG = "CCSWITCH_TEST_CODEX_MODEL_TURN"
 ACCOUNT_ALIAS_ENV = "CCSWITCH_TEST_CODEX_ACCOUNT"
 RUNNERS_ENV = "CCSWITCH_TEST_CODEX_RUNNERS"
 AUTHORITY_HOME_ENV = "CCSWITCH_TEST_CODEX_AUTHORITY_HOME"
@@ -50,6 +52,17 @@ REQUEST_TIMEOUT_S = 45.0
 PROCESS_TERMINATE_GRACE_S = 2.0
 CALLBACK_QUIET_INTERVAL_S = 0.1
 CALLBACK_FENCE_DEADLINE_S = 2.0
+MODEL_TURN_TIMEOUT_S = 90.0
+TOOL_CATALOG_PREFLIGHT_TIMEOUT_S = 30.0
+MODEL_TURN_MODEL = "gpt-5.6-luna"
+MODEL_TURN_EXPECTED_TEXT = "OK"
+MODEL_TURN_DEVELOPER_INSTRUCTIONS = (
+    "Do not call, invoke, or use any tool or perform any external activity. "
+    f"Respond with exactly {MODEL_TURN_EXPECTED_TEXT} and no other text."
+)
+MODEL_TURN_PROMPT = (
+    f"Reply with exactly {MODEL_TURN_EXPECTED_TEXT} and no other text. Do not use tools."
+)
 _CLEANUP_FAILED_NOTE = "ccswitch spike cleanup also failed; details suppressed"
 
 ProtocolMethod = Literal[
@@ -59,6 +72,11 @@ ProtocolMethod = Literal[
     "account/rateLimits/read",
     "model/list",
     "account/chatgptAuthTokens/refresh",
+    "thread/start",
+    "turn/start",
+    "turn/completed",
+    "item/started",
+    "item/completed",
 ]
 ProtocolStage = Literal[
     "initialize",
@@ -66,6 +84,8 @@ ProtocolStage = Literal[
     "authority_refresh",
     "initial_login",
     "initial_read_only",
+    "tool_catalog_preflight",
+    "model_thread_start",
     "invalid_login",
     "refresh_callback",
     "refresh_trigger",
@@ -106,9 +126,17 @@ _RELEVANT_SCHEMA_FILES = (
     "v2/GetAccountRateLimitsResponse.json",
     "v2/ModelListParams.json",
     "v2/ModelListResponse.json",
+    "v2/ThreadStartParams.json",
+    "v2/ThreadStartResponse.json",
+    "v2/TurnStartParams.json",
+    "v2/TurnStartResponse.json",
+    "v2/TurnCompletedNotification.json",
+    "v2/ItemStartedNotification.json",
+    "v2/ItemCompletedNotification.json",
     "ChatgptAuthTokensRefreshParams.json",
     "ChatgptAuthTokensRefreshResponse.json",
     "ClientRequest.json",
+    "ServerNotification.json",
     "ServerRequest.json",
 )
 _REQUIRED_SCHEMA_MARKERS = (
@@ -118,7 +146,203 @@ _REQUIRED_SCHEMA_MARKERS = (
     "account/read",
     "account/rateLimits/read",
     "model/list",
+    "thread/start",
+    "turn/start",
+    "turn/completed",
+    "item/started",
+    "item/completed",
 )
+
+# This program executes on each runner without any managed credentials. It points the
+# pinned app-server at a loopback-only fake Responses provider and reports only whether
+# the resulting HTTP request contained the exact empty tool catalog. Raw JSON-RPC frames,
+# request payloads, native identifiers, and child stderr remain inside the short-lived
+# process and are discarded.
+_TOOL_CATALOG_PREFLIGHT_PROGRAM = r"""
+import http.server
+import json
+import os
+import selectors
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+
+
+class CaptureHandler(http.server.BaseHTTPRequestHandler):
+    observed = False
+    empty = False
+
+    def log_message(self, _format, *_args):
+        return
+
+    def do_POST(self):
+        try:
+            length = int(self.headers.get("Content-Length", "-1"))
+            if length < 0 or length > 8 * 1024 * 1024:
+                raise ValueError
+            payload = json.loads(self.rfile.read(length))
+            if not isinstance(payload, dict):
+                raise ValueError
+            tools = payload.get("tools")
+            type(self).empty = "tools" not in payload or tools == []
+        except BaseException:
+            type(self).empty = False
+        finally:
+            type(self).observed = True
+        body = b'{"error":{"message":"preflight complete","type":"invalid_request_error"}}'
+        self.send_response(400)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def write_frame(process, frame):
+    process.stdin.write(json.dumps(frame, separators=(",", ":")).encode() + b"\n")
+    process.stdin.flush()
+
+
+def read_frame(process, deadline):
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ)
+    try:
+        while time.monotonic() < deadline:
+            if not selector.select(max(0.0, deadline - time.monotonic())):
+                continue
+            line = process.stdout.readline()
+            if not line:
+                raise RuntimeError
+            frame = json.loads(line)
+            if isinstance(frame, dict):
+                return frame
+        raise TimeoutError
+    finally:
+        selector.close()
+
+
+def request(process, request_id, method, params, deadline):
+    write_frame(process, {"id": request_id, "method": method, "params": params})
+    while True:
+        frame = read_frame(process, deadline)
+        if frame.get("id") != request_id:
+            continue
+        if "error" in frame or "result" not in frame:
+            raise RuntimeError
+        return frame["result"]
+
+
+def stop_process(process):
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=2)
+
+
+def main():
+    process = None
+    server = None
+    server_thread = None
+    empty = False
+    try:
+        supplied = json.loads(sys.stdin.buffer.read())
+        thread_params = supplied["thread"]
+        turn_params = supplied["turn"]
+        if not isinstance(thread_params, dict) or not isinstance(turn_params, dict):
+            raise ValueError
+        model = thread_params.get("model")
+        if not isinstance(model, str) or not model:
+            raise ValueError
+        with tempfile.TemporaryDirectory(prefix="ccswitch-codex-tool-preflight.") as root:
+            thread_params["cwd"] = root
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), CaptureHandler)
+            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
+            port = server.server_address[1]
+            environment = {
+                key: os.environ[key]
+                for key in ("HOME", "LANG", "LC_ALL", "PATH", "TERM")
+                if key in os.environ
+            }
+            environment["CODEX_HOME"] = root
+            provider = "ccswitch_tool_preflight"
+            command = [
+                sys.argv[1],
+                "app-server",
+                "--stdio",
+                "--strict-config",
+                "-c", f'model_provider="{provider}"',
+                "-c", "model=" + json.dumps(model),
+                "-c", f'model_providers.{provider}.name="ccswitch tool preflight"',
+                "-c", f'model_providers.{provider}.base_url="http://127.0.0.1:{port}/v1"',
+                "-c", f'model_providers.{provider}.wire_api="responses"',
+                "-c", f'model_providers.{provider}.experimental_bearer_token="preflight"',
+                "-c", f'model_providers.{provider}.request_max_retries=0',
+                "-c", f'model_providers.{provider}.stream_max_retries=0',
+            ]
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                env=environment,
+            )
+            deadline = time.monotonic() + 20
+            request(
+                process,
+                1,
+                "initialize",
+                {
+                    "clientInfo": {
+                        "name": "ccswitch-tool-catalog-preflight",
+                        "title": "ccswitch tool catalog preflight",
+                        "version": "1",
+                    },
+                    "capabilities": {"experimentalApi": True},
+                },
+                deadline,
+            )
+            write_frame(process, {"method": "initialized", "params": {}})
+            thread = request(process, 2, "thread/start", thread_params, deadline)
+            native_thread = thread.get("thread") if isinstance(thread, dict) else None
+            native_thread_id = (
+                native_thread.get("id") if isinstance(native_thread, dict) else None
+            )
+            if not isinstance(native_thread_id, str) or not native_thread_id:
+                raise RuntimeError
+            turn_params["threadId"] = native_thread_id
+            request(process, 3, "turn/start", turn_params, deadline)
+            while not CaptureHandler.observed and time.monotonic() < deadline:
+                time.sleep(0.01)
+            empty = CaptureHandler.observed and CaptureHandler.empty
+            stop_process(process)
+            process = None
+            server.shutdown()
+            server.server_close()
+            server = None
+            server_thread.join(timeout=2)
+            server_thread = None
+    except BaseException:
+        empty = False
+    finally:
+        stop_process(process)
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+        if server_thread is not None:
+            server_thread.join(timeout=2)
+    sys.stdout.write(json.dumps({"empty": bool(empty)}, separators=(",", ":")))
+    return 0 if empty else 1
+
+
+raise SystemExit(main())
+""".strip()
 
 
 class SpikeError(RuntimeError):
@@ -162,6 +386,10 @@ class ProtocolError(SpikeError):
         return self
 
 
+class NativeRequestError(ProtocolError):
+    """A sanitized native error response eligible for refresh-state classification."""
+
+
 def validate_account_response(response: Any) -> None:
     """Require an authenticated ChatGPT account response, not merely JSON-RPC success."""
     if not isinstance(response, dict):
@@ -180,7 +408,7 @@ def validate_account_response(response: Any) -> None:
         raise ProtocolError("account/read returned an invalid ChatGPT identity shape")
 
 
-def validate_model_response(response: Any) -> None:
+def validate_model_response(response: Any, *, required_model: str | None = None) -> None:
     """Require a nonempty, structurally meaningful model catalog."""
     if not isinstance(response, dict):
         raise ProtocolError("model/list returned an invalid response")
@@ -206,6 +434,11 @@ def validate_model_response(response: Any) -> None:
             for effort in efforts
         ):
             raise ProtocolError("model/list returned invalid reasoning capabilities")
+    if required_model is not None and not any(
+        model.get("id") == required_model and model.get("model") == required_model
+        for model in models
+    ):
+        raise ProtocolError("model/list did not include the required model")
 
 
 def _valid_rate_window(value: Any) -> bool:
@@ -243,6 +476,28 @@ def validate_rate_limit_response(response: Any, *, expected_account_id: str) -> 
 
 
 @dataclass(frozen=True)
+class RedactionValues:
+    """Exact auth and native identifiers forbidden from every observable sink."""
+
+    exact_values: tuple[str, ...]
+
+    def find_leaks(self, text: str | bytes) -> tuple[str, ...]:
+        raw = text if isinstance(text, bytes) else text.encode("utf-8", errors="replace")
+        labels: list[str] = []
+        for index, value in enumerate(self.exact_values):
+            if value.encode("utf-8") in raw:
+                labels.append(f"sensitive-value-{index + 1}")
+        return tuple(labels)
+
+
+@dataclass(frozen=True)
+class RunnerHomeAuthValues:
+    """Runner-visible auth/account material forbidden from temporary home files."""
+
+    exact_values: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class SecretValues:
     """Exact live values that must never reach a user-visible sink."""
 
@@ -251,8 +506,8 @@ class SecretValues:
     account_id: str
     invalid_access_token: str
     native_ids: tuple[str, ...] = ()
-    prior_values: tuple[str, ...] = ()
-    refresh_history: tuple[str, ...] = ()
+    historical_runner_auth_values: tuple[str, ...] = ()
+    historical_refresh_tokens: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         required = (
@@ -265,37 +520,38 @@ class SecretValues:
             raise ValueError("sensitive auth values must be nonempty and at least 12 characters")
 
     @property
-    def values(self) -> tuple[str, ...]:
-        return tuple(
-            dict.fromkeys(
-                (
-                    self.access_token,
-                    self.refresh_token,
-                    self.account_id,
-                    self.invalid_access_token,
-                    *self.native_ids,
-                    *self.prior_values,
+    def redaction_values(self) -> RedactionValues:
+        return RedactionValues(
+            tuple(
+                dict.fromkeys(
+                    (
+                        self.access_token,
+                        self.refresh_token,
+                        self.account_id,
+                        self.invalid_access_token,
+                        *self.native_ids,
+                        *self.historical_runner_auth_values,
+                        *self.historical_refresh_tokens,
+                    )
                 )
             )
         )
 
     @property
-    def runner_values(self) -> tuple[str, ...]:
-        """Values a runner actually received; deliberately excludes refresh tokens."""
-        return tuple(
-            value
-            for value in self.values
-            if value != self.refresh_token
-            and value not in self.refresh_history
+    def runner_home_auth_values(self) -> RunnerHomeAuthValues:
+        """Return only auth/account bytes whose persistence would be a real leak."""
+        return RunnerHomeAuthValues(
+            tuple(
+                dict.fromkeys(
+                    (
+                        self.access_token,
+                        self.account_id,
+                        self.invalid_access_token,
+                        *self.historical_runner_auth_values,
+                    )
+                )
+            )
         )
-
-    def find_leaks(self, text: str | bytes) -> tuple[str, ...]:
-        raw = text if isinstance(text, bytes) else text.encode("utf-8", errors="replace")
-        labels: list[str] = []
-        for index, value in enumerate(self.values):
-            if value.encode("utf-8") in raw:
-                labels.append(f"sensitive-value-{index + 1}")
-        return tuple(labels)
 
     def with_native_id(self, native_id: str) -> SecretValues:
         if not native_id:
@@ -306,10 +562,21 @@ class SecretValues:
         return replace(
             newer,
             native_ids=tuple(dict.fromkeys((*self.native_ids, *newer.native_ids))),
-            prior_values=tuple(dict.fromkeys((*self.values, *newer.prior_values))),
-            refresh_history=tuple(
+            historical_runner_auth_values=tuple(
                 dict.fromkeys(
-                    (*self.refresh_history, self.refresh_token, *newer.refresh_history)
+                    (
+                        *self.runner_home_auth_values.exact_values,
+                        *newer.historical_runner_auth_values,
+                    )
+                )
+            ),
+            historical_refresh_tokens=tuple(
+                dict.fromkeys(
+                    (
+                        *self.historical_refresh_tokens,
+                        self.refresh_token,
+                        *newer.historical_refresh_tokens,
+                    )
                 )
             ),
         )
@@ -319,7 +586,7 @@ def sanitize_text(text: str, secrets: SecretValues | None = None) -> str:
     """Use the application's canonical redactor plus exact live-value replacement."""
     clean = redact_text(text)
     if secrets is not None:
-        for value in sorted(secrets.values, key=len, reverse=True):
+        for value in sorted(secrets.redaction_values.exact_values, key=len, reverse=True):
             clean = clean.replace(value, REDACTED)
     return clean
 
@@ -374,13 +641,10 @@ class HomeScan:
 
 def scan_home(
     home: Path,
-    secrets: SecretValues,
-    *,
-    values: Sequence[str] | None = None,
+    auth_values: RunnerHomeAuthValues,
 ) -> HomeScan:
     """Scan a temporary local runner home without returning file names/content."""
-    needles = tuple(values) if values is not None else secrets.values
-    encoded = tuple(value.encode("utf-8") for value in needles)
+    encoded = tuple(value.encode("utf-8") for value in auth_values.exact_values)
     auth_json_present = False
     secret_file_count = 0
     symlink_count = 0
@@ -529,6 +793,98 @@ def build_external_login_frame(request_id: int, secrets: SecretValues) -> dict[s
     }
 
 
+def model_turn_opted_in(flag: str | None) -> bool:
+    """Recognize only the exact second live-cost opt-in value."""
+    return flag == "1"
+
+
+def _require_model_turn_opt_in(model_turn_enabled: bool) -> None:
+    if not model_turn_enabled:
+        raise SpikeConfigurationError(
+            f"refusing model turn: set {MODEL_TURN_OPT_IN_FLAG}=1"
+        )
+
+
+def build_model_thread_params(
+    cwd: Path,
+    *,
+    model_turn_enabled: bool,
+) -> dict[str, Any]:
+    """Build the pinned, tool-free ephemeral-thread request after explicit opt-in."""
+    _require_model_turn_opt_in(model_turn_enabled)
+    return {
+        "approvalPolicy": "never",
+        "config": {
+            "agents": {"enabled": False},
+            "apps": {"_default": {"enabled": False}},
+            "features": {
+                "apps": False,
+                "browser_use": False,
+                "browser_use_external": False,
+                "browser_use_full_cdp_access": False,
+                "code_mode": False,
+                "computer_use": False,
+                "enable_request_compression": False,
+                "goals": False,
+                "hooks": False,
+                "image_generation": False,
+                "multi_agent": False,
+                "multi_agent_v2": False,
+                "plugin_sharing": False,
+                "plugins": False,
+                "recommended_plugins": False,
+                "remote_plugin": False,
+                "shell_tool": False,
+                "skill_mcp_dependency_install": False,
+                "skill_search": False,
+                "sleep_tool": False,
+                "tool_suggest": False,
+                "unified_exec": False,
+                "view_image": False,
+                "workspace_dependencies": False,
+            },
+            "mcp_servers": {},
+            "orchestrator": {"skills": {"enabled": False}},
+            "skills": {
+                "bundled": {"enabled": False},
+                "include_instructions": False,
+            },
+            "tools": {
+                "experimental_request_user_input": {"enabled": False},
+            },
+            "web_search": "disabled",
+        },
+        "cwd": str(cwd),
+        "developerInstructions": MODEL_TURN_DEVELOPER_INSTRUCTIONS,
+        "dynamicTools": [],
+        "environments": [],
+        "ephemeral": True,
+        "experimentalRawEvents": False,
+        "model": MODEL_TURN_MODEL,
+        "sandbox": "read-only",
+    }
+
+
+def build_model_turn_params(
+    thread_id: str,
+    *,
+    model_turn_enabled: bool,
+) -> dict[str, Any]:
+    """Build the single fixed minimal turn request after explicit opt-in."""
+    _require_model_turn_opt_in(model_turn_enabled)
+    if not thread_id:
+        raise ProtocolError(
+            "model thread response omitted its native identifier",
+            method="thread/start",
+            stage="model_thread_start",
+            role="runner",
+        )
+    return {
+        "threadId": thread_id,
+        "input": [{"type": "text", "text": MODEL_TURN_PROMPT}],
+    }
+
+
 def require_opt_in(*, flag: str | None, account: str | None) -> str:
     """Require the exact live-test flag and a nonempty non-secret account alias."""
     if flag != "1" or not account or not account.strip():
@@ -544,6 +900,76 @@ class SchemaEvidence:
     schema_sha256: str
     methods: tuple[str, ...]
     experimental_api_required: bool
+
+
+def _validate_model_turn_schema(subset: Mapping[str, Any]) -> None:
+    """Fail closed unless the pinned thread/turn contracts have their exact essentials."""
+    required_contracts = {
+        "v2/ThreadStartParams.json": {
+            "approvalPolicy",
+            "cwd",
+            "developerInstructions",
+            "dynamicTools",
+            "environments",
+            "ephemeral",
+            "experimentalRawEvents",
+            "model",
+            "sandbox",
+        },
+        "v2/ThreadStartResponse.json": {"approvalPolicy", "cwd", "sandbox", "thread"},
+        "v2/TurnStartParams.json": {"input", "threadId"},
+        "v2/TurnStartResponse.json": {"turn"},
+        "v2/TurnCompletedNotification.json": {"threadId", "turn"},
+        "v2/ItemStartedNotification.json": {"item", "threadId", "turnId"},
+        "v2/ItemCompletedNotification.json": {"item", "threadId", "turnId"},
+    }
+    for relative, expected_properties in required_contracts.items():
+        document = subset.get(relative)
+        properties = document.get("properties") if isinstance(document, dict) else None
+        if not isinstance(properties, dict) or not expected_properties.issubset(properties):
+            raise SpikeError("generated Codex schema has an incompatible model-turn contract")
+
+    thread_params = subset["v2/ThreadStartParams.json"]
+    thread_response = subset["v2/ThreadStartResponse.json"]
+    turn_params = subset["v2/TurnStartParams.json"]
+    turn_response = subset["v2/TurnStartResponse.json"]
+    turn_completed = subset["v2/TurnCompletedNotification.json"]
+    item_started = subset["v2/ItemStartedNotification.json"]
+    item_completed = subset["v2/ItemCompletedNotification.json"]
+    canonical_contracts = json.dumps(
+        {
+            "thread_params": thread_params,
+            "thread_response": thread_response,
+            "turn_params": turn_params,
+            "turn_response": turn_response,
+            "turn_completed": turn_completed,
+            "item_started": item_started,
+            "item_completed": item_completed,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    required_shape_markers = (
+        '"never"',
+        '"read-only"',
+        '"readOnly"',
+        '"completed"',
+        '"agentMessage"',
+        '"commandExecution"',
+        '"text"',
+    )
+    if any(marker not in canonical_contracts for marker in required_shape_markers):
+        raise SpikeError("generated Codex schema has an incompatible model-turn shape")
+    for document, required_fields in (
+        (turn_params, {"input", "threadId"}),
+        (turn_response, {"turn"}),
+        (turn_completed, {"threadId", "turn"}),
+        (item_started, {"item", "startedAtMs", "threadId", "turnId"}),
+        (item_completed, {"completedAtMs", "item", "threadId", "turnId"}),
+    ):
+        required = document.get("required")
+        if not isinstance(required, list) or not required_fields.issubset(required):
+            raise SpikeError("generated Codex schema has incompatible required fields")
 
 
 def inspect_schema(codex_bin: str) -> SchemaEvidence:
@@ -586,6 +1012,7 @@ def inspect_schema(codex_bin: str) -> SchemaEvidence:
         missing = tuple(marker for marker in _REQUIRED_SCHEMA_MARKERS if marker not in canonical)
         if missing:
             raise SpikeError("generated Codex schema is missing required external-auth methods")
+        _validate_model_turn_schema(subset)
         external_description = json.dumps(subset["v2/LoginAccountParams.json"])
         experimental = "UNSTABLE" in external_description and "INTERNAL USE ONLY" in external_description
         if not experimental:
@@ -602,12 +1029,193 @@ def inspect_schema(codex_bin: str) -> SchemaEvidence:
             "account/rateLimits/read",
             "model/list",
             "account/chatgptAuthTokens/refresh",
+            "thread/start",
+            "turn/start",
+            "turn/completed",
+            "item/started",
+            "item/completed",
         ),
         experimental_api_required=True,
     )
 
 
 ServerRequestHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+ServerNotificationHandler = Callable[[str, Any], None]
+
+
+@dataclass(frozen=True)
+class ModelTurnResult:
+    """Bounded result state; no raw notification or text payload is retained."""
+
+    tool_free_exact_ok: bool
+    native_ids: tuple[str, ...]
+
+
+class ModelTurnObserver:
+    """Reduce one runner's model-turn notifications into fixed safe state."""
+
+    _ALLOWED_ITEM_TYPES = frozenset({"userMessage", "reasoning", "agentMessage"})
+    _OBSERVED_METHODS = frozenset(
+        {"turn/completed", "item/started", "item/completed"}
+    )
+
+    def __init__(self) -> None:
+        self._thread_id: str | None = None
+        self._turn_id: str | None = None
+        self._completion: asyncio.Future[ModelTurnResult] = (
+            asyncio.get_running_loop().create_future()
+        )
+
+    def arm(self, thread_id: str) -> None:
+        if not thread_id or self._thread_id is not None:
+            raise ProtocolError(
+                "model thread observer could not be armed",
+                method="thread/start",
+                stage="model_thread_start",
+                role="runner",
+            )
+        self._thread_id = thread_id
+
+    @property
+    def thread_id(self) -> str | None:
+        return self._thread_id
+
+    def _fail(self, message: str, *, method: str) -> None:
+        if not self._completion.done():
+            self._completion.set_exception(
+                ProtocolError(
+                    message,
+                    method=method,
+                    stage="refresh_trigger",
+                    role="runner",
+                )
+            )
+
+    def _bind_turn_id(self, turn_id: Any, *, method: str) -> bool:
+        if not isinstance(turn_id, str) or not turn_id:
+            self._fail("model turn notification omitted its native identifier", method=method)
+            return False
+        if self._turn_id is not None and self._turn_id != turn_id:
+            self._fail("model turn notification referenced a different turn", method=method)
+            return False
+        self._turn_id = turn_id
+        return True
+
+    def _validate_items(self, items: Any, *, method: str) -> bool:
+        if not isinstance(items, list):
+            self._fail("model turn notification returned invalid items", method=method)
+            return False
+        agent_message_count = 0
+        exact_ok = True
+        for item in items:
+            if not isinstance(item, dict) or not isinstance(item.get("type"), str):
+                self._fail("model turn notification returned an invalid item", method=method)
+                return False
+            item_type = item["type"]
+            if item_type not in self._ALLOWED_ITEM_TYPES:
+                self._fail(
+                    "model turn emitted a prohibited tool or activity item",
+                    method=method,
+                )
+                return False
+            if item_type == "agentMessage":
+                agent_message_count += 1
+                exact_ok = exact_ok and item.get("text") == MODEL_TURN_EXPECTED_TEXT
+        if method == "turn/completed" and (
+            agent_message_count != 1 or not exact_ok
+        ):
+            self._fail("model turn assistant output was not exactly OK", method=method)
+            return False
+        return True
+
+    def observe(self, method: str, params: Any) -> None:
+        """Consume relevant fields immediately and discard the raw notification."""
+        if (
+            self._thread_id is None
+            or self._completion.done()
+            or method not in self._OBSERVED_METHODS
+        ):
+            return
+        if not isinstance(params, dict):
+            self._fail("model turn notification had invalid parameters", method=method)
+            return
+        if params.get("threadId") != self._thread_id:
+            self._fail("model turn notification referenced a different thread", method=method)
+            return
+        if method in {"item/started", "item/completed"}:
+            if not self._bind_turn_id(params.get("turnId"), method=method):
+                return
+            item = params.get("item")
+            self._validate_items([item], method=method)
+            return
+
+        turn = params.get("turn")
+        if not isinstance(turn, dict):
+            self._fail("model turn completion had an invalid response", method=method)
+            return
+        if not self._bind_turn_id(turn.get("id"), method=method):
+            return
+        if turn.get("status") != "completed":
+            self._fail("model turn did not complete successfully", method=method)
+            return
+        if not self._validate_items(turn.get("items"), method=method):
+            return
+        assert self._thread_id is not None and self._turn_id is not None
+        self._completion.set_result(
+            ModelTurnResult(
+                tool_free_exact_ok=True,
+                native_ids=(self._thread_id, self._turn_id),
+            )
+        )
+
+    def bind_turn_response(self, response: Any) -> None:
+        if not isinstance(response, dict) or not isinstance(response.get("turn"), dict):
+            raise ProtocolError(
+                "turn/start returned an invalid response",
+                method="turn/start",
+                stage="refresh_trigger",
+                role="runner",
+            )
+        turn = response["turn"]
+        turn_id = turn.get("id")
+        if (
+            not isinstance(turn_id, str)
+            or not turn_id
+            or turn.get("status") not in {"inProgress", "completed"}
+            or not isinstance(turn.get("items"), list)
+            or self._turn_id is not None
+            and self._turn_id != turn_id
+        ):
+            raise ProtocolError(
+                "turn/start returned an invalid or inconsistent response",
+                method="turn/start",
+                stage="refresh_trigger",
+                role="runner",
+            )
+        self._turn_id = turn_id
+
+    async def wait_for_completion(self) -> ModelTurnResult:
+        try:
+            return await asyncio.wait_for(
+                asyncio.shield(self._completion),
+                MODEL_TURN_TIMEOUT_S,
+            )
+        except TimeoutError as exc:
+            self._completion.cancel()
+            raise ProtocolError(
+                "model turn completion timed out",
+                method="turn/completed",
+                stage="refresh_trigger",
+                role="runner",
+            ) from exc
+
+    def discard(self) -> None:
+        """Consume or cancel bounded state when turn/start fails first."""
+        if self._completion.done():
+            if not self._completion.cancelled():
+                self._completion.exception()
+            return
+        self._completion.cancel()
 
 
 class JsonRpcProcess:
@@ -620,11 +1228,13 @@ class JsonRpcProcess:
         *,
         role: ProtocolRole,
         handler: ServerRequestHandler | None = None,
+        notification_handler: ServerNotificationHandler | None = None,
     ) -> None:
         self._command = list(command)
         self._environment = dict(environment)
         self._role = role if role in _PROTOCOL_ROLES else None
         self._handler = handler
+        self._notification_handler = notification_handler
         self._process: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task[None] | None = None
         self._stderr_task: asyncio.Task[None] | None = None
@@ -679,6 +1289,11 @@ class JsonRpcProcess:
                 if "id" in frame and "method" in frame:
                     self._start_server_request(frame)
                     continue
+                if "id" not in frame and "method" in frame:
+                    method = frame.get("method")
+                    if self._notification_handler is not None and isinstance(method, str):
+                        self._notification_handler(method, frame.get("params"))
+                    continue
                 if "id" in frame:
                     request_id = frame.get("id")
                     if type(request_id) is not int:
@@ -698,7 +1313,7 @@ class JsonRpcProcess:
                         continue
                     if "error" in frame:
                         future.set_exception(
-                            ProtocolError(
+                            NativeRequestError(
                                 "app-server request returned an error",
                                 method=method,
                                 stage=stage,
@@ -724,6 +1339,15 @@ class JsonRpcProcess:
                         )
                     )
             self._pending.clear()
+
+    def set_notification_handler(self, handler: ServerNotificationHandler) -> None:
+        if self._notification_handler is not None:
+            raise ProtocolError(
+                "app-server notification observer was already configured",
+                stage="protocol_transport",
+                role=self._role,
+            )
+        self._notification_handler = handler
 
     def _start_server_request(self, frame: dict[str, Any]) -> None:
         self._callback_activity_sequence += 1
@@ -1083,15 +1707,42 @@ class RefreshCoalescer:
         self._authority_home = authority_home
         self._current = initial
         self._lock = asyncio.Lock()
+        self._successful_callbacks_by_runner: dict[object, int] = {}
         self.generation = 0
         self.refresh_calls = 0
-        self.callback_count = 0
 
     @property
     def current(self) -> SecretValues:
         return self._current
 
-    async def handle(self, frame: dict[str, Any]) -> dict[str, Any]:
+    @property
+    def callback_count(self) -> int:
+        return sum(self._successful_callbacks_by_runner.values())
+
+    def register_runner(self) -> ServerRequestHandler:
+        """Return a handler bound to one opaque, stable in-process runner identity."""
+        runner_identity = object()
+        self._successful_callbacks_by_runner[runner_identity] = 0
+
+        async def handle(frame: dict[str, Any]) -> dict[str, Any]:
+            return await self._handle(runner_identity, frame)
+
+        return handle
+
+    def has_exact_callback_coverage(self, *, expected_runner_count: int) -> bool:
+        """Require exactly one successful callback from every expected runner."""
+        counts = self._successful_callbacks_by_runner.values()
+        return (
+            expected_runner_count > 0
+            and len(self._successful_callbacks_by_runner) == expected_runner_count
+            and all(count == 1 for count in counts)
+        )
+
+    async def _handle(
+        self,
+        runner_identity: object,
+        frame: dict[str, Any],
+    ) -> dict[str, Any]:
         if frame.get("method") != "account/chatgptAuthTokens/refresh":
             raise ProtocolError(
                 "runner requested an unsupported experimental method",
@@ -1114,7 +1765,6 @@ class RefreshCoalescer:
                 stage="refresh_callback",
                 role="runner",
             )
-        self.callback_count += 1
         rejected_generation = 0
         async with self._lock:
             if self.generation <= rejected_generation:
@@ -1145,6 +1795,7 @@ class RefreshCoalescer:
                 self._current = self._current.merge(newer)
                 self.generation += 1
             current = self._current
+        self._successful_callbacks_by_runner[runner_identity] += 1
         return {
             "accessToken": current.access_token,
             "chatgptAccountId": current.account_id,
@@ -1158,6 +1809,78 @@ class RunnerRuntime:
     process: JsonRpcProcess
     is_remote: bool
     cleaned: bool = False
+
+
+def _validate_thread_start_response(response: Any, *, expected_cwd: Path) -> str:
+    if not isinstance(response, dict):
+        raise ProtocolError(
+            "thread/start returned an invalid response",
+            method="thread/start",
+            stage="model_thread_start",
+            role="runner",
+        )
+    thread = response.get("thread")
+    sandbox = response.get("sandbox")
+    if (
+        not isinstance(thread, dict)
+        or not isinstance(thread.get("id"), str)
+        or not thread["id"]
+        or thread.get("ephemeral") is not True
+        or thread.get("model") != MODEL_TURN_MODEL
+        or thread.get("cwd") != str(expected_cwd)
+        or response.get("cwd") != str(expected_cwd)
+        or response.get("approvalPolicy") != "never"
+        or not isinstance(sandbox, dict)
+        or sandbox.get("type") != "readOnly"
+    ):
+        raise ProtocolError(
+            "thread/start did not confirm the requested safe ephemeral thread",
+            method="thread/start",
+            stage="model_thread_start",
+            role="runner",
+        )
+    return thread["id"]
+
+
+async def _start_model_turn_threads(
+    runtimes: Sequence[RunnerRuntime],
+    *,
+    model_turn_enabled: bool,
+    empty_tool_catalog_verified: bool = False,
+) -> tuple[tuple[ModelTurnObserver, ...], tuple[str, ...]]:
+    """Create no threads unless the second exact gate was enabled by the caller."""
+    if not model_turn_enabled:
+        return (), ()
+    if not empty_tool_catalog_verified:
+        raise ProtocolError(
+            "refusing model thread before empty tool catalog preflight",
+            method="thread/start",
+            stage="tool_catalog_preflight",
+            role="runner",
+        )
+    observers = tuple(ModelTurnObserver() for _ in runtimes)
+    for runtime, observer in zip(runtimes, observers, strict=True):
+        runtime.process.set_notification_handler(observer.observe)
+    responses = await asyncio.gather(
+        *(
+            runtime.process.request(
+                "thread/start",
+                build_model_thread_params(
+                    runtime.home,
+                    model_turn_enabled=model_turn_enabled,
+                ),
+                stage="model_thread_start",
+            )
+            for runtime in runtimes
+        )
+    )
+    thread_ids = tuple(
+        _validate_thread_start_response(response, expected_cwd=runtime.home)
+        for runtime, response in zip(runtimes, responses, strict=True)
+    )
+    for observer, thread_id in zip(observers, thread_ids, strict=True):
+        observer.arm(thread_id)
+    return observers, thread_ids
 
 
 async def _run_command(
@@ -1330,6 +2053,53 @@ async def verify_runner_version(
         raise SpikeConfigurationError("a runner lacks the exact supported Codex CLI version")
 
 
+async def verify_empty_tool_catalog(
+    target: RunnerTarget,
+    *,
+    codex_bin: str,
+) -> None:
+    """Prove the pinned runner emits an exact empty tool catalog before a live turn."""
+    payload = json.dumps(
+        {
+            "thread": build_model_thread_params(
+                Path("/tmp/ccswitch-codex-tool-preflight.placeholder"),
+                model_turn_enabled=True,
+            ),
+            "turn": build_model_turn_params(
+                "ccswitch-tool-preflight-placeholder",
+                model_turn_enabled=True,
+            ),
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+    command = ["python3", "-c", _TOOL_CATALOG_PREFLIGHT_PROGRAM, codex_bin]
+    if target.ssh_host is not None:
+        command = build_ssh_command(target.ssh_host, command)
+    try:
+        code, stdout, _ = await _run_command(
+            command,
+            stdin=payload,
+            timeout=TOOL_CATALOG_PREFLIGHT_TIMEOUT_S,
+        )
+        result = json.loads(stdout)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        raise ProtocolError(
+            "runner could not prove an empty outgoing model tool catalog",
+            method="turn/start",
+            stage="tool_catalog_preflight",
+            role="runner",
+        ) from exc
+    if code != 0 or result != {"empty": True}:
+        raise ProtocolError(
+            "runner could not prove an empty outgoing model tool catalog",
+            method="turn/start",
+            stage="tool_catalog_preflight",
+            role="runner",
+        )
+
+
 _REMOTE_SCAN_PROGRAM = r"""
 import json
 import pathlib
@@ -1355,13 +2125,17 @@ print(json.dumps({'auth': auth, 'leaks': leaks, 'links': links}, separators=(','
 """.strip()
 
 
-async def scan_remote_home(target: RunnerTarget, home: Path, secrets: SecretValues) -> HomeScan:
+async def scan_remote_home(
+    target: RunnerTarget,
+    home: Path,
+    auth_values: RunnerHomeAuthValues,
+) -> HomeScan:
     assert target.ssh_host is not None
     if not _REMOTE_HOME_RE.fullmatch(str(home)):
         raise SpikeConfigurationError("refusing to inspect an unsafe remote path")
     # The runner-visible access/account values cross this second authenticated SSH stdin boundary
     # only for an exact byte scan. Refresh tokens are excluded and output is aggregate counts only.
-    payload = json.dumps(secrets.runner_values, separators=(",", ":")).encode("utf-8")
+    payload = json.dumps(auth_values.exact_values, separators=(",", ":")).encode("utf-8")
     code, stdout, _ = await _run_command(
         build_ssh_command(
             target.ssh_host,
@@ -1489,11 +2263,14 @@ class SpikeEvidence:
     release_gate: str
     protocol_methods: tuple[str, ...] = field(default_factory=tuple)
     experimental_api_required: bool = True
+    model_turn_trigger_used: bool = False
+    empty_model_tool_catalog_preflight: bool = False
+    tool_free_exact_ok_turns_completed: bool = False
 
     def to_json(self, secrets: SecretValues | None = None) -> str:
         serialized = json.dumps(asdict(self), sort_keys=True, separators=(",", ":"))
         clean = sanitize_text(serialized, secrets)
-        if secrets is not None and secrets.find_leaks(clean):
+        if secrets is not None and secrets.redaction_values.find_leaks(clean):
             raise SpikeError("sanitized evidence still contains a sensitive value")
         return clean
 
@@ -1503,6 +2280,7 @@ async def _verify_read_only(
     *,
     expected_account_id: str,
     stage: ProtocolStage,
+    required_model: str | None = None,
 ) -> None:
     method: ProtocolMethod = "account/read"
     try:
@@ -1510,7 +2288,7 @@ async def _verify_read_only(
         validate_account_response(account)
         method = "model/list"
         models = await runner.request(method, {}, stage=stage)
-        validate_model_response(models)
+        validate_model_response(models, required_model=required_model)
         method = "account/rateLimits/read"
         rate_limits = await runner.request(method, {}, stage=stage)
         validate_rate_limit_response(rate_limits, expected_account_id=expected_account_id)
@@ -1531,6 +2309,7 @@ def _classify_refresh_trigger_failure(
     *,
     runner_count: int,
     checkpoint: tuple[int, int, int],
+    trigger_method: ProtocolMethod,
 ) -> ProtocolError:
     prior_callbacks, prior_refreshes, prior_generation = checkpoint
     callback_delta = coalescer.callback_count - prior_callbacks
@@ -1562,7 +2341,7 @@ def _classify_refresh_trigger_failure(
         message = "refresh trigger observed incomplete or anomalous callback state"
     return ProtocolError(
         message,
-        method="account/rateLimits/read",
+        method=trigger_method,
         stage="refresh_trigger",
         role="runner",
     )
@@ -1572,25 +2351,33 @@ async def _run_refresh_triggers(
     runners: Sequence[JsonRpcProcess],
     *,
     coalescer: RefreshCoalescer,
-) -> None:
+    trigger_operations: Sequence[Awaitable[Any]] | None = None,
+    trigger_method: ProtocolMethod = "account/rateLimits/read",
+) -> tuple[Any, ...]:
     """Prefer a refresh callback root failure over its downstream request error."""
+    if trigger_operations is not None and len(trigger_operations) != len(runners):
+        raise ProtocolError(
+            "refresh trigger operation count did not match runners",
+            method=trigger_method,
+            stage="refresh_trigger",
+            role="runner",
+        )
     checkpoints = [runner.callback_checkpoint() for runner in runners]
     coalescer_checkpoint = (
         coalescer.callback_count,
         coalescer.refresh_calls,
         coalescer.generation,
     )
+    operations = trigger_operations or tuple(
+        runner.request(
+            "account/rateLimits/read",
+            {},
+            stage="refresh_trigger",
+        )
+        for runner in runners
+    )
     outcomes = await asyncio.gather(
-        *(
-            _capture_refresh_outcome(
-                runner.request(
-                    "account/rateLimits/read",
-                    {},
-                    stage="refresh_trigger",
-                )
-            )
-            for runner in runners
-        ),
+        *(_capture_refresh_outcome(operation) for operation in operations),
     )
     # App-server's host-refresh contract places the callback before retrying the original
     # request. Completed downstream outcomes are therefore the protocol fence; the bounded
@@ -1612,14 +2399,97 @@ async def _run_refresh_triggers(
         if failures:
             raise failures[0]
     for outcome in outcomes:
-        if isinstance(outcome, ProtocolError):
+        if isinstance(outcome, NativeRequestError):
             raise _classify_refresh_trigger_failure(
                 coalescer,
                 runner_count=len(runners),
                 checkpoint=coalescer_checkpoint,
+                trigger_method=trigger_method,
             )
         if isinstance(outcome, BaseException):
             raise outcome
+    return tuple(outcomes)
+
+
+async def _run_one_model_turn(
+    runner: JsonRpcProcess,
+    observer: ModelTurnObserver,
+    *,
+    model_turn_enabled: bool,
+) -> ModelTurnResult:
+    _require_model_turn_opt_in(model_turn_enabled)
+    thread_id = observer.thread_id
+    if thread_id is None:
+        raise ProtocolError(
+            "model turn observer was not armed",
+            method="turn/start",
+            stage="refresh_trigger",
+            role="runner",
+        )
+    try:
+        response = await runner.request(
+            "turn/start",
+            build_model_turn_params(
+                thread_id,
+                model_turn_enabled=model_turn_enabled,
+            ),
+            stage="refresh_trigger",
+        )
+        observer.bind_turn_response(response)
+        return await observer.wait_for_completion()
+    except BaseException:
+        observer.discard()
+        raise
+
+
+async def _run_model_turn_refresh_triggers(
+    runtimes: Sequence[RunnerRuntime],
+    observers: Sequence[ModelTurnObserver],
+    *,
+    coalescer: RefreshCoalescer,
+    model_turn_enabled: bool,
+    empty_tool_catalog_verified: bool = False,
+) -> tuple[ModelTurnResult, ...]:
+    """Start exactly one fixed turn per runner and validate both safe completions."""
+    _require_model_turn_opt_in(model_turn_enabled)
+    if not empty_tool_catalog_verified:
+        raise ProtocolError(
+            "refusing model turn before empty tool catalog preflight",
+            method="turn/start",
+            stage="tool_catalog_preflight",
+            role="runner",
+        )
+    if len(runtimes) != len(observers):
+        raise ProtocolError(
+            "model turn observer count did not match runners",
+            method="turn/start",
+            stage="refresh_trigger",
+            role="runner",
+        )
+    outcomes = await _run_refresh_triggers(
+        [runtime.process for runtime in runtimes],
+        coalescer=coalescer,
+        trigger_operations=tuple(
+            _run_one_model_turn(
+                runtime.process,
+                observer,
+                model_turn_enabled=model_turn_enabled,
+            )
+            for runtime, observer in zip(runtimes, observers, strict=True)
+        ),
+        trigger_method="turn/start",
+    )
+    if any(
+        not isinstance(outcome, ModelTurnResult) or not outcome.tool_free_exact_ok
+        for outcome in outcomes
+    ):
+        raise ProtocolError(
+            "model turns did not both complete tool-free with exact OK output",
+            method="turn/completed",
+            stage="refresh_trigger",
+            role="runner",
+        )
+    return tuple(outcome for outcome in outcomes if isinstance(outcome, ModelTurnResult))
 
 
 async def run_spike(
@@ -1627,6 +2497,7 @@ async def run_spike(
     codex_bin: str,
     authority_home: Path,
     targets: tuple[RunnerTarget, RunnerTarget],
+    model_turn_enabled: bool = False,
 ) -> tuple[SpikeEvidence, SecretValues]:
     schema = inspect_schema(codex_bin)
     topology = await inspect_topology(targets)
@@ -1640,6 +2511,21 @@ async def run_spike(
             for target in targets
         )
     )
+    empty_tool_catalog_verified = False
+    if model_turn_enabled:
+        preflight_results = await asyncio.gather(
+            *(
+                verify_empty_tool_catalog(target, codex_bin=codex_bin)
+                for target in targets
+            ),
+            return_exceptions=True,
+        )
+        for preflight_result in preflight_results:
+            if isinstance(preflight_result, asyncio.CancelledError):
+                raise preflight_result
+            if isinstance(preflight_result, BaseException):
+                raise preflight_result
+        empty_tool_catalog_verified = True
     authority_command = [codex_bin, "app-server", "--stdio"]
     authority = JsonRpcProcess(
         authority_command,
@@ -1652,6 +2538,7 @@ async def run_spike(
     cleanup_complete = False
     stderr_clean = False
     coalescer: RefreshCoalescer | None = None
+    model_turns_completed = False
     processes_closed = False
     try:
         await authority.start(experimental_api=False)
@@ -1676,7 +2563,7 @@ async def run_spike(
             runtime = await create_runner_runtime(
                 target,
                 codex_bin=codex_bin,
-                handler=coalescer.handle,
+                handler=coalescer.register_runner(),
                 runtimes=runners,
             )
             await runtime.process.start(experimental_api=True)
@@ -1693,10 +2580,19 @@ async def run_spike(
                     runtime.process,
                     expected_account_id=initial.account_id,
                     stage="initial_read_only",
+                    required_model=MODEL_TURN_MODEL if model_turn_enabled else None,
                 )
                 for runtime in runners
             )
         )
+
+        observers, thread_ids = await _start_model_turn_threads(
+            runners,
+            model_turn_enabled=model_turn_enabled,
+            empty_tool_catalog_verified=empty_tool_catalog_verified,
+        )
+        for thread_id in thread_ids:
+            all_secrets = all_secrets.with_native_id(thread_id)
 
         invalid = replace(initial, access_token=initial.invalid_access_token)
         await asyncio.gather(
@@ -1705,12 +2601,29 @@ async def run_spike(
                 for runtime in runners
             )
         )
-        await _run_refresh_triggers(
-            [runtime.process for runtime in runners],
-            coalescer=coalescer,
-        )
-        if coalescer.callback_count != 2:
-            raise SpikeError("both runners did not request external-token refresh")
+        if model_turn_enabled:
+            turn_results = await _run_model_turn_refresh_triggers(
+                runners,
+                observers,
+                coalescer=coalescer,
+                model_turn_enabled=model_turn_enabled,
+                empty_tool_catalog_verified=empty_tool_catalog_verified,
+            )
+            for result in turn_results:
+                for native_id in result.native_ids:
+                    all_secrets = all_secrets.with_native_id(native_id)
+            model_turns_completed = len(turn_results) == len(runners)
+        else:
+            await _run_refresh_triggers(
+                [runtime.process for runtime in runners],
+                coalescer=coalescer,
+            )
+        if not coalescer.has_exact_callback_coverage(
+            expected_runner_count=len(runners),
+        ):
+            raise SpikeError(
+                "each runner did not complete exactly one external-token refresh callback"
+            )
         if coalescer.refresh_calls != 1 or coalescer.generation != 1:
             raise SpikeError("runner refresh callbacks did not coalesce to one newer generation")
         if coalescer.current.access_token in {
@@ -1718,7 +2631,7 @@ async def run_spike(
             initial.invalid_access_token,
         }:
             raise SpikeError("corrupted runners did not receive an advanced access token")
-        all_secrets = initial.merge(coalescer.current)
+        all_secrets = all_secrets.merge(coalescer.current)
         await asyncio.gather(
             *(
                 _verify_read_only(
@@ -1740,21 +2653,23 @@ async def run_spike(
         authority.assert_background_clean()
 
         scans: list[HomeScan] = []
+        runner_home_auth_values = all_secrets.runner_home_auth_values
         for runtime in runners:
             if runtime.is_remote:
-                scans.append(await scan_remote_home(runtime.target, runtime.home, all_secrets))
-            else:
                 scans.append(
-                    scan_home(
+                    await scan_remote_home(
+                        runtime.target,
                         runtime.home,
-                        all_secrets,
-                        values=all_secrets.runner_values,
+                        runner_home_auth_values,
                     )
                 )
+            else:
+                scans.append(scan_home(runtime.home, runner_home_auth_values))
         homes_clean = all(scan.clean for scan in scans)
         stderr_clean = all(
-            not all_secrets.find_leaks(runtime.process.captured_stderr) for runtime in runners
-        ) and not all_secrets.find_leaks(authority.captured_stderr)
+            not all_secrets.redaction_values.find_leaks(runtime.process.captured_stderr)
+            for runtime in runners
+        ) and not all_secrets.redaction_values.find_leaks(authority.captured_stderr)
         if not homes_clean:
             raise SpikeError("a temporary runner home retained auth material or an auth.json")
         if not stderr_clean:
@@ -1784,7 +2699,9 @@ async def run_spike(
         authority_on_local_runner=topology.authority_on_local_runner,
         topology_sha256=topology.topology_sha256,
         healthy_read_only_calls=True,
-        refresh_callback_observed=coalescer.callback_count == len(runners),
+        refresh_callback_observed=coalescer.has_exact_callback_coverage(
+            expected_runner_count=len(runners),
+        ),
         refresh_calls=coalescer.refresh_calls,
         credential_generation=coalescer.generation,
         runner_homes_clean=homes_clean,
@@ -1793,6 +2710,9 @@ async def run_spike(
         release_gate="pass" if cleanup_complete else "fail",
         protocol_methods=schema.methods,
         experimental_api_required=schema.experimental_api_required,
+        model_turn_trigger_used=model_turn_enabled,
+        empty_model_tool_catalog_preflight=empty_tool_catalog_verified,
+        tool_free_exact_ok_turns_completed=model_turns_completed,
     )
     return evidence, all_secrets
 
@@ -1803,6 +2723,7 @@ async def async_main() -> int:
         account=os.environ.get(ACCOUNT_ALIAS_ENV),
     )
     targets = parse_runners(os.environ.get(RUNNERS_ENV))
+    model_turn_enabled = model_turn_opted_in(os.environ.get(MODEL_TURN_OPT_IN_FLAG))
     codex_bin = os.environ.get(CODEX_BIN_ENV, "codex")
     authority_home = Path(
         os.environ.get(
@@ -1816,9 +2737,10 @@ async def async_main() -> int:
             codex_bin=codex_bin,
             authority_home=authority_home,
             targets=targets,
+            model_turn_enabled=model_turn_enabled,
         )
         output = evidence.to_json(secrets)
-        if secrets.find_leaks(output):
+        if secrets.redaction_values.find_leaks(output):
             raise SpikeError("final evidence failed exact-value redaction")
         print(output)
         return 0 if evidence.release_gate == "pass" else 1

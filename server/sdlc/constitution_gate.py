@@ -26,6 +26,7 @@ import re
 __all__ = [
     "ACKNOWLEDGMENT_MARKER",
     "check_amendment",
+    "check_guardrail_change",
     "parse_footer",
 ]
 
@@ -97,10 +98,59 @@ def check_amendment(base_text: str, head_text: str, pr_body: str) -> list[str]:
         )
 
     # 4. A human must acknowledge the amendment in the PR description.
-    if ACKNOWLEDGMENT_MARKER not in (pr_body or "").lower():
+    if not _acknowledged(pr_body):
         violations.append(
             "the pull request description carries no owner acknowledgment — add a line "
             f"beginning {ACKNOWLEDGMENT_MARKER!r} stating what is approved"
         )
 
     return violations
+
+
+# An HTML comment is invisible in the rendered description, so text inside one is
+# not an acknowledgment — it is usually the template *asking* for one. Stripping
+# comments first is what stops a checklist from satisfying its own checklist item.
+_HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+# The marker must open a line, so merely discussing the gate in prose does not
+# clear it. Everything before it may only be whitespace or decoration: emphasis,
+# heading, blockquote, list bullet, bracket, or backtick. Brackets matter in
+# practice — a template placeholder is usually written `[ ... ]` and authors
+# reasonably type the acknowledgment inside the brackets they were given.
+# Widening here cannot admit prose: the marker still has to open the line.
+_ACK_LINE = re.compile(
+    r"^[\s>*_#\-\[\]()`\"']*" + re.escape(ACKNOWLEDGMENT_MARKER) + r"\s*\S",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _acknowledged(pr_body: str) -> bool:
+    """True when *pr_body* carries a real acknowledgment line.
+
+    Requires a non-empty statement after the marker: a bare ``Owner
+    acknowledgment:`` with nothing following it acknowledges nothing.
+    """
+    visible = _HTML_COMMENT.sub("", pr_body or "")
+    return bool(_ACK_LINE.search(visible))
+
+
+def check_guardrail_change(changed_paths: list[str], pr_body: str) -> list[str]:
+    """Violations for a diff that changes how governance is enforced.
+
+    A change to the hook, the deny rules, or this gate alters what every other
+    control can catch, so it needs the same deliberate acknowledgment an amendment
+    does — but not a version bump, since these files are not versioned documents.
+
+    *changed_paths* are repo-relative. Returns an empty list when the diff touches
+    no guardrail.
+    """
+    from server.sdlc.governance import GUARDRAIL_PATHS  # local: avoid a cycle
+
+    touched = sorted(set(changed_paths) & set(GUARDRAIL_PATHS))
+    if not touched or _acknowledged(pr_body):
+        return []
+    listed = ", ".join(touched)
+    return [
+        f"this pull request changes governance enforcement ({listed}) but carries no "
+        f"owner acknowledgment — add a line beginning {ACKNOWLEDGMENT_MARKER!r} saying "
+        "what you intend to change and why"
+    ]

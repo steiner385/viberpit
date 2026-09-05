@@ -24,7 +24,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor, within } from '@testing-library/react'
+import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { Session, Account } from './api/types'
 import { session } from '@/test/factories'
@@ -196,9 +196,10 @@ describe('App routing', () => {
   it('redirects legacy /accounts to the Settings accounts section', async () => {
     const app = renderApp({ path: '/accounts' })
     await waitFor(() => expect(app.path()).toBe('/settings/accounts'))
-    // The redirect carries the section, so the Accounts section is the active one.
-    const sections = within(await screen.findByRole('tablist', { name: /settings sections/i }))
-    expect(sections.getByRole('tab', { name: /accounts/i })).toHaveAttribute('aria-selected', 'true')
+    // The redirect carries the section, so Accounts is what is on screen. This
+    // is the default (phone) mode, where the section IS the page — the grouped
+    // nav lives on `/settings` itself, so the section landmark is what names it.
+    expect(await screen.findByRole('region', { name: 'Accounts' })).toBeInTheDocument()
   })
 
   it('clicking the Automations rail item updates the URL to /automations', async () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { NAV_DEFS, NAV_BY_ID, navDefForPath } from './navDefs'
+import { NAV_DEFS, NAV_BY_ID, navDefForPath, settingsSectionPath } from './navDefs'
 
 describe('navDefs', () => {
   it('preserves the legacy tab order and labels', () => {
@@ -86,5 +86,40 @@ describe('navDefForPath', () => {
 
   it('returns null for an unknown path', () => {
     expect(navDefForPath('/nope')).toBeNull()
+  })
+})
+
+/**
+ * The blank-section guard, pinned HERE rather than at the route level.
+ *
+ * It used to be asserted through `routes.test.tsx`'s
+ * `/settings?section=%20%20 → /settings/general` row, back when
+ * `SettingsIndexRedirect` was the only step between the two. It is not
+ * assertable that way any more: `SettingsPage` rejects an unknown `:section` and
+ * redirects to General on its own, so a `settingsSectionPath` that passed `'  '`
+ * straight through would still LAND on `/settings/general` — via
+ * `/settings/%20%20` and one extra history entry, with a nonsense URL in the bar
+ * in between. The route test cannot see the difference; this one can, which is
+ * why the guard needs its own unit test and not just a landing assertion.
+ */
+describe('settingsSectionPath', () => {
+  it('builds the path form of a section', () => {
+    expect(settingsSectionPath('accounts')).toBe('/settings/accounts')
+    expect(settingsSectionPath('accounts', 'plugins')).toBe('/settings/accounts')
+  })
+
+  it('falls back rather than passing a blank section through', () => {
+    // `/settings?section=` and `/settings?section=%20%20` are URLs a stale link
+    // really can carry.
+    expect(settingsSectionPath('')).toBe('/settings/general')
+    expect(settingsSectionPath('  ')).toBe('/settings/general')
+    expect(settingsSectionPath('\t\n')).toBe('/settings/general')
+    expect(settingsSectionPath(null)).toBe('/settings/general')
+    expect(settingsSectionPath(undefined)).toBe('/settings/general')
+  })
+
+  it('honours the caller\'s fallback — /library has always defaulted to Plugins', () => {
+    expect(settingsSectionPath(null, 'plugins')).toBe('/settings/plugins')
+    expect(settingsSectionPath('   ', 'plugins')).toBe('/settings/plugins')
   })
 })

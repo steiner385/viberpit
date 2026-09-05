@@ -262,6 +262,290 @@ def test_queued_prompt_runs_after_first_turn():
     assert queries == ["prompt-one", "prompt-two"]
 
 
+def test_send_prompt_context_header_prepended_once_per_change():
+    """A context header is prepended to the text sent to the SDK the first time
+    (or whenever) the context changes, but the UserMessage event keeps the
+    original, unprefixed text — the chip and the SDK-visible text are independent
+    (spec §4.5)."""
+    import asyncio
+
+    class QuickFakeSDK(PerQueryScript):
+        def __init__(self):
+            self.queries: list[str] = []
+            self._call = 0
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        async def query(self, prompt: str): self.queries.append(prompt)
+        async def receive_response(self):
+            self._call += 1
+            yield f.result(uuid=f"t{self._call}")
+        async def interrupt(self): pass
+        async def set_permission_mode(self, mode): pass
+
+    sdk = QuickFakeSDK()
+
+    def factory(cwd, cfg, can_use_tool, mode, resume, *, on_pre_compact=None):
+        return sdk
+
+    async def run():
+        d = SessionDriver("sctx1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=factory, registry=PermissionRegistry(), identity="me")
+        await d.start()
+        events = []
+
+        async def drain_until_idle():
+            async for e in d.events():
+                events.append(e)
+                if isinstance(e, Status) and e.state in ("idle", "done", "complete",
+                                                          "needs_attention"):
+                    break
+
+        await d.send_prompt("hi", context={"route": "/pipeline"})
+        await drain_until_idle()
+        # Same context again — no new header.
+        await d.send_prompt("again", context={"route": "/pipeline"})
+        await drain_until_idle()
+        # Context changed — header re-sent.
+        await d.send_prompt("third", context={"route": "/sessions"})
+        await drain_until_idle()
+        await d.aclose()
+        return sdk.queries, [e for e in events if isinstance(e, UserMessage)]
+
+    queries, user_msgs = asyncio.run(run())
+    assert queries[0].startswith('<ccswitch-context route="/pipeline"')
+    assert queries[0].endswith("\nhi")
+    assert queries[1] == "again"
+    assert queries[2].startswith('<ccswitch-context route="/sessions"')
+    assert queries[2].endswith("\nthird")
+    assert [m.text for m in user_msgs] == ["hi", "again", "third"]
+    assert [m.context for m in user_msgs] == [
+        {"route": "/pipeline"}, {"route": "/pipeline"}, {"route": "/sessions"}]
+
+
+def _quick_sdk():
+    """A fake SDK that answers every query immediately, recording what it was sent."""
+    import asyncio  # noqa: F401 — imported for parity with the other tests in this file
+
+    class QuickFakeSDK(PerQueryScript):
+        def __init__(self):
+            self.queries: list[str] = []
+            self._call = 0
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        async def query(self, prompt: str): self.queries.append(prompt)
+        async def receive_response(self):
+            self._call += 1
+            yield f.result(uuid=f"t{self._call}")
+        async def interrupt(self): pass
+        async def set_permission_mode(self, mode): pass
+
+    return QuickFakeSDK()
+
+
+def test_queued_prompt_keeps_its_context_header():
+    """A prompt that QUEUES behind a live turn must still carry its chip when it
+    finally runs. Sending a follow-up while the assistant is working is the normal
+    interaction, not an edge case: rendering the header at enqueue time (or only on
+    the immediate-start path) silently dropped both the SDK header and the
+    transcript chip for every queued prompt."""
+    import asyncio
+
+    sdk = _quick_sdk()
+
+    def factory(cwd, cfg, can_use_tool, mode, resume, *, on_pre_compact=None):
+        return sdk
+
+    async def run():
+        d = SessionDriver("sqctx", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=factory, registry=PermissionRegistry(), identity="me")
+        await d.start()
+        msgs = []
+        # The first starts a turn; the second lands in the FIFO queue with a
+        # DIFFERENT route and must be rendered when it is dequeued.
+        await d.send_prompt("prompt-one", context={"route": "/pipeline"})
+        await d.send_prompt("prompt-two", context={"route": "/sessions"})
+        async for e in d.events():
+            if isinstance(e, UserMessage):
+                msgs.append(e)
+            if isinstance(e, Status) and e.state in ("idle", "done", "complete",
+                                                     "needs_attention"):
+                break
+        await d.aclose()
+        return sdk.queries, msgs
+
+    queries, msgs = asyncio.run(run())
+    assert queries[0].startswith('<ccswitch-context route="/pipeline"')
+    assert queries[0].endswith("\nprompt-one")
+    assert queries[1].startswith('<ccswitch-context route="/sessions"')
+    assert queries[1].endswith("\nprompt-two")
+    # The chip rides the transcript event for the queued prompt too.
+    assert [m.context for m in msgs] == [{"route": "/pipeline"}, {"route": "/sessions"}]
+
+
+def test_interrupt_and_post_keeps_its_context_header():
+    """Interrupt-and-post inserts at the queue HEAD and returns — the prompt starts
+    from the drain, so its chip has to survive the queue just like a FIFO one."""
+    import asyncio
+
+    class SlowFakeSDK(PerQueryScript):
+        def __init__(self):
+            self.queries: list[str] = []
+            self._call = 0
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        async def query(self, prompt: str): self.queries.append(prompt)
+        async def receive_response(self):
+            self._call += 1
+            if self._call == 1:
+                await asyncio.sleep(0.05)
+            yield f.result(uuid=f"t{self._call}")
+        async def interrupt(self): pass
+        async def set_permission_mode(self, mode): pass
+
+    sdk = SlowFakeSDK()
+
+    def factory(cwd, cfg, can_use_tool, mode, resume, *, on_pre_compact=None):
+        return sdk
+
+    async def run():
+        d = SessionDriver("sictx", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=factory, registry=PermissionRegistry(), identity="me")
+        await d.start()
+        await d.send_prompt("slow-one", context={"route": "/pipeline"})
+        await d.send_prompt("urgent", context={"route": "/insights"}, interrupt=True)
+        async for e in d.events():
+            if isinstance(e, Status) and e.state in ("idle", "done", "complete",
+                                                     "needs_attention"):
+                break
+        await d.aclose()
+        return sdk.queries
+
+    queries = asyncio.run(run())
+    assert queries[-1].startswith('<ccswitch-context route="/insights"')
+    assert queries[-1].endswith("\nurgent")
+
+
+def test_context_dedupe_only_advances_when_the_header_is_actually_sent():
+    """Dedupe state must move at DEQUEUE time, not at enqueue.
+
+    A queued prompt whose turn never runs (a Stop clears the queue) never sent its
+    header — so the next prompt on that same route must still get one. Advancing the
+    dedupe when the prompt was merely accepted leaves the model with no route at all
+    for that route, which is invisible from the transcript (the chip still renders)."""
+    import asyncio
+
+    class SlowFakeSDK(PerQueryScript):
+        def __init__(self):
+            self.queries: list[str] = []
+            self._call = 0
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        async def query(self, prompt: str): self.queries.append(prompt)
+        async def receive_response(self):
+            self._call += 1
+            if self._call == 1:
+                await asyncio.sleep(0.05)
+            yield f.result(uuid=f"t{self._call}")
+        async def interrupt(self): pass
+        async def set_permission_mode(self, mode): pass
+
+    sdk = SlowFakeSDK()
+
+    def factory(cwd, cfg, can_use_tool, mode, resume, *, on_pre_compact=None):
+        return sdk
+
+    async def run():
+        d = SessionDriver("sdctx", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=factory, registry=PermissionRegistry(), identity="me")
+        await d.start()
+        await d.send_prompt("one", context={"route": "/pipeline"})
+        # Queued behind the live turn, then abandoned by the Stop — "two" never
+        # reaches the SDK, so it must not count as "/sessions has been announced".
+        await d.send_prompt("two", context={"route": "/sessions"})
+        await d.interrupt()
+        assert d.queued() == []
+        await d.send_prompt("three", context={"route": "/sessions"})
+        async for e in d.events():
+            if isinstance(e, Status) and e.state in ("idle", "done", "complete",
+                                                     "needs_attention"):
+                break
+        await d.aclose()
+        return sdk.queries
+
+    queries = asyncio.run(run())
+    assert queries[-1].startswith('<ccswitch-context route="/sessions"')
+
+
+def test_fresh_session_resends_the_context_header_after_clear():
+    """/clear starts a brand-new CLI session with no history — a header deduped
+    against the OLD session's last-sent value would leave the fresh session never
+    told where the user is."""
+    import asyncio
+
+    sdk = _quick_sdk()
+
+    def factory(cwd, cfg, can_use_tool, mode, resume, *, on_pre_compact=None):
+        return sdk
+
+    async def run():
+        d = SessionDriver("scctx", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=factory, registry=PermissionRegistry(), identity="me")
+        await d.start()
+
+        async def drain_until_idle():
+            async for e in d.events():
+                if isinstance(e, Status) and e.state in ("idle", "done", "complete",
+                                                         "needs_attention"):
+                    break
+
+        await d.send_prompt("before", context={"route": "/pipeline"})
+        await drain_until_idle()
+        await d.reconnect()
+        await d.send_prompt("after", context={"route": "/pipeline"})
+        await drain_until_idle()
+        await d.aclose()
+        return sdk.queries
+
+    queries = asyncio.run(run())
+    assert queries[-1].startswith('<ccswitch-context route="/pipeline"')
+    assert queries[-1].endswith("\nafter")
+
+
+def test_compaction_resends_the_context_header():
+    """Compaction can summarize the last header away — the dedupe must not keep
+    claiming the model knows the route it can no longer see."""
+    import asyncio
+
+    sdk = _quick_sdk()
+
+    def factory(cwd, cfg, can_use_tool, mode, resume, *, on_pre_compact=None):
+        return sdk
+
+    async def run():
+        d = SessionDriver("spctx", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=factory, registry=PermissionRegistry(), identity="me")
+        await d.start()
+
+        async def drain_until_idle():
+            async for e in d.events():
+                if isinstance(e, Status) and e.state in ("idle", "done", "complete",
+                                                         "needs_attention"):
+                    break
+
+        await d.send_prompt("before", context={"route": "/pipeline"})
+        await drain_until_idle()
+        await d._on_pre_compact()
+        await d.send_prompt("after", context={"route": "/pipeline"})
+        await drain_until_idle()
+        await d.aclose()
+        return sdk.queries
+
+    queries = asyncio.run(run())
+    assert queries[0].startswith('<ccswitch-context route="/pipeline"')
+    assert queries[-1].startswith('<ccswitch-context route="/pipeline"')
+    assert queries[-1].endswith("\nafter")
+
+
 def test_interrupt_clears_queue():
     """interrupt() clears the queue and emits an idle status."""
     import asyncio
