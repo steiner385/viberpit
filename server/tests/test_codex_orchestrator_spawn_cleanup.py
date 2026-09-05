@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from server.sessions.engine import AgentDriverRegistry, AgentEngine
+from server.sessions.engine import AgentDriverConfig, AgentDriverRegistry, AgentEngine
 from server.sessions.orchestrator import SessionOrchestrator
 
 
@@ -52,9 +52,9 @@ class _DoubleCancelDriver(_BlockingDriver):
 class _Factory:
     def __init__(self, driver: _Driver) -> None:
         self.driver = driver
-        self.configs = []
+        self.configs: list[AgentDriverConfig] = []
 
-    def create(self, config):
+    def create(self, config: AgentDriverConfig):
         self.configs.append(config)
         return self.driver
 
