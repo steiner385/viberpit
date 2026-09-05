@@ -40,6 +40,13 @@ _DISPOSE_GRACE_TIMEOUT_S = 5.0
 def _make_engine(db_url: str, *, poolclass=None):
     connect_args: dict[str, object] = {}
     if db_url.startswith("sqlite"):
+        # Before the first aiosqlite connection exists: upstream's worker thread
+        # dies with an unhandled "Event loop is closed" when it delivers a result
+        # to a loop that closed under an abandoned borrower (bounded_wait does
+        # exactly that on a teardown overrun), taking the SQLite handle with it.
+        # See server/db/aiosqlite_guard.py (issue #1134).
+        from server.db.aiosqlite_guard import install_loop_safe_worker
+        install_loop_safe_worker()
         connect_args["check_same_thread"] = False
         # Pass timeout at the sqlite3.connect() level so it takes effect
         # regardless of greenlet context.  The aiosqlite dialect forwards
