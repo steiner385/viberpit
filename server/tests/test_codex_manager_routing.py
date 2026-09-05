@@ -30,7 +30,7 @@ def _manager(tmp_path) -> CodexRunnerManager:
     )
 
 
-def _turn_started(thread_id: str) -> schema.TurnStartedParams:
+def _turn_started(thread_id: str) -> schema.ServerNotificationParams:
     return schema.parse_server_notification(
         schema.METHOD_TURN_STARTED,
         {
@@ -55,7 +55,7 @@ def test_a_thread_scoped_notification_reaches_only_its_own_thread(tmp_path):
     assert seen == {"a": [schema.METHOD_TURN_STARTED], "b": []}
 
 
-def _error(thread_id: str) -> schema.ErrorNotificationParams:
+def _error(thread_id: str) -> schema.ServerNotificationParams:
     return schema.parse_server_notification(
         "error",
         {
@@ -141,7 +141,7 @@ def test_unregister_thread_stops_every_stream(tmp_path):
     assert manager.unrouted_events == 1
 
 
-def _approval(thread_id: str) -> schema.CommandExecutionApprovalParams:
+def _approval(thread_id: str) -> schema.ApprovalParams:
     return schema.parse_approval_params(
         schema.METHOD_COMMAND_EXECUTION_APPROVAL,
         {
