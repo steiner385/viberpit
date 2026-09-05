@@ -97,6 +97,25 @@ class CodexSandboxMode(StrEnum):
         """True when the sandbox permits writing to the filesystem at all."""
         return self is not CodexSandboxMode.READ_ONLY
 
+    @property
+    def network_egress(self) -> bool:
+        """True when a command run under this sandbox can reach the network.
+
+        Only the unsandboxed mode can. Both `read-only` and `workspace-write`
+        are network-isolated, and ccswitch cannot lift that: the pinned
+        `ThreadStartParams` takes a bare `SandboxMode` string with no
+        `sandboxPolicy` object, and the policy the app-server reports back
+        defaults `workspaceWrite.networkAccess` to `false`. The knob exists in
+        Codex's own config file, but managing Codex config is explicitly post-v1
+        (see the plan's Definition of done), so for ccswitch this is a fact about
+        the mode, not a setting.
+
+        Asserted against the pinned fixture in
+        ``server/tests/test_codex_sandbox_network_egress.py`` so a schema bump
+        that adds a settable knob fails loudly instead of leaving this stale.
+        """
+        return self is CodexSandboxMode.DANGER_FULL_ACCESS
+
 
 class CodexApprovalPolicy(StrEnum):
     """The plain-string arm of `AskForApproval` (v2 `ThreadStartParams.json`).
@@ -126,6 +145,15 @@ class CodexPermissionProfile:
     sandbox_mode: CodexSandboxMode
     approval_policy: CodexApprovalPolicy
     description: str
+
+    @property
+    def network_egress(self) -> bool:
+        """True when work in this profile can reach the network.
+
+        Derived from the sandbox rather than stored, so a profile cannot claim
+        an egress its own sandbox forbids.
+        """
+        return self.sandbox_mode.network_egress
 
 
 _PLAN = CodexPermissionProfile(
@@ -224,3 +252,19 @@ def profile_for_mode(mode: str) -> CodexPermissionProfile:
         return PROFILES[mode]
     except KeyError:
         raise UnsupportedCodexPermissionMode(mode) from None
+
+
+def permits_network_egress(mode: str) -> bool:
+    """Whether a Codex thread in ccswitch permission *mode* can reach the network.
+
+    The question an UNATTENDED caller has to ask before it spends a session: an
+    automation's own seed prompt ends in ``git push`` and ``gh pr create``, and
+    under a network-isolated sandbox those fail after the whole run. Every mode
+    except ``bypassPermissions`` answers False — approving every command without
+    asking (``full-auto``) is an *approval* grant, not an egress one.
+
+    Raises :class:`UnsupportedCodexPermissionMode` for an unmapped mode, like
+    :func:`profile_for_mode`: a security question never gets a permissive
+    default.
+    """
+    return profile_for_mode(mode).network_egress

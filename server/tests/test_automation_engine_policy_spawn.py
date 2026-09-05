@@ -95,13 +95,21 @@ def test_a_codex_only_origin_refuses_and_records_why_when_the_flag_is_off(
 def test_a_codex_spawn_drops_the_claude_account_and_model_and_says_so(
         tmp_path, monkeypatch):
     """The spawn sites resolve a Claude account and a Claude model alias before
-    the engine is known; both must be dropped, visibly."""
+    the engine is known; both must be dropped, visibly.
+
+    ``permission_mode`` is pinned to the one mode a Codex automation can actually
+    complete in: the default ``full-auto`` maps to a network-isolated sandbox and
+    is now refused before ``create_session`` (Phase 7, Tasks 7.2/7.3 — see
+    ``engine_policy.unattended_launch_blocker``). That refusal is asserted in
+    ``test_backlog_runner_codex_acceptance.py``; what this test is about is the
+    sanitizing, which needs a launch that reaches the end."""
 
     async def run():
         rec, ctx = await _spawn_with(
             tmp_path, "eng_d.db", policy=EnginePolicy.CODEX_ALLOWED,
             config={"engine": "codex"}, automations_enabled=True,
-            monkeypatch=monkeypatch, account="tony_cairnea.com", model="opus")
+            monkeypatch=monkeypatch, account="tony_cairnea.com", model="opus",
+            permission_mode="bypassPermissions")
         assert rec.launch_kwargs["engine"] is AgentEngine.CODEX
         assert rec.launch_kwargs["account"] is None
         assert "model" not in rec.launch_kwargs

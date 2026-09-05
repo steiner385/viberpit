@@ -9,10 +9,12 @@ links:
   acceptance: docs/superpowers/spikes/2026-09-04-codex-interactive-acceptance.md
 ---
 
-> **State.** Phases 1–6 have landed behind fail-closed flags:
+> **State.** Phases 1–6 and Phase 7 Tasks 7.1–7.3 have landed behind fail-closed flags:
 > `CCSWITCH_CODEX_ENABLED` and `CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED` are both
-> `false` everywhere, and `CCSWITCH_CODEX_AUTOMATIONS_ENABLED` stays false until
-> Phase 7. This becomes `live` only when Part 2 of the acceptance record —
+> `false` everywhere, and `CCSWITCH_CODEX_AUTOMATIONS_ENABLED` stays false: every
+> automation origin is still `claude_only`, blocked on the sandbox-egress finding
+> below rather than on the prompt contract. This becomes `live` only when Part 2
+> of the acceptance record —
 > the real-boundary runs on dobby and rocky — passes and the owner enables the
 > flags. Operator procedures: `docs/runbooks/codex-credential-authority.md`.
 
@@ -91,9 +93,23 @@ compatibility audit; API-key authentication in v1.
   completion-marker mismatch is not a degraded experience. `CCSWITCH_CODEX_AUTOMATIONS_ENABLED`
   (default `false`) is the global kill switch — it forces every `codex_allowed` origin back to
   Claude without an operator unwinding each config, and it is separate from `CCSWITCH_CODEX_ENABLED`
-  so enabling Codex for humans does not enable it for control loops. **As of Phase 7 Task 7.1 every
-  origin is `claude_only`;** widening one is gated on that origin's Codex acceptance suite passing
+  so enabling Codex for humans does not enable it for control loops. **Every origin is still
+  `claude_only`;** widening one is gated on that origin's Codex acceptance suite passing
   (Tasks 7.2 and 7.3).
+- **Automation parity is blocked on the Codex sandbox, not on the prompt contract (Phase 7, Tasks
+  7.2/7.3).** The offline half of both acceptance gates passes — the backlog and SDLC seed prompts
+  carry their whole contract with no Claude-only syntax, the loops handle a refused launch without
+  stranding a claim, and permission tiers map without weakening the propose-only human gates
+  (`server/tests/test_backlog_runner_codex_acceptance.py`,
+  `server/tests/test_sdlc_codex_acceptance.py`). The blocker is elsewhere: an automation's only
+  output is a pushed branch and a PR, and Codex's sandbox is network-isolated in every mode except
+  `bypassPermissions`. `full-auto` — the automation default — maps to `workspace-write`, whose
+  `networkAccess` the pinned app-server schema defaults to `false` with no settable override on
+  `thread/start` (Codex's own config file has the knob, but config management is post-v1). So an
+  unattended Codex run would do all the work and fail at `git push`. The launch path now refuses
+  that pair up front with an operator-legible reason rather than spending a session to discover it.
+  Enabling automation parity therefore needs a separate, explicit decision about the authority an
+  unattended Codex session runs with — not just a ceiling widening.
 - Users explicitly select Claude Code or Codex. V1 Codex controls are model, reasoning effort, and
   permission profile. The data model supports multiple named OpenAI accounts immediately, while
   automatic OpenAI-account rotation is deferred.

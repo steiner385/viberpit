@@ -753,6 +753,32 @@ class BacklogRunnerLoop:
                 if self._spawn_circuit_until is not None:
                     break
                 continue
+            if rec is None:
+                # REFUSED, not failed: the spawn helper declined before creating
+                # anything (engine policy, or an engine/permission-mode pair that
+                # could never push a branch — see
+                # ``engine_policy.unattended_launch_blocker``). The context has
+                # already recorded why, so the only thing owed here is to undo the
+                # claim — otherwise the label stays on the issue, the state row
+                # holds a concurrency slot forever, and a later sweep escalates the
+                # target to ``needs-human`` on the evidence of a session that never
+                # existed.
+                #
+                # A refusal is a configuration answer, not a fault: it consumes no
+                # attempt and no daily-cap slot, and it does NOT count toward the
+                # consecutive-failure breaker (which would also block the Claude
+                # fallback an operator reaches for to fix it). It IS origin-wide,
+                # so the remaining free slots would refuse identically — back the
+                # target off and stop refilling this tick.
+                fails = max(1, self._spawn_backoff.get(batch.primary, (0, 0.0))[0])
+                self._spawn_backoff[batch.primary] = (
+                    fails, self._clock() + _spawn_backoff_delay(fails))
+                await self._release(batch.primary)
+                await self._ctx.emit(
+                    "info", f"released {batch.primary} (launch refused)",
+                    kind="unclaimed", target=batch.primary)
+                await self._ctx.delete_target_state(batch.primary)
+                break
             self._spawn_backoff.pop(batch.primary, None)
             self._consec_spawn_failures = 0
             self._spawns_today.append(self._clock())
