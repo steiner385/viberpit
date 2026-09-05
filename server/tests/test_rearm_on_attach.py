@@ -16,13 +16,13 @@ def test_attach_triggers_pending_rearm(tmp_path):
         await init_db(db_url=db_url)
         async with db_session() as db:
             db.add(DbSession(id="s1", name="n", account_name="a", cwd=str(tmp_path),
-                             claude_session_id="c1", pending_rearm=_SNAP))
+                             engine_session_id="c1", pending_rearm=_SNAP))
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
         await orch.rehydrate()
 
         sent = {}
         class _D:
-            claude_session_id = "c1"
+            engine_session_id = "c1"
             async def send_prompt(self, text, images=None): sent["text"] = text
             async def start(self): pass
         # short-circuit the heavy build path: return a fake driver directly

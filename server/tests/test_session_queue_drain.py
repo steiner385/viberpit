@@ -14,9 +14,9 @@ from server.tests.fakes.fake_factory import fake_sdk_factory
 
 def _fake_usage(account: str):
     from datetime import datetime, timedelta, timezone
-    from ccswitch.oauth import Usage
+    from ccswitch.quota import anthropic_snapshot
     reset = datetime.now(timezone.utc) + timedelta(hours=5)
-    return Usage(10.0, reset, 10.0, reset, False)
+    return anthropic_snapshot(10.0, reset, 10.0, reset, False)
 
 
 def _seed_account(name: str) -> None:
@@ -327,6 +327,113 @@ def test_queued_status_not_touched_by_midturn_normalization(tmp_path):
             assert orch2._records[b.id].status == "queued"
         finally:
             await _stop_orch(orch2)
+
+    asyncio.run(run())
+
+
+async def _set_cap(n: int) -> None:
+    from sqlalchemy import update as sa_update
+    from server.db import db_session
+    async with db_session() as db:
+        await db.execute(sa_update(AppSettings).values(max_active_sessions=n))
+
+
+async def _row_status(session_id: str) -> str:
+    from sqlalchemy import select as sa_select
+    from server.db import db_session
+    from server.db.models import Session as DbSession
+    async with db_session() as db:
+        return (await db.execute(
+            sa_select(DbSession.status).where(DbSession.id == session_id))).scalar_one()
+
+
+def test_worker_drain_skips_entries_it_does_not_own(tmp_path):
+    """Fleet incident 2026-09-04: the session_queue table is shared by every daemon,
+    but _records is per-process (a worker's rehydrate loads only its own host's rows,
+    and a session enqueued on the primary never reaches a worker's memory at all).
+    The drain treated "no in-memory record" as "stale entry" and DELETED it — so a
+    worker with a free local slot ate every queue entry the primary created, leaving
+    'queued' rows the UI lists but nothing can move, cancel, or start ("Session …
+    is not in the queue"). A daemon must leave entries it does not own untouched."""
+    async def run():
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'd8.db'}"
+        orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=1)
+        try:
+            await orch.create_session("one")
+            b = await orch.create_session("two")   # queued on the primary: host=NULL
+            from server.sessions import session_queue as sq
+            assert (await sq.positions()) == {b.id: 1}
+
+            # Same shared DB, seen from a WORKER daemon on host "rocky" that has a
+            # free slot and no in-memory record of the primary's session.
+            orch._records.pop(b.id)
+            await _set_cap(2)
+            with patch.dict(os.environ, {"CCSWITCH_DAEMON_ROLE": "worker",
+                                         "CCSWITCH_HOST_NAME": "rocky"}):
+                started = await orch._maybe_start_queued()
+            assert started == 0
+            assert (await sq.positions()) == {b.id: 1}, "worker must not delete a foreign entry"
+            assert await _row_status(b.id) == "queued"
+            assert b.id not in orch._drivers, "worker must not spawn a foreign entry"
+
+            # The owner (primary) still drains it, even though its record is gone
+            # from memory — the shared row + entry are the truth, not the process.
+            started = await orch._maybe_start_queued()
+            assert started == 1
+            assert (await sq.positions()) == {}
+            assert orch._records[b.id].status != "queued"
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
+def test_primary_drain_skips_entries_stamped_for_live_worker(tmp_path):
+    """Mirror image: the primary's _records holds EVERY row (fleet dashboard), so a
+    worker-stamped queued entry looks perfectly drainable to it. It must skip that
+    entry while the worker is enabled in the registry, and adopt it only once the
+    worker has left the registry (same ownership rule as _owns_record)."""
+    async def run():
+        from sqlalchemy import update as sa_update
+        from server.db import db_session
+        from server.db.models import Host, Session as DbSession
+        db_url = f"sqlite+aiosqlite:///{tmp_path / 'd9.db'}"
+        orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=1)
+        try:
+            await orch.create_session("one")
+            b = await orch.create_session("two")   # queued
+            # Pretend the dispatcher routed b to worker "worker-b". Pin this
+            # daemon's own name too: the kernel hostname of the box running the
+            # suite must never be mistaken for the foreign stamp.
+            async with db_session() as db:
+                db.add(Host(name="worker-b", endpoint="https://worker-b:9443", enabled=True))
+                await db.execute(sa_update(DbSession).where(DbSession.id == b.id)
+                                 .values(host="worker-b"))
+            orch._records[b.id].host = "worker-b"
+            from server.sessions import session_queue as sq
+            await _set_cap(2)
+
+            # The registry snapshot is cached for _OWNERSHIP_HOSTS_TTL_S; start()
+            # may have taken one before the Host row above existed.
+            orch._ownership_hosts_cache = None
+            with patch.dict(os.environ, {"CCSWITCH_HOST_NAME": "primary-a"}):
+                started = await orch._maybe_start_queued()
+                assert started == 0
+                assert (await sq.positions()) == {b.id: 1}, "primary must not eat a worker's entry"
+                assert await _row_status(b.id) == "queued"
+                assert b.id not in orch._drivers
+
+                # Worker leaves the registry → its rows are orphans the primary adopts.
+                async with db_session() as db:
+                    await db.execute(sa_update(Host).where(Host.name == "worker-b")
+                                     .values(enabled=False))
+                orch._ownership_hosts_cache = None
+                started = await orch._maybe_start_queued()
+                assert started == 1
+                assert (await sq.positions()) == {}
+                assert orch._records[b.id].status != "queued"
+        finally:
+            await _stop_orch(orch)
 
     asyncio.run(run())
 

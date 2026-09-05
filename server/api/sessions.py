@@ -27,7 +27,8 @@ from ccswitch import accounts as _accounts
 from ccswitch import gitrepos
 from server.auth.middleware import current_identity
 from server.sessions.search import parse_terms, session_matches
-from server.sessions.types import RESUME_ELIGIBLE_STATUSES
+from server.sessions.types import ASSISTANT_KIND, RESUME_ELIGIBLE_STATUSES, is_assistant
+from server.sessions.usage_stall import is_usage_stalled
 from server.audit import record_audit
 from server.config import get_settings
 from server.db import db_session, get_db
@@ -37,8 +38,11 @@ from server.sessions.orchestrator import (
     InsufficientStorageError,
     ModelBlockedError,
 )
+from server.sessions import session_actions
+from server.sessions.session_actions import ActionError
 from server.ipc.client import DaemonError, DaemonUnavailable
 from server.sessions.facade import call_with_deadline
+from server.sessions.engine import AgentEngine, AgentEngineUnavailable
 from server.sessions.permissions import resolve_permission_mode
 from server.sessions.selection import AllAccountsBusy
 from server.sessions.fleet_router import UnknownHost, NoHostAvailable
@@ -80,6 +84,8 @@ class CreateSessionRequest(BaseModel):
     # Model alias/id to start the session on (e.g. "opus", "fable"). None / "default"
     # → the account default; the value is applied to the driver once it starts.
     model: str | None = None
+    engine: AgentEngine = AgentEngine.CLAUDE_CODE
+    reasoningEffort: str | None = None
     # Optional runner preference. None → auto-rank; a name → that host first, still
     # failing over. Forwarded to FleetOrchestrator.create_session as prefer=.
     host: str | None = None
@@ -104,6 +110,9 @@ class AdoptRequest(BaseModel):
 
 class SendPromptRequest(BaseModel):
     text: str
+    # "Interrupt and post" (same contract as the WS `prompt` frame, ws.py ~1080):
+    # stop the in-flight turn and run this prompt next instead of queueing it.
+    interrupt: bool = False
 
 
 class ModelApprovalBody(BaseModel):
@@ -201,6 +210,9 @@ def _record_to_dict(
         "id": record.id,
         "name": record.name,
         "accountName": record.account,
+        "engine": record.engine.value,
+        "engineSessionId": record.engine_session_id or None,
+        "reasoningEffort": record.reasoning_effort,
         "repo": record.repo if repo is _UNSET else repo,
         # Fleet host that ran this session. None for pre-fleet sessions and for
         # deployments whose endpoint is not in an operator-managed registry.
@@ -223,6 +235,13 @@ def _record_to_dict(
         "updatedAt": record.updated_at_iso,
         "revAt": record.rev_at,
         "accountPinned": getattr(record, "account_pinned", False),
+        # Why a needs_attention/limited session is parked, when it may recover, and
+        # the derived "stalled on usage" flag the Rotate-stalled batch button counts.
+        # Same two-serializer rule as `resumable`: SessionRecord.to_dict is the
+        # daemon→edge RPC copy, this is the browser copy — both must emit them.
+        "pausedReason": getattr(record, "paused_reason", None),
+        "pausedUntil": iso_utc(getattr(record, "paused_until", None)),
+        "usageStalled": is_usage_stalled(record.status, getattr(record, "paused_reason", None)),
         "model": getattr(record, "model", None),
         # Approval-hold model: set when the model-approval gate parks a requested
         # model pending admin sign-off (status="pending_approval" or a mid-session
@@ -261,6 +280,10 @@ def _record_to_dict(
         "summary": summary or "",
         "queuePosition": queue_position,
         "queueStallReason": queue_stall_reason,
+        # "assistant" for the AI-drawer thread, null for a coding session. The drawer
+        # fetches its thread by id (this list excludes assistants by default), so this
+        # is what lets a client tell the two apart when it does get one.
+        "kind": getattr(record, "kind", None),
     }
     # Liveness derived at the edge from the owning host's heartbeat snapshot (spec 002
     # FR-103). Never stored — always computed from host_heartbeats. Emitted ONLY when a
@@ -479,9 +502,20 @@ async def list_sessions(
     request: Request,
     _identity: str = Depends(current_identity),
 ) -> list[dict]:
-    """Return all in-memory session records."""
+    """Return all in-memory session records.
+
+    Assistant threads are a UI surface, not dashboard cards, so they are excluded by
+    default. `?kind=assistant` SELECTS them — it returns assistant threads only, not
+    everything-plus-assistants; the orchestrator flag merely stops them being filtered
+    out upstream, and the narrowing happens here. The kwarg is passed ONLY when asked
+    for, so the default call is byte-identical for every orchestrator flavour
+    (in-process, remote, fleet) and for test doubles.
+    """
     orch = _get_orchestrator(request)
-    records = await orch.list_sessions()
+    want_assistant = request.query_params.get("kind") == ASSISTANT_KIND
+    records = await orch.list_sessions(**({"include_assistant": True} if want_assistant else {}))
+    if want_assistant:
+        records = [r for r in records if is_assistant(r)]
     viewing = request.query_params.get("viewing") in ("1", "true", "yes")
     # Enrich the whole page in three batched RPCs (one per field) rather than three per
     # session: 21 sessions cost 3 daemon round trips, not 63 (#742). Each is bounded by
@@ -525,11 +559,25 @@ async def create_session(
     identity: str = Depends(current_identity),
     db=Depends(get_db),
 ):
-    """Create a new Claude session on the most-headroom account.
+    """Create a native-agent session on the most-headroom compatible account.
 
     Returns 409 with earliestReset if all accounts are at ceiling.
     """
     orch = _get_orchestrator(request)
+    if body.reasoningEffort is not None and body.engine is AgentEngine.CLAUDE_CODE:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={
+                "error": {
+                    "code": "unsupported_reasoning_effort",
+                    "message": (
+                        "reasoningEffort is not supported by agent engine: "
+                        f"{body.engine.value}"
+                    ),
+                    "engine": body.engine.value,
+                },
+            },
+        )
     # When the user supplies no name, the session is auto-named (Claude title / first
     # prompt) and stays auto until a manual rename. A supplied name is pinned manual.
     name_is_auto = not (body.name and body.name.strip())
@@ -615,6 +663,9 @@ async def create_session(
             attachment_ids=body.attachmentIds,
             name_is_auto=name_is_auto,
             model=_resolved_model,
+            engine=body.engine,
+            **({"reasoning_effort": body.reasoningEffort}
+               if body.reasoningEffort is not None else {}),
         )
     except UnknownHost as exc:
         return JSONResponse(
@@ -625,6 +676,17 @@ async def create_session(
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
             content={"error": {"code": "no_host_available", "message": str(exc)}},
+        )
+    except AgentEngineUnavailable as exc:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "error": {
+                    "code": "engine_unavailable",
+                    "message": str(exc),
+                    "engine": exc.engine.value,
+                },
+            },
         )
     except (gitrepos.CloneError, gitrepos.GhError) as exc:
         # repo→clone resolution now happens inside orch.create_session (on
@@ -757,7 +819,13 @@ async def list_archived_sessions(
 ) -> list[dict]:
     """Return all archived session metadata."""
     orch = _get_orchestrator(request)
-    return await orch.list_archived()
+    rows = await orch.list_archived()
+    # The orchestrator's internal RPC wire temporarily carries the old Claude
+    # alias for daemon-first rolling deploys. It is not part of the browser API.
+    return [
+        {key: value for key, value in row.items() if key != "claudeSessionId"}
+        for row in rows
+    ]
 
 
 async def _search_ids(items, fetch_text, terms) -> list[str]:
@@ -946,6 +1014,35 @@ async def batch_resume_sessions(
                 db=db, type="session.resume", identity=identity,
                 detail={"session_id": session_id},
             )
+        else:
+            failed.append({"id": session_id, "error": result})
+    return {"succeeded": succeeded, "failed": failed}
+
+
+@router.post("/batch/rotate")
+async def batch_rotate_sessions(
+    body: BatchSessionIdsRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Move each session to the next best account and continue its conversation —
+    the "Rotate stalled (N)" button. Best-effort: "rotated" lands in `succeeded`;
+    any skip / no_driver lands in `failed` with the reason as `error`."""
+    orch = _get_orchestrator(request)
+    succeeded: list[str] = []
+    failed: list[dict] = []
+    for session_id in dict.fromkeys(body.ids):  # dedupe, preserve order
+        try:
+            result = await orch.rotate_to_best(session_id, identity)
+        except Exception as exc:  # noqa: BLE001 — best-effort batch must not abort
+            log.warning("batch rotate failed for %s: %s", session_id, exc)
+            failed.append({"id": session_id, "error": str(exc)})
+            continue
+        if result == "rotated":
+            succeeded.append(session_id)
+            await record_audit(db=db, type="session.rotate", identity=identity,
+                               detail={"session_id": session_id, "batch": True})
         else:
             failed.append({"id": session_id, "error": result})
     return {"succeeded": succeeded, "failed": failed}
@@ -1214,10 +1311,125 @@ async def send_session_prompt(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "resume_failed", "message": "Session could not be resumed."},
         )
-    await orch.send_prompt(session_id, body.text)
+    await orch.send_prompt(session_id, body.text, interrupt=body.interrupt)
     await record_audit(db, "session.prompt", identity, {"sessionId": session_id})
     updated = await orch.get_session(session_id) or record
     return _record_to_dict(updated, repo=await _resolve_repo(updated))
+
+
+class PermissionResponseRequest(BaseModel):
+    decision: str
+
+
+class QuestionAnswerRequest(BaseModel):
+    selected: list[str] = Field(default_factory=list)
+    mode: str = "option"
+
+
+class PermissionModeRequest(BaseModel):
+    mode: str
+
+
+class SetModelRequest(BaseModel):
+    model: str | None = None
+
+
+def _action_error_response(exc: ActionError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.http,
+        content={"detail": {"code": exc.code, "message": exc.message}},
+    )
+
+
+@router.post("/{session_id}/interrupt")
+async def interrupt_session(
+    session_id: str,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Stop a session's in-flight turn (HTTP twin of the WS `interrupt` frame)."""
+    orch = _get_orchestrator(request)
+    via = getattr(request.state, "via", None)
+    return await session_actions.interrupt(orch, db, session_id=session_id, identity=identity, via=via)
+
+
+@router.post("/{session_id}/permissions/{perm_id}")
+async def resolve_session_permission(
+    session_id: str,
+    perm_id: str,
+    body: PermissionResponseRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+):
+    """Answer a pending permission card (HTTP twin of the WS `permissionResponse`
+    frame). 400 if the assistant token tries to grant `"always"`; 404 if the
+    permission is no longer pending."""
+    orch = _get_orchestrator(request)
+    via = getattr(request.state, "via", None)
+    try:
+        return await session_actions.resolve_permission(
+            orch, db, session_id=session_id, perm_id=perm_id,
+            decision=body.decision, identity=identity, via=via)
+    except ActionError as exc:
+        return _action_error_response(exc)
+
+
+@router.post("/{session_id}/questions/{question_id}")
+async def answer_session_question(
+    session_id: str,
+    question_id: str,
+    body: QuestionAnswerRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+):
+    """Answer a pending AskUserQuestion (HTTP twin of the WS `answerQuestion` frame).
+    404 if the question is no longer pending."""
+    orch = _get_orchestrator(request)
+    via = getattr(request.state, "via", None)
+    try:
+        return await session_actions.answer_question(
+            orch, db, session_id=session_id, question_id=question_id,
+            selected=body.selected, mode=body.mode, identity=identity, via=via)
+    except ActionError as exc:
+        return _action_error_response(exc)
+
+
+@router.post("/{session_id}/permission-mode")
+async def set_session_permission_mode(
+    session_id: str,
+    body: PermissionModeRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Change a session's permission mode (HTTP twin of the WS `setPermissionMode`
+    frame)."""
+    orch = _get_orchestrator(request)
+    via = getattr(request.state, "via", None)
+    return await session_actions.set_permission_mode(
+        orch, db, session_id=session_id, mode=body.mode, identity=identity, via=via)
+
+
+@router.post("/{session_id}/model")
+async def set_session_model(
+    session_id: str,
+    body: SetModelRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+):
+    """Switch a session's model (→ `set_model_for_session`). 409 if the model is
+    blocked by policy."""
+    orch = _get_orchestrator(request)
+    via = getattr(request.state, "via", None)
+    try:
+        return await session_actions.set_model(
+            orch, db, session_id=session_id, model=body.model, identity=identity, via=via)
+    except ActionError as exc:
+        return _action_error_response(exc)
 
 
 @router.post("/{session_id}/suggest")
@@ -1313,6 +1525,63 @@ async def reload_session(
             detail={"code": result, "message": f"Session could not be reloaded: {result}"},
         )
     await record_audit(db, "session.reload", identity, {"sessionId": session_id})
+    updated = await orch.get_session(session_id) or record
+    return _record_to_dict(updated, repo=await _resolve_repo(updated))
+
+
+@router.post("/{session_id}/rotate")
+async def rotate_session(
+    session_id: str,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """"Next best account": move the session to the account the selector ranks
+    best and continue the conversation (orch.rotate_to_best — the same driver-swap
+    primitive rotation uses). 404 unknown; 409 (code = the orchestrator's reason)
+    when nothing has headroom or the session is parked where a move makes no sense."""
+    orch = _get_orchestrator(request)
+    record = await orch.get_session(session_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
+        )
+    result = await orch.rotate_to_best(session_id, identity)
+    if result != "rotated":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": result, "message": f"Session could not be rotated: {result}"},
+        )
+    await record_audit(db, "session.rotate", identity, {"sessionId": session_id})
+    updated = await orch.get_session(session_id) or record
+    return _record_to_dict(updated, repo=await _resolve_repo(updated))
+
+
+class AccountPinRequest(BaseModel):
+    pinned: bool
+
+
+@router.post("/{session_id}/account-pin")
+async def set_account_pin(
+    session_id: str,
+    body: AccountPinRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Pin the session to its current account, or clear the pin (the 📌 button).
+    Unpinning a `limited` session rotates it immediately."""
+    orch = _get_orchestrator(request)
+    record = await orch.get_session(session_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
+        )
+    await orch.set_account_pin(session_id, body.pinned)
+    await record_audit(db, "session.account_pin", identity,
+                       {"sessionId": session_id, "pinned": body.pinned})
     updated = await orch.get_session(session_id) or record
     return _record_to_dict(updated, repo=await _resolve_repo(updated))
 

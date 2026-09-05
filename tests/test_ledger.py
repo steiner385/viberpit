@@ -15,7 +15,7 @@ class TestLedger(unittest.TestCase):
                 ledger.record_usage(led, "alpha", usage(session=42.0), now)
             with ledger.locked_ledger() as led:
                 got = ledger.cached_usage(led, "alpha", cfg, now)
-            self.assertEqual(got.session_pct, 42.0)
+            self.assertEqual(got.window("session").used_pct, 42.0)
 
     def test_cache_expires_after_ttl(self):
         with temp_env():

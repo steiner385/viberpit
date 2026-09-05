@@ -8,7 +8,7 @@ should interrupt the turn and give the CLI a bounded chance to flush that result
 """
 import asyncio
 
-from server.sessions.driver import SessionDriver
+from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.events import ToolResult
 from server.sessions.permissions import PermissionRegistry
 from server.tests.fakes import fake_sdk as f
@@ -57,7 +57,7 @@ class _WedgedToolClient(PerQueryScript):
 
 def _drive(client):
     async def run():
-        d = SessionDriver("s1", "primary", "/repo", "/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s1", "primary", "/repo", "/cfg", mode="interactive",
                           sdk_factory=lambda *a, **k: client, registry=PermissionRegistry(),
                           identity="me")
         d._close_grace = 0.2
@@ -101,7 +101,7 @@ def test_aclose_still_closes_when_cli_never_flushes():
     client = _WedgedToolClient(flush_on_interrupt=False)
 
     async def run():
-        d = SessionDriver("s1", "primary", "/repo", "/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s1", "primary", "/repo", "/cfg", mode="interactive",
                           sdk_factory=lambda *a, **k: client, registry=PermissionRegistry(),
                           identity="me")
         d._close_grace = 0.1

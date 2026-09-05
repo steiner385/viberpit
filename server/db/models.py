@@ -73,14 +73,20 @@ DEFAULT_MAX_ACTIVE_SESSIONS = 5
 
 
 class Session(Base):
-    """An active (or ended) Claude session managed by ccswitch-web."""
+    """An active (or ended) native-agent session managed by ccswitch-web."""
 
     __tablename__ = "sessions"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
     name: Mapped[str] = mapped_column(String, nullable=False)
     account_name: Mapped[str] = mapped_column(String, nullable=False)
-    claude_session_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Native executable and its conversation/thread identifier. Both stay nullable
+    # at the SQL layer so runtime reconciliation can add them to populated SQLite
+    # and Postgres databases; init_db backfills every legacy row before use.
+    engine: Mapped[str | None] = mapped_column(String, nullable=True)
+    engine_session_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Engine-native reasoning choice. None means the selected model's default.
+    reasoning_effort: Mapped[str | None] = mapped_column(String, nullable=True)
     # working / idle / limited / ended
     status: Mapped[str] = mapped_column(String, nullable=False, default="idle")
     pid: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -197,6 +203,12 @@ class Session(Base):
     # the session (it goes 'limited' at the ceiling instead). Hard 401/429 recovery
     # still rotates and clears the pin. Nullable for the same backfill reason.
     account_pinned: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
+    # Why the session is parked + the earliest known usage reset (naive UTC), written
+    # by _persist_status alongside `needs_attention`/`limited` and cleared on any other
+    # status. Lets the dashboard say "waiting for capacity · retries 12:10" instead of
+    # a bare "Turn failed". Nullable so reconcile ALTER-ADDs them on both dialects.
+    paused_reason: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    paused_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
     # Provenance: the automation id that spawned this session (NULL = human-created),
     # and what it was spawned for (e.g. "owner/name#412"). Nullable so init_db backfills
     # on the dev SQLite DB without a migration. See server/automations/.
@@ -231,6 +243,14 @@ class Session(Base):
     # composer's command palette instead of an empty autocomplete. NULL until the
     # session has been live once. Nullable so init_db backfills on dev SQLite w/o a migration.
     command_catalog: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    # Session kind. "assistant" = the AI-drawer meta-assistant (spec
+    # docs/superpowers/specs/2026-09-04-ai-assistant-design.md §4.1): hidden from the
+    # session list, capacity-exempt, tool-restricted. NULL = a normal coding session.
+    # Nullable so init_db backfills on both dialects without a migration.
+    kind: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # Identity that owns an assistant thread (the idempotency key for
+    # POST /api/assistant/session). NULL for coding sessions. Nullable for backfill.
+    owner_identity: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
 
 class AppSession(Base):
@@ -273,6 +293,9 @@ class AuditEvent(Base):
     type: Mapped[str] = mapped_column(String, nullable=False)
     identity: Mapped[str] = mapped_column(String, nullable=False)
     detail: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    # Actor channel: "assistant" when the request carried the assistant bearer token
+    # (the AI drawer acting on the user's behalf); NULL = the user directly.
+    via: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
 
 class PushSubscription(Base):
@@ -380,12 +403,16 @@ class AppSettings(Base):
     # session lingers exactly like a per-session manual opt-out. Nullable (three-state:
     # NULL means "unset → default enabled") so init_db backfills it without a migration.
     auto_archive_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
-    # Model-approval policy. `model_approval_action` is the action to take when a
-    # gated model is requested ("approve" | "deny" | NULL = prompt). `model_approval_denylist`
-    # is a JSON-encoded list of model aliases that are always denied without a prompt.
+    # Per-install model-approval action: "require_approval" | "block" | "allow" | NULL
+    # (NULL = fall back to CCSWITCH_MODEL_APPROVAL_ACTION). See
+    # server/sessions/model_policy.VALID_ACTIONS — the one definition of the set.
     # Both nullable so init_db backfills them without a migration on both dialects.
     model_approval_action: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     model_approval_denylist: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # AI assistant (spec 2026-09-04-ai-assistant-design §4.11). NULL = fall through to
+    # CCSWITCH_ASSISTANT_ENABLED / CCSWITCH_ASSISTANT_MODEL. Nullable for backfill.
+    assistant_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
+    assistant_model: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
 
 class SessionQueue(Base):
@@ -395,6 +422,15 @@ class SessionQueue(Base):
     or fails to start. `params` holds the create_session kwargs that the
     sessions row does not (cols, rows, attachment_ids, identity, requested
     branch/cwd/account) — worktree and account rotation are decided at DEQUEUE.
+
+    Losing this row is NOT fatal to the session (#1100): a `queued` sessions row
+    with no entry here is reconciled by
+    ``SessionOrchestrator._reconcile_orphan_queued``, which rebuilds a params blob
+    from the sessions row via ``_spawn_kwargs_from_row`` and re-enqueues whenever the
+    row still proves its turn one never ran. Only the fields listed above are
+    genuinely lost. Every path that deletes an entry must persist the session's new
+    status FIRST, or a crash in between manufactures an orphan that replay cannot
+    tell apart from a legitimately stranded one.
     """
 
     __tablename__ = "session_queue"
@@ -1253,6 +1289,8 @@ class WorkItem(Base):
     gh_node_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     # PR→issue closing references (list of ints), from closingIssuesReferences.
     linked_issue_numbers: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # GitHub assignee logins; an assigned item is never queue-eligible (spec 003 §7a, C-5).
+    assignees: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # --- spec 003 overlay (epic hierarchy + projects v2 mirror) ---
     parent_work_item_id: Mapped[str | None] = mapped_column(
         String, ForeignKey("work_items.id"), nullable=True, index=True)

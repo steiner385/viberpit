@@ -15,7 +15,10 @@ import type { Tone } from '@/ui/Badge'
 
 interface UsageBadgeProps {
   pct: number
-  label?: string  // e.g. "session" or "weekly"
+  /** The window's own label, straight off the wire — e.g. "session",
+   *  "weekly", "premium-req". Never hard-code one here: which windows exist is
+   *  a per-provider fact the API reports. */
+  label?: string
   /** ISO timestamp the window resets at, or null when no window is active. */
   resetsAt?: string | null
   /** Reserve marker position (0–100); renders a vertical line on the bar when set. */
@@ -154,15 +157,19 @@ interface StatusPillProps {
   className?: string
   /** Issue #434: relabel a restart-stranded session as "re-send to resume". */
   interruptedByRestart?: boolean
+  /** Server-derived Session.usageStalled — parked for lack of usage headroom. */
+  usageStalled?: boolean
+  /** Session.pausedUntil — earliest known reset, for the pill's time suffix. */
+  pausedUntil?: string | null
 }
 
-export function StatusPill({ status, className, interruptedByRestart }: StatusPillProps) {
+export function StatusPill({ status, className, interruptedByRestart, usageStalled, pausedUntil }: StatusPillProps) {
   // Account statuses have their own vocabulary; session statuses use the shared map.
   const account = (ACCOUNT_STATUS_MAP as Record<string, StatusConfig>)[status]
   if (account) {
     return <Pill label={account.label} Icon={account.Icon} tone={account.tone} className={className} />
   }
-  const p = statusPresentation(status, { interruptedByRestart })
+  const p = statusPresentation(status, { interruptedByRestart, usageStalled, pausedUntil })
   return (
     <Pill
       label={p.label}

@@ -2,6 +2,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 import time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Typing-only, so this module's runtime imports stay stdlib-only. PromptContext is
+    # a leaf TypedDict (server/assistant/context.py imports nothing from
+    # server.sessions), so this direction can never form a cycle.
+    from server.assistant.context import PromptContext
 
 
 def _now_ms() -> float:
@@ -10,7 +17,7 @@ def _now_ms() -> float:
 class ToolKind(str, Enum):
     EDIT = "edit"; WRITE = "write"; READ = "read"; BASH = "bash"
     TODO = "todo"; SEARCH = "search"; WEB = "web"; TASK = "task"
-    MCP = "mcp"; UNKNOWN = "unknown"
+    MCP = "mcp"; APP_ACTION = "app_action"; UNKNOWN = "unknown"
 
 _TOOL_KIND = {
     "Edit": ToolKind.EDIT, "MultiEdit": ToolKind.EDIT, "NotebookEdit": ToolKind.EDIT,
@@ -19,9 +26,18 @@ _TOOL_KIND = {
     "LS": ToolKind.SEARCH, "WebFetch": ToolKind.WEB, "WebSearch": ToolKind.WEB,
     "Task": ToolKind.TASK,
 }
+# The ccswitch MCP server (server/assistant/tools.py) is the app talking to
+# itself, not a third-party integration — it gets its own kind so the web
+# presenter can render "Listed sessions" instead of the raw mcp__ name and the
+# permission card can apply its non-grantable-destructive rule (spec §4.4).
+# Checked before the generic "mcp__" branch so it wins the more specific match.
+_APP_ACTION_PREFIX = "mcp__ccswitch__"
+
 def tool_kind(name: str) -> ToolKind:
     # MCP tools are namespaced `mcp__<server>__<tool>`; the server/tool parts are
     # open-ended, so match the prefix rather than enumerate every name.
+    if name.startswith(_APP_ACTION_PREFIX):
+        return ToolKind.APP_ACTION
     if name.startswith("mcp__"):
         return ToolKind.MCP
     return _TOOL_KIND.get(name, ToolKind.UNKNOWN)
@@ -47,8 +63,12 @@ class TurnModel:
 @dataclass
 class SessionMeta:
     model: str; session_id: str
+    # "assistant" for the AI-drawer session's own SDK-level meta event; None for a
+    # coding session. Mirrors SessionRecord.kind (server/sessions/types.py) so a
+    # live-attaching client can tell the two apart without a separate REST call.
+    kind: str | None = None
     def to_wire(self): return {"type": "sessionMeta", "model": self.model,
-                               "sessionId": self.session_id}
+                               "sessionId": self.session_id, "kind": self.kind}
 
 @dataclass
 class TurnEnd:
@@ -102,10 +122,14 @@ class ToolResult:
 @dataclass
 class PermissionRequest:
     perm_id: str; turn_id: str; tool: str; kind: ToolKind; input: dict; plan: bool = False
+    # False only for destructive `mcp__ccswitch__*` tools (spec §4.4) — those
+    # cards never offer "Always allow", so the client must hide the button
+    # rather than infer it from toolKind (a mutation app_action IS grantable).
+    always_allowed: bool = True
     ts: float | None = field(default_factory=_now_ms)
     def to_wire(self): return {"type": "permissionRequest", "permId": self.perm_id, "turnId": self.turn_id,
                                "tool": self.tool, "toolKind": self.kind.value, "input": self.input, "plan": self.plan,
-                               "ts": self.ts}
+                               "alwaysAllowed": self.always_allowed, "ts": self.ts}
 
 @dataclass
 class PermissionResolved:
@@ -229,9 +253,16 @@ class UserMessage:
     # mark to drop boundary copies deterministically on merge, and to detect one left
     # pinned mid-transcript (the page-boundary ordering bug, #1000).
     owner_prefix: bool = False
+    # The page (route/sessionId) the user was on when they sent this prompt — the
+    # "context chip" (spec §4.5). Only ever set on an assistant-kind session; a
+    # coding session's UserMessage always carries None. Always the ORIGINAL user
+    # text/context pair: the `<ccswitch-context>` header the driver prepends in
+    # _start_turn before handing the prompt to the SDK never appears here — this is
+    # what the transcript bubble renders.
+    context: PromptContext | None = None
     def to_wire(self): return {"type": "user", "turnId": self.turn_id, "text": self.text, "srcUuid": self.src_uuid,
                                "images": self.images or [], "ts": self.ts,
-                               "ownerPrefix": self.owner_prefix}
+                               "ownerPrefix": self.owner_prefix, "context": self.context}
 
 @dataclass
 class QueueUpdate:

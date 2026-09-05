@@ -22,12 +22,17 @@ import { ApiRequestError } from '@/api/client'
 import type { Account, Session } from '@/api/types'
 import { loadingQueryResult, queryResult } from '@/test/reactQuery'
 import { getServerSttEnabled, setServerSttEnabled } from '@/lib/sttCapability'
+import { anthropicUsage } from '@/test/factories'
 
 const NOOP = { mutate: vi.fn(), isPending: false, isSuccess: false }
 
 vi.mock('@/api/hooks', () => ({
   // "Reload session" (MainPaneSession → SessionHeader → SessionActions).
   useReloadSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  // "Next best account" (MainPaneSession → SessionHeader → SessionActions).
+  useRotateSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  // Unpin account button (MainPaneSession → SessionBody → SessionMeta).
+  useSetAccountPin: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useQueueMove: vi.fn(() => ({ mutate: vi.fn() })),
   useQueueCancel: vi.fn(() => ({ mutate: vi.fn() })),
   useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
@@ -72,6 +77,7 @@ vi.mock('@/api/hooks', () => ({
   useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
   useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useResumeInterrupted: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useRotateStalled: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAssessDispatch: vi.fn(() => ({ assess: vi.fn() })),
   QK: {
     accounts: ['accounts'], sessions: ['sessions'], archived: ['archived-sessions'],
@@ -117,7 +123,8 @@ vi.mock('@/ws/client', async (importOriginal) => {
 /** Typed factories — real values, never `as unknown as T` (R10). */
 function session(over: Partial<Session> = {}): Session {
   return {
-    id: 's1', name: 'One', accountName: 'alice', status: 'idle',
+    id: 's1', name: 'One', accountName: 'alice', engine: 'claude_code',
+    engineSessionId: null, status: 'idle',
     createdAt: '2026-06-19T10:00:00Z', prs: [],
     ...over,
   }
@@ -126,7 +133,7 @@ function session(over: Partial<Session> = {}): Session {
 function account(over: Partial<Account> = {}): Account {
   return {
     name: 'alice', status: 'ok',
-    usage: { session: { pct: 10, resetsAt: null }, weekly: { pct: 10, resetsAt: null } },
+    usage: anthropicUsage(10, 10),
     liveSessions: { active: 0, idle: 0 }, rank: null, rankReason: null,
     ...over,
   }

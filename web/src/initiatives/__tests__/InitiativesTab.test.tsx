@@ -37,6 +37,7 @@ function wrapper({ children }: { children: ReactNode }) {
 const INIT: sdlc.Initiative = {
   slug: 'ai-native-sdlc', repo: 'steiner385/ccswitch', title: 'AI-native SDLC',
   stage: 'design', status: 'active', origin: 'human', originRef: null,
+  epicRepo: null, epicNumber: null, epic: null,
   createdAt: null, updatedAt: null,
   artifacts: [
     {
@@ -63,6 +64,26 @@ describe('InitiativesTab', () => {
     const link = screen.getByRole('link', { name: /intent/i })
     expect(link).toHaveAttribute(
       'href', 'https://github.com/steiner385/ccswitch/blob/abc1234/docs/sdlc/x/intent.md')
+  })
+
+  it('passes the epic progress through to the Build node as a deep link', async () => {
+    mocked.fetchInitiatives.mockResolvedValue([{
+      ...INIT, stage: 'build', epicRepo: 'o/r', epicNumber: 997,
+      epic: {
+        ref: 'o/r#997', url: 'https://github.com/o/r/issues/997',
+        total: 10, done: 3, blocked: 1, needsHuman: 0, children: [],
+      },
+    }])
+    render(<InitiativesTab />, { wrapper })
+
+    await waitFor(() => expect(screen.getByText('AI-native SDLC')).toBeInTheDocument())
+    // The Build node drops aria-hidden when an epic is present (it becomes a
+    // real interactive link), so query it by role — an independent guard on
+    // the accessibility fix alongside InitiativeTrack.test.tsx's own coverage,
+    // rather than a brittle CSS-path selector into the DOM.
+    const link = screen.getByRole('link', { name: /view epic on github/i })
+    expect(link).toHaveTextContent('Build 3/10')
+    expect(link).toHaveAttribute('href', 'https://github.com/o/r/issues/997')
   })
 
   it('shows an empty state when there are no initiatives', async () => {

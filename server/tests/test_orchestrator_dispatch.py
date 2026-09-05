@@ -14,6 +14,7 @@ import pytest
 
 import server.sessions.orchestrator as orch_mod
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
@@ -44,7 +45,8 @@ def _make_record(session_id: str, repo: str | None = None, status: str = "done")
         id=session_id,
         name="test",
         account="acct-a",
-        claude_session_id="",
+        engine=AgentEngine.CLAUDE_CODE,
+        engine_session_id="",
         cols=80,
         rows=24,
         cwd="/tmp",
@@ -66,7 +68,7 @@ def test_dispatch_proposal_none_for_no_repo():
 
 def _record_with_branch(session_id: str, repo: str, branch: str, status: str = "done") -> SessionRecord:
     return SessionRecord(
-        id=session_id, name="test", account="acct-a", claude_session_id="",
+        id=session_id, name="test", account="acct-a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
         cols=80, rows=24, cwd="/tmp", repo=repo, branch=branch, status=status,
     )
 

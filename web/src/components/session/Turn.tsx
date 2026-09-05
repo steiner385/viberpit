@@ -1,6 +1,9 @@
 import { memo } from 'react'
 import type { Turn as TurnType, SubThread } from '@/session/reducer'
+import type { PromptContext } from '@/session/events'
 import { groupBlocks, type ToolDetailMode } from '@/session/groupBlocks'
+import { useSessions } from '@/api/hooks'
+import { navDefForPath } from '@/shell/navDefs'
 import { AssistantText } from './AssistantText'
 import { UserBubble } from './UserBubble'
 import { ThinkingBlock } from './ThinkingBlock'
@@ -46,6 +49,7 @@ export const Turn = memo(function Turn({
 
   return (
     <div className="px-4 py-2">
+      {isUser && turn.context && <PromptContextChip context={turn.context} />}
       {items.map((item, idx) => {
         const rowTs = item.kind === 'toolGroup' ? item.tools[0]?.ts : item.block.ts
 
@@ -103,3 +107,25 @@ export const Turn = memo(function Turn({
     </div>
   )
 })
+
+/**
+ * Small, low-emphasis chip marking where a prompt was sent from — the AI assistant
+ * drawer's composer stamps this (`SessionComposer`'s `contextProvider`). Prefers the
+ * open session's title (resolved live via `useSessions()`) over the route label, since
+ * "on My PR fix session" is more useful than "on Sessions" while a session is open.
+ */
+function PromptContextChip({ context }: { context: PromptContext }) {
+  const { data: sessions } = useSessions()
+  const sessionTitle = context.sessionId
+    ? sessions?.find((s) => s.id === context.sessionId)?.name
+    : undefined
+  const label = sessionTitle ?? navDefForPath(context.route)?.label
+  if (!label) return null
+  return (
+    <div className="flex justify-end pb-1">
+      <span className="rounded-full border border-gray-200 px-2 py-0.5 text-[10px] text-gray-500 dark:border-gray-700 dark:text-gray-400">
+        on {label}
+      </span>
+    </div>
+  )
+}

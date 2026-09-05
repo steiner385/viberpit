@@ -16,6 +16,8 @@ so callers need no per-method native-deadline classification either.
 import asyncio
 import inspect
 
+from server.sessions.engine import parse_agent_engine
+
 
 async def _maybe_await(result):
     if inspect.isawaitable(result):
@@ -99,6 +101,9 @@ class InProcessOrchestratorAdapter:
         # not apply here. Pop it before forwarding so the underlying orchestrator
         # (which does not accept prefer=) never sees it. (Ruling D)
         k.pop("prefer", None)
+        if "engine" in k:
+            engine = parse_agent_engine(k["engine"])
+            k["engine"] = engine
         return await _maybe_await(self._orch.create_session(*a, **k))
     async def send_prompt(self, *a, **k): return await _maybe_await(self._orch.send_prompt(*a, **k))
     async def ensure_driver(self, *a, **k): return await _maybe_await(self._orch.ensure_driver(*a, **k))
@@ -139,6 +144,7 @@ class InProcessOrchestratorAdapter:
     async def run_command(self, *a, **k): return await _maybe_await(self._orch.run_command(*a, **k))
     async def list_sessions(self, *a, **k): return await _maybe_await(self._orch.list_sessions(*a, **k))
     async def get_session(self, *a, **k): return await _maybe_await(self._orch.get_session(*a, **k))
+    async def find_assistant(self, *a, **k): return await _maybe_await(self._orch.find_assistant(*a, **k))
     async def latest_suggestions(self, *a, **k): return await _maybe_await(self._orch.latest_suggestions(*a, **k))
     async def generate_suggestions_now(self, *a, **k): return await _maybe_await(self._orch.generate_suggestions_now(*a, **k))
     async def latest_summary(self, *a, **k): return await _maybe_await(self._orch.latest_summary(*a, **k))
@@ -147,6 +153,8 @@ class InProcessOrchestratorAdapter:
     async def latest_summary_many(self, *a, **k): return await _maybe_await(self._orch.latest_summary_many(*a, **k))
     async def resume_interrupted(self, *a, **k): return await _maybe_await(self._orch.resume_interrupted(*a, **k))
     async def reload_session(self, *a, **k): return await _maybe_await(self._orch.reload_session(*a, **k))
+    async def rotate_to_best(self, *a, **k): return await _maybe_await(self._orch.rotate_to_best(*a, **k))
+    async def set_account_pin(self, *a, **k): return await _maybe_await(self._orch.set_account_pin(*a, **k))
     async def transcript_path(self, *a, **k): return await _maybe_await(self._orch.transcript_path(*a, **k))
     async def resolve_transcript_path(self, *a, **k): return await _maybe_await(self._orch.resolve_transcript_path(*a, **k))
     async def transcript_search_text(self, *a, **k): return await _maybe_await(self._orch.transcript_search_text(*a, **k))

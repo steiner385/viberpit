@@ -47,23 +47,23 @@ class TestOAuth(unittest.TestCase):
     def test_parse_usage_prefers_limits_array(self):
         from ccswitch.oauth import parse_usage
         u = parse_usage(USAGE_PAYLOAD)
-        self.assertEqual(u.session_pct, 11.0)
-        self.assertEqual(u.weekly_pct, 69.0)
+        self.assertEqual(u.window("session").used_pct, 11.0)
+        self.assertEqual(u.window("weekly").used_pct, 69.0)
         self.assertFalse(u.extra_usage_enabled)
-        self.assertEqual(u.session_resets_at.tzinfo, timezone.utc)
+        self.assertEqual(u.window("session").resets_at.tzinfo, timezone.utc)
 
     def test_parse_usage_falls_back_to_objects(self):
         from ccswitch.oauth import parse_usage
         payload = {k: v for k, v in USAGE_PAYLOAD.items() if k != "limits"}
         u = parse_usage(payload)
-        self.assertEqual(u.session_pct, 11.0)
-        self.assertEqual(u.weekly_pct, 69.0)
+        self.assertEqual(u.window("session").used_pct, 11.0)
+        self.assertEqual(u.window("weekly").used_pct, 69.0)
 
     def test_fetch_usage_ok(self):
         from ccswitch import oauth
         with mock.patch.object(oauth, "http_request", return_value=(200, json.dumps(USAGE_PAYLOAD).encode())):
             u = oauth.fetch_usage("tok")
-            self.assertEqual(u.session_pct, 11.0)
+            self.assertEqual(u.window("session").used_pct, 11.0)
 
     def test_fetch_usage_401_raises_autherror(self):
         from ccswitch import oauth
@@ -144,8 +144,8 @@ class TestOAuth(unittest.TestCase):
         }
         # Must not raise KeyError; must fall back to five_hour/seven_day values
         u = parse_usage(payload)
-        self.assertEqual(u.session_pct, 42.0)
-        self.assertEqual(u.weekly_pct, 5.0)
+        self.assertEqual(u.window("session").used_pct, 42.0)
+        self.assertEqual(u.window("weekly").used_pct, 5.0)
 
     def test_refresh_url_encodes_special_chars_in_token(self):
         """refresh token containing &, =, + must be properly URL-encoded in the body."""
@@ -428,10 +428,10 @@ class TestUsageNullReset(unittest.TestCase):
             "limits": [],
         }
         u = parse_usage(payload)
-        self.assertEqual(u.session_pct, 0.0)
-        self.assertEqual(u.weekly_pct, 0.0)
-        self.assertIsNone(u.session_resets_at)
-        self.assertIsNone(u.weekly_resets_at)
+        self.assertEqual(u.window("session").used_pct, 0.0)
+        self.assertEqual(u.window("weekly").used_pct, 0.0)
+        self.assertIsNone(u.window("session").resets_at)
+        self.assertIsNone(u.window("weekly").resets_at)
 
     def test_limits_session_null_reset_falls_back_to_null(self):
         from ccswitch.oauth import parse_usage
@@ -442,7 +442,7 @@ class TestUsageNullReset(unittest.TestCase):
                         "resets_at": "2026-06-22T20:00:00+00:00"}],
         }
         u = parse_usage(payload)
-        self.assertEqual(u.session_pct, 0.0)
-        self.assertIsNone(u.session_resets_at)
-        self.assertEqual(u.weekly_pct, 40.0)
-        self.assertIsNotNone(u.weekly_resets_at)
+        self.assertEqual(u.window("session").used_pct, 0.0)
+        self.assertIsNone(u.window("session").resets_at)
+        self.assertEqual(u.window("weekly").used_pct, 40.0)
+        self.assertIsNotNone(u.window("weekly").resets_at)

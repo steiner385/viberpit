@@ -5,10 +5,14 @@ Sessions paused as needs_attention (all_accounts_busy, crash_cap, etc.) have no
 auto-recovery path — this sweep provides it by retrying _rotate_away periodically.
 """
 import asyncio
+import types
+
 import pytest
 
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
+from ccswitch.quota import anthropic_snapshot
 
 
 def _make_orch():
@@ -29,7 +33,8 @@ def _make_orch():
 
 def _rec(o, session_id="s1", account="acct", *, status="needs_attention"):
     rec = SessionRecord(id=session_id, name="n", account=account,
-                        claude_session_id=None, cols=80, rows=24, cwd="/tmp")
+                        engine=AgentEngine.CLAUDE_CODE,
+                        engine_session_id=None, cols=80, rows=24, cwd="/tmp")
     rec.status = status
     o._records[session_id] = rec
     return rec
@@ -146,3 +151,88 @@ async def test_sweep_loop_survives_rotate_error():
 
     # The loop ran (calls has one entry) and did not raise despite the error.
     assert calls, "sweep was never called"
+
+
+# ---------------------------------------------------------------------------
+# _sweep_needs_attention: `limited` sessions resume once their account recovers
+# ---------------------------------------------------------------------------
+
+def _usage(session, weekly):
+    return anthropic_snapshot(session_pct=session, session_resets_at=None,
+                 weekly_pct=weekly, weekly_resets_at=None, extra_usage_enabled=False)
+
+
+def _with_poller(o, cached):
+    o._poller = types.SimpleNamespace(cached=lambda account: cached)
+
+    async def spy_reassign(record, new_account, *, reason, replay_last_prompt=True):
+        o.calls.append(("reassign", record.id, new_account, reason))
+
+    o._reassign = spy_reassign
+    return o
+
+
+@pytest.mark.asyncio
+async def test_sweep_resumes_limited_session_once_its_account_recovers():
+    o = _with_poller(_make_orch(), _usage(20.0, 30.0))
+    rec = _rec(o, account="pinned_acct", status="limited")
+    rec.account_pinned = True
+
+    await o._sweep_needs_attention()
+    await asyncio.sleep(0)
+
+    assert ("reassign", "s1", "pinned_acct", "limit_reset") in o.calls
+    assert not any(c[0] == "rotate" for c in o.calls)   # the pin is honoured
+
+
+@pytest.mark.asyncio
+async def test_sweep_leaves_limited_session_while_account_still_at_ceiling():
+    o = _with_poller(_make_orch(), _usage(100.0, 30.0))
+    _rec(o, account="pinned_acct", status="limited")
+
+    await o._sweep_needs_attention()
+    await asyncio.sleep(0)
+
+    assert o.calls == []
+
+
+@pytest.mark.asyncio
+async def test_sweep_leaves_limited_session_with_no_cached_usage():
+    o = _with_poller(_make_orch(), None)
+    _rec(o, account="pinned_acct", status="limited")
+
+    await o._sweep_needs_attention()
+    await asyncio.sleep(0)
+
+    assert o.calls == []
+
+
+# --- recovery-triggered sweep ---------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_maybe_sweep_on_recovery_fires_once_per_debounce_window():
+    o = _make_orch()
+    rec = _rec(o, status="needs_attention")
+    rec.paused_reason = "all_accounts_busy"
+    swept = []
+
+    async def spy_sweep():
+        swept.append(True)
+
+    o._sweep_needs_attention = spy_sweep
+    o._clock = lambda: 1000.0
+    assert o._maybe_sweep_on_recovery() is True
+    assert o._maybe_sweep_on_recovery() is False          # debounced
+    o._clock = lambda: 1000.0 + 31.0
+    assert o._maybe_sweep_on_recovery() is True
+
+    await asyncio.gather(*o._bg_tasks)
+
+
+@pytest.mark.asyncio
+async def test_maybe_sweep_on_recovery_skips_when_nothing_is_stalled():
+    o = _make_orch()
+    rec = _rec(o, status="needs_attention")
+    rec.paused_reason = "crash_cap"                       # not a usage stall
+    _rec(o, "s2", status="idle")
+    assert o._maybe_sweep_on_recovery() is False

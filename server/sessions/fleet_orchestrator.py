@@ -9,7 +9,9 @@ import logging
 
 from server.sessions.facade import _DEADLINE_ATTR
 from server.sessions.fleet_router import FleetRouter, NoHostAvailable
+from server.sessions.engine import AgentEngine, AgentEngineUnavailable, parse_agent_engine
 from server.sessions.remote import RemoteOrchestrator
+from server.sessions.types import is_assistant, is_assistant_kind
 
 log = logging.getLogger(__name__)
 
@@ -77,7 +79,7 @@ _PER_SESSION: frozenset[str] = frozenset({
     "latest_summary", "pop_pending_initial_prompt", "pop_pending_initial_attachment_ids",
     "request_pr_fix", "prs_for", "ring_covers", "ring_tail", "unarchive",
     "x11_open_browser", "resolve_model_approval", "resume_interrupted",
-    "reload_session",
+    "reload_session", "rotate_to_best", "set_account_pin",
 })
 
 
@@ -157,6 +159,20 @@ class FleetOrchestrator:
         return _call
 
     async def create_session(self, *, prefer: str | None = None, **kwargs):
+        if "engine" in kwargs:
+            engine = parse_agent_engine(kwargs["engine"])
+            if engine is AgentEngine.CLAUDE_CODE:
+                # Preserve the exact legacy request for mixed-version runners.
+                kwargs.pop("engine")
+            else:
+                # Protocol v1 has no host-engine capability advertisement. Never
+                # gamble a Codex request on an arbitrary mixed-version runner.
+                raise AgentEngineUnavailable(engine)
+        # The assistant is pinned to the primary: its tools call the edge's own loopback
+        # API and its in-process MCP server lives in the primary daemon, so a worker
+        # placement would have neither. Overrides any caller preference.
+        if is_assistant_kind(kwargs.get("kind")):
+            prefer = self._primary
         order = await self._router.pick(prefer=prefer)  # raises NoHostAvailable if empty
         last_exc: Exception | None = None
         for host in order:
@@ -234,8 +250,12 @@ class FleetOrchestrator:
             setattr(_call, _DEADLINE_ATTR, True)
         return _call
 
-    async def list_sessions(self):
+    async def list_sessions(self, *, include_assistant: bool = False):
         """Fleet-wide session list: ask EVERY host and merge.
+
+        ``include_assistant`` is forwarded to every host (each applies the same
+        ``is_assistant`` filter), and re-applied to the merged result so a mirror
+        served by a host too old to know the flag is filtered here too.
 
         The primary's ``_records`` mirrors foreign rows only at rehydrate (process
         start), so a session a worker created after the primary's last restart was
@@ -262,10 +282,11 @@ class FleetOrchestrator:
           actually drives (``detached`` False) is kept whatever its stamp.
         """
         names = self._router.names()
+        kw = {"include_assistant": True} if include_assistant else {}
 
         async def _one(name: str):
             try:
-                return name, await self._router.get(name).list_sessions(), None
+                return name, await self._router.get(name).list_sessions(**kw), None
             except Exception as e:  # noqa: BLE001 — per-host isolation is the point
                 return name, None, e
 
@@ -280,6 +301,8 @@ class FleetOrchestrator:
                             "sessions this pass", name, exc_info=exc)
                 continue
             for rec in recs or []:
+                if not include_assistant and is_assistant(rec):
+                    continue
                 prev = served_by.get(rec.id)
                 # Keep an existing entry unless it is the primary's mirror and this
                 # host is the one actually running the session.

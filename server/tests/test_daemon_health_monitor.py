@@ -175,3 +175,57 @@ def test_stale_invariant_probe_errors_never_set_last_seen():
     # The failed polls must not have reset _last_seen_at, so the staleness is intact.
     assert snap["available"] is False
     assert snap["lastSeenAgoSec"] == pytest.approx(100.0, abs=0.01)
+
+
+def test_stop_does_not_swallow_the_callers_cancellation():
+    """Issue #1164: ``stop()`` runs inside the SIGTERM drain, where a cancellation
+    aimed at the DRAIN must keep unwinding instead of being mistaken for the poll
+    loop's own — a swallowed one overruns ``TimeoutStopSec`` and gets the daemon
+    SIGKILLed with live sessions attached."""
+    async def main():
+        polling = asyncio.Event()
+        release = asyncio.Event()
+
+        swallowed = False
+
+        async def ignores_its_cancel():
+            # Models a poll wedged in an uncancellable region, so stop() is still
+            # waiting on it when the drain's own cancellation arrives. Only the
+            # FIRST cancel is swallowed, so the cleanup below can end the task.
+            nonlocal swallowed
+            polling.set()
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                if swallowed:
+                    raise
+                swallowed = True
+                await release.wait()
+            return {}
+
+        mon = DaemonHealthMonitor(info_fn=ignores_its_cancel, poll_interval_s=0.01)
+        mon.start()
+        await polling.wait()
+        poll_task = next(t for t in asyncio.all_tasks()
+                         if t.get_name() == "daemon-health-monitor")
+
+        finished = False
+
+        async def stopper():
+            nonlocal finished
+            await mon.stop()
+            finished = True
+
+        task = asyncio.create_task(stopper())
+        await asyncio.sleep(0.01)          # let it park inside the reap
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert task.cancelled()
+        assert finished is False, "stop() swallowed the caller's cancellation"
+
+        release.set()
+        poll_task.cancel()
+        await asyncio.wait({poll_task}, timeout=1)
+
+    asyncio.run(main())

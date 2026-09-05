@@ -10,10 +10,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from . import copilot, ledger, oauth, paths
+from . import account_registry, copilot, ledger, oauth, paths
 from .account_names import aliases_store_root
 from .config import Config, load_config
 from .creds import merge_keep_later, read_credentials, read_json, split_credentials, write_credentials, write_json_secure
+from .quota import QuotaSnapshot
 from .selector import AllAccountsBusy, Picked, select_picked
 
 log = logging.getLogger(__name__)
@@ -61,7 +62,7 @@ def set_copilot_usage_reader(fn: "Callable[[str], dict | None] | None") -> None:
     _copilot_usage_reader = fn
 
 
-def _copilot_usage_for(name: str) -> "oauth.Usage | None":
+def _copilot_usage_for(name: str) -> QuotaSnapshot | None:
     reader = _copilot_usage_reader
     if reader is None:
         # Feature not configured — not a fetch failure, so no backoff.
@@ -170,18 +171,64 @@ def anthropic_slot_paths() -> list[Path]:
 
 
 def provider_of(name: str) -> str:
-    # copilot_token_dir("") is the copilot store ROOT, which exists as soon as any
-    # Copilot account is configured — so without this guard a nameless account is
-    # reported as Copilot and the orchestrator tries to start a proxy for it.
+    """The account's provider, READ FROM THE MANIFEST — never inferred.
+
+    This used to answer ``"anthropic"`` for any name it did not recognise, so a
+    typo, a stale session row, or an account type this build predates all resolved
+    silently to the Claude OAuth launch path. It now raises
+    :class:`~ccswitch.account_registry.UnknownAccountError`; callers that must
+    degrade (the usage sweep) catch it and report "unknown", which is safe,
+    instead of acting on a wrong provider.
+    """
     if aliases_store_root(name):
-        return "anthropic"
-    return copilot.PROVIDER if paths.copilot_token_dir(name).exists() else "anthropic"
+        # A nameless/dotted name collapses every per-account path onto the shared
+        # store root; it is never a real account.
+        raise account_registry.UnknownAccountError(name)
+    return account_registry.provider_of(name)
+
+
+def provider_or_none(name: str) -> str | None:
+    """``provider_of`` for callers that ask "is this account provider X?".
+
+    Returns None — never a default provider — when the account is not in the
+    manifest. Every caller compares the result against a specific provider
+    (``== copilot.PROVIDER``), so an unregistered account answers "no" to every
+    such question and no provider-specific machinery (a Copilot proxy, a Codex
+    app-server) is started on its behalf. That is the safe answer; the old
+    ``provider_of`` returning ``"anthropic"`` for an unknown name was not, because
+    it made the Claude launch path the silent default for a name nobody had
+    declared.
+
+    It also degrades on a manifest FAULT, not just an unknown name. The manifest
+    lives on the account store, which is the sshfs mount that produced torn reads
+    on 2026-09-04 (#1005), and this function sits on hot paths — ``configdir.compose``
+    (every spawn and reassign), the orchestrator's rotation and the driver — where
+    ``Path.exists()`` used to swallow the same faults. A transient ``EIO``/
+    ``ESTALE``/``PermissionError`` therefore answers "no provider-specific
+    machinery" (the safe answer, as above) instead of aborting a spawn.
+    ``provider_of`` stays strict for callers that want the error.
+    """
+    try:
+        return provider_of(name)
+    except account_registry.UnknownAccountError:
+        return None
+    except (account_registry.AccountRegistryError, OSError) as e:
+        account_registry.warn_once(
+            f"provider_or_none:{type(e).__name__}",
+            "provider_or_none(%s): the account manifest is unreadable (%s) — "
+            "degrading to 'no provider'", name, e)
+        return None
 
 
 def all_accounts() -> list[tuple[str, str]]:
-    out = [(n, "anthropic") for n in _anthropic_account_names()]
-    out += [(n, copilot.PROVIDER) for n in copilot.copilot_account_names()]
-    return out
+    """``(name, provider)`` for every registered account, from the MANIFEST.
+
+    Filesystem discovery (``_anthropic_account_names`` /
+    ``copilot.copilot_account_names``) is reachable only through
+    ``account_registry.discover_filesystem_accounts``, i.e. the importer and the
+    ``ccswitch accounts import`` repair command.
+    """
+    return [(e.name, e.provider) for e in account_registry.all_entries()]
 
 
 def _account_names() -> list[str]:
@@ -255,13 +302,36 @@ def acquire_valid_token(name: str) -> dict:
 _NO_SETUP_TOKEN: object = object()
 
 
+def _record_health(name: str, state: str, detail: str | None = None) -> None:
+    """Mirror a needs-reauth / recovered transition into the account manifest.
+
+    Best-effort and deliberately RARE: only credential-state transitions are
+    recorded, never the routine "usage fetched OK" outcome. The manifest is a
+    fleet-replicated file whose revision counter is meant to mean "identity
+    changed", so stamping it on every poll would churn it once per account per
+    minute. The ledger stays the live health signal; this is the durable,
+    human-readable record of it.
+
+    Swallows registry faults: on a runner (``ManifestNotWritable``) or for an
+    account that is not registered, the auth path must proceed unchanged — this
+    is bookkeeping, not a gate.
+    """
+    try:
+        account_registry.set_health(name, state, detail=detail)
+    except account_registry.AccountRegistryError:
+        log.debug("account health not recorded for %s (not the manifest writer, "
+                  "or account not registered)", name)
+    except Exception:  # noqa: BLE001 — never let bookkeeping break the auth path
+        log.warning("account health write failed for %s", name, exc_info=True)
+
+
 def _note_usage_fetch_failure(name: str) -> None:
     """Record a failed usage fetch in the ledger (grows the shared cooldown)."""
     with ledger.locked_ledger() as led:
         ledger.note_usage_fetch_failure(led, name, time.time())
 
 
-def _setup_token_usage_fallback(name: str, now: datetime, retry_kw: dict) -> "oauth.Usage | None | object":
+def _setup_token_usage_fallback(name: str, now: datetime, retry_kw: dict) -> "QuotaSnapshot | None | object":
     """Auth fallback for accounts that hold a long-lived setup-token.
 
     A setup-token (``sk-ant-oat01``) makes the account launch-capable via
@@ -277,7 +347,7 @@ def _setup_token_usage_fallback(name: str, now: datetime, retry_kw: dict) -> "oa
     tok = crypto.read_oauth_token(name)
     if not tok:
         return _NO_SETUP_TOKEN
-    u: oauth.Usage | None = None
+    u: QuotaSnapshot | None = None
     try:
         u = oauth.fetch_usage(tok, **retry_kw)
     except (oauth.AuthError, oauth.UsageError, oauth.TransientError) as e:
@@ -291,7 +361,7 @@ def _setup_token_usage_fallback(name: str, now: datetime, retry_kw: dict) -> "oa
     return u
 
 
-def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -> oauth.Usage | None:
+def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -> QuotaSnapshot | None:
     """Cached-or-fetched usage. Returns None and marks needs-reauth if auth fails.
 
     Args:
@@ -303,7 +373,16 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
             refreshing and WITHOUT marking needs-reauth (the live SDK owns the
             token family and will refresh on its next request).
     """
-    if provider_of(name) == copilot.PROVIDER:
+    try:
+        provider = provider_of(name)
+    except account_registry.UnknownAccountError:
+        # The account is not registered. Report "usage unknown" rather than
+        # guessing a provider — the old anthropic fallback would refresh, and
+        # possibly flip to needs-reauth, against a credential slot that belongs to
+        # nobody.
+        log.warning("usage_for(%s): not in the account manifest — usage unknown", name)
+        return None
+    if provider == copilot.PROVIDER:
         return _copilot_usage_for(name)
     if name in _dead_accounts:
         log.debug("usage_for(%s): refresh token known-dead (400) — skipping without network I/O", name)
@@ -368,6 +447,7 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
         with ledger.locked_ledger() as led:
             ledger.set_status(led, name, "needs-reauth")
             ledger.note_usage_fetch_failure(led, name, time.time())
+        _record_health(name, "needs-reauth", detail="refresh token rejected")
         return None
 
     # Step 2: fetch usage; on 401 do exactly ONE refresh+refetch.
@@ -427,6 +507,7 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
             with ledger.locked_ledger() as led:
                 ledger.set_status(led, name, "needs-reauth")
                 ledger.note_usage_fetch_failure(led, name, time.time())
+            _record_health(name, "needs-reauth", detail="usage credentials rejected")
             return None
 
         try:
@@ -448,6 +529,7 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
             with ledger.locked_ledger() as led:
                 ledger.set_status(led, name, "needs-reauth")
                 ledger.note_usage_fetch_failure(led, name, time.time())
+            _record_health(name, "needs-reauth", detail="usage credentials rejected")
             return None
 
     with ledger.locked_ledger() as led:
@@ -555,11 +637,46 @@ def remove_account(name: str) -> None:
     ct = paths.copilot_token_dir(name)
     if ct.exists():
         shutil.rmtree(ct)
-    # Drop the ledger entry too: the health watchdog alerts on ledger status,
-    # so a removed account left behind at e.g. needs-reauth alerts forever
-    # (2026-07-21: long-deleted primary/secondary paged reauth all day).
+    # Drop the ledger entry FIRST, and unconditionally: the health watchdog alerts
+    # on ledger status, so a removed account left behind at e.g. needs-reauth
+    # alerts forever (2026-07-21: long-deleted primary/secondary paged reauth all
+    # day). The credential slot and copilot dir are already gone by this line, so
+    # a manifest fault below must not be able to strand that ledger row — hence
+    # the ordering, not just the except clause.
     with ledger.locked_ledger() as led:
         led["accounts"].pop(name, None)
+    # Drop the manifest entry: the manifest is now what `all_accounts()` reads, so
+    # leaving it behind would keep listing an account whose credentials are gone.
+    # (Reconcile-on-read is additive only and would never remove it.)
+    try:
+        account_registry.forget_account(name)
+    except account_registry.ManifestNotWritable:
+        log.warning("remove_account(%s): runner host cannot edit accounts.json; "
+                    "the primary will drop the entry", name)
+    except (account_registry.AccountRegistryError, OSError):
+        # An unwritable/corrupt manifest or a store-mount fault. The reauth-paging
+        # state is already cleared above; re-running `ccswitch accounts remove`
+        # (or repairing the manifest) drops the leftover entry.
+        log.warning("remove_account(%s): could not drop the accounts.json entry; "
+                    "credentials and ledger state are gone, the entry is not",
+                    name, exc_info=True)
+
+
+def _normalized_usage_blob(name: str, acct: dict) -> dict | None:
+    """The cached usage blob in the CURRENT (versioned) shape, or None.
+
+    A live ledger still holds pre-versioning entries; decoding and re-encoding
+    here means every consumer of ``list_accounts()`` sees one shape and none of
+    them has to know the legacy encoding existed.
+    """
+    blob = acct.get("usage")
+    if not blob:
+        return None
+    try:
+        return ledger.usage_from_blob(name, blob).to_dict()
+    except (KeyError, TypeError, ValueError):
+        log.warning("list_accounts(%s): unreadable cached usage blob", name, exc_info=True)
+        return None
 
 
 def list_accounts() -> list[dict]:
@@ -570,7 +687,7 @@ def list_accounts() -> list[dict]:
             out.append({
                 "name": name,
                 "status": acct.get("status", "unknown"),
-                "usage": acct.get("usage"),
+                "usage": _normalized_usage_blob(name, acct),
                 "nickname": acct.get("nickname"),
                 "provider": provider_of(name),
                 "weeklyReservePct": ledger.get_weekly_reserve(led, name),
@@ -644,6 +761,13 @@ def mark_reauthenticated(name: str) -> None:
     with ledger.locked_ledger() as led:
         ledger.set_status(led, name, "ok")
         ledger.clear_cached_usage(led, name)
+    # A successful re-auth replaces the credential behind this account, so the
+    # non-secret generation counter advances alongside the health record.
+    _record_health(name, "ok")
+    try:
+        account_registry.bump_generation(name)
+    except account_registry.AccountRegistryError:
+        pass
 
 
 def add_account(name: str, email: str | None = None) -> None:

@@ -26,6 +26,7 @@ import userEvent from '@testing-library/user-event'
 import type { Session, Account } from './api/types'
 import { renderApp } from './test/renderApp'
 import { LAYOUT_MODES } from './shell/useViewport'
+import { anthropicUsage } from '@/test/factories'
 
 vi.mock('./ws/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./ws/client')>()
@@ -43,31 +44,43 @@ vi.mock('./ws/client', async (importOriginal) => {
 const MOCK_ACCOUNTS: Account[] = [
   {
     name: 'alice', status: 'ok',
-    usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 30, resetsAt: null } },
+    usage: anthropicUsage(20, 30),
     liveSessions: { active: 0, idle: 0 }, rank: null, rankReason: null,
   },
 ]
 const MOCK_SESSIONS: Session[] = []
 
-vi.mock('./api/client', () => ({
-  ApiRequestError: class extends Error {
-    status: number; body: Record<string, unknown>
-    constructor(status: number, body: Record<string, unknown>) {
-      super(`API error ${status}`); this.status = status; this.body = body
-    }
-  },
-  api: {
-    get: vi.fn().mockImplementation((path: string) => {
-      // Exact path + query only: `/sessions/archived` is a DIFFERENT endpoint,
-      // and answering it with the live list makes every session look archived —
-      // which sends `useArchiveAdvance` into an endless advance loop.
-      if (path === '/sessions' || path.startsWith('/sessions?')) return Promise.resolve(MOCK_SESSIONS)
-      if (path === '/accounts') return Promise.resolve(MOCK_ACCOUNTS)
-      return Promise.resolve([])
-    }),
-    post: vi.fn(), put: vi.fn(), patch: vi.fn(), del: vi.fn(),
-  },
-}))
+// The factory is async and imports the fixtures INSIDE itself: `vi.mock` is
+// hoisted above every import, so closing over a module-scope binding would read
+// it before `./test/factories` had been evaluated.
+vi.mock('./api/client', async () => {
+  const { appSettings } = await import('./test/factories')
+  return {
+    ApiRequestError: class extends Error {
+      status: number; body: Record<string, unknown>
+      constructor(status: number, body: Record<string, unknown>) {
+        super(`API error ${status}`); this.status = status; this.body = body
+      }
+    },
+    api: {
+      get: vi.fn().mockImplementation((path: string) => {
+        // Exact path + query only: `/sessions/archived` is a DIFFERENT endpoint,
+        // and answering it with the live list makes every session look archived —
+        // which sends `useArchiveAdvance` into an endless advance loop.
+        if (path === '/sessions' || path.startsWith('/sessions?')) return Promise.resolve(MOCK_SESSIONS)
+        if (path === '/accounts') return Promise.resolve(MOCK_ACCOUNTS)
+        // `/settings` is an OBJECT endpoint. The `[]` fallback below satisfied
+        // every earlier reader by accident (`settings.x` on an array is just
+        // undefined) until Settings › General started reading a nested field —
+        // `effectiveDefaults.repoRoot` — and threw. A fake that cannot be
+        // mistaken for the real payload is the point of the factory.
+        if (path === '/settings') return Promise.resolve(appSettings())
+        return Promise.resolve([])
+      }),
+      post: vi.fn(), put: vi.fn(), patch: vi.fn(), del: vi.fn(),
+    },
+  }
+})
 
 const newSessionDialog = () => screen.findByRole('dialog', { name: /new session/i })
 
@@ -152,8 +165,8 @@ describe('?dialog=settings — the legacy Settings modal link', () => {
 
     await waitFor(() => expect(app.path()).toBe('/settings/general'))
     expect(app.search()).not.toContain('dialog=settings')
-    // The real Settings page, with its own section strip — not a modal.
-    expect(await screen.findByRole('tablist', { name: /settings sections/i })).toBeInTheDocument()
+    // The real Settings page, with its own section nav — not a modal.
+    expect(await screen.findByRole('navigation', { name: 'Settings sections' })).toBeInTheDocument()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 })

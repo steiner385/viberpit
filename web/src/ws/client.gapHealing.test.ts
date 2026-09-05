@@ -1,3 +1,4 @@
+// @vitest-environment node
 // web/src/ws/client.gapHealing.test.ts
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { SessionSocket } from './client'

@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest'
 import { triageTier, sessionTriage } from '../triageTier'
 import { statusPresentation } from '../statusTier'

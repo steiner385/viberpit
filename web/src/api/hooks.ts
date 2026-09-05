@@ -197,6 +197,22 @@ export function useGithubBranches(repo?: string) {
   })
 }
 
+/** One read-only env flag shown on Settings › About. The server sends an allowlist. */
+export interface ManagedFlag {
+  key: string
+  value: string | number | boolean | null
+  description: string
+}
+
+/** What the server falls back to when the matching AppSettings column is NULL. */
+export interface EffectiveDefaults {
+  repoRoot: string
+  archiveHome: string | null
+  modelApprovalAction: string
+  modelApprovalDenylist: string
+  maxActiveSessions: number
+}
+
 export interface AppSettings {
   defaultPermissionMode: string
   thinkingCollapsed: boolean
@@ -216,6 +232,11 @@ export interface AppSettings {
   modelApprovalAction: string | null
   // Comma-separated model ids/tiers that require approval; null = server default (fable).
   modelApprovalDenylist: string | null
+  /** The modes PUT accepts, in display order. The client's PERMISSION_MODES must equal this set. */
+  acceptedPermissionModes: string[]
+  effectiveDefaults: EffectiveDefaults
+  managed: ManagedFlag[]
+  about: { gitSha: string | null; hostName: string }
 }
 
 export function useSettings() {
@@ -243,6 +264,8 @@ export interface CreateSessionInput {
   permissionMode?: string
   attachmentIds?: string[]
   model?: string
+  engine?: 'claude_code' | 'codex'
+  reasoningEffort?: string | null
   /** Optional runner preference. null → auto-rank; a name → that host first. */
   host?: string | null
 }
@@ -261,6 +284,8 @@ export function useCreateSession() {
       const tempId = addPendingSession({
         name: input.name?.trim() || input.initialPrompt?.trim().slice(0, 60) || 'New session',
         accountName: input.account ?? '',
+        engine: input.engine ?? 'claude_code',
+        engineSessionId: null,
         status: 'in_progress',
         createdAt: new Date().toISOString(),
         repo: input.repo ?? null,
@@ -340,6 +365,32 @@ export function useReloadSession() {
   const qc = useQueryClient()
   return useMutation<Session, ApiRequestError, { id: string }>({
     mutationFn: ({ id }) => api.post<Session>(`/sessions/${id}/reload`, {}),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
+  })
+}
+
+// "Next best account": the daemon moves the session to the account the selector
+// ranks best and continues the conversation (replays a stalled prompt). The caller
+// re-attaches the socket on success, exactly as reload does.
+export function useRotateSession() {
+  const qc = useQueryClient()
+  return useMutation<Session, ApiRequestError, { id: string }>({
+    mutationFn: ({ id }) => api.post<Session>(`/sessions/${id}/rotate`, {}),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
+    onError: (e) => {
+      const code = (e.body.detail as { code?: string } | null)?.code
+      toast.error(code === 'skipped:all_accounts_busy' ? 'No account has headroom right now' : `Couldn't rotate session`)
+    },
+  })
+}
+
+// Pin the session to its current account (usage-ceiling rotation then parks it as
+// `limited` instead of moving it) or clear the pin; unpinning a limited session
+// rotates it immediately on the server.
+export function useSetAccountPin() {
+  const qc = useQueryClient()
+  return useMutation<Session, ApiRequestError, { id: string; pinned: boolean }>({
+    mutationFn: ({ id, pinned }) => api.post<Session>(`/sessions/${id}/account-pin`, { pinned }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
   })
 }
@@ -716,6 +767,20 @@ export function useResumeInterrupted() {
       const f = result.failed.length
       if (f > 0) toast.error(`Resumed ${n} · ${f} skipped`)
       else toast.success(`Resumed ${n}`)
+    },
+    onSettled: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
+  })
+}
+
+export function useRotateStalled() {
+  const qc = useQueryClient()
+  return useMutation<BatchResult, ApiRequestError, string[]>({
+    mutationFn: (ids) => api.post<BatchResult>('/sessions/batch/rotate', { ids }),
+    onSuccess: (result) => {
+      const n = result.succeeded.length
+      const f = result.failed.length
+      if (f > 0) toast.error(`Rotated ${n} · ${f} skipped`)
+      else toast.success(`Rotated ${n}`)
     },
     onSettled: () => { qc.invalidateQueries({ queryKey: QK.sessions }) },
   })

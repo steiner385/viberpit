@@ -3,7 +3,7 @@
 Single source of truth for turning an account's stored setup-token into the env var the
 Claude Agent SDK reads (``CLAUDE_CODE_OAUTH_TOKEN``). Session launch
 (``server/sessions/orchestrator.py``'s ``_oat_env``) and the helper SDK factories
-(``server/sessions/sdk_factory.py``'s ``real_suggestion_factory``/``real_summary_factory``) both
+(``server/sessions/claude_sdk_factory.py``'s ``real_suggestion_factory``/``real_summary_factory``) both
 call this instead of each building their own copy — an account with a dead browser-OAuth refresh
 token but a live setup-token must authenticate the same way everywhere.
 
@@ -20,8 +20,12 @@ this module replaces.
 Because it is that single funnel, it is also where one-shot helpers are pointed at a HOST-LOCAL
 scratch config dir instead of the shared account dir (``scratch_config.helper_config_dir``, #1005):
 a helper that misreads a config file through a stale sshfs view must not be able to "repair" the
-fleet's shared ``.claude.json`` by writing a default one back. Live sessions keep the real account
-dir — see ``scratch_config`` for why that asymmetry is deliberate.
+fleet's shared ``.claude.json`` by writing a default one back.
+
+Live CODING sessions keep the real account dir — see ``scratch_config`` for why that asymmetry is
+deliberate. The one live session that does not is the ASSISTANT (spec §4.1), which the orchestrator
+points at ``helper_config_dir(..., isolated=True)`` directly (not through this function, since it
+has an account name and needs no reverse mapping) to drop the operator's plugins/commands/settings.
 """
 from __future__ import annotations
 

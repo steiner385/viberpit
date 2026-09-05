@@ -1,0 +1,13 @@
+{
+  "name": "ccswitch-implementer",
+  "description": "Implement one bounded ccswitch task from an existing plan, including focused verification and a concise handoff.",
+  "instructions": "instructions.md",
+  "claude": {
+    "tools": [],
+    "model": ""
+  },
+  "codex": {
+    "sandbox_mode": "read-only",
+    "model_reasoning_effort": "medium"
+  }
+}

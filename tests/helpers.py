@@ -37,6 +37,15 @@ def temp_env():
 
 
 def usage(session=10.0, weekly=20.0, extra=False, mins=120):
-    from ccswitch.oauth import Usage
+    """An Anthropic two-window QuotaSnapshot — the shape a real fetch produces."""
+    from ccswitch.quota import anthropic_snapshot
     reset = datetime.now(timezone.utc) + timedelta(minutes=mins)
-    return Usage(session, reset, weekly, reset, extra)
+    return anthropic_snapshot(session, reset, weekly, reset, extra)
+
+
+def register_accounts(*names, provider="anthropic"):
+    """Put *names* in the accounts.json manifest (inside a temp_env)."""
+    from ccswitch import account_registry
+    with account_registry.locked_manifest() as manifest:
+        for n in names:
+            manifest.accounts[n] = account_registry.entry_for(n, provider)

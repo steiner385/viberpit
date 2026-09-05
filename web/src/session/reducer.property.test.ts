@@ -1,3 +1,4 @@
+// @vitest-environment node
 // web/src/session/reducer.property.test.ts
 //
 // Property-based invariants for the transcript reducer (audit wave 3):

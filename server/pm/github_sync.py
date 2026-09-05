@@ -16,7 +16,8 @@ _PAGE_PRS = 50
 _ITEM_FIELDS = """
       number title body state url createdAt updatedAt closedAt
       author { login }
-      labels(first: 20) { nodes { name } }"""
+      labels(first: 20) { nodes { name } }
+      assignees(first: 10) { nodes { login } }"""
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,8 @@ class WorkItemView:
     # content ids, addBlockedBy targets — spec 003 Phase B). Defaulted so every
     # existing positional/keyword construction keeps working.
     node_id: str | None = None
+    # GitHub assignee logins; an assigned item is never queue-eligible (spec 003 §7a, C-5).
+    assignees: tuple[str, ...] = ()
 
 
 def _owner_name(repo: str) -> tuple[str, str]:
@@ -151,5 +154,8 @@ def parse_page(payload: dict, repo: str, kind: str) -> tuple[list[WorkItemView],
             gh_closed_at=_parse_dt(node.get("closedAt")),
             linked_issue_numbers=refs,
             node_id=node.get("id") if isinstance(node.get("id"), str) else None,
+            assignees=tuple(
+                a["login"] for a in ((node.get("assignees") or {}).get("nodes") or [])
+                if isinstance(a, dict) and a.get("login")),
         ))
     return items, info.get("endCursor"), bool(info.get("hasNextPage"))

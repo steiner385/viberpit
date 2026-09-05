@@ -12,7 +12,6 @@ the DictationSession buffer (≤ max_buffer_s) and is never persisted or logged.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 from collections.abc import Callable
@@ -20,6 +19,7 @@ from collections.abc import Callable
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
+from server.aio import cancel_and_reap
 from server.auth.middleware import require_ws_identity
 from server.stt.engine import SAMPLE_RATE, SttEngine
 from server.stt.session import DictationSession
@@ -184,9 +184,9 @@ async def _serve(ws: WebSocket, engine: SttEngine, session: DictationSession,
                 {recv_task, tick_task}, timeout=remaining, return_when=asyncio.FIRST_COMPLETED
             )
             if recv_task not in done:
-                recv_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await recv_task
+                # Reaping the receive task must not eat a cancellation aimed at this
+                # handler (server shutdown closing the socket) — issue #1164.
+                await cancel_and_reap(recv_task, phase="stt.ws.receive")
                 break  # either the ticker failed, or the deadline elapsed
             msg = recv_task.result()
             if msg["type"] == "websocket.disconnect":

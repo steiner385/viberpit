@@ -1,0 +1,5 @@
+id: codeowners-protects-governance
+description: CODEOWNERS claims the constitution and the guardrails that enforce it.
+kind: static
+tags: [agent-config, governance, constitution]
+check: 'test -f .github/CODEOWNERS && grep -q "^/.specify/" .github/CODEOWNERS && grep -q "managed-settings.json" .github/CODEOWNERS && grep -q "governance.py" .github/CODEOWNERS'

@@ -24,10 +24,10 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor, within } from '@testing-library/react'
+import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { Session, Account } from './api/types'
-import { session } from '@/test/factories'
+import { anthropicUsage, session } from '@/test/factories'
 import { api } from './api/client'
 import { renderApp } from './test/renderApp'
 
@@ -75,7 +75,7 @@ const MOCK_ACCOUNTS: Account[] = [
   {
     name: 'alice',
     status: 'ok',
-    usage: { session: { pct: 20, resetsAt: null }, weekly: { pct: 30, resetsAt: null } },
+    usage: anthropicUsage(20, 30),
     liveSessions: { active: 0, idle: 0 },
     rank: null,
     rankReason: null,
@@ -159,7 +159,7 @@ describe('App routing', () => {
     vi.mocked(api.get).mockImplementation((path: string) => {
       if (path === '/sessions/archived') return Promise.resolve([
         { id: 'arch-1', name: 'Implement issue 16', account: 'alice', cwd: '/tmp/x',
-          claudeSessionId: 'c-1', permissionMode: 'default',
+          engineSessionId: 'c-1', permissionMode: 'default',
           createdAt: '2026-06-01T10:00:00Z', archivedAt: '2026-06-02T10:00:00Z' },
       ])
       // Exact path + query only: `/sessions/archived` is a DIFFERENT endpoint,
@@ -196,9 +196,10 @@ describe('App routing', () => {
   it('redirects legacy /accounts to the Settings accounts section', async () => {
     const app = renderApp({ path: '/accounts' })
     await waitFor(() => expect(app.path()).toBe('/settings/accounts'))
-    // The redirect carries the section, so the Accounts section is the active one.
-    const sections = within(await screen.findByRole('tablist', { name: /settings sections/i }))
-    expect(sections.getByRole('tab', { name: /accounts/i })).toHaveAttribute('aria-selected', 'true')
+    // The redirect carries the section, so Accounts is what is on screen. This
+    // is the default (phone) mode, where the section IS the page — the grouped
+    // nav lives on `/settings` itself, so the section landmark is what names it.
+    expect(await screen.findByRole('region', { name: 'Accounts' })).toBeInTheDocument()
   })
 
   it('clicking the Automations rail item updates the URL to /automations', async () => {

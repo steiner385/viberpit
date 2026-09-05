@@ -11,6 +11,7 @@ import asyncio
 import pytest
 
 from server.automations.autopilot_policy import Decision, DecisionContext
+from server.sessions.engine import AgentEngine
 
 
 def make_decision_context(**kw):
@@ -89,12 +90,13 @@ def test_list_governed_excludes_all_complete(tmp_path):
     govern it — governing both would race two archivers on the same session. Autopilot
     still governs goal-met INFERENCE for sessions that never emitted the marker (`done`)."""
     async def run():
+        from server.sessions.engine import AgentEngine
         from server.sessions.types import SessionRecord
         await _init_db(tmp_path)
         orch = _bare_orch()
 
         def _rec(sid, status, origin=None):
-            return SessionRecord(id=sid, name="n", account="a", claude_session_id="",
+            return SessionRecord(id=sid, name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
                                  cols=80, rows=24, cwd="/tmp", status=status, origin=origin)
 
         orch._records = {
@@ -160,7 +162,8 @@ def test_get_context_populates_transcript_tail(tmp_path):
         orch = _bare_orch()
         orch._records = {"s1": SessionRecord(
             id="s1", name="Implement and ship issue #10282", account="a",
-            claude_session_id="", cols=80, rows=24, cwd="/tmp",
+            engine=AgentEngine.CLAUDE_CODE,
+            engine_session_id="", cols=80, rows=24, cwd="/tmp",
             status="needs_attention")}
         orch._registry = None  # no driver → no pending perms
         orch.pending_questions = lambda sid: []
@@ -192,7 +195,7 @@ def test_get_context_tail_empty_on_window_failure(tmp_path):
         from server.sessions.types import SessionRecord
         orch = _bare_orch()
         orch._records = {"s1": SessionRecord(
-            id="s1", name="n", account="a", claude_session_id="",
+            id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
             cols=80, rows=24, cwd="/tmp", status="done")}
         orch._registry = None
         orch.pending_questions = lambda sid: []
@@ -211,7 +214,7 @@ def test_note_user_interaction_stamps(tmp_path):
     async def run():
         from server.sessions.types import SessionRecord
         orch = _bare_orch()
-        orch._records = {"s1": SessionRecord(id="s1", name="n", account="a", claude_session_id="",
+        orch._records = {"s1": SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
                                              cols=80, rows=24, cwd="/tmp", status="idle")}
         assert orch._records["s1"].last_user_interaction_at is None
         orch.note_user_interaction("s1")
@@ -224,7 +227,7 @@ def test_autopilot_apply_does_not_stamp_interaction(tmp_path):
     async def run():
         from server.sessions.types import SessionRecord
         orch = _bare_orch()
-        orch._records = {"s1": SessionRecord(id="s1", name="n", account="a", claude_session_id="",
+        orch._records = {"s1": SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
                                              cols=80, rows=24, cwd="/tmp", status="idle")}
         orch._records["s1"].last_user_interaction_at = None
         # escalate/complete/skip return False without a driver and never touch the field.
@@ -241,7 +244,7 @@ def test_get_context_reports_seconds_since_human(tmp_path):
         from server.sessions.types import SessionRecord
         orch = _bare_orch()
         orch._records = {"s1": SessionRecord(
-            id="s1", name="n", account="a", claude_session_id="",
+            id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
             cols=80, rows=24, cwd="/tmp", status="done")}
         orch._registry = None
         orch.pending_questions = lambda sid: []
@@ -264,7 +267,7 @@ def test_get_context_none_when_never_touched(tmp_path):
         from server.sessions.types import SessionRecord
         orch = _bare_orch()
         orch._records = {"s1": SessionRecord(
-            id="s1", name="n", account="a", claude_session_id="",
+            id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
             cols=80, rows=24, cwd="/tmp", status="done")}
         orch._registry = None
         orch.pending_questions = lambda sid: []
@@ -285,7 +288,7 @@ def test_get_context_none_when_never_touched(tmp_path):
 
 def _fleet_rec(sid, *, repo=None, branch=None, status="idle", name=None):
     from server.sessions.types import SessionRecord
-    return SessionRecord(id=sid, name=name or sid, account="a", claude_session_id="",
+    return SessionRecord(id=sid, name=name or sid, account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
                          cols=80, rows=24, cwd="/tmp", status=status,
                          repo=repo, branch=branch)
 
@@ -409,7 +412,7 @@ async def test_autopilot_archive_context_records_resolution(tmp_path):
     from server.automations.completion_bar import PrFacts
 
     orch = _bare_orch()
-    orch._records = {"s1": SessionRecord(id="s1", name="n", account="a", claude_session_id="",
+    orch._records = {"s1": SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
                                          cols=80, rows=24, cwd=str(tmp_path), repo="o/r")}
     orch._records["s1"].pr_resolution = "cancelled"
     # Stub _autopilot_pr_facts so the bare orch doesn't need pr_for / _session_pr_branches.
@@ -467,7 +470,7 @@ def _make_orch_with_session(repo="o/r", branch="feat/x"):
     from server.sessions.types import SessionRecord
     orch = _bare_orch()
     orch._records = {"s1": SessionRecord(
-        id="s1", name="n", account="acct-a", claude_session_id="",
+        id="s1", name="n", account="acct-a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
         cols=80, rows=24, cwd="/tmp", status="in_progress",
         repo=repo, branch=branch,
     )}
@@ -576,7 +579,7 @@ async def test_autopilot_archive_context_default_reason_when_unresolved(tmp_path
     from server.automations.completion_bar import PrFacts
 
     orch = _bare_orch()
-    orch._records = {"s1": SessionRecord(id="s1", name="n", account="a", claude_session_id="",
+    orch._records = {"s1": SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
                                          cols=80, rows=24, cwd=str(tmp_path), repo="o/r")}
     orch._autopilot_pr_facts = lambda rec: PrFacts(has_repo=bool(rec.repo), prs=())
 

@@ -6,6 +6,8 @@ No orchestrator imports: the orchestrator calls this module, never vice versa.
 """
 from __future__ import annotations
 
+from collections.abc import Collection
+
 from sqlalchemy import delete as sa_delete, select
 
 from server.db import db_session
@@ -22,10 +24,14 @@ async def enqueue(session_id: str, params: dict) -> int:
         return priority
 
 
-async def next_entry() -> SessionQueue | None:
+async def next_entry(exclude: Collection[str] = ()) -> SessionQueue | None:
+    """Head of the queue, skipping ``exclude`` (entries the caller may not act on —
+    the drain passes the ids owned by another fleet daemon)."""
+    stmt = select(SessionQueue).order_by(*_ORDER).limit(1)
+    if exclude:
+        stmt = stmt.where(SessionQueue.session_id.notin_(list(exclude)))
     async with db_session() as db:
-        return (await db.execute(
-            select(SessionQueue).order_by(*_ORDER).limit(1))).scalar_one_or_none()
+        return (await db.execute(stmt)).scalar_one_or_none()
 
 
 async def remove(session_id: str) -> bool:

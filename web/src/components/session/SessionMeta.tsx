@@ -2,23 +2,26 @@
  * SessionMeta — the second-tier session status strip.
  *
  * Shows, glanceably: current account, current model, remaining context,
- * account quota (session / weekly), and a toggle for the sub-agent list.
+ * account quota (one readout per provider window), and a toggle for the
+ * sub-agent list.
  * All values are pre-derived by the caller (SessionView); this component is
  * pure presentation.
  */
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { formatResetTime } from '@/lib/formatReset'
 import { contextSeverity } from '@/lib/contextWindow'
 import type { SubAgent, SubAgentStatus } from '@/session/selectors'
 import { modelName } from '@/session/modelName'
 import { SubAgentList } from './SubAgentList'
+import type { UsageWindow } from '@/api/types'
 
-interface Quota {
-  sessionPct: number
-  weeklyPct: number
-  sessionResetsAt: string | null
-  weeklyResetsAt: string | null
+/** Compact labels for the strip, which is tight on horizontal space. Falls back
+ *  to the provider's own window key when it is not one we abbreviate. */
+const QUOTA_ABBR: Record<string, string> = {
+  session: 'sess',
+  weekly: 'wk',
+  premium: 'prem',
 }
 
 /** Tooltip copy for a quota window: spell out the abbreviation + reset time. */
@@ -39,7 +42,7 @@ interface Props {
   /** Permission mode for the session ('plan' shows the plan-mode toggle as on). */
   mode: string
   contextPct: number | null
-  quota: Quota | null
+  quota: UsageWindow[] | null
   subAgents: SubAgent[]
   /** Live status node (the StatusBar) folded into this strip so the session pane
    *  has a single status line instead of two stacked bars. Optional so the
@@ -59,6 +62,8 @@ interface Props {
   onSelectModel: (id: string) => void
   onSelectAccount: (name: string) => void
   onSetMode: (mode: string) => void
+  /** Clear the account pin; the server rotates a `limited` session immediately. */
+  onUnpin?: () => void
 }
 
 const DASH = '—'
@@ -76,7 +81,7 @@ const DOT_CLASS: Record<SubAgentStatus, string> = {
   failed: 'bg-red-500',
 }
 
-export function SessionMeta({ account, model, liveModel = null, modelPending = false, mode, contextPct, quota, subAgents, statusSlot, exportSlot, actionsSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onSetMode }: Props) {
+export function SessionMeta({ account, model, liveModel = null, modelPending = false, mode, contextPct, quota, subAgents, statusSlot, exportSlot, actionsSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onSetMode, onUnpin }: Props) {
   const [open, setOpen] = useState(false)
   const agentCount = subAgents.length
 
@@ -104,7 +109,15 @@ export function SessionMeta({ account, model, liveModel = null, modelPending = f
             ))}
           </select>
           {accountPinned && (
-            <span aria-label="Account pinned" title="Pinned — auto-rotation off" className="text-amber-500">📌</span>
+            <button
+              type="button"
+              onClick={onUnpin}
+              aria-label="Unpin account"
+              title="Pinned — auto-rotation off. Click to unpin."
+              className="text-amber-500 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+            >
+              📌
+            </button>
           )}
         </span>
 
@@ -171,25 +184,24 @@ export function SessionMeta({ account, model, liveModel = null, modelPending = f
           )
         })()}
 
-        {/* Account quota */}
-        {quota && (
+        {/* Account quota — one readout per window the provider reported, so a
+            single-allowance provider shows ONE number instead of the same one
+            twice under two labels. */}
+        {quota && quota.length > 0 && (
           <span className="inline-flex items-center gap-1.5" aria-label="Account quota">
             <span className="text-gray-400 dark:text-gray-500">quota</span>
-            <span
-              className="tabular-nums text-gray-900 dark:text-gray-100"
-              title={quotaTitle('Session', quota.sessionResetsAt)}
-              aria-label={`Session usage: ${quota.sessionPct}% — ${quotaTitle('Session', quota.sessionResetsAt)}`}
-            >
-              sess {quota.sessionPct}%
-            </span>
-            <span className="text-gray-300 dark:text-gray-600">/</span>
-            <span
-              className="tabular-nums text-gray-900 dark:text-gray-100"
-              title={quotaTitle('Weekly', quota.weeklyResetsAt)}
-              aria-label={`Weekly usage: ${quota.weeklyPct}% — ${quotaTitle('Weekly', quota.weeklyResetsAt)}`}
-            >
-              wk {quota.weeklyPct}%
-            </span>
+            {quota.map((w, i) => (
+              <Fragment key={w.key}>
+                {i > 0 && <span className="text-gray-300 dark:text-gray-600">/</span>}
+                <span
+                  className="tabular-nums text-gray-900 dark:text-gray-100"
+                  title={quotaTitle(w.label, w.resetsAt)}
+                  aria-label={`${w.label} usage: ${w.pct}% — ${quotaTitle(w.label, w.resetsAt)}`}
+                >
+                  {QUOTA_ABBR[w.key] ?? w.key} {w.pct}%
+                </span>
+              </Fragment>
+            ))}
           </span>
         )}
 

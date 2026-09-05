@@ -1,5 +1,5 @@
 import asyncio
-from server.sessions.driver import SessionDriver
+from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.permissions import PermissionRegistry
 from server.sessions.events import Suggestions
 from server.tests.fakes.fake_sdk import FakeSDKClient
@@ -30,7 +30,7 @@ def test_emits_suggestions_after_idle():
     sug = _StubSuggester(["Run the tests", "Commit it"])
 
     async def run():
-        d = SessionDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory(msgs), registry=PermissionRegistry(),
                           identity="me", suggester=sug)
         await d.start()
@@ -56,7 +56,7 @@ def test_empty_suggestions_emit_no_event():
     sug = _StubSuggester([])
 
     async def run():
-        d = SessionDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory(msgs), registry=PermissionRegistry(),
                           identity="me", suggester=sug)
         await d.start()
@@ -83,7 +83,7 @@ def test_no_suggester_never_triggers():
     msgs = [f.stream_start(uuid="t1"), f.stream_text("done", uuid="t1"), f.result(uuid="t1")]
 
     async def run():
-        d = SessionDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory(msgs), registry=PermissionRegistry(),
                           identity="me")
         await d.start()
@@ -108,7 +108,7 @@ def test_new_prompt_cancels_inflight_suggestion():
     sug = _StubSuggester(["late"], gate=gate)
 
     async def run():
-        d = SessionDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory(msgs), registry=PermissionRegistry(),
                           identity="me", suggester=sug)
         await d.start()
@@ -135,7 +135,7 @@ def test_seed_idle_suggestions_emits_once(caplog):
     sug = _StubSuggester(["Resume hint"])
 
     async def run():
-        d = SessionDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory([]), registry=PermissionRegistry(),
                           identity="me", suggester=sug)
         await d.start()
@@ -164,7 +164,7 @@ def test_seed_idle_suggestions_noop_without_context():
     sug = _StubSuggester(["x"])
 
     async def run():
-        d = SessionDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory([]), registry=PermissionRegistry(),
                           identity="me", suggester=sug)
         await d.start()
@@ -184,7 +184,7 @@ def test_no_subscribers_skips_suggestions():
     sug = _StubSuggester(["never generated"])
 
     async def run():
-        d = SessionDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory(msgs), registry=PermissionRegistry(),
                           identity="me", suggester=sug)
         await d.start()
@@ -203,13 +203,13 @@ def test_no_subscribers_skips_suggestions():
 def test_copilot_account_skips_suggestions(monkeypatch):
     """Copilot sessions run a third-party model — Haiku suggestions routed through
     the proxy are meaningless (mirrors the detached-path guard at orchestrator:4947)."""
-    monkeypatch.setattr("server.sessions.driver._provider_of",
+    monkeypatch.setattr("server.sessions.claude_driver._provider_of",
                         lambda name: "copilot")
     msgs = [f.stream_start(uuid="t1"), f.stream_text("done", uuid="t1"), f.result(uuid="t1")]
     sug = _StubSuggester(["never generated"])
 
     async def run():
-        d = SessionDriver("s1", "copilot-acct", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s1", "copilot-acct", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory(msgs), registry=PermissionRegistry(),
                           identity="me", suggester=sug)
         await d.start()
@@ -232,7 +232,7 @@ def test_identical_context_dedupes_generation():
     sug = _StubSuggester(["Run the tests"])
 
     async def run():
-        d = SessionDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory([]), registry=PermissionRegistry(),
                           identity="me", suggester=sug)
         await d.start()

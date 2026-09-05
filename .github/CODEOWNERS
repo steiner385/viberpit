@@ -1,0 +1,33 @@
+# Code owners for the governance control plane.
+#
+# Purpose: stop an amendment or a guardrail change from auto-merging before a
+# human has actually looked at it. PR #1098 rebased, went green, and squashed
+# itself in while review corrections were still being written — required status
+# checks cannot tell a reviewed amendment from an unreviewed one, only a required
+# review can.
+#
+# IMPORTANT: this file is advisory on its own. It takes effect only once master's
+# branch protection has "Require a pull request before merging" +
+# "Require review from Code Owners" enabled.
+#
+# Solo-maintainer caveat: GitHub does not let you approve your own pull request.
+# With code-owner review required, a PR you authored yourself cannot be approved
+# by anyone else here — you merge it via admin override instead. That is the
+# intended shape: auto-merge stops being able to land governance changes silently,
+# and merging becomes a deliberate act. Leave "Do not allow bypassing the above
+# settings" OFF, or you will lock yourself out of your own amendments.
+
+# The constitution itself.
+/.specify/                          @steiner385
+
+# The guardrails that enforce it.
+/.claude/managed-settings.json      @steiner385
+/.claude/hooks/                     @steiner385
+/.claude/settings.json              @steiner385
+/.codex/config.toml                 @steiner385
+/.codex/rules/                      @steiner385
+/server/sdlc/governance.py          @steiner385
+/server/sdlc/constitution_gate.py   @steiner385
+/scripts/check_constitution_amendment.py @steiner385
+/.github/workflows/constitution.yml @steiner385
+/.github/CODEOWNERS                 @steiner385

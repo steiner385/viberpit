@@ -4,6 +4,8 @@ import { SidebarResizer } from '@/components/SidebarResizer'
 import { useDrawerName, useCloseDrawer, type DrawerName } from '@/shell/drawerParam'
 import { DRAWER_MIN, DRAWER_MAX, useDrawerWidth } from '@/shell/drawerWidth'
 import { useViewport } from '@/shell/useViewport'
+import { AssistantSheet } from '@/features/assistant/AssistantSheet'
+import { AssistantGestureProvider, useAssistantGestureHandle } from '@/features/assistant/assistantGestures'
 import { HelpSheet } from './HelpSheet'
 
 /**
@@ -46,27 +48,47 @@ import { HelpSheet } from './HelpSheet'
 
 const DRAWERS: Record<DrawerName, { title: string; content: ReactNode }> = {
   help: { title: 'Help & Shortcuts', content: <HelpSheet /> },
-  // PR 12 replaces this with `AssistantSheet` (a transcript + composer over
-  // `POST /api/assistant/session`). Until that backend exists the drawer is
-  // deliberately inert: a composer wired to nothing would take prompts and drop
-  // them, which is worse than an honest placeholder.
-  assistant: { title: 'Assistant', content: <AssistantPlaceholder /> },
+  assistant: { title: 'Assistant', content: <AssistantSheet /> },
 }
 
 export function DrawerHost() {
+  // Wraps the whole component so both this component's own `onClose` (below) and the
+  // nested `AssistantSheet` (whenever the assistant drawer is the one open) share the
+  // same gesture ref — see assistantGestures.tsx.
+  return (
+    <AssistantGestureProvider>
+      <DrawerHostInner />
+    </AssistantGestureProvider>
+  )
+}
+
+function DrawerHostInner() {
   const drawer = useDrawerName()
   const close = useCloseDrawer()
   const { drawerPushes } = useViewport()
   const [width, setWidth] = useDrawerWidth()
+  const assistantGestures = useAssistantGestureHandle()
 
   if (!drawer) return null
 
   const { title, content } = DRAWERS[drawer]
 
+  // Esc normally just closes the drawer (Sheet's focus trap calls `onClose` on Escape
+  // in overlay mode — see useFocusTrap.ts). When the assistant drawer is open with a
+  // live turn, Esc should stop that turn first and leave the drawer open, matching
+  // the in-session Esc/interrupt behavior instead of abandoning the turn silently.
+  const onClose = () => {
+    if (drawer === 'assistant' && assistantGestures.current?.turnLive) {
+      assistantGestures.current.interrupt()
+      return
+    }
+    close()
+  }
+
   const sheet = (
     <Sheet
       open
-      onClose={close}
+      onClose={onClose}
       title={title}
       side="right"
       mode={drawerPushes ? 'push' : 'overlay'}
@@ -107,18 +129,5 @@ export function DrawerHost() {
       />
       {sheet}
     </aside>
-  )
-}
-
-function AssistantPlaceholder() {
-  return (
-    <div data-testid="drawer-assistant" className="space-y-3 text-sm text-ink-muted">
-      <p className="text-ink font-medium">Assistant is coming.</p>
-      <p>
-        It will answer questions about what your sessions are doing and act on this app on your
-        behalf, with the page you are on as context.
-      </p>
-      <p>Nothing to configure — it appears here when the backend ships.</p>
-    </div>
   )
 }

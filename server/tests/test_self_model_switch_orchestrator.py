@@ -28,6 +28,7 @@ import asyncio
 from datetime import datetime
 
 from server.sessions.self_model_guards import SelfModelState
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 from server.tests.test_orchestrator_model_gate import _harness, _seed_account
 
@@ -48,7 +49,7 @@ class _FakeDriver:
 
 def _attach(orch, *, session_id="s1", model="opus", account="alpha", req=None):
     rec = SessionRecord(
-        id=session_id, name="n", account=account, claude_session_id="c1",
+        id=session_id, name="n", account=account, engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
         cols=80, rows=24, cwd="/tmp", model=model, updated_at=datetime.utcnow())
     orch._records[session_id] = rec
     orch._drivers[session_id] = _FakeDriver(req)
@@ -388,7 +389,7 @@ def test_park_self_model_request_writes_the_real_row(tmp_path, monkeypatch):
                 sid = "s1"
                 async with db_session() as db:
                     db.add(DbSession(id=sid, name="n", account_name="alpha",
-                                     claude_session_id="c1", status="idle",
+                                     engine_session_id="c1", status="idle",
                                      cwd="/tmp", model="opus"))
                 _attach(orch, session_id=sid, model="opus", req=None)
 

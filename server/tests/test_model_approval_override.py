@@ -2,6 +2,7 @@
 import pytest
 
 from server.sessions.orchestrator import ModelBlockedError, SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
@@ -30,7 +31,7 @@ def audit_log(monkeypatch):
 def orch_with_hold(monkeypatch, audit_log):
     """An orchestrator holding a mid-session, session-initiated fable request."""
     o = SessionOrchestrator.__new__(SessionOrchestrator)
-    rec = SessionRecord(id="s1", name="n", account="acct", claude_session_id="c1",
+    rec = SessionRecord(id="s1", name="n", account="acct", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                          cols=80, rows=24, cwd="/tmp", model="sonnet", status="in_progress")
     rec.pending_model = "fable"
     rec.pending_model_reason = "cross-module refactor"
@@ -141,7 +142,7 @@ async def test_override_with_no_hold_is_refused(monkeypatch, audit_log):
     substitution and fire the mid-session apply branch, bypassing
     set_model_for_session's require_approval gate entirely."""
     o = SessionOrchestrator.__new__(SessionOrchestrator)
-    rec = SessionRecord(id="s3", name="n", account="acct", claude_session_id="c1",
+    rec = SessionRecord(id="s3", name="n", account="acct", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                          cols=80, rows=24, cwd="/tmp", model="sonnet",
                          status="in_progress")
     # rec.pending_model defaults to None: nothing parked.
@@ -182,7 +183,7 @@ async def test_override_with_no_hold_is_refused(monkeypatch, audit_log):
 async def test_launch_time_hold_spawns_with_the_counter_offer(monkeypatch, audit_log):
     """The other hold kind: a not-yet-spawned session approved at a different model."""
     o = SessionOrchestrator.__new__(SessionOrchestrator)
-    rec = SessionRecord(id="s2", name="n", account="acct", claude_session_id="",
+    rec = SessionRecord(id="s2", name="n", account="acct", engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
                          cols=80, rows=24, cwd="/tmp", model=None,
                          status="pending_approval")
     rec.pending_model = "fable"

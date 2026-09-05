@@ -37,8 +37,15 @@ describe('SessionMeta switchers', () => {
     expect(onSelectAccount).toHaveBeenCalledWith('acct-b')
   })
 
-  it('shows a pin indicator when pinned', () => {
-    render(<SessionMeta {...base} accountPinned onSelectModel={vi.fn()} onSelectAccount={vi.fn()} />)
-    expect(screen.getByLabelText('Account pinned')).toBeInTheDocument()
+  it('renders the pin as an Unpin button and dispatches onUnpin', () => {
+    const onUnpin = vi.fn()
+    render(<SessionMeta {...base} accountPinned onSelectModel={vi.fn()} onSelectAccount={vi.fn()} onUnpin={onUnpin} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Unpin account' }))
+    expect(onUnpin).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders no pin control when not pinned', () => {
+    render(<SessionMeta {...base} onSelectModel={vi.fn()} onSelectAccount={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: 'Unpin account' })).not.toBeInTheDocument()
   })
 })

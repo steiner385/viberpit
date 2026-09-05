@@ -1,3 +1,4 @@
+// @vitest-environment node
 // Ported from plotroom@5166b52 frontend/src/spine/__tests__/lanes.test.tsx; edits: ../lanes/* → ../spine/lanes/*; ../../types → ../types
 import { describe, it, expect } from 'vitest';
 import { prCiLane } from '../spine/lanes/prCiLane';

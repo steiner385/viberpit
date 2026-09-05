@@ -1,0 +1,5 @@
+id: codex-agents-loads-canonical-context
+description: AGENTS.md loads the canonical project and review context.
+kind: static
+tags: [agent-config, codex, context]
+check: "grep -Fq '# cc-account-switcher — Agent Context' AGENTS.md && grep -Fq 'read `.claude/REVIEW.md` in full' AGENTS.md"

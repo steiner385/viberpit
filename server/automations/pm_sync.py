@@ -118,6 +118,9 @@ SaveRelations = Callable[[str, list[IssueRelView]], Awaitable[None]]
 # Rewrite every mirror key from a stored alias to GitHub's canonical
 # ``nameWithOwner`` (args: old, new) and return per-table counts (issue #999).
 RenameRepo = Callable[[str, str], Awaitable[dict]]
+# Adopt every open, board-linked epic with no Initiative yet as one at
+# stage=build (arg: project_id) -> the refs ("repo#number") adopted (#991).
+AdoptEpics = Callable[[str], Awaitable[list[str]]]
 
 
 class PmSyncLoop:
@@ -144,6 +147,7 @@ class PmSyncLoop:
         save_project_items: SaveProjectItems | None = None,
         save_relations: SaveRelations | None = None,
         rename_repo: RenameRepo | None = None,
+        adopt_epics: AdoptEpics | None = None,
     ) -> None:
         self._ctx = ctx
         self._read_config = read_config
@@ -164,6 +168,8 @@ class PmSyncLoop:
         self._save_relations = save_relations
         # None ⇒ the payload's canonical name is informational only (issue #999).
         self._rename_repo = rename_repo
+        # None ⇒ epic adoption is skipped (issue #991).
+        self._adopt_epics = adopt_epics
         # Projects v2 pass gating (issue #973). In-memory on the long-lived loop:
         # ``_projects_next_run`` is the earliest UTC time the pass may run again;
         # ``_last_gh_projects`` keeps the status count steady across skipped ticks;
@@ -370,6 +376,15 @@ class PmSyncLoop:
                 if not more:
                     break
             await self._save_relations(repo, rels)
+        # Epic adoption (issue #991): only when the board itself is actually
+        # linked. ``linked == 0`` also covers the board-deleted halt above — a
+        # deliberate loud needs-human pause that preserves mirror rows, so
+        # creating new Initiative rows here would contradict it.
+        if linked == 1 and self._adopt_epics is not None:
+            for ref in await self._adopt_epics(product.project_id):
+                await self._ctx.emit(
+                    "info", f"adopted GitHub epic {ref} as an Initiative (stage=build)",
+                    kind="epic_adopted", target=ref)
         return linked
 
     async def _emit_board_deleted(self, product: ProductSyncView,

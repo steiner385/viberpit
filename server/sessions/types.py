@@ -8,6 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from server.sessions.engine import AgentEngine, parse_agent_engine
+from server.sessions.usage_stall import is_usage_stalled
 from server.time_iso import iso_utc
 
 # Sentinel identity for internal/background callers (rehydrate, dispatch, eager
@@ -37,15 +39,18 @@ VALID_SESSION_MODES = frozenset({
     "acceptEdits", "bypassPermissions",
 })
 
+ASSISTANT_KIND = "assistant"
+
 
 @dataclass
 class SessionRecord:
     """In-memory view of a running session — mirrors the DB row but stays process-local."""
 
-    id: str                  # UUID, also the session key in SessionOrchestrator/SessionDriver
+    id: str                  # UUID, also the session key in SessionOrchestrator/ClaudeAgentDriver
     name: str                # user-visible label
     account: str             # current account name (updated on rotation)
-    claude_session_id: str   # value passed to --resume on rotation
+    engine: AgentEngine      # native executable owning the conversation
+    engine_session_id: str   # native id passed to resume on rotation/recovery
     cols: int
     rows: int
     cwd: str
@@ -65,6 +70,7 @@ class SessionRecord:
     adopted_in_place: bool = False   # resumed in original cwd, no worktree (adopted session)
     sub_agents: list | None = None   # [{agentId,parentAgentId,agentType,description,status}], refreshed at status changes
     model: str | None = None         # persisted model alias/id; None = account default
+    reasoning_effort: str | None = None  # engine-native effort; None = model default
     # Requested model held pending human approval while status == "pending_approval"
     # (the launch gate parks a gated tier here rather than spawning it — see
     # SessionOrchestrator._hold_for_approval). Mirrors DB Session.pending_model; None
@@ -85,6 +91,12 @@ class SessionRecord:
     active_goal: str | None = None    # active /goal condition; None = no goal
     inferred_goal: str | None = None  # LLM-inferred goal (middle effective_goal tier)
     autopilot_paused: bool = False    # per-session autopilot opt-out (True = pinned to manual)
+    kind: str | None = None           # "assistant" for the AI-drawer session; None = coding session
+    owner_identity: str | None = None # identity owning an assistant thread (idempotency key)
+    # Monotonic time of the last prompt or `activity` WS frame. In-memory only — drives
+    # the assistant idle reap; never a DB column (a restart resets it, which is fine:
+    # the reap re-arms from the next interaction).
+    last_activity_at: float | None = None
     # Sticky auto-archive opt-out reason. None = eligible for auto-archive; "manual-unarchive"
     # = a human unarchived this session, so it is never auto-archived again (see orchestrator).
     auto_archive_opt_out_reason: str | None = None
@@ -115,6 +127,12 @@ class SessionRecord:
     # session is resumable iff it was flagged AND this is in RESUME_ELIGIBLE_STATUSES.
     # Never persisted; cleared with the flag on the next turn.
     interrupted_from_status: str | None = None
+    # Why the session is parked (a _pause_session reason token, or
+    # "pinned_account_limited" for the `limited` overlay) and the earliest known
+    # usage reset (naive UTC). Persisted so a poll/reload keeps the cause; cleared by
+    # _persist_status on any non-stalled status. See server/sessions/usage_stall.py.
+    paused_reason: str | None = None
+    paused_until: datetime | None = None
     authored_branches: list[str] = field(default_factory=list)  # feature branches → multi-PR badges
     # Last EXACT context-window occupancy from the SDK (the `/context` data), refreshed
     # each turn. Persisted + replayed on attach so a reloaded/idle session shows real
@@ -155,7 +173,18 @@ class SessionRecord:
         # `from_dict` restores it faithfully over RPC.
         return {
             "id": self.id, "name": self.name, "account": self.account,
-            "claudeSessionId": self.claude_session_id, "cols": self.cols, "rows": self.rows,
+            "engine": self.engine.value,
+            "engineSessionId": self.engine_session_id,
+            # Temporary daemon→edge rolling-upgrade alias. Daemons deploy before
+            # the edge, so the old edge still needs this key while the new edge
+            # already understands ``engineSessionId``. Browser serializers never
+            # expose it, and it is intentionally null for non-Claude engines.
+            "claudeSessionId": (
+                self.engine_session_id
+                if self.engine is AgentEngine.CLAUDE_CODE
+                else None
+            ),
+            "cols": self.cols, "rows": self.rows,
             "cwd": self.cwd, "repo": self.repo, "branch": self.branch, "detached": self.detached,
             "origin": self.origin, "origin_ref": self.origin_ref,
             "assistedBy": self.assisted_by,
@@ -168,6 +197,7 @@ class SessionRecord:
             "revAt": self.rev_at,
             "adoptedInPlace": self.adopted_in_place,
             "model": self.model,
+            "reasoningEffort": self.reasoning_effort,
             "pendingModel": self.pending_model,
             "pendingModelReason": self.pending_model_reason,
             "pendingModelRequestedBy": self.pending_model_requested_by,
@@ -185,10 +215,17 @@ class SessionRecord:
             "interruptedFromStatus": self.interrupted_from_status,
             "resumable": (self.interrupted_by_restart
                           and self.interrupted_from_status in RESUME_ELIGIBLE_STATUSES),
+            "pausedReason": self.paused_reason,
+            "pausedUntil": iso_utc(self.paused_until),
+            "usageStalled": is_usage_stalled(self.status, self.paused_reason),
             "authoredBranches": list(self.authored_branches),
             "contextUsedTokens": self.context_used_tokens,
             "contextMaxTokens": self.context_max_tokens,
             "commandCatalog": self.command_catalog,
+            # Carried over RPC so a fleet mirror of an assistant session is still
+            # recognised by is_assistant() on the edge (list filtering, sweeps).
+            "kind": self.kind,
+            "ownerIdentity": self.owner_identity,
         }
 
     @classmethod
@@ -199,7 +236,17 @@ class SessionRecord:
         rev = d.get("revAt")
         return cls(
             id=d["id"], name=d["name"], account=d["account"],
-            claude_session_id=d["claudeSessionId"], cols=d["cols"], rows=d["rows"],
+            # Only an omitted field identifies an old daemon. An explicit null is
+            # malformed current wire data and must not be relabelled as Claude.
+            engine=parse_agent_engine(
+                d["engine"] if "engine" in d else AgentEngine.CLAUDE_CODE),
+            # ``claudeSessionId`` is accepted only at this daemon→edge rolling-
+            # upgrade boundary. Browser payloads and all internal models use the
+            # canonical engine-neutral key.
+            engine_session_id=((d.get("engineSessionId")
+                                if "engineSessionId" in d
+                                else d.get("claudeSessionId")) or ""),
+            cols=d["cols"], rows=d["rows"],
             cwd=d["cwd"], repo=d.get("repo"), branch=d.get("branch"), detached=d.get("detached", False),
             origin=d.get("origin"), origin_ref=d.get("origin_ref"),
             assisted_by=d.get("assistedBy"),
@@ -212,6 +259,7 @@ class SessionRecord:
             updated_at=datetime.fromisoformat(rev) if rev else None,
             adopted_in_place=d.get("adoptedInPlace", False),
             model=d.get("model"),
+            reasoning_effort=d.get("reasoningEffort"),
             pending_model=d.get("pendingModel"),
             pending_model_reason=d.get("pendingModelReason"),
             pending_model_requested_by=d.get("pendingModelRequestedBy"),
@@ -227,8 +275,28 @@ class SessionRecord:
             usage_unverified=d.get("usageUnverified", False),
             interrupted_by_restart=d.get("interruptedByRestart", False),
             interrupted_from_status=d.get("interruptedFromStatus"),
+            paused_reason=d.get("pausedReason"),
+            paused_until=(datetime.fromisoformat(d["pausedUntil"])
+                          if d.get("pausedUntil") else None),
             authored_branches=list(d.get("authoredBranches") or []),
             context_used_tokens=d.get("contextUsedTokens"),
             context_max_tokens=d.get("contextMaxTokens"),
             command_catalog=d.get("commandCatalog"),
+            kind=d.get("kind"),
+            owner_identity=d.get("ownerIdentity"),
         )
+
+
+def is_assistant_kind(kind: str | None) -> bool:
+    """The ONE comparison against ``ASSISTANT_KIND``, for the paths that hold a bare
+    kind STRING rather than a record (``create_session``'s parameter, the queue params).
+    Keeps the literal from being open-coded a second time (constitution VI)."""
+    return kind == ASSISTANT_KIND
+
+
+def is_assistant(rec) -> bool:
+    """The ONE predicate for 'is this the AI-drawer session' — every loop that
+    iterates sessions (autopilot, titles, summaries, suggestions, goal inference,
+    auto-archive, capacity) routes through it. Duck-typed so fleet mirrors and DB rows
+    qualify too."""
+    return is_assistant_kind(getattr(rec, "kind", None))

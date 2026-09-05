@@ -16,6 +16,7 @@ import asyncio
 import pytest
 
 from server.sessions.orchestrator import SessionOrchestrator, _MIRROR_EVICT_STRIKES
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
@@ -41,7 +42,8 @@ def _make_orch(monkeypatch, *, present_ids, inactive_ids=()):
 
 def _rec(o, sid, *, host):
     rec = SessionRecord(id=sid, name="n", account="acct",
-                        claude_session_id=None, cols=80, rows=24, cwd="/tmp")
+                        engine=AgentEngine.CLAUDE_CODE,
+                        engine_session_id=None, cols=80, rows=24, cwd="/tmp")
     rec.status = "idle"
     rec.host = host
     o._records[sid] = rec
@@ -198,11 +200,11 @@ async def test_session_row_liveness_partitions_against_a_real_db(tmp_path):
     await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'liveness.db'}")
     async with db_session() as db:
         db.add(DbSession(id="live", name="L", account_name="a",
-                         claude_session_id=None, status="idle", cwd="/tmp"))
+                         engine_session_id=None, status="idle", cwd="/tmp"))
         db.add(DbSession(id="arch", name="A", account_name="a",
-                         claude_session_id=None, status="archived", cwd="/tmp"))
+                         engine_session_id=None, status="archived", cwd="/tmp"))
         db.add(DbSession(id="over", name="E", account_name="a",
-                         claude_session_id=None, status="ended", cwd="/tmp"))
+                         engine_session_id=None, status="ended", cwd="/tmp"))
 
     o = SessionOrchestrator(sdk_factory=lambda *a, **k: None)
     active, inactive = await o._session_row_liveness(["live", "arch", "over", "gone"])

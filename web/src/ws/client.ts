@@ -7,9 +7,9 @@
  */
 
 import type { QueryClient } from '@tanstack/react-query'
-import type { Session } from '@/api/types'
+import type { AccountUsage, Session } from '@/api/types'
 import { QK } from '@/api/hooks'
-import type { SessionEvent } from '@/session/events'
+import type { SessionEvent, PromptContext } from '@/session/events'
 import { SESSION_EVENT_TYPES } from '@/session/events'
 import { clientLogger } from '@/obs/logger'
 import { createGapState, handleLiveBatch, catchUpCursor, catchUpEpoch, invalidateCatchUp, type GapState } from './liveBatch'
@@ -17,8 +17,8 @@ import { shouldApplyRev } from '@/session/reconcile'
 
 // ── Inbound message shapes ───────────────────────────────────────────────────
 
-export interface WsStatusMsg       { type: 'status';        sessionId: string; status: string; updatedAt?: string; revAt?: string; interruptedByRestart?: boolean }
-export interface WsUsageMsg        { type: 'usage';         account: string; session: { pct: number; resetsAt: string | null }; weekly: { pct: number; resetsAt: string | null } }
+export interface WsStatusMsg       { type: 'status';        sessionId: string; status: string; updatedAt?: string; revAt?: string; interruptedByRestart?: boolean; pausedReason?: string | null; pausedUntil?: string | null; usageStalled?: boolean }
+export interface WsUsageMsg        { type: 'usage';         account: string; usage: AccountUsage }
 export interface WsRotatedMsg      { type: 'rotated';       sessionId: string; fromAccount: string; toAccount: string; reason?: string; turnRestarted?: boolean; revAt?: string }
 export interface WsErrorMsg        { type: 'error';         sessionId?: string; code: string; message: string; resetsAt?: string | null }
 export interface WsBatchMsg        { type: 'batch';         events: SessionEvent[] }
@@ -85,7 +85,7 @@ export class SessionSocket {
   private _queryClient: QueryClient | null = null
   private readonly url: string
   private _updatePending = false
-  private _pendingPrompts: { sessionId: string; text: string; attachmentIds?: string[] }[] = []
+  private _pendingPrompts: { sessionId: string; text: string; attachmentIds?: string[]; context?: PromptContext }[] = []
   private static readonly MAX_PENDING = 50
   private _gap: GapState = createGapState()
   private _lastHealAt = 0
@@ -225,15 +225,17 @@ export class SessionSocket {
     return this._sendControl({ type: 'interrupt', sessionId })
   }
 
-  prompt(sessionId: string, text: string, attachmentIds?: string[]) {
+  prompt(sessionId: string, text: string, attachmentIds?: string[], context?: PromptContext) {
     // Never silently drop input. Buffer whenever it can't be trusted to land — the
     // server is draining (updatePending) OR the socket isn't open — and flush on the
     // next reconnect (after re-attach). Otherwise send straight through.
     if (this._updatePending || this.ws?.readyState !== WebSocket.OPEN) {
-      this._enqueuePrompt({ sessionId, text, attachmentIds })
+      this._enqueuePrompt({ sessionId, text, attachmentIds, context })
       return
     }
-    this._send({ type: 'prompt', sessionId, text, ...(attachmentIds && attachmentIds.length ? { attachmentIds } : {}) })
+    this._send({ type: 'prompt', sessionId, text,
+      ...(attachmentIds && attachmentIds.length ? { attachmentIds } : {}),
+      ...(context ? { context } : {}) })
   }
 
   sendInterrupt(sessionId: string): boolean {
@@ -303,7 +305,7 @@ export class SessionSocket {
     this._emit('updatePendingChange', { active: this._updatePending, count: this._pendingPrompts.length })
   }
 
-  private _enqueuePrompt(p: { sessionId: string; text: string; attachmentIds?: string[] }) {
+  private _enqueuePrompt(p: { sessionId: string; text: string; attachmentIds?: string[]; context?: PromptContext }) {
     if (this._pendingPrompts.length >= SessionSocket.MAX_PENDING) {
       const dropped = this._pendingPrompts.shift()
       // No silent caps — tell the user a held message was lost rather than dropping it quietly.
@@ -324,7 +326,8 @@ export class SessionSocket {
     this._updatePending = false
     for (const p of pending) {
       this._send({ type: 'prompt', sessionId: p.sessionId, text: p.text,
-        ...(p.attachmentIds && p.attachmentIds.length ? { attachmentIds: p.attachmentIds } : {}) })
+        ...(p.attachmentIds && p.attachmentIds.length ? { attachmentIds: p.attachmentIds } : {}),
+        ...(p.context ? { context: p.context } : {}) })
     }
     this._emitUpdatePending()
   }
@@ -454,7 +457,7 @@ export class SessionSocket {
     switch (msg.type) {
       case 'status':
         this._emit('status', msg)
-        this._patchSessionStatus(msg.sessionId, msg.status as Session['status'], msg.updatedAt, msg.revAt, msg.interruptedByRestart)
+        this._patchSessionStatus(msg.sessionId, msg.status as Session['status'], msg.updatedAt, msg.revAt, msg.interruptedByRestart, msg)
         break
       case 'usage':
         this._emit('usage', msg)
@@ -529,7 +532,7 @@ export class SessionSocket {
 
   // ── TanStack Query cache patching ────────────────────────────────────────────
 
-  private _patchSessionStatus(sessionId: string, status: Session['status'], updatedAt?: string, revAt?: string, interruptedByRestart?: boolean) {
+  private _patchSessionStatus(sessionId: string, status: Session['status'], updatedAt?: string, revAt?: string, interruptedByRestart?: boolean, stall?: Pick<WsStatusMsg, 'pausedReason' | 'pausedUntil' | 'usageStalled'>) {
     const qc = this._queryClient
     if (!qc) return
     qc.setQueryData<Session[]>(QK.sessions, (old) => {
@@ -546,6 +549,11 @@ export class SessionSocket {
                  // (cleared on resume) so the pill relabels without waiting for the 5s poll.
                  ...(interruptedByRestart !== undefined
                      ? { interruptedByRestart, ...(interruptedByRestart ? {} : { resumable: false }) }
+                     : {}),
+                 // Stall fields ride the same frame so the "Waiting for capacity" pill
+                 // and the Rotate-stalled count update without waiting for the poll.
+                 ...(stall?.usageStalled !== undefined
+                     ? { usageStalled: stall.usageStalled, pausedReason: stall.pausedReason ?? null, pausedUntil: stall.pausedUntil ?? null }
                      : {}) }
       })
     })
@@ -566,7 +574,8 @@ export class SessionSocket {
       return old.map((s) => {
         if (s.id !== sessionId) return s
         if (!shouldApplyRev(revAt, s.revAt)) return s
-        return { ...s, accountName, ...(revAt ? { revAt } : {}) }
+        // A rotation ends whatever pause parked the session.
+        return { ...s, accountName, usageStalled: false, pausedReason: null, pausedUntil: null, ...(revAt ? { revAt } : {}) }
       })
     })
   }
@@ -575,29 +584,53 @@ export class SessionSocket {
     const qc = this._queryClient
     if (!qc) return
     // Import Account type inline to avoid circular imports
-    type AccountLike = { name: string; usage: { session: { pct: number; resetsAt: string | null }; weekly: { pct: number; resetsAt: string | null } } }
+    type AccountLike = { name: string; usage: AccountUsage | null }
     qc.setQueryData<AccountLike[]>(QK.accounts, (old) => {
       if (!old) return old
-      return old.map((a) =>
-        a.name === msg.account
-          ? { ...a, usage: { session: { pct: msg.session.pct, resetsAt: msg.session.resetsAt }, weekly: { pct: msg.weekly.pct, resetsAt: msg.weekly.resetsAt } } }
-          : a,
-      )
+      // Replace the whole snapshot: the number of windows is provider-dependent,
+      // so merging field-by-field would leave a stale window behind when a
+      // provider reports fewer than it did before.
+      return old.map((a) => (a.name === msg.account ? { ...a, usage: msg.usage } : a))
     })
   }
 }
 
-// ── Singleton ────────────────────────────────────────────────────────────────
-// One socket per page — shared across all useSessionSocket callers.
+// ── Channel singletons ───────────────────────────────────────────────────────
+// One socket per CHANNEL, shared across all useSessionSocket callers on it.
+//
+// A SessionSocket tracks a single `_activeSessionId`, so two consumers sharing
+// one instance fight over it: attaching the assistant thread would detach the
+// page's session (and detach it again on unmount). The AI drawer therefore gets
+// its own channel. Both connect to the same `/ws` endpoint — the server already
+// accepts several sockets per identity (that is what multi-tab is).
 
-let _singleton: SessionSocket | null = null
+/** 'route' carries the session the page has open; 'assistant' the AI drawer's thread. */
+export type SocketChannel = 'route' | 'assistant'
 
-export function getSessionSocket(): SessionSocket {
-  if (!_singleton) {
-    _singleton = new SessionSocket('/ws')
-    _singleton.connect()
+const _sockets: Partial<Record<SocketChannel, SessionSocket>> = {}
+
+export function getSocket(channel: SocketChannel = 'route'): SessionSocket {
+  let socket = _sockets[channel]
+  if (!socket) {
+    socket = new SessionSocket('/ws')
+    _sockets[channel] = socket
+    // Created lazily, so the assistant socket only opens once the drawer asks for it.
+    socket.connect()
   }
-  return _singleton
+  return socket
+}
+
+/** The page's session socket — the original accessor, now the 'route' channel. */
+export function getSessionSocket(): SessionSocket {
+  return getSocket('route')
+}
+
+/** Test-only: drop every channel's socket so the next getSocket() builds a fresh one. */
+export function __resetSocketsForTest(): void {
+  for (const channel of Object.keys(_sockets) as SocketChannel[]) {
+    _sockets[channel]?.destroy()
+    delete _sockets[channel]
+  }
 }
 
 // ── React hook ───────────────────────────────────────────────────────────────
@@ -605,9 +638,9 @@ export function getSessionSocket(): SessionSocket {
 import { useEffect, useState, useCallback } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 
-export function useSessionSocket() {
+export function useSessionSocket(channel: SocketChannel = 'route') {
   const queryClient = useQueryClient()
-  const socket = getSessionSocket()
+  const socket = getSocket(channel)
 
   // Wire the query client once
   useEffect(() => {
@@ -625,7 +658,7 @@ export function useSessionSocket() {
   const attach              = useCallback((sessionId: string) => socket.attach(sessionId), [socket])
   const detach              = useCallback((sessionId: string) => socket.detach(sessionId), [socket])
   const interrupt           = useCallback((sessionId: string) => socket.interrupt(sessionId), [socket])
-  const prompt              = useCallback((sessionId: string, text: string, attachmentIds?: string[]) => socket.prompt(sessionId, text, attachmentIds), [socket])
+  const prompt              = useCallback((sessionId: string, text: string, attachmentIds?: string[], context?: PromptContext) => socket.prompt(sessionId, text, attachmentIds, context), [socket])
   const sendInterrupt       = useCallback((sessionId: string) => socket.sendInterrupt(sessionId), [socket])
   const interruptAndPrompt  = useCallback((sessionId: string, text: string, attachmentIds?: string[]) => socket.interruptAndPrompt(sessionId, text, attachmentIds), [socket])
   const permissionResponse  = useCallback((sessionId: string, permId: string, decision: 'allow' | 'deny' | 'always') => socket.permissionResponse(sessionId, permId, decision), [socket])

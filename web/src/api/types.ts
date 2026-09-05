@@ -9,9 +9,39 @@ export interface ReauthState {
   authUrl?: string | null
 }
 
+/** One metered allowance on one account.
+ *
+ *  A provider reports the windows it ACTUALLY meters — Anthropic sends a session
+ *  (5-hour) and a weekly (7-day) window; Copilot sends one premium-request
+ *  window. It used to send that single number twice, under two labels, because
+ *  the wire shape had two fixed fields. Render the list, never a fixed pair. */
 export interface UsageWindow {
+  /** Stable machine key: 'session' | 'weekly' | 'premium' | … */
+  key: string
+  /** Human label the provider chose for this window, e.g. 'premium-req'. */
+  label: string
   pct: number        // 0–100
-  resetsAt: string | null  // ISO timestamp or null
+  resetsAt: string | null  // ISO timestamp, or null when no window is active
+  durationSeconds?: number | null
+  /** 'account' (meters everything) or 'model' (meters `appliesToModels` only). */
+  scope?: string
+  appliesToModels?: string[]
+}
+
+/** How much a snapshot's windows can be trusted. Anything other than 'available'
+ *  means the read failed — the windows array is then EMPTY rather than holding a
+ *  fabricated 0%. */
+export type UsageAvailability = 'available' | 'unknown' | 'auth_error'
+
+export interface AccountUsage {
+  provider: string
+  fetchedAt: string | null
+  availability: UsageAvailability
+  windows: UsageWindow[]
+  // Whether the PROVIDER has extra usage enabled — read-only, set in the
+  // Anthropic console. Distinct from `allowExtraUsage` below, which is this
+  // app's opt-in. Optional: older payloads predate the field.
+  extraUsageEnabled?: boolean
 }
 
 export interface LiveSessionCounts {
@@ -22,15 +52,11 @@ export interface LiveSessionCounts {
 export interface Account {
   name: string
   status: AccountStatus
-  provider?: 'anthropic' | 'copilot'
-  usage: {
-    session: UsageWindow
-    weekly: UsageWindow
-    // Whether the PROVIDER has extra usage enabled — read-only, set in the
-    // Anthropic console. Distinct from `allowExtraUsage` below, which is this
-    // app's opt-in. Optional: older payloads predate the field.
-    extraUsageEnabled?: boolean
-  } | null
+  /** 'unknown' when the account is not in the accounts.json manifest — the API
+   *  says so rather than defaulting to 'anthropic' and offering the wrong
+   *  recovery action. */
+  provider?: 'anthropic' | 'copilot' | 'openai' | 'unknown'
+  usage: AccountUsage | null
   nickname?: string | null
   weeklyReservePct?: number | null
   // Opt-in to spending paid extra-usage credits on this account once it is at
@@ -63,6 +89,8 @@ export type SessionStatus =
   | 'ended'
   | 'queued'
   | 'pending_approval'
+
+export type AgentEngine = 'claude_code' | 'codex'
 
 /**
  * Statuses a session holds BEFORE its driver exists — parked at the launch-time
@@ -131,6 +159,10 @@ export interface Session {
   id: string
   name: string
   accountName: string
+  engine: AgentEngine
+  engineSessionId: string | null
+  /** Engine-native reasoning choice; null means the model default. */
+  reasoningEffort?: string | null
   /** GitHub nameWithOwner ("owner/name") this session works on, or null for a scratch session. */
   repo?: string | null
   /** Fleet host that ran this session. Null for sessions created before the fleet
@@ -201,6 +233,14 @@ export interface Session {
    *  orphaned-ask notice. Sent by server/api/sessions.py:_record_to_dict (the browser
    *  serializer — server/sessions/types.py:to_dict is the daemon→edge RPC one). */
   interruptedFromStatus?: string | null
+  /** Why a needs_attention/limited session is parked (server pause reason token,
+   *  e.g. "all_accounts_busy", "rotation_cap", "pinned_account_limited"). */
+  pausedReason?: string | null
+  /** ISO instant of the earliest known usage reset for a parked session, or null. */
+  pausedUntil?: string | null
+  /** Server-derived: parked because no account has usage headroom (or pinned at its
+   *  ceiling). Counts toward the "Rotate stalled (N)" button; relabels the pill. */
+  usageStalled?: boolean
   /** The automation_id that spawned this session (e.g. 'pr-doctor'); null/absent = human-created. */
   origin?: string | null
   /** The automation's reference key (e.g. 'owner/repo#123'); null/absent when origin is absent. */
@@ -209,6 +249,8 @@ export interface Session {
   pending?: boolean
   /** Position in the max-active-sessions queue (1 = next to run); null when not queued. */
   queuePosition?: number | null
+  /** Session kind; 'assistant' marks the singleton AI-drawer session, distinct from ordinary work sessions. */
+  kind?: 'assistant' | null
 }
 
 export interface ArchivedSession {
@@ -218,7 +260,9 @@ export interface ArchivedSession {
   cwd: string
   /** GitHub nameWithOwner (e.g. "cairnea/KinDash"); null for scratch/legacy rows. */
   repo: string | null
-  claudeSessionId: string | null
+  engine: AgentEngine
+  engineSessionId: string | null
+  reasoningEffort?: string | null
   permissionMode: string
   createdAt: string
   archivedAt: string

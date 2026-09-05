@@ -11,14 +11,16 @@
 
 import { useEffect, useMemo, useReducer, useState, useCallback, useRef } from 'react'
 import { useSessionSocket } from '@/ws/client'
-import type { ConnectionState, WsRotatedMsg, WsErrorMsg } from '@/ws/client'
+import type { ConnectionState, SocketChannel, WsRotatedMsg, WsErrorMsg } from '@/ws/client'
 import { transcriptReducer, initialTranscript } from '@/session/reducer'
 import type { TranscriptState } from '@/session/reducer'
-import type { SessionEvent, Command } from '@/session/events'
+import type { SessionEvent, Command, PromptContext } from '@/session/events'
 import { selectSubAgents, selectVisibleTurns, selectVisibleSubAgents } from '@/session/selectors'
 import { remainingContextPct, remainingFromContextUsage } from '@/lib/contextWindow'
 import { useSessions, useAccounts, useSettings } from '@/api/hooks'
 import { isPreSpawnStatus } from '@/api/types'
+import type { UsageWindow } from '@/api/types'
+import { usageWindows } from '@/lib/usageWindows'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { fetchOlderTurns } from '@/api/transcript'
 
@@ -48,12 +50,10 @@ export interface SessionRuntime {
   /** The model actually producing (SDK id, e.g. "claude-opus-4-8") — launch model,
    *  refreshed per turn. Read-only: after a switch it lags `model` by one turn. */
   liveModel: string | null
-  quota: {
-    sessionPct: number
-    weeklyPct: number
-    sessionResetsAt: string | null
-    weeklyResetsAt: string | null
-  } | null
+  /** The account's quota WINDOWS, in provider order. Null when the read failed
+   *  or no account is attached; an empty list is impossible (an unavailable
+   *  snapshot has no windows, so it reads as null here). */
+  quota: UsageWindow[] | null
   contextPct: number | null
   subAgents: ReturnType<typeof selectSubAgents>
   hasOpenAction: boolean
@@ -67,7 +67,7 @@ export interface SessionRuntime {
   onAnswer: (questionId: string, selected: string[], mode?: 'option' | 'freeform' | 'chat') => void
   /** Set/clear the chat-armed question (toggles off if the same id is passed again). */
   onChat: (questionId: string) => void
-  onPrompt: (text: string, attachmentIds: AttachmentIds) => void
+  onPrompt: (text: string, attachmentIds: AttachmentIds, context?: PromptContext) => void
   /** Fire while the user is typing/steering (before send) — refreshes autopilot's human-deference window. */
   onActivity: () => void
   onInterrupt: () => void
@@ -87,7 +87,16 @@ export interface SessionRuntime {
   onLoadOlder: () => void
 }
 
-export function useSessionRuntime(sessionId: string, initialPrompt?: string): SessionRuntime {
+/**
+ * @param channel which WebSocket channel to attach on. 'route' (the default) is the
+ *   page's socket; the AI drawer passes 'assistant' so its attach never displaces
+ *   the session the page has open.
+ */
+export function useSessionRuntime(
+  sessionId: string,
+  initialPrompt?: string,
+  channel: SocketChannel = 'route',
+): SessionRuntime {
   const {
     attach,
     detach,
@@ -103,7 +112,7 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
     cancelQueued,
     command,
     activity,
-  } = useSessionSocket()
+  } = useSessionSocket(channel)
 
   const [state, dispatch] = useReducer(transcriptReducer, initialTranscript)
 
@@ -263,7 +272,7 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
   // that question (mode='chat') and unblocks the turn; otherwise it's a normal prompt.
   // (Chat replies go through the answer channel, which carries no attachments.)
   const onPrompt = useCallback(
-    (text: string, attachmentIds: AttachmentIds) => {
+    (text: string, attachmentIds: AttachmentIds, context?: PromptContext) => {
       if (armedQuestionId) {
         // A chat reply is delivered through the answer channel — route it through the
         // same gated path as onAnswer so a closed socket REJECTS (visible error, card
@@ -274,7 +283,11 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
       // Track the sent prompt so a reconnect whose replayReset outruns the
       // transcript-file write can re-assert it instead of dropping it silently.
       dispatch({ type: '_trackSentPrompt', text })
-      prompt(sessionId, text, attachmentIds)
+      // Omit the trailing arg entirely when there's no context, rather than passing an
+      // explicit `undefined` — callers (and their test mocks) that assert the prompt
+      // was sent with exactly 3 args must keep seeing exactly 3.
+      if (context) prompt(sessionId, text, attachmentIds, context)
+      else prompt(sessionId, text, attachmentIds)
     },
     [sessionId, prompt, onAnswer, armedQuestionId],
   )
@@ -407,14 +420,8 @@ export function useSessionRuntime(sessionId: string, initialPrompt?: string): Se
   const liveModel = state.model
 
   const accountUsage = accounts?.find((a) => a.name === account)?.usage ?? null
-  const quota = accountUsage
-    ? {
-        sessionPct: accountUsage.session.pct,
-        weeklyPct: accountUsage.weekly.pct,
-        sessionResetsAt: accountUsage.session.resetsAt,
-        weeklyResetsAt: accountUsage.weekly.resetsAt,
-      }
-    : null
+  const accountWindows = usageWindows(accountUsage)
+  const quota = accountWindows.length > 0 ? accountWindows : null
 
   // Prefer the SDK's exact context occupancy (the `/context` data) when a live turn
   // has reported it; fall back to the per-call usage approximation for historic or

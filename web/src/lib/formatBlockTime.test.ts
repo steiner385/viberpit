@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { formatBlockTime } from './formatBlockTime'
 
 test('absent ts yields empty strings', () => {

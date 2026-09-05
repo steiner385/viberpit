@@ -1,5 +1,6 @@
 import type {
   SessionEvent, ToolKind, EvUser, EvTurnStart, EvTextDelta, EvThinkingDelta, EvToolCall, EvToolResult, QueuedItem,
+  PromptContext,
 } from './events'
 import type { ContextUsageExact } from '@/lib/contextWindow'
 import { clientLogger } from '@/obs/logger'
@@ -20,7 +21,7 @@ export type Block =
   | { kind: 'thinking';   id: string; text: string; ts?: number }
   | { kind: 'image';      id: string; images: Array<{ url: string; mime: string; name: string }>; ts?: number }
   | { kind: 'tool';       id: string; toolId: string; name: string; toolKind: ToolKind; input: Record<string, unknown>; result?: { ok: boolean; payload: Record<string, unknown>; ts?: number }; ts?: number }
-  | { kind: 'permission'; id: string; permId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean; ts?: number }
+  | { kind: 'permission'; id: string; permId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean; alwaysAllowed?: boolean; ts?: number }
   | { kind: 'question';   id: string; questionId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; live?: boolean; orphaned?: boolean; answered?: string[]; ts?: number }
   | { kind: 'notice';     id: string; text: string; ts?: number }
   | { kind: 'error';      id: string; code: string; message: string; resetsAt?: string | null; ts?: number }
@@ -36,7 +37,7 @@ export type Block =
 // mid-logical-turn (see EvUser.ownerPrefix). It is the ONLY order signal a user turn
 // carries: user turns have no ordinal, so a misplaced prompt — the actual #1000 bug —
 // is invisible to the ordinal scan and detectable only through this mark.
-export interface Turn { id: string; role: 'user' | 'assistant'; blocks: Block[]; model?: string | null; ordinal?: number; ownerPrefix?: boolean }
+export interface Turn { id: string; role: 'user' | 'assistant'; blocks: Block[]; model?: string | null; ordinal?: number; ownerPrefix?: boolean; context?: PromptContext }
 
 /** A self-contained conversation thread (the main transcript, or one sub-agent). */
 export interface SubThread { turns: Turn[]; openBlockId: string | null; model?: string | null }
@@ -390,8 +391,8 @@ function userTurnBlocks(turnId: string, text: string, images?: EvUser['images'],
  * travels with the turn from exactly one place — and so an upsert that re-emits the SAME
  * prompt without the mark (the page holding its real position finally loaded) clears it.
  */
-function userTurn(turnId: string, blocks: Block[], ownerPrefix?: boolean): Turn {
-  return { id: turnId, role: 'user', blocks, ...(ownerPrefix ? { ownerPrefix: true } : {}) }
+function userTurn(turnId: string, blocks: Block[], ownerPrefix?: boolean, context?: PromptContext): Turn {
+  return { id: turnId, role: 'user', blocks, ...(ownerPrefix ? { ownerPrefix: true } : {}), ...(context ? { context } : {}) }
 }
 
 // ── Thread-scoped reducer ─────────────────────────────────────────────────────
@@ -411,8 +412,8 @@ function applyToThread(thread: SubThread, ev: BlockEvent): SubThread {
       const idx = findTurnIdx(thread.turns, turnId)
       const turns =
         idx === -1
-          ? [...thread.turns, userTurn(turnId, blocks, ev.ownerPrefix)]
-          : replaceTurn(thread.turns, idx, () => userTurn(turnId, blocks, ev.ownerPrefix))
+          ? [...thread.turns, userTurn(turnId, blocks, ev.ownerPrefix, ev.context)]
+          : replaceTurn(thread.turns, idx, () => userTurn(turnId, blocks, ev.ownerPrefix, ev.context))
       return { turns, openBlockId: null }
     }
 
@@ -580,7 +581,7 @@ export function transcriptReducer(
       // user event is always the seeded prompt — and only one optimistic turn exists.
       const optIdx = findTurnIdx(state.turns, OPTIMISTIC_USER_ID)
       if (optIdx !== -1) {
-        const nextTurns = replaceTurn(state.turns, optIdx, () => userTurn(turnId, blocks, ev.ownerPrefix))
+        const nextTurns = replaceTurn(state.turns, optIdx, () => userTurn(turnId, blocks, ev.ownerPrefix, ev.context))
         return { ...state, turns: nextTurns, openBlockId: null, latestSuggestions: [], pendingSent }
       }
 
@@ -596,7 +597,7 @@ export function transcriptReducer(
           && t.blocks.some((b) => b.kind === 'text' && b.text === text),
       )
       if (pendIdx !== -1) {
-        const nextTurns = replaceTurn(state.turns, pendIdx, () => userTurn(turnId, blocks, ev.ownerPrefix))
+        const nextTurns = replaceTurn(state.turns, pendIdx, () => userTurn(turnId, blocks, ev.ownerPrefix, ev.context))
         return { ...state, turns: nextTurns, openBlockId: null, latestSuggestions: [], pendingSent }
       }
 
@@ -613,10 +614,10 @@ export function transcriptReducer(
         if (ev.ownerPrefix && state.turns.length > 0) {
           clientLogger.warn(`transcript.turn.fabricated type=${ev.type} turnId=${turnId}`)
         }
-        nextTurns = [...state.turns, userTurn(turnId, blocks, ev.ownerPrefix)]
+        nextTurns = [...state.turns, userTurn(turnId, blocks, ev.ownerPrefix, ev.context)]
       } else {
         // Upsert: rebuild the turn (blocks + prefix mark) from the newer event.
-        nextTurns = replaceTurn(state.turns, idx, () => userTurn(turnId, blocks, ev.ownerPrefix))
+        nextTurns = replaceTurn(state.turns, idx, () => userTurn(turnId, blocks, ev.ownerPrefix, ev.context))
       }
       return { ...state, turns: nextTurns, openBlockId: null, latestSuggestions: [], pendingSent }
     }
@@ -756,7 +757,7 @@ export function transcriptReducer(
 
     // ── permissionRequest ─────────────────────────────────────────────────────
     case 'permissionRequest': {
-      const { permId, turnId, tool, toolKind, input, plan } = ev
+      const { permId, turnId, tool, toolKind, input, plan, alwaysAllowed } = ev
       const [turns, idx] = ensureAssistantTurn(state.turns, turnId, ev.type)
       const turn = turns[idx]
 
@@ -765,7 +766,7 @@ export function transcriptReducer(
         return { ...state, turns }
       }
 
-      const newBlock: Block = { kind: 'permission', id: permId, permId, tool, toolKind, input, plan, ts: ev.ts }
+      const newBlock: Block = { kind: 'permission', id: permId, permId, tool, toolKind, input, plan, alwaysAllowed, ts: ev.ts }
       const nextTurns = replaceTurn(turns, idx, (t) => ({
         ...t,
         blocks: [...t.blocks, newBlock],

@@ -118,18 +118,18 @@ def read_user_prompts_from_file(path: str | Path) -> list[str]:
     return prompts
 
 
-def read_ai_title(projects_root: str | Path, claude_session_id: str) -> str | None:
+def read_ai_title(projects_root: str | Path, engine_session_id: str) -> str | None:
     """Return the best available title for a session, or ``None``.
 
     Prefers a user-set ``customTitle`` over a model ``ai-title``/``summary``. Scans
     every JSONL line of every transcript matching the session id; the last non-empty
     value of each kind wins. Never raises.
     """
-    if not claude_session_id:
+    if not engine_session_id:
         return None
     try:
         root = Path(projects_root)
-        matches = list(root.glob(f"**/{claude_session_id}.jsonl"))
+        matches = list(root.glob(f"**/{engine_session_id}.jsonl"))
         if not matches:
             return None
         custom: str | None = None
@@ -146,5 +146,5 @@ def read_ai_title(projects_root: str | Path, claude_session_id: str) -> str | No
                 auto = a
         return custom or auto
     except Exception:  # never raise into the session loop
-        log.warning("read_ai_title failed for %s", claude_session_id, exc_info=True)
+        log.warning("read_ai_title failed for %s", engine_session_id, exc_info=True)
         return None

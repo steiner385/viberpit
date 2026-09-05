@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 
 import server.sessions.events as ev
-from server.sessions.driver import SessionDriver
+from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.permissions import PermissionRegistry
 from server.tests.fakes.fake_sdk import FakeSDKClient
 
@@ -32,12 +32,12 @@ def _question_input(*questions):
         for h, q in questions]}
 
 
-def _driver(sid: str) -> SessionDriver:
-    return SessionDriver(sid, "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+def _driver(sid: str) -> ClaudeAgentDriver:
+    return ClaudeAgentDriver(sid, "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                          sdk_factory=_factory, registry=PermissionRegistry(), identity="me")
 
 
-async def _park_on_question(d: SessionDriver, *questions) -> asyncio.Task:
+async def _park_on_question(d: ClaudeAgentDriver, *questions) -> asyncio.Task:
     cb = asyncio.create_task(d._can_use_tool("AskUserQuestion", _question_input(*questions)))
     await asyncio.sleep(0)
     await asyncio.sleep(0)
@@ -111,7 +111,9 @@ def test_send_prompt_with_images_during_question_answers_text_and_queues_images(
 
         result = await asyncio.wait_for(cb, timeout=2.0)
         assert "see screenshot" in result.message
-        assert d._queue == [("", images)]
+        # (text, images, context) — the attachment-only follow-up inherits the
+        # prompt's context chip, which is None for a coding session like this one.
+        assert d._queue == [("", images, None)]
         await d.aclose()
 
     asyncio.run(run())

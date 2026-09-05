@@ -8,6 +8,7 @@ import logging
 from server.ipc.daemon import register_rpc
 from server.obs.tasks import supervise
 from server.sessions.types import SYSTEM_IDENTITY
+from server.sessions.engine import AgentEngine, parse_agent_engine
 
 log = logging.getLogger(__name__)
 
@@ -148,20 +149,39 @@ def register_orchestrator_rpc(app, orch) -> None:
         return app.state.ring_tail(params["session_id"], params.get("since"))
 
     async def list_sessions(params: dict) -> dict:
-        return {"sessions": [r.to_dict() for r in orch.list_sessions()]}
+        # The param is only sent when True, so an older edge talking to a newer daemon
+        # (and vice versa) keeps the default "assistants excluded" behaviour.
+        kw = {"include_assistant": True} if params.get("include_assistant") else {}
+        return {"sessions": [r.to_dict() for r in orch.list_sessions(**kw)]}
 
     async def get_session(params: dict) -> dict:
         rec = orch.get_session(params["session_id"])
         return {"session": rec.to_dict() if rec is not None else None}
 
     async def create_session(params: dict) -> dict:
-        rec = await orch.create_session(**params)
+        launch = dict(params)
+        if "engine" in launch:
+            engine = parse_agent_engine(launch["engine"])
+        else:
+            engine = parse_agent_engine(None, legacy_default=True)
+        if engine is not AgentEngine.CLAUDE_CODE:
+            launch["engine"] = engine
+        else:
+            # Missing/Claude stays byte-compatible with the protocol-v1 request.
+            launch.pop("engine", None)
+        rec = await orch.create_session(**launch)
         return {"session": rec.to_dict()}
 
     async def send_prompt(params: dict) -> dict:
-        # `interrupt` (interrupt-and-post) is only forwarded when set, so an edge
-        # that predates the flag keeps the plain queued-send contract.
-        extra = {"interrupt": True} if params.get("interrupt") is True else {}
+        # `interrupt` (interrupt-and-post) and `context` (the assistant's route chip,
+        # spec §4.5) are only forwarded when set, so an edge that predates either
+        # keeps the plain queued-send contract — and an older edge's payload never
+        # grows keys this orchestrator would reject. There is no `**params` splat to
+        # lean on here: an unlisted key is silently dropped, which is how the chip
+        # went missing on the deployed edge→daemon path.
+        extra: dict[str, object] = {"interrupt": True} if params.get("interrupt") is True else {}
+        if params.get("context") is not None:
+            extra["context"] = params["context"]
         status = await orch.send_prompt(params["session_id"], params["text"],
                                         params.get("images"), **extra)
         return {"status": status}
@@ -274,7 +294,7 @@ def register_orchestrator_rpc(app, orch) -> None:
 
     # Methods whose return value is already JSON-safe (bool / None / str / list-of-dicts).
     _SIMPLE = [
-        "archive_session", "resume_interrupted", "reload_session", "rename_session", "note_user_interaction", "set_autopilot_paused", "interrupt",
+        "archive_session", "resume_interrupted", "reload_session", "rotate_to_best", "set_account_pin", "rename_session", "note_user_interaction", "set_autopilot_paused", "interrupt",
         "set_permission_mode", "cancel_queued", "resolve_permission", "answer_question",
         "transcript_path", "resolve_transcript_path", "transcript_search_text",
         "pending_questions", "orphaned_interaction", "pop_pending_initial_prompt",

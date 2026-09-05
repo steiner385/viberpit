@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 from server.sessions.orchestrator import SessionOrchestrator
 
@@ -25,7 +26,7 @@ from server.sessions.orchestrator import SessionOrchestrator
 # ── serde round-trip (RPC daemon↔edge path) ─────────────────────────────────
 
 def _rec(**kw) -> SessionRecord:
-    base: dict[str, Any] = dict(id="s1", name="S1", account="acct", claude_session_id="cs",
+    base: dict[str, Any] = dict(id="s1", name="S1", account="acct", engine=AgentEngine.CLAUDE_CODE, engine_session_id="cs",
                                 cols=80, rows=24, cwd="/tmp")
     base.update(kw)
     return SessionRecord(**base)
@@ -67,7 +68,7 @@ class _FakeDB:
 
 def _make_row(**kwargs):
     defaults = dict(
-        id="s1", name="test", account_name="acct-a", claude_session_id="cid1",
+        id="s1", name="test", account_name="acct-a", engine_session_id="cid1",
         cwd="/tmp", repo=None, status="idle", name_is_auto=True,
         permission_mode="interactive", created_at=datetime(2025, 1, 1),
         adopted_in_place=False, model=None, account_pinned=False,
@@ -93,7 +94,7 @@ async def test_rehydrate_restores_context_usage(monkeypatch):
 @pytest.mark.asyncio
 async def test_rehydrate_defaults_when_context_columns_absent(monkeypatch):
     row = SimpleNamespace(
-        id="s1", name="test", account_name="acct-a", claude_session_id="cid1",
+        id="s1", name="test", account_name="acct-a", engine_session_id="cid1",
         cwd="/tmp", repo=None, status="idle", name_is_auto=True,
         permission_mode="interactive", created_at=datetime(2025, 1, 1),
         # deliberately omit context columns
@@ -128,7 +129,7 @@ async def test_persist_context_usage_updates_record(monkeypatch):
 
 def test_driver_calls_on_context_usage_callback():
     from claude_agent_sdk import TextBlock
-    from server.sessions.driver import SessionDriver
+    from server.sessions.claude_driver import ClaudeAgentDriver
     from server.sessions.permissions import PermissionRegistry
     from server.sessions import events as ev
     from server.tests.fakes.fake_sdk import FakeSDKClient
@@ -149,7 +150,7 @@ def test_driver_calls_on_context_usage_callback():
         captured.append((sid, used, mx))
 
     async def run():
-        d = SessionDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=make, registry=PermissionRegistry(),
                           identity="me", on_context_usage=on_ctx)
         await d.start()

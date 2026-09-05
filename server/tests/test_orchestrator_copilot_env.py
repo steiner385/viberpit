@@ -15,6 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
@@ -45,15 +46,24 @@ class FakeCopilotProxy:
 
 
 def _make_copilot_home(tmp_path: Path, account: str) -> Path:
-    """Create the copilot token-dir so provider_of(account) == 'copilot'.
+    """Create a COMPLETE copilot token-dir so provider_of(account) == 'copilot'.
 
     paths.copilot_token_dir(name) == CCSWITCH_HOME / 'store' / 'copilot' / name
+
+    ``credentials.json`` matters: it is what ``copilot_auth`` writes when the
+    device flow succeeds, and what ``copilot.copilot_account_names()`` has always
+    required before calling a directory an account. A bare directory is a
+    half-finished login, and the account manifest — like that enumeration —
+    declines to register it. The predecessor ``provider_of`` disagreed: it probed
+    only for the directory, so an abandoned device flow was classified as a
+    Copilot account that enumeration would never list.
     """
     ccswitch_home = tmp_path / "ccswitch_home"
     ccswitch_home.mkdir()
     # token_dir lives under store/copilot/<name>
     token_dir = ccswitch_home / "store" / "copilot" / account
     token_dir.mkdir(parents=True)
+    (token_dir / "credentials.json").write_text("{}")
     return ccswitch_home
 
 
@@ -83,7 +93,7 @@ def test_factory_closure_injects_copilot_env(tmp_path):
         # Seed a minimal SessionRecord so _oat_env can find the account
         sid = "test-sid-001"
         orch._records[sid] = SessionRecord(
-            id=sid, name="Test", account=account, claude_session_id="",
+            id=sid, name="Test", account=account, engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
             cols=80, rows=24, cwd=str(tmp_path),
         )
         closure = orch._session_factory(sid)
@@ -102,9 +112,9 @@ def test_factory_closure_injects_copilot_env(tmp_path):
 
 def _fake_usage(account: str):
     from datetime import datetime, timedelta, timezone
-    from ccswitch.oauth import Usage
+    from ccswitch.quota import anthropic_snapshot
     reset = datetime.now(timezone.utc) + timedelta(hours=5)
-    return Usage(10.0, reset, 10.0, reset, False)
+    return anthropic_snapshot(10.0, reset, 10.0, reset, False)
 
 
 @pytest.mark.asyncio
@@ -185,7 +195,7 @@ async def test_latest_suggestions_skipped_for_copilot(tmp_path):
         orch = SessionOrchestrator(sdk_factory=lambda *a, **k: None, copilot=proxy)
         sid = "test-sid-002"
         orch._records[sid] = SessionRecord(
-            id=sid, name="Test", account=account, claude_session_id="",
+            id=sid, name="Test", account=account, engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
             cols=80, rows=24, cwd=str(tmp_path),
         )
         result = await orch.latest_suggestions(sid)
@@ -271,7 +281,7 @@ async def test_latest_summary_skipped_for_copilot(tmp_path):
         orch = SessionOrchestrator(sdk_factory=lambda *a, **k: None, copilot=proxy)
         sid = "test-sid-003"
         orch._records[sid] = SessionRecord(
-            id=sid, name="Test", account=account, claude_session_id="",
+            id=sid, name="Test", account=account, engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
             cols=80, rows=24, cwd=str(tmp_path),
         )
         result = await orch.latest_summary(sid, viewing=True)

@@ -123,6 +123,61 @@ def deploy_code_changed(changed_files: list[str] | None) -> bool:
     return any(_DEPLOY_CODE.match(f) for f in changed_files)
 
 
+# Units a deploy restarts on THIS host: the edge, the local runner daemon, and the
+# controller itself (deferred, when deploy code changed). Remote runners are checked by
+# their own host's controller, not from here.
+RESTARTABLE_UNITS: tuple[str, ...] = (
+    "ccswitch.service",
+    "ccswitch-daemon.service",
+    "ccswitch-deploy-controller.service",
+)
+
+# `systemctl show -p ExecStart <unit>` renders as:
+#   ExecStart={ path=/x/.venv/bin/python ; argv[]=/x/.venv/bin/python -m server.ipc ; ... }
+_EXEC_PATH_RE = re.compile(r"path=([^\s;]+)")
+
+
+def check_unit_interpreters(units: tuple[str, ...] | None = None,
+                            *, run: Run = subprocess.run) -> list[str]:
+    """Return one problem string per unit whose ExecStart binary cannot be executed.
+
+    A unit can keep RUNNING long after its ExecStart binary has vanished — a live process
+    holds open inodes, not paths — so this breakage is invisible until something tries to
+    exec it again. A deploy restarts these units, which makes the deploy itself the thing
+    that discovers the problem, at the worst possible moment: 2026-09-04, the daemon's
+    `.venv` was a symlink into a checkout that got renamed, and the next deploy would have
+    stopped every live session with nothing able to start again.
+
+    Unresolvable units are SKIPPED, never reported. If systemctl fails, the unit is not
+    installed, or the property does not parse, we have no *evidence* of breakage — and a
+    preflight that refuses on absent evidence is precisely the failure mode that wedged
+    the deploy gate behind a required check which could never report. Fail only on
+    positive proof: a path we resolved that is missing or not executable.
+    """
+    problems: list[str] = []
+    for unit in (units if units is not None else RESTARTABLE_UNITS):
+        try:
+            proc = run(["systemctl", "show", "-p", "ExecStart", unit],
+                       check=False, capture_output=True, text=True)
+        except Exception:
+            continue                      # no systemd / not permitted — unverifiable
+        raw = (getattr(proc, "stdout", "") or "")
+        match = _EXEC_PATH_RE.search(raw)
+        if not match:
+            continue                      # absent unit or unparseable — unverifiable
+        path = match.group(1)
+        # os.path.exists FOLLOWS symlinks, which is the point: the real failure was a
+        # symlink whose target moved. lexists would call that healthy.
+        if not os.path.exists(path):
+            problems.append(
+                f"{unit}: ExecStart binary {path} does not exist "
+                "(the unit is running only because a live process holds its open files; "
+                "it cannot restart)")
+        elif not os.access(path, os.X_OK):
+            problems.append(f"{unit}: ExecStart binary {path} is not executable")
+    return problems
+
+
 def schedule_controller_restart(*, run: Run = subprocess.run, delay_s: int = 10) -> bool:
     """Schedule a DEFERRED restart of ccswitch-deploy-controller.service.
 

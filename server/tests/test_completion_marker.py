@@ -24,6 +24,6 @@ def test_no_pr_instruction_embeds_marker():
 
 def test_sdk_factory_append_contains_no_pr_marker():
     # sdk_factory appends both COMPLETION_INSTRUCTION and NO_PR_INSTRUCTION
-    from server.sessions.sdk_factory import _build_append_string
+    from server.sessions.claude_sdk_factory import _build_append_string
     append = _build_append_string()
     assert NO_PR_MARKER in append

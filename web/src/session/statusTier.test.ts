@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest'
 import { statusPresentation, statusTier, sortSessionsByTier, TIER_ACCENT } from './statusTier'
 import type { StatusTier } from './statusTier'
@@ -209,5 +210,31 @@ describe('sortSessionsByTier', () => {
     const original = [...input]
     sortSessionsByTier(input)
     expect(input).toEqual(original)
+  })
+})
+
+describe('usage-stalled presentation', () => {
+  it('relabels a usage-paused needs_attention session as waiting for capacity', () => {
+    const p = statusPresentation('needs_attention', { usageStalled: true, pausedUntil: '2026-09-04T16:10:00+00:00' })
+    expect(p.tier).toBe('waiting')
+    expect(p.label).toMatch(/^Waiting for capacity · retries /)
+  })
+  it('omits the time suffix when no reset is known', () => {
+    expect(statusPresentation('needs_attention', { usageStalled: true, pausedUntil: null }).label).toBe('Waiting for capacity')
+  })
+  it('labels a pinned limited session and names the reset', () => {
+    const p = statusPresentation('limited', { usageStalled: true, pausedUntil: '2026-09-04T16:10:00+00:00' })
+    expect(p.tier).toBe('waiting')
+    expect(p.label).toMatch(/^Usage limit \(pinned\) · resets /)
+  })
+  it('leaves a plain needs_attention (crash cap) as Turn failed', () => {
+    expect(statusPresentation('needs_attention', { usageStalled: false }).label).toBe('Turn failed')
+    expect(statusPresentation('needs_attention').tier).toBe('error')
+  })
+  it('never hijacks a live status even if the flag lingers', () => {
+    expect(statusPresentation('in_progress', { usageStalled: true }).label).toBe('Working…')
+  })
+  it('restart interruption wins over the stall relabel', () => {
+    expect(statusPresentation('needs_attention', { usageStalled: true, interruptedByRestart: true }).label).toMatch(/re-send/i)
   })
 })

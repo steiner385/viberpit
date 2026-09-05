@@ -3,10 +3,10 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
-import { SettingsView } from '../settings/SettingsView'
+import { AccountsManager } from '../AccountsManager'
 import * as hooks from '@/api/hooks'
 import type { Account } from '@/api/types'
-import { appSettings } from '@/test/factories'
+import { anthropicUsage, appSettings } from '@/test/factories'
 import { queryResult } from '@/test/reactQuery'
 
 vi.mock('@/api/hooks', () => ({
@@ -73,11 +73,7 @@ function makeAccount(overrides: Partial<Account> = {}): Account {
   return {
     name: 'work',
     status: 'ok',
-    usage: {
-      session: { pct: 30, resetsAt: null },
-      weekly: { pct: 50, resetsAt: null },
-      extraUsageEnabled: true,
-    },
+    usage: anthropicUsage(30, 50, { extraUsageEnabled: true }),
     liveSessions: { active: 0, idle: 0 },
     rank: null,
     rankReason: null,
@@ -94,10 +90,6 @@ function wrapper({ children }: { children: React.ReactNode }) {
       <MemoryRouter initialEntries={['/settings?section=accounts']}>{children}</MemoryRouter>
     </QueryClientProvider>
   )
-}
-
-async function switchToAccountsTab(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(screen.getByRole('tab', { name: /accounts/i }))
 }
 
 describe('AccountRow — extra usage credits', () => {
@@ -139,8 +131,7 @@ describe('AccountRow — extra usage credits', () => {
     const user = userEvent.setup()
     mockAccounts(makeAccount({ name: 'work', allowExtraUsage: true }))
 
-    render(<SettingsView />, { wrapper })
-    await switchToAccountsTab(user)
+    render(<AccountsManager />, { wrapper })
     await user.click(screen.getByRole('button', { name: /rename work/i }))
 
     const box = screen.getByRole('checkbox', { name: /extra usage credits for work/i })
@@ -151,8 +142,7 @@ describe('AccountRow — extra usage credits', () => {
     const user = userEvent.setup()
     mockAccounts(makeAccount({ name: 'work', nickname: null, allowExtraUsage: false }))
 
-    render(<SettingsView />, { wrapper })
-    await switchToAccountsTab(user)
+    render(<AccountsManager />, { wrapper })
     await user.click(screen.getByRole('button', { name: /rename work/i }))
     await user.click(screen.getByRole('checkbox', { name: /extra usage credits for work/i }))
     await user.click(screen.getByRole('button', { name: /save account settings/i }))
@@ -166,8 +156,7 @@ describe('AccountRow — extra usage credits', () => {
     const user = userEvent.setup()
     mockAccounts(makeAccount({ name: 'work', nickname: null, allowExtraUsage: true }))
 
-    render(<SettingsView />, { wrapper })
-    await switchToAccountsTab(user)
+    render(<AccountsManager />, { wrapper })
     await user.click(screen.getByRole('button', { name: /rename work/i }))
     await user.click(screen.getByRole('checkbox', { name: /extra usage credits for work/i }))
     await user.click(screen.getByRole('button', { name: /save account settings/i }))
@@ -181,8 +170,7 @@ describe('AccountRow — extra usage credits', () => {
     const user = userEvent.setup()
     mockAccounts(makeAccount({ name: 'work', allowExtraUsage: false }))
 
-    render(<SettingsView />, { wrapper })
-    await switchToAccountsTab(user)
+    render(<AccountsManager />, { wrapper })
     await user.click(screen.getByRole('button', { name: /rename work/i }))
     await user.click(screen.getByRole('checkbox', { name: /extra usage credits for work/i }))
     await user.click(screen.getByRole('button', { name: /cancel/i }))
@@ -191,60 +179,45 @@ describe('AccountRow — extra usage credits', () => {
   })
 
   it('shows an extra-usage chip on opted-in accounts only', async () => {
-    const user = userEvent.setup()
     mockAccounts(
       makeAccount({ name: 'work', allowExtraUsage: true }),
       makeAccount({ name: 'personal', allowExtraUsage: false }),
     )
 
-    render(<SettingsView />, { wrapper })
-    await switchToAccountsTab(user)
+    render(<AccountsManager />, { wrapper })
 
     expect(screen.getAllByText(/extra usage/i)).toHaveLength(1)
   })
 
   it('warns when opted in but the provider has extra usage disabled', async () => {
-    const user = userEvent.setup()
     mockAccounts(makeAccount({
       name: 'work',
       allowExtraUsage: true,
-      usage: {
-        session: { pct: 30, resetsAt: null },
-        weekly: { pct: 50, resetsAt: null },
-        extraUsageEnabled: false,   // off upstream — the opt-in cannot take effect
-      },
+      // off upstream — the opt-in cannot take effect
+      usage: anthropicUsage(30, 50, { extraUsageEnabled: false }),
     }))
 
-    render(<SettingsView />, { wrapper })
-    await switchToAccountsTab(user)
+    render(<AccountsManager />, { wrapper })
 
     expect(screen.getByText(/not enabled upstream/i)).toBeInTheDocument()
   })
 
   it('does not warn when the provider has extra usage enabled', async () => {
-    const user = userEvent.setup()
     mockAccounts(makeAccount({ name: 'work', allowExtraUsage: true }))
 
-    render(<SettingsView />, { wrapper })
-    await switchToAccountsTab(user)
+    render(<AccountsManager />, { wrapper })
 
     expect(screen.queryByText(/not enabled upstream/i)).not.toBeInTheDocument()
   })
 
   it('does not warn on an account that never opted in', async () => {
-    const user = userEvent.setup()
     mockAccounts(makeAccount({
       name: 'work',
       allowExtraUsage: false,
-      usage: {
-        session: { pct: 30, resetsAt: null },
-        weekly: { pct: 50, resetsAt: null },
-        extraUsageEnabled: false,
-      },
+      usage: anthropicUsage(30, 50, { extraUsageEnabled: false }),
     }))
 
-    render(<SettingsView />, { wrapper })
-    await switchToAccountsTab(user)
+    render(<AccountsManager />, { wrapper })
 
     expect(screen.queryByText(/not enabled upstream/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/extra usage/i)).not.toBeInTheDocument()

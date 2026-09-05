@@ -7,13 +7,123 @@ from server.ipc.daemon import create_daemon_app
 from server.ipc.orchestrator_rpc import register_orchestrator_rpc
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.remote import RemoteOrchestrator
+from server.sessions.engine import AgentEngine, AgentEngineUnavailable, InvalidAgentEngine
 from server.sessions.types import SessionRecord
 from server.tests.ipc_harness import serve_daemon_uds
 
 
 def _rec(sid="s1"):
-    return SessionRecord(id=sid, name="S1", account="acct", claude_session_id="cs",
+    return SessionRecord(id=sid, name="S1", account="acct", engine=AgentEngine.CLAUDE_CODE, engine_session_id="cs",
                          cols=80, rows=24, cwd="/tmp")
+
+
+class _RecordingClient:
+    def __init__(self, return_value):
+        self.return_value = return_value
+        self.last_call = None
+
+    async def call(self, method, **kwargs):
+        self.last_call = (method, kwargs)
+        return self.return_value
+
+
+@pytest.mark.asyncio
+async def test_create_session_keeps_default_claude_request_wire_compatible():
+    client = _RecordingClient({"session": _rec().to_dict()})
+    remote = RemoteOrchestrator(client)
+
+    await remote.create_session(name="S", engine="claude_code")
+
+    assert client.last_call == ("create_session", {"name": "S"})
+
+
+@pytest.mark.asyncio
+async def test_create_session_rejects_codex_without_dispatching_on_protocol_v1():
+    client = _RecordingClient({"session": _rec().to_dict()})
+    remote = RemoteOrchestrator(client)
+
+    with pytest.raises(AgentEngineUnavailable):
+        await remote.create_session(name="S", engine="codex")
+
+    assert client.last_call is None
+
+
+@pytest.mark.asyncio
+async def test_list_archived_normalizes_old_daemon_wire_shape():
+    client = _RecordingClient([{
+        "id": "arch-1",
+        "name": "Old",
+        "account": "acct",
+        "claudeSessionId": "legacy-csid",
+        "reasoningEffort": None,
+    }])
+    remote = RemoteOrchestrator(client)
+
+    rows = await remote.list_archived()
+
+    assert rows == [{
+        "id": "arch-1",
+        "name": "Old",
+        "account": "acct",
+        "engine": "claude_code",
+        "engineSessionId": "legacy-csid",
+        "reasoningEffort": None,
+    }]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("engine", ["openai", None])
+async def test_create_session_rejects_invalid_engine_without_rpc(engine):
+    client = _RecordingClient({"session": _rec().to_dict()})
+    remote = RemoteOrchestrator(client)
+
+    with pytest.raises(InvalidAgentEngine):
+        await remote.create_session(name="S", engine=engine)
+
+    assert client.last_call is None
+
+
+@pytest.mark.asyncio
+async def test_create_session_rpc_defaults_missing_engine_without_growing_legacy_params():
+    app, orch = _build_app()
+    orch.create_session = mock.AsyncMock(return_value=_rec())
+
+    async with serve_daemon_uds(app) as sock:
+        client = DaemonClient(sock)
+        try:
+            await client.call("create_session", name="S")
+        finally:
+            await client.aclose()
+
+    orch.create_session.assert_awaited_once_with(name="S")
+
+
+@pytest.mark.asyncio
+async def test_create_session_rpc_threads_non_default_engine_to_orchestrator():
+    app, orch = _build_app()
+    orch.create_session = mock.AsyncMock(return_value=_rec())
+
+    async with serve_daemon_uds(app) as sock:
+        client = DaemonClient(sock)
+        try:
+            await client.call("create_session", name="S", engine="codex")
+        finally:
+            await client.aclose()
+
+    orch.create_session.assert_awaited_once_with(name="S", engine=AgentEngine.CODEX)
+
+
+@pytest.mark.asyncio
+async def test_create_session_rpc_rejects_explicit_null_engine():
+    app, _orch = _build_app()
+
+    async with serve_daemon_uds(app) as sock:
+        client = DaemonClient(sock)
+        try:
+            with pytest.raises(DaemonError, match="agent engine is required"):
+                await client.call("create_session", name="S", engine=None)
+        finally:
+            await client.aclose()
 
 
 class _FakeEvent:
@@ -63,7 +173,7 @@ async def test_prs_for_over_uds():
     from server.sessions.types import SessionRecord
     app, orch = _build_app()
     orch._records["s1"] = SessionRecord(
-        id="s1", name="S1", account="acct", claude_session_id="cs", cols=80, rows=24,
+        id="s1", name="S1", account="acct", engine=AgentEngine.CLAUDE_CODE, engine_session_id="cs", cols=80, rows=24,
         cwd="/tmp", repo="o/r", authored_branches=["feat/a", "feat/b"],
     )
     cache = {
@@ -177,7 +287,7 @@ async def test_request_pr_fix_over_uds():
     from server.github.pr_status import PullRequestInfo
     app, orch = _build_app()
     orch._records["s1"] = SessionRecord(
-        id="s1", name="S1", account="acct", claude_session_id="cs", cols=80, rows=24,
+        id="s1", name="S1", account="acct", engine=AgentEngine.CLAUDE_CODE, engine_session_id="cs", cols=80, rows=24,
         cwd="/tmp", repo="o/r", authored_branches=["feat/a"],
     )
     orch._pr_poller.cached = lambda repo, br: (

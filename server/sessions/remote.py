@@ -9,9 +9,15 @@ import logging
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from ccswitch.oauth import Usage
+from ccswitch.quota import QuotaSnapshot
+from server.assistant.context import PromptContext
 from server.ipc.client import DaemonError, DaemonUnavailable
 from server.sessions.facade import rpc_deadline
+from server.sessions.engine import (
+    AgentEngine,
+    AgentEngineUnavailable,
+    parse_agent_engine,
+)
 from server.sessions.orchestrator import ModelBlockedError
 from server.sessions.selection import AllAccountsBusy
 
@@ -103,7 +109,7 @@ class RemoteDriver:
         # Epoch seconds of the open turn's start (None when idle), from the daemon's
         # ensure_driver snapshot. ws.py hands it to replay_window so the incomplete-
         # turn drop only trims the turn that actually IS in progress — mirrors the
-        # local SessionDriver.turn_started_at property.
+        # local ClaudeAgentDriver.turn_started_at property.
         self.turn_started_at = turn_started_at
         self._bg_tasks: set[asyncio.Task] = set()
         # Wave-3 cursor catch-up (audit W2.3), FINDING-1 atomic commitment. When
@@ -127,7 +133,7 @@ class RemoteDriver:
         return self._queued
 
     def queue_wire(self) -> list[dict]:
-        """Structured queue snapshot, mirroring local SessionDriver.queue_wire so
+        """Structured queue snapshot, mirroring local ClaudeAgentDriver.queue_wire so
         ws.py can re-emit queued-prompt chips on reattach in remote mode too.
 
         Without this, ws.py's `driver.queue_wire()` raised AttributeError on every
@@ -238,7 +244,7 @@ class RemoteDriver:
         return True
 
     def open_stream(self) -> RemoteDriverStream:
-        """Uniform attach interface with the local SessionDriver.open_stream()."""
+        """Uniform attach interface with the local ClaudeAgentDriver.open_stream()."""
         return RemoteDriverStream(self)
 
     async def events(self):
@@ -279,8 +285,12 @@ class RemoteOrchestrator:
         self._global_subs: set[asyncio.Queue] = set()
         self._global_pump: asyncio.Task | None = None
 
-    async def list_sessions(self) -> list[SessionRecord]:
-        r = await self._client.call("list_sessions")
+    async def list_sessions(self, *, include_assistant: bool = False) -> list[SessionRecord]:
+        # Sent only when True so the wire shape is unchanged for every existing caller
+        # (an older daemon simply ignores an unknown param, but not sending it at all
+        # keeps the default path byte-identical).
+        kw = {"include_assistant": True} if include_assistant else {}
+        r = await self._client.call("list_sessions", **kw)
         return [SessionRecord.from_dict(d) for d in r["sessions"]]
 
     async def pr_for(self, repo, branch) -> "PullRequestInfo | None":
@@ -478,6 +488,16 @@ class RemoteOrchestrator:
         # AllAccountsBusy these carry no structured ``error_data`` payload —
         # the message alone is the whole contract — so reconstruction only
         # needs the type name.
+        if "engine" in kwargs:
+            engine = parse_agent_engine(kwargs["engine"])
+            if engine is AgentEngine.CLAUDE_CODE:
+                # Old protocol-v1 daemons do not accept this additive key. Claude is
+                # the legacy default, so omission preserves rolling compatibility.
+                kwargs.pop("engine")
+            else:
+                # Protocol v1 cannot prove that the selected daemon has a Codex
+                # driver. Capability-gated dispatch arrives with fleet support.
+                raise AgentEngineUnavailable(engine)
         try:
             r = await self._client.call("create_session", **kwargs)
         except DaemonError as exc:
@@ -494,9 +514,17 @@ class RemoteOrchestrator:
         return SessionRecord.from_dict(r["session"])
 
     async def send_prompt(self, session_id: str, text: str, images=None, *,
-                          interrupt: bool = False) -> str | None:
+                          interrupt: bool = False,
+                          context: PromptContext | None = None) -> str | None:
+        # This is the hop the deployed edge actually takes (app.state.sessions is a
+        # RemoteOrchestrator, or a FleetOrchestrator whose _make_per_session splats
+        # **kwargs into one), so every optional send_prompt kwarg has to exist here or
+        # it raises TypeError in production while every in-process test passes.
+        # `context` is only forwarded when set: a newer edge talking to an older
+        # daemon then sends the exact pre-chip payload.
+        extra = {"context": context} if context is not None else {}
         r = await self._client.call("send_prompt", session_id=session_id, text=text,
-                                    images=images, interrupt=interrupt)
+                                    images=images, interrupt=interrupt, **extra)
         return (r or {}).get("status")
 
     def daemon_sha(self) -> str | None:
@@ -582,6 +610,18 @@ class RemoteOrchestrator:
         Returns "reloaded" / "skipped:<reason>" / "no_driver"."""
         return await self._client.call(
             "reload_session", session_id=session_id, identity=identity)
+
+    async def rotate_to_best(self, session_id: str, identity: str = SYSTEM_IDENTITY) -> str:
+        """Proxy the owning daemon's rotate_to_best (move to the next best account).
+        Returns "rotated" / "skipped:<reason>" / "no_driver"."""
+        return await self._client.call(
+            "rotate_to_best", session_id=session_id, identity=identity)
+
+    async def set_account_pin(self, session_id: str, pinned: bool) -> str:
+        """Proxy the owning daemon's set_account_pin. Returns "pinned" / "unpinned" /
+        "skipped:not-found"."""
+        return await self._client.call(
+            "set_account_pin", session_id=session_id, pinned=pinned)
 
     async def permanent_delete(self, session_id):
         return await self._client.call("permanent_delete", session_id=session_id)
@@ -722,14 +762,30 @@ class RemoteOrchestrator:
         return r if isinstance(r, dict) else {}
 
     async def list_archived(self):
-        return await self._client.call("list_archived")
+        rows = await self._client.call("list_archived")
+        normalized = []
+        for row in rows:
+            item = dict(row)
+            # One rolling-upgrade window: an old daemon has neither ``engine``
+            # nor the engine-neutral session-id key. Normalize at this internal
+            # RPC boundary so the browser sees only the current public contract.
+            item["engine"] = parse_agent_engine(
+                item["engine"] if "engine" in item else AgentEngine.CLAUDE_CODE
+            ).value
+            if "engineSessionId" not in item:
+                item["engineSessionId"] = item.get("claudeSessionId")
+            item.setdefault("reasoningEffort", None)
+            item.pop("claudeSessionId", None)
+            normalized.append(item)
+        return normalized
 
     async def unarchive(self, session_id):
         r = await self._client.call("unarchive", session_id=session_id)
         return SessionRecord.from_dict(r["session"]) if r["session"] is not None else None
 
     async def adopt_session(self, claude_session_id, identity):
-        r = await self._client.call("adopt_session", claude_session_id=claude_session_id, identity=identity)
+        r = await self._client.call(
+            "adopt_session", claude_session_id=claude_session_id, identity=identity)
         return SessionRecord.from_dict(r["record"]), r["metadata"]
 
     async def transcript_events(self, session_id, *, max_turns: int | None = 20):
@@ -782,7 +838,7 @@ class RemoteOrchestrator:
             # Wedged/slow daemon → treat as unknown usage rather than 500 the caller.
             log.warning("usage RPC for %s unavailable — returning None", name)
             return None
-        return Usage.from_dict(r["usage"]) if r["usage"] is not None else None
+        return QuotaSnapshot.from_dict(r["usage"]) if r["usage"] is not None else None
 
     async def pending_permissions(self, session_id):
         return await self._client.call("pending_permissions", session_id=session_id)

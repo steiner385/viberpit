@@ -12,9 +12,8 @@ from server.db.models import (GhProject, GhProjectItem, GhWriteJournal, Initiati
 
 from .desired_state import ItemFacts
 from .mirror_store import ProductSyncView, deps_in_repos
+from .queue import NEEDS_HUMAN_LABEL
 from .reconcile_diff import DepView, MirrorItem
-
-NEEDS_HUMAN_LABEL = "needs-human"
 
 
 @dataclass(frozen=True)

@@ -19,7 +19,7 @@ from unittest.mock import patch
 import pytest
 
 from tests.helpers import temp_env
-from ccswitch.oauth import Usage
+from ccswitch.quota import QuotaSnapshot, anthropic_snapshot
 
 
 # ---------------------------------------------------------------------------
@@ -43,15 +43,15 @@ def _seed_account(name: str) -> None:
         write_json_secure(shared_mcp, {})
 
 
-def _ceiling_usage() -> Usage:
+def _ceiling_usage() -> QuotaSnapshot:
     """Usage at 100% session — treated as at-ceiling by select_best."""
     reset = datetime.now(timezone.utc) + timedelta(hours=5)
-    return Usage(100.0, reset, 20.0, reset, False)
+    return anthropic_snapshot(100.0, reset, 20.0, reset, False)
 
 
-def _headroom_usage(session_pct: float = 10.0) -> Usage:
+def _headroom_usage(session_pct: float = 10.0) -> QuotaSnapshot:
     reset = datetime.now(timezone.utc) + timedelta(hours=5)
-    return Usage(session_pct, reset, 20.0, reset, False)
+    return anthropic_snapshot(session_pct, reset, 20.0, reset, False)
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +73,7 @@ def test_sequential_calls_return_different_accounts():
             "gamma": _headroom_usage(session_pct=50.0),
         }
 
-        def fake_usage(name: str) -> Usage:
+        def fake_usage(name: str) -> QuotaSnapshot:
             return usage_map[name]
 
         with patch("ccswitch.accounts.usage_for", side_effect=fake_usage):
@@ -100,7 +100,7 @@ def test_ceiling_account_never_selected():
             "alpha": _headroom_usage(session_pct=20.0),
         }
 
-        def fake_usage(name: str) -> Usage:
+        def fake_usage(name: str) -> QuotaSnapshot:
             return usage_map[name]
 
         with patch("ccswitch.accounts.usage_for", side_effect=fake_usage):
@@ -124,8 +124,8 @@ def test_all_at_ceiling_raises_all_accounts_busy():
 
         reset = datetime.now(timezone.utc) + timedelta(hours=3)
 
-        def fake_usage(name: str) -> Usage:
-            return Usage(100.0, reset, 20.0, reset, False)
+        def fake_usage(name: str) -> QuotaSnapshot:
+            return anthropic_snapshot(100.0, reset, 20.0, reset, False)
 
         with patch("ccswitch.accounts.usage_for", side_effect=fake_usage):
             from server.sessions.selection import select_account, AllAccountsBusy
@@ -151,7 +151,7 @@ def test_exclude_prevents_current_account_selection():
             "beta":  _headroom_usage(session_pct=10.0),  # best, but excluded
         }
 
-        def fake_usage(name: str) -> Usage:
+        def fake_usage(name: str) -> QuotaSnapshot:
             return usage_map[name]
 
         with patch("ccswitch.accounts.usage_for", side_effect=fake_usage):
@@ -176,12 +176,12 @@ def test_quarantined_account_selected_as_last_resort():
 
         reset = datetime.now(timezone.utc) + timedelta(hours=3)
         usage_map = {
-            "limited1":  Usage(100.0, reset, 100.0, reset, False),  # weekly ceiling
-            "limited2":  Usage(100.0, reset, 100.0, reset, False),  # weekly ceiling
+            "limited1":  anthropic_snapshot(100.0, reset, 100.0, reset, False),  # weekly ceiling
+            "limited2":  anthropic_snapshot(100.0, reset, 100.0, reset, False),  # weekly ceiling
             "tonystein": _headroom_usage(session_pct=14.0),         # 14% / 81% — has headroom
         }
 
-        def fake_usage(name: str) -> Usage:
+        def fake_usage(name: str) -> QuotaSnapshot:
             return usage_map[name]
 
         # tonystein is "quarantined" — passed in the exclude set just as the
@@ -209,8 +209,8 @@ def test_quarantined_last_resort_still_raises_when_all_at_ceiling():
 
         reset = datetime.now(timezone.utc) + timedelta(hours=3)
 
-        def fake_usage(name: str) -> Usage:
-            return Usage(100.0, reset, 100.0, reset, False)
+        def fake_usage(name: str) -> QuotaSnapshot:
+            return anthropic_snapshot(100.0, reset, 100.0, reset, False)
 
         with patch("ccswitch.accounts.usage_for", side_effect=fake_usage):
             from server.sessions.selection import select_account, AllAccountsBusy

@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { SessionList } from '../SessionList'
 import type { Session, Account } from '@/api/types'
-import { account, session } from '@/test/factories'
+import { anthropicUsage, account, session } from '@/test/factories'
 
 const SESSIONS: Session[] = [
   session({
@@ -29,12 +29,12 @@ const ACCOUNTS: Account[] = [
   account({
     name: 'alice',
     status: 'ok',
-    usage: { session: { pct: 30, resetsAt: null }, weekly: { pct: 50, resetsAt: null } },
+    usage: anthropicUsage(30, 50),
   }),
   account({
     name: 'bob',
     status: 'limited',
-    usage: { session: { pct: 95, resetsAt: null }, weekly: { pct: 80, resetsAt: null } },
+    usage: anthropicUsage(95, 80),
   }),
 ]
 
@@ -797,5 +797,29 @@ describe('SessionList — Resume interrupted button', () => {
     ]
     render(<SessionList {...sharedProps} sessions={sessions} />, { wrapper })
     expect(screen.queryByRole('button', { name: /resume interrupted/i })).not.toBeInTheDocument()
+  })
+})
+
+describe('SessionList — Rotate stalled button', () => {
+  const sharedProps = {
+    accounts: ACCOUNTS, onNew: vi.fn(), onOpen: vi.fn(), onRename: vi.fn(),
+    onClose: vi.fn(), onDelete: vi.fn(), onQuickResume: vi.fn(),
+  }
+  beforeEach(() => vi.clearAllMocks())
+
+  it('renders "Rotate stalled (2)" when two sessions are usageStalled', () => {
+    const sessions: Session[] = [
+      { ...SESSIONS[0], status: 'needs_attention', usageStalled: true },
+      { ...SESSIONS[1], status: 'limited', usageStalled: true },
+      session({ id: 'sess-3', name: 'Healthy', accountName: 'alice', status: 'idle',
+                createdAt: '2026-06-19T12:00:00Z', updatedAt: '2026-06-19T12:00:00Z' }),
+    ]
+    render(<SessionList {...sharedProps} sessions={sessions} />, { wrapper })
+    expect(screen.getByRole('button', { name: /rotate stalled \(2\)/i })).toBeInTheDocument()
+  })
+
+  it('does not render the button when nothing is stalled', () => {
+    render(<SessionList {...sharedProps} sessions={SESSIONS} />, { wrapper })
+    expect(screen.queryByRole('button', { name: /rotate stalled/i })).not.toBeInTheDocument()
   })
 })

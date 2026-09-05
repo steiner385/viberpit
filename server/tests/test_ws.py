@@ -47,9 +47,9 @@ _IDENTITY_HEADERS = {"Tailscale-User-Login": "wstest@example.com"}
 
 def _fake_usage(account: str):
     from datetime import datetime, timedelta, timezone
-    from ccswitch.oauth import Usage
+    from ccswitch.quota import anthropic_snapshot
     reset = datetime.now(timezone.utc) + timedelta(hours=5)
-    return Usage(10.0, reset, 10.0, reset, False)
+    return anthropic_snapshot(10.0, reset, 10.0, reset, False)
 
 
 def _seed_account(name: str) -> None:
@@ -73,9 +73,11 @@ def _factory(msgs, client_cls=None):
     cls = client_cls or FakeSDKClient
 
     # Mirror real_sdk_factory's signature — the orchestrator's factory wrapper
-    # forwards extra_env=... whenever a session has X11/OAT env, so a fake that
-    # omits it raises TypeError on those sessions ("accept and ignore it").
-    def make(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *, on_pre_compact=None):
+    # forwards extra_env=... whenever a session has X11/OAT env, and
+    # options_overlay=... for an assistant-kind session, so a fake that omits
+    # either raises TypeError on those sessions ("accept and ignore it").
+    def make(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *,
+             on_pre_compact=None, options_overlay=None):
         return cls(list(msgs), on_can_use_tool=can_use_tool)
 
     return make
@@ -983,7 +985,7 @@ def test_frame_too_large_rejected(ws_env):
 # ---------------------------------------------------------------------------
 
 @contextlib.contextmanager
-def _rehydrated_detached_client(tmp_path, msgs, *, claude_session_id="resume-me"):
+def _rehydrated_detached_client(tmp_path, msgs, *, engine_session_id="resume-me"):
     """Build an app rehydrated from a seeded DETACHED session row.
 
     Yields ``(orch, client, session_id)`` with the patches and lifespan active.
@@ -1003,7 +1005,7 @@ def _rehydrated_detached_client(tmp_path, msgs, *, claude_session_id="resume-me"
         async with _db_session() as db:
             db.add(_DbSession(
                 id=session_id, name="rehydrated-ws-session",
-                account_name="alpha", claude_session_id=claude_session_id,
+                account_name="alpha", engine_session_id=engine_session_id,
                 status="idle", cwd=cwd,
             ))
     _asyncio.run(_seed())
@@ -1279,3 +1281,42 @@ def test_prompt_with_interrupt_flag_stops_turn_and_sends(ws_env):
         [e.get("type") for e in events]
 
     client.portal.call(orch.close_session, session_id)
+
+
+def test_prompt_context_honored_for_assistant_ignored_for_coding(ws_env):
+    """A ``prompt`` frame's ``context`` field reaches the SDK as a header only for
+    an assistant-kind session; the identical frame on a coding session must reach
+    the SDK unmodified (spec §4.5 — coding sessions never see it)."""
+    import functools
+    from server.sessions.types import ASSISTANT_KIND
+
+    _app, orch, client = ws_env([], client_cls=FakeSDKClient)
+    identity = _IDENTITY_HEADERS["Tailscale-User-Login"]
+    assistant = client.portal.call(functools.partial(
+        orch.create_session, "assistant-ws", identity=identity,
+        kind=ASSISTANT_KIND, owner_identity=identity))
+    coder = client.portal.call(orch.create_session, "coder-ws")
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": assistant.id}))
+        _drain_events(ws, until_type="replayComplete")
+        ws.send_text(json.dumps({"type": "prompt", "sessionId": assistant.id,
+                                 "text": "hi", "context": {"route": "/pipeline"}}))
+        _drain_events(ws, until=lambda e: e.get("type") == "user" and e.get("text") == "hi",
+                      timeout=8.0)
+
+        ws.send_text(json.dumps({"type": "attach", "sessionId": coder.id}))
+        _drain_events(ws, until_type="replayComplete")
+        ws.send_text(json.dumps({"type": "prompt", "sessionId": coder.id,
+                                 "text": "hi", "context": {"route": "/pipeline"}}))
+        _drain_events(ws, until=lambda e: e.get("type") == "user" and e.get("text") == "hi",
+                      timeout=8.0)
+
+    assistant_sdk = orch._drivers[assistant.id]._client
+    coder_sdk = orch._drivers[coder.id]._client
+    assert assistant_sdk.sent[0].startswith('<ccswitch-context route="/pipeline"'), \
+        assistant_sdk.sent
+    assert coder_sdk.sent == ["hi"], coder_sdk.sent
+
+    client.portal.call(orch.close_session, assistant.id)
+    client.portal.call(orch.close_session, coder.id)

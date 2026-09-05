@@ -36,13 +36,15 @@ def test_archive_session_sets_archived_at(tmp_path):
             async with db_session() as db:
                 db.add(DbSession(
                     id="s1", name="S1", account_name="acct1",
-                    claude_session_id=None, status="idle", cwd=str(cwd),
+                    engine_session_id=None, status="idle", cwd=str(cwd),
                 ))
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            from server.sessions.engine import AgentEngine
             from server.sessions.types import SessionRecord
             orch._records["s1"] = SessionRecord(
                 id="s1", name="S1", account="acct1",
-                claude_session_id="", cols=80, rows=24, cwd=str(cwd),
+                engine=AgentEngine.CLAUDE_CODE,
+                engine_session_id="", cols=80, rows=24, cwd=str(cwd),
             )
             t_before = datetime.utcnow()
             await orch.archive_session("s1")

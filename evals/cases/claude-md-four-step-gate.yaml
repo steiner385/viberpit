@@ -1,7 +1,7 @@
 id: claude-md-four-step-gate
 description: >-
-  CLAUDE.md documents the four-step lint-and-test gate (ruff, mypy, core pytest,
-  server pytest) so an agent runs all of it, not just server tests.
+  The canonical shared instructions document the four-step lint-and-test gate
+  (ruff, mypy, core pytest, server pytest) so an agent runs all of it.
 kind: static
 tags: [agent-config, ci-gate]
-check: 'grep -q "ruff check src/ server/" CLAUDE.md'
+check: 'grep -q "ruff check src/ server/" .agents/instructions/core.md'

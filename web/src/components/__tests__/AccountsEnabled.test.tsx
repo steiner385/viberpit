@@ -3,9 +3,10 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
-import { SettingsView } from '../settings/SettingsView'
+import { AccountsManager } from '../AccountsManager'
 import * as hooks from '@/api/hooks'
 import type { Account } from '@/api/types'
+import { anthropicUsage } from '@/test/factories'
 
 const setEnabledMutate = vi.fn()
 
@@ -62,7 +63,7 @@ vi.mock('@/session/useSessionSearch', () => ({
 function makeAccount(overrides: Partial<Account> = {}): Account {
   return {
     name: 'work', status: 'ok',
-    usage: { session: { pct: 30, resetsAt: null }, weekly: { pct: 50, resetsAt: null } },
+    usage: anthropicUsage(30, 50),
     liveSessions: { active: 0, idle: 0 }, rank: null, rankReason: null, weeklyReservePct: null,
     ...overrides,
   }
@@ -86,7 +87,7 @@ describe('AccountRow — enable/disable', () => {
       data: [makeAccount({ name: 'work', enabled: true })], isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
-    render(<SettingsView />, { wrapper })
+    render(<AccountsManager />, { wrapper })
     await user.click(screen.getByRole('button', { name: /disable account work/i }))
 
     expect(setEnabledMutate).toHaveBeenCalledWith({ name: 'work', enabled: false })
@@ -98,7 +99,7 @@ describe('AccountRow — enable/disable', () => {
       data: [makeAccount({ name: 'work', enabled: false })], isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
-    render(<SettingsView />, { wrapper })
+    render(<AccountsManager />, { wrapper })
 
     expect(screen.getByText(/disabled/i)).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: /enable account work/i }))

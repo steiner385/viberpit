@@ -72,7 +72,7 @@ def test_ensure_driver_allocates_and_injects_display(tmp_path):
         await init_db(db_url=db_url)
         async with db_session() as db:
             db.add(DbSession(id="s1", name="S1", account_name="acct1",
-                             claude_session_id="cs1", status="idle", cwd=str(tmp_path)))
+                             engine_session_id="cs1", status="idle", cwd=str(tmp_path)))
         x11 = FakeX11()
         orch = SessionOrchestrator(sdk_factory=_recording_factory(captured), x11=x11)
         await orch.rehydrate()

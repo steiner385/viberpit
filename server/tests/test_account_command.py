@@ -2,6 +2,7 @@
 import pytest
 from server.sessions.commands.catalog import build_catalog
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
@@ -15,7 +16,7 @@ def test_account_command_is_in_catalog():
 @pytest.mark.asyncio
 async def test_run_command_account_calls_manual_switch(monkeypatch):
     orch = SessionOrchestrator.__new__(SessionOrchestrator)
-    rec = SessionRecord(id="s1", name="n", account="a", claude_session_id="c1",
+    rec = SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                         cols=80, rows=24, cwd="/tmp")
     orch._records = {"s1": rec}
     orch._drivers = {"s1": object()}

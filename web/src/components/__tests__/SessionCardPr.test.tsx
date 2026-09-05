@@ -6,6 +6,7 @@ import type { Session } from '@/api/types'
 
 const session: Session = {
   id: 's1', name: 'My session', accountName: 'acct', repo: 'o/r',
+  engine: 'claude_code', engineSessionId: null,
   status: 'in_progress', createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
   prs: [],

@@ -2,13 +2,14 @@
 import asyncio
 import pytest
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
 
 def _rec(sid: str, status: str) -> SessionRecord:
     return SessionRecord(
-        id=sid, name=sid, account="acct", claude_session_id="cs",
+        id=sid, name=sid, account="acct", engine=AgentEngine.CLAUDE_CODE, engine_session_id="cs",
         cols=80, rows=24, cwd="/tmp", status=status,
     )
 
