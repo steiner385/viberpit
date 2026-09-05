@@ -62,7 +62,7 @@ sub-spec B defines only the drawer and the API shape it expects.
 | # | Question | Decision |
 |---|---|---|
 | D1 | App frame | **Left nav rail** for sections + a **contextual second column** (session list inside Sessions). No persistent app header on tablet/desktop; brand + global actions live in the rail. Phone: rail becomes a bottom nav bar; slim top bar for brand + actions. |
-| D2 | "AI drawer" | A right-side **meta-assistant for ccswitch itself** (fleet questions, PR diagnosis, "start a session on X"), reachable from every section. Frontend + API shape here; backend later. |
+| D2 | "AI drawer" | A right-side **meta-assistant for ccswitch itself** (fleet questions, PR diagnosis, "start a session on X"), reachable from every section. Frontend + API shape here; backend: `2026-09-04-ai-assistant-design.md` (live, see `docs/product/features/ai-assistant.md`). |
 | D3 | Kiosk | **App-level read-only mode for any section**, URL-entered, chrome hidden, larger type, wake-lock, optional attract cycle over a URL-given page list. |
 | D4 | Tablet (768–1023) | **Own mode:** icon-only rail + one column (session replaces list), dock stays. Desktop from 1024. |
 | D5 | Theme | **System + explicit light/dark override**, per browser, toggle in rail and Settings → General; kiosk pins via URL. |

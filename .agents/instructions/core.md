@@ -272,6 +272,18 @@ when the edge does not advertise `sttEnabled` in `GET /api/config`.
   `server/tests/test_stt_whisper_integration.py`, gated on `CCSWITCH_TEST_STT=1`.
 - Audio is never persisted or logged.
 
+## AI assistant (drawer)
+
+A right-side drawer, reachable from every section, backed by a real session of
+`kind == "assistant"` (`docs/product/features/ai-assistant.md`). Its only tools are an in-process
+`ccswitch` MCP server (`server/assistant/tools.py`) where each tool calls exactly **one ccswitch
+HTTP API endpoint over loopback** — never add business logic to a tool handler, add it to the
+endpoint. The bearer token (`server/assistant/token.py`, `ccas1:` prefix) is identity-bound,
+HMAC-signed, never persisted, and accepted only from loopback. Kill switch:
+`CCSWITCH_ASSISTANT_ENABLED` (default `true`); `AppSettings.assistant_enabled` overrides per
+deployment. Eval set + runner: `docs/superpowers/evals/assistant/` (`cases.jsonl` +
+`scripts/eval_assistant.py`), latest result 98% (39/40).
+
 ## Self-directed model switching
 
 A running session can ask for a different model by ending a message with
