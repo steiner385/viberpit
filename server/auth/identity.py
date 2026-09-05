@@ -4,16 +4,32 @@ Resolves the caller's verified identity from Tailscale-provided request headers.
 Primary source: Tailscale-User-Login (set by `tailscale serve` proxy).
 Fallback: X-Tailscale-User-Login (alternate header name some setups use).
 
+Header trust is conditional on the PEER, not on the header's presence. `tailscale
+serve` proxies to the edge's loopback bind, so a genuinely stamped header always
+arrives from loopback (or from an address listed in CCSWITCH_TRUSTED_PROXY_IPS).
+Presented by anyone else it is an unverified claim and is discarded — the request
+then falls through to `tailscale whois`, which verifies the peer against the local
+tailscaled rather than believing what the caller wrote.
+
 Allowlist: if Settings.tailnet_allowlist is non-empty, identity must be in the
 list or None is returned (deny). If empty (dev default), any identity is accepted.
 """
 from __future__ import annotations
 
+import logging
 import subprocess
 from starlette.requests import Request
 from starlette.websockets import WebSocket
 
 from server.config import get_settings
+
+logger = logging.getLogger(__name__)
+
+# The one definition of "this peer is the local host", shared with the assistant-token
+# gate in server/auth/middleware.py (which imports it from here). `::ffff:127.0.0.1` is
+# the IPv4-mapped form a dual-stack listener reports for a v4 loopback connection; it
+# can only originate locally, so it belongs in the set.
+LOOPBACK_PEERS = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
 
 # Synthetic identity handed to unidentified clients when LAN-open mode is enabled
 # (CCSWITCH_ALLOW_UNAUTHENTICATED). Recognisable in logs/session authorship as a
@@ -31,6 +47,24 @@ def verify_identity(request: Request | WebSocket) -> str | None:
         request.headers.get("Tailscale-User-Login")
         or request.headers.get("X-Tailscale-User-Login")
     )
+
+    # The header is only evidence when the peer is entitled to stamp it. From anyone
+    # else it is an unverified claim, so drop it and carry on as if it were absent —
+    # `whois` below is peer-verified and may still identify the caller, and LAN-open
+    # mode must still be able to admit them as a guest. Denying outright here would
+    # turn a stray header into a lockout.
+    if identity and not _peer_is_trusted(request):
+        # The asserted value is deliberately NOT logged: it is either attacker-chosen
+        # text or a real person's email address, and neither belongs in a log line
+        # (server/audit.py redacts token material, but not identities). The peer is
+        # the actionable datum — it says who tried.
+        peer = request.client.host if request.client else "<unknown>"
+        logger.warning(
+            "ignoring Tailscale identity header asserted by untrusted peer %s "
+            "(trusted: loopback + CCSWITCH_TRUSTED_PROXY_IPS)",
+            peer,
+        )
+        identity = None
 
     if not identity:
         # Best-effort: try `tailscale whois` on the peer address
@@ -51,6 +85,20 @@ def verify_identity(request: Request | WebSocket) -> str | None:
         return None
 
     return identity
+
+
+def _peer_is_trusted(request: Request | WebSocket) -> bool:
+    """True when this peer may assert an identity header.
+
+    Fails closed: a request with no peer address (ASGI ``client`` absent) cannot be
+    placed on either side of the boundary, so it does not get to assert one.
+    """
+    peer = request.client.host if request.client else None
+    if not peer:
+        return False
+    if peer in LOOPBACK_PEERS:
+        return True
+    return peer in get_settings().trusted_proxy_ips_items
 
 
 def _whois_identity(request: Request | WebSocket) -> str | None:
