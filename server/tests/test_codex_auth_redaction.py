@@ -401,11 +401,19 @@ def test_a_credential_never_reaches_a_traceback():
     assert "[REDACTED]" in with_locals
 
 
-def test_scrub_exception_flattens_and_redacts_a_multiline_message():
-    exc = ValueError(f"line one {TOKEN}\nline two {API_KEY}\r")
-    rendered = redaction.scrub_exception(exc)
+def test_scrub_exception_reduces_a_failure_to_a_fixed_category():
+    """The authority surfaces exception CATEGORIES, never messages.
 
-    assert rendered.startswith("ValueError: ")
+    `redaction.scrub_exception` is owned by that module and tested there; what is
+    asserted here is only the property this package depends on — that a message
+    carrying a credential cannot reach an authority error, a login snapshot, or a
+    log line through it.
+    """
+    rendered = redaction.scrub_exception(
+        ValueError(f"line one {TOKEN}\nline two {API_KEY}\r")
+    )
+
+    assert rendered == "validation_error"
     assert "\n" not in rendered and "\r" not in rendered
     assert_no_secrets(rendered, extra=(API_KEY,))
 

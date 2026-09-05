@@ -19,7 +19,6 @@ from server.codex.quota import (
     QuotaWindow,
     snapshot_from_rate_limits,
 )
-from server.codex.redaction import REDACTED
 
 NOW = 1_800_000_000.0
 
@@ -298,7 +297,9 @@ async def test_failure_detail_is_scrubbed() -> None:
     snapshot = await reader.read("acct", client=client)
 
     assert "sk-abcdefghijklmnop" not in snapshot.detail
-    assert REDACTED in snapshot.detail
+    # Since #1172 the detail is a fixed category, not a redacted message — a
+    # stronger guarantee, and the one the quota surface renders to operators.
+    assert snapshot.detail == "runtime_error"
 
 
 # ---------------------------------------------------------------------------

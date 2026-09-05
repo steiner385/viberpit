@@ -58,7 +58,10 @@ from server.aio import cancel_and_reap
 from server.codex import process as codex_process
 from server.codex import redaction, schema
 from server.codex.capabilities import CodexAvailability, CodexUnavailableReason
-from server.codex.external_auth import assert_no_runner_credentials
+from server.codex.external_auth import (
+    ExternalAuthUnavailable,
+    assert_no_runner_credentials,
+)
 from server.codex.process import CodexProcess, CodexProcessHandle
 from server.codex.protocol import CodexAppServerClient, RefreshHandler
 from server.obs.context import log_event
@@ -386,6 +389,26 @@ class CodexRunnerManager:
             # process.start/client.start may already have allocated OS resources.
             await self._discard_startup(account, process, client)
             raise
+        except ExternalAuthUnavailable:
+            # Named separately from the generic failure below because the generic
+            # path reduces its cause to a fixed category ("runtime_error"), and
+            # "this runner is holding a ChatGPT credential" is the one startup
+            # failure whose REASON an operator must be told verbatim — the message
+            # is authored here, contains no native text, and names the remedy.
+            await self._discard_startup(account, process, client)
+            log_event(
+                logger,
+                logging.ERROR,
+                "codex.manager.start_failed",
+                account=account,
+                error="runner_holds_credential",
+            )
+            raise CodexStartError(
+                f"codex app-server for {account} was refused: a credential cache "
+                f"appeared in the runner home. A runner using external-token auth "
+                f"must never hold one; refusing rather than leaving a refresh "
+                f"token on a session host."
+            ) from None
         except Exception as exc:  # noqa: BLE001 -- one typed start failure
             # A daemon cancellation arriving while an ordinary startup failure is
             # being cleaned up has the same ownership rule: finish teardown first.

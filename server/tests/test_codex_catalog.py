@@ -19,7 +19,6 @@ from server.codex.catalog import (
     ModelEffortMismatch,
     ModelOption,
 )
-from server.codex.redaction import REDACTED
 
 
 # ---------------------------------------------------------------------------
@@ -325,7 +324,9 @@ async def test_request_failure_becomes_a_scrubbed_catalog_error() -> None:
         await catalog.models("acct", client=client, cli_version="0.153.2")
 
     assert "sk-abcdefghijklmnop" not in str(excinfo.value)
-    assert REDACTED in str(excinfo.value)
+    # Since #1172 an upstream failure reduces to a fixed category rather than a
+    # redacted message: nothing peer-controlled survives into the catalog error.
+    assert str(excinfo.value) == "runtime_error"
 
 
 @pytest.mark.parametrize(

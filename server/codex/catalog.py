@@ -36,7 +36,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Final, Protocol
 
-from server.codex import redaction, schema
+from server.codex import redaction
+from server.codex.auth_types import safe_detail, schema
 from server.codex.protocol import CodexProtocolError
 from server.obs.context import log_event
 
@@ -104,10 +105,14 @@ class ModelEffortMismatch(RuntimeError):
         self.model = model
         self.effort = effort
         self.choices = tuple(choices)
-        # The requested values are caller-supplied strings and this message
-        # reaches logs, so scrub before formatting.
+        # The model/effort names are caller-supplied, so the message is guarded —
+        # but with `safe_detail`, not `redaction.scrub_text`. The latter treats its
+        # input as opaque native text and replaces it wholesale, which would turn
+        # every mismatch into "[REDACTED]" and leave the 409 unable to say which
+        # pair was rejected. A name that genuinely looks credential-shaped is
+        # replaced entirely instead.
         super().__init__(
-            redaction.scrub_text(
+            safe_detail(
                 f"model {model!r} with reasoning effort {effort!r} "
                 "is not offered by the codex model catalog"
             )

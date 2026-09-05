@@ -746,7 +746,9 @@ async def test_a_login_runner_that_raises_fails_with_a_scrubbed_error(tmp_path):
     assert snapshot.state == LOGIN_FAILED
     assert snapshot.error is not None
     assert token not in snapshot.error
-    assert "[REDACTED]" in snapshot.error
+    # Since #1172 the guarantee is stronger than "redacted": the failure reduces to
+    # a fixed category, so no part of the upstream message survives at all.
+    assert snapshot.error == "runtime_error"
 
 
 @pytest.mark.asyncio

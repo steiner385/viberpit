@@ -65,6 +65,32 @@ LOGIN_TERMINAL_STATES: Final[frozenset[str]] = frozenset(
 )
 
 
+def safe_detail(text: str) -> str:
+    """Guard an **authored** diagnostic string on its way to a log or the browser.
+
+    Deliberately NOT :func:`server.codex.redaction.scrub_text`. That function
+    treats its input as *native, peer-controlled* text and replaces it wholesale,
+    which is right for an app-server stderr dump and wrong here: every string that
+    reaches this module is a fixed phrase ccswitch wrote ("account is disabled in
+    the account manifest"), and collapsing those to ``[REDACTED]`` would leave the
+    typed-error surface with a code and no explanation — the browser gates its
+    recovery UI on exactly that explanation.
+
+    ``redaction``'s own doctrine names this split: native strings are opaque, and
+    "diagnostic call sites retain usefulness by logging only fixed categories,
+    reason codes, [and] supported method names". This is that second category,
+    with a belt-and-braces check so the convention is enforced rather than
+    trusted: a detail that ever *does* carry credential-shaped material is
+    replaced entirely rather than trimmed, because a partially-redacted secret is
+    still a leak and a caller that produced one has a bug worth noticing.
+    """
+    if not text:
+        return ""
+    if redaction.contains_secret_shaped_value(text):
+        return redaction.REDACTED
+    return text
+
+
 class AuthorityErrorCode(StrEnum):
     """Why an authority call failed, in words a client can branch on.
 
@@ -126,7 +152,7 @@ class AuthorityError(RuntimeError):
     ) -> None:
         self.code = code
         self.account = account
-        self.detail = redaction.scrub_text(detail)
+        self.detail = safe_detail(detail)
         super().__init__(f"{code.value}: {self.detail}" if self.detail else code.value)
 
     @property
@@ -399,7 +425,7 @@ class LoginSnapshot:
         if self.state not in LOGIN_STATES:
             raise ValueError(f"unknown login state {self.state!r}")
         if self.error is not None:
-            object.__setattr__(self, "error", redaction.scrub_text(self.error))
+            object.__setattr__(self, "error", safe_detail(self.error))
 
     @property
     def terminal(self) -> bool:
@@ -471,9 +497,9 @@ class AuthorityHealth:
             sync_revision=None if revision is None else int(revision),
             sync_expires_in_s=None if expires is None else float(expires),
             accounts=int(body.get("accounts") or 0),
-            detail=redaction.scrub_text(str(body.get("detail") or "")),
+            detail=safe_detail(str(body.get("detail") or "")),
         )
 
     @classmethod
     def unreachable(cls, detail: str) -> AuthorityHealth:
-        return cls(reachable=False, detail=redaction.scrub_text(detail))
+        return cls(reachable=False, detail=safe_detail(detail))
