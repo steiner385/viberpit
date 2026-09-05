@@ -161,3 +161,49 @@ def test_delete_host_404_unknown(tmp_path):
         assert False, "expected HTTPException"
     except HTTPException as exc:
         assert exc.status_code == 404
+
+
+# --------------------------------------------------------------- engine wire
+
+
+_CODEX_UP = {
+    "claude_code": {"available": True},
+    "codex": {"available": True, "cliVersion": "codex-cli 0.153.2",
+              "contractSha256": "moved"},
+}
+
+
+def test_host_wire_lists_every_known_engine_even_for_a_legacy_runner():
+    """A missing row would read as "the page failed", not as "an old runner"."""
+    from server.api.fleet import host_to_wire
+    from server.db.models import Host
+
+    engines = {e["engine"]: e for e in host_to_wire(
+        Host(name="rocky", endpoint="unix:///a"))["engines"]}
+    assert set(engines) == {"claude_code", "codex"}
+    assert engines["codex"]["available"] is False
+    assert engines["codex"]["reason"] == "engine_not_advertised"
+    assert engines["claude_code"]["dispatchable"] is True
+
+
+def test_host_wire_separates_what_the_runner_said_from_what_the_edge_would_do():
+    """A runner on a contract this edge is not pinned to is available, not dispatchable.
+
+    Collapsing the two would hide which side of a mixed-version fleet to upgrade.
+    """
+    from server.api.fleet import host_to_wire
+    from server.db.models import Host
+
+    engines = {e["engine"]: e for e in host_to_wire(
+        Host(name="rocky", endpoint="unix:///a", engines=_CODEX_UP))["engines"]}
+    assert engines["codex"]["available"] is True
+    assert engines["codex"]["cliVersion"] == "codex-cli 0.153.2"
+    assert engines["codex"]["dispatchable"] is False
+    assert engines["codex"]["dispatchReason"] == "contract_hash_mismatch"
+
+
+def test_engine_state_is_not_operator_writable():
+    """Probe-owned state must never be settable, or the UI could lie to the ranker."""
+    from server.api.fleet import sanitize_patch
+
+    assert sanitize_patch({"engines": {"codex": {"available": True}}}) == {}

@@ -188,4 +188,57 @@ describe('SessionMeta', () => {
     const ctx = screen.getByLabelText('Remaining context')
     expect(ctx.className).not.toMatch(/red|amber/)
   })
+
+  // ── session identity: agent, runner, reasoning effort (Task 5.3) ───────────
+
+  it('names the agent when the session does not run the default engine', () => {
+    render(<SessionMeta {...baseProps} engine="codex" />)
+    expect(screen.getByLabelText('Agent')).toHaveTextContent('Codex')
+  })
+
+  it('shows no agent readout for a Claude session', () => {
+    render(<SessionMeta {...baseProps} engine="claude_code" />)
+    expect(screen.queryByLabelText('Agent')).toBeNull()
+  })
+
+  it('shows the runner host the session is executing on', () => {
+    render(<SessionMeta {...baseProps} host="rocky" />)
+    expect(screen.getByLabelText('Runner host')).toHaveTextContent('rocky')
+  })
+
+  it('omits the runner readout when the deployment has no host registry', () => {
+    render(<SessionMeta {...baseProps} host={null} />)
+    expect(screen.queryByLabelText('Runner host')).toBeNull()
+  })
+
+  it('shows the engine-native reasoning effort', () => {
+    render(<SessionMeta {...baseProps} engine="codex" reasoningEffort="high" />)
+    expect(screen.getByLabelText('Reasoning effort')).toHaveTextContent('high')
+  })
+
+  it('omits reasoning effort when the session runs the model default', () => {
+    render(<SessionMeta {...baseProps} reasoningEffort={null} />)
+    expect(screen.queryByLabelText('Reasoning effort')).toBeNull()
+  })
+
+  it('renders a codex live model through the shared label helper', () => {
+    render(
+      <SessionMeta
+        {...baseProps}
+        engine="codex"
+        model="gpt-5.1-codex"
+        liveModel="gpt-5.1-codex"
+        models={[{ id: 'gpt-5.1-codex', label: 'GPT-5.1 Codex' }]}
+      />,
+    )
+    expect(screen.getByLabelText('Model in use')).toHaveTextContent('GPT-5.1 Codex')
+  })
+
+  it('hides the sub-agent control for an engine without the subagents capability', () => {
+    const subAgents: SubAgent[] = [
+      { toolId: 'a', type: 'Explore', description: 'find it', status: 'running' },
+    ]
+    render(<SessionMeta {...baseProps} subAgents={subAgents} subAgentsSupported={false} />)
+    expect(screen.queryByRole('button', { name: /sub-agent/i })).toBeNull()
+  })
 })

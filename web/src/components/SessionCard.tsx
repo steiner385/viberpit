@@ -13,7 +13,7 @@ import { TIER_ACCENT } from '@/session/statusTier'
 import { sessionTriage } from '@/session/triageTier'
 import { useSessionPromptFlight } from '@/lib/promptFlight'
 import { anyChecksFailing, isActionablePrState } from '@/session/prStatus'
-import { isGatedTier, tierLabel } from '@/session/modelName'
+import { engineBadge, isGatedTier, tierLabel } from '@/session/modelName'
 import { UsageBadge } from './UsageBadge'
 import { PrList } from './PrList'
 import { SubAgentRows } from './SubAgentRows'
@@ -65,12 +65,17 @@ function automationLabel(id: string): string {
  * upgrade awaiting approval (`pendingModel`) are mutually exclusive on the
  * server — the former is an already-approved switch, the latter is the hold.
  */
-function modelTitle(s: Pick<Session, 'model' | 'modelPending' | 'pendingModel'>): string {
-  const label = `Model: ${tierLabel(s.model)}`
-  if (s.pendingModel) return `${label} (${tierLabel(s.pendingModel)} requested, awaiting approval)`
+function modelTitle(s: Pick<Session, 'model' | 'modelPending' | 'pendingModel' | 'engine'>): string {
+  const label = `Model: ${tierLabel(s.model, s.engine)}`
+  if (s.pendingModel) return `${label} (${tierLabel(s.pendingModel, s.engine)} requested, awaiting approval)`
   if (s.modelPending) return `${label} (switching after this turn)`
   return label
 }
+
+// Neutral chip shell shared by the identity chips on line 1 (engine, reasoning
+// effort, model). Each caps its own width and truncates so no single long value
+// can starve the session title.
+const identityChip = 'text-xs px-1.5 py-0.5 rounded truncate'
 
 /** Passive `·` divider between line-2 segments. */
 function Sep() {
@@ -615,25 +620,57 @@ export function SessionCard({ session, account, selected = false, listMode = fal
               </span>
             ) : null
           })()}
+          {/* Agent chip — WHICH engine runs this session. Only rendered when it
+              is not the default Claude Code engine (`engineBadge` owns that
+              rule): a deployment that runs only Claude must not grow a chip on
+              every card. Wide-card only, like every other secondary signal. */}
+          {engineBadge(session.engine) && (
+            <span
+              data-testid="card-engine"
+              className={cn(
+                markerBase, identityChip, 'max-w-[6rem]',
+                'bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300',
+              )}
+              title={`Agent: ${engineBadge(session.engine)}`}
+            >
+              {engineBadge(session.engine)}
+            </span>
+          )}
+          {/* Reasoning effort — the engine-native depth choice (Codex). Absent
+              means "the model's own default", the unremarkable case. It sits
+              BEFORE the model chip because the model chip must stay adjacent to
+              the account chip (see the comment below). */}
+          {session.reasoningEffort && (
+            <span
+              data-testid="card-effort"
+              className={cn(
+                markerBase, identityChip, 'max-w-[6rem]',
+                'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400',
+              )}
+              title={`Reasoning effort: ${session.reasoningEffort}`}
+            >
+              {session.reasoningEffort}
+            </span>
+          )}
           {/* Model chip — which model the session is running, right before the
               account chip so the pair reads together ("Opus · tony@…"). Only
               shown when the record pins a model; null means the account/binary
               default, which is the unremarkable case and would just be noise on
               most cards. Wide-card only, like every other secondary signal. The
-              gated tier is tinted so an expensive session stands out on a scan. */}
+              gated tier is tinted so an expensive session stands out on a scan
+              — never for a non-Claude engine, whose ids no tier gate matches. */}
           {session.model && (
             <span
               data-testid="card-model"
               className={cn(
-                markerBase,
-                'text-xs px-1.5 py-0.5 rounded whitespace-nowrap',
-                isGatedTier(session.model)
+                markerBase, identityChip, 'max-w-[8rem]',
+                isGatedTier(session.model, session.engine)
                   ? 'bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300'
                   : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400',
               )}
               title={modelTitle(session)}
             >
-              {tierLabel(session.model)}
+              {tierLabel(session.model, session.engine)}
             </span>
           )}
           {/* The chip yields before the title does: capped at 30% of the row and
@@ -641,6 +678,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
               (Line 1 now also hosts the action buttons, so the old 45% cap left
               starved one-word titles.) `title` keeps the full value reachable. */}
           <span
+            data-testid="card-account"
             className="flex-shrink-0 max-w-[30%] truncate text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded"
             title={account?.nickname || session.accountName}
           >

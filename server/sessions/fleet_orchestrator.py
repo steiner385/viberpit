@@ -11,7 +11,8 @@ from ccswitch.quota import QuotaSnapshot
 from server.codex.quota import persist_quota_snapshot
 from server.sessions.facade import _DEADLINE_ATTR
 from server.sessions.fleet_router import FleetRouter, NoHostAvailable
-from server.sessions.engine import AgentEngine, AgentEngineUnavailable, parse_agent_engine
+from server.sessions.host_engines import expected_contract_sha256
+from server.sessions.engine import AgentEngine, parse_agent_engine
 from server.sessions.remote import RemoteOrchestrator
 from server.sessions.types import is_assistant, is_assistant_kind
 
@@ -196,21 +197,31 @@ class FleetOrchestrator:
         return _call
 
     async def create_session(self, *, prefer: str | None = None, **kwargs):
+        engine: AgentEngine | None = None
         if "engine" in kwargs:
             engine = parse_agent_engine(kwargs["engine"])
             if engine is AgentEngine.CLAUDE_CODE:
-                # Preserve the exact legacy request for mixed-version runners.
+                # Preserve the exact legacy request for mixed-version runners: a
+                # daemon that predates the key rejects it, and Claude is the default
+                # it would have applied anyway.
                 kwargs.pop("engine")
+                engine = None
             else:
-                # Protocol v1 has no host-engine capability advertisement. Never
-                # gamble a Codex request on an arbitrary mixed-version runner.
-                raise AgentEngineUnavailable(engine)
+                # Normalize to the enum so every downstream hop sees one type. It is
+                # a StrEnum, so the wire encoding is unchanged.
+                kwargs["engine"] = engine
         # The assistant is pinned to the primary: its tools call the edge's own loopback
         # API and its in-process MCP server lives in the primary daemon, so a worker
         # placement would have neither. Overrides any caller preference.
         if is_assistant_kind(kwargs.get("kind")):
             prefer = self._primary
-        order = await self._router.pick(prefer=prefer)  # raises NoHostAvailable if empty
+        # Candidate selection now filters on the requested engine before scoring, so a
+        # Codex launch is only ever offered runners that advertised a usable Codex
+        # boundary. Raises NoEngineHostAvailable (a NoHostAvailable) when every healthy
+        # host is incompatible, carrying the per-host reason.
+        order = await self._router.pick(
+            prefer=prefer, engine=engine,
+            expected_contract_sha256=expected_contract_sha256(engine))
         last_exc: Exception | None = None
         for host in order:
             try:

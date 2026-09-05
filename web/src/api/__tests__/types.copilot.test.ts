@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
-import type { Account, CopilotAddState } from '../types'
+import type { Account, DeviceCodeState } from '../types'
 
 describe('Copilot types', () => {
   it('Account with provider: copilot compiles and is assignable', () => {
@@ -28,15 +28,15 @@ describe('Copilot types', () => {
     expect(account.provider).toBeUndefined()
   })
 
-  it('CopilotAddState with all state values is valid', () => {
-    const pending: CopilotAddState = {
+  it('DeviceCodeState with all state values is valid', () => {
+    const pending: DeviceCodeState = {
       state: 'pending',
       userCode: null,
       verificationUri: null,
     }
     expect(pending.state).toBe('pending')
 
-    const awaiting: CopilotAddState = {
+    const awaiting: DeviceCodeState = {
       state: 'awaiting_authorization',
       userCode: 'ABC123',
       verificationUri: 'https://example.com/auth',
@@ -45,14 +45,14 @@ describe('Copilot types', () => {
     expect(awaiting.userCode).toBe('ABC123')
     expect(awaiting.verificationUri).toBe('https://example.com/auth')
 
-    const authorized: CopilotAddState = {
+    const authorized: DeviceCodeState = {
       state: 'authorized',
       userCode: null,
       verificationUri: null,
     }
     expect(authorized.state).toBe('authorized')
 
-    const failed: CopilotAddState = {
+    const failed: DeviceCodeState = {
       state: 'failed',
       userCode: null,
       verificationUri: null,

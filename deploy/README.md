@@ -305,6 +305,32 @@ Restarting the authority is cheap: it holds no sessions, cancels in-flight devic
 logins, and the persisted generation counter means a restart cannot re-mint a number
 an in-flight runner is still fencing against.
 
+### "Codex isn't offered" — where to look
+
+Codex is offered only when the edge has an authority **and** some enabled, healthy
+runner advertises a usable Codex boundary. Each daemon reports its own verdict on
+`GET /info` under `engines`, the fleet probe stores it on the host row, and both the
+Fleet settings table and `GET /api/config` render it. Work down in this order:
+
+1. **`/api/config` → `engines[codex].blockedReason`.** `authority_unconfigured` means
+   the *edge* has no `CCSWITCH_CODEX_AUTHORITY_*` settings; no runner can help, because
+   runners authenticate only with authority-minted envelopes. Fix the edge and stop here.
+2. **Fleet settings → the per-host Codex column** (or `engines[codex].unavailableReasons`).
+   The reason is the runner's own typed verdict: `disabled` (`CCSWITCH_CODEX_ENABLED`
+   unset), `external_auth_disabled` (`CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED` unset),
+   `binary_not_found` (install `codex`, or set `CCSWITCH_CODEX_BIN`),
+   `version_probe_failed`, `unsupported_version`, or `runtime_home_refused`.
+3. **`engine_not_advertised`** means that daemon predates `/info.engines` — it is a
+   legacy runner mid-upgrade, read as Claude-only. Deploy it.
+4. **`available: true` but `dispatchable: false`** with `contract_hash_mismatch` is the
+   mixed-version case: the *runner* verified a Codex app-server contract this *edge* is
+   not pinned to. One of the two is ahead; the edge's pin is
+   `server/codex/schema.py:PINNED_CONTRACT_SHA256`.
+
+None of this affects host health. A runner with no Codex binary stays `healthy`, keeps
+taking Claude sessions, and remains a deploy target — Codex unavailability is dropped
+from Codex dispatch only.
+
 ## Deploy controller (`ccswitch-deploy-controller.service`)
 
 Long-lived service that polls `origin/master` (notify-only) and runs user-triggered deploys.

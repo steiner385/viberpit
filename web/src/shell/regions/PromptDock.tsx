@@ -1,12 +1,13 @@
+import { useCallback, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { DispatchBar } from '@/components/DispatchBar'
 import { DispatchError } from '@/components/dispatchError'
 import { SessionComposer } from '@/components/session/SessionComposer'
 import { useSessionRuntimeContext } from '@/components/session/SessionRuntimeProvider'
-import { useCreateSession, useGithubRepos, useModels } from '@/api/hooks'
+import { useCreateSession, useEngineOffers, useGithubRepos, useModels } from '@/api/hooks'
 import { useEnabledFleetHosts } from '@/api/fleet'
-import type { Account } from '@/api/types'
+import { DEFAULT_AGENT_ENGINE, type Account, type AgentEngine } from '@/api/types'
 import { setLastRepo } from '@/lib/lastRepo'
 import { isPendingSessionId } from '@/lib/pendingSessions'
 import { NAV_BY_ID } from '@/shell/navDefs'
@@ -128,13 +129,32 @@ function NewSessionBar({
 }: PromptDockProps) {
   const navigate = useNavigate()
   const reposQuery = useGithubRepos()
-  const { data: models = [] } = useModels()
+  // The bar owns the engine/account picks; the model list is engine- AND
+  // account-scoped (Codex's comes from the account's own app-server), so the bar
+  // reports its context up and the query lives here beside the other fetches.
+  // While Codex has no account the query is disabled — asking is a 400, and the
+  // bar renders "select an account first" instead.
+  const [modelContext, setModelContext] = useState<{ engine: AgentEngine; account: string | null }>(
+    { engine: DEFAULT_AGENT_ENGINE, account: null },
+  )
+  const { data: models = [] } = useModels(modelContext.engine, modelContext.account)
+  const engines = useEngineOffers()
   // DEC-2: the Runner picker was phone-only — `Dashboard` fetched the hosts and
   // `DesktopShell.handleDispatch` had no `host` parameter at all. One dock means
   // one DispatchBar, so desktop gains it rather than mobile losing it.
   const hosts = useEnabledFleetHosts()
   const createSession = useCreateSession()
   const { ordering, nav } = list
+
+  // Stable identity: it is a dependency of the bar's report effect, so a fresh
+  // closure each render would re-fire it on every keystroke.
+  const handleEngineContext = useCallback(
+    (context: { engine: AgentEngine; account: string | null }) => {
+      setModelContext((prev) =>
+        prev.engine === context.engine && prev.account === context.account ? prev : context)
+    },
+    [],
+  )
 
   function openSession(id: string, initialPrompt?: string) {
     // An optimistic placeholder has no session on the server yet — opening one
@@ -149,7 +169,7 @@ function NewSessionBar({
   }
 
   function handleDispatch({
-    initialPrompt, repo, account, model, host, attachmentIds,
+    initialPrompt, repo, account, model, host, attachmentIds, engine, reasoningEffort,
   }: {
     initialPrompt: string
     repo: string | null
@@ -157,6 +177,8 @@ function NewSessionBar({
     model: string | null
     host: string | null
     attachmentIds: string[]
+    engine: AgentEngine
+    reasoningEffort: string | null
   }): Promise<void> {
     const repoInfo = repo ? (reposQuery.data ?? []).find((r) => r.nameWithOwner === repo) : undefined
     return new Promise((resolve, reject) => {
@@ -169,6 +191,11 @@ function NewSessionBar({
           model: model ?? undefined,
           host: host ?? undefined,
           attachmentIds: attachmentIds.length ? attachmentIds : undefined,
+          // Sent even for the default so `useCreateSession`'s optimistic
+          // placeholder carries the real engine — a Codex card must never be
+          // briefly labelled Claude while the daemon spins the runtime up.
+          engine,
+          reasoningEffort: reasoningEffort ?? undefined,
         },
         {
           onSuccess: (session) => {
@@ -210,7 +237,9 @@ function NewSessionBar({
       accounts={accounts}
       models={models}
       hosts={hosts}
+      engines={engines}
       onDispatch={handleDispatch}
+      onEngineContextChange={handleEngineContext}
       onNavigate={nav.navigate}
       onOpenHighlighted={() => {
         if (nav.highlightedSession) openSession(nav.highlightedSession.id)

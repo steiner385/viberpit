@@ -10,10 +10,11 @@ import {
   type ActionableItem, type TriggerResult, type ConsolidationView,
   type BacklogGroupsView, type BacklogCandidatesView, type DispatchGroupResponse,
 } from './automations'
+import { DEFAULT_AGENT_ENGINE } from './types'
 import type {
   Account, Session, ReauthState, ArchivedSession, AdoptionCandidate, AdoptOutcome, ModelOption, BatchResult,
   DeployStatusResponse, PendingDeploy, DeployProgress, PipelinePr, StageModel, CheckInsights,
-  DaemonHealth, CopilotAddState, McpAuthState,
+  DaemonHealth, DeviceCodeState, McpAuthState, AgentEngine, AgentCapabilities, EngineOffer,
   LibraryPluginDetail, LibraryPluginsResponse, LibrarySkill, LibraryCommand,
   LibraryMcpServer, McpServerConfig, LibraryContent,
   SessionPreset, PromptTemplate, PermissionProfile, AssessResponse,
@@ -42,7 +43,12 @@ import { toast } from 'sonner'
 // Query keys
 export const QK = {
   accounts: ['accounts'] as const,
-  models: ['models'] as const,
+  // Engine- AND account-scoped. Codex's list comes from the selected account's
+  // own app-server and differs by plan, so a single ['models'] key would serve
+  // one engine's catalogue to the other engine's picker the moment both are
+  // offered — and a Codex account switch would show the previous account's models.
+  models: (engine: AgentEngine = DEFAULT_AGENT_ENGINE, account?: string | null) =>
+    ['models', engine, account ?? null] as const,
   sessions: ['sessions'] as const,
   archived: ['archived-sessions'] as const,
   adoptable: ['adoptable-sessions'] as const,
@@ -76,10 +82,29 @@ export const QK = {
   onboarding: (slug: string) => ['pm', 'onboarding', slug] as const,
 }
 
-export function useModels() {
+/**
+ * The model list for one engine, and — for Codex — for one account.
+ *
+ * Claude's catalogue is curated and host-independent, so the URL stays the bare
+ * `/models` every existing caller already sends (the route defaults `engine` for
+ * exactly that reason). Codex's comes from the account's own app-server and
+ * differs by plan, which is why `account` is required there: asking without one
+ * is a 400 `account_required`, so the query simply does not run and the picker
+ * says "select an account" instead.
+ */
+export function useModels(
+  engine: AgentEngine = DEFAULT_AGENT_ENGINE,
+  account?: string | null,
+) {
+  const needsAccount = engine !== DEFAULT_AGENT_ENGINE
   return useQuery<ModelOption[]>({
-    queryKey: QK.models,
-    queryFn: () => api.get<ModelOption[]>('/models'),
+    queryKey: QK.models(engine, account),
+    queryFn: () => api.get<ModelOption[]>(
+      needsAccount
+        ? `/models?engine=${encodeURIComponent(engine)}&account=${encodeURIComponent(account ?? '')}`
+        : '/models',
+    ),
+    enabled: !needsAccount || !!account,
     staleTime: 5 * 60_000,   // curated list rarely changes
   })
 }
@@ -146,6 +171,12 @@ export interface ConfigInfo {
   adoptionEnabled: boolean
   /** Edge runs the server-side dictation engine (`CCSWITCH_ENABLE_STT` + `stt` extra). */
   sttEnabled?: boolean
+  /**
+   * Per-engine offerability + capabilities. Absent on an edge that predates the
+   * engine registry — treat that as "Claude Code only", which is what
+   * `useEngineOffers()` degrades to.
+   */
+  engines?: EngineOffer[]
 }
 
 export function useConfig() {
@@ -154,6 +185,42 @@ export function useConfig() {
     queryFn: () => api.get<ConfigInfo>('/config'),
     staleTime: 60_000,
   })
+}
+
+/** Never a new array identity for the same "no offers" answer — this is a
+ *  dependency of the launch UI's memoised engine resolution. */
+const NO_ENGINE_OFFERS: EngineOffer[] = []
+
+/**
+ * What engines this deployment offers, read off the ONE `/config` query.
+ *
+ * Deliberately a selector over `useConfig()` rather than a second hook with its
+ * own key: `/api/config` already carries `engines`, and a parallel query would
+ * be a second source of truth for "may the user pick Codex?" that could answer
+ * differently mid-session.
+ */
+export function useEngineOffers(): EngineOffer[] {
+  const { data } = useConfig()
+  return data?.engines ?? NO_ENGINE_OFFERS
+}
+
+/**
+ * The server-advertised control surface of one engine, or undefined when
+ * `/api/config` has not answered (or predates the engine registry).
+ *
+ * Lives here rather than beside its first consumer so EVERY capability-gated
+ * surface reads one hook: a component-file copy cannot be imported without
+ * tripping `react-refresh/only-export-components`, which is exactly how a
+ * second `offers.find(...)` gets written somewhere else.
+ *
+ * Callers must treat `undefined` as "capability present" — see
+ * `canUseEngine` in `@/session/engineCapabilities`.
+ */
+export function useEngineCapabilities(
+  engine: AgentEngine | undefined,
+): AgentCapabilities | undefined {
+  const offers = useEngineOffers()
+  return offers.find((o) => o.engine === (engine ?? DEFAULT_AGENT_ENGINE))?.capabilities
 }
 
 // Self-heal for the New Session repo dropdown: a fetch that fails while the
@@ -253,7 +320,8 @@ export interface CreateSessionInput {
   permissionMode?: string
   attachmentIds?: string[]
   model?: string
-  engine?: 'claude_code' | 'codex'
+  /** Which agent runs the session; omitted ⇒ the server's default (Claude Code). */
+  engine?: AgentEngine
   reasoningEffort?: string | null
   /** Optional runner preference. null → auto-rank; a name → that host first. */
   host?: string | null
@@ -276,7 +344,9 @@ export function useCreateSession() {
       const tempId = addPendingSession({
         name: input.name?.trim() || input.initialPrompt?.trim().slice(0, 60) || 'New session',
         accountName: input.account ?? '',
-        engine: input.engine ?? 'claude_code',
+        // The REAL engine, so a Codex card is never briefly labelled Claude while
+        // the daemon spins the runtime up.
+        engine: input.engine ?? DEFAULT_AGENT_ENGINE,
         engineSessionId: null,
         status: 'in_progress',
         createdAt: new Date().toISOString(),
@@ -592,8 +662,8 @@ export function useCancelAddAccount() {
 // Copilot device-flow add: initiates the GitHub device-flow OAuth for a new
 // Copilot account slot. The name is sent in the body since the slot does not exist yet.
 export function useAddCopilotAccount() {
-  return useMutation<CopilotAddState, ApiRequestError, string>({
-    mutationFn: (name) => api.post<CopilotAddState>('/accounts/add/copilot', { name }),
+  return useMutation<DeviceCodeState, ApiRequestError, string>({
+    mutationFn: (name) => api.post<DeviceCodeState>('/accounts/add/copilot', { name }),
   })
 }
 
@@ -601,9 +671,9 @@ export function useAddCopilotAccount() {
 // Mirrors useReauthStatus / useAddAccountStatus — polling stops automatically
 // at terminal states (authorized | failed) to avoid unnecessary requests.
 export function useCopilotAddStatus(name: string, enabled: boolean) {
-  return useQuery<CopilotAddState>({
+  return useQuery<DeviceCodeState>({
     queryKey: ['copilot-add-status', name],
-    queryFn: () => api.get<CopilotAddState>(`/accounts/add/copilot?name=${encodeURIComponent(name)}`),
+    queryFn: () => api.get<DeviceCodeState>(`/accounts/add/copilot?name=${encodeURIComponent(name)}`),
     enabled,
     refetchInterval: (query) => {
       const s = query.state.data?.state
@@ -616,8 +686,82 @@ export function useCopilotAddStatus(name: string, enabled: boolean) {
 
 export function useCancelCopilotAdd() {
   const qc = useQueryClient()
-  return useMutation<CopilotAddState, ApiRequestError, string>({
-    mutationFn: (name) => api.post<CopilotAddState>('/accounts/add/copilot/cancel', { name }),
+  return useMutation<DeviceCodeState, ApiRequestError, string>({
+    mutationFn: (name) => api.post<DeviceCodeState>('/accounts/add/copilot/cancel', { name }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.accounts }) },
+  })
+}
+
+// ── OpenAI / ChatGPT device flow ─────────────────────────────────────────────
+//
+// The SAME state machine as Copilot, on different routes — the backend spells
+// the two payloads identically on purpose, so these are modelled line-for-line
+// on the Copilot trio above rather than being a third dialect. Polling stops at
+// the terminal states (authorized | failed); nothing here writes a userCode or
+// verificationUri anywhere that outlives the query cache.
+
+export function useAddOpenAIAccount() {
+  return useMutation<DeviceCodeState, ApiRequestError, string>({
+    mutationFn: (name) => api.post<DeviceCodeState>('/accounts/add/openai', { name }),
+  })
+}
+
+export function useOpenAIAddStatus(name: string, enabled: boolean) {
+  return useQuery<DeviceCodeState>({
+    queryKey: ['openai-add-status', name],
+    queryFn: () => api.get<DeviceCodeState>(`/accounts/add/openai?name=${encodeURIComponent(name)}`),
+    enabled,
+    refetchInterval: (query) => {
+      const s = query.state.data?.state
+      return s === 'authorized' || s === 'failed' ? false : 2000
+    },
+    refetchOnWindowFocus: false,
+    staleTime: 0,
+  })
+}
+
+export function useCancelOpenAIAdd() {
+  const qc = useQueryClient()
+  return useMutation<DeviceCodeState, ApiRequestError, string>({
+    mutationFn: (name) => api.post<DeviceCodeState>('/accounts/add/openai/cancel', { name }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.accounts }) },
+  })
+}
+
+// An OpenAI account RE-authenticates by re-running its device flow at the
+// credential authority, so `/accounts/{name}/reauth` answers with a device-code
+// snapshot rather than a `ReauthState` (there is no browser OAuth and no local
+// slot to re-encrypt). Same URLs as `useReauthAccount`/`useReauthStatus`,
+// different payload — hence a DISTINCT query key: sharing ['reauth-status', name]
+// would hand one reader the other's shape.
+
+export function useOpenAIReauth() {
+  return useMutation<DeviceCodeState, ApiRequestError, string>({
+    mutationFn: (name) => api.post<DeviceCodeState>(`/accounts/${encodeURIComponent(name)}/reauth`),
+  })
+}
+
+export function useOpenAIReauthStatus(name: string, enabled: boolean) {
+  return useQuery<DeviceCodeState>({
+    queryKey: ['openai-reauth-status', name],
+    queryFn: () => api.get<DeviceCodeState>(`/accounts/${encodeURIComponent(name)}/reauth`),
+    enabled,
+    refetchInterval: (query) => {
+      const s = query.state.data?.state
+      return s === 'authorized' || s === 'failed' ? false : 2000
+    },
+    refetchOnWindowFocus: false,
+    staleTime: 0,
+  })
+}
+
+export function useCancelOpenAIReauth() {
+  const qc = useQueryClient()
+  return useMutation<DeviceCodeState, ApiRequestError, string>({
+    mutationFn: (name) =>
+      api.post<DeviceCodeState>(`/accounts/${encodeURIComponent(name)}/reauth/cancel`),
+    // fire-and-forget cancel: never toast on error (see queryClient global handler)
+    meta: { suppressErrorToast: true },
     onSuccess: () => { qc.invalidateQueries({ queryKey: QK.accounts }) },
   })
 }

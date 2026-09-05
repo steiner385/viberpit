@@ -6,6 +6,7 @@ the vertical-slice methods only.
 """
 import asyncio
 import logging
+import time
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -280,10 +281,54 @@ class RemoteDriver:
 
 
 class RemoteOrchestrator:
+    #: How long a daemon's `/info.engines` answer is reused before re-asking. Short
+    #: enough that a runner losing its Codex binary is noticed within one probe
+    #: cycle, long enough that a burst of Codex launches is one round trip.
+    _ENGINES_TTL_S = 20.0
+
     def __init__(self, client):
         self._client = client
         self._global_subs: set[asyncio.Queue] = set()
         self._global_pump: asyncio.Task | None = None
+        self._engines_cache: tuple[float, dict] | None = None
+
+    async def _engines(self) -> dict:
+        """This daemon's advertised engines, cached briefly. Never raises.
+
+        A daemon that cannot answer `/info` at all is reported as the legacy
+        Claude-only map: unreachable is a *health* failure that the caller's own
+        error handling already covers, and inventing "Codex is fine" here would turn
+        it into a launch that fails much later and much less legibly.
+        """
+        from server.sessions.host_engines import LEGACY_ENGINES, parse_engines_info
+
+        now = time.monotonic()
+        cached = self._engines_cache
+        if cached is not None and now - cached[0] < self._ENGINES_TTL_S:
+            return cached[1]
+        try:
+            info = await self._client.info()
+        except Exception:  # noqa: BLE001 -- an unreachable daemon offers nothing new
+            log.warning("remote: /info unavailable — treating as legacy engines",
+                        exc_info=True)
+            return dict(LEGACY_ENGINES)
+        engines = parse_engines_info(info if isinstance(info, dict) else None)
+        self._engines_cache = (now, engines)
+        return engines
+
+    async def _require_engine(self, engine: AgentEngine) -> None:
+        """Raise ``AgentEngineUnavailable`` unless this daemon can run *engine*."""
+        from server.sessions.host_engines import (
+            engine_dispatchable,
+            expected_contract_sha256,
+        )
+
+        ok, reason = engine_dispatchable(
+            await self._engines(), engine,
+            expected_contract_sha256=expected_contract_sha256(engine))
+        if not ok:
+            log.info("remote: refusing %s launch — %s", engine.value, reason)
+            raise AgentEngineUnavailable(engine)
 
     async def list_sessions(self, *, include_assistant: bool = False) -> list[SessionRecord]:
         # Sent only when True so the wire shape is unchanged for every existing caller
@@ -495,9 +540,12 @@ class RemoteOrchestrator:
                 # the legacy default, so omission preserves rolling compatibility.
                 kwargs.pop("engine")
             else:
-                # Protocol v1 cannot prove that the selected daemon has a Codex
-                # driver. Capability-gated dispatch arrives with fleet support.
-                raise AgentEngineUnavailable(engine)
+                # Ask the daemon itself, not the registry. The fleet probe's snapshot
+                # is what RANKED this host; it can be up to a probe interval old, and
+                # a daemon that restarted without its Codex binary in between would
+                # otherwise be handed a launch it cannot start. Claude never pays for
+                # this — the branch above returns before the round trip.
+                await self._require_engine(engine)
         try:
             r = await self._client.call("create_session", **kwargs)
         except DaemonError as exc:

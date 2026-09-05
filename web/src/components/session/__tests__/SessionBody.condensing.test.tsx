@@ -9,6 +9,11 @@ vi.mock('@/api/hooks', () => ({
   useModels: () => ({ data: [] }),
   useAccounts: () => ({ data: [] }),
   useSessions: () => ({ data: [] }),
+  // Engine capabilities (SessionBody gates Claude-only surfaces on them).
+  useEngineOffers: vi.fn(() => []),
+  // Capability gate for engine-conditional controls; undefined = "unknown",
+  // which every gate reads as "capability present".
+  useEngineCapabilities: vi.fn(() => undefined),
   useSessionsViewing: vi.fn(),
   useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),
   // Unpin account button (SessionBody → SessionMeta).

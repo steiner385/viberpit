@@ -782,16 +782,34 @@ rateLimits/read against the supported binary. No turn yet.
 
 **Work:**
 
-- [ ] Add `/info.engines` with availability, CLI version, app-server schema hash, and external-auth
+- [x] Add `/info.engines` with availability, CLI version, app-server schema hash, and external-auth
   compatibility. An absent field means legacy Claude-only during the one-window upgrade.
-- [ ] Filter candidates by requested engine and required protocol/schema before capacity scoring.
+- [x] Filter candidates by requested engine and required protocol/schema before capacity scoring.
   `prefer=host` is a preference, not permission to dispatch to an incompatible host.
-- [ ] Allow the same OpenAI account on multiple eligible runners; add no account affinity/lease.
+- [x] Allow the same OpenAI account on multiple eligible runners; add no account affinity/lease.
   Continue stamping one owning host per session.
-- [ ] Show Codex availability/reason in Fleet settings. A Codex mismatch must leave host health and
+- [x] Show Codex availability/reason in Fleet settings. A Codex mismatch must leave host health and
   Claude dispatch intact.
-- [ ] Test mixed-version rollout, missing binary, schema mismatch, authority unavailable, host
+- [x] Test mixed-version rollout, missing binary, schema mismatch, authority unavailable, host
   preference, all-incompatible error, and concurrent same-account dispatch.
+
+**As built** (2026-09-05, one PR covering all three Phase 5 groups):
+
+- `server/sessions/host_engines.py` is the single parser + verdict for engine advertisement,
+  consumed by the daemon writer, the probe, the fleet candidate filter, the live pre-dispatch
+  gate, and both API surfaces. The compatibility default is applied there and nowhere else, so
+  removing it in the interactive-v1 cleanup PR is a one-file change.
+- Two gates, one parser: the persisted `Host.engines` snapshot filters candidates (no RPC per
+  host during ranking), and the chosen daemon's live `/info` is re-checked before a non-Claude
+  launch. Claude never pays for the round trip.
+- `detail` is deliberately absent from the advertisement: `CodexAvailability.detail` is scrubbed
+  to a fixed `[REDACTED]` on construction, so the typed `reason` is the whole contract.
+- `NoEngineHostAvailable` subclasses `NoHostAvailable` (every existing handler still catches it)
+  and carries per-host reasons, surfaced as HTTP 409 `no_engine_host_available`.
+- `/api/config.engines` is where the browser learns which agents to offer, including the
+  edge-side `blockedReason: "authority_unconfigured"`.
+- Fixed on the way through: `app.state.orchestrator` was never set on the daemon app, so
+  `/info.activeSessions` always reported 0 and the ranker's headroom term was dead weight.
 
 ### Task 5.2: Engine-aware account and launch UI
 
@@ -804,28 +822,43 @@ rateLimits/read against the supported binary. No turn yet.
 - Modify: `web/src/components/AddAccountDialog.tsx`
 - Modify: `web/src/components/AccountsManager.tsx`
 - Modify: `web/src/components/DispatchBar.tsx`
-- Modify: `web/src/features/sessions/NewSessionDialog.tsx`
-- Modify: `web/src/features/sessions/NewSessionDialogHost.tsx`
+- ~~Modify: `web/src/features/sessions/NewSessionDialog.tsx`~~ — retired in a36c49c3; see below
+- ~~Modify: `web/src/features/sessions/NewSessionDialogHost.tsx`~~ — retired in a36c49c3
 - Modify: related account/dispatch/new-session tests
 - Add targeted a11y coverage in `web/src/components/__tests__/a11y.test.tsx`
 
 **Work:**
 
-- [ ] Add an Agent selector with explicit `Claude Code` and `Codex`; default to the persisted user
+- [x] Add an Agent selector with explicit `Claude Code` and `Codex`; default to the persisted user
   choice only after the user has made one, otherwise preserve Claude Code for upgrade safety.
-- [ ] Filter account/model/host choices by engine. Changing engine clears incompatible account,
+- [x] Filter account/model/host choices by engine. Changing engine clears incompatible account,
   model, and reasoning selections visibly.
-- [ ] Query models with engine/account context. Show reasoning only when the selected model offers
+- [x] Query models with engine/account context. Show reasoning only when the selected model offers
   choices and initialize it to the advertised default.
-- [ ] Show the common permission profile plus expandable engine-specific sandbox/approval details.
-- [ ] Add OpenAI device-code enrollment/status/cancel/reauth/remove UI. Never place device or token
+- [x] Show the common permission profile plus expandable engine-specific sandbox/approval details.
+- [x] Add OpenAI device-code enrollment/status/cancel/reauth/remove UI. Never place device or token
   material in query-cache persistence, analytics, or error telemetry.
-- [ ] Render quota windows generically and show authority health/active runner count. Keep Anthropic
+- [x] Render quota windows generically and show authority health/active runner count. Keep Anthropic
   extras/reserve controls provider-specific.
-- [ ] Update optimistic session placeholders with engine so list cards never briefly mislabel Codex
+- [x] Update optimistic session placeholders with engine so list cards never briefly mislabel Codex
   as Claude.
-- [ ] Verify keyboard flow, screen-reader labels/live states, 44px mobile targets, narrow layout,
+- [x] Verify keyboard flow, screen-reader labels/live states, 44px mobile targets, narrow layout,
   and reduced motion.
+
+**As built:**
+
+- **The plan's two dialog files no longer exist.** `a36c49c3` retired the New Session dialog in
+  favour of one create control in the prompt dock, so the launch UI is
+  `PromptDock → NewSessionBar → DispatchBar → useCreateSession` and that is where the Agent and
+  reasoning selectors landed.
+- `useEngineOffers()` is a SELECTOR over the existing `/api/config` query, not a second query;
+  `useEngineCapabilities()` sits beside it so every capability-gated surface reads one hook.
+- The engine choice is **derived, not stored**: a persisted choice the server has withdrawn falls
+  back to Claude Code on every render.
+- `CopilotAddState` was renamed `DeviceCodeState` and the panel extracted to `DeviceCodePanel`,
+  rather than adding an OpenAI twin — the backend made the two payloads identical on purpose.
+- Reauth for an existing OpenAI account runs **in place** in `AccountsManager`, not through
+  `AddAccountDialog`: `POST /accounts/add/openai` 409s on an existing name.
 
 ### Task 5.3: Session identity and Codex activity UI
 
@@ -844,15 +877,34 @@ rateLimits/read against the supported binary. No turn yet.
 
 **Work:**
 
-- [ ] Show agent, provider/account alias, runner, model, and reasoning effort in session identity
+- [x] Show agent, provider/account alias, runner, model, and reasoning effort in session identity
   surfaces without crowding mobile cards.
-- [ ] Render normalized command/file/MCP/search/collaboration activities using existing transcript
+- [x] Render normalized command/file/MCP/search/collaboration activities using existing transcript
   primitives. Add a component only where an existing generic/tool card cannot truthfully render it.
-- [ ] Hide unsupported Claude-only commands/actions for Codex using server capabilities.
-- [ ] Route approvals through the existing pending-permission UX while displaying the exact Codex
+- [x] Hide unsupported Claude-only commands/actions for Codex using server capabilities.
+- [x] Route approvals through the existing pending-permission UX while displaying the exact Codex
   decision choices. Reconnect must not resurrect resolved requests.
-- [ ] Add visual/a11y regression tests for mixed Claude/Codex session lists and long account/model
+- [x] Add visual/a11y regression tests for mixed Claude/Codex session lists and long account/model
   names.
+
+**As built:**
+
+- `modelName.ts` gained `modelFamily()` plus an OpenAI formatter; Claude behaviour is unchanged and
+  `isGatedTier` is explicitly false for a non-Claude engine (the gate it mirrors only matches
+  Claude ids). `engineBadge()` returns null for `claude_code`, so "only chip a non-default engine"
+  has one implementation across card, header and meta.
+- **No new event kinds and no new transcript component.** Two truthfulness gaps were closed in the
+  existing primitives instead: `toolSummary` (`web/src/session/toolSummary.ts`) is now THE one-line
+  tool summary for both the transcript card and the approval card — they had a copy each and had
+  already drifted, so a Codex `Edit` summarised in the transcript and not on the card an operator
+  has to act on. `DiffView` lists a Codex `changes: [{path, kind}]` rather than rendering the empty
+  diff `buildLines` produces for it.
+- Approvals needed no new vocabulary: `CodexAgentDriver` already normalizes an approval onto the
+  same permission event, and ccswitch's allow/deny/always is exactly what it relays as the
+  app-server's `accept`/`decline`/`acceptForSession`.
+- `canUseEngine` lives in `web/src/session/engineCapabilities.ts`, NOT in `@/api/hooks`: ~50 suites
+  replace that module with a hand-written `vi.mock` factory, and anything exported from it must be
+  restated in every one of them.
 
 ---
 

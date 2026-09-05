@@ -100,4 +100,107 @@ describe('SessionCard model chip', () => {
     renderCard({ ...base, model: 'sonnet' })
     expect(screen.getByTestId('card-model').className).not.toMatch(/violet/)
   })
+
+  it('labels a Codex model through the same chip', () => {
+    renderCard({ ...base, engine: 'codex', model: 'gpt-5.1-codex' })
+    const chip = screen.getByTestId('card-model')
+    expect(chip).toHaveTextContent('GPT-5.1 Codex')
+    expect(chip).toHaveAttribute('title', 'Model: GPT-5.1 Codex')
+  })
+
+  it('never tints a Codex model as the gated tier', () => {
+    renderCard({ ...base, engine: 'codex', model: 'gpt-5.1-codex' })
+    expect(screen.getByTestId('card-model').className).not.toMatch(/violet/)
+  })
+})
+
+// ── engine + reasoning effort (session identity, Task 5.3) ───────────────────
+
+describe('SessionCard engine chip', () => {
+  it('names the agent when it is not the default Claude Code engine', () => {
+    renderCard({ ...base, engine: 'codex' })
+    const chip = screen.getByTestId('card-engine')
+    expect(chip).toHaveTextContent('Codex')
+    expect(chip).toHaveAttribute('title', 'Agent: Codex')
+  })
+
+  it('renders nothing for a Claude session, so a Claude-only fleet gains no chip', () => {
+    renderCard({ ...base, engine: 'claude_code' })
+    expect(screen.queryByTestId('card-engine')).not.toBeInTheDocument()
+  })
+
+  it('is wide-card only, like every other secondary signal', () => {
+    renderCard({ ...base, engine: 'codex' })
+    expect(screen.getByTestId('card-engine')).toHaveClass('hidden', '@md:inline-flex')
+  })
+})
+
+describe('SessionCard reasoning-effort chip', () => {
+  it('shows the engine-native reasoning choice', () => {
+    renderCard({ ...base, engine: 'codex', reasoningEffort: 'high' })
+    const chip = screen.getByTestId('card-effort')
+    expect(chip).toHaveTextContent('high')
+    expect(chip).toHaveAttribute('title', 'Reasoning effort: high')
+  })
+
+  it('renders nothing when the session runs the model default', () => {
+    renderCard({ ...base, engine: 'codex', reasoningEffort: null })
+    expect(screen.queryByTestId('card-effort')).not.toBeInTheDocument()
+    renderCard(base)
+    expect(screen.queryByTestId('card-effort')).not.toBeInTheDocument()
+  })
+
+  it('is wide-card only', () => {
+    renderCard({ ...base, engine: 'codex', reasoningEffort: 'medium' })
+    expect(screen.getByTestId('card-effort')).toHaveClass('hidden', '@md:inline-flex')
+  })
+})
+
+// ── mixed fleet + overflow (Task 5.3 regression) ─────────────────────────────
+
+describe('SessionCard in a mixed Claude/Codex list', () => {
+  const claude = session({
+    id: 'c1', name: 'Claude one', accountName: 'work', model: 'opus', status: 'idle',
+  })
+  const codex = session({
+    id: 'x1', name: 'Codex one', accountName: 'chatgpt-pro', engine: 'codex',
+    model: 'gpt-5.1-codex', reasoningEffort: 'high', status: 'idle',
+  })
+
+  it('renders each card with its own agent, model and account', () => {
+    render(
+      <MemoryRouter>
+        {[claude, codex].map((s) => (
+          <SessionCard
+            key={s.id} session={s} account={undefined}
+            onOpen={noop} onRename={noop} onClose={noop} onDelete={noop} onQuickResume={noop}
+          />
+        ))}
+      </MemoryRouter>,
+    )
+    const cards = screen.getAllByTestId('card-identity')
+    expect(within(cards[0]).queryByTestId('card-engine')).toBeNull()
+    expect(within(cards[0]).getByTestId('card-model')).toHaveTextContent('Opus')
+    expect(within(cards[1]).getByTestId('card-engine')).toHaveTextContent('Codex')
+    expect(within(cards[1]).getByTestId('card-model')).toHaveTextContent('GPT-5.1 Codex')
+    expect(within(cards[1]).getByTestId('card-effort')).toHaveTextContent('high')
+  })
+
+  it('truncates long account and model names instead of overflowing the row', () => {
+    renderCard({
+      ...base,
+      accountName: 'a-really-long-account-alias@some-organisation.example.com',
+      engine: 'codex',
+      model: 'gpt-5.1-codex-with-an-absurdly-long-suffix',
+      reasoningEffort: 'extremely-high-effort-setting',
+    })
+    // The always-visible account chip keeps its 30% cap + truncation …
+    const account = screen.getByTestId('card-account')
+    expect(account).toHaveClass('max-w-[30%]', 'truncate')
+    expect(account).toHaveAttribute('title', expect.stringContaining('a-really-long-account-alias'))
+    // … and the @md-gated chips truncate too, so neither can starve the title.
+    for (const id of ['card-model', 'card-effort', 'card-engine']) {
+      expect(screen.getByTestId(id), id).toHaveClass('truncate')
+    }
+  })
 })

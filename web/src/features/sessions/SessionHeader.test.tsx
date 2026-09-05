@@ -20,7 +20,7 @@ import userEvent from '@testing-library/user-event'
 import { axe, toHaveNoViolations } from 'jest-axe'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { QK } from '@/api/hooks'
-import type { Session, SessionStatus } from '@/api/types'
+import type { AgentCapabilities, EngineOffer, Session, SessionStatus } from '@/api/types'
 import { session as makeSession } from '@/test/factories'
 import { SessionHeader, type SessionHeaderProps } from './SessionHeader'
 
@@ -36,14 +36,17 @@ const session = (over: Partial<Session> = {}): Session =>
 interface RenderOpts {
   props?: Partial<SessionHeaderProps>
   sessions?: Session[]
+  /** Seed `/api/config`'s engine report; omit for "the server has not answered". */
+  engines?: EngineOffer[]
 }
 
-function renderHeader({ props = {}, sessions = [session()] }: RenderOpts = {}) {
+function renderHeader({ props = {}, sessions = [session()], engines }: RenderOpts = {}) {
   const onBack = vi.fn()
   const onOpenSession = vi.fn()
   const onClosed = vi.fn()
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   qc.setQueryData(QK.sessions, sessions)
+  if (engines) qc.setQueryData(QK.config, { repoRoot: '/repo', engines })
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={qc}>{children}</QueryClientProvider>
   )
@@ -213,6 +216,59 @@ describe('SessionHeader — the goal', () => {
   })
 })
 
+// ── session identity (Task 5.3) ──────────────────────────────────────────────
+//
+// The header names WHAT is running the session: agent (engine), account alias,
+// runner host, model and reasoning effort. The record is read from the sessions
+// query by this header's own `sessionId` — the same query the prev/next
+// chevrons already walk — rather than from a global.
+
+describe('SessionHeader — session identity', () => {
+  const codex = () => [session({
+    id: 'sess-1', engine: 'codex', accountName: 'chatgpt-pro', host: 'rocky',
+    model: 'gpt-5.1-codex', reasoningEffort: 'high',
+  })]
+
+  it('names the agent, account, runner, model and effort of a Codex session', () => {
+    renderHeader({ sessions: codex() })
+    const identity = screen.getByTestId('session-identity')
+    expect(identity).toHaveTextContent('Codex')
+    expect(identity).toHaveTextContent('chatgpt-pro')
+    expect(identity).toHaveTextContent('rocky')
+    expect(identity).toHaveTextContent('GPT-5.1 Codex')
+    expect(identity).toHaveTextContent('high')
+  })
+
+  it('omits the agent chip for the default Claude Code engine', () => {
+    renderHeader({ sessions: [session({ id: 'sess-1', model: 'opus' })] })
+    const identity = screen.getByTestId('session-identity')
+    expect(identity).not.toHaveTextContent('Claude Code')
+    expect(identity).toHaveTextContent('Opus')
+  })
+
+  it('omits the effort and host readouts when the record carries none', () => {
+    renderHeader({ sessions: [session({ id: 'sess-1' })] })
+    expect(screen.queryByLabelText('Reasoning effort')).toBeNull()
+    expect(screen.queryByLabelText('Runner host')).toBeNull()
+  })
+
+  it('renders nothing when the record is not in the list yet', () => {
+    renderHeader({ sessions: [session({ id: 'other' })] })
+    expect(screen.queryByTestId('session-identity')).toBeNull()
+  })
+
+  it('truncates a long account alias and model instead of overflowing the bar', () => {
+    renderHeader({ sessions: [session({
+      id: 'sess-1',
+      accountName: 'a-really-long-account-alias@some-organisation.example.com',
+      model: 'claude-opus-4-8-with-an-absurdly-long-suffix',
+    })] })
+    for (const label of ['Account', 'Model']) {
+      expect(screen.getByLabelText(label), label).toHaveClass('truncate')
+    }
+  })
+})
+
 // ── accessibility ────────────────────────────────────────────────────────────
 
 describe('SessionHeader — accessibility', () => {
@@ -222,5 +278,66 @@ describe('SessionHeader — accessibility', () => {
       props: { goal: 'ship the header', goalSource: 'explicit', status: 'waiting_input' },
     })
     expect(await axe(container)).toHaveNoViolations()
+  })
+
+  it('has no axe violations with the full identity cluster on screen', async () => {
+    const { container } = renderHeader({
+      sessions: [session({
+        id: 'sess-1', engine: 'codex', host: 'rocky',
+        model: 'gpt-5.1-codex', reasoningEffort: 'high',
+      })],
+    })
+    expect(await axe(container)).toHaveNoViolations()
+  })
+})
+
+
+// ── capability-gated actions ─────────────────────────────────────────────────
+
+/** Every capability off but the one under test, so a gate cannot pass by luck. */
+const caps = (over: Partial<AgentCapabilities> = {}): AgentCapabilities => ({
+  models: false, reasoningEffort: false, steer: false, interrupt: false,
+  approvals: false, questions: false, fork: false, adopt: false,
+  selfModelSwitch: false, subagents: false, attachments: false,
+  accountRotation: false, ...over,
+})
+
+const offer = (engine: 'claude_code' | 'codex', capabilities: AgentCapabilities): EngineOffer => ({
+  engine, available: true, hosts: [], unavailableReasons: {}, blockedReason: null, capabilities,
+})
+
+describe('SessionHeader — account rotation is capability-gated', () => {
+  async function openActions() {
+    await userEvent.click(screen.getByRole('button', { name: 'More session actions' }))
+  }
+
+  it('offers "next best account" for an engine that declares accountRotation', async () => {
+    renderHeader({
+      props: { onRotate: vi.fn() },
+      engines: [offer('claude_code', caps({ accountRotation: true }))],
+    })
+    await openActions()
+    expect(screen.getByRole('menuitem', { name: /next best account/i })).toBeInTheDocument()
+  })
+
+  it('hides it for an engine that does not', async () => {
+    // Rotation recomposes the target account's config dir and syncs credentials
+    // back; the server REFUSES an engine without the capability, so offering the
+    // action would offer a guaranteed error.
+    renderHeader({
+      props: { onRotate: vi.fn() },
+      sessions: [session({ id: 'sess-1', engine: 'codex' })],
+      engines: [offer('codex', caps({ accountRotation: false }))],
+    })
+    await openActions()
+    expect(screen.queryByRole('menuitem', { name: /next best account/i })).toBeNull()
+  })
+
+  it('keeps offering it while /api/config has not answered', async () => {
+    // Unknown counts as present: the report is advisory (the server refuses
+    // regardless), so a slow or old config must not hide a working control.
+    renderHeader({ props: { onRotate: vi.fn() } })
+    await openActions()
+    expect(screen.getByRole('menuitem', { name: /next best account/i })).toBeInTheDocument()
   })
 })

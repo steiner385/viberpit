@@ -45,3 +45,39 @@ describe('DiffView', () => {
     expect(container.firstChild).not.toHaveClass('border-red-400')
   })
 })
+
+describe('DiffView: a Codex file change', () => {
+  // The app-server reports WHICH files changed and how, never the text either
+  // side. `buildLines` therefore returns nothing, and rendering its empty result
+  // was an empty bordered box that claimed a diff existed.
+  const changes = [
+    { path: 'server/app.py', kind: 'update' },
+    { path: 'server/new.py', kind: 'add' },
+    { path: 'server/old.py', kind: 'delete' },
+  ]
+
+  it('lists every changed path instead of an empty diff', () => {
+    render(<DiffView input={{ changes }} />)
+    expect(screen.getByText('server/app.py')).toBeInTheDocument()
+    expect(screen.getByText('server/new.py')).toBeInTheDocument()
+    expect(screen.getByText('server/old.py')).toBeInTheDocument()
+  })
+
+  it('names what happened to each file', () => {
+    render(<DiffView input={{ changes }} />)
+    expect(screen.getByText('updated')).toBeInTheDocument()
+    expect(screen.getByText('added')).toBeInTheDocument()
+    expect(screen.getByText('deleted')).toBeInTheDocument()
+  })
+
+  it('still renders a real diff when one is reconstructable', () => {
+    // The Claude path must be untouched by the fallback.
+    render(<DiffView input={{ old_string: 'old', new_string: 'new' }} />)
+    expect(screen.getByText('- old')).toBeInTheDocument()
+  })
+
+  it('renders nothing rather than a change list when there is no diff at all', () => {
+    const { container } = render(<DiffView input={{}} />)
+    expect(container.querySelector('ul')).toBeNull()
+  })
+})

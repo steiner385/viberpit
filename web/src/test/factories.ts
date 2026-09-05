@@ -86,6 +86,20 @@ export function copilotUsage(pct = 10, over: Partial<AccountUsage> = {}): Accoun
   }
 }
 
+/** An OpenAI/Codex quota snapshot: ONE plan window, the shape
+ *  `server/api/accounts.py:_parse_codex_status_quota` produces. */
+export function codexUsage(pct = 10, over: Partial<AccountUsage> = {}): AccountUsage {
+  return {
+    provider: 'openai',
+    fetchedAt: '2026-06-19T10:00:00Z',
+    availability: 'available',
+    windows: [
+      { key: 'premium', label: 'premium', pct, resetsAt: null, durationSeconds: 18000, scope: 'account', appliesToModels: [] },
+    ],
+    ...over,
+  }
+}
+
 /** An `Account` with every required field filled in. */
 export function account(over: Partial<Account> = {}): Account {
   return {

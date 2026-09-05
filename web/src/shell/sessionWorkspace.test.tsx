@@ -40,6 +40,12 @@ vi.mock('@/api/hooks', () => ({
   useDaemonHealth: vi.fn(() => ({ data: { available: false } })),
   useGenerateSuggestions: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(() => Promise.resolve([])), isPending: false })),
   useConfig: vi.fn(() => ({ data: { adoptionEnabled: false } })),
+  // Per-engine capabilities: read by SessionBody (capability-gated surfaces) and
+  // by the prompt dock's engine picker.
+  useEngineOffers: vi.fn(() => []),
+  // Capability gate for engine-conditional controls; undefined = "unknown",
+  // which every gate reads as "capability present".
+  useEngineCapabilities: vi.fn(() => undefined),
   useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
   useAdoptSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useAccounts: vi.fn(),

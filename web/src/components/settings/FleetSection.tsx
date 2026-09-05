@@ -9,7 +9,9 @@ import { usePendingDeploy } from '@/api/hooks'
 // `['fleet','hosts']`: an open-coded invalidation that drifts from the query
 // key does not error, it just silently stops refreshing — a host the operator
 // adds, enables or removes would sit there until a reload.
-import { FLEET_HOSTS_KEY, useFleetHosts, type FleetHost } from '@/api/fleet'
+import {
+  FLEET_HOSTS_KEY, engineReasonLabel, hostEngine, useFleetHosts, type FleetHost,
+} from '@/api/fleet'
 
 /** Prefix match, not ===: hosts abbreviate the same commit to different
  *  lengths (mirrors server.deploy.steps.short_sha_match, #788). */
@@ -27,6 +29,46 @@ function healthLabel(h: FleetHost): string {
 function capacityLabel(h: FleetHost): string {
   const active = h.activeSessions ?? 0
   return h.maxSessions ? `${active} / ${h.maxSessions}` : String(active)
+}
+
+/**
+ * The Codex cell: what the RUNNER says, and what this EDGE will do about it.
+ *
+ * Tri-state on the same principle as `healthLabel`: absent (a runner that
+ * predates `/info.engines`, or an edge that predates the key) is "not
+ * advertised", NOT "unavailable" — the runner never claimed it could not.
+ *
+ * Both verdicts are shown because `available: true` with `dispatchable: false`
+ * is a real state — a runner happily running Codex against an app-server schema
+ * contract this edge is not pinned to — and which half is at fault decides
+ * which machine gets upgraded.
+ *
+ * Nothing here touches host health: a runner with no Codex binary is a perfectly
+ * good Claude runner, and colouring the row would send an operator to fix the
+ * wrong thing.
+ */
+function CodexCell({ host }: { host: FleetHost }) {
+  const state = hostEngine(host, 'codex')
+  if (state === null || state.reason === 'engine_not_advertised') {
+    return <span className="text-gray-500 dark:text-gray-400">not advertised</span>
+  }
+  if (state.dispatchable) {
+    return (
+      <span className="text-green-600 dark:text-green-400" title={state.cliVersion ?? undefined}>
+        dispatchable
+      </span>
+    )
+  }
+  return (
+    <div className="flex flex-col">
+      <span className="text-amber-600 dark:text-amber-400">
+        {state.available ? 'runner ready, edge refuses' : 'unavailable'}
+      </span>
+      <span className="text-xs text-gray-500 dark:text-gray-400">
+        {engineReasonLabel(state.dispatchReason ?? state.reason)}
+      </span>
+    </div>
+  )
 }
 
 /**
@@ -128,6 +170,7 @@ export function FleetSection() {
               <tr className="text-left text-xs text-gray-500 dark:text-gray-400">
                 <th className="py-1 pr-2">Host</th>
                 <th className="pr-2">Status</th>
+                <th className="pr-2">Codex</th>
                 <th className="pr-2">Sessions</th>
                 <th className="pr-2">Load</th>
                 <th className="pr-2">Free mem</th>
@@ -152,6 +195,7 @@ export function FleetSection() {
                     )}
                   </td>
                   <td className="pr-2">{healthLabel(h)}</td>
+                  <td className="pr-2"><CodexCell host={h} /></td>
                   <td className="pr-2">{capacityLabel(h)}</td>
                   <td className="pr-2">{h.loadAvg?.toFixed(2) ?? '—'}</td>
                   <td className="pr-2">

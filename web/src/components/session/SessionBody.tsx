@@ -24,9 +24,13 @@ import { SessionAriaLive } from './SessionAriaLive'
 import { statusTier } from '@/session/statusTier'
 import { selectRunningSubAgentCount } from '@/session/selectors'
 import { BrowserTab } from '../BrowserTab'
-import { useModels, useAccounts, useSessions, useModelApproval, useSetAccountPin } from '@/api/hooks'
+import { useModels, useAccounts, useSessions, useModelApproval, useSetAccountPin, useEngineCapabilities } from '@/api/hooks'
+import { canUseEngine } from '@/session/engineCapabilities'
 import { ExportMenu } from './ExportMenu'
 import { ModelSwitchDialog } from './ModelSwitchDialog'
+
+/** Local alias: the shared gate now lives beside the hook that feeds it. */
+const can = canUseEngine
 
 export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSlot?: ReactNode }) {
   const runningSubAgents = selectRunningSubAgentCount(rt.state.turns)
@@ -35,6 +39,7 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
   const { data: sessions = [] } = useSessions()
   const sessionRecord = sessions.find((s) => s.id === rt.sessionId)
   const pinned = sessionRecord?.accountPinned ?? false
+  const caps = useEngineCapabilities(sessionRecord?.engine)
   const { mutate: modelApproval, isPending: modelApprovalPending } = useModelApproval()
   const setAccountPin = useSetAccountPin()
 
@@ -76,6 +81,10 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
       <div className="flex-shrink-0">
         <SessionMeta
           account={rt.account}
+          engine={sessionRecord?.engine}
+          host={sessionRecord?.host}
+          reasoningEffort={sessionRecord?.reasoningEffort}
+          subAgentsSupported={can(caps, 'subagents')}
           model={rt.model}
           liveModel={rt.liveModel}
           modelPending={rt.modelPending}
@@ -239,8 +248,11 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
 
             {/* Pinned model-approval panel for a mid-session gated model switch.
                 `pendingModel` is read from the session record (server source of truth for
-                approval state) — not the reducer, which tracks transcript model events only. */}
-            {sessionRecord?.pendingModel && (
+                approval state) — not the reducer, which tracks transcript model events only.
+                Capability-gated on `selfModelSwitch`: the parked hold is produced by the
+                self-directed switch flow and the Claude tier gate, so an engine without it
+                can never own one, and offering the approval buttons would be a lie. */}
+            {can(caps, 'selfModelSwitch') && sessionRecord?.pendingModel && (
               <PendingModelApprovalPanel
                 model={sessionRecord.pendingModel}
                 reason={sessionRecord.pendingModelReason}
@@ -256,13 +268,17 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
                 here in SessionBody so BOTH the mobile SessionView and the desktop
                 master-detail shell render it — the desktop shell previously had no panel,
                 so a live AskUserQuestion (filtered out of the inline transcript by Turn)
-                rendered nowhere and was unanswerable. */}
-            <PendingQuestionPanel
-              turns={rt.state.turns}
-              onAnswer={rt.onAnswer}
-              onChat={rt.onChat}
-              armedQuestionId={rt.armedQuestionId}
-            />
+                rendered nowhere and was unanswerable. Hidden for an engine without the
+                `questions` capability — it has no interactive-question channel, so an
+                answer sent from here could only ever come back "no longer pending". */}
+            {can(caps, 'questions') && (
+              <PendingQuestionPanel
+                turns={rt.state.turns}
+                onAnswer={rt.onAnswer}
+                onChat={rt.onChat}
+                armedQuestionId={rt.armedQuestionId}
+              />
+            )}
 
             {/* Pinned "Your turn" call-to-action for a finished turn. The session
                 list flags these sessions loudly, but inside the session the only
@@ -316,6 +332,7 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
       {pendingModelId !== null && (
         <ModelSwitchDialog
           modelLabel={models.find((m) => m.id === pendingModelId)?.label ?? pendingModelId}
+          canSteer={caps?.steer === true}
           onClose={() => setPendingModelId(null)}
           onConfirm={(when) => {
             rt.onSetModel(pendingModelId, when)

@@ -49,6 +49,39 @@ export interface LiveSessionCounts {
   idle: number
 }
 
+/** How the HUMAN proves who they are when enrolling/repairing an account. */
+export type UserAuthMode = 'claude_oauth' | 'github_device' | 'chatgpt_device'
+
+/** How a RUNNER is handed the credential for a launch. */
+export type RunnerAuthMode = 'config_dir' | 'copilot_proxy' | 'chatgpt_external_tokens'
+
+/** What the edge may say about the Codex credential authority itself.
+ *  Mirrors `server/codex/auth_types.py:AuthorityHealth.to_wire`; never carries a
+ *  token or a native account id. `null` on an account row means the edge has no
+ *  authority configured (or the probe failed) — NOT that it is down. */
+export interface CodexAuthorityHealth {
+  reachable: boolean
+  protocolVersion?: number
+  /** Revision of the authorization projection in force, or null when none. */
+  syncRevision?: number | null
+  syncExpiresInS?: number | null
+  accounts?: string[]
+  detail?: string | null
+}
+
+/** The OpenAI-only block on an account row (`server/api/accounts.py:_codex_details`).
+ *  Absent for every other provider. */
+export interface CodexAccountInfo {
+  authority: CodexAuthorityHealth | null
+  /** Premium/plan quota, in the SAME window shape every provider uses — read it
+   *  through `@/lib/usageWindows`, never by reaching for a named window. */
+  quota: AccountUsage | null
+  /** Live Codex runner processes currently holding this account's credential. */
+  activeRunners: number
+  /** Why the account is degraded (e.g. authority unreachable); null when healthy. */
+  degradedReason: string | null
+}
+
 export interface Account {
   name: string
   status: AccountStatus
@@ -56,6 +89,18 @@ export interface Account {
    *  says so rather than defaulting to 'anthropic' and offering the wrong
    *  recovery action. */
   provider?: 'anthropic' | 'copilot' | 'openai' | 'unknown'
+  /** Which agent this account can launch. Absent on a pre-Codex payload and for
+   *  an account missing from the manifest; treat absent as 'claude_code' via
+   *  `accountEngine()` rather than re-deriving the rule per call site. */
+  engine?: AgentEngine | null
+  /** Enrolment/repair flow to offer: 'chatgpt_device' renders a device-code
+   *  panel, 'claude_oauth' the browser flow. */
+  userAuthMode?: UserAuthMode | null
+  runnerAuthMode?: RunnerAuthMode | null
+  /** WHO holds the credential (e.g. 'codex_authority'); never the credential. */
+  credentialAuthority?: string | null
+  /** Present only for OpenAI accounts. */
+  codex?: CodexAccountInfo | null
   usage: AccountUsage | null
   nickname?: string | null
   weeklyReservePct?: number | null
@@ -91,6 +136,80 @@ export type SessionStatus =
   | 'pending_approval'
 
 export type AgentEngine = 'claude_code' | 'codex'
+
+/** The engine the launch UI defaults to, and what an absent `engine` means.
+ *
+ *  Upgrade safety: every account and every session that predates the engine
+ *  registry is Claude Code, and the server applies the same rule
+ *  (`server/api/accounts.py:_account_response`). Named once so no picker,
+ *  filter or badge re-spells `?? 'claude_code'` and later drifts. */
+export const DEFAULT_AGENT_ENGINE: AgentEngine = 'claude_code'
+
+/** Every engine, in the order the Agent selector offers them. */
+export const AGENT_ENGINES: readonly AgentEngine[] = ['claude_code', 'codex']
+
+/** Display names for the Agent selector — the ONE place an engine is spelled
+ *  for a human, so a card, a filter and a dropdown cannot disagree. */
+export const AGENT_ENGINE_LABELS: Record<AgentEngine, string> = {
+  claude_code: 'Claude Code',
+  codex: 'Codex',
+}
+
+export function isAgentEngine(value: unknown): value is AgentEngine {
+  return typeof value === 'string' && (AGENT_ENGINES as readonly string[]).includes(value)
+}
+
+/** The engine an account can launch; absent/unknown ⇒ Claude Code. */
+export function accountEngine(account: Pick<Account, 'engine'>): AgentEngine {
+  return isAgentEngine(account.engine) ? account.engine : DEFAULT_AGENT_ENGINE
+}
+
+/**
+ * One engine's optional control surfaces, as `/api/config` reports them
+ * (`server/sessions/engine.py:capabilities_to_wire`). The plan is explicit that
+ * CAPABILITIES — not `if (engine === 'codex')` — decide which controls render,
+ * so this is the shape every conditional reads from.
+ */
+export interface AgentCapabilities {
+  models: boolean
+  reasoningEffort: boolean
+  steer: boolean
+  interrupt: boolean
+  approvals: boolean
+  questions: boolean
+  fork: boolean
+  adopt: boolean
+  selfModelSwitch: boolean
+  subagents: boolean
+  attachments: boolean
+  accountRotation: boolean
+}
+
+/**
+ * What this deployment may currently offer for one engine (`GET /api/config`).
+ *
+ * `available` is aggregated over the ENABLED fleet hosts: one compatible runner
+ * is enough, because dispatch ranks and fails over across the rest.
+ * `unavailableReasons` is keyed by host name, so "Codex is greyed out" can be
+ * answered without opening Settings › Fleet.
+ */
+export interface EngineOffer {
+  engine: AgentEngine
+  available: boolean
+  /** Enabled hosts that could run this engine right now. */
+  hosts: string[]
+  /** Why each OTHER host could not, keyed by host name. Meaningful only while
+   *  `blockedReason` is null — when the edge itself blocks the engine, no runner
+   *  is at fault and this is `{}`. */
+  unavailableReasons: Record<string, string>
+  /**
+   * An EDGE-side blocker no runner could fix (currently only
+   * `authority_unconfigured`: no ChatGPT credential authority, so even a capable
+   * runner would produce a session that cannot log in). Null otherwise.
+   */
+  blockedReason?: string | null
+  capabilities: AgentCapabilities
+}
 
 /**
  * Statuses a session holds BEFORE its driver exists — parked at the launch-time
@@ -411,7 +530,29 @@ export interface CheckInsights {
   runner_wait_health: RunnerWaitStat[]
 }
 
-export interface ModelOption { id: string; label: string }
+/**
+ * One row of `GET /api/models`, for EITHER engine.
+ *
+ * The wire shape is a superset, not a union: `{id,label}` is what the Claude
+ * catalog has always returned and what every existing caller still gets, and the
+ * Codex fields below are simply ABSENT for Claude (never null-filled). One
+ * endpoint and one row type is deliberate — two would put an `if (engine ===)`
+ * in the picker and guarantee the two lists drift (`server/api/models.py`).
+ */
+export interface ModelOption {
+  id: string
+  label: string
+  /** Codex: the catalog's own one-line description. */
+  description?: string
+  /** Codex: this is the account's default model. */
+  default?: boolean
+  /** Codex: reasoning efforts this model offers. Absent/empty ⇒ no selector. */
+  reasoningEfforts?: string[]
+  /** Codex: the effort to preselect when this model is chosen. */
+  defaultReasoningEffort?: string | null
+  /** Codex: e.g. ['text','image']. */
+  inputModalities?: string[]
+}
 
 export interface PendingDeploy {
   behind: boolean
@@ -493,10 +634,29 @@ export interface AllLimitedError extends ApiError {
   earliestReset: string | null
 }
 
-export interface CopilotAddState {
+/**
+ * A device-code login, for EVERY provider that uses one.
+ *
+ * Was `CopilotAddState`. GitHub Copilot and OpenAI/ChatGPT run the identical
+ * state machine and the backend spells them identically on purpose
+ * (`server/codex/auth_types.py:LoginSnapshot.to_wire` vs the Copilot add
+ * routes), so a second provider-named copy of this interface would be the
+ * parallel-implementation shape this repo bans — and would invite a second
+ * device-code panel to drift from the first.
+ *
+ * `userCode` / `verificationUri` are the ONLY login details allowed out of the
+ * authority: single-use, short-lived and useless without the operator's own
+ * session. They must never be persisted, cached to storage, or put in an error
+ * or analytics payload.
+ */
+export interface DeviceCodeState {
   state: 'pending' | 'awaiting_authorization' | 'authorized' | 'failed'
   userCode: string | null
   verificationUri: string | null
+  /** Why a `failed` login failed, already scrubbed server-side. */
+  error?: string | null
+  /** Bumps per login attempt; lets a late poll be recognised as stale. */
+  generation?: number | null
 }
 
 export interface McpAuthState {

@@ -10,6 +10,7 @@ import { sizeHint } from '@/lib/toolContent'
 import { cn } from '@/lib/utils'
 import { Turn } from './Turn'
 import { modelName } from '@/session/modelName'
+import { toolSummary } from '@/session/toolSummary'
 
 type ToolBlock = Extract<Block, { kind: 'tool' }>
 
@@ -52,16 +53,15 @@ function toolDisplayName(kind: ToolKind, name: string): string {
   return appActionTitle(name) ?? name
 }
 
-function keyArg(kind: ToolKind, input: Record<string, unknown>): string {
-  if (kind === 'bash' && typeof input.command === 'string') {
-    return input.command.slice(0, 60)
-  }
-  if ((kind === 'edit' || kind === 'write' || kind === 'read') && typeof input.file_path === 'string') {
-    return input.file_path
-  }
-  return ''
-}
-
+/**
+ * The one-line summary beside a tool name.
+ *
+ * File-shaped tools carry their path in one of TWO input shapes: the Claude
+ * tools use `file_path`, while a Codex `fileChange` item normalises to the same
+ * Edit/edit card with `changes: [{path, kind}]` (server/codex/translator.py
+ * `_tool_shape`). Reading only `file_path` summarised every Codex edit as an
+ * empty string, so both shapes are read here.
+ */
 export function ToolCallCard({ block, density = 'card', defaultResultOpen = false, toolDetailMode, thinkingCollapsed = true, subThread, sessionModel }: Props) {
   const [argsOpen, setArgsOpen] = useState(false)
   // The global toggle force-overrides the per-row default; 'auto' (or no mode)
@@ -84,7 +84,7 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
   const detailRegionId = useId()
   const subRegionId = useId()
 
-  const summary = keyArg(block.toolKind, block.input)
+  const summary = toolSummary(block.toolKind, block.input)
   const displayName = toolDisplayName(block.toolKind, block.name)
   // Completed tools dim to grey (Claude-Code style); a running tool stays prominent.
   const complete = block.result !== undefined

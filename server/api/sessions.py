@@ -45,7 +45,11 @@ from server.sessions.facade import call_with_deadline
 from server.sessions.engine import AgentEngine, AgentEngineUnavailable
 from server.sessions.permissions import resolve_permission_mode
 from server.sessions.selection import AllAccountsBusy
-from server.sessions.fleet_router import UnknownHost, NoHostAvailable
+from server.sessions.fleet_router import (
+    NoEngineHostAvailable,
+    NoHostAvailable,
+    UnknownHost,
+)
 from server.sessions import host_heartbeat
 from server.time_iso import iso_utc
 
@@ -689,6 +693,22 @@ async def create_session(
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={"error": {"code": "unknown_host", "message": str(exc)}},
+        )
+    except NoEngineHostAvailable as exc:
+        # Ordered BEFORE NoHostAvailable, which it subclasses. "No host available"
+        # sends an operator to look at host health; the real answer is that the
+        # fleet is healthy and simply cannot run this engine, and the per-host
+        # reasons say which runner to fix.
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "error": {
+                    "code": "no_engine_host_available",
+                    "message": str(exc),
+                    "engine": exc.engine.value,
+                    "hostReasons": exc.reasons,
+                },
+            },
         )
     except NoHostAvailable as exc:
         return JSONResponse(

@@ -73,6 +73,18 @@ vi.mock('@/api/hooks', () => ({
   useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
   useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  // Task 5.2: the engine-aware launch path (`useEngineOffers`) and the OpenAI
+  // device flow. An empty offer list is the pre-Codex answer — no Agent selector.
+  useEngineOffers: vi.fn(() => []),
+  // Capability gate for engine-conditional controls; undefined = "unknown",
+  // which every gate reads as "capability present".
+  useEngineCapabilities: vi.fn(() => undefined),
+  useAddOpenAIAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useOpenAIAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
+  useCancelOpenAIAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useOpenAIReauth: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useOpenAIReauthStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
+  useCancelOpenAIReauth: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   QK: {
     accounts: ['accounts'],
     sessions: ['sessions'],
@@ -423,7 +435,9 @@ describe('Task 6 — dispatch create-and-open', () => {
     await user.type(box, 'add a button')
     await user.keyboard('{Enter}')
     expect(createMutate).toHaveBeenCalledWith(
-      { initialPrompt: 'add a button', repo: 'acme/web', branch: 'main' },
+      // `engine` is always sent, even for the default: it is what makes the
+      // optimistic placeholder card carry the right agent (Task 5.2).
+      { initialPrompt: 'add a button', repo: 'acme/web', branch: 'main', engine: 'claude_code' },
       expect.anything(),
     )
     // The prompt is forwarded so the conversation can show it immediately on
@@ -442,7 +456,7 @@ describe('Task 6 — dispatch create-and-open', () => {
     await user.type(box, 'hello')
     await user.keyboard('{Enter}')
     expect(createMutate).toHaveBeenCalledWith(
-      { initialPrompt: 'hello', repo: undefined, branch: undefined },
+      { initialPrompt: 'hello', repo: undefined, branch: undefined, engine: 'claude_code' },
       expect.anything(),
     )
     expect(app.path()).toBe('/sessions/n2')
