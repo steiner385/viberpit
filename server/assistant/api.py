@@ -64,7 +64,12 @@ async def create(body: CreateBody, request: Request,
     if existing is not None and not body.fresh:
         state = "existing"
         if existing.status == "ended":
-            await orch.ensure_driver(existing.id)   # resume path used by detached sessions
+            # resume path used by detached sessions (and by every idle reap, spec §4.7).
+            # The identity is REQUIRED, not decorative: ensure_driver rebuilds the
+            # assistant's options overlay, and the loopback token it mints inside is
+            # identity-bound — defaulting to SYSTEM_IDENTITY would let the drawer call
+            # ccswitch's own API as "system" instead of as the user who opened it.
+            await orch.ensure_driver(existing.id, identity)
             state = "resumed"
         return {"id": existing.id, "model": existing.model or model, "state": state}
     if existing is not None:
