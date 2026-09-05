@@ -321,6 +321,10 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
             elif t in ("permissionRequest", "question"):
                 events.append({"pending": t, "tool": ev.get("tool"), "text": ev.get("question")})
         keep = events[-n * 4:]
+        # Counts rows dropped by THIS tail cut. The `[-400:]` above is a scan bound on
+        # raw events, not rows, and only some raw types become rows — so folding it in
+        # would report a number that is neither rows nor events. `totalTurns` is the
+        # honest whole-transcript size, and it is already in the payload.
         return Trimmed({"events": keep, "totalTurns": data.get("totalTurns")},
                        len(events) - len(keep))
 
