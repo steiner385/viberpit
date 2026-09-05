@@ -1,0 +1,80 @@
+[Unit]
+Description=ccswitch ChatGPT credential authority — the only holder of OpenAI refresh tokens
+After=network-online.target
+Wants=network-online.target
+# Deliberately NOT Requires=/PartOf= ccswitch-daemon.service. The authority is a
+# separate trust domain and a separate failure domain: a daemon restart (which
+# touches every live session) must not restart the process holding every ChatGPT
+# refresh token, and an authority outage must degrade Codex only.
+
+[Service]
+Type=simple
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ccswitch-codex-auth
+
+# A dedicated OS user, not the session user. This is the whole point of the
+# service: /var/lib/ccswitch-codex-auth must be untraversable by the user that
+# runs `claude` and `codex app-server`, so that a compromised session cannot read
+# a refresh token. See deploy/ccswitch-codex-auth.sysusers.
+User=ccswitch-auth
+Group=ccswitch-auth
+
+# 0700 under /var/lib, owned by ccswitch-auth. StateDirectoryMode is explicit
+# because systemd's default (0755) would make the managed CODEX_HOMEs traversable
+# by every local user, which is exactly the exposure this service exists to close.
+StateDirectory=ccswitch-codex-auth
+StateDirectoryMode=0700
+
+WorkingDirectory=/home/tony/GitHub/cc-account-switcher-deploy
+# Authority-specific configuration ONLY. This file holds
+# CCSWITCH_CODEX_AUTHORITY_LISTEN_ENDPOINT, _TLS_CERT, _TLS_KEY, _TLS_CLIENT_CA and
+# _CLIENT_ALLOWLIST. It must NOT be /etc/ccswitch/ccswitch.env: the authority has
+# no business inheriting the edge's database URL, GitHub credentials or session
+# daemon client key (server/codex/auth_endpoint.py refuses a shared key outright).
+EnvironmentFile=/etc/ccswitch/codex-auth.env
+ExecStart=/home/tony/GitHub/cc-account-switcher-deploy/.venv/bin/python -m server.codex.auth_main
+
+# A failed start is almost always a configuration error (missing TLS material, a
+# second authority already holding the lock). Restart, but let the start limiter
+# stop a boot loop rather than hammering the lock.
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=5
+StartLimitIntervalSec=120
+
+# Shutdown is quick: cancel in-flight logins, close the listener, release the
+# lock. No turns are drained here — the authority holds no sessions.
+TimeoutStopSec=30
+KillMode=mixed
+
+# --- Sandboxing -------------------------------------------------------------
+# This process holds long-lived OpenAI refresh tokens and shells out to the
+# vendor `codex` binary. Everything below narrows what a compromise of either
+# reaches. NoNewPrivileges and ProtectSystem=strict are the load-bearing pair;
+# the rest closes the usual escalation surfaces.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+# ReadWritePaths must include the checkout only if the venv needs it at import
+# time; the state directory is granted automatically by StateDirectory=.
+ReadOnlyPaths=/home/tony/GitHub/cc-account-switcher-deploy
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+# The device login and the token refresh both talk to auth.openai.com, and the
+# listener is mTLS over the tailnet.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

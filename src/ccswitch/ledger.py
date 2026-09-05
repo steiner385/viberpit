@@ -118,6 +118,34 @@ def locked_ledger():
         lf.close()
 
 
+def read_ledger() -> dict:
+    """Read ledger.json WITHOUT taking the lock and without writing it back.
+
+    ``locked_ledger`` republishes the file on every exit, even when the body only
+    read — harmless for a one-shot caller, but a caller on a *timer* would then
+    rewrite this file periodically. That matters here specifically: the store is a
+    network mount, and this module's own lock cannot exclude across hosts
+    (verified 2026-08-22), so every extra write is another chance at a lost
+    update. A periodic reader must therefore not go through ``locked_ledger``.
+
+    Safety is unchanged for a reader: ``_load`` already tolerates the concatenated
+    documents an interleaved write can produce, and the publish is
+    ``os.replace``, so a reader sees either the old file or the new one — never a
+    truncated one. What is given up is only freshness against a write racing this
+    read, which no reader could rely on anyway.
+
+    Returns an empty ledger for a missing or unreadable file, like every other
+    read path in this module.
+    """
+    try:
+        raw = paths.ledger_path().read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        raw = ""
+    data = _load(raw)
+    data.setdefault("accounts", {})
+    return data
+
+
 def _acct(led: dict, name: str) -> dict:
     return led["accounts"].setdefault(name, {})
 

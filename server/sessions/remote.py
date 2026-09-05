@@ -868,6 +868,26 @@ class RemoteOrchestrator:
         """Return the proxy /usage payload for a copilot account, via the daemon."""
         return await self._client.call("copilot_usage", account=account)
 
+    async def codex_models(self, account: str, refresh: bool = False) -> dict:
+        """Model options for an OpenAI account, from the daemon's app-server."""
+        return await self._client.call("codex_models", account=account, refresh=refresh)
+
+    async def codex_account_status(self, account: str) -> dict:
+        """Quota, runner count and auth health for an OpenAI account, via the daemon."""
+        return await self._client.call("codex_account_status", account=account)
+
+    async def codex_validate_model(
+        self, account: str, model: str | None, effort: str | None
+    ) -> dict:
+        """Validate a (model, effort) pair on the host that owns the app-server."""
+        return await self._client.call(
+            "codex_validate_model", account=account, model=model, effort=effort
+        )
+
+    async def codex_invalidate_credentials(self, account: str) -> dict:
+        """Drop this daemon's cached Codex credentials for an account."""
+        return await self._client.call("codex_invalidate_credentials", account=account)
+
     async def subscribe_events(self) -> asyncio.Queue:
         """Return a queue that receives global lifecycle events.
 
