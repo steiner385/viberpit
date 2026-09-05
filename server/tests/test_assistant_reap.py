@@ -338,11 +338,22 @@ async def test_reap_publishes_its_teardown_in_releasing(isolated_db, tmp_path, m
     ensure_driver waits on `_releasing` before building a replacement driver with the
     same `resume=`, precisely so the new `claude` process cannot race the old one's
     transcript flush and lose its tail. The reap must therefore publish its teardown
-    there instead of awaiting aclose() inline behind no lock anyone respects."""
+    there instead of awaiting aclose() inline behind no lock anyone respects.
+
+    WHEN it publishes is the whole contract, so the claim is inspected from INSIDE the
+    slow `stop_display` — not merely after the sweep returns. The real teardown budgets
+    ~10 s for the display stop, and publishing after it left a multi-second window in
+    which the driver was gone, the old `claude` process alive, `_releasing` empty and
+    the status not yet "ended" — so a user reopening the drawer at the idle boundary got
+    a SECOND claude process on the same claude_session_id, whose overlay the sweep then
+    deleted and whose session it then stamped "ended".
+    """
     monkeypatch.setenv("CCSWITCH_ASSISTANT_IDLE_S", "100")
 
     clients: list[FakeSDKClient] = []
     orch, patches = await _boot_orch(tmp_path, monkeypatch, _capturing_factory(clients))
+    x11 = _SlowX11()
+    orch._x11 = x11
     try:
         a = await orch.create_session(name="Assistant", cwd=str(tmp_path), identity="u@x",
                                       kind=ASSISTANT_KIND, owner_identity="u@x")
@@ -359,7 +370,31 @@ async def test_reap_publishes_its_teardown_in_releasing(isolated_db, tmp_path, m
 
         driver.aclose = _gated_aclose
 
+        # Sampled mid-teardown: the display stop is the slow await the claim must
+        # already have crossed.
+        during: dict = {}
+
+        async def _sample_during_stop(sid):
+            await asyncio.sleep(0)      # a real yield, like the real stop_display
+            during["releasing"] = orch._releasing.get(sid)
+            during["overlay"] = sid in orch._assistant_overlays
+            during["status"] = orch.get_session(sid).status
+            during["driver"] = sid in orch._drivers
+
+        x11.during_stop = _sample_during_stop
+
         assert await orch._reap_idle_assistants_once(now=t0 + 101) == [a.id]
+
+        assert during["releasing"] is not None, (
+            "`_releasing` was still empty during the display stop — ensure_driver would "
+            "have built a second claude process on the same claude_session_id")
+        assert during["overlay"] is False, (
+            "the overlay was still registered during the display stop — a resume in that "
+            "window registers its own, which the sweep then deletes")
+        assert during["status"] == "ended", (
+            "the record still looked live during the display stop — the sweep would go "
+            "on to stamp a just-resumed session 'ended'")
+        assert during["driver"] is False
         assert orch._releasing.get(a.id) is not None, "reap did not publish its release"
 
         resume = asyncio.create_task(orch.ensure_driver(a.id, "u@x"))
