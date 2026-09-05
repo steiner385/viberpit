@@ -21,6 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       web: ${{ steps.detect.outputs.web }}
+      py: ${{ steps.detect.outputs.py }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -43,7 +44,8 @@ jobs:
           # e2e/lighthouse baselines and the deploy watchers expect master runs.
           if [ "$EVENT_NAME" != "pull_request" ]; then
             echo "web=true" >> "$GITHUB_OUTPUT"
-            echo "not a pull_request -> web=true"
+            echo "py=true" >> "$GITHUB_OUTPUT"
+            echo "not a pull_request -> web=true py=true"
             exit 0
           fi
           git fetch --no-tags origin "$BASE_REF"
@@ -62,12 +64,29 @@ jobs:
           else
             web=false
           fi
+          # Same shape for the python half. `lint-and-test` is ~12 minutes (ruff, mypy,
+          # the core suite and the full server suite), and a docs-only PR paid all of it
+          # to prove nothing — which is what made bypassing the gate look attractive.
+          # ci.yml counts here too, exactly as it does for web: an edit to THIS detection
+          # must be proven against a real run before it lands.
+          if grep -qE '^(src/|server/|tests/|pyproject\.toml$|\.github/workflows/ci\.yml$)' <<<"$changed"; then
+            py=true
+          else
+            py=false
+          fi
           echo "web=$web" >> "$GITHUB_OUTPUT"
-          echo "web=$web ($(wc -l <<<"$changed") changed files)"
+          echo "py=$py" >> "$GITHUB_OUTPUT"
+          echo "web=$web py=$py ($(wc -l <<<"$changed") changed files)"
 
   lint-and-test:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # Same contract as `frontend`: this is a REQUIRED check, so the job always runs and
+    # always reports — a required check that is `skip`ped never reports at all and leaves
+    # the PR pending forever (the trap `constitution.yml` documents, and the one that
+    # wedged the deploy gate in #1127). It therefore stays in the job list and gates its
+    # own expensive steps on `needs.changes.outputs.py` instead of using a `paths:` filter.
+    needs: changes
     services:
       postgres:
         image: postgres:16
@@ -80,21 +99,28 @@ jobs:
           --health-cmd pg_isready --health-interval 10s
           --health-timeout 5s --health-retries 5
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - if: needs.changes.outputs.py == 'true'
+        uses: actions/checkout@v7
+      - if: needs.changes.outputs.py == 'true'
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: pyproject.toml
       - name: Install deps
+        if: needs.changes.outputs.py == 'true'
         run: pip install -e ".[server]"
       - name: Ruff check
+        if: needs.changes.outputs.py == 'true'
         run: ruff check src/ server/
       - name: Mypy
+        if: needs.changes.outputs.py == 'true'
         run: mypy server/ --ignore-missing-imports
       - name: Core unit tests
+        if: needs.changes.outputs.py == 'true'
         run: python -m pytest tests/ -q --junitxml=test-results/core.xml
       - name: Server tests
+        if: needs.changes.outputs.py == 'true'
         env:
           CCSWITCH_TEST_PG_URL: postgresql+asyncpg://ccswitch_test:test@127.0.0.1:5432/ccswitch_test
         # -n auto --dist loadfile: the suite is I/O-bound (~28% CPU serial), so
@@ -106,7 +132,10 @@ jobs:
         # up the deploy controller); the outer `timeout` guard is the backstop.
         run: timeout --signal=SIGTERM 1500 python -m pytest server/tests/ -q -n auto --dist loadfile --timeout=300 --junitxml=test-results/server.xml
       - name: Upload test results
-        if: always()
+        # always() so a FAILING run still uploads its junit — but only when the tests
+        # actually ran, or a gated-out run would try to upload a directory that was
+        # never created.
+        if: always() && needs.changes.outputs.py == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: junit-python
