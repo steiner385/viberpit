@@ -709,12 +709,16 @@ async def reauth_start(
     request: Request,
     identity: str = Depends(current_identity),
     db=Depends(get_db),
-    mode: str = "login",
 ) -> dict:
-    """Start a re-authentication flow for the named account.
+    """Start a re-authentication flow for the named (existing) account.
 
-    Query params:
-      mode: "login" (default, browser OAuth flow) or "setup_token" (PTY-driven flow).
+    Always the in-process PKCE/setup-token exchange (issue #1130) — no browser,
+    no virtual display, no Chrome profile copy. The account's slot already
+    exists, so this only needs to mint a fresh long-lived setup-token; the
+    browser/VNC login (mode="login" on ReauthManager) is reserved for
+    /accounts/add, which still needs it to bootstrap a brand-new slot's full
+    OAuth credential — setup_token_oauth.exchange() yields a bare access token,
+    with no refresh_token, so it cannot create a new account by itself.
 
     Returns 202 + state dict on success.
     Returns 409 if another reauth is already running.
@@ -725,7 +729,7 @@ async def reauth_start(
 
     reauth = _get_reauth(request)
     try:
-        state = await reauth.start(name, identity, mode=mode)
+        state = await reauth.start(name, identity, mode="setup_token")
     except ReauthBusy as exc:
         raise HTTPException(
             status_code=409,

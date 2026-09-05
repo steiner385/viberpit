@@ -1,6 +1,10 @@
+import base64
+import os
 import unittest
 from unittest import mock
 from tests.helpers import temp_env
+
+_TEST_KEY_B64 = base64.b64encode(bytes(range(32))).decode("ascii")
 
 
 class TestFmtReset(unittest.TestCase):
@@ -200,3 +204,80 @@ class TestClonesCommands(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("removed clone cairnea/KinDash", out)
         self.assertFalse(self.clone.exists())
+
+
+class TestCliReauth(unittest.TestCase):
+    """`ccswitch reauth <name>` — the no-browser recovery path (issue #1130).
+
+    Mirrors ReauthManager.submit_code's own calls (setup_token_oauth.begin/exchange,
+    crypto.store_oauth_token, accounts.mark_reauthenticated) so a CLI test double
+    lines up with the same contract the web UI exercises.
+    """
+
+    def test_no_key_refuses_without_starting_the_exchange(self):
+        from ccswitch import cli, setup_token_oauth
+
+        os.environ.pop("CCSWITCH_MASTER_KEY", None)
+        with temp_env():
+            with mock.patch.object(setup_token_oauth, "begin") as begin:
+                rc = cli.main(["reauth", "primary"])
+        self.assertEqual(rc, 1)
+        begin.assert_not_called()
+
+    def test_success_stores_token_and_marks_reauthenticated(self):
+        import io
+        import contextlib
+
+        from ccswitch import cli, setup_token_oauth
+
+        old = os.environ.get("CCSWITCH_MASTER_KEY")
+        os.environ["CCSWITCH_MASTER_KEY"] = _TEST_KEY_B64
+        challenge = setup_token_oauth.SetupTokenChallenge(
+            authorize_url="https://claude.com/cai/oauth/authorize?x=1", verifier="v", state="STATE")
+        try:
+            with temp_env():
+                with mock.patch.object(setup_token_oauth, "begin", return_value=challenge), \
+                     mock.patch("builtins.input", return_value="AUTHCODE#STATE"), \
+                     mock.patch.object(setup_token_oauth, "exchange", return_value="sk-ant-oat01-abc") as exchange, \
+                     mock.patch("ccswitch.accounts.mark_reauthenticated") as mark, \
+                     mock.patch("ccswitch.crypto.store_oauth_token") as store:
+                    buf = io.StringIO()
+                    with contextlib.redirect_stdout(buf):
+                        rc = cli.main(["reauth", "primary"])
+        finally:
+            if old is None:
+                os.environ.pop("CCSWITCH_MASTER_KEY", None)
+            else:
+                os.environ["CCSWITCH_MASTER_KEY"] = old
+
+        self.assertEqual(rc, 0)
+        exchange.assert_called_once_with("AUTHCODE#STATE", challenge)
+        store.assert_called_once_with("primary", "sk-ant-oat01-abc")
+        mark.assert_called_once_with("primary")
+        self.assertIn(challenge.authorize_url, buf.getvalue())
+        self.assertIn("recovered", buf.getvalue())
+
+    def test_invalid_code_does_not_store_anything(self):
+        from ccswitch import cli, setup_token_oauth
+
+        old = os.environ.get("CCSWITCH_MASTER_KEY")
+        os.environ["CCSWITCH_MASTER_KEY"] = _TEST_KEY_B64
+        challenge = setup_token_oauth.SetupTokenChallenge(
+            authorize_url="https://claude.com/cai/oauth/authorize?x=1", verifier="v", state="STATE")
+        try:
+            with temp_env():
+                with mock.patch.object(setup_token_oauth, "begin", return_value=challenge), \
+                     mock.patch("builtins.input", return_value="BADCODE#STATE"), \
+                     mock.patch.object(
+                         setup_token_oauth, "exchange",
+                         side_effect=setup_token_oauth.SetupTokenInvalidCode("bad")), \
+                     mock.patch("ccswitch.crypto.store_oauth_token") as store:
+                    rc = cli.main(["reauth", "primary"])
+        finally:
+            if old is None:
+                os.environ.pop("CCSWITCH_MASTER_KEY", None)
+            else:
+                os.environ["CCSWITCH_MASTER_KEY"] = old
+
+        self.assertEqual(rc, 1)
+        store.assert_not_called()

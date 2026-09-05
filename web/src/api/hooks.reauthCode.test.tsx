@@ -1,9 +1,9 @@
 /**
  * Verifies:
  * 1. useSubmitReauthCode POSTs to /accounts/<name>/reauth/code with { code }.
- * 2. useReauthAccount with { name, mode: 'setup_token' } hits /…/reauth?mode=setup_token.
- * 3. useReauthAccount with a bare string hits /…/reauth (no query param).
- * 4. useReauthAccount with { name } and no mode hits /…/reauth (no query param).
+ * 2. useReauthAccount POSTs to /accounts/<name>/reauth with no query param — the
+ *    endpoint always drives the PKCE/setup-token exchange now (issue #1130),
+ *    so there is no mode to select from the client.
  *
  * Strategy: mock api.post to resolve, run the mutations, assert the call shape.
  */
@@ -77,19 +77,8 @@ describe('useSubmitReauthCode', () => {
   })
 })
 
-describe('useReauthAccount — mode param', () => {
-  it('hits /reauth?mode=setup_token when called with { name, mode: "setup_token" }', async () => {
-    const wrapper = makeWrapper()
-    const { result } = renderHook(() => useReauthAccount(), { wrapper })
-
-    result.current.mutate({ name: 'kindash', mode: 'setup_token' })
-
-    await waitFor(() => expect(result.current.isSuccess).toBe(true))
-
-    expect(api.post).toHaveBeenCalledWith('/accounts/kindash/reauth?mode=setup_token')
-  })
-
-  it('hits /reauth (no query param) when called with a bare string', async () => {
+describe('useReauthAccount', () => {
+  it('hits /reauth with no query param', async () => {
     const wrapper = makeWrapper()
     const { result } = renderHook(() => useReauthAccount(), { wrapper })
 
@@ -100,14 +89,14 @@ describe('useReauthAccount — mode param', () => {
     expect(api.post).toHaveBeenCalledWith('/accounts/kindash/reauth')
   })
 
-  it('hits /reauth (no query param) when called with { name } and no mode', async () => {
+  it('URL-encodes special characters in the account name', async () => {
     const wrapper = makeWrapper()
     const { result } = renderHook(() => useReauthAccount(), { wrapper })
 
-    result.current.mutate({ name: 'kindash' })
+    result.current.mutate('foo/bar')
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
 
-    expect(api.post).toHaveBeenCalledWith('/accounts/kindash/reauth')
+    expect(api.post).toHaveBeenCalledWith('/accounts/foo%2Fbar/reauth')
   })
 })
