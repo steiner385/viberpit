@@ -124,7 +124,11 @@ export function describeCreateSessionFailure(err: unknown): CreateSessionFailure
         return { kind: 'branch', message: message ?? 'Could not switch branch' }
       }
       if (code === 'accounts_need_reauth') return { kind: 'reauth', message: REAUTH_MESSAGE }
-      return { kind: 'all-limited', earliestReset }
+      if (code === 'all_accounts_limited') return { kind: 'all-limited', earliestReset }
+    }
+    return {
+      kind: 'other',
+      message: message ?? extractMutationErrorMessage(err, CREATE_SESSION_FALLBACK),
     }
   }
   return { kind: 'other', message: extractMutationErrorMessage(err, CREATE_SESSION_FALLBACK) }
