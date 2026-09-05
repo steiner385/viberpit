@@ -28,6 +28,11 @@ interface Props {
   loadingOlder?: boolean
   /** Called when the user scrolls near the top and more history is available. */
   onLoadOlder?: () => void
+  /** 'assistant' marks the AI drawer's transcript (a forward-compat hook for a later
+   *  toolbar — e.g. hiding open-in-sessions/archive affordances that don't apply to
+   *  the assistant's own thread; none exist inline in this component today). Rendered
+   *  as `data-variant` only; default 'session' keeps every existing caller unchanged. */
+  variant?: 'session' | 'assistant'
 }
 
 /**
@@ -44,7 +49,7 @@ interface Props {
  *  - scrolling near the top pages in older turns and the prior scroll anchor is
  *    restored so the viewport doesn't jump.
  */
-export function TranscriptView({ turns, rotations = [], model, toolDetailMode, thinkingCollapsed, streamingBlockId = null, onAnswer, subAgents = {}, earliestTurn, loadingOlder, onLoadOlder }: Props) {
+export function TranscriptView({ turns, rotations = [], model, toolDetailMode, thinkingCollapsed, streamingBlockId = null, onAnswer, subAgents = {}, earliestTurn, loadingOlder, onLoadOlder, variant = 'session' }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   // Track whether the user is at/near the bottom so we auto-scroll only when appropriate.
@@ -185,7 +190,7 @@ export function TranscriptView({ turns, rotations = [], model, toolDetailMode, t
   }
 
   return (
-    <div className="relative flex-1 min-h-0 flex flex-col">
+    <div className="relative flex-1 min-h-0 flex flex-col" data-variant={variant}>
       <div
         ref={containerRef}
         onScroll={handleScroll}

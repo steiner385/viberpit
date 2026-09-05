@@ -8,11 +8,12 @@ import asyncio
 from datetime import datetime
 
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
 def _rec(**over):
-    base = dict(id="s1", name="s", account="a", claude_session_id="cs", cols=80, rows=24,
+    base = dict(id="s1", name="s", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="cs", cols=80, rows=24,
                 cwd="/tmp", repo=None, branch=None, status="idle", name_is_auto=True,
                 created_at=datetime.utcnow(), updated_at=datetime.utcnow())
     base.update(over)

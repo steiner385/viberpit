@@ -1,3 +1,4 @@
+// @vitest-environment node
 // web/src/ws/pipeline.fuzz.test.ts
 //
 // Cross-layer fuzz: the full CLIENT rendering pipeline (handleLiveBatch seq

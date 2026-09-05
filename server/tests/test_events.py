@@ -32,8 +32,17 @@ def test_toolcall_carries_kind_and_turn():
 
 def test_session_meta_to_wire():
     e = SessionMeta(model="claude-sonnet-4-5", session_id="s1")
-    assert e.to_wire() == {"type": "sessionMeta", "model": "claude-sonnet-4-5", "sessionId": "s1",
-                           "kind": None}
+    # `kind` rides the same frame (Task 1.7): the drawer's client tells an assistant
+    # session from a coding one off the live stream, with no extra REST call. A coding
+    # session's meta carries None.
+    assert e.to_wire() == {"type": "sessionMeta", "model": "claude-sonnet-4-5",
+                           "sessionId": "s1", "kind": None}
+
+
+def test_session_meta_to_wire_carries_assistant_kind():
+    e = SessionMeta(model="claude-sonnet-4-5", session_id="s1", kind="assistant")
+    assert e.to_wire() == {"type": "sessionMeta", "model": "claude-sonnet-4-5",
+                           "sessionId": "s1", "kind": "assistant"}
 
 def test_turn_end_to_wire_includes_cost():
     e = TurnEnd(turn_id="t1", usage={"input_tokens": 5}, cost_usd=0.25, src_uuid="u1")

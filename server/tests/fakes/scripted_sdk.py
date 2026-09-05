@@ -209,7 +209,7 @@ class ScriptedSDKClient:
 def scripted_factory(steps, **client_kw):
     """Build an ``sdk_factory`` returning a single ``ScriptedSDKClient`` for ``steps``.
 
-    Signature matches what ``SessionDriver`` calls:
+    Signature matches what ``ClaudeAgentDriver`` calls:
     ``factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None)``.
     The SAME client instance is returned across turns so its cross-turn cursor advances
     (the driver builds the client once, in ``start()``)."""

@@ -14,6 +14,7 @@ from server.db import db_session, init_db
 from server.db.models import Session as DbSession
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.status import ACTIVITY_STATUSES
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
@@ -22,7 +23,7 @@ async def _build_orch(tmp_path, **row):
     db_url = f"sqlite+aiosqlite:///{tmp_path/'ccswitch.db'}"
     await init_db(db_url=db_url)
     base = dict(id="s1", name="New Session", account_name="acct1",
-                claude_session_id="claude-s1", status="idle", cwd="/repo/s1")
+                engine_session_id="claude-s1", status="idle", cwd="/repo/s1")
     base.update(row)
     async with db_session() as db:
         db.add(DbSession(**base))
@@ -111,7 +112,7 @@ def test_record_dict_roundtrip_preserves_last_turn_at():
     from datetime import datetime, timezone
     turn = datetime(2020, 1, 2, 3, 4, 5)
     rec = SessionRecord(
-        id="s1", name="n", account="a", claude_session_id="c",
+        id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c",
         cols=80, rows=24, cwd="/x", last_turn_at=turn,
     )
     back = SessionRecord.from_dict(rec.to_dict())
@@ -129,7 +130,7 @@ def test_to_dict_updatedat_is_last_turn_not_row_write():
     row_write = datetime(2020, 6, 6, 6, 6, 6)  # later, bumped by an incidental write
     created = datetime(2020, 1, 1, 0, 0, 0)
     rec = SessionRecord(
-        id="s1", name="n", account="a", claude_session_id="c", cols=80, rows=24, cwd="/x",
+        id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c", cols=80, rows=24, cwd="/x",
         created_at=created, updated_at=row_write, last_turn_at=turn,
     )
     assert rec.to_dict()["updatedAt"] == "2020-01-02T03:04:05+00:00"  # not row_write; UTC-aware
@@ -140,7 +141,7 @@ def test_to_dict_updatedat_falls_back_to_created_at():
     created = datetime(2020, 1, 1, 0, 0, 0)
     row_write = datetime(2020, 6, 6, 6, 6, 6)
     rec = SessionRecord(
-        id="s1", name="n", account="a", claude_session_id="c", cols=80, rows=24, cwd="/x",
+        id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c", cols=80, rows=24, cwd="/x",
         created_at=created, updated_at=row_write, last_turn_at=None,
     )
     assert rec.to_dict()["updatedAt"] == "2020-01-01T00:00:00+00:00"  # not row_write; UTC-aware

@@ -38,12 +38,12 @@ const MOCK_ACCOUNTS = [
   {
     name: 'alice',
     status: 'ok',
-    usage: { session: { pct: 30, resetsAt: null }, weekly: { pct: 50, resetsAt: null } },
+    usage: { provider: 'anthropic', fetchedAt: null, availability: 'available', windows: [{ key: 'session', label: 'session', pct: 30, resetsAt: null, durationSeconds: 18000 }, { key: 'weekly', label: 'weekly', pct: 50, resetsAt: null, durationSeconds: 604800 }] },
   },
   {
     name: 'bob',
     status: 'ok',
-    usage: { session: { pct: 10, resetsAt: null }, weekly: { pct: 20, resetsAt: null } },
+    usage: { provider: 'anthropic', fetchedAt: null, availability: 'available', windows: [{ key: 'session', label: 'session', pct: 10, resetsAt: null, durationSeconds: 18000 }, { key: 'weekly', label: 'weekly', pct: 20, resetsAt: null, durationSeconds: 604800 }] },
   },
 ]
 

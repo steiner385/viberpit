@@ -17,7 +17,7 @@ def _make_row(**kwargs):
         id="s1",
         name="test",
         account_name="acct-a",
-        claude_session_id="cid1",
+        engine_session_id="cid1",
         cwd="/tmp",
         repo=None,
         status="idle",
@@ -120,7 +120,7 @@ async def test_rehydrate_both_fields_together(monkeypatch):
 async def test_rehydrate_defaults_when_columns_absent(monkeypatch):
     """getattr fallback: row without model/account_pinned attrs gets defaults."""
     row = SimpleNamespace(
-        id="s1", name="test", account_name="acct-a", claude_session_id="cid1",
+        id="s1", name="test", account_name="acct-a", engine_session_id="cid1",
         cwd="/tmp", repo=None, status="idle", name_is_auto=True,
         permission_mode="interactive", created_at=datetime(2025, 1, 1),
         # deliberately omit model and account_pinned

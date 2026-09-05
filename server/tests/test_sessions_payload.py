@@ -2,11 +2,12 @@
 import datetime as _dt
 
 from server.api.sessions import _record_to_dict
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
 def _rec(**kw):
-    r = SessionRecord(id="s1", name="n", account="a", claude_session_id="c",
+    r = SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c",
                       cols=80, rows=24, cwd="/x")
     for k, v in kw.items():
         setattr(r, k, v)
@@ -21,6 +22,13 @@ def test_record_to_dict_includes_suggestions():
 def test_record_to_dict_defaults_empty_suggestions():
     d = _record_to_dict(_rec(), repo=None)
     assert d["latestSuggestions"] == []
+
+
+def test_record_to_dict_emits_engine_native_identity_and_reasoning_effort():
+    d = _record_to_dict(_rec(reasoning_effort="high"), repo=None)
+    assert d["engine"] == "claude_code"
+    assert d["engineSessionId"] == "c"
+    assert d["reasoningEffort"] == "high"
 
 
 # ---------------------------------------------------------------------------

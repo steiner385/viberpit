@@ -50,6 +50,11 @@ try:
         master_key: str | None = Field(default=None, alias="CCSWITCH_MASTER_KEY")
         session_secret: str | None = Field(default=None, alias="CCSWITCH_SESSION_SECRET")
         tailnet_allowlist: str = Field(default="", alias="CCSWITCH_TAILNET_ALLOWLIST")
+        # Peers entitled to ASSERT an identity via the Tailscale-User-Login header.
+        # Loopback is always trusted (the `tailscale serve` proxy reaches the edge
+        # there); this adds addresses for any other front-end that stamps the header,
+        # e.g. a container gateway. Empty = loopback only.
+        trusted_proxy_ips: str = Field(default="", alias="CCSWITCH_TRUSTED_PROXY_IPS")
         # Opt-in LAN-open mode: admit clients that present NO Tailscale identity as a
         # synthetic guest instead of 401'ing them. Defaults OFF so the deployed,
         # Tailscale-fronted posture stays locked down — only flip it on a trusted,
@@ -98,6 +103,20 @@ try:
         copilot_port_base: int = Field(default=4142, alias="CCSWITCH_COPILOT_PORT_BASE")
         copilot_port_count: int = Field(default=8, alias="CCSWITCH_COPILOT_PORT_COUNT")
         copilot_idle_grace_s: float = Field(default=300.0, alias="CCSWITCH_COPILOT_IDLE_GRACE_S")
+        # Native OpenAI Codex (server/codex). Both flags default FALSE — this is a
+        # launch flag, and absence or incompatibility must disable Codex ONLY. The
+        # external-token API is the experimental app-server surface runners use to
+        # authenticate without holding a credential, so it is gated separately.
+        codex_enabled: bool = Field(default=False, alias="CCSWITCH_CODEX_ENABLED")
+        codex_external_auth_enabled: bool = Field(
+            default=False, alias="CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED")
+        codex_bin: str = Field(default="codex", alias="CCSWITCH_CODEX_BIN")
+        # Comma list of `codex --version` strings an operator has verified beyond
+        # the pin in server/codex/schema.py. It WIDENS the pinned set; it can never
+        # remove the version this code was written against.
+        codex_supported_versions: str = Field(
+            default="", alias="CCSWITCH_CODEX_SUPPORTED_VERSIONS")
+        codex_idle_grace_s: float = Field(default=300.0, alias="CCSWITCH_CODEX_IDLE_GRACE_S")
         # Server-side dictation (server/stt): off by default; needs the `stt` extra.
         enable_stt: bool = Field(default=False, alias="CCSWITCH_ENABLE_STT")
         stt_model: str = Field(default="base.en", alias="CCSWITCH_STT_MODEL")
@@ -170,6 +189,11 @@ try:
             return [item.strip() for item in self.tailnet_allowlist.split(",") if item.strip()]
 
         @property
+        def trusted_proxy_ips_items(self) -> list[str]:
+            """Extra peer addresses allowed to assert an identity header."""
+            return [item.strip() for item in self.trusted_proxy_ips.split(",") if item.strip()]
+
+        @property
         def reauth_extension_id_items(self) -> list[str] | None:
             """None = use the core default list; [] = disabled; else the configured ids."""
             if self.reauth_extension_ids is None:
@@ -223,6 +247,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         tailnet_allowlist: str = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_TAILNET_ALLOWLIST", "")
+        )
+        trusted_proxy_ips: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_TRUSTED_PROXY_IPS", "")
         )
         allow_unauthenticated: bool = dataclasses.field(
             default_factory=lambda: os.environ.get(
@@ -301,6 +328,21 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         copilot_idle_grace_s: float = dataclasses.field(
             default_factory=lambda: float(os.environ.get("CCSWITCH_COPILOT_IDLE_GRACE_S", "300.0"))
         )
+        codex_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_CODEX_ENABLED", "false").lower() in ("1","true","yes","on")
+        )
+        codex_external_auth_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED", "false").lower() in ("1","true","yes","on")
+        )
+        codex_bin: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_CODEX_BIN", "codex")
+        )
+        codex_supported_versions: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_CODEX_SUPPORTED_VERSIONS", "")
+        )
+        codex_idle_grace_s: float = dataclasses.field(
+            default_factory=lambda: float(os.environ.get("CCSWITCH_CODEX_IDLE_GRACE_S", "300.0"))
+        )
         enable_stt: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_ENABLE_STT", "false").lower() in ("1","true","yes","on")
         )
@@ -370,6 +412,11 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         @property
         def tailnet_allowlist_items(self) -> list[str]:
             return [item.strip() for item in self.tailnet_allowlist.split(",") if item.strip()]
+
+        @property
+        def trusted_proxy_ips_items(self) -> list[str]:
+            """Extra peer addresses allowed to assert an identity header."""
+            return [item.strip() for item in self.trusted_proxy_ips.split(",") if item.strip()]
 
         @property
         def reauth_extension_id_items(self) -> list[str] | None:

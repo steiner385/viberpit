@@ -15,7 +15,10 @@ import type { Tone } from '@/ui/Badge'
 
 interface UsageBadgeProps {
   pct: number
-  label?: string  // e.g. "session" or "weekly"
+  /** The window's own label, straight off the wire — e.g. "session",
+   *  "weekly", "premium-req". Never hard-code one here: which windows exist is
+   *  a per-provider fact the API reports. */
+  label?: string
   /** ISO timestamp the window resets at, or null when no window is active. */
   resetsAt?: string | null
   /** Reserve marker position (0–100); renders a vertical line on the bar when set. */

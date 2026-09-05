@@ -11,6 +11,7 @@ from . import accounts
 from .config import load_config
 from .crypto import read_oauth_token
 from .detect import detect_limit_in_jsonl_line
+from .selector import at_ceiling, binding_window, usage_known
 
 
 def _claude_cmd(cfg) -> list[str]:
@@ -59,21 +60,39 @@ def scan_for_limit(cfg_dir: str):
 
 
 def _proactive_target(name, cfg):
-    """Return a strictly-less-loaded usable account to pre-empt to, or None."""
+    """Return a strictly-less-loaded usable account to pre-empt to, or None.
+
+    "Loaded" is measured on the BINDING window (whichever allowance the account
+    runs out of first), so this reads the same number the selector ranks on
+    instead of assuming a dimension named "session". "Usable" is likewise the
+    shared ``selector.at_ceiling`` definition — ANY window at/above the ceiling
+    disqualifies a candidate, so a weekly-exhausted account is never offered as a
+    pre-emption target.
+    """
     active = accounts.usage_for(name)
-    if active is None or active.session_pct < cfg.soft_threshold * 100.0:
+    active_pct = _binding_pct(active)
+    if active_pct is None or active_pct < cfg.soft_threshold * 100.0:
         return None
     ceiling = cfg.hard_ceiling * 100.0
-    best, best_pct = None, active.session_pct
+    best, best_pct = None, active_pct
     for other in [a["name"] for a in accounts.list_accounts() if a["name"] != name]:
         u = accounts.usage_for(other)
-        if u is None:
+        pct = _binding_pct(u)
+        if pct is None:
             continue
-        if u.session_pct >= ceiling or u.weekly_pct >= ceiling:
+        if at_ceiling(u, ceiling):
             continue
-        if u.session_pct < best_pct:
-            best, best_pct = other, u.session_pct
+        if pct < best_pct:
+            best, best_pct = other, pct
     return best
+
+
+def _binding_pct(u):
+    """Used-percent of the account's binding window, or None when usage is unknown."""
+    if not usage_known(u):
+        return None
+    w = binding_window(u)
+    return None if w is None else w.used_pct
 
 
 def main(argv: list[str] | None = None) -> int:

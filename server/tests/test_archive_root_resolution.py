@@ -36,7 +36,7 @@ async def _add_archived(*, cwd, archive_root):
     from server.db import db_session
     from server.db.models import Session as DbSession
     async with db_session() as db:
-        db.add(DbSession(id="s1", name="S1", account_name="a", claude_session_id=None,
+        db.add(DbSession(id="s1", name="S1", account_name="a", engine_session_id=None,
                          status="archived", cwd=str(cwd),
                          archive_root=(str(archive_root) if archive_root else None)))
 
@@ -47,6 +47,7 @@ def test_archive_session_stamps_null_root_and_leaves_cwd(tmp_path):
     round trip — and nothing lands under the archive home."""
     from server.db import db_session, init_db
     from server.db.models import Session as DbSession
+    from server.sessions.engine import AgentEngine
     from server.sessions.types import SessionRecord
 
     home = tmp_path / "archives"
@@ -61,11 +62,11 @@ def test_archive_session_stamps_null_root_and_leaves_cwd(tmp_path):
                 # A stale root from a legacy archive→unarchive round trip must be
                 # cleared, or unarchive would look for files that are at cwd.
                 db.add(DbSession(id="s1", name="S1", account_name="a",
-                                 claude_session_id=None, status="idle", cwd=str(cwd),
+                                 engine_session_id=None, status="idle", cwd=str(cwd),
                                  archive_root=str(tmp_path / "stale_old_root")))
             orch = _orch()
             orch._records["s1"] = SessionRecord(
-                id="s1", name="S1", account="a", claude_session_id="",
+                id="s1", name="S1", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
                 cols=80, rows=24, cwd=str(cwd))
             await orch.archive_session("s1")
             async with db_session() as db:

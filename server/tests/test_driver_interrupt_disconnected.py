@@ -10,7 +10,7 @@ import asyncio
 from unittest.mock import AsyncMock, Mock
 import pytest
 from claude_agent_sdk._errors import CLIConnectionError
-from server.sessions.driver import SessionDriver
+from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.permissions import PermissionRegistry
 
 
@@ -27,7 +27,7 @@ async def test_interrupt_on_disconnected_client_proceeds():
     def fake_sdk_factory(*args, **kwargs):
         return disconnected_client
     
-    driver = SessionDriver(
+    driver = ClaudeAgentDriver(
         session_id="test-123",
         account="acc1",
         cwd="/tmp",
@@ -71,7 +71,7 @@ async def test_aclose_on_disconnected_client_logs_and_proceeds():
         # Immediate finish so aclose doesn't hang
         pass
     
-    driver = SessionDriver(
+    driver = ClaudeAgentDriver(
         session_id="test-456",
         account="acc2",
         cwd="/tmp",

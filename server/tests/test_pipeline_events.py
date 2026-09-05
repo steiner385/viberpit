@@ -80,7 +80,7 @@ async def _drive_sse(app, headers: list[tuple[bytes, bytes]]):
     scope = {
         "type": "http", "method": "GET", "path": "/api/pipeline/events",
         "raw_path": b"/api/pipeline/events", "query_string": b"",
-        "headers": headers, "client": ("1.2.3.4", 9999), "scheme": "http",
+        "headers": headers, "client": ("127.0.0.1", 9999), "scheme": "http",
         "server": ("t", 80),
     }
     sent_request = False
@@ -232,7 +232,7 @@ async def test_events_emits_notification_on_new_ci_failure():
         "type": "http", "method": "GET", "path": "/api/pipeline/events",
         "raw_path": b"/api/pipeline/events", "query_string": b"",
         "headers": [(b"tailscale-user-login", b"testuser@example.com")],
-        "client": ("1.2.3.4", 9999), "scheme": "http", "server": ("t", 80),
+        "client": ("127.0.0.1", 9999), "scheme": "http", "server": ("t", 80),
     }
     sent_request = False
     disconnect = asyncio.Event()
@@ -380,7 +380,7 @@ async def test_events_requires_identity():
     scope = {
         "type": "http", "method": "GET", "path": "/api/pipeline/events",
         "raw_path": b"/api/pipeline/events", "query_string": b"",
-        "headers": [], "client": ("1.2.3.4", 9999), "scheme": "http",
+        "headers": [], "client": ("127.0.0.1", 9999), "scheme": "http",
         "server": ("t", 80),
     }
     start: dict = {}

@@ -60,9 +60,9 @@ def test_create_session_emits_session_start(tmp_path, caplog):
 
     def _fake_usage(account: str):
         from datetime import datetime, timedelta, timezone
-        from ccswitch.oauth import Usage
+        from ccswitch.quota import anthropic_snapshot
         reset = datetime.now(timezone.utc) + timedelta(hours=5)
-        return Usage(10.0, reset, 10.0, reset, False)
+        return anthropic_snapshot(10.0, reset, 10.0, reset, False)
 
     async def run():
         await init_db(db_url=db_url)
@@ -113,9 +113,9 @@ def test_rehydrate_emits_session_reattach(tmp_path, caplog):
         await init_db(db_url=db_url)
         await _seed([
             dict(id="a", name="Alpha", account_name="acct1",
-                 claude_session_id="cs-a", status="idle", cwd="/repo/a"),
+                 engine_session_id="cs-a", status="idle", cwd="/repo/a"),
             dict(id="b", name="Beta", account_name="acct1",
-                 claude_session_id=None, status="working", cwd="/repo/b"),
+                 engine_session_id=None, status="working", cwd="/repo/b"),
         ])
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
         with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
@@ -163,7 +163,7 @@ def test_rehydrate_emits_session_unpark_when_not_parked(tmp_path, caplog):
         await init_db(db_url=db_url)
         await _seed([
             dict(id="wx1", name="WX", account_name="acct1",
-                 claude_session_id=None, status="waiting_external", cwd="/repo/wx"),
+                 engine_session_id=None, status="waiting_external", cwd="/repo/wx"),
         ])
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
         # Patch transcript_path so we control what is_parked reads
@@ -199,6 +199,7 @@ def test_archive_session_emits_session_terminal(tmp_path, caplog):
     from server.db import init_db, db_session
     from server.db.models import Session as DbSession
     from server.sessions.orchestrator import SessionOrchestrator
+    from server.sessions.engine import AgentEngine
     from server.sessions.types import SessionRecord
     from server.tests.fakes.fake_factory import fake_sdk_factory
 
@@ -212,12 +213,13 @@ def test_archive_session_emits_session_terminal(tmp_path, caplog):
             async with db_session() as db:
                 db.add(DbSession(
                     id="s1", name="S1", account_name="acct1",
-                    claude_session_id=None, status="done", cwd=str(cwd),
+                    engine_session_id=None, status="done", cwd=str(cwd),
                 ))
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
             orch._records["s1"] = SessionRecord(
                 id="s1", name="S1", account="acct1",
-                claude_session_id="", cols=80, rows=24, cwd=str(cwd),
+                engine=AgentEngine.CLAUDE_CODE,
+                engine_session_id="", cols=80, rows=24, cwd=str(cwd),
                 status="done",
             )
             with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):

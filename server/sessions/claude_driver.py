@@ -13,18 +13,20 @@ from typing import Callable
 from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny, ResultMessage
 from claude_agent_sdk._errors import CLIConnectionError
 from ccswitch import copilot as _copilot_mod
-from ccswitch.accounts import provider_of as _provider_of
-from server.aio import bounded_wait
+from ccswitch.accounts import provider_or_none as _provider_of
+from server.aio import bounded_wait, cancel_and_reap
 from server.assistant.context import PromptContext, render_context_header
 from server.hostname import self_host_name
 from . import events as ev
 from .failure import classify, TurnFailure
+from .engine import AgentCapabilities, AgentDriverConfig, AgentDriverFactory, AgentEngine
 from .translator import Translator
 from .permissions import PermissionRegistry, to_sdk_permission_mode
 from .questions import QuestionRegistry
 from .sdk_contract import is_turn_message
 from .status import StatusSignals, derive_status
 from .transcript_repair import repair_resumed_transcript
+from .types import ASSISTANT_KIND, is_assistant_kind
 
 _IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 
@@ -122,7 +124,7 @@ class _MessageSource:
 class DriverStream:
     """One attach's atomically-opened view of a driver's event stream.
 
-    Built by ``SessionDriver.open_stream()`` with NO awaits between snapshotting
+    Built by ``ClaudeAgentDriver.open_stream()`` with NO awaits between snapshotting
     the in-progress turn buffer, registering the subscriber queue, and capturing
     ``turn_active``/``turn_started_at`` — so all four describe the SAME instant.
 
@@ -136,7 +138,7 @@ class DriverStream:
     queue and is delivered live.
     """
 
-    def __init__(self, driver: "SessionDriver", snapshot: list,
+    def __init__(self, driver: "ClaudeAgentDriver", snapshot: list,
                  queue: asyncio.Queue, turn_active: bool,
                  turn_started_at: float | None) -> None:
         self._driver = driver
@@ -170,13 +172,25 @@ class DriverStream:
         self._driver._subscribers.discard(self._queue)
 
 
-class SessionDriver:
+class ClaudeAgentDriver:
     """Drives one Claude session via an SDK client, exposing normalized events.
 
     The orchestrator composes the per-account config dir and passes it as `config_dir`;
     `sdk_factory(cwd, config_dir, can_use_tool, mode, resume) -> SDKClientProtocol` builds
     the client (production = real ClaudeSDKClient; tests = FakeSDKClient).
     """
+
+    engine = AgentEngine.CLAUDE_CODE
+    capabilities = AgentCapabilities(
+        models=True,
+        interrupt=True,
+        approvals=True,
+        questions=True,
+        adopt=True,
+        self_model_switch=True,
+        subagents=True,
+        attachments=True,
+    )
 
     def __init__(self, session_id, account, cwd, config_dir, *, mode, sdk_factory, registry,
                  identity, denylist=PermissionRegistry.DANGEROUS, resume=None,
@@ -197,7 +211,7 @@ class SessionDriver:
         self._identity = identity
         self.denylist = denylist
         self.resume = resume
-        self.claude_session_id: str | None = None
+        self._engine_session_id: str | None = None
         self._on_session_id = on_session_id
         self._on_sync_back = on_sync_back
         # async callback ``on_status(session_id, derived_status)`` — keeps
@@ -287,6 +301,21 @@ class SessionDriver:
         self._source: _MessageSource | None = None
         self._listener: asyncio.Task | None = None
         self._closing: bool = False
+
+    @property
+    def engine_session_id(self) -> str | None:
+        """The Claude conversation id through the provider-neutral driver contract."""
+        return self._engine_session_id
+
+    @property
+    def kind(self) -> str | None:
+        """"assistant" for an AI-drawer session, None for an ordinary coding
+        session. ``self._assistant_api`` (the loopback HTTP client the ccswitch
+        MCP tools call through) is the sole, pre-existing signal for this fact —
+        every orchestrator call site that builds a driver passes it exactly when
+        the session is assistant-kind — so this is a computed property rather
+        than a second, parallel ``kind`` field that could drift from it."""
+        return ASSISTANT_KIND if self._assistant_api is not None else None
 
     def _turn(self):
         return getattr(self._tr, "_turn_id", None) or "turn"
@@ -647,13 +676,22 @@ class SessionDriver:
         turn_id = self._turn()
         if tool_name == "AskUserQuestion":
             return await self._handle_ask_user_question(tool_input, turn_id)
-        perm_id, fut = await self._reg.request(
+        if is_assistant_kind(self.kind) and not tool_name.startswith("mcp__ccswitch__"):
+            # An assistant-kind session's model is scoped to the ccswitch MCP
+            # server only (spec §4.4) — anything else (Bash, a third-party MCP
+            # server, …) is a hard deny with no card: this is a programming
+            # error / prompt-injection surface, not a user decision, so it never
+            # touches the registry or emits a PermissionRequest event.
+            log.warning("driver._can_use_tool: assistant session=%s attempted non-ccswitch "
+                        "tool=%s", self.session_id, tool_name)
+            return PermissionResultDeny(message="assistant sessions may only use ccswitch tools")
+        perm_id, fut, always_allowed = await self._reg.request(
             self.session_id, turn_id, tool_name, tool_input,
             mode=self.mode, denylist=self.denylist, allowlist=True, identity=self.identity)
         if perm_id is not None:
             self._emit(ev.PermissionRequest(
                 perm_id, turn_id, tool_name, ev.tool_kind(tool_name),
-                tool_input, plan=(tool_name == "ExitPlanMode")))
+                tool_input, plan=(tool_name == "ExitPlanMode"), always_allowed=always_allowed))
             # A prompt is now pending for the user → waiting_input / ready_review.
             await self._emit_status()
         allowed = await fut
@@ -704,7 +742,7 @@ class SessionDriver:
         interaction, and it must not lose its header or its chip. Rendering and dedupe
         happen in ``_start_turn`` when the turn actually starts, never here."""
         if self._client is None:
-            raise RuntimeError("SessionDriver.send_prompt called before start()")
+            raise RuntimeError("ClaudeAgentDriver.send_prompt called before start()")
         images = images or []
         if interrupt and self._turn_live():
             # Queue-head insert BEFORE the interrupt: the SDK interrupt awaits the
@@ -949,11 +987,11 @@ class SessionDriver:
                 self._turn_produced_output = True
             self._note_progress(e)
             self._emit(e)
-        if self.claude_session_id is None and self._tr.session_id:
-            self.claude_session_id = self._tr.session_id
+        if self._engine_session_id is None and self._tr.session_id:
+            self._engine_session_id = self._tr.session_id
             if self._on_session_id is not None:
                 try:
-                    await self._on_session_id(self.session_id, self.claude_session_id)
+                    await self._on_session_id(self.session_id, self._engine_session_id)
                 except Exception:
                     log.exception("driver.on_session_id session=%s", self.session_id)
 
@@ -1015,9 +1053,9 @@ class SessionDriver:
         task, self._listener = self._listener, None
         if task is None or task.done() or task is asyncio.current_task():
             return
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await task
+        # Only the LISTENER's cancellation may be swallowed here; ours (a close racing
+        # the drain) has to keep unwinding — see server.aio.cancel_and_reap (#1164).
+        await cancel_and_reap(task, phase=f"driver.idle-listener:{self.session_id}")
 
     async def _open_autonomous_turn(self) -> None:
         """The CLI started a turn on its own — a background task's <task-notification>
@@ -1389,7 +1427,7 @@ class SessionDriver:
                                phase=f"driver.reconnect-aexit:{self.session_id}")
             await self._call_sync_back()
         self.resume = None
-        self.claude_session_id = None
+        self._engine_session_id = None
         self._titled = False
         self._queue.clear()
         self._turn_active = False
@@ -1434,10 +1472,11 @@ class SessionDriver:
                 await bounded_wait(self._client.interrupt(), timeout=grace,
                                    phase=f"driver.interrupt:{self.session_id}",
                                    cancel_grace=grace)
-            try:
-                await asyncio.wait_for(asyncio.shield(self._pump), timeout=grace)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
-                pass
+            # asyncio.wait, not wait_for(shield(...)): both leave the pump running on
+            # overrun, but wait_for's CancelledError is indistinguishable from OUR own
+            # (this close runs inside the drain), and swallowing that stalls the stop
+            # budget (#1164).
+            await asyncio.wait({self._pump}, timeout=grace)
             if not self._pump.done():
                 self._pump.cancel()
                 # The reap must be bounded too: a pump wedged in an uncancellable
@@ -1460,3 +1499,35 @@ class SessionDriver:
             await self._assistant_api.aclose()
         for q in self._subscribers:
             q.put_nowait(_STREAM_DONE)
+
+
+class ClaudeAgentDriverFactory(AgentDriverFactory):
+    """Construct Claude drivers while keeping the SDK factory below the engine seam."""
+
+    def __init__(self, sdk_factory_for_session: Callable[[str], object],
+                 permission_registry: PermissionRegistry) -> None:
+        self._sdk_factory_for_session = sdk_factory_for_session
+        self._permission_registry = permission_registry
+
+    def create(self, config: AgentDriverConfig) -> ClaudeAgentDriver:
+        return ClaudeAgentDriver(
+            config.session_id,
+            config.account,
+            config.cwd,
+            config.config_dir,
+            mode=config.mode,
+            sdk_factory=self._sdk_factory_for_session(config.session_id),
+            registry=self._permission_registry,
+            identity=config.identity,
+            resume=config.resume,
+            on_session_id=config.on_engine_session_id,
+            on_sync_back=config.on_sync_back,
+            on_status=config.on_status,
+            on_context_usage=config.on_context_usage,
+            on_record_condense_ms=config.on_record_condense_ms,
+            get_condense_estimate=config.get_condense_estimate,
+            on_recoverable_failure=config.on_recoverable_failure,
+            clock=config.clock,
+            suggester=config.suggester,
+            assistant_api=config.assistant_api,
+        )

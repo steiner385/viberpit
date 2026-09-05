@@ -32,7 +32,7 @@ import { toast } from 'sonner'
 import * as hooks from '@/api/hooks'
 import { ApiRequestError } from '@/api/client'
 import type { Account, Session } from '@/api/types'
-import { session as makeSession } from '@/test/factories'
+import { anthropicUsage, session as makeSession } from '@/test/factories'
 import { NewSessionDialogHost } from './NewSessionDialogHost'
 import { CREATE_SESSION_FALLBACK } from './createSessionFailure'
 
@@ -56,7 +56,7 @@ const session = (over: Partial<Session> = {}): Session =>
 const ACCOUNTS: Account[] = [
   {
     name: 'alice', status: 'ok',
-    usage: { session: { pct: 1, resetsAt: null }, weekly: { pct: 1, resetsAt: null } },
+    usage: anthropicUsage(1, 1),
     liveSessions: { active: 0, idle: 0 }, rank: 1, rankReason: null,
   },
 ]

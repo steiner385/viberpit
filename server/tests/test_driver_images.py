@@ -1,5 +1,5 @@
 import asyncio, base64
-from server.sessions.driver import SessionDriver
+from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.permissions import PermissionRegistry
 from server.sessions.events import UserMessage, Status
 from server.tests.fakes.fake_sdk import FakeSDKClient
@@ -34,7 +34,7 @@ def test_images_sent_as_content_blocks(tmp_path):
     images = [{"sha": "abc", "mime": "image/png", "name": "shot.png",
                "path": str(img_path), "url": "/api/sessions/s/images/abc"}]
     async def run():
-        d = SessionDriver("s", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me")
         await d.start()
         seen = []
@@ -62,7 +62,7 @@ def test_text_only_unchanged(tmp_path):
     msgs = [f.stream_start(uuid="t1"), f.assistant(TextBlock(text="hi"), uuid="t1"), f.result(uuid="t1")]
     def factory(cwd, cfg, cut, mode, resume, *, on_pre_compact=None): return FakeSDKClient(msgs, on_can_use_tool=cut)
     async def run():
-        d = SessionDriver("s2", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s2", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me")
         await d.start(); await d.send_prompt("hello")  # no images arg
         async for e in d.events():

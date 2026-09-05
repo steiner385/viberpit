@@ -73,14 +73,20 @@ DEFAULT_MAX_ACTIVE_SESSIONS = 5
 
 
 class Session(Base):
-    """An active (or ended) Claude session managed by ccswitch-web."""
+    """An active (or ended) native-agent session managed by ccswitch-web."""
 
     __tablename__ = "sessions"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
     name: Mapped[str] = mapped_column(String, nullable=False)
     account_name: Mapped[str] = mapped_column(String, nullable=False)
-    claude_session_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Native executable and its conversation/thread identifier. Both stay nullable
+    # at the SQL layer so runtime reconciliation can add them to populated SQLite
+    # and Postgres databases; init_db backfills every legacy row before use.
+    engine: Mapped[str | None] = mapped_column(String, nullable=True)
+    engine_session_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Engine-native reasoning choice. None means the selected model's default.
+    reasoning_effort: Mapped[str | None] = mapped_column(String, nullable=True)
     # working / idle / limited / ended
     status: Mapped[str] = mapped_column(String, nullable=False, default="idle")
     pid: Mapped[int | None] = mapped_column(Integer, nullable=True)

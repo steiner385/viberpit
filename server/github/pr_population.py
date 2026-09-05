@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Union
 
 from ccswitch import gitrepos
-
+from server.aio import cancel_and_reap
 from server.github import app_auth
 from .api_budget import PriorityGate
 from .merge_queue import build_merge_queue_query, parse_merge_queue_response
@@ -668,11 +668,7 @@ class PrPopulationPoller:
 
     async def stop(self) -> None:
         if self._task is not None:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
+            await cancel_and_reap(self._task, phase="pr-population-poller")
             self._task = None
 
     async def _loop(self) -> None:

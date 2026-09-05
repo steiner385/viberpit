@@ -14,7 +14,7 @@ import asyncio
 import pytest
 from claude_agent_sdk import SystemMessage
 
-from server.sessions.driver import SessionDriver
+from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions import events as ev
 from server.sessions.permissions import PermissionRegistry
 from server.tests.fakes.fake_sdk import FakeSDKClient
@@ -22,11 +22,11 @@ from server.tests.fakes import fake_sdk as f
 
 
 def _make_driver(messages=None):
-    """Construct a minimal SessionDriver with no real SDK interaction needed."""
+    """Construct a minimal ClaudeAgentDriver with no real SDK interaction needed."""
     def factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
         return FakeSDKClient(messages or [], on_can_use_tool=can_use_tool)
 
-    return SessionDriver(
+    return ClaudeAgentDriver(
         "s1", "primary", "/tmp/r", "/tmp/cfg", mode="default",
         sdk_factory=factory, registry=PermissionRegistry(),
         identity="test@example.com",

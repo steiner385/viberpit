@@ -174,6 +174,9 @@ def _make_deploy_controller(*, daemon_enabled=True, daemon_changed=True,
 
     steps_mod = MagicMock()
     steps_mod.ci_verdict.return_value = "green"
+    # Must be an explicit empty list: a bare MagicMock return is TRUTHY, which preflight
+    # reads as "these units cannot be restarted" and refuses the deploy.
+    steps_mod.check_unit_interpreters.return_value = []
     steps_mod.guard_working_tree.return_value = False
     steps_mod.fast_forward.return_value = None
     steps_mod.sync_deps_if_changed.return_value = []

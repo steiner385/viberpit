@@ -3,11 +3,12 @@ from fastapi.testclient import TestClient
 from server.ipc.daemon import create_daemon_app
 from server.ipc.orchestrator_rpc import register_orchestrator_rpc
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
 def _rec(sid="s1"):
-    return SessionRecord(id=sid, name="S1", account="acct", claude_session_id="cs",
+    return SessionRecord(id=sid, name="S1", account="acct", engine=AgentEngine.CLAUDE_CODE, engine_session_id="cs",
                          cols=80, rows=24, cwd="/tmp")
 
 

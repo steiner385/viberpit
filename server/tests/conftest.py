@@ -5,6 +5,7 @@ Loaded by pytest before any test module in this package is collected, so the
 their (function-local) ``from ccswitch.creds import write_json_secure`` imports.
 """
 import atexit
+import functools
 import importlib
 import os
 import shutil
@@ -138,6 +139,38 @@ if not os.environ.get("CCSWITCH_HELPER_SCRATCH_ROOT"):
 # this explicitly via monkeypatch / patch.dict(clear=True).                      #
 os.environ["CCSWITCH_TAILNET_ALLOWLIST"] = ""
 os.environ["CCSWITCH_DEV"] = "1"
+
+
+# --------------------------------------------------------------------------- #
+# TestClient peers must look like the deployed topology.                       #
+#                                                                              #
+# `tailscale serve` terminates the tailnet connection and proxies to the edge's #
+# loopback bind, so in production the peer asserting Tailscale-User-Login is    #
+# ALWAYS 127.0.0.1 — which is why only a trusted peer may assert that header    #
+# (server/auth/identity.py). Starlette defaults TestClient to                   #
+# client=("testclient", 50000): an address that cannot exist in production and  #
+# is not entitled to assert an identity. Left alone, the ~88 suites that send   #
+# the header would all authenticate over a path the real deployment never uses. #
+#                                                                              #
+# Patch the default at import (before collection) rather than via a fixture —   #
+# several test modules build their TestClient at module scope, which a fixture  #
+# would be too late to affect. A test that wants an untrusted peer passes       #
+# client=(...) explicitly and this leaves it alone.                            #
+# --------------------------------------------------------------------------- #
+import starlette.testclient as _starlette_testclient  # noqa: E402
+
+_orig_testclient_init = _starlette_testclient.TestClient.__init__
+
+
+@functools.wraps(_orig_testclient_init)
+def _testclient_init_loopback_peer(self, *args, **kwargs):
+    kwargs.setdefault("client", ("127.0.0.1", 50000))
+    return _orig_testclient_init(self, *args, **kwargs)
+
+
+_starlette_testclient.TestClient.__init__ = (  # type: ignore[method-assign]
+    _testclient_init_loopback_peer
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -322,6 +355,10 @@ _install_real_store_write_guard()
 # substrate is gone regardless of which phase overruns its budget. The file     #
 # backing keeps the schema durable, and WAL keeps COMMITTED writes visible      #
 # across the now-separate connections (db_session/get_db always commit).        #
+#                                                                               #
+# NullPool has no pool to return an ABANDONED checked-out connection to, so it  #
+# survives to GC after its loop is gone; the loop-safe worker installed by      #
+# server/db/aiosqlite_guard.py is what keeps that harmless (issue #1134).       #
 # --------------------------------------------------------------------------- #
 def _cleanup_sqlite_file(path: str) -> None:
     for suffix in ("", "-wal", "-shm"):

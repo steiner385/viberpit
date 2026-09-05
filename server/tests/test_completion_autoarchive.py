@@ -15,11 +15,12 @@ from __future__ import annotations
 import asyncio
 import types
 
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
 def _rec(sid="s1", *, origin=None, repo="o/r", branch="feat/x", initial_prompt=None):
-    r = SessionRecord(id=sid, name="run", account="a", claude_session_id="",
+    r = SessionRecord(id=sid, name="run", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
                       cols=80, rows=24, cwd="/tmp", repo=repo, branch=branch)
     r.origin = origin
     r.initial_prompt = initial_prompt

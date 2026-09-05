@@ -1,0 +1,14 @@
+[
+  "get_automation_events",
+  "get_deploy_status",
+  "get_pipeline_health",
+  "get_session",
+  "get_session_transcript",
+  "list_accounts",
+  "list_archived_sessions",
+  "list_automations",
+  "list_hosts",
+  "list_prs",
+  "list_sessions",
+  "search_sessions"
+]
