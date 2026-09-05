@@ -15,7 +15,7 @@ from claude_agent_sdk._errors import CLIConnectionError
 from ccswitch import copilot as _copilot_mod
 from ccswitch.accounts import provider_of as _provider_of
 from server.aio import bounded_wait
-from server.assistant.context import render_context_header
+from server.assistant.context import PromptContext, render_context_header
 from server.hostname import self_host_name
 from . import events as ev
 from .failure import classify, TurnFailure
@@ -232,9 +232,14 @@ class SessionDriver:
         self._qreg = QuestionRegistry()
         self._tr = Translator()
         self._client = None
-        # Last context header sent to the SDK (assistant sessions only) — the header
-        # is re-sent only when the route/session changes, not on every prompt.
-        self._last_context: dict | None = None
+        # The last `<ccswitch-context …/>` header actually SENT to the SDK (assistant
+        # sessions only) — the header is re-sent only when it changes, not on every
+        # prompt. Deduped on the rendered STRING rather than the context dict so "did
+        # the header change" is exact (it also covers the host attribute), and only
+        # ever advanced in _start_turn at the moment the header goes out: a prompt
+        # that is queued and then abandoned by a Stop never announced its route, so
+        # it must not suppress the header for the next prompt on that route.
+        self._last_context_header: str | None = None
         # Broadcast fan-out: each events() subscriber gets its own queue. A single
         # asyncio.Queue is a WORK queue (each item to one getter) — fatal when
         # "attach" happens more than once per session (reconnect, 2nd viewer).
@@ -244,7 +249,11 @@ class SessionDriver:
         self._turn_buffer: list = []
         self._pump: asyncio.Task | None = None
         self._titled: bool = False
-        self._queue: list[tuple[str, list[dict]]] = []
+        # Each entry: (text, images, context). The context chip (assistant sessions
+        # only, spec §4.5) rides along so a prompt that waits in the queue still gets
+        # its header and its transcript chip when it finally starts — rendering
+        # happens at DEQUEUE time in _start_turn, never here.
+        self._queue: list[tuple[str, list[dict], PromptContext | None]] = []
         self._turn_active: bool = False
         # Epoch seconds of the in-progress turn's start; None whenever no turn is
         # active. Consumed by the WS attach path (→ replay_window.turn_started_at)
@@ -366,6 +375,14 @@ class SessionDriver:
         learned expected duration to the UI, flip the status. Never blocks compaction."""
         self._condense_started_at = self._clock()
         self._condensing = True
+        # Compaction may summarize the last <ccswitch-context> header away, so the
+        # dedupe can no longer claim the model knows the route — re-announce it on
+        # the next prompt. Same invariant as the /clear reset in reconnect(): drop
+        # the dedupe whenever the model's memory of the header may be gone. The cost
+        # of being wrong here is one repeated header; the cost of not resetting is a
+        # model that has silently lost the user's location for the rest of the page
+        # visit.
+        self._last_context_header = None
         est: float | None = None
         if self._get_condense_estimate is not None:
             try:
@@ -675,10 +692,17 @@ class SessionDriver:
         self._start_listener()
 
     async def send_prompt(self, text: str, images: list[dict] | None = None, *,
-                          interrupt: bool = False, context: dict | None = None):
+                          interrupt: bool = False,
+                          context: PromptContext | None = None):
         """Send a prompt. While a turn is live it joins the FIFO queue — unless
         ``interrupt`` is set, in which case the live turn is stopped and this prompt
-        runs NEXT ("interrupt and post"), ahead of anything already queued."""
+        runs NEXT ("interrupt and post"), ahead of anything already queued.
+
+        ``context`` (assistant sessions only, spec §4.5) is the composer's route chip.
+        It rides along in the queue entry even when this prompt does not start
+        immediately: a follow-up sent while the assistant is still working is a normal
+        interaction, and it must not lose its header or its chip. Rendering and dedupe
+        happen in ``_start_turn`` when the turn actually starts, never here."""
         if self._client is None:
             raise RuntimeError("SessionDriver.send_prompt called before start()")
         images = images or []
@@ -691,7 +715,7 @@ class SessionDriver:
             # result is consumed reads it as its own and closes the fresh turn.
             # The interrupt also denies any parked permission/question, so the text
             # is a fresh prompt — the answer short-circuit below must not see it.
-            self._queue.insert(0, (text, images))
+            self._queue.insert(0, (text, images, context))
             log.info("driver.send_prompt: interrupt-and-post session=%s queue_depth=%d",
                      self.session_id, len(self._queue))
             await self.interrupt(keep_queue=True)
@@ -713,14 +737,14 @@ class SessionDriver:
                 log.info("driver.send_prompt: delivered prompt as the answer to %d pending "
                          "question(s) session=%s", answered, self.session_id)
                 if images:
-                    self._queue.append(("", images))
+                    self._queue.append(("", images, context))
                     self._emit(ev.QueueUpdate(self.queue_wire()))
                 return
         # C2 — FIFO queue: if a turn is live — a prompt's pump, or a CLI-initiated turn
-        # the idle listener is tracking (`_turn_active`) — enqueue (text, images)
-        # instead of rejecting.
+        # the idle listener is tracking (`_turn_active`) — enqueue
+        # (text, images, context) instead of rejecting.
         if self._turn_live():
-            self._queue.append((text, images))
+            self._queue.append((text, images, context))
             log.debug("driver.send_prompt: queued prompt for session=%s, queue_depth=%d",
                       self.session_id, len(self._queue))
             await self._emit_status()
@@ -731,22 +755,27 @@ class SessionDriver:
             self._titled = True
             first_line = text.splitlines()[0] if text else (text or "attachment")
             self._emit(ev.Title(title=first_line[:50], source="prompt"))
-        sdk_text = text
-        if context is not None and context != self._last_context:
-            sdk_text = f"{render_context_header(context, host=self_host_name())}\n{text}"
-            self._last_context = context
-        await self._start_turn(text, images, sdk_text=sdk_text, context=context)
+        await self._start_turn(text, images, context=context)
 
     async def _start_turn(self, text: str, images: list[dict] | None = None, *,
-                          sdk_text: str | None = None, context: dict | None = None):
+                          context: PromptContext | None = None):
         """Echo the user prompt, emit working status, query the SDK, drain.
 
-        ``sdk_text`` (defaulting to ``text``) is what actually reaches the SDK —
-        it may carry a prepended ``<ccswitch-context>`` header (see send_prompt).
-        The emitted UserMessage always carries the original ``text`` plus the raw
-        ``context`` dict, so the transcript and the chip stay independent of it."""
+        ``context`` is rendered into a ``<ccswitch-context>`` header prepended to the
+        text that reaches the SDK — here, at the one moment a turn actually starts, so
+        a prompt that came off the queue is treated exactly like one that started
+        immediately. The emitted UserMessage always carries the original ``text`` plus
+        the raw ``context`` dict, so the transcript and the chip stay independent of
+        what the model sees."""
         images = images or []
-        sdk_text = text if sdk_text is None else sdk_text
+        sdk_text = text
+        if context is not None:
+            header = render_context_header(context, host=self_host_name())
+            # Same header as the last one SENT → omit it: the model already knows,
+            # and repeating it would churn the prompt-cache prefix for no gain.
+            if header != self._last_context_header:
+                sdk_text = f"{header}\n{text}" if text else header
+            self._last_context_header = header
         # The prompt's pump takes over the SDK cursor: park the idle listener first
         # (a no-op when this runs INSIDE the listener, dequeuing at a turn's end).
         await self._stop_listener()
@@ -950,11 +979,11 @@ class SessionDriver:
         self._reset_turn_flags()
         # If queued prompts remain, pop the front and start the next turn.
         if self._queue:
-            next_text, next_images = self._queue.pop(0)
+            next_text, next_images, next_context = self._queue.pop(0)
             log.debug("driver.drain: dequeuing next prompt for session=%s, remaining=%d",
                       self.session_id, len(self._queue))
             self._emit(ev.QueueUpdate(self.queue_wire()))
-            await self._start_turn(next_text, next_images)
+            await self._start_turn(next_text, next_images, context=next_context)
         else:
             self._turn_active = False
             self._turn_started_at = None
@@ -1038,7 +1067,7 @@ class SessionDriver:
 
     def queued(self) -> list[str]:
         """Return a snapshot of the queued prompt texts."""
-        return [t for t, _ in self._queue]
+        return [t for t, _, _ in self._queue]
 
     def queue_wire(self) -> list[dict]:
         """Structured queue snapshot: text + image refs per queued prompt."""
@@ -1046,7 +1075,7 @@ class SessionDriver:
             {"text": t,
              "images": [{"url": im["url"], "mime": im["mime"], "name": im.get("name", "")}
                         for im in imgs]}
-            for t, imgs in self._queue
+            for t, imgs, _ in self._queue
         ]
 
     async def cancel_queued(self, index: int) -> bool:
@@ -1366,6 +1395,10 @@ class SessionDriver:
         self._turn_active = False
         self._turn_started_at = None
         self._tr = Translator()
+        # A fresh CLI session has no history: a header deduped against the OLD
+        # session's last-sent value would leave the new one never told where the
+        # user is.
+        self._last_context_header = None
         client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode, None,
                                on_pre_compact=self._on_pre_compact)
         self._client = client
