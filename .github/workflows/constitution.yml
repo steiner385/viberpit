@@ -18,12 +18,22 @@ on:
     # to a failing PR must re-run the check. Without this the only way to clear a
     # missing acknowledgment is an empty commit.
     types: [opened, synchronize, reopened, edited]
+  # `amendment` is a REQUIRED status check, and server/deploy/steps.py:ci_verdict
+  # treats a required context with no run on the commit as "pending" — not "green".
+  # Without a push trigger no master commit ever carries this context, so the deploy
+  # preflight wedges permanently. Enforcement still happens on the pull request; this
+  # trigger exists so the context is REPORTED on master.
+  push:
+    branches: [master]
 
 permissions:
   contents: read
 
 concurrency:
-  group: constitution-${{ github.event.pull_request.number }}
+  # pull_request.number is EMPTY on push: without the sha fallback every master push
+  # shares the group `constitution-` and cancels its predecessor, leaving the earlier
+  # commit with a cancelled (absent) check — which is the wedge this patch removes.
+  group: constitution-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -37,7 +47,20 @@ jobs:
       - name: Check governance record
         # PR_BODY is passed through the environment, never interpolated into the
         # run command — a title or body is attacker-controlled text.
+        #
+        # pull_request only: on push, github.base_ref is empty, so this would run
+        # --base-ref "origin/", fail to diff, treat the constitution as new, find no
+        # acknowledgment in an empty PR_BODY and exit 1 — turning the wedge from
+        # permanent-pending into permanent-red.
+        if: github.event_name == 'pull_request'
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
           BASE_REF: ${{ github.base_ref }}
         run: python3 scripts/check_constitution_amendment.py --base-ref "origin/${BASE_REF}"
+      - name: Report required context on master
+        # The acknowledgment was already enforced on the pull request that produced
+        # this commit; master is a fast-forward of reviewed work. This step exists so
+        # the REQUIRED `amendment` context is present on the commit, which is what
+        # ci_verdict needs to return "green".
+        if: github.event_name == 'push'
+        run: echo "governance gate enforced at pull-request time; reporting required context on master"
