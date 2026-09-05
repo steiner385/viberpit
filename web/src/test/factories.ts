@@ -94,8 +94,9 @@ export function pullRequest(over: Partial<PullRequestInfo> = {}): PullRequestInf
  * cast the literal at `AppSettings` — so a component reading `autoArchiveEnabled`
  * or `maxActiveSessions` saw `undefined` in the test and a real value in the
  * browser. The values below match the `?? default` each reader already applies
- * (GeneralSection.tsx), so routing a stub through this changes nothing it
- * rendered — it only stops the fixture lying about the payload.
+ * (`features/settings/sections/{General,SessionDefaults}Section.tsx`), so
+ * routing a stub through this changes nothing it rendered — it only stops the
+ * fixture lying about the payload.
  */
 export function appSettings(over: Partial<AppSettings> = {}): AppSettings {
   return {
@@ -109,6 +110,13 @@ export function appSettings(over: Partial<AppSettings> = {}): AppSettings {
     autoArchiveEnabled: true,
     modelApprovalAction: null,
     modelApprovalDenylist: null,
+    acceptedPermissionModes: ['interactive', 'auto', 'allowlist', 'acceptEdits', 'full-auto', 'bypassPermissions'],
+    effectiveDefaults: {
+      repoRoot: '/home/user/GitHub', archiveHome: null,
+      modelApprovalAction: 'require_approval', modelApprovalDenylist: 'fable', maxActiveSessions: 5,
+    },
+    managed: [],
+    about: { gitSha: null, hostName: 'test-host' },
     ...over,
   }
 }

@@ -5,13 +5,26 @@ import { useInteractive } from '@/shell/InteractionContext'
 
 export interface PageHeaderProps {
   title: string
+  /**
+   * The base for `document.title`, when it must differ from the visible `h1`.
+   *
+   * Settings is the case this exists for: the page is one page called
+   * "Settings", so its `h1` must not change under the user as they move between
+   * sections — but a browser tab (or a window switcher) showing three tabs all
+   * reading "Settings — ccswitch" is useless, so the TITLE carries the section
+   * ("Defaults · Settings — ccswitch"). WCAG 2.4.2 asks the title to identify
+   * the page; it does not ask it to be byte-identical to the heading.
+   *
+   * Defaults to `title`, so every other page is unaffected.
+   */
+  documentTitle?: string
   meta?: React.ReactNode
   actions?: React.ReactNode
   className?: string
 }
 
 /** Zone 1 of every page: the only h1 on the page, synced to document.title (WCAG 2.4.2). */
-export function PageHeader({ title, meta, actions, className }: PageHeaderProps) {
+export function PageHeader({ title, documentTitle, meta, actions, className }: PageHeaderProps) {
   // A stable per-instance identity for `shell/documentTitle.ts`'s base-title
   // stack. useState's initializer (not a ref) because this codebase's
   // react-hooks/refs rule rejects reading a ref during render.
@@ -25,9 +38,10 @@ export function PageHeader({ title, meta, actions, className }: PageHeaderProps)
   const interactive = useInteractive()
 
   // Claim/update this instance's slot on every title change...
+  const base = documentTitle ?? title
   React.useEffect(() => {
-    setBaseTitle(token, title)
-  }, [token, title])
+    setBaseTitle(token, base)
+  }, [token, base])
 
   // ...and release it exactly once, on unmount. Split from the effect above
   // so a title change (which re-runs the effect) doesn't release-then-reclaim

@@ -197,6 +197,22 @@ export function useGithubBranches(repo?: string) {
   })
 }
 
+/** One read-only env flag shown on Settings › About. The server sends an allowlist. */
+export interface ManagedFlag {
+  key: string
+  value: string | number | boolean | null
+  description: string
+}
+
+/** What the server falls back to when the matching AppSettings column is NULL. */
+export interface EffectiveDefaults {
+  repoRoot: string
+  archiveHome: string | null
+  modelApprovalAction: string
+  modelApprovalDenylist: string
+  maxActiveSessions: number
+}
+
 export interface AppSettings {
   defaultPermissionMode: string
   thinkingCollapsed: boolean
@@ -216,6 +232,11 @@ export interface AppSettings {
   modelApprovalAction: string | null
   // Comma-separated model ids/tiers that require approval; null = server default (fable).
   modelApprovalDenylist: string | null
+  /** The modes PUT accepts, in display order. The client's PERMISSION_MODES must equal this set. */
+  acceptedPermissionModes: string[]
+  effectiveDefaults: EffectiveDefaults
+  managed: ManagedFlag[]
+  about: { gitSha: string | null; hostName: string }
 }
 
 export function useSettings() {
