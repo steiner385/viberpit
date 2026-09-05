@@ -414,6 +414,9 @@ class AppSettings(Base):
     # CCSWITCH_ASSISTANT_ENABLED / CCSWITCH_ASSISTANT_MODEL. Nullable for backfill.
     assistant_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
     assistant_model: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # Operator-tier assistant tools (v2 spec §5/§7, decision B1). NULL = fall through to
+    # CCSWITCH_ASSISTANT_OPERATOR_TOOLS, which defaults false. Nullable for backfill.
+    assistant_operator_tools: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
 
 
 class SessionQueue(Base):

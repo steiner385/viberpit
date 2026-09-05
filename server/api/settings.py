@@ -105,6 +105,9 @@ class SettingsBody(BaseModel):
     # CCSWITCH_ASSISTANT_MODEL env fallback, omitted leaves the stored value alone.
     assistantEnabled: bool | None = None
     assistantModel: str | None = None
+    # Operator tier (v2 spec B1). Same three-state contract; null clears back to
+    # CCSWITCH_ASSISTANT_OPERATOR_TOOLS, which is false.
+    assistantOperatorTools: bool | None = None
 
 
 async def _migrate_archive_home(orch, db, old_home: str | None, new_home: str | None) -> tuple[int, int, int]:
@@ -166,6 +169,7 @@ def _to_dict(s: AppSettings) -> dict:
         "modelApprovalDenylist": s.model_approval_denylist,
         "assistantEnabled": s.assistant_enabled,
         "assistantModel": s.assistant_model,
+        "assistantOperatorTools": s.assistant_operator_tools,
         **_server_blocks(),
     }
 
@@ -239,5 +243,7 @@ async def put_settings_row(
         row.assistant_enabled = body.assistantEnabled
     if "assistantModel" in body.model_fields_set:
         row.assistant_model = body.assistantModel
+    if "assistantOperatorTools" in body.model_fields_set:
+        row.assistant_operator_tools = body.assistantOperatorTools
     await db.flush()
     return _to_dict(row)

@@ -122,7 +122,7 @@ describe('GeneralSection', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(mutateAsync).toHaveBeenCalledWith({
       repoRoot: null, archiveHome: '', maxArchivedSessions: 0, maxActiveSessions: 7, autoArchiveEnabled: false,
-      assistantEnabled: true, assistantModel: null,
+      assistantEnabled: true, assistantModel: null, assistantOperatorTools: false,
     }))
   })
 
@@ -135,6 +135,26 @@ describe('GeneralSection', () => {
     await waitFor(() => expect(mutateAsync).toHaveBeenCalledWith(
       expect.objectContaining({ assistantEnabled: false }),
     ))
+  })
+
+  it('renders the operator-tier switch off by default with its warning line, and PUTs true', async () => {
+    mount()
+    const operator = screen.getByRole('checkbox', { name: 'Enable operator tools' })
+    // Server null → off: the operator tier is opt-in (spec v2 B1), unlike the
+    // assistant switch above whose null means the launch default ON.
+    expect(operator).not.toBeChecked()
+    expect(screen.getByText(/start deploys, upgrade hosts and refresh accounts/i)).toBeInTheDocument()
+    await userEvent.click(operator)
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ assistantOperatorTools: true }),
+    ))
+  })
+
+  it('shows the operator-tier switch on when the server has it stored true', () => {
+    vi.mocked(hooks.useSettings).mockReturnValue(queryResult(appSettings({ assistantOperatorTools: true })))
+    mount()
+    expect(screen.getByRole('checkbox', { name: 'Enable operator tools' })).toBeChecked()
   })
 
   it('lets the assistant model be set from the models fed by useModels()', async () => {

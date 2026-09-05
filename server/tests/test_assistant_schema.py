@@ -27,7 +27,11 @@ def test_is_assistant_true_for_kind():
 def test_db_columns_exist():
     cols = {c.name for c in Session.__table__.columns}
     assert {"kind", "owner_identity"} <= cols
-    assert {"assistant_enabled", "assistant_model"} <= {c.name for c in AppSettings.__table__.columns}
+    settings_cols = {c.name for c in AppSettings.__table__.columns}
+    assert {"assistant_enabled", "assistant_model", "assistant_operator_tools"} <= settings_cols
+    # Nullable is what lets init_db._reconcile_columns ALTER-ADD it on both dialects; a
+    # NOT NULL column here would need a real migration and would fail the drift assert.
+    assert AppSettings.__table__.columns["assistant_operator_tools"].nullable is True
     assert "via" in {c.name for c in AuditEvent.__table__.columns}
     for name in ("kind", "owner_identity"):
         assert Session.__table__.columns[name].nullable is True

@@ -168,6 +168,7 @@ export function appSettings(over: Partial<AppSettings> = {}): AppSettings {
     modelApprovalDenylist: null,
     assistantEnabled: null,
     assistantModel: null,
+    assistantOperatorTools: null,
     acceptedPermissionModes: ['interactive', 'auto', 'allowlist', 'acceptEdits', 'full-auto', 'bypassPermissions'],
     effectiveDefaults: {
       repoRoot: '/home/user/GitHub', archiveHome: null,

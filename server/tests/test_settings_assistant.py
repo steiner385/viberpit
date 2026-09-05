@@ -54,6 +54,8 @@ def test_get_settings_assistant_defaults_null():
     assert data["assistantEnabled"] is None
     assert "assistantModel" in data
     assert data["assistantModel"] is None
+    assert "assistantOperatorTools" in data
+    assert data["assistantOperatorTools"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -179,3 +181,60 @@ def test_put_omitted_assistant_fields_leave_stored_value_unchanged():
         get_resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
         assert get_resp.json()["assistantEnabled"] is True
         assert get_resp.json()["assistantModel"] == "sonnet"
+
+
+# ---------------------------------------------------------------------------
+# Operator tier (spec v2 §7, decision B1) — same three-state contract
+# ---------------------------------------------------------------------------
+
+
+def test_put_assistant_operator_tools_round_trips():
+    """PUT {assistantOperatorTools: true} then GET → same, other assistant fields untouched."""
+    with _client() as client:
+        put_resp = client.put(
+            "/api/settings",
+            json={"assistantOperatorTools": True},
+            headers=IDENTITY_HEADERS,
+        )
+        assert put_resp.status_code == 200
+        assert put_resp.json()["assistantOperatorTools"] is True
+        assert put_resp.json()["assistantEnabled"] is None
+
+        get_resp = client.get("/api/settings", headers=IDENTITY_HEADERS)
+        assert get_resp.json()["assistantOperatorTools"] is True
+
+
+def test_put_null_assistant_operator_tools_clears_stored_value():
+    """Explicit null clears back to the CCSWITCH_ASSISTANT_OPERATOR_TOOLS env fallback."""
+    with _client() as client:
+        client.put(
+            "/api/settings",
+            json={"assistantOperatorTools": True},
+            headers=IDENTITY_HEADERS,
+        )
+        assert client.get("/api/settings", headers=IDENTITY_HEADERS).json()["assistantOperatorTools"] is True
+
+        put_resp = client.put(
+            "/api/settings",
+            json={"assistantOperatorTools": None},
+            headers=IDENTITY_HEADERS,
+        )
+        assert put_resp.status_code == 200
+        assert put_resp.json()["assistantOperatorTools"] is None
+        assert client.get("/api/settings", headers=IDENTITY_HEADERS).json()["assistantOperatorTools"] is None
+
+
+def test_put_omitted_operator_tools_leaves_stored_value_unchanged():
+    """A PUT that never mentions assistantOperatorTools leaves an enabled operator tier on.
+
+    The dangerous direction is the other one — an omitted key must not silently turn
+    the tier OFF either, or every unrelated Settings save would fight the operator.
+    """
+    with _client() as client:
+        client.put(
+            "/api/settings",
+            json={"assistantOperatorTools": True},
+            headers=IDENTITY_HEADERS,
+        )
+        client.put("/api/settings", json={"thinkingCollapsed": False}, headers=IDENTITY_HEADERS)
+        assert client.get("/api/settings", headers=IDENTITY_HEADERS).json()["assistantOperatorTools"] is True
