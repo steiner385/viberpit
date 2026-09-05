@@ -433,6 +433,11 @@ def test_completion_nudge_is_delivered_after_the_driver_was_released(tmp_path):
              patch("server.sessions.orchestrator.compose", return_value=tmp_path / "cfg"), \
              patch("server.sessions.orchestrator.configdir.trust_project"):
             await orch._auto_archive_completed("s1")
+        # Drain before asyncio.run() closes the loop. Persisting a status spawns
+        # follow-up work (the autopilot nudge among it); left pending, those tasks
+        # are destroyed with the loop and the orchestrator survives holding them,
+        # which is how this file poisoned later files sharing an xdist worker.
+        await _drain(orch)
         return orch
     orch = asyncio.run(run())
     # send_prompt records _last_prompt ONLY on the delivered path — a "no_driver"
