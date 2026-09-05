@@ -52,7 +52,7 @@ def test_ensure_driver_upgrades_system_identity_to_real_user(tmp_path):
     async def run():
         await init_db(db_url=db_url)
         await _seed([dict(id="s1", name="S1", account_name="acct1",
-                          claude_session_id="cs1", status="idle", cwd=str(tmp_path))])
+                          engine_session_id="cs1", status="idle", cwd=str(tmp_path))])
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
         await orch.rehydrate()
         # 1) Internal/background path builds the driver first, under "system".
@@ -78,7 +78,7 @@ def test_ensure_driver_does_not_downgrade_real_identity_to_system(tmp_path):
     async def run():
         await init_db(db_url=db_url)
         await _seed([dict(id="s2", name="S2", account_name="acct1",
-                          claude_session_id="cs2", status="idle", cwd=str(tmp_path))])
+                          engine_session_id="cs2", status="idle", cwd=str(tmp_path))])
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
         await orch.rehydrate()
         await _ensure(orch, tmp_path, "s2", "user@example.test")  # real user attaches first
@@ -105,15 +105,15 @@ def test_rethread_makes_question_asked_under_system_answerable(tmp_path):
     async def run():
         await init_db(db_url=db_url)
         await _seed([dict(id="s3", name="S3", account_name="acct1",
-                          claude_session_id="cs3", status="idle", cwd=str(tmp_path))])
+                          engine_session_id="cs3", status="idle", cwd=str(tmp_path))])
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
         await orch.rehydrate()
         d_sys = await _ensure(orch, tmp_path, "s3")  # built by an internal path
         # The CLI asks a question while the driver still carries "system" — exactly
-        # what SessionDriver's AskUserQuestion handler registers.
+        # what ClaudeAgentDriver's AskUserQuestion handler registers.
         qid, fut = d_sys._qreg.request("s3", "t1", "H", "Q?", [{"label": "A"}], False,
                                        d_sys.identity)
-        pid, pfut = await d_sys._reg.request(
+        pid, pfut, _ = await d_sys._reg.request(
             "s3", "t1", "Bash", {"command": "make"}, mode="interactive",
             denylist=PermissionRegistry.DANGEROUS, allowlist=True, identity=d_sys.identity)
         # Now the real user attaches (WS attach → ensure_driver with their identity).

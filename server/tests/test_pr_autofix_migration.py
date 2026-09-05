@@ -16,6 +16,7 @@ import asyncio
 from sqlalchemy import select
 
 from server.github.pr_status import PullRequestInfo
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
@@ -30,7 +31,7 @@ def _pr(number=7, state="open", checks="failing"):
 
 def _make_record(session_id="sess1", repo="o/r", branch="feat/x"):
     return SessionRecord(
-        id=session_id, name="test-session", account="acct-a", claude_session_id="",
+        id=session_id, name="test-session", account="acct-a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
         cols=80, rows=24, cwd="/tmp", repo=repo, branch=branch,
         authored_branches=[branch])
 

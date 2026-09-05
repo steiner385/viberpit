@@ -4,7 +4,7 @@ via last_model_request — the call-site sibling of test_driver_pr_resolution.py
 Whole-branch review finding 2: driver.py:718 (`self._latch_model_request(e)` inside
 the TurnEnd branch of `_drain`) is the SINGLE point where a parsed request reaches
 the driver. Every other test that touches `_latch_model_request` calls it unbound
-(`SessionDriver._latch_model_request(d, e)`) or sets `last_model_request` on a fake
+(`ClaudeAgentDriver._latch_model_request(d, e)`) or sets `last_model_request` on a fake
 driver — none drives a real TurnEnd through `_drain()`, so replacing the call site
 with `pass` passed the entire `driver|model|translator|turn_end` test selection.
 This mirrors test_driver_pr_resolution.py's proven pattern (a fake SDK client whose
@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 from claude_agent_sdk import TextBlock
 
-from server.sessions.driver import SessionDriver
+from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.permissions import PermissionRegistry
 from server.tests.fakes.fake_sdk import FakeSDKClient
 from server.tests.fakes import fake_sdk as f
@@ -48,7 +48,7 @@ def _make_driver(client_cls=_ModelRequestTurnClient):
     def factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *,
                 on_pre_compact=None):
         return client_cls([], on_can_use_tool=can_use_tool)
-    return SessionDriver(
+    return ClaudeAgentDriver(
         "sid", "alpha", "/tmp", "/tmp/cfg", mode="default",
         sdk_factory=factory, registry=PermissionRegistry(),
         identity="wstest@example.com",

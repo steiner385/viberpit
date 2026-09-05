@@ -5,7 +5,7 @@ import pytest
 from claude_agent_sdk import TextBlock
 
 from server.sessions.completion import NO_PR_MARKER
-from server.sessions.driver import SessionDriver
+from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.permissions import PermissionRegistry
 from server.tests.fakes.fake_sdk import FakeSDKClient
 from server.tests.fakes import fake_sdk as f
@@ -40,7 +40,7 @@ def _make_driver(client_cls=_NoPRTurnClient):
     def factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *,
                 on_pre_compact=None):
         return client_cls([], on_can_use_tool=can_use_tool)
-    return SessionDriver(
+    return ClaudeAgentDriver(
         "sid", "alpha", "/tmp", "/tmp/cfg", mode="default",
         sdk_factory=factory, registry=PermissionRegistry(),
         identity="wstest@example.com",

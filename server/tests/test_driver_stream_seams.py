@@ -15,7 +15,7 @@ import asyncio
 
 from claude_agent_sdk import TextBlock
 
-from server.sessions.driver import SessionDriver
+from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.permissions import PermissionRegistry
 from server.sessions import events as ev
 from server.tests.fakes import fake_sdk as f
@@ -25,7 +25,7 @@ from server.tests.fakes.scripted_sdk import (
 
 
 def _driver(scenario, session_id="s"):
-    return SessionDriver(session_id, "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+    return ClaudeAgentDriver(session_id, "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                          sdk_factory=scripted_factory(scenario),
                          registry=PermissionRegistry(), identity="me")
 

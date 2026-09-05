@@ -1,3 +1,4 @@
+// @vitest-environment node
 // Ported from plotroom@5166b52 frontend/src/spine/__tests__/laneStatus.test.ts; edits: ../laneStatus → ../spine/laneStatus; ../../types → ../types
 import { describe, it, expect } from 'vitest';
 import { LANE_GLYPH, LANE_WORD, rollup, attentionPhrase } from '../spine/laneStatus';

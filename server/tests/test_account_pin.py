@@ -4,6 +4,7 @@ import asyncio
 import pytest
 
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
@@ -24,7 +25,7 @@ def _orch(rec):
 
 
 def _rec(status="idle", pinned=True):
-    return SessionRecord(id="s1", name="n", account="a", claude_session_id="c1",
+    return SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                          cols=80, rows=24, cwd="/tmp", status=status, account_pinned=pinned)
 
 

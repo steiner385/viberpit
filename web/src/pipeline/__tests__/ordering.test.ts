@@ -1,3 +1,4 @@
+// @vitest-environment node
 // Ported from plotroom@5166b52 frontend/src/__tests__/pipelineOrdering.test.ts; edits: import repointing (../ordering, ../types)
 import { describe, it, expect } from 'vitest';
 import { attentionSort, splitCohort, deployBreakdown } from '../ordering';

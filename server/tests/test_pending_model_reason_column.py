@@ -1,5 +1,6 @@
 """pending_model_reason: nullable column, record round-trip, API surface."""
 from server.db.models import Session as DbSession
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
@@ -9,7 +10,7 @@ def test_column_exists_and_is_nullable():
 
 
 def test_record_round_trips_the_reason():
-    rec = SessionRecord(id="s1", name="test", account="test", claude_session_id="c1",
+    rec = SessionRecord(id="s1", name="test", account="test", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                         cols=80, rows=24, cwd="/tmp", pending_model="fable",
                         pending_model_reason="cross-module refactor")
     revived = SessionRecord.from_dict(rec.to_dict())
@@ -17,7 +18,7 @@ def test_record_round_trips_the_reason():
 
 
 def test_record_defaults_to_none():
-    rec = SessionRecord(id="s1", name="test", account="test", claude_session_id="c1",
+    rec = SessionRecord(id="s1", name="test", account="test", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                         cols=80, rows=24, cwd="/tmp")
     assert rec.pending_model_reason is None
 
@@ -34,7 +35,7 @@ def test_orchestrator_record_from_row_preserves_pending_model_reason():
         id="test-session-id",
         name="Test Session",
         account_name="test-account",
-        claude_session_id="claude-123",
+        engine_session_id="claude-123",
         cwd="/tmp/test",
         repo="owner/repo",
         status="idle",
@@ -94,7 +95,7 @@ def test_orchestrator_record_from_row_preserves_pending_model_requested_by():
         id="test-session-id",
         name="Test Session",
         account_name="test-account",
-        claude_session_id="claude-123",
+        engine_session_id="claude-123",
         cwd="/tmp/test",
         repo="owner/repo",
         status="idle",

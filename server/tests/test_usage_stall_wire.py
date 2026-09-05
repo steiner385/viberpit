@@ -4,12 +4,13 @@ from __future__ import annotations
 import datetime as _dt
 
 from server.api.sessions import _record_to_dict
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 from server.sessions.usage_stall import USAGE_STALL_REASONS, is_usage_stalled
 
 
 def _rec(**kw) -> SessionRecord:
-    base = dict(id="s1", name="n", account="a", claude_session_id="c",
+    base = dict(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c",
                 cols=80, rows=24, cwd="/tmp", status="idle")
     base.update(kw)
     return SessionRecord(**base)  # type: ignore[arg-type]

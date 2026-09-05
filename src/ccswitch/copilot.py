@@ -11,20 +11,26 @@ import logging
 from datetime import datetime
 
 from . import paths
-from .oauth import Usage
+from .quota import QuotaSnapshot, copilot_snapshot
 
 log = logging.getLogger(__name__)
 
 PROVIDER = "copilot"
 
 
-def usage_from_proxy(payload: dict, now: datetime) -> Usage | None:
-    """Map the proxy /usage premium-request quota into a Usage.
+def usage_from_proxy(payload: dict, now: datetime) -> QuotaSnapshot | None:
+    """Map the proxy /usage premium-request quota into a QuotaSnapshot.
 
-    Copilot Pro+ meters a single ~monthly premium-request allowance, so we project it onto
-    BOTH the session and weekly dimensions (the selector takes whichever binds first; here
-    they are identical). Returns None for a missing/garbage payload so callers degrade to
-    'usage unknown' rather than a false ceiling.
+    Copilot Pro+ meters exactly ONE allowance (premium requests), so the snapshot
+    has exactly one window. The predecessor projected that single number onto both
+    a "session" and a "weekly" dimension because the old ``Usage`` dataclass had
+    nowhere else to put it; the duplicate then surfaced as two identical badges in
+    the accounts UI and made "which dimension binds?" a meaningless question for
+    this provider. Fabricating it is now impossible — the window list holds what
+    the provider reported and nothing else.
+
+    Returns None for a missing/garbage payload so callers degrade to 'usage
+    unknown' rather than a false ceiling.
     """
     block = payload.get("premium") if isinstance(payload.get("premium"), dict) else payload
     try:
@@ -36,11 +42,7 @@ def usage_from_proxy(payload: dict, now: datetime) -> Usage | None:
         return None
     pct = max(0.0, min(100.0, 100.0 * used / limit))
     resets_at = _parse_iso(block.get("resets_at"))
-    return Usage(
-        session_pct=pct, session_resets_at=resets_at,
-        weekly_pct=pct, weekly_resets_at=resets_at,
-        extra_usage_enabled=False,
-    )
+    return copilot_snapshot(pct, resets_at, fetched_at=now)
 
 
 def _parse_iso(s) -> datetime | None:

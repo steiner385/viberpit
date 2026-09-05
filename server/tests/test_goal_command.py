@@ -1,8 +1,9 @@
 import asyncio
 import pytest
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
-from server.sessions.driver import SessionDriver
+from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.permissions import PermissionRegistry
 from server.tests.fakes import fake_sdk
 
@@ -10,13 +11,14 @@ from server.tests.fakes import fake_sdk
 async def _orch_with_goal_session():
     client = fake_sdk.FakeSDKClient(messages=[], server_info={"commands": [{"name": "goal"}]})
     orch = SessionOrchestrator(sdk_factory=lambda *a, **k: client)
-    d = SessionDriver("s1", "a", "/tmp", "/tmp/c", mode="interactive",
+    d = ClaudeAgentDriver("s1", "a", "/tmp", "/tmp/c", mode="interactive",
                       sdk_factory=lambda *a, **k: client, registry=PermissionRegistry(),
                       identity="t")
     await d.start()
     orch._drivers["s1"] = d
     orch._records["s1"] = SessionRecord(id="s1", name="n", account="a",
-                                        claude_session_id="c1", cols=80, rows=24, cwd="/tmp")
+                                        engine=AgentEngine.CLAUDE_CODE,
+                                        engine_session_id="c1", cols=80, rows=24, cwd="/tmp")
 
     async def _noop_persist(sid, goal):
         pass

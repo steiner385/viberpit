@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest'
 import { flattenRows, buildRenderRows } from './transcriptRows'
 import type { Turn as TurnType, RotationMarker } from '@/session/reducer'

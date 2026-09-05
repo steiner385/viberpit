@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 
 from server.automations.completion_bar import PrFact, PrFacts
+from server.sessions.engine import AgentEngine
 
 
 def _bare_orch():
@@ -18,8 +19,9 @@ def _bare_orch():
 
 
 def _rec(pr_resolution=None, pr_resolution_source=None):
+    from server.sessions.engine import AgentEngine
     from server.sessions.types import SessionRecord
-    r = SessionRecord(id="s1", name="n", account="a", claude_session_id="",
+    r = SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
                       cols=80, rows=24, cwd="/tmp", status="complete")
     r.pr_resolution = pr_resolution
     r.pr_resolution_source = pr_resolution_source
@@ -200,7 +202,7 @@ def test_classifier_not_invoked_for_non_complete_status(monkeypatch):
 
     orch = _bare_orch()
     # Build a record with a non-complete status — still has a repo, no PR, no stored resolution
-    rec = SessionRecord(id="s2", name="n", account="a", claude_session_id="",
+    rec = SessionRecord(id="s2", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
                         cols=80, rows=24, cwd="/tmp", status="done")
     rec.pr_resolution = None
     rec.pr_resolution_source = None

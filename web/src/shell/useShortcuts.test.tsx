@@ -34,6 +34,8 @@ function session(over: Partial<Session> = {}): Session {
     id: 's1',
     name: 'One',
     accountName: 'alice',
+    engine: 'claude_code',
+    engineSessionId: null,
     status: 'idle',
     createdAt: '2026-06-19T10:00:00Z',
     prs: [],

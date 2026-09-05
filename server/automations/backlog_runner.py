@@ -252,7 +252,7 @@ NeedsHuman = Callable[[str], Awaitable[None]]
 # stubs) reads as "closed".
 CloseOut = Callable[[str, "PullRequestInfo"], Awaitable["str | None"]]
 SessionEnded = Callable[[str], Awaitable[bool]]
-# Did the session ever run a turn? True once it recorded a ``claude_session_id``
+# Did the session ever run a turn? True once it recorded a ``engine_session_id``
 # (the SDK assigns one when turn ONE starts), so False proves the batch was never
 # actually attempted. Gates the give-up path: a session that never ran must not
 # escalate its issue to ``needs-human`` (#1100).
@@ -864,7 +864,7 @@ class BacklogRunnerLoop:
             attempts = st.get("attempts", 0) + 1
             if attempts >= config["max_attempts"]:
                 if not await self._session_ever_ran(st):
-                    # The session never ran a single turn (no claude_session_id) —
+                    # The session never ran a single turn (no engine_session_id) —
                     # its queue entry was lost and the reaper ended it, or it died
                     # before turn one (#1100). Escalating that to ``needs-human``
                     # parks a perfectly good issue for ``needs_human_retry_days`` on
@@ -897,7 +897,7 @@ class BacklogRunnerLoop:
         FAILS SAFE to True — "we could not prove it never ran" must keep the normal
         give-up path, so a missing probe, a vanished row or a probe error can never
         silently disable escalation. Only a probe that positively answers False (a
-        live row with a NULL ``claude_session_id``) diverts to the release path."""
+        live row with a NULL ``engine_session_id``) diverts to the release path."""
         sid = st.get("session_id")
         if sid is None or self._session_ran is None:
             return True

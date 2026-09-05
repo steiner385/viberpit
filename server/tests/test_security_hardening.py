@@ -132,7 +132,7 @@ def api_client(tmp_path):
     from server.sessions.orchestrator import SessionOrchestrator
     from server.app import create_app
     from fastapi.testclient import TestClient
-    from ccswitch.oauth import Usage
+    from ccswitch.quota import anthropic_snapshot
     from datetime import datetime, timedelta, timezone
 
     store = tmp_path / "store"
@@ -140,7 +140,7 @@ def api_client(tmp_path):
 
     def _usage(name):
         reset = datetime.now(timezone.utc) + timedelta(hours=5)
-        return Usage(10.0, reset, 10.0, reset, False)
+        return anthropic_snapshot(10.0, reset, 10.0, reset, False)
 
     with patch.dict(os.environ, {
         "CCSWITCH_HOME": str(tmp_path),

@@ -88,6 +88,8 @@ describe('documentTitle', () => {
       id: 'a',
       name: 'a',
       accountName: 'acct',
+      engine: 'claude_code',
+      engineSessionId: null,
       status: 'waiting_input',
       createdAt: '2026-01-01T00:00:00Z',
       prs: [],

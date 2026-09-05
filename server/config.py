@@ -103,6 +103,20 @@ try:
         copilot_port_base: int = Field(default=4142, alias="CCSWITCH_COPILOT_PORT_BASE")
         copilot_port_count: int = Field(default=8, alias="CCSWITCH_COPILOT_PORT_COUNT")
         copilot_idle_grace_s: float = Field(default=300.0, alias="CCSWITCH_COPILOT_IDLE_GRACE_S")
+        # Native OpenAI Codex (server/codex). Both flags default FALSE — this is a
+        # launch flag, and absence or incompatibility must disable Codex ONLY. The
+        # external-token API is the experimental app-server surface runners use to
+        # authenticate without holding a credential, so it is gated separately.
+        codex_enabled: bool = Field(default=False, alias="CCSWITCH_CODEX_ENABLED")
+        codex_external_auth_enabled: bool = Field(
+            default=False, alias="CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED")
+        codex_bin: str = Field(default="codex", alias="CCSWITCH_CODEX_BIN")
+        # Comma list of `codex --version` strings an operator has verified beyond
+        # the pin in server/codex/schema.py. It WIDENS the pinned set; it can never
+        # remove the version this code was written against.
+        codex_supported_versions: str = Field(
+            default="", alias="CCSWITCH_CODEX_SUPPORTED_VERSIONS")
+        codex_idle_grace_s: float = Field(default=300.0, alias="CCSWITCH_CODEX_IDLE_GRACE_S")
         # Server-side dictation (server/stt): off by default; needs the `stt` extra.
         enable_stt: bool = Field(default=False, alias="CCSWITCH_ENABLE_STT")
         stt_model: str = Field(default="base.en", alias="CCSWITCH_STT_MODEL")
@@ -313,6 +327,21 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         copilot_idle_grace_s: float = dataclasses.field(
             default_factory=lambda: float(os.environ.get("CCSWITCH_COPILOT_IDLE_GRACE_S", "300.0"))
+        )
+        codex_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_CODEX_ENABLED", "false").lower() in ("1","true","yes","on")
+        )
+        codex_external_auth_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED", "false").lower() in ("1","true","yes","on")
+        )
+        codex_bin: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_CODEX_BIN", "codex")
+        )
+        codex_supported_versions: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_CODEX_SUPPORTED_VERSIONS", "")
+        )
+        codex_idle_grace_s: float = dataclasses.field(
+            default_factory=lambda: float(os.environ.get("CCSWITCH_CODEX_IDLE_GRACE_S", "300.0"))
         )
         enable_stt: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_ENABLE_STT", "false").lower() in ("1","true","yes","on")

@@ -12,7 +12,7 @@ def test_interactive_write_always_prompts():
     reg = PermissionRegistry()
     async def run():
         # First call: approve with "always" to seed the grant cache.
-        pid1, fut1 = await reg.request("s1", "t1", "Write", {"file_path": "/tmp/out.txt"},
+        pid1, fut1, _ = await reg.request("s1", "t1", "Write", {"file_path": "/tmp/out.txt"},
                                        mode="interactive", denylist=PermissionRegistry.DANGEROUS,
                                        allowlist=True, identity="me")
         assert pid1 is not None, "first Write should prompt in interactive mode"
@@ -20,7 +20,7 @@ def test_interactive_write_always_prompts():
         await fut1
 
         # Second call with same fingerprint: interactive mode must still prompt.
-        pid2, fut2 = await reg.request("s1", "t2", "Write", {"file_path": "/tmp/out.txt"},
+        pid2, fut2, _ = await reg.request("s1", "t2", "Write", {"file_path": "/tmp/out.txt"},
                                        mode="interactive", denylist=PermissionRegistry.DANGEROUS,
                                        allowlist=True, identity="me")
         assert pid2 is not None, "Write must prompt again in interactive mode even after 'always'"
@@ -35,7 +35,7 @@ def test_interactive_bash_always_prompts():
     async def run():
         cmd = "echo hello"
         # Seed "always" grant.
-        pid1, fut1 = await reg.request("s1", "t1", "Bash", {"command": cmd, "cwd": "/tmp"},
+        pid1, fut1, _ = await reg.request("s1", "t1", "Bash", {"command": cmd, "cwd": "/tmp"},
                                        mode="interactive", denylist=PermissionRegistry.DANGEROUS,
                                        allowlist=True, identity="me")
         assert pid1 is not None
@@ -43,7 +43,7 @@ def test_interactive_bash_always_prompts():
         await fut1
 
         # Must still prompt on the next call.
-        pid2, fut2 = await reg.request("s1", "t2", "Bash", {"command": cmd, "cwd": "/tmp"},
+        pid2, fut2, _ = await reg.request("s1", "t2", "Bash", {"command": cmd, "cwd": "/tmp"},
                                        mode="interactive", denylist=PermissionRegistry.DANGEROUS,
                                        allowlist=True, identity="me")
         assert pid2 is not None, "Bash must prompt again in interactive mode even after 'always'"
@@ -57,7 +57,7 @@ def test_allowlist_mode_prompts_for_todoswrite():
     """allowlist mode ('Allowlist read-only, prompt the rest') must prompt for TodoWrite."""
     reg = PermissionRegistry()
     async def run():
-        pid, fut = await reg.request("s1", "t1", "TodoWrite", {"todos": []},
+        pid, fut, _ = await reg.request("s1", "t1", "TodoWrite", {"todos": []},
                                      mode="allowlist", denylist=PermissionRegistry.DANGEROUS,
                                      allowlist=True, identity="me")
         if pid is not None:
@@ -77,7 +77,7 @@ def test_allowlist_mode_auto_allows_read_only():
                           ("Grep", {"pattern": "x", "path": "/"}),
                           ("Glob", {"pattern": "*.py"}),
                           ("LS", {"path": "/"})]:
-            pid, fut = await reg.request("s1", "t1", tool, inp,
+            pid, fut, _ = await reg.request("s1", "t1", tool, inp,
                                          mode="allowlist", denylist=PermissionRegistry.DANGEROUS,
                                          allowlist=True, identity="me")
             results[tool] = (pid, await fut)
@@ -91,7 +91,7 @@ def test_allowlist_mode_auto_allows_read_only():
 def test_interactive_mode_round_trips_then_allow():
     reg = PermissionRegistry()
     async def run():
-        pid, fut = await reg.request("s1", "t1", "Bash", {"command": "ls", "cwd": "/x"},
+        pid, fut, _ = await reg.request("s1", "t1", "Bash", {"command": "ls", "cwd": "/x"},
                                      mode="interactive", denylist=PermissionRegistry.DANGEROUS,
                                      allowlist=True, identity="me")
         assert pid is not None
@@ -102,7 +102,7 @@ def test_interactive_mode_round_trips_then_allow():
 def test_auto_mode_denylist_still_round_trips_bash():
     reg = PermissionRegistry()
     async def run():
-        pid, fut = await reg.request("s1", "t1", "Bash", {"command": "ls"},
+        pid, fut, _ = await reg.request("s1", "t1", "Bash", {"command": "ls"},
                                      mode="auto", denylist=PermissionRegistry.DANGEROUS,
                                      allowlist=True, identity="me")
         assert pid is not None
@@ -114,7 +114,7 @@ def test_auto_mode_denylist_still_round_trips_bash():
 def test_full_auto_allows_bash_without_prompt():
     reg = PermissionRegistry()
     async def run():
-        pid, fut = await reg.request("s1", "t1", "Bash", {"command": "ls"},
+        pid, fut, _ = await reg.request("s1", "t1", "Bash", {"command": "ls"},
                                      mode="full-auto", denylist=frozenset(),
                                      allowlist=True, identity="me")
         return pid, (await fut if fut else True)
@@ -124,7 +124,7 @@ def test_full_auto_allows_bash_without_prompt():
 def test_always_grant_is_fingerprinted_and_expires():
     reg = PermissionRegistry()
     async def run():
-        pid, fut = await reg.request("s1", "t1", "Bash", {"command": "npm test", "cwd": "/r"},
+        pid, fut, _ = await reg.request("s1", "t1", "Bash", {"command": "npm test", "cwd": "/r"},
                                      mode="interactive", denylist=PermissionRegistry.DANGEROUS,
                                      allowlist=True, identity="me")
         reg.resolve(pid, "always", "me")
@@ -138,7 +138,7 @@ def test_always_grant_is_fingerprinted_and_expires():
 def test_resolve_rejects_wrong_identity_and_unknown():
     reg = PermissionRegistry()
     async def run():
-        pid, fut = await reg.request("s1", "t1", "Edit", {"file_path": "/a"},
+        pid, fut, _ = await reg.request("s1", "t1", "Edit", {"file_path": "/a"},
                                      mode="interactive", denylist=PermissionRegistry.DANGEROUS,
                                      allowlist=True, identity="owner")
         assert reg.resolve(pid, "allow", "attacker") is False
@@ -150,7 +150,7 @@ def test_resolve_rejects_wrong_identity_and_unknown():
 def test_deny_all_resolves_pending_false():
     reg = PermissionRegistry()
     async def run():
-        pid, fut = await reg.request("s1", "t1", "Edit", {"file_path": "/a"},
+        pid, fut, _ = await reg.request("s1", "t1", "Edit", {"file_path": "/a"},
                                      mode="interactive", denylist=PermissionRegistry.DANGEROUS,
                                      allowlist=True, identity="o")
         reg.deny_all("s1")
@@ -169,7 +169,7 @@ def test_pending_lists_open_requests_for_session():
 def test_bash_always_grant_does_not_cover_other_commands():
     reg = PermissionRegistry()
     async def run():
-        pid, fut = await reg.request("s1", "t1", "Bash", {"command": "npm test", "cwd": "/r"},
+        pid, fut, _ = await reg.request("s1", "t1", "Bash", {"command": "npm test", "cwd": "/r"},
                                      mode="interactive", denylist=PermissionRegistry.DANGEROUS,
                                      allowlist=True, identity="me")
         reg.resolve(pid, "always", "me"); await fut
@@ -192,7 +192,7 @@ def _mem_path(tmp_path, *, account="secondary", enc="-enc-cwd", name="note.md"):
 
 def _request(reg, tool, file_path, mode):
     async def run():
-        pid, fut = await reg.request("s1", "t1", tool, {"file_path": file_path},
+        pid, fut, _ = await reg.request("s1", "t1", tool, {"file_path": file_path},
                                      mode=mode, denylist=PermissionRegistry.DANGEROUS,
                                      allowlist=True, identity="me")
         if pid is not None:
@@ -254,7 +254,7 @@ def test_repo_memory_dir_not_auto_allowed(tmp_path, monkeypatch):
 
 def _request_tool(reg, tool, mode, input=None):
     async def run():
-        pid, fut = await reg.request("s1", "t1", tool, input or {},
+        pid, fut, _ = await reg.request("s1", "t1", tool, input or {},
                                      mode=mode, denylist=PermissionRegistry.DANGEROUS,
                                      allowlist=True, identity="me")
         if pid is not None:
@@ -309,7 +309,7 @@ def test_accept_edits_auto_allows_file_writes():
 def test_accept_edits_still_prompts_for_bash():
     reg = PermissionRegistry()
     async def run():
-        pid, fut = await reg.request("s1", "t1", "Bash", {"command": "rm -rf build"},
+        pid, fut, _ = await reg.request("s1", "t1", "Bash", {"command": "rm -rf build"},
                                      mode="acceptEdits", denylist=PermissionRegistry.DANGEROUS,
                                      allowlist=True, identity="me")
         if pid is not None:
@@ -322,7 +322,7 @@ def test_accept_edits_still_prompts_for_bash():
 def test_bypass_permissions_allows_bash_without_prompt():
     reg = PermissionRegistry()
     async def run():
-        pid, fut = await reg.request("s1", "t1", "Bash", {"command": "rm -rf /"},
+        pid, fut, _ = await reg.request("s1", "t1", "Bash", {"command": "rm -rf /"},
                                      mode="bypassPermissions", denylist=frozenset(),
                                      allowlist=True, identity="me")
         return pid, (await fut if fut else True)
@@ -354,10 +354,10 @@ def test_rethread_identity_moves_pending_permissions_to_new_identity():
     reg = PermissionRegistry()
 
     async def run():
-        pid1, fut1 = await reg.request("s1", "t1", "Bash", {"command": "make"},
+        pid1, fut1, _ = await reg.request("s1", "t1", "Bash", {"command": "make"},
                                        mode="interactive", denylist=PermissionRegistry.DANGEROUS,
                                        allowlist=True, identity="system")
-        pid2, fut2 = await reg.request("s2", "t1", "Bash", {"command": "make"},
+        pid2, fut2, _ = await reg.request("s2", "t1", "Bash", {"command": "make"},
                                        mode="interactive", denylist=PermissionRegistry.DANGEROUS,
                                        allowlist=True, identity="system")
         moved = reg.rethread_identity("s1", "system", "user@example.test")

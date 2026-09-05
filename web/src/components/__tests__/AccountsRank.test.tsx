@@ -5,7 +5,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { AccountsManager } from '../AccountsManager'
 import * as hooks from '@/api/hooks'
 import type { Account } from '@/api/types'
-import { appSettings } from '@/test/factories'
+import { anthropicUsage, appSettings } from '@/test/factories'
 import { queryResult } from '@/test/reactQuery'
 
 vi.mock('@/api/hooks', () => ({
@@ -72,7 +72,7 @@ function makeAccount(overrides: Partial<Account> = {}): Account {
   return {
     name: 'work',
     status: 'ok',
-    usage: { session: { pct: 30, resetsAt: null }, weekly: { pct: 50, resetsAt: null } },
+    usage: anthropicUsage(30, 50),
     liveSessions: { active: 0, idle: 0 },
     rank: null,
     rankReason: null,

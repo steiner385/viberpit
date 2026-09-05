@@ -19,6 +19,57 @@ def _fmt_reset(iso: str | None, tz: str) -> str:
     return datetime.fromisoformat(iso).astimezone(ZoneInfo(tz)).strftime("%a %-I:%M %p %Z")
 
 
+def _fmt_windows(acct: dict, tz: str) -> str:
+    """Render an account's quota windows as ``key=pct% (resets …)``, in order.
+
+    Enumerates whatever the provider reported instead of printing two fixed
+    columns: an Anthropic account shows session + weekly, a Copilot account shows
+    its single premium-request window (it used to show that one number twice,
+    under two labels). An account with no usage prints a single "usage unknown"
+    so an unreadable account is never mistaken for a fresh one.
+    """
+    blob = acct.get("usage") or {}
+    windows = blob.get("windows")
+    if not windows:
+        return "usage unknown"
+    return "  ".join(
+        f"{w.get('key', '?')}={w.get('used_pct', '?')}% "
+        f"(resets {_fmt_reset(w.get('resets_at'), tz)})"
+        for w in windows)
+
+
+def _cmd_accounts(args: argparse.Namespace) -> int:
+    """`ccswitch accounts` — the ONLY user-facing entry to filesystem discovery.
+
+    Normal reads go through the manifest; this is the migration/repair door for a
+    store whose credential artefacts and manifest have drifted apart.
+    """
+    from . import account_registry
+
+    if args.accounts_cmd == "import":
+        try:
+            result = account_registry.import_filesystem_accounts()
+        # AccountRegistryError covers both "this host is a runner"
+        # (ManifestNotWritable) and "the existing file is unreadable, so writing
+        # would destroy it" — both are operator-actionable, not tracebacks.
+        except account_registry.AccountRegistryError as exc:
+            print(f"ccswitch: {exc}", file=sys.stderr)
+            return 2
+        for name in result.added:
+            print(f"registered {name}")
+        print(f"accounts.json revision {result.revision}: "
+              f"{len(result.added)} added, {len(result.unchanged)} already present")
+        return 0
+    if args.accounts_cmd == "show":
+        for e in account_registry.all_entries():
+            print(f"{e.name:<16} {e.provider:<10} engine={e.engine or '(default)':<12} "
+                  f"user={e.user_auth_mode:<15} runner={e.runner_auth_mode:<24} "
+                  f"enabled={e.enabled} gen={e.generation} health={e.health.state}")
+        return 0
+    print(f"ccswitch accounts: unknown sub-command {args.accounts_cmd!r}", file=sys.stderr)
+    return 1
+
+
 def _cmd_crypto(args: argparse.Namespace) -> int:
     """Handle the `ccswitch crypto` subcommand family."""
     from . import paths
@@ -225,6 +276,50 @@ def _cmd_clones(args: argparse.Namespace) -> int:
     return 1
 
 
+def _cmd_reauth(args: argparse.Namespace) -> int:
+    """Recover a broken account via the URL/paste-code PKCE exchange (issue #1130).
+
+    No browser, no display, no daemon required — this is the supported recovery
+    path when the web UI itself is down. Mirrors server/reauth.py's
+    ReauthManager.submit_code (same setup_token_oauth calls, same crypto guard),
+    but runs synchronously in the terminal instead of over the reauth state
+    machine.
+    """
+    from . import crypto, accounts, setup_token_oauth
+
+    if not crypto.key_available():
+        print(
+            "ccswitch reauth: no encryption key configured — refusing to store "
+            "plaintext credentials. Run `ccswitch crypto init` first.",
+            file=sys.stderr,
+        )
+        return 1
+
+    challenge = setup_token_oauth.begin()
+    print(f"Open this URL, approve, then paste the resulting code below:\n\n  {challenge.authorize_url}\n")
+    pasted = input("Code (format: code#state): ")
+
+    try:
+        token = setup_token_oauth.exchange(pasted, challenge)
+    except setup_token_oauth.SetupTokenStateMismatch:
+        print("ccswitch reauth: code didn't match this request — restart and try again.", file=sys.stderr)
+        return 1
+    except setup_token_oauth.SetupTokenInvalidCode:
+        print("ccswitch reauth: code invalid or expired — generate a new one.", file=sys.stderr)
+        return 1
+    except setup_token_oauth.SetupTokenTransient as exc:
+        print(f"ccswitch reauth: couldn't reach the token service: {exc}", file=sys.stderr)
+        return 1
+    except setup_token_oauth.SetupTokenError as exc:
+        print(f"ccswitch reauth: token service returned no token: {exc}", file=sys.stderr)
+        return 1
+
+    crypto.store_oauth_token(args.name, token)
+    accounts.mark_reauthenticated(args.name)
+    print(f"ccswitch reauth: account {args.name!r} recovered — status ok.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ccswitch")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -235,6 +330,10 @@ def main(argv: list[str] | None = None) -> int:
     p_add.add_argument("--email", default=None, help="pre-populate the login page email for this account")
     p_rm = sub.add_parser("remove"); p_rm.add_argument("name")
     p_link = sub.add_parser("link"); p_link.add_argument("name", nargs="?")
+    p_reauth = sub.add_parser(
+        "reauth",
+        help="recover a broken account via the URL/paste-code flow (no browser/UI needed)")
+    p_reauth.add_argument("name", help="existing account slot to recover")
     p_use = sub.add_parser("use", help="compose a config dir for an account and print its export line")
     p_use.add_argument("name", nargs="?", help="account to pin (default: most-headroom account)")
     p_use.add_argument("--dir", action="store_true", help="print only the config dir path (no 'export ')")
@@ -243,6 +342,12 @@ def main(argv: list[str] | None = None) -> int:
     crypto_sub.add_parser("status", help="show encryption status (key source + slot counts)")
     crypto_sub.add_parser("init", help="generate a master key and store it in the keyring")
     crypto_sub.add_parser("migrate", help="encrypt all plaintext store slots (idempotent)")
+    p_accounts = sub.add_parser(
+        "accounts", help="inspect or repair the accounts.json manifest")
+    accounts_sub = p_accounts.add_subparsers(dest="accounts_cmd", required=True)
+    accounts_sub.add_parser(
+        "import", help="register credential slots found on disk into accounts.json (idempotent)")
+    accounts_sub.add_parser("show", help="print the manifest entries")
     p_clones = sub.add_parser(
         "clones", help="inspect, repair, or safely remove ccswitch-owned repo clones")
     clones_sub = p_clones.add_subparsers(dest="clones_cmd", required=True)
@@ -272,10 +377,7 @@ def main(argv: list[str] | None = None) -> int:
             for a in accounts.list_accounts():
                 accounts.usage_for(a["name"], path="cli")
         for a in accounts.list_accounts():
-            u = a.get("usage") or {}
-            print(f"{a['name']:<12} {a['status']:<12} "
-                  f"session={u.get('session_pct', '?')}% (resets {_fmt_reset(u.get('session_resets_at'), cfg.timezone)})  "
-                  f"weekly={u.get('weekly_pct', '?')}% (resets {_fmt_reset(u.get('weekly_resets_at'), cfg.timezone)})")
+            print(f"{a['name']:<12} {a['status']:<12} {_fmt_windows(a, cfg.timezone)}")
         return 0
     if args.cmd == "add":
         accounts.add_account(args.name, email=args.email); return 0
@@ -306,6 +408,10 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"export CLAUDE_CONFIG_DIR={shlex.quote(str(cfg_dir))}  # ccswitch: {name}")
         return 0
+    if args.cmd == "accounts":
+        return _cmd_accounts(args)
+    if args.cmd == "reauth":
+        return _cmd_reauth(args)
     if args.cmd == "crypto":
         return _cmd_crypto(args)
     if args.cmd == "clones":

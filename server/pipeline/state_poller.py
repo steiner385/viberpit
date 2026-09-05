@@ -20,6 +20,8 @@ import contextlib
 import logging
 from typing import Awaitable, Callable
 
+from server.aio import cancel_and_reap
+
 log = logging.getLogger(__name__)
 
 # Match the historic SSE cadence so per-tab freshness is unchanged.
@@ -128,7 +130,5 @@ class PipelineStatePoller:
 
     async def stop(self) -> None:
         if self._task is not None:
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
+            await cancel_and_reap(self._task, phase="pipeline-state-poller")
             self._task = None

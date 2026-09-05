@@ -10,6 +10,7 @@ import pytest
 
 from server.sessions import orchestrator as orch_mod
 from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord, SYSTEM_IDENTITY
 
 
@@ -24,7 +25,7 @@ class _NewDriver:
         self.account = a[1] if len(a) > 1 else k.get("account")
         self.cwd = "/tmp"; self.mode = "interactive"
         self.identity = k.get("identity")
-        self.claude_session_id = "c1"
+        self.engine_session_id = "c1"
         self.sent: list[str] = []
     async def start(self): pass
     async def send_prompt(self, p): self.sent.append(p)
@@ -32,7 +33,7 @@ class _NewDriver:
 
 
 class _OldDriver:
-    cwd = "/tmp"; mode = "interactive"; identity = SYSTEM_IDENTITY; claude_session_id = "c1"
+    cwd = "/tmp"; mode = "interactive"; identity = SYSTEM_IDENTITY; engine_session_id = "c1"
     def __init__(self):
         self.closed = False
     async def interrupt(self): pass
@@ -47,7 +48,12 @@ def _orch(monkeypatch, rec, old, *, last_prompt=None):
             super().__init__(*a, **k)
             built.append(self)
 
-    monkeypatch.setattr(orch_mod, "SessionDriver", _Factory)
+    monkeypatch.setattr(
+        orch_mod.SessionOrchestrator,
+        "_create_driver",
+        lambda self, **kw: _Factory(
+            account=kw.get("account"), resume=kw.get("resume"), identity=kw.get("identity")),
+    )
     monkeypatch.setattr(orch_mod, "compose", lambda a: "/cfg")
     monkeypatch.setattr(orch_mod.configdir, "trust_project", lambda *a, **k: None)
     monkeypatch.setattr(orch_mod, "db_session", lambda: _NullCtx())
@@ -61,7 +67,7 @@ def _orch(monkeypatch, rec, old, *, last_prompt=None):
     orch._registry = None
     orch._suggester = None
     orch._session_factory = lambda sid: None
-    orch._persist_claude_session_id = lambda *a, **k: None
+    orch._persist_engine_session_id = lambda *a, **k: None
     orch._persist_status = lambda *a, **k: None
     orch._handle_recoverable_failure = lambda *a, **k: None
     orch._publish_event = lambda e: None
@@ -69,7 +75,7 @@ def _orch(monkeypatch, rec, old, *, last_prompt=None):
 
 
 def _rec(status: str) -> SessionRecord:
-    return SessionRecord(id="s1", name="n", account="a", claude_session_id="c1",
+    return SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                          cols=80, rows=24, cwd="/tmp", status=status)
 
 

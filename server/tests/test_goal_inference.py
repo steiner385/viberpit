@@ -7,6 +7,7 @@ import asyncio
 import pytest
 
 from server.sessions.goal_inference import _INSTRUCTION, _SYSTEM_PROMPT, infer_goal
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
@@ -70,7 +71,7 @@ def _bare_orch():
 
 
 def _rec(**kw):
-    base = dict(id="s1", name="Fix login bug", account="a", claude_session_id="",
+    base = dict(id="s1", name="Fix login bug", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
                 cols=80, rows=24, cwd="/tmp", status="done")
     base.update(kw)
     return SessionRecord(**base)

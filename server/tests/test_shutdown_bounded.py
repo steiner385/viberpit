@@ -20,7 +20,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from ccswitch.selector import Picked
-from server.sessions.driver import SessionDriver
+from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.permissions import PermissionRegistry
 from server.tests.fakes import fake_sdk as f
@@ -32,9 +32,9 @@ REPO_ROOT = Path(__file__).parent.parent.parent
 def _fake_usage(account: str):
     from datetime import datetime, timedelta, timezone
 
-    from ccswitch.oauth import Usage
+    from ccswitch.quota import anthropic_snapshot
     reset = datetime.now(timezone.utc) + timedelta(hours=5)
-    return Usage(10.0, reset, 10.0, reset, False)
+    return anthropic_snapshot(10.0, reset, 10.0, reset, False)
 
 
 # ---------------------------------------------------------------------------
@@ -75,17 +75,17 @@ class _CancelSwallowingClient(PerQueryScript, f.FakeSDKClient):
             await self._gate.wait()
 
 
-def _driver(client) -> SessionDriver:
+def _driver(client) -> ClaudeAgentDriver:
     def factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *,
                 on_pre_compact=None):
         return client
 
-    return SessionDriver("sb", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+    return ClaudeAgentDriver("sb", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                          sdk_factory=factory, registry=PermissionRegistry(),
                          identity="me")
 
 
-async def _start_turn(d: SessionDriver) -> None:
+async def _start_turn(d: ClaudeAgentDriver) -> None:
     await d.start()
     await d.send_prompt("go")
     # Wait until the pump has consumed the stream head so the turn is active.

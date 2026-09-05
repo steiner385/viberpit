@@ -6,11 +6,12 @@ from __future__ import annotations
 import asyncio
 
 from server.sessions.remote import RemoteOrchestrator
+from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
 def _rec(autopilot_paused: bool = False) -> SessionRecord:
-    return SessionRecord(id="s1", name="n", account="a", claude_session_id="",
+    return SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
                          cols=80, rows=24, cwd="/tmp", repo=None,
                          autopilot_paused=autopilot_paused)
 
