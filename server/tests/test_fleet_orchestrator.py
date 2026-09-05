@@ -14,6 +14,9 @@ class _FakeOrch:
     def daemon_sha(self): return "abc1234"
     async def list_archived(self):
         self.calls.append("list_archived"); return [("archived", self.name)]
+    async def find_assistant(self, owner_identity):
+        self.calls.append(("find_assistant", owner_identity))
+        return f"assistant@{self.name}"
 
 
 class _FakeRouter:
@@ -30,6 +33,20 @@ async def test_unrouted_method_goes_to_primary():
     fo = FleetOrchestrator(_FakeRouter({"rocky": prim}), primary="rocky")
     assert await fo.list_archived() == [("archived", "rocky")]
     assert prim.calls == ["list_archived"]
+
+
+@pytest.mark.asyncio
+async def test_find_assistant_asks_only_the_primary():
+    """create_session pins assistant-kind sessions to the primary (its in-process MCP
+    server and loopback API only exist there), so the owner lookup must resolve on the
+    primary too. Fanning it out or routing it per-session would look for the thread on a
+    worker that structurally cannot hold one, return None, and mint a duplicate over the
+    existing transcript. This is the read half of that pinning invariant."""
+    dobby, rocky = _FakeOrch("dobby"), _FakeOrch("rocky")
+    fo = FleetOrchestrator(_FakeRouter({"dobby": dobby, "rocky": rocky}), primary="dobby")
+    assert await fo.find_assistant("me@example.com") == "assistant@dobby"
+    assert dobby.calls == [("find_assistant", "me@example.com")]
+    assert rocky.calls == []
 
 
 # --- list_sessions fans out across every host ---------------------------------
@@ -456,6 +473,10 @@ def test_every_remote_method_is_classified():
         "automation_consolidate", "backlog_candidates", "backlog_runner_dispatch",
         "list_adoptable_candidates", "migrate_archive_home", "cloned_repos", "usage",
         "active_session_count",
+        # Owner-scoped, and primary-routed on purpose: create_session pins assistant-kind
+        # sessions to the primary, so no worker can hold the thread this looks for.
+        # See test_find_assistant_asks_only_the_primary.
+        "find_assistant",
         "copilot_add_start", "copilot_add_status", "copilot_add_cancel", "copilot_usage",
         # Codex: the model list and model+effort validation are account-scoped and
         # give the same answer on any host that can start the app-server, so asking

@@ -20,7 +20,13 @@ from server.tests.ipc_harness import serve_daemon_uds
 # `orch` they call is a RemoteOrchestrator RPC proxy, NOT the real SessionOrchestrator,
 # so every method they invoke must be explicitly proxied or it raises AttributeError
 # -> 500 in prod (the #295 `request_pr_fix` incident, 2026-06-25).
-_REQUEST_LAYER_DIRS = ("api", "bridge", "auth")
+#
+# This list used to be hand-maintained and drifted: `server/assistant/` mounts its own
+# router on the edge but was never added, so `orch.find_assistant` shipped unproxied and
+# GET /api/assistant/status returned 500 on every deployed edge from the moment #1186
+# turned the flag on. `test_every_router_package_is_scanned` below now fails if a NEW
+# router package is added without being listed here, so the scope cannot drift again.
+_REQUEST_LAYER_DIRS = ("api", "bridge", "auth", "assistant", "stt")
 
 # Names bound to an orchestrator at these call sites, by convention.
 _ORCH_VARS = {"orch", "orchestrator"}
@@ -64,6 +70,41 @@ def test_remote_orchestrator_covers_every_request_layer_call():
         f"RemoteOrchestrator is missing {missing} — the request layer calls these on `orch`, "
         f"but daemon mode would AttributeError -> 500. Add a proxy method in server/sessions/remote.py "
         f"(or add to _LOCAL_ONLY if truly local-only)."
+    )
+
+
+def _router_packages() -> set[str]:
+    """Every `server/<pkg>/` that constructs an APIRouter — i.e. every package that can
+    hold an edge request handler. Derived from the source, not hand-listed."""
+    root = Path(server.__file__).parent
+    pkgs: set[str] = set()
+    for path in root.rglob("*.py"):
+        rel = path.relative_to(root)
+        if rel.parts[0] == "tests" or len(rel.parts) < 2:
+            continue
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == "APIRouter"):
+                pkgs.add(rel.parts[0])
+    return pkgs
+
+
+def test_every_router_package_is_scanned():
+    """Meta-guard: _REQUEST_LAYER_DIRS is a hand-maintained list, and the coverage guard
+    above is only as good as its scope. `server/assistant/` mounted a router for the whole
+    Phase 1-4 build without ever being added, so the guard stayed green while
+    `orch.find_assistant` shipped unproxied and 500'd on every deployed edge once #1186
+    turned the flag on.
+
+    Deriving the set of router packages from the source means adding a new one either
+    extends the scan or fails here — the scope can no longer silently drift behind the
+    code it is supposed to cover."""
+    unscanned = sorted(_router_packages() - set(_REQUEST_LAYER_DIRS))
+    assert not unscanned, (
+        f"server/{{{','.join(unscanned)}}}/ define APIRouters but are not in "
+        f"_REQUEST_LAYER_DIRS, so no orch.* call site in them is checked against "
+        f"RemoteOrchestrator. Add them to _REQUEST_LAYER_DIRS."
     )
 
 
@@ -185,6 +226,96 @@ async def test_simple_and_quirk_methods_round_trip():
         finally:
             await ro.aclose()
     orch.resolve_permission.assert_called_once_with(session_id="s1", perm_id="p", decision="deny", identity="me")
+
+
+@pytest.mark.asyncio
+async def test_find_assistant_round_trips_through_daemon():
+    """The AI drawer's idempotency lookup. GET /api/assistant/status and
+    POST /api/assistant/session both call it on the edge orchestrator, which in every
+    deployed topology is this RPC proxy — unproxied it AttributeError'd -> 500 and the
+    drawer could neither report its state nor open a thread."""
+    app, orch = _build()
+    orch.find_assistant = mock.AsyncMock(return_value=_rec("asst1"))
+
+    async with serve_daemon_uds(app) as sock:
+        ro = RemoteOrchestrator(DaemonClient(sock))
+        try:
+            rec = await ro.find_assistant("me@example.com")
+            assert rec is not None and rec.id == "asst1"
+        finally:
+            await ro.aclose()
+    orch.find_assistant.assert_awaited_once_with(owner_identity="me@example.com")
+
+
+@pytest.mark.asyncio
+async def test_find_assistant_none_survives_the_rpc():
+    """None must not arrive as a truthy empty record: POST /api/assistant/session
+    branches on it to decide resume-vs-create, so a None that degrades into an object
+    would resume a thread that does not exist — and one that degrades the other way
+    mints a BRAND-NEW thread and orphans the existing transcript (the #1122 shape)."""
+    app, orch = _build()
+    orch.find_assistant = mock.AsyncMock(return_value=None)
+
+    async with serve_daemon_uds(app) as sock:
+        ro = RemoteOrchestrator(DaemonClient(sock))
+        try:
+            assert await ro.find_assistant("nobody@example.com") is None
+        finally:
+            await ro.aclose()
+
+
+@pytest.mark.asyncio
+async def test_archive_session_forwards_the_assistant_reset_kwargs():
+    """`POST /api/assistant/session {"fresh": true}` archives the old thread with
+    `archived_by="user", context={"reason": "assistant-reset"}`. The proxy accepted
+    neither, so "start a fresh assistant" was a TypeError -> 500 in every deployed
+    topology — and the audit trail it stamps (who archived it, and why) was the thing
+    being dropped, so a silent default would have hidden the reset rather than fixed it."""
+    app, orch = _build()
+    orch.archive_session = mock.AsyncMock(return_value=None)
+
+    async with serve_daemon_uds(app) as sock:
+        ro = RemoteOrchestrator(DaemonClient(sock))
+        try:
+            await ro.archive_session("s1", archived_by="user",
+                                     context={"reason": "assistant-reset"})
+        finally:
+            await ro.aclose()
+    # `context` is the load-bearing half — it is the only record of WHY the thread was
+    # archived, and nothing downstream can reconstruct it. `archived_by` rides the
+    # daemon-side default instead of the wire (see the proxy's rolling-deploy note),
+    # which is only equivalent as long as that default IS "user" — assert it, don't
+    # assume it, or a change there would silently re-attribute every assistant reset.
+    orch.archive_session.assert_awaited_once_with(
+        session_id="s1", context={"reason": "assistant-reset"})
+    assert inspect.signature(
+        SessionOrchestrator.archive_session).parameters["archived_by"].default == "user"
+
+
+@pytest.mark.asyncio
+async def test_archive_session_forwards_a_non_default_archived_by():
+    """The autopilot auto-archive stamps `archived_by="autopilot"`; that one is not the
+    daemon's default, so it has to cross the wire or the audit trail credits the user."""
+    client = mock.AsyncMock()
+    client.call.return_value = None
+    ro = RemoteOrchestrator(client)
+    await ro.archive_session("s1", archived_by="autopilot", context={"reason": "idle"})
+    client.call.assert_awaited_once_with(
+        "archive_session", session_id="s1", archived_by="autopilot",
+        context={"reason": "idle"})
+
+
+@pytest.mark.asyncio
+async def test_archive_session_omits_defaults_for_an_older_daemon():
+    """The plain dashboard archive must keep its exact pre-existing wire shape: during a
+    rolling deploy the edge can be newer than the daemon, and `_make_simple` splats
+    **params straight into the daemon's orchestrator — an unexpected key there is a
+    TypeError on the far side. Same convention as list_sessions' include_assistant."""
+    client = mock.AsyncMock()
+    client.call.return_value = None
+    ro = RemoteOrchestrator(client)
+    await ro.archive_session("s1")
+    client.call.assert_awaited_once_with("archive_session", session_id="s1")
 
 
 @pytest.mark.asyncio
