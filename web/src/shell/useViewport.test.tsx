@@ -129,6 +129,9 @@ const EXEMPT = new Set<string>([
   // SessionCard's swipe-overflow clipping reads 1024px directly. Not part of
   // this PR's scope; outlives it until a later PR migrates it to useViewport.
   'src/components/SessionCard.tsx',
+  // CardFrame extracts that same swipe/overflow logic verbatim out of
+  // SessionCard (Task 6) — same pre-existing query, same scope boundary.
+  'src/components/card/CardFrame.tsx',
 ])
 
 function walk(dir: string, out: string[] = []): string[] {
