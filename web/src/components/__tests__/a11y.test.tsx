@@ -297,7 +297,10 @@ vi.mock('@/api/hooks', async (importOriginal) => ({
   useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
   useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  useAddOpenAIAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useAddOpenAIAccount: vi.fn(() => ({
+    mutate: vi.fn((_name: string, options?: { onSuccess?: () => void }) => options?.onSuccess?.()),
+    isPending: false,
+  })),
   useOpenAIAddStatus: vi.fn((_name: string, enabled: boolean) => ({
     data: enabled ? {
       state: 'awaiting_authorization',

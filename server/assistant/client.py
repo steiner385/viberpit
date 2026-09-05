@@ -77,5 +77,8 @@ class AssistantApi:
     async def patch(self, path: str, json: Any = None) -> Any:
         return await self._call("PATCH", path, json=json)
 
+    async def put(self, path: str, json: Any = None) -> Any:
+        return await self._call("PUT", path, json=json)
+
     async def delete(self, path: str) -> Any:
         return await self._call("DELETE", path)

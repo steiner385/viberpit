@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AddAccountDialog } from '../AddAccountDialog'
@@ -35,7 +35,15 @@ function wrapper({ children }: { children: React.ReactNode }) {
 }
 
 describe('AddAccountDialog — GitHub Copilot flow', () => {
-  beforeEach(() => { vi.clearAllMocks() })
+  beforeEach(() => {
+    vi.clearAllMocks()
+    const mutate = vi.fn((
+      _name: string,
+      options?: { onSuccess?: () => void },
+    ) => { options?.onSuccess?.() })
+    vi.mocked(hooks.useAddCopilotAccount).mockReturnValue(
+      { mutate, isPending: false } as unknown as ReturnType<typeof hooks.useAddCopilotAccount>)
+  })
 
   it('shows userCode and verification link when awaiting_authorization', async () => {
     const user = userEvent.setup()
@@ -48,7 +56,10 @@ describe('AddAccountDialog — GitHub Copilot flow', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useCopilotAddStatus>))
 
-    const addMutate = vi.fn()
+    const addMutate = vi.fn((
+      _name: string,
+      options?: { onSuccess?: () => void },
+    ) => { options?.onSuccess?.() })
     vi.mocked(hooks.useAddCopilotAccount).mockReturnValue({
       mutate: addMutate,
       isPending: false,
@@ -70,6 +81,33 @@ describe('AddAccountDialog — GitHub Copilot flow', () => {
     expect(screen.getByText('ABCD-1234')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /github\.com\/login\/device/i })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /github\.com\/login\/device/i })).toHaveAttribute('href', 'https://github.com/login/device')
+  })
+
+  it('waits for the start POST before polling a previous terminal state', async () => {
+    const pollEnabled: boolean[] = []
+    let finishStart: (() => void) | undefined
+    vi.mocked(hooks.useCopilotAddStatus).mockImplementation((_name: string, enabled: boolean) => {
+      pollEnabled.push(enabled)
+      return {
+        data: enabled ? makeCopilotState({ state: 'failed', error: 'cancelled' }) : undefined,
+        isLoading: false,
+      } as ReturnType<typeof hooks.useCopilotAddStatus>
+    })
+    const mutate = vi.fn((
+      _name: string,
+      options?: { onSuccess?: () => void },
+    ) => { finishStart = options?.onSuccess })
+    vi.mocked(hooks.useAddCopilotAccount).mockReturnValue(
+      { mutate, isPending: false } as unknown as ReturnType<typeof hooks.useAddCopilotAccount>)
+
+    const user = userEvent.setup()
+    render(<AddAccountDialog onClose={vi.fn()} initialProvider="copilot" />, { wrapper })
+    await user.type(screen.getByLabelText(/account name/i), 'mycopilot')
+    await user.click(screen.getByRole('button', { name: /^add$/i }))
+
+    expect(pollEnabled.at(-1)).toBe(false)
+    act(() => finishStart?.())
+    await waitFor(() => expect(pollEnabled.at(-1)).toBe(true))
   })
 
   it('calls onClose when copilot status reaches authorized', async () => {

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import * as React from 'react'
-import { useAddCopilotAccount, useCopilotAddStatus, useCancelCopilotAdd } from '../hooks'
+import { QK, useAddCopilotAccount, useCopilotAddStatus, useCancelCopilotAdd } from '../hooks'
 import { api } from '../client'
 
 vi.mock('../client', () => ({
@@ -51,6 +51,19 @@ describe('useAddCopilotAccount', () => {
 
     expect(api.post).toHaveBeenCalledWith('/accounts/add/copilot', { name: 'acc' })
     expect(result.current.data).toEqual(COPILOT_STATE)
+  })
+
+  it('seeds the new flow state before polling is enabled', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    qc.setQueryData(QK.copilotAddStatus('acc'), { ...COPILOT_STATE, state: 'failed' })
+    const wrapper = ({ children }: { children: React.ReactNode }) =>
+      React.createElement(QueryClientProvider, { client: qc }, children)
+
+    const { result } = renderHook(() => useAddCopilotAccount(), { wrapper })
+    result.current.mutate('acc')
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    expect(qc.getQueryData(QK.copilotAddStatus('acc'))).toEqual(COPILOT_STATE)
   })
 })
 

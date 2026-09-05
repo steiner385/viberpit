@@ -75,6 +75,13 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("DELETE", _S + r"/permanent"),
         ("DELETE", _S + r"/queue"),
         ("POST", r"/api/pipeline/pr/ready-merge"),
+        ("GET", r"/api/notifications/channels"),
+        ("GET", r"/api/notifications/rules"),
+        ("POST", r"/api/notifications/rules"),
+        ("DELETE", r"/api/notifications/rules/[A-Za-z0-9-]+"),
+        ("GET", r"/api/notifications/quiet-hours"),
+        ("PUT", r"/api/notifications/quiet-hours"),
+        ("POST", r"/api/notifications/test"),
     ]
 )
 
@@ -87,4 +94,4 @@ def route_allowed(method: str, path: str) -> bool:
 # READ-class tools whose backing route is a POST that mutates nothing (a dry-run or a
 # render). The conformance test (server/tests/test_assistant_conformance.py) lets a
 # READ tool use POST only when it is listed here. Later tasks add names to this set.
-READ_POSTS: frozenset[str] = frozenset()
+READ_POSTS: frozenset[str] = frozenset({"test_notification"})

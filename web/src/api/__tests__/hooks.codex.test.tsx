@@ -129,6 +129,19 @@ describe('useAddOpenAIAccount', () => {
     expect(api.post).toHaveBeenCalledWith('/accounts/add/openai', { name: 'acc' })
     expect(result.current.data).toEqual(DEVICE_STATE)
   })
+
+  it('seeds the new flow state before polling is enabled', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    qc.setQueryData(QK.openaiAddStatus('acc'), { ...DEVICE_STATE, state: 'failed' })
+    const wrapper = ({ children }: { children: React.ReactNode }) =>
+      React.createElement(QueryClientProvider, { client: qc }, children)
+
+    const { result } = renderHook(() => useAddOpenAIAccount(), { wrapper })
+    result.current.mutate('acc')
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    expect(qc.getQueryData(QK.openaiAddStatus('acc'))).toEqual(DEVICE_STATE)
+  })
 })
 
 describe('useOpenAIAddStatus', () => {
@@ -201,6 +214,19 @@ describe('OpenAI reauth', () => {
     cancel.result.current.mutate('my account')
     await waitFor(() => expect(cancel.result.current.isSuccess).toBe(true))
     expect(api.post).toHaveBeenCalledWith('/accounts/my%20account/reauth/cancel')
+  })
+
+  it('replaces a previous terminal state before reauth polling is enabled', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    qc.setQueryData(QK.openaiReauthStatus('acc'), { ...DEVICE_STATE, state: 'failed' })
+    const wrapper = ({ children }: { children: React.ReactNode }) =>
+      React.createElement(QueryClientProvider, { client: qc }, children)
+
+    const { result } = renderHook(() => useOpenAIReauth(), { wrapper })
+    result.current.mutate('acc')
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    expect(qc.getQueryData(QK.openaiReauthStatus('acc'))).toEqual(DEVICE_STATE)
   })
 
   it('keys its poll apart from the Anthropic reauth status of the same account', async () => {

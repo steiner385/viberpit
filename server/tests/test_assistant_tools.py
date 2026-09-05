@@ -112,7 +112,9 @@ def test_tool_spec_keys_match_web_app_action_titles_fixture():
 # each MUST validate `{}`, or the CLI rejects the call (jsonschema.validate runs in
 # mcp.server.lowlevel.server.Server.call_tool BEFORE the handler ever sees the args).
 _ALL_OPTIONAL_TOOLS = ("list_sessions", "list_prs", "list_accounts", "list_hosts",
-                       "list_automations", "get_deploy_status", "list_archived_sessions")
+                       "list_automations", "get_deploy_status", "list_archived_sessions",
+                       "list_notification_channels", "list_notification_rules",
+                       "get_quiet_hours", "test_notification", "set_quiet_hours")
 
 
 @pytest.mark.asyncio
@@ -184,6 +186,20 @@ _MUTATION_CALLS = [
     ("cancel_queued_session", {"id": _SID}, "DELETE", f"/api/sessions/{_SID}/queue", None),
     ("ready_merge_pr", {"repo": "o/r", "number": 7},
      "POST", "/api/pipeline/pr/ready-merge", {"repo": "o/r", "number": 7}),
+    ("create_notification_rule",
+     {"event_class": "session.done", "action": "channel", "channel_id": "ch1",
+      "scope_repo": "o/r", "scope_account": "acct", "scope_automation": "autopilot"},
+     "POST", "/api/notifications/rules",
+     {"eventClass": "session.done", "action": "channel", "channelId": "ch1",
+      "scopeRepo": "o/r", "scopeAccount": "acct", "scopeAutomation": "autopilot"}),
+    ("create_notification_rule", {"event_class": "session.done", "action": "push"},
+     "POST", "/api/notifications/rules",
+     {"eventClass": "session.done", "action": "push", "channelId": None, "scopeRepo": None,
+      "scopeAccount": None, "scopeAutomation": None}),
+    ("delete_notification_rule", {"id": "rule-1"},
+     "DELETE", "/api/notifications/rules/rule-1", None),
+    ("set_quiet_hours", {"start": "22:00", "end": "07:00"},
+     "PUT", "/api/notifications/quiet-hours", {"start": "22:00", "end": "07:00"}),
 ]
 
 
@@ -353,3 +369,74 @@ def test_every_mutation_tool_path_is_in_the_assistant_route_allowlist():
 
     for name, _args, method, path, _body in _MUTATION_CALLS:
         assert route_allowed(method, path), f"{name}: {method} {path} is not allowlisted"
+
+
+# ---------------------------------------------------------------------------
+# Task 8.1 — notification channel / rule / quiet-hours tools
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_list_notification_channels_trims_url_to_host_and_drops_headers():
+    def handler(req: httpx.Request):
+        assert req.url.path == "/api/notifications/channels"
+        return httpx.Response(200, json=[{
+            "id": "ch1", "name": "Slack", "kind": "webhook",
+            "url": "https://hooks.example.com/services/T00/B00/secrettoken?x=1",
+            "headers": {"Authorization": "Bearer supersecret"},
+            "enabled": True, "createdAt": "2026-09-05T00:00:00",
+        }])
+
+    tools = build_tools(_api(handler))
+    out = await _tool(tools, "list_notification_channels").handler({})
+    row = json.loads(out["content"][0]["text"])["data"][0]
+    assert row["url"] == "hooks.example.com"
+    assert "headers" not in row
+    assert row == {"id": "ch1", "name": "Slack", "kind": "webhook", "url": "hooks.example.com",
+                   "enabled": True, "createdAt": "2026-09-05T00:00:00"}
+
+
+@pytest.mark.asyncio
+async def test_list_notification_rules_passes_rows_through():
+    rows = [{"id": "r1", "eventClass": "session.done", "action": "push"}]
+
+    def handler(req: httpx.Request):
+        assert req.method == "GET" and req.url.path == "/api/notifications/rules"
+        return httpx.Response(200, json=rows)
+
+    out = await _tool(build_tools(_api(handler)), "list_notification_rules").handler({})
+    assert json.loads(out["content"][0]["text"])["data"] == rows
+
+
+@pytest.mark.asyncio
+async def test_get_quiet_hours_returns_server_shape():
+    def handler(req: httpx.Request):
+        assert req.method == "GET" and req.url.path == "/api/notifications/quiet-hours"
+        return httpx.Response(200, json={"start": "22:00", "end": "07:00"})
+
+    out = await _tool(build_tools(_api(handler)), "get_quiet_hours").handler({})
+    assert json.loads(out["content"][0]["text"])["data"] == {"start": "22:00", "end": "07:00"}
+
+
+@pytest.mark.asyncio
+async def test_test_notification_is_read_classed_but_calls_post():
+    """`test_notification` is a READ tool (it mutates nothing) whose backing endpoint is a
+    POST dry-run — the `READ_POSTS` carve-out (server/assistant/policy.py) is what lets a
+    READ tool call POST at all; this proves the carve-out actually applies here."""
+    from server.assistant.policy import READ_POSTS
+
+    assert TOOL_SPECS["test_notification"].tool_class is ToolClass.READ
+    assert "test_notification" in READ_POSTS
+
+    seen = {}
+
+    def handler(req: httpx.Request):
+        seen["method"] = req.method
+        seen["path"] = req.url.path
+        seen["body"] = json.loads(req.content) if req.content else None
+        return httpx.Response(200, json={"action": "push", "deliver": True})
+
+    out = await _tool(build_tools(_api(handler)), "test_notification").handler(
+        {"event_class": "session.done", "repo": "o/r"})
+    assert "is_error" not in out
+    assert seen == {"method": "POST", "path": "/api/notifications/test",
+                    "body": {"eventClass": "session.done", "repo": "o/r"}}

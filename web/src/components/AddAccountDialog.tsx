@@ -73,12 +73,14 @@ export function AddAccountDialog({ onClose, initialProvider, initialName }: AddA
   const cancelCopilotAdd = useCancelCopilotAdd()
   const copilotStatusQuery = useCopilotAddStatus(name.trim(), copilotStarted)
   const copilotStatus = copilotStarted ? copilotStatusQuery.data : undefined
+  const copilotStarting = addCopilotAccount.isPending
 
   // OpenAI hooks — the same trio, on the OpenAI routes.
   const addOpenAIAccount = useAddOpenAIAccount()
   const cancelOpenAIAdd = useCancelOpenAIAdd()
   const openaiStatusQuery = useOpenAIAddStatus(name.trim(), openaiStarted)
   const openaiStatus = openaiStarted ? openaiStatusQuery.data : undefined
+  const openaiStarting = addOpenAIAccount.isPending
 
   const isRunning = status?.state === 'running' || status?.state === 'cancelling'
   const isSuccess = status?.state === 'success'
@@ -125,17 +127,28 @@ export function AddAccountDialog({ onClose, initialProvider, initialName }: AddA
   // Anthropic canSubmit: block while running
   const canSubmit = !!trimmed && !nameError && !isRunning
   // Device flows: block once the flow has started
-  const copilotCanSubmit = !!trimmed && !nameError && !copilotStarted
-  const openaiCanSubmit = !!trimmed && !nameError && !openaiStarted
+  const copilotCanSubmit = !!trimmed && !nameError && !copilotStarted && !copilotStarting
+  const openaiCanSubmit = !!trimmed && !nameError && !openaiStarted && !openaiStarting
 
   /** The device flow currently on screen, or null on the Anthropic tab. One
    *  accessor so the shared panel and the shared button row cannot disagree
    *  with each other about which provider is live. */
   const deviceFlow = provider === 'copilot'
-    ? { started: copilotStarted, status: copilotStatus, canSubmit: copilotCanSubmit }
+    ? {
+        started: copilotStarted,
+        starting: copilotStarting,
+        status: copilotStatus,
+        canSubmit: copilotCanSubmit,
+      }
     : provider === 'openai'
-      ? { started: openaiStarted, status: openaiStatus, canSubmit: openaiCanSubmit }
+      ? {
+          started: openaiStarted,
+          starting: openaiStarting,
+          status: openaiStatus,
+          canSubmit: openaiCanSubmit,
+        }
       : null
+  const deviceFlowBusy = !!deviceFlow && (deviceFlow.started || deviceFlow.starting)
 
   function handleSubmit() {
     if (!canSubmit) return
@@ -154,8 +167,8 @@ export function AddAccountDialog({ onClose, initialProvider, initialName }: AddA
 
   function handleCopilotSubmit() {
     if (!copilotCanSubmit) return
-    setCopilotStarted(true)
     addCopilotAccount.mutate(trimmed, {
+      onSuccess: () => setCopilotStarted(true),
       onError: () => setCopilotStarted(false),
     })
   }
@@ -167,8 +180,8 @@ export function AddAccountDialog({ onClose, initialProvider, initialName }: AddA
 
   function handleOpenAISubmit() {
     if (!openaiCanSubmit) return
-    setOpenaiStarted(true)
     addOpenAIAccount.mutate(trimmed, {
+      onSuccess: () => setOpenaiStarted(true),
       onError: () => setOpenaiStarted(false),
     })
   }
@@ -189,6 +202,10 @@ export function AddAccountDialog({ onClose, initialProvider, initialName }: AddA
    *  (and, for a new OpenAI account, a disabled placeholder in the manifest). */
   function pickProvider(next: AddProvider) {
     if (next === provider) return
+    // A cancel cannot overtake a start request whose server-side flow does not
+    // exist yet. Keep this tab fixed for the brief POST window, then the normal
+    // cancel path becomes available once `started` is confirmed.
+    if (copilotStarting || openaiStarting) return
     if (provider === 'anthropic' && started && !optimisticIdle) cancelAdd.mutate()
     if (provider === 'copilot' && copilotStarted) cancelCopilotAdd.mutate(trimmed)
     if (provider === 'openai' && openaiStarted) cancelOpenAIAdd.mutate(trimmed)
@@ -211,7 +228,8 @@ export function AddAccountDialog({ onClose, initialProvider, initialName }: AddA
       title="Add account"
       size={showVnc ? 'xl' : 'sm'}
       initialFocus={inputRef}
-      dismissable={!isRunning && !copilotStarted && !openaiStarted}
+      dismissable={!isRunning && !copilotStarted && !openaiStarted
+        && !copilotStarting && !openaiStarting}
       className="transition-[max-width] motion-reduce:transition-none"
     >
       {/* Provider toggle */}
@@ -221,6 +239,7 @@ export function AddAccountDialog({ onClose, initialProvider, initialName }: AddA
             key={tab.id}
             type="button"
             onClick={() => pickProvider(tab.id)}
+            disabled={copilotStarting || openaiStarting}
             className={cn(
               'flex-1 py-2 px-3 text-center transition-colors min-h-[44px]',
               provider === tab.id
@@ -253,7 +272,8 @@ export function AddAccountDialog({ onClose, initialProvider, initialName }: AddA
               submitCurrent()
             }
           }}
-          disabled={isRunning || isSuccess || copilotStarted || openaiStarted}
+          disabled={isRunning || isSuccess || copilotStarted || openaiStarted
+            || copilotStarting || openaiStarting}
           placeholder="e.g. work"
           aria-label="Account name"
           invalid={!!nameError}
@@ -290,7 +310,7 @@ export function AddAccountDialog({ onClose, initialProvider, initialName }: AddA
       {deviceFlow && provider !== 'anthropic' && (
         <DeviceCodePanel
           state={deviceFlow.status}
-          started={deviceFlow.started}
+          started={deviceFlowBusy}
           providerLabel={DEVICE_PROVIDER_LABEL[provider]}
         />
       )}
@@ -329,12 +349,13 @@ export function AddAccountDialog({ onClose, initialProvider, initialName }: AddA
           </>
         ) : (
           <>
-            {deviceFlow?.started ? (
+            {deviceFlowBusy ? (
               <Button
                 type="button"
                 variant="secondary"
                 onClick={provider === 'copilot' ? handleCopilotCancel : handleOpenAICancel}
                 aria-label="Cancel add"
+                disabled={deviceFlow?.starting}
               >
                 Cancel
               </Button>
@@ -353,7 +374,9 @@ export function AddAccountDialog({ onClose, initialProvider, initialName }: AddA
               onClick={submitCurrent}
               disabled={!deviceFlow?.canSubmit}
             >
-              {deviceFlow?.started ? 'Authorizing…' : 'Add'}
+              {deviceFlow?.starting
+                ? 'Starting…'
+                : deviceFlow?.started ? 'Authorizing…' : 'Add'}
             </Button>
           </>
         )}
