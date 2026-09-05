@@ -227,17 +227,10 @@ does NOT close. Put `Fixes #N` in the PR body for a full fix, `Refs #N` for a pa
 
 ## Copilot account type
 
-ccswitch supports GitHub Copilot Pro+ accounts via the `whtsky/copilot2api` proxy binary, which
-translates Anthropic API calls into Copilot API calls. Key operational notes:
-
-**Provisioning the binary:** `CCSWITCH_ENABLE_COPILOT=true` must be set and the proxy binary must
-be installed before adding Copilot accounts.
-
-```bash
-bash scripts/fetch-copilot-proxy.sh   # installs to ~/.local/lib/ccswitch/copilot2api
-```
-
-Or point to a custom binary: `CCSWITCH_COPILOT_PROXY_BIN=/path/to/copilot2api`.
+GitHub Copilot Pro+ accounts run through the `whtsky/copilot2api` proxy binary, which translates
+Anthropic API calls into Copilot API calls. Gated on `CCSWITCH_ENABLE_COPILOT=true` plus an
+installed binary; experimental, with a ToS caveat — see
+`docs/product/features/copilot-account-support.md` for provisioning, the add flow, and the caveat.
 
 **Copilot sessions behave differently from Anthropic sessions:**
 - Suggestions and auto-summaries are disabled (`_pre_record` skips `suggester`/`summarizer`).
@@ -247,13 +240,6 @@ Or point to a custom binary: `CCSWITCH_COPILOT_PROXY_BIN=/path/to/copilot2api`.
   `src/ccswitch/copilot.py:usage_from_proxy`), not session-reset tokens.
 - The proxy runs as a supervised subprocess per account (see `CopilotProxyManager`), health-gated
   on `GET /usage`, with idle teardown after `CCSWITCH_COPILOT_IDLE_GRACE_S` (default 300 s).
-
-**ToS caveat:** routing Claude sessions through the Copilot API may violate GitHub's ToS or
-Anthropic's usage policies. This feature is provided for personal experimentation. Users are
-responsible for ensuring their usage complies with applicable terms.
-
-**Adding a Copilot account:** open the Add Account dialog → toggle to "GitHub Copilot" → enter a
-name → click Add → follow the device-flow code at `github.com/login/device`.
 
 ## Server-side dictation (STT)
 
@@ -274,15 +260,12 @@ when the edge does not advertise `sttEnabled` in `GET /api/config`.
 
 ## AI assistant (drawer)
 
-A right-side drawer, reachable from every section, backed by a real session of
-`kind == "assistant"` (`docs/product/features/ai-assistant.md`). Its only tools are an in-process
-`ccswitch` MCP server (`server/assistant/tools.py`) where each tool calls exactly **one ccswitch
-HTTP API endpoint over loopback** — never add business logic to a tool handler, add it to the
-endpoint. The bearer token (`server/assistant/token.py`, `ccas1:` prefix) is identity-bound,
-HMAC-signed, never persisted, and accepted only from loopback. Kill switch:
-`CCSWITCH_ASSISTANT_ENABLED` (default `true`); `AppSettings.assistant_enabled` overrides per
-deployment. Eval set + runner: `docs/superpowers/evals/assistant/` (`cases.jsonl` +
-`scripts/eval_assistant.py`), latest result 98% (39/40).
+A right-side drawer backed by a real session of `kind == "assistant"`. Its only tools are an
+in-process `ccswitch` MCP server (`server/assistant/tools.py`) where each handler calls exactly
+**one ccswitch HTTP API endpoint over loopback** — never add business logic to a handler, add it to
+the endpoint. Its `ccas1:` bearer token (`server/assistant/token.py`) is identity-bound, never
+persisted, loopback-only. Kill switch `CCSWITCH_ASSISTANT_ENABLED`; evals under
+`docs/superpowers/evals/assistant/`. Details: `docs/product/features/ai-assistant.md`.
 
 ## Self-directed model switching
 
