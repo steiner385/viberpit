@@ -100,6 +100,11 @@ class SettingsBody(BaseModel):
     # env fallback. action ∈ VALID_ACTIONS or null; denylist is a free-text comma list.
     modelApprovalAction: str | None = None
     modelApprovalDenylist: str | None = None
+    # Assistant launch (spec §4.11). Uses model_fields_set like the model-approval
+    # pair above: explicit null clears back to the CCSWITCH_ASSISTANT_ENABLED /
+    # CCSWITCH_ASSISTANT_MODEL env fallback, omitted leaves the stored value alone.
+    assistantEnabled: bool | None = None
+    assistantModel: str | None = None
 
 
 async def _migrate_archive_home(orch, db, old_home: str | None, new_home: str | None) -> tuple[int, int, int]:
@@ -159,6 +164,8 @@ def _to_dict(s: AppSettings) -> dict:
         "autoArchiveEnabled": s.auto_archive_enabled is not False,
         "modelApprovalAction": s.model_approval_action,
         "modelApprovalDenylist": s.model_approval_denylist,
+        "assistantEnabled": s.assistant_enabled,
+        "assistantModel": s.assistant_model,
         **_server_blocks(),
     }
 
@@ -228,5 +235,9 @@ async def put_settings_row(
         row.model_approval_action = body.modelApprovalAction
     if "modelApprovalDenylist" in body.model_fields_set:
         row.model_approval_denylist = body.modelApprovalDenylist
+    if "assistantEnabled" in body.model_fields_set:
+        row.assistant_enabled = body.assistantEnabled
+    if "assistantModel" in body.model_fields_set:
+        row.assistant_model = body.assistantModel
     await db.flush()
     return _to_dict(row)

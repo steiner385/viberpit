@@ -217,6 +217,10 @@ export interface AppSettings {
   modelApprovalAction: string | null
   // Comma-separated model ids/tiers that require approval; null = server default (fable).
   modelApprovalDenylist: string | null
+  // AI assistant (spec §4.11). null = server env default (CCSWITCH_ASSISTANT_ENABLED /
+  // CCSWITCH_ASSISTANT_MODEL) for both.
+  assistantEnabled?: boolean | null
+  assistantModel?: string | null
   /** The modes PUT accepts, in display order. The client's PERMISSION_MODES must equal this set. */
   acceptedPermissionModes: string[]
   effectiveDefaults: EffectiveDefaults

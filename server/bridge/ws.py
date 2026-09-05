@@ -53,6 +53,7 @@ from server.db import db_session
 from server.ipc import protocol as proto
 from server.ipc.client import DaemonTimeout, DaemonUnavailable
 from server.obs.context import bind_session, log_event
+from server.obs.metrics import assistant_prompts_total
 from server.obs.tasks import supervise
 from server.sessions.commands.catalog import parse_command_line
 from server.sessions.events import ErrorEvent, PermissionRequest, tool_kind
@@ -1166,6 +1167,8 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                                          "text": text, "attachmentIds": attachment_ids,
                                          "reason": "RATE_LIMITED"})
                             continue
+                        if assistant_record:
+                            assistant_prompts_total.inc()
                         status = await orchestrator.send_prompt(
                             session_id, text, attachment_ids, **extra)
                         if status == "no_driver":

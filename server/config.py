@@ -222,8 +222,8 @@ try:
         gh_reconcile_enabled: bool = Field(
             default=False, alias="CCSWITCH_GH_RECONCILE_ENABLED")
         # AI assistant (docs/superpowers/specs/2026-09-04-ai-assistant-design.md §4.11).
-        # Off by default until the launch PR flips it; AppSettings.assistant_enabled overrides.
-        assistant_enabled: bool = Field(default=False, alias="CCSWITCH_ASSISTANT_ENABLED")
+        # On by default as of the Phase 4 launch (#1076); AppSettings.assistant_enabled overrides.
+        assistant_enabled: bool = Field(default=True, alias="CCSWITCH_ASSISTANT_ENABLED")
         assistant_model: str = Field(default="sonnet", alias="CCSWITCH_ASSISTANT_MODEL")
         assistant_idle_s: float = Field(default=900.0, alias="CCSWITCH_ASSISTANT_IDLE_S")
         assistant_max_turns: int = Field(default=30, alias="CCSWITCH_ASSISTANT_MAX_TURNS")
@@ -464,7 +464,7 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
             default_factory=lambda: os.environ.get("CCSWITCH_GH_RECONCILE_ENABLED", "false").lower() in ("1", "true", "yes", "on")
         )
         assistant_enabled: bool = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_ASSISTANT_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+            default_factory=lambda: os.environ.get("CCSWITCH_ASSISTANT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
         )
         assistant_model: str = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_ASSISTANT_MODEL", "sonnet")
