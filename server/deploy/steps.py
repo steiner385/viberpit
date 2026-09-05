@@ -137,6 +137,18 @@ RESTARTABLE_UNITS: tuple[str, ...] = (
 _EXEC_PATH_RE = re.compile(r"path=([^\s;]+)")
 
 
+def _checkout_root(path: str) -> str | None:
+    """The checkout directory ``path`` nominally belongs to, or None.
+
+    The convention is ``<checkout>/.venv/bin/python``. A path not shaped like that (e.g.
+    a future service-owned venv artifact) has no notion of "which checkout owns it", so
+    the isolation check has no positive proof to act on and must not fire.
+    """
+    marker = "/.venv/"
+    idx = path.find(marker)
+    return path[:idx] if idx != -1 else None
+
+
 def check_unit_interpreters(units: tuple[str, ...] | None = None,
                             *, run: Run = subprocess.run) -> list[str]:
     """Return one problem string per unit whose ExecStart binary cannot be executed.
@@ -153,6 +165,12 @@ def check_unit_interpreters(units: tuple[str, ...] | None = None,
     preflight that refuses on absent evidence is precisely the failure mode that wedged
     the deploy gate behind a required check which could never report. Fail only on
     positive proof: a path we resolved that is missing or not executable.
+
+    Also reports a unit whose interpreter is *alive* but has escaped its own checkout:
+    ExecStart named ``<checkout>/.venv/bin/python``, yet ``.venv`` resolves (by symlink)
+    into some other checkout entirely (issue #1171 — the coupling #1129 above only
+    detects once the *other* checkout has already broken). That still runs today, but
+    renaming or rebuilding the other checkout takes this unit down with no warning.
     """
     problems: list[str] = []
     for unit in (units if units is not None else RESTARTABLE_UNITS):
@@ -175,6 +193,15 @@ def check_unit_interpreters(units: tuple[str, ...] | None = None,
                 "it cannot restart)")
         elif not os.access(path, os.X_OK):
             problems.append(f"{unit}: ExecStart binary {path} is not executable")
+        else:
+            root = _checkout_root(path)
+            resolved = os.path.realpath(path)
+            if root is not None and resolved != path and not resolved.startswith(root + os.sep):
+                problems.append(
+                    f"{unit}: ExecStart binary {path} (checkout {root}) resolves to "
+                    f"{resolved}, a different checkout entirely — this unit's interpreter "
+                    "is owned by another developer checkout and breaks if that checkout "
+                    "is renamed, rebuilt, or removed")
     return problems
 
 
