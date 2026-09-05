@@ -81,7 +81,7 @@ from server.obs.context import log_event, PROC_EPOCH
 from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
 from server.sessions.types import (
-    SessionRecord, SYSTEM_IDENTITY, RESUME_ELIGIBLE_STATUSES,
+    ASSISTANT_KIND, SessionRecord, SYSTEM_IDENTITY, RESUME_ELIGIBLE_STATUSES,
     is_assistant, is_assistant_kind,
 )
 from server.sessions.usage_stall import is_usage_stalled
@@ -7127,11 +7127,64 @@ class SessionOrchestrator:
     async def find_assistant(self, owner_identity: str) -> SessionRecord | None:
         """Return the live (non-archived) assistant thread owned by *owner_identity*,
         or None. The idempotency lookup ``POST /api/assistant/session`` uses before
-        deciding whether to create, resume, or (with ``fresh``) archive-and-recreate."""
+        deciding whether to create, resume, or (with ``fresh``) archive-and-recreate.
+
+        Falls back to ``_adopt_reaped_assistant`` on an in-memory miss: a thread the
+        idle reap already parked on ``ended`` is NOT in ``_records`` after a restart."""
         for r in self._records.values():
             if is_assistant(r) and r.owner_identity == owner_identity and r.status != "archived":
                 return self._sync_detached(r)
-        return None
+        return await self._adopt_reaped_assistant(owner_identity)
+
+    async def _adopt_reaped_assistant(self, owner_identity: str) -> SessionRecord | None:
+        """Load an idle-reaped assistant row back into ``_records`` on demand (#1122).
+
+        The reap parks the thread on ``status="ended"`` (spec §4.7) and ``rehydrate``
+        selects ``status NOT IN INACTIVE_SESSION_STATUSES`` — the two filters disagree
+        on exactly that status. So after "reaped, then a deploy restart" (a common
+        pairing: the reap fires at 15 min idle) the row is in the DB but not in memory,
+        the scan in ``find_assistant`` returns None, and ``POST /api/assistant/session``
+        mints a BRAND-NEW thread. Nothing crashes — the old ``claude_session_id`` and
+        its CLI transcript are intact on disk — but nothing points at them any more,
+        which is the same silently-orphaned-history shape as the 2026-09-04 torn-read
+        incident. This closes the gap so §4.7's "Daemon restart … continues" holds for
+        a reaped thread too, not only one that was live at restart.
+
+        Deliberately narrow (issue #1122 option 1) rather than widening ``rehydrate``:
+        that select is shared with coding sessions, and an ``ended`` exception there
+        would pull every closed coding session back into ``_records`` (dashboard,
+        sweeps, capacity). Here only ``ended`` rows are eligible (the one status
+        rehydrate skips and the one ``POST /api/assistant/session`` already branches on
+        to resume), only for this owner, and only the newest — one row, materialised
+        lazily, from which ``ensure_driver`` resumes exactly as it does for any other
+        detached session.
+        """
+        from sqlalchemy import select as sa_select
+        async with db_session() as db:
+            row = (await db.execute(
+                sa_select(DbSession)
+                .where(DbSession.kind == ASSISTANT_KIND,
+                       DbSession.owner_identity == owner_identity,
+                       DbSession.status == "ended")
+                .order_by(DbSession.created_at.desc())
+                .limit(1))).scalars().first()
+        if row is None:
+            return None
+        # Host partition (#852), same rule as rehydrate: a worker never owns a row
+        # stamped for another host. The assistant is pinned to the primary anyway
+        # (FleetOrchestrator.create_session), so this only guards a misroute.
+        if daemon_role() == "worker" and row.host != self_host_name():
+            return None
+        # Another caller may have adopted (or the owner respawned) it while we awaited
+        # the DB — never overwrite a live record with a stale row.
+        existing = self._records.get(row.id)
+        if existing is not None:
+            return self._sync_detached(existing)
+        rec = self._record_from_row(row)
+        self._records[row.id] = rec
+        log_event(log, logging.INFO, "session.reattach", session_id=row.id,
+                  **{"from": "ended", "to": "ended", "reason": "assistant_adopt"})
+        return self._sync_detached(rec)
 
     def get_session(self, session_id: str) -> SessionRecord | None:
         """Return the in-memory SessionRecord for session_id, or None

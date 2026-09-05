@@ -94,6 +94,37 @@ def test_fresh_archives_and_recreates(tmp_path):
         assert c.get("/api/assistant/status", headers=_H).json()["sessionId"] == second["id"]
 
 
+async def _end_row(session_id: str) -> None:
+    """Park the row exactly as the idle reap does (spec §4.7: status=ended, driver
+    closed, CLI transcript kept)."""
+    from sqlalchemy import update as sa_update
+    from server.db import db_session
+    from server.db.models import Session as DbSession
+    async with db_session() as db:
+        await db.execute(sa_update(DbSession).where(DbSession.id == session_id)
+                         .values(status="ended"))
+        await db.commit()
+
+
+def test_reaped_thread_is_reused_after_a_daemon_restart(tmp_path):
+    """#1122: reap (status=ended) + restart used to lose the thread — `rehydrate`
+    skips ended rows, so the drawer created a new assistant and orphaned the old
+    transcript. The endpoint must hand back the SAME session, resumed."""
+    with _client(tmp_path) as c:
+        first = c.post("/api/assistant/session", json={}, headers=_H).json()["id"]
+        # app.state.sessions is the facade; the records live on the real orchestrator.
+        orch = c.app.state.sessions._orch
+        c.portal.call(_end_row, first)
+        orch._records.clear()          # daemon restart: nothing in memory…
+        orch._drivers.clear()
+        c.portal.call(orch.rehydrate)  # …and rehydrate does not bring an ended row back
+        assert first not in orch._records
+
+        again = c.post("/api/assistant/session", json={}, headers=_H).json()
+        assert again["id"] == first and again["state"] == "resumed"
+        assert c.get("/api/assistant/status", headers=_H).json()["sessionId"] == first
+
+
 def test_gated_model_is_400(tmp_path):
     with _client(tmp_path, {"CCSWITCH_MODEL_APPROVAL_DENYLIST": "fable"}) as c:
         r = c.post("/api/assistant/session", json={"model": "fable"}, headers=_H)
