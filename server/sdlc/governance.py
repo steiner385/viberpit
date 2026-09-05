@@ -167,6 +167,31 @@ PROTECTED_EDIT_PATHS: tuple[str, ...] = (
     ".claude/managed-settings.json",
 )
 
+# Paths that decide *how* governance is enforced. Changing one silently changes
+# what every other control can catch, so a diff touching any of them needs the
+# same deliberate human acknowledgment an amendment does.
+#
+# Enforced by the ``amendment`` CI check, not by a required review: with a single
+# maintainer, "someone must approve" degenerates to either "nobody can merge"
+# (approvals=1, since GitHub will not let an author approve their own PR) or "no
+# gate at all" (approvals=0). A status check evaluates the diff, not the author,
+# so it works at any team size.
+#
+# ``.github/CODEOWNERS`` mirrors this tuple; ``test_codeowners_covers_guardrails``
+# asserts the two agree.
+GUARDRAIL_PATHS: tuple[str, ...] = (
+    ".claude/hooks/prod-deploy-gate.py",
+    ".claude/managed-settings.json",
+    ".claude/settings.json",
+    ".codex/config.toml",
+    ".codex/rules/default.rules",
+    "server/sdlc/governance.py",
+    "server/sdlc/constitution_gate.py",
+    "scripts/check_constitution_amendment.py",
+    ".github/workflows/constitution.yml",
+    ".github/CODEOWNERS",
+)
+
 # Why each protected path is protected, cited back to the constitution.
 _PROTECTED_PATH_RATIONALE: dict[str, tuple[str, str]] = {
     ".specify/memory/constitution.md": (
