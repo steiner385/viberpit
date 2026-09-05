@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
+from urllib.parse import urlparse
 
 from claude_agent_sdk import SdkMcpTool, tool
 from mcp.types import ToolAnnotations
@@ -48,6 +49,10 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("list_automations", ToolClass.READ, "List automations"),
     ToolSpec("get_automation_events", ToolClass.READ, "Get automation events"),
     ToolSpec("get_deploy_status", ToolClass.READ, "Get deploy status"),
+    ToolSpec("list_notification_channels", ToolClass.READ, "List notification channels"),
+    ToolSpec("list_notification_rules", ToolClass.READ, "List notification rules"),
+    ToolSpec("get_quiet_hours", ToolClass.READ, "Get quiet hours"),
+    ToolSpec("test_notification", ToolClass.READ, "Preview notification routing"),
     ToolSpec("create_session", ToolClass.MUTATION, "Start a session"),
     ToolSpec("send_prompt", ToolClass.MUTATION, "Send a prompt"),
     ToolSpec("interrupt_session", ToolClass.MUTATION, "Interrupt session"),
@@ -61,6 +66,9 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("set_autopilot_paused", ToolClass.MUTATION, "Pause/resume autopilot"),
     ToolSpec("fix_pr", ToolClass.MUTATION, "Fix a pull request"),
     ToolSpec("set_automation_enabled", ToolClass.MUTATION, "Enable/disable automation"),
+    ToolSpec("create_notification_rule", ToolClass.MUTATION, "Create notification rule"),
+    ToolSpec("delete_notification_rule", ToolClass.MUTATION, "Delete notification rule"),
+    ToolSpec("set_quiet_hours", ToolClass.MUTATION, "Set quiet hours"),
     # DESTRUCTIVE — irreversible. `PermissionRegistry.request` gives these a card in
     # EVERY mode (including full-auto) and never offers "Always allow" (spec §4.4).
     ToolSpec("delete_session", ToolClass.DESTRUCTIVE, "Permanently delete session"),
@@ -156,6 +164,17 @@ def _trim_session(s: dict[str, Any]) -> dict[str, Any]:
 
 def _trim_archived(s: dict[str, Any]) -> dict[str, Any]:
     return {k: s[k] for k in _ARCHIVED_KEYS if k in s}
+
+
+# A channel's `url` can embed secrets (a Slack webhook token in the path, an ntfy
+# topic, a bearer query param) — never let the raw url reach the model. `headers`
+# is dropped outright for the same reason (spec §4.7).
+def _trim_channel(c: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": c.get("id"), "name": c.get("name"), "kind": c.get("kind"),
+        "url": urlparse(c["url"]).hostname if c.get("url") else None,
+        "enabled": c.get("enabled"), "createdAt": c.get("createdAt"),
+    }
 
 
 async def _audit_tool_call(api: AssistantApi, spec: ToolSpec, ok: bool, ms: float) -> None:
@@ -306,6 +325,49 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
     async def get_deploy_status(args: dict[str, Any]) -> Any:
         return await api.get("/api/deploy/status")
 
+    @spec_tool("list_notification_channels",
+               "Configured notification channels (webhook targets etc). URLs are reduced to "
+               "just their host — never the full webhook URL, which can embed a secret.", {})
+    @guarded
+    async def list_notification_channels(args: dict[str, Any]) -> Any:
+        rows = await api.get("/api/notifications/channels")
+        return [_trim_channel(c) for c in rows]
+
+    @spec_tool("list_notification_rules",
+               "Notification routing rules: which events go to which channel, and any repo, "
+               "account or automation scope.", {})
+    @guarded
+    async def list_notification_rules(args: dict[str, Any]) -> Any:
+        return await api.get("/api/notifications/rules")
+
+    @spec_tool("get_quiet_hours",
+               "The configured quiet-hours window ('HH:MM' start/end, or null if unset) during "
+               "which non-critical notifications are suppressed.", {})
+    @guarded
+    async def get_quiet_hours(args: dict[str, Any]) -> Any:
+        return await api.get("/api/notifications/quiet-hours")
+
+    @spec_tool("test_notification",
+               "Dry-run the notification routing engine for a hypothetical event — shows which "
+               "rule would match and whether quiet hours would suppress it. Delivers nothing.",
+               _schema(event_class=str, repo=str, account=str, automation=str))
+    @guarded
+    async def test_notification(args: dict[str, Any]) -> Any:
+        # `TestBody.eventClass` is a plain `str` with a server-side default of
+        # "needs_input" (server/api/notifications.py) — Pydantic requires the key be
+        # absent or a str, so an explicit `None` would 422. Omit the key when unset
+        # and let the server default apply.
+        body: dict[str, Any] = {}
+        if args.get("event_class"):
+            body["eventClass"] = args["event_class"]
+        if args.get("repo") is not None:
+            body["repo"] = args["repo"]
+        if args.get("account") is not None:
+            body["account"] = args["account"]
+        if args.get("automation") is not None:
+            body["automation"] = args["automation"]
+        return await api.post("/api/notifications/test", body)
+
     # -- Mutations (spec §4.2, class M) ------------------------------------------------
     # Each is a thin adapter over ONE endpoint: rename args to the endpoint's field
     # names, call, return. Business logic lives behind the endpoint
@@ -420,6 +482,34 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
         return await api.patch(f"/api/automations/{args['id']}",
                                {"enabled": bool(args["enabled"])})
 
+    @spec_tool("create_notification_rule",
+               "Add a notification routing rule: which event class routes to which channel "
+               "(or 'push'/'ignore'), optionally scoped to a repo, account or automation.",
+               _schema(("event_class", "action"), event_class=str, action=str, channel_id=str,
+                       scope_repo=str, scope_account=str, scope_automation=str))
+    @guarded
+    async def create_notification_rule(args: dict[str, Any]) -> Any:
+        return await api.post("/api/notifications/rules", {
+            "eventClass": args["event_class"], "action": args["action"],
+            "channelId": args.get("channel_id"), "scopeRepo": args.get("scope_repo"),
+            "scopeAccount": args.get("scope_account"),
+            "scopeAutomation": args.get("scope_automation")})
+
+    @spec_tool("delete_notification_rule", "Remove a notification routing rule. Use the id from "
+               "list_notification_rules.", {"id": str})
+    @guarded
+    async def delete_notification_rule(args: dict[str, Any]) -> Any:
+        return await api.delete(f"/api/notifications/rules/{args['id']}") or {"ok": True}
+
+    @spec_tool("set_quiet_hours",
+               "Set (or clear, by omitting a field) the quiet-hours window during which "
+               "non-critical notifications are suppressed. Times are 'HH:MM', 24h, local.",
+               _schema(start=str, end=str))
+    @guarded
+    async def set_quiet_hours(args: dict[str, Any]) -> Any:
+        return await api.put("/api/notifications/quiet-hours",
+                             {"start": args.get("start"), "end": args.get("end")})
+
     # -- Destructive (spec §4.2, class D) ----------------------------------------------
     # Irreversible. These always surface a permission card, in every mode, and the card
     # never offers "Always allow" (server/sessions/permissions.py).
@@ -451,8 +541,11 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
     return [list_sessions, get_session, get_session_transcript, search_sessions,
             list_archived_sessions, list_accounts, list_hosts, list_prs, get_pipeline_health,
             list_automations, get_automation_events, get_deploy_status,
+            list_notification_channels, list_notification_rules, get_quiet_hours,
+            test_notification,
             create_session, send_prompt, interrupt_session, answer_question,
             resolve_permission, set_model, set_permission_mode, resolve_model_approval,
             archive_session, unarchive_session, set_autopilot_paused, fix_pr,
-            set_automation_enabled,
+            set_automation_enabled, create_notification_rule, delete_notification_rule,
+            set_quiet_hours,
             delete_session, cancel_queued_session, ready_merge_pr]
