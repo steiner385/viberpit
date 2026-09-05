@@ -37,6 +37,12 @@ export interface CardFrameProps {
   selected: boolean
   listMode: boolean
   onOpen: (id: string) => void
+  /** Tab-stop for the open control. Omit for the roving-tabindex default
+   *  (`selected ? 0 : -1`) SessionCard's keyboard cursor needs — a highlighted
+   *  row takes the tab stop, an unhighlighted one yields it. A card with no
+   *  roving cursor to manage (e.g. ArchivedSessionCard, every row a plain tab
+   *  stop) should pass `true` so its open control is always reachable. */
+  focusable?: boolean
   /** Row-level key handling (each card owns its own shortcut table). */
   onKeyDown?: (e: React.KeyboardEvent) => void
   /** Swipe right reveals this (reversible action). Omit to disable the edge. */
@@ -59,7 +65,7 @@ export interface CardFrameProps {
 const PANEL_PX = 88
 
 export function CardFrame({
-  id, openLabel, railClass, selected, listMode, onOpen, onKeyDown,
+  id, openLabel, railClass, selected, listMode, onOpen, onKeyDown, focusable,
   swipeRight, swipeLeft, swipeEnabled = true, leading, identity, trailing, children,
 }: CardFrameProps) {
   const articleRef = useRef<HTMLElement>(null)
@@ -74,10 +80,17 @@ export function CardFrame({
     enabled: gestureLive,
     onCommit: (side) => (side === 'left' ? swipeLeft?.onCommit() : swipeRight?.onCommit()),
   })
+  // A settled openSide with no action configured for that edge (both current
+  // callers wire both edges, but CardFrame itself does not require it) must
+  // not reveal anything — no translate, no clip — or the user gets a bare
+  // 88px gutter with nothing behind it, recoverable only by tapping the card.
+  const revealValid = swipe.openSide === 'left' ? !!swipeLeft
+    : swipe.openSide === 'right' ? !!swipeRight
+      : false
   const restX = swipe.dragging
     ? swipe.dx
-    : swipe.openSide === 'left' ? -PANEL_PX : swipe.openSide === 'right' ? PANEL_PX : 0
-  const panelsMounted = gestureLive && (swipe.dragging || swipe.openSide !== null)
+    : revealValid ? (swipe.openSide === 'left' ? -PANEL_PX : PANEL_PX) : 0
+  const panelsMounted = gestureLive && (swipe.dragging || revealValid)
 
   // jsdom does not implement scrollIntoView.
   useEffect(() => {
@@ -187,7 +200,7 @@ export function CardFrame({
             type="button"
             id={`row-${id}`}
             ref={buttonRef}
-            tabIndex={selected ? 0 : -1}
+            tabIndex={focusable === undefined ? (selected ? 0 : -1) : (focusable ? 0 : -1)}
             data-selected={selected}
             className={cn(
               'flex-1 min-w-0 flex items-center gap-1.5 text-left py-0.5',

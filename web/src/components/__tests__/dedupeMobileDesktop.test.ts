@@ -14,8 +14,10 @@ import { describe, it, expect } from 'vitest'
  * It was written when there were TWO shells: PR #41 gave the desktop layout
  * standalone mirrors of logic that still lived inline in the mobile components,
  * and the debt was paid down by extracting shared units
- * (`AccountsManager`/`ArchivedManager` #222, `useSessionRuntime`/`SessionBody`
- * 570a4e6). Every assertion was then "and BOTH shells use the shared one".
+ * (`AccountsManager`/`ArchivedManager` #222 — the latter since replaced by
+ * `ArchivedSessionList`, this plan's Task 9 — and `useSessionRuntime`/
+ * `SessionBody` 570a4e6). Every assertion was then "and BOTH shells use the
+ * shared one".
  *
  * Task 17 deleted both shells. The naive reading is that the guard has nothing
  * left to check — but the property it protects is not "the two shells agree", it

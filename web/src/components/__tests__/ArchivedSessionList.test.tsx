@@ -11,7 +11,7 @@
  * - shift-click range selection over the visible order (from #179)
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import * as React from 'react'
@@ -147,10 +147,13 @@ describe('ArchivedSessionList — controls strip', () => {
     // Scoped to the GroupHeader buttons (`id="group-header-<key>"`): a plain
     // `getByText` now also matches the row's own account chip
     // (`ArchivedSessionCard`'s `data-testid="card-account"`, Task 8), which
-    // renders the same exact account text.
+    // renders the same exact account text. `within(header).queryByText` also
+    // matches EXACTLY ('tony', not 'tonyx' or the header's count badge sharing
+    // its textContent) — a loosened `textContent?.includes('tony')` would pass
+    // on either false positive.
     const groupHeaders = screen.getAllByRole('button').filter((b) => b.id.startsWith('group-header-'))
-    expect(groupHeaders.some((h) => h.textContent?.includes('tony'))).toBe(true)
-    expect(groupHeaders.some((h) => h.textContent?.includes('work'))).toBe(true)
+    expect(groupHeaders.some((h) => within(h).queryByText('tony'))).toBe(true)
+    expect(groupHeaders.some((h) => within(h).queryByText('work'))).toBe(true)
   })
 
   it('search filters the archived list to matching sessions only', () => {
@@ -245,7 +248,6 @@ describe('ArchivedSessionList — collapse recoverability', () => {
     searchState = { query: '', setQuery: vi.fn(), matchedIds: null, isFiltered: false }
   })
 
-  // Group headers are the only buttons carrying aria-expanded.
   // GroupHeader buttons carry `aria-expanded`, but so does each row's own ⋯
   // menu trigger (`CardMenu`, Task 8) now that rows render through
   // `ArchivedSessionCard` — filtering on the attribute alone over-counts once

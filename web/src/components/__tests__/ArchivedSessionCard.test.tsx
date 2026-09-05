@@ -39,6 +39,22 @@ describe('ArchivedSessionCard', () => {
     expect(onReview).toHaveBeenCalledWith('a1')
   })
 
+  it('keeps the open control in the tab order — CardFrame has no roving cursor to hand it a tabindex', async () => {
+    // CardFrame defaults the open control to tabIndex={selected ? 0 : -1} for
+    // SessionCard's roving-tabindex list. ArchivedSessionCard is never given a
+    // `selected` cursor, so without `focusable` on CardFrame every archived
+    // row's primary action would silently drop out of the tab order (still
+    // reachable via the ⋯ menu, but no longer a plain Tab stop).
+    const user = userEvent.setup()
+    render(<ArchivedSessionCard {...props()} />)
+    const openControl = screen.getByRole('button', { name: 'Review Old project' })
+    expect(openControl).toHaveAttribute('tabindex', '0')
+    await user.tab()
+    // The checkbox (rendered by SelectableRow in the real list) is not part of
+    // this component, so the first tab stop IS the open control.
+    expect(openControl).toHaveFocus()
+  })
+
   it('offers Review, Unarchive and Delete permanently in the overflow menu', async () => {
     const onUnarchive = vi.fn()
     render(<ArchivedSessionCard {...props({ onUnarchive })} />)

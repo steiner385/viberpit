@@ -94,6 +94,26 @@ describe('CardFrame', () => {
     expect(screen.queryByTestId('swipe-panel-delete')).not.toBeInTheDocument()
   })
 
+  it('does not translate or clip on a sub-commit drag toward an edge with no action configured', () => {
+    // Only swipeRight is wired; drag toward the (unconfigured) left edge far
+    // enough to reveal (>64px) but not commit (<135px of a 300px card).
+    // settleSwipe still returns {outcome:'open', side:'left'} — CardFrame must
+    // not act on that reveal for an edge with no action, or the foreground
+    // stays translated 88px with nothing rendered behind it.
+    render(
+      <CardFrame
+        {...props()}
+        swipeRight={{ label: 'Unarchive Alpha', icon: <i />, onCommit: vi.fn(), testId: 'swipe-panel-unarchive', className: 'bg-blue-600' }}
+      />,
+    )
+    const el = fg()
+    fireEvent.pointerDown(el, { clientX: 250, clientY: 40 })
+    fireEvent.pointerMove(window, { clientX: 170, clientY: 42 })   // dx -80: sub-commit toward the unconfigured LEFT edge
+    fireEvent.pointerUp(window, { clientX: 170, clientY: 42 })
+    expect(el.style.transform).toBe('')
+    expect(el.parentElement?.className).not.toContain('overflow-hidden')
+  })
+
   it('opens on Enter when not in list mode, and defers keys to onKeyDown when it is', () => {
     const onOpen = vi.fn()
     const onKeyDown = vi.fn()

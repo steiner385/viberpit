@@ -9,7 +9,7 @@
 // It shows nothing a live card shows that ArchivedSession has no field for: no
 // status pill, model chip, host, PRs, sub-agents, quick replies or autopilot
 // marker. See the design spec's D5.
-import { Archive, ArchiveRestore, FolderGit2, Trash2 } from 'lucide-react'
+import { ArchiveRestore, Eye, FolderGit2, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatRepoLabel } from '@/lib/repoLabel'
 import { repoFromCwd } from '@/lib/repoFromCwd'
@@ -54,9 +54,10 @@ export function ArchivedSessionCard({
   const repoLabel = formatRepoLabel(session.repo ?? repoFromCwd(session.cwd))
   // 60s, not the SessionCard default of 1s: an archived timestamp is days old
   // (see the "Archived Nd ago" label below), so the displayed text changes at
-  // most once a day. ArchivedManager's QUICK_PURGE_COUNTS goes up to 200 rows
-  // and neither this card nor CardFrame is memoized, so a per-second tick here
-  // would be 200 needless re-renders/sec for a label that never visibly moves.
+  // most once a day. ArchivedSessionList's QUICK_PURGE_COUNTS goes up to 200
+  // rows and neither this card nor CardFrame is memoized, so a per-second tick
+  // here would be 200 needless re-renders/sec for a label that never visibly
+  // moves.
   const now = useNow(60_000)
 
   return (
@@ -68,6 +69,9 @@ export function ArchivedSessionCard({
       selected={selected}
       listMode={listMode}
       onOpen={onReview}
+      // No roving keyboard cursor here (that's SessionCard's list-mode
+      // pattern) — an archived row's open control is always a plain tab stop.
+      focusable
       swipeEnabled={!unarchiving}
       swipeRight={{
         label: `Unarchive ${name}`,
@@ -106,7 +110,7 @@ export function ArchivedSessionCard({
                   onClick={() => { close(); onReview(session.id) }}
                   className={cn(menuItem, 'text-gray-700 dark:text-gray-200')}
                 >
-                  <Archive size={16} aria-hidden="true" />
+                  <Eye size={16} aria-hidden="true" />
                   Review
                 </button>
                 <button
