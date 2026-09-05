@@ -10510,6 +10510,27 @@ class SessionOrchestrator:
             _copilot = getattr(self, "_copilot", None)
             if _copilot is not None and _provider_of(new_account) == _copilot_mod.PROVIDER:
                 await _copilot.ensure(new_account)
+            # An assistant-kind session's overlay carries an AssistantApi whose MCP
+            # tool handlers close over a live httpx.AsyncClient. old_driver.aclose()
+            # above already closed that client (it belonged to old_driver), so every
+            # mcp__ccswitch__* call on the rebuilt driver would raise against a dead
+            # connection unless a FRESH AssistantApi is minted here and re-registered
+            # under record.id before the new SessionDriver is built — mirroring the
+            # rebuild _spawn_session does on the initial spawn (#1125).
+            assistant_api = None
+            if is_assistant_kind(getattr(record, "kind", None)):
+                from server.assistant.client import AssistantApi
+                from server.assistant.options import assistant_options
+                from server.assistant.server import build_server
+                from server.assistant.token import mint_token
+                from server.config import get_settings
+                settings = get_settings()
+                assistant_api = AssistantApi(
+                    base_url=f"http://127.0.0.1:{settings.port}",
+                    token=mint_token(identity, record.id), session_id=record.id)
+                self.register_assistant_overlay(record.id, assistant_options(
+                    server=build_server(assistant_api), max_turns=settings.assistant_max_turns,
+                    model=record.model or settings.assistant_model))
             new_driver = SessionDriver(
                 record.id, new_account, cwd, str(cfg),
                 mode=mode, sdk_factory=self._session_factory(record.id),
@@ -10523,12 +10544,19 @@ class SessionOrchestrator:
                 get_condense_estimate=self._condense_estimate,
                 on_recoverable_failure=self._handle_recoverable_failure,
                 suggester=self._suggester_for(getattr(record, "kind", None)),
+                assistant_api=assistant_api,
             )
             # Set the record's account BEFORE start(): start() triggers the SDK factory →
             # _oat_env, which reads record.account to pick the setup-token. If left stale, a
             # cross-account reassign injects the old account's token into the new config (#346).
             record.account = new_account
-            await new_driver.start()
+            try:
+                await new_driver.start()
+            except Exception:
+                if assistant_api is not None:
+                    self._assistant_overlays.pop(record.id, None)
+                    await assistant_api.aclose()
+                raise
             self._install_driver(record.id, new_driver)
             if record.model is not None:
                 await new_driver.set_model(record.model)
