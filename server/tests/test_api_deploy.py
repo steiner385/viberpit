@@ -2,6 +2,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from server.api.deploy import router, get_deploy_client
 from server.auth.middleware import current_identity
+from server.db import get_db
+from server.db.models import AuditEvent
 from server.deploy.client import DeployControllerUnavailable
 
 
@@ -24,6 +26,20 @@ class FakeClient:
         return self._start
 
 
+class FakeDB:
+    """Captures what record_audit() adds; get_db normally commits for us."""
+
+    def __init__(self) -> None:
+        self.added: list[object] = []
+
+    def add(self, obj: object) -> None:
+        self.added.append(obj)
+
+
+def audits(client) -> list[AuditEvent]:
+    return [o for o in client.fake_db.added if isinstance(o, AuditEvent)]
+
+
 class FakeOrch:
     def __init__(self, live):
         self._live = live
@@ -37,9 +53,13 @@ def make_app(client, orch=None):
     app.include_router(router)
     app.dependency_overrides[current_identity] = lambda: "tester"
     app.dependency_overrides[get_deploy_client] = lambda: client
+    db = FakeDB()
+    app.dependency_overrides[get_db] = lambda: db
     if orch is not None:
         app.state.sessions = orch
-    return TestClient(app)
+    tc = TestClient(app)
+    tc.fake_db = db
+    return tc
 
 
 def test_status_proxies_controller():
@@ -112,3 +132,43 @@ def test_start_without_body_passes_no_target():
 def test_start_unavailable_is_503():
     c = make_app(FakeClient(unavailable=True))
     assert c.post("/api/deploy/start").status_code == 503
+
+
+def test_start_records_an_audit_event_naming_the_caller():
+    """A deploy is a privileged, outward-facing action: record WHO asked for it.
+
+    The route already resolves the caller via current_identity for authorisation;
+    without this it was resolved and then discarded, so a completed deploy left no
+    record of who triggered it.
+    """
+    c = make_app(FakeClient())
+    assert c.post("/api/deploy/start", json={"targetSha": "abc1234"}).status_code == 200
+    events = audits(c)
+    assert len(events) == 1, f"expected exactly one audit event, got {len(events)}"
+    ev = events[0]
+    assert ev.type == "deploy_start"
+    assert ev.identity == "tester"
+    assert ev.detail["targetSha"] == "abc1234"
+    assert ev.detail["started"] is True
+
+
+def test_start_records_audit_even_when_the_controller_refuses():
+    """A REFUSED deploy is exactly the event worth having a record of — a preflight
+    rejection (e.g. CI verdict=pending) is how an unexpected trigger shows up."""
+    c = make_app(FakeClient(start_ret=(200, {"started": False, "reason": "preflight: CI verdict=pending"})))
+    assert c.post("/api/deploy/start").status_code == 200
+    events = audits(c)
+    assert len(events) == 1
+    assert events[0].detail["started"] is False
+    assert events[0].detail["reason"] == "preflight: CI verdict=pending"
+    assert events[0].detail["targetSha"] is None
+
+
+def test_start_records_audit_when_the_controller_is_unavailable():
+    """The attempt still happened and still deserves a record."""
+    c = make_app(FakeClient(unavailable=True))
+    assert c.post("/api/deploy/start").status_code == 503
+    events = audits(c)
+    assert len(events) == 1
+    assert events[0].detail["started"] is False
+    assert events[0].detail["reason"] == "controller unavailable"
