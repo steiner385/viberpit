@@ -189,8 +189,12 @@ async def reap_lingering_db_tasks(
       so the cancel is swallowed and the task re-parks on the shield;
     * aiosqlite's ``Connection.close()`` catches a cancel delivered at its
       ``await self._execute(...)`` and then awaits ``stop()``'s future in its
-      ``finally`` — forever, if the worker thread already died (it dies when it
-      services a future whose loop closed, e.g. a cross-test leak under load).
+      ``finally`` — forever, if the worker thread already died. Upstream's
+      worker dies whenever it services a future whose loop closed;
+      ``server/db/aiosqlite_guard.py`` (issue #1134) removes that specific
+      cause for every connection this process opens, but the reaper still owns
+      the shield layer above, a worker wedged inside a ``busy_timeout`` lock
+      wait, and any aiosqlite connection opened outside our engine factory.
 
     That is precisely the TestClient.__exit__ portal-join hang CI kept hitting
     (~300 s pytest-timeout on an unrelated test) and the systemd-stop hang in
