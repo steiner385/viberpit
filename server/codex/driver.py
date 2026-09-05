@@ -512,6 +512,18 @@ class CodexAgentDriver:
         old = self._thread_id
         if old is not None:
             self._manager.unregister_thread(self.account, old)
+        # The inbox pump belongs to the thread subscription being replaced. If it
+        # survives, start() creates a second consumer for the same queue and live
+        # notifications are split nondeterministically between them. Retire it and
+        # discard any already-queued frames from the abandoned thread before the
+        # fresh thread registers.
+        pump, self._pump = self._pump, None
+        await cancel_and_reap(
+            pump,
+            phase=f"codex.driver.reconnect-pump:{self.session_id}",
+            timeout=_CLOSE_GRACE_S,
+        )
+        self._inbox = asyncio.Queue()
         self._dismiss_pending_approvals()
         self._finish_turn()
         self._queue.clear()
@@ -682,19 +694,23 @@ class CodexAgentDriver:
         """Start the next queued prompt, if any, once nothing is in flight."""
         if self._closing or self._turn_active or not self._queue:
             return
-        entry = self._queue.pop(0)
-        self._emit(ev.QueueUpdate(self.queue_wire()))
-        try:
-            inputs = self._build_inputs(entry.text, entry.images)
-        except CodexAttachmentRejected as exc:
-            # The file moved (or was replaced by a symlink out of the workspace)
-            # while the prompt waited. Surface it instead of raising into a
-            # turn-end handler that has no caller to report to.
-            await self.emit_error("codex_attachment_rejected", str(exc))
+        while self._queue:
+            entry = self._queue.pop(0)
+            self._emit(ev.QueueUpdate(self.queue_wire()))
+            try:
+                inputs = self._build_inputs(entry.text, entry.images)
+            except CodexAttachmentRejected as exc:
+                # The file moved (or was replaced by a symlink out of the workspace)
+                # while the prompt waited. Surface it instead of raising into a
+                # turn-end handler that has no caller to report to, then keep
+                # draining: one invalid attachment must not strand every valid
+                # prompt behind it with no active turn left to trigger another drain.
+                await self.emit_error("codex_attachment_rejected", str(exc))
+                continue
+            if not inputs:
+                continue
+            await self._start_turn(entry, inputs)
             return
-        if not inputs:
-            return
-        await self._start_turn(entry, inputs)
 
     def _finish_turn(self) -> TurnOutcome:
         """Close the supervision fence, if one is open."""

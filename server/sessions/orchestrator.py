@@ -1286,6 +1286,31 @@ class SessionOrchestrator:
         caps = registry.capabilities_for(engine)
         return bool(getattr(caps, capability, False)) if caps is not None else False
 
+    def _driver_config_dir(
+        self,
+        engine: AgentEngine,
+        account: str,
+        cwd: str,
+        kind: str | None,
+    ) -> str:
+        """Prepare and return the engine-specific session configuration directory.
+
+        Claude needs a composed ``CLAUDE_CONFIG_DIR`` plus its project-trust entry.
+        Codex does not: its account state lives in the runner manager's host-local
+        ``CODEX_HOME``, and an OpenAI account intentionally has no Claude credential
+        slot to compose.  The shared driver contract still carries ``config_dir``,
+        but the Codex driver documents it as informational and never reads it, so an
+        empty value is the honest representation instead of manufacturing Claude
+        state for the wrong provider.
+        """
+        if engine is AgentEngine.CODEX:
+            return ""
+        cfg_dir = compose(account)
+        # compose() rewrites .claude.json from the store, so trust must follow it;
+        # the assistant isolation copy must then be taken last.
+        configdir.trust_project(account, cwd)
+        return str(self._isolated_dir_for(cfg_dir, kind))
+
     def _create_driver(
         self,
         *,
@@ -2768,15 +2793,9 @@ class SessionOrchestrator:
             # Verify the given account exists (will raise if cred file missing — acceptable)
             pass
 
-        cfg_dir: Path = compose(account)
-
-        # Pre-trust the project directory (now the worktree, if any) so claude
-        # won't prompt for trust on startup. MUST follow compose(): compose rewrites
-        # .claude.json and replaces `projects` wholesale from the shared store, so a
-        # trust entry written first is erased (see _isolated_dir_for).
-        configdir.trust_project(account, cwd)
-        # …and the isolated mirror is taken last, so its copy carries the trust entry.
-        cfg_dir = self._isolated_dir_for(cfg_dir, kind)
+        driver_config_dir = self._driver_config_dir(
+            selected_engine, account, cwd, kind
+        )
 
         # Allocate a virtual X11 display for this session (if X11Manager wired in).
         if self._x11 is not None:
@@ -2855,7 +2874,7 @@ class SessionOrchestrator:
                 session_id=session_id,
                 account=account,
                 cwd=cwd,
-                config_dir=str(cfg_dir),
+                config_dir=driver_config_dir,
                 mode=permission_mode,
                 identity=identity,
                 resume=resume,
@@ -9119,18 +9138,15 @@ class SessionOrchestrator:
             # brand-new Claude conversation over the row.
             resume_engine = rec.engine
             resume = rec.engine_session_id or None
-            cfg_dir = compose(rec.account)
             # Ensure the working directory exists. A rehydrated session's cwd (a no-repo
             # scratch dir or a git worktree) may have been removed when the session was
             # previously closed (close_session cleans those up); without recreating it the
             # SDK fails with "Working directory does not exist", which surfaced as a
             # misleading "account needs re-authentication" error.
             Path(rec.cwd).mkdir(parents=True, exist_ok=True)
-            configdir.trust_project(rec.account, rec.cwd)
-            # After compose + trust, never before (see _isolated_dir_for): a reattach
-            # must not hand an assistant the un-isolated account dir back, and must not
-            # cost a coding session its pre-trust.
-            cfg_dir = self._isolated_dir_for(cfg_dir, getattr(rec, "kind", None))
+            driver_config_dir = self._driver_config_dir(
+                resume_engine, rec.account, rec.cwd, getattr(rec, "kind", None)
+            )
 
             # Allocate a virtual X11 display for this session (if X11Manager wired
             # in). Without this, a resumed/rehydrated session — the common path
@@ -9190,7 +9206,7 @@ class SessionOrchestrator:
                     session_id=session_id,
                     account=rec.account,
                     cwd=rec.cwd,
-                    config_dir=str(cfg_dir),
+                    config_dir=driver_config_dir,
                     mode=getattr(rec, "permission_mode", "interactive"),
                     identity=identity,
                     resume=resume_arg,
@@ -9252,7 +9268,7 @@ class SessionOrchestrator:
                     # or recorded under a different project dir — is starting fresh the
                     # right call, and then there is no history left to lose.
                     transcript = await asyncio.to_thread(
-                        self._find_transcript, str(cfg_dir), resume, rec.cwd)
+                        self._find_transcript, driver_config_dir, resume, rec.cwd)
                     with contextlib.suppress(Exception):
                         await driver.aclose()
                     if transcript is not None:

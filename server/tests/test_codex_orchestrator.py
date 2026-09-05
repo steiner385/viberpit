@@ -231,6 +231,9 @@ async def test_ensure_driver_rebuilds_a_codex_session_as_codex(tmp_path: Path,
     assert driver.engine is AgentEngine.CODEX
     # The stored thread id is the resume handle, not a fresh conversation.
     assert driver.resume == "thread-1"
+    # OpenAI accounts have no Claude credential slot. Resuming Codex must not
+    # manufacture a CLAUDE_CONFIG_DIR for the shared driver contract.
+    assert driver.config.config_dir == ""
     assert orch._drivers["s1"] is driver
 
 

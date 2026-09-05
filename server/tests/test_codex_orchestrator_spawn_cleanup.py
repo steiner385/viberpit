@@ -52,8 +52,10 @@ class _DoubleCancelDriver(_BlockingDriver):
 class _Factory:
     def __init__(self, driver: _Driver) -> None:
         self.driver = driver
+        self.configs = []
 
     def create(self, config):
+        self.configs.append(config)
         return self.driver
 
 
@@ -95,7 +97,8 @@ async def test_codex_attach_failure_rolls_back_started_spawn(tmp_path: Path) -> 
     driver = _Driver()
     manager = _AttachRaceManager()
     x11 = _X11()
-    registry = AgentDriverRegistry({AgentEngine.CODEX: _Factory(driver)})
+    factory = _Factory(driver)
+    registry = AgentDriverRegistry({AgentEngine.CODEX: factory})
     repo_root = tmp_path / "repos"
     repo_root.mkdir()
     config_dir = tmp_path / "config"
@@ -104,8 +107,8 @@ async def test_codex_attach_failure_rolls_back_started_spawn(tmp_path: Path) -> 
         codex=manager, x11=x11, driver_registry=registry, repo_root=str(repo_root),
     )
     with (
-        patch("server.sessions.orchestrator.compose", return_value=config_dir),
-        patch("server.sessions.orchestrator.configdir.trust_project"),
+        patch("server.sessions.orchestrator.compose", return_value=config_dir) as compose,
+        patch("server.sessions.orchestrator.configdir.trust_project") as trust_project,
         patch.object(orchestrator, "_isolated_dir_for", side_effect=lambda cfg, kind: cfg),
     ):
         with pytest.raises(RuntimeError, match="runner exited during attach"):
@@ -129,6 +132,9 @@ async def test_codex_attach_failure_rolls_back_started_spawn(tmp_path: Path) -> 
                 engine=AgentEngine.CODEX,
             )
 
+    compose.assert_not_called()
+    trust_project.assert_not_called()
+    assert factory.configs[0].config_dir == ""
     assert driver.started
     assert driver.close_calls == 1
     assert session_id not in orchestrator._drivers
