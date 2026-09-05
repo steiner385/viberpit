@@ -1158,11 +1158,12 @@ class SessionOrchestrator:
         plain Claude Code session with the operator's own MCP servers mounted and no tool
         restrictions at all, while simultaneously losing its ``mcp__ccswitch__*`` tools.
 
-        NOT yet universal: ``_reassign`` (account rotation / 401 recompose / crash
-        recovery) is a THIRD site that builds an AgentDriver and does not go through
-        here, so a rotated assistant carries the closed ``AssistantApi`` of the driver it
-        replaced. That is pre-existing at this branch's merge base and is tracked
-        separately — do not read this helper as covering every driver build.
+        Also called from ``_reassign_locked`` (account rotation / 401 recompose / crash
+        recovery), the THIRD site that builds an AgentDriver: a rotated assistant would
+        otherwise carry the closed ``AssistantApi`` of the driver it replaced (#1125).
+        Every driver build for an assistant goes through here — see
+        ``docs/superpowers/fix-patterns/2026-09-04-per-process-state-armed-only-on-the-create-path.md``
+        before adding a fourth build site.
 
         And it must REBUILD rather than preserve: the MCP tool handlers close over this
         ``AssistantApi``, whose ``httpx.AsyncClient`` ``driver.aclose()`` closes on
@@ -11011,23 +11012,12 @@ class SessionOrchestrator:
             # above already closed that client (it belonged to old_driver), so every
             # mcp__ccswitch__* call on the rebuilt driver would raise against a dead
             # connection unless a FRESH AssistantApi is minted here and re-registered
-            # under record.id before the new AgentDriver is built — mirroring the
-            # rebuild _spawn_session does on the initial spawn (#1125).
+            # under record.id before the new AgentDriver is built — the same
+            # _setup_assistant_overlay the spawn and the resume use (#1125).
             assistant_api = None
             if is_assistant_kind(getattr(record, "kind", None)):
-                from server.assistant.client import AssistantApi
-                from server.assistant.options import assistant_options
-                from server.assistant.server import build_server
-                from server.assistant.token import mint_token
-                from server.config import get_settings
-                settings = get_settings()
-                assistant_api = AssistantApi(
-                    base_url=f"http://127.0.0.1:{settings.port}",
-                    token=mint_token(identity, record.id), session_id=record.id,
-                    identity=identity)
-                self.register_assistant_overlay(record.id, assistant_options(
-                    server=build_server(assistant_api), max_turns=settings.assistant_max_turns,
-                    model=record.model or settings.assistant_model))
+                assistant_api = self._setup_assistant_overlay(
+                    record.id, identity=identity, model=record.model)
             new_driver = self._create_driver(
                 engine=AgentEngine.CLAUDE_CODE,
                 session_id=record.id,
