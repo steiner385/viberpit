@@ -59,11 +59,11 @@ class CodexThreadReplay:
         self._thread_id = thread_id
         self._model = model
 
-    async def _turns(self) -> tuple[schema.Turn, ...]:
+    async def _read(self) -> schema.Thread:
         response = await self._client.read_thread(
             schema.ThreadReadParams(thread_id=self._thread_id, include_turns=True)
         )
-        return response.thread.turns
+        return response.thread
 
     def _events_for(self, turn: schema.Turn, ordinal: int) -> list:
         """One turn's events, in the order the live stream would have produced them.
@@ -117,19 +117,36 @@ class CodexThreadReplay:
         so ``drop_incomplete_turn`` can simply drop an `inProgress` turn — no
         heuristic, and no way for it to amputate a completed one.
         """
-        turns = await self._turns()
+        thread = await self._read()
+        turns = thread.turns
         if drop_incomplete_turn:
             while turns and turns[-1].status is schema.TurnStatus.IN_PROGRESS:
                 turns = turns[:-1]
+        # Leads every window, exactly as the Claude adapter prepends its
+        # transcript's meta entry. The live `SessionMeta` is emitted once at
+        # thread start and does not survive in the driver's turn buffer, so
+        # without this a client attaching to an existing session would never
+        # learn which model it is talking to.
+        meta = self._session_meta(thread)
         total = len(turns)
         if total == 0:
-            return ReplayWindow(events=[], earliest_turn=0, total_turns=0)
+            return ReplayWindow(
+                events=[] if meta is None else [meta],
+                earliest_turn=0,
+                total_turns=0,
+            )
         end = total if before is None else max(0, min(before, total))
         start = 0 if limit is None else max(0, end - limit)
-        out: list = []
+        out: list = [] if meta is None else [meta]
         for ordinal in range(start, end):
             out.extend(self._events_for(turns[ordinal], ordinal))
         return ReplayWindow(events=out, earliest_turn=start, total_turns=total)
+
+    def _session_meta(self, thread: schema.Thread) -> ev.SessionMeta | None:
+        model = thread.model or self._model
+        if model is None:
+            return None
+        return ev.SessionMeta(model=model, session_id=thread.id)
 
     async def events(self, *, max_turns: int | None = 20) -> list:
         window = await self.window(before=None, limit=max_turns)

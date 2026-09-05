@@ -69,9 +69,9 @@ async def test_a_turn_reads_back_as_prompt_then_turn_then_reply():
     render as assistant output."""
     window = await _replay([_turn("t1")]).window()
     kinds = [type(e).__name__ for e in window.events]
-    assert kinds == ["UserMessage", "TurnStart", "TextDelta", "TurnEnd"]
-    assert window.events[0].text == "hi"
-    assert window.events[2].text == "hello"
+    assert kinds == ["SessionMeta", "UserMessage", "TurnStart", "TextDelta", "TurnEnd"]
+    assert window.events[1].text == "hi"
+    assert window.events[3].text == "hello"
 
 
 @pytest.mark.asyncio
@@ -113,9 +113,21 @@ async def test_limit_none_returns_every_turn():
 
 
 @pytest.mark.asyncio
-async def test_an_empty_thread_is_an_empty_window_not_an_error():
+async def test_an_empty_thread_reports_no_turns_but_still_announces_the_model():
     window = await _replay([]).window()
-    assert (window.events, window.earliest_turn, window.total_turns) == ([], 0, 0)
+    assert [type(e).__name__ for e in window.events] == ["SessionMeta"]
+    assert (window.earliest_turn, window.total_turns) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_every_window_leads_with_session_meta():
+    """The live SessionMeta is emitted once at thread start and does not survive
+    in the driver's turn buffer, so a client attaching to an existing session
+    would otherwise never learn which model it is talking to."""
+    window = await _replay([_turn(f"t{i}") for i in range(5)]).window(limit=2)
+    meta = window.events[0]
+    assert isinstance(meta, ev.SessionMeta)
+    assert (meta.model, meta.session_id) == ("gpt-5-codex", "thread-1")
 
 
 @pytest.mark.asyncio
@@ -173,7 +185,7 @@ async def test_an_unknown_item_type_does_not_break_the_replay():
         _turn("t1", extra=[{"type": "somethingNewUpstream", "id": "x1"}])
     ]).window()
     assert [type(e).__name__ for e in window.events] == [
-        "UserMessage", "TurnStart", "TextDelta", "TurnEnd"]
+        "SessionMeta", "UserMessage", "TurnStart", "TextDelta", "TurnEnd"]
 
 
 @pytest.mark.asyncio
@@ -191,4 +203,4 @@ async def test_a_turn_with_no_user_message_still_opens_a_turn():
          "items": [{"type": "agentMessage", "id": "a1", "text": "solo"}]}
     ]).window()
     assert [type(e).__name__ for e in window.events] == [
-        "TurnStart", "TextDelta", "TurnEnd"]
+        "SessionMeta", "TurnStart", "TextDelta", "TurnEnd"]

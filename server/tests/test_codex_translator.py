@@ -730,9 +730,29 @@ def test_turn_text_does_not_leak_across_turns() -> None:
 
 def test_turn_started_opens_the_turn() -> None:
     translator, emitted = _fresh()
-    assert [type(e) for e in emitted] == [ev.SessionMeta, ev.TurnStart]
+    assert [type(e) for e in emitted] == [ev.TurnStart]
     assert emitted[-1].turn_id == TURN  # type: ignore[attr-defined]
     assert translator.turn_id == TURN
+
+
+def test_thread_started_records_the_thread_but_emits_no_session_meta() -> None:
+    """`SessionMeta` has exactly one writer, and it is not this notification.
+
+    The driver only learns its thread id from the `thread/start` RESPONSE, so a
+    notification emitted before that response is parsed has no registered owner
+    and never reaches a translator; a RESUMED thread never sends it at all. The
+    driver mints `SessionMeta` from the response, and `CodexThreadReplay` mints
+    it from `thread/read` — announcing it here as well would let one session
+    report two different models.
+    """
+    translator = tr.CodexEventTranslator()
+    out = translator.translate(
+        schema.METHOD_THREAD_STARTED,
+        _notify(schema.METHOD_THREAD_STARTED, {"thread": _thread_wire()}),
+    )
+    assert out == []
+    assert translator.thread_id == THREAD
+    assert translator.model == "gpt-5-codex"
 
 
 def test_turn_completed_does_not_replay_the_items_that_already_streamed() -> None:
@@ -943,7 +963,6 @@ def _replay(name: str) -> tuple[tr.CodexEventTranslator, list[object]]:
 def test_ordinary_turn_transcript_translates_to_the_expected_stream() -> None:
     translator, out = _replay("ordinary_turn.jsonl")
     assert [type(e).__name__ for e in out] == [
-        "SessionMeta",
         "TurnStart",
         "ThinkingDelta",
         "TextDelta",

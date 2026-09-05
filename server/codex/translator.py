@@ -280,12 +280,17 @@ class CodexEventTranslator:
         thread = params.thread
         self._thread_id = thread.id
         self._model = thread.model or self._model
-        if self._model is None:
-            return []
-        # `SessionMeta.session_id` is the engine-native id a resume needs, which
-        # for Codex is the thread id — the same role the Claude SDK session id
-        # plays, so the web's model chip and resume affordance work unchanged.
-        return [ev.SessionMeta(model=self._model, session_id=thread.id)]
+        # No `SessionMeta` here, deliberately. This notification cannot be relied
+        # on to carry it: the driver only learns its thread id from the
+        # `thread/start` RESPONSE, so anything the app-server emits before that
+        # response is parsed has no registered owner and is dropped by the
+        # manager (which counts it) — and a RESUMED thread never sends this
+        # notification at all. `SessionMeta` is minted from the authoritative
+        # response instead, by the driver live and by `CodexThreadReplay` on
+        # attach, exactly as Claude mints it from the SDK and from its
+        # transcript's meta entry. Two writers for one frame is how a session
+        # ends up announcing two different models.
+        return []
 
     def _thread_status_changed(
         self, params: schema.ServerNotificationParams
