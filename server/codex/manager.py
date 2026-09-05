@@ -57,6 +57,7 @@ from typing import Any, Final
 from server.aio import cancel_and_reap
 from server.codex import process as codex_process
 from server.codex import redaction, schema
+from server.codex.redaction import Redacted
 from server.codex.capabilities import CodexAvailability, CodexUnavailableReason
 from server.codex.external_auth import (
     ExternalAuthUnavailable,
@@ -153,6 +154,15 @@ CredentialSupplier = Callable[[str], Awaitable[schema.ExternalAuthLoginParams]]
 #: external-token design exists to avoid.
 RefreshHandlerFactory = Callable[[str], RefreshHandler]
 ThreadNotifier = Callable[[RunnerNotice], None]
+#: Delivers one parsed app-server notification to the driver of ONE thread.
+#:
+#: Separate from :data:`ThreadNotifier` because the two carry different truths:
+#: a `RunnerNotice` is this module's own supervision verdict, while this is the
+#: app-server's stream. Same registration call and same isolation rules, so
+#: there is still exactly one place a thread driver subscribes and unsubscribes.
+ThreadEventSink = Callable[[str, "schema.ServerNotificationParams"], None]
+#: Answers one approval request raised by ONE thread's turn.
+ApprovalSink = Callable[[str, "schema.ApprovalParams"], Awaitable["schema.ApprovalResponse"]]
 ProcessFactory = Callable[..., CodexProcessHandle]
 ClientFactory = Callable[..., CodexAppServerClient]
 HomeFactory = Callable[[Path, str], Path]
@@ -249,6 +259,13 @@ class CodexRunnerManager:
         self._registry_lock = asyncio.Lock()
         self._sessions: dict[str, str] = {}  # session id -> account
         self._notifiers: dict[str, dict[str, ThreadNotifier]] = {}
+        #: account -> thread -> sink for the app-server's own notification stream.
+        self._event_sinks: dict[str, dict[str, ThreadEventSink]] = {}
+        #: account -> thread -> approval handler. Keyed by thread for the same
+        #: reason the event sinks are: one app-server serves every thread of an
+        #: account, so an approval must reach the ONE session whose turn raised
+        #: it — an account-wide handler would let session A answer B's prompt.
+        self._approval_sinks: dict[str, dict[str, ApprovalSink]] = {}
         self._turns: dict[str, dict[str, int]] = {}  # account -> thread -> generation
         #: Monotonic per account for the life of the manager. Owned here rather than
         #: on `_Runner` precisely so that stop(), the idle reaper and `_give_up` —
@@ -257,6 +274,11 @@ class CodexRunnerManager:
         #: At most one armed teardown per account; re-arming cancels the previous.
         self._idle_tasks: dict[str, asyncio.Task[None]] = {}
         self.notify_errors = 0
+        #: Thread-scoped frames that arrived with no registered owner. Expected to
+        #: stay at or near zero; a climbing value means threads are being served
+        #: that no ccswitch session is attached to.
+        self.unrouted_events = 0
+        self.unrouted_approvals = 0
         #: Set by ``build_codex_manager`` to the provider backing
         #: ``credential_supplier``. ``invalidate_credentials`` needs it; nothing
         #: else in this class does, which is why it is not a constructor argument.
@@ -317,6 +339,11 @@ class CodexRunnerManager:
         return CodexAppServerClient(
             transport,
             external_auth_enabled=external_auth_enabled,
+            # Bound to THIS account, because that is knowledge only the manager
+            # has: the connection carries no account name, and every routing
+            # decision below (which thread, which session) is scoped by it.
+            notification_handler=partial(self._on_notification, account),
+            approval_handler=partial(self._on_approval, account),
             refresh_handler=(
                 None
                 if self._refresh_handler_factory is None
@@ -601,14 +628,149 @@ class CodexRunnerManager:
     # -- thread notification ----------------------------------------------
 
     def register_thread(
-        self, account: str, thread_id: str, notifier: ThreadNotifier
+        self,
+        account: str,
+        thread_id: str,
+        notifier: ThreadNotifier,
+        *,
+        events: ThreadEventSink | None = None,
+        approvals: ApprovalSink | None = None,
     ) -> None:
-        """Subscribe one thread driver to its runner's supervision events."""
+        """Subscribe one thread driver to everything addressed to its thread.
+
+        One registration call for all three streams — supervision notices, the
+        app-server's notifications, and its approval requests — so a driver
+        cannot end up half-subscribed, and :meth:`unregister_thread` has exactly
+        one inverse to keep correct.
+        """
         self._notifiers.setdefault(account, {})[thread_id] = notifier
+        if events is not None:
+            self._event_sinks.setdefault(account, {})[thread_id] = events
+        if approvals is not None:
+            self._approval_sinks.setdefault(account, {})[thread_id] = approvals
 
     def unregister_thread(self, account: str, thread_id: str) -> None:
         self._notifiers.get(account, {}).pop(thread_id, None)
+        self._event_sinks.get(account, {}).pop(thread_id, None)
+        # Dropped BEFORE the turn fence, so a request arriving during teardown
+        # finds no handler and takes the protocol's fail-closed `-32601` path
+        # rather than reaching a driver that is already closing.
+        self._approval_sinks.get(account, {}).pop(thread_id, None)
         self._turns.get(account, {}).pop(thread_id, None)
+
+    # -- app-server stream routing ----------------------------------------
+
+    @staticmethod
+    def _thread_of(params: Any) -> str | None:
+        """The thread a frame belongs to, or None when it is account-wide.
+
+        Read off the parsed DTO rather than the raw frame: every thread-scoped
+        schema declares `threadId` as required, so a missing attribute here means
+        "account-scoped", never "malformed".
+
+        The `Redacted` unwrap is load-bearing, not defensive. `error` carries its
+        thread id as :class:`~server.codex.redaction.Redacted` (it is a native
+        id, and Phase 2 made every native id in that notification unrenderable).
+        Comparing the wrapper against a plain string id would route every single
+        `error` to nobody, so the one session whose turn just failed would be the
+        only session never told. Revealing here is safe precisely because routing
+        is the one place the value is USED rather than rendered — nothing below
+        logs it.
+        """
+        value = getattr(params, "thread_id", None)
+        if isinstance(value, Redacted):
+            return value.reveal()
+        return value
+
+    def _on_notification(
+        self, account: str, method: str, params: schema.ServerNotificationParams
+    ) -> None:
+        """Route one parsed notification to the thread it belongs to.
+
+        Thread-scoped notifications go to exactly one sink. An account-scoped one
+        (`error`, `account/*`) fans out to every thread on this runner, because
+        it describes the shared app-server and each session must react for
+        itself.
+
+        A thread-scoped notification for an unregistered thread is dropped and
+        counted. The only window in which that can happen is between
+        `thread/start` being written and its response being parsed — the driver
+        does not know its own thread id before then — and the notifications
+        emitted in that window (`thread/started`) are redundant with the response
+        the driver is about to receive. Buffering them would add an eviction
+        policy and a flush ordering to protect data the driver already has.
+        """
+        thread_id = self._thread_of(params)
+        if thread_id is None:
+            for sink_id, sink in list(self._event_sinks.get(account, {}).items()):
+                self._deliver(account, sink_id, sink, method, params)
+            return
+        owner = self._event_sinks.get(account, {}).get(thread_id)
+        if owner is None:
+            self.unrouted_events += 1
+            log_event(
+                logger,
+                logging.DEBUG,
+                "codex.manager.unrouted_notification",
+                account=account,
+                method=method,
+            )
+            return
+        self._deliver(account, thread_id, owner, method, params)
+
+    def _deliver(
+        self,
+        account: str,
+        thread_id: str,
+        sink: ThreadEventSink,
+        method: str,
+        params: schema.ServerNotificationParams,
+    ) -> None:
+        """Call one sink under the same isolation rule :meth:`_notify` uses: one
+        bad subscriber must not stop the others, and must never raise into the
+        protocol reader, which is shared with every other thread on this runner."""
+        try:
+            sink(method, params)
+        except Exception as exc:  # noqa: BLE001 -- one bad subscriber, not all
+            self.notify_errors += 1
+            log_event(
+                logger,
+                logging.ERROR,
+                "codex.manager.event_sink_failed",
+                account=account,
+                thread=thread_id,
+                method=method,
+                error=redaction.scrub_exception(exc),
+            )
+
+    async def _on_approval(
+        self, account: str, method: str, params: schema.ApprovalParams
+    ) -> schema.ApprovalResponse:
+        """Route one approval request to the thread whose turn raised it.
+
+        Raises when there is no handler for that thread, which the protocol
+        turns into a JSON-RPC error rather than a decision. That is the whole
+        point: an approval nobody owns must never be answered, and *not
+        answering* is the only outcome that cannot become an allow.
+        """
+        thread_id = self._thread_of(params)
+        sink = (
+            None if thread_id is None
+            else self._approval_sinks.get(account, {}).get(thread_id)
+        )
+        if sink is None:
+            self.unrouted_approvals += 1
+            log_event(
+                logger,
+                logging.WARNING,
+                "codex.manager.unrouted_approval",
+                account=account,
+                method=method,
+            )
+            raise CodexRunnerMissingError(
+                "no live ccswitch session owns this codex approval request"
+            )
+        return await sink(method, params)
 
     def _notify(self, notice: RunnerNotice) -> None:
         for thread_id, notifier in list(self._notifiers.get(notice.account, {}).items()):
