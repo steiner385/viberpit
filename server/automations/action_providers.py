@@ -140,6 +140,11 @@ _BACKLOG_STATUS_MAP = {
     "claim_failed": ("error", "Could not claim the issue — see the feed"),
     "no_account": ("warn", "All accounts at/above usage ceiling — try later"),
     "unknown": ("warn", "No longer a current candidate"),
+    # The launch was declined before a session existed — an engine the origin is
+    # not audited for, or an engine/permission-mode pair that could not open the
+    # PR the run exists to produce. The claim was returned to the pool; the
+    # automation feed carries the specific reason.
+    "refused": ("error", "Launch refused for this origin — see the feed"),
 }
 
 

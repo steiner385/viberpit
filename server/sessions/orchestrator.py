@@ -844,7 +844,7 @@ class SessionOrchestrator:
             spawn=self._backlog_spawn,
             count_in_flight=self._backlog_count_in_flight,
             count_candidates=self._backlog_count_candidates,
-            healthy_account=self._backlog_healthy_account,
+            healthy_account=self._backlog_loop_healthy_account,
             pr_status_for=self._backlog_pr_status_for,
             pr_doctor_active=self._backlog_pr_doctor_active,
             read_config=self._backlog_read_config,
@@ -3793,12 +3793,23 @@ class SessionOrchestrator:
         return sum(1 for st in states.values()
                    if not st.get("gave_up") and not st.get("handed_off"))
 
-    async def _backlog_healthy_account(self) -> str | None:
-        """A non-quarantined, non-limited account with headroom, or None.
+    async def _backlog_healthy_account(
+            self, engine: AgentEngine = AgentEngine.CLAUDE_CODE) -> str | None:
+        """A non-quarantined, non-limited account with headroom for *engine*, or None.
 
         Reuses the same selection the interactive path uses (``select_account``
         excluding quarantined accounts, load-aware) plus the usage-ceiling guard
-        (``_account_limited``). None means: pause spawning until an account frees."""
+        (``_account_limited``). None means: pause spawning until an account frees.
+
+        *engine* is threaded through because this gate answers TWO questions at
+        once, and both are engine-specific (Phase 7, Tasks 7.2/7.3): which account
+        the session runs on, and whether to spawn at all. Selecting for Claude and
+        launching Codex got both wrong — ``sanitize_launch_for_engine`` would drop
+        the Anthropic account (leaving the Codex session with none), and the
+        "no healthy account — pausing spawns" decision would be made on Claude's
+        quota while OpenAI's went unread. The selector's own engine filter is
+        metadata-driven and fails closed, so an account with no engine mapping is
+        simply not a candidate."""
         try:
             # reserve=False: this is a read-only availability probe. Reserving here
             # would consume the picked account's reservation window without starting
@@ -3806,12 +3817,36 @@ class SessionOrchestrator:
             # one account has headroom.
             picked = select_account(
                 exclude=self._recovery.quarantined(now=self._clock()),
-                load=self.live_session_load(), reserve=False)
+                load=self.live_session_load(), reserve=False, engine=engine)
         except AllAccountsBusy:
             return None
         if self._account_limited(picked.name):
             return None
         return picked.name
+
+    async def _backlog_loop_healthy_account(self) -> str | None:
+        """The runner loop's zero-arg ``healthy_account`` seam, engine-aware.
+
+        The loop asks this before it selects a batch, so the engine comes from the
+        origin's launch plan rather than from the batch — which is right: the
+        ceiling is per-origin, not per-issue."""
+        return await self._automation_account_for(self._backlog_ctx, "backlog-runner")
+
+    async def _automation_account_for(self, ctx, origin_ref: str) -> str | None:
+        """The healthy account for *ctx*'s next launch, selected for its engine.
+
+        One helper for every automation spawn site so the engine decision and the
+        account gate cannot disagree. A refused launch plan resolves to Claude for
+        the purposes of the probe only — the refusal itself is reported by the
+        spawn path, which must stay the single place that decides not to run."""
+        plan = None
+        try:
+            plan = await ctx.launch_plan()
+        except Exception:
+            log.debug("automation: launch plan unresolved for %s; probing the "
+                      "Claude account pool", origin_ref, exc_info=True)
+        engine = plan[0] if plan else AgentEngine.CLAUDE_CODE
+        return await self._backlog_healthy_account(engine=engine)
 
     async def _backlog_pr_status_for(self, target: str) -> PullRequestInfo | None:
         """The PullRequestInfo for a runner target, or None.
@@ -4123,6 +4158,14 @@ class SessionOrchestrator:
         emits ``spawned`` with ``detail.issues``). Returns the SessionRecord."""
         from server.automations.backlog_prompt import build_implement_prompt
         from server.automations.model_pick import resolve_model
+        # Engine FIRST, before any network or disk work: the seed prompt states a
+        # commit trailer so it has to be built for the engine that will actually
+        # run (Phase 7, Task 7.1) — and a refusal must cost nothing, which it did
+        # not while a remote branch listing and a full clone ran ahead of it.
+        plan = await self._backlog_ctx.launch_plan_or_refuse(batch.primary)
+        if plan is None:                       # out of policy — the ctx recorded why
+            return None
+        engine, _launch_config = plan
         url = f"https://github.com/{batch.repo}.git"
         try:
             default_branch = await asyncio.to_thread(
@@ -4133,12 +4176,6 @@ class SessionOrchestrator:
         cwd = await asyncio.to_thread(
             gitrepos.ensure_clone, await self._effective_repo_root(), batch.repo, url)
         _mode, config = await self._backlog_read_config()
-        # Engine first: the seed prompt states a commit trailer, so it has to be
-        # built for the engine that will actually run (Phase 7, Task 7.1).
-        plan = await self._backlog_ctx.launch_plan_or_refuse(batch.primary)
-        if plan is None:                       # out of policy — the ctx recorded why
-            return None
-        engine, _launch_config = plan
         detail: dict = {"issues": batch.issues, "engine": engine.value}
         model = model_source = None
         if engine is AgentEngine.CLAUDE_CODE:
@@ -4208,10 +4245,19 @@ class SessionOrchestrator:
             new_st = dict(st)
             new_st.pop("proposed", None)
             await self._backlog_ctx.set_target_state(primary, new_st)
-        account = await self._backlog_healthy_account()
+        account = await self._automation_account_for(self._backlog_ctx, primary)
         if account is None:
             return "no_account"
         rec = await self._backlog_spawn(batch, account)
+        if rec is None:
+            # REFUSED before anything was created (engine policy, or an
+            # engine/permission-mode pair that could not open a PR). Reporting
+            # "spawned" here told the dashboard a session exists and left the
+            # claim row holding a concurrency slot forever. Undo the claim and
+            # say so; the spawn path already recorded the reason.
+            await self._backlog_release(primary)
+            await self._backlog_ctx.delete_target_state(primary)
+            return "refused"
         # A de-dup hit returns the existing row without appending to spawns; treat
         # a matching origin_ref that already existed as "exists".
         await self._backlog_ctx.set_target_state(primary, {
@@ -4266,11 +4312,15 @@ class SessionOrchestrator:
             await self._backlog_ctx.emit("info", f"manual dispatch {primary}",
                                          kind="claimed", target=primary,
                                          detail={"issues": batch.issues})
-        account = await self._backlog_healthy_account()
+        account = await self._automation_account_for(self._backlog_ctx, primary)
         if account is None:
             return {"status": "no_account", "session_id": None,
                     "session_name": None}
         rec = await self._backlog_spawn(batch, account)
+        if rec is None:
+            await self._backlog_release(primary)
+            await self._backlog_ctx.delete_target_state(primary)
+            return {"status": "refused", "session_id": None, "session_name": None}
         await self._backlog_ctx.set_target_state(primary, {
             "session_id": getattr(rec, "id", None),
             "repo": batch.repo,
@@ -4383,7 +4433,8 @@ class SessionOrchestrator:
         Resolves the repo clone cwd + a healthy account off the event loop, then
         spawns via the de-dup-safe context spawner (origin_ref=``<slug>:intent``);
         ``create_session`` falls back to its own account/cwd if these are None."""
-        account = await self._backlog_healthy_account()
+        account = await self._automation_account_for(
+            self._sdlc_intake_ctx, f"{trigger.slug}:intent")
         cwd = None
         if trigger.repo:
             url = f"https://github.com/{trigger.repo}.git"
@@ -5413,7 +5464,8 @@ class SessionOrchestrator:
             return None
         if kind not in ("spec", "plan"):  # pragma: no cover — loop only asks these
             return None
-        account = await self._backlog_healthy_account()
+        account = await self._automation_account_for(
+            self._sdlc_synth_ctx, f"{slug}:{kind}")
         if account is None:
             return None
         _mode, config = await self._sdlc_synth_read_config()
