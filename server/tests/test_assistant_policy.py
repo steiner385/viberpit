@@ -60,6 +60,22 @@ _UUID = "3f2a9c1e-7b4d-4e0a-9c7d-1a2b3c4d5e6f"
     ("GET", "/api/sessions/adoptable", False),
     ("POST", "/api/sessions/adopt", False),
     ("DELETE", "/api/sessions/abc", False),
+    # Task 8.1 — notification channel/rule/quiet-hours tools.
+    ("GET", "/api/notifications/channels", True),
+    ("GET", "/api/notifications/rules", True),
+    ("POST", "/api/notifications/rules", True),
+    ("DELETE", "/api/notifications/rules/rule-1", True),
+    ("GET", "/api/notifications/quiet-hours", True),
+    ("PUT", "/api/notifications/quiet-hours", True),
+    ("POST", "/api/notifications/test", True),
+    # Regression: channels are CRUD via PUT/DELETE/POST but only GET is allowlisted
+    # for the assistant — creating/editing/deleting a webhook channel is not a tool.
+    ("POST", "/api/notifications/channels", False),
+    ("PUT", "/api/notifications/channels/ch1", False),
+    ("DELETE", "/api/notifications/channels/ch1", False),
+    ("PUT", "/api/notifications/rules/rule-1", False),
+    ("DELETE", "/api/notifications/rules/rule-1/extra", False),
+    ("GET", "/api/notifications/test", False),
 ])
 def test_route_allowlist(method, path, ok):
     assert route_allowed(method, path) is ok

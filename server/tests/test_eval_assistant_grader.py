@@ -103,7 +103,8 @@ _SHIPPED_CASES = load_cases()
 
 def test_shipped_case_file_has_around_fifty_cases():
     # Task 5.1 (spec v2 §4.0) added 15 starter-chip cases on top of the original ~40.
-    assert 45 <= len(_SHIPPED_CASES) <= 60
+    # Task 8.1 added 8 notification-tool cases on top of that ~55.
+    assert 45 <= len(_SHIPPED_CASES) <= 70
 
 
 def test_shipped_case_file_has_at_least_six_injection_cases():
