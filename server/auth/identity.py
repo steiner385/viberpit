@@ -149,11 +149,24 @@ def _whois_identity(request: Request | WebSocket) -> str | None:
     """
     import json
     try:
-        peer_ip = request.client.host if request.client else None
+        direct_peer = request.client.host if request.client else None
+        peer_ip: str | None = direct_peer
+        if _peer_is_trusted(request):
+            # Only honour X-Real-IP when something entitled to set it sits in front:
+            # loopback, or an address in CCSWITCH_TRUSTED_PROXY_IPS. This is the same
+            # predicate the identity-header gate uses — one peer-trust rule in this
+            # module, not two that can drift apart.
+            peer_ip = request.headers.get("X-Real-IP") or direct_peer
         if not peer_ip:
             return None
+        # Validate peer_ip is a real IP address to prevent argv flag injection
+        # (e.g. a value like "--flag" being misinterpreted by tailscale whois).
+        try:
+            ipaddress.ip_address(peer_ip)
+        except ValueError:
+            return None
         result = subprocess.run(
-            ["tailscale", "whois", "--json", peer_ip],
+            ["tailscale", "whois", "--json", "--", peer_ip],
             capture_output=True,
             text=True,
             timeout=2,

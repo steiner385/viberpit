@@ -46,24 +46,32 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now ccswitch.service
 ```
 
-## HTTPS via `tailscale serve` (required once per host)
+## HTTPS via nginx + tailscale cert (required once per host)
 
 The edge server binds to `127.0.0.1:8787` (loopback). To expose it over HTTPS on the
 Tailscale network — required for browser secure-context APIs such as microphone access —
-run this once on the host:
+run this once on the host (nginx must already be installed):
 
 ```bash
-tailscale serve https / http://127.0.0.1:8787
+sudo tailscale cert \
+    --cert-file /etc/ccswitch/dobby.tail0dd570.ts.net.crt \
+    --key-file  /etc/ccswitch/dobby.tail0dd570.ts.net.key \
+    dobby.tail0dd570.ts.net
+sudo cp deploy/ccswitch-tailnet.nginx /etc/nginx/sites-available/ccswitch-tailnet
+sudo ln -sf /etc/nginx/sites-available/ccswitch-tailnet /etc/nginx/sites-enabled/
+sudo nginx -t && sudo nginx -s reload
+sudo cp deploy/ccswitch-cert-renew.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now ccswitch-cert-renew.timer
 ```
 
-This registers a persistent `tailscale serve` rule that survives reboots. After running it,
-access ccswitch at `https://<hostname>.<tailnet-name>.ts.net` instead of the raw IP.
-Tailscale provisions and auto-rotates the TLS certificate; no cert management is needed.
+Access ccswitch at `https://dobby.tail0dd570.ts.net/`. Tailscale provisions the TLS
+certificate; `ccswitch-cert-renew.timer` renews it weekly and reloads nginx automatically.
 
-To verify the rule is active:
+To verify the nginx vhost is active:
 
 ```bash
-tailscale serve status
+sudo nginx -t
+systemctl status ccswitch-cert-renew.timer
 ```
 
 ## Server-side dictation (optional)

@@ -8,6 +8,9 @@ Tests:
 """
 from __future__ import annotations
 
+import json
+from unittest.mock import MagicMock
+
 import pytest
 from httpx import AsyncClient, ASGITransport
 from fastapi import FastAPI, WebSocket
@@ -166,3 +169,120 @@ async def test_ws_upgrade_without_identity_is_rejected():
         # Expected: connection refused / HTTP 401 from middleware before upgrade
         pass
     # The test simply asserts no unhandled exception escapes (WS rejection is the goal)
+
+
+# ---------------------------------------------------------------------------
+# X-Real-IP fallback (nginx reverse-proxy path)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_x_real_ip_used_for_whois_when_ts_header_absent(monkeypatch):
+    """When Tailscale-User-Login is absent and the direct TCP peer is a trusted proxy
+    (loopback), X-Real-IP is passed to tailscale whois instead of client.host."""
+    whois_calls: list[str] = []
+
+    def fake_whois(cmd, **kwargs):
+        whois_calls.append(cmd[-1])  # IP argument (after --)
+        mock = MagicMock()
+        mock.returncode = 0
+        mock.stdout = json.dumps({"UserProfile": {"LoginName": "alice@example.com"}})
+        return mock
+
+    monkeypatch.setattr("server.auth.identity.subprocess.run", fake_whois)
+    # `server.auth.identity` and `ccswitch.crypto` both call the same shared
+    # `subprocess` module object, so the patch above intercepts calls from either.
+    # This request succeeds (200), so IdentityMiddleware signs a session cookie via
+    # `_signing_secret()`, which falls back to `ccswitch.crypto.master_key()`'s
+    # `secret-tool` lookup when no secret is configured — that call would otherwise
+    # also land in `whois_calls`. Configure a session secret so it short-circuits.
+    monkeypatch.setenv("CCSWITCH_SESSION_SECRET", "test-secret")
+    app = create_app()
+    # Simulate nginx on loopback forwarding the real Tailscale peer IP via X-Real-IP
+    transport = ASGITransport(app=app, client=("127.0.0.1", 12345))
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/api/health",
+            headers={"X-Real-IP": "100.64.0.1"},
+        )
+    assert response.status_code == 200
+    assert whois_calls == ["100.64.0.1"], (
+        f"whois should be called with X-Real-IP value, got {whois_calls}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_whois_falls_back_to_client_host_without_x_real_ip(monkeypatch):
+    """Without X-Real-IP, whois is called with the direct peer IP (not a spoofed header).
+    Uses a non-trusted direct peer (100.64.0.50) so X-Real-IP would be ignored anyway;
+    whois fails → 401."""
+    whois_calls: list[str] = []
+
+    def fake_whois(cmd, **kwargs):
+        whois_calls.append(cmd[-1])
+        mock = MagicMock()
+        mock.returncode = 1  # whois fails → 401
+        mock.stdout = ""
+        return mock
+
+    monkeypatch.setattr("server.auth.identity.subprocess.run", fake_whois)
+    app = create_app()
+    transport = ASGITransport(app=app, client=("100.64.0.50", 12345))
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/health")
+    assert response.status_code == 401
+    # whois was called with the direct peer IP — X-Real-IP was NOT used (header absent)
+    assert len(whois_calls) == 1
+    assert whois_calls[0] == "100.64.0.50"
+
+
+@pytest.mark.asyncio
+async def test_x_real_ip_ignored_when_direct_peer_not_trusted(monkeypatch):
+    """X-Real-IP is ignored when the direct TCP peer is not a trusted proxy.
+    An attacker reaching uvicorn directly cannot spoof identity via this header."""
+    whois_calls: list[str] = []
+
+    def fake_whois(cmd, **kwargs):
+        whois_calls.append(cmd[-1])  # IP argument (after --)
+        mock = MagicMock()
+        mock.returncode = 1
+        mock.stdout = ""
+        return mock
+
+    monkeypatch.setattr("server.auth.identity.subprocess.run", fake_whois)
+    app = create_app()
+    transport = ASGITransport(app=app, client=("100.64.0.99", 12345))
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/api/health",
+            headers={"X-Real-IP": "100.64.0.1"},  # attacker tries to spoof
+        )
+    assert response.status_code == 401
+    # whois called with direct peer (100.64.0.99), not the spoofed X-Real-IP
+    assert len(whois_calls) == 1
+    assert whois_calls[0] == "100.64.0.99"
+
+
+@pytest.mark.asyncio
+async def test_invalid_x_real_ip_does_not_invoke_whois(monkeypatch):
+    """A non-IP value in X-Real-IP (e.g. a flag string) is rejected by ipaddress
+    validation before whois is invoked — closing the argv injection vector."""
+    whois_calls: list[str] = []
+
+    def fake_whois(cmd, **kwargs):
+        whois_calls.append(cmd[-1])
+        mock = MagicMock()
+        mock.returncode = 0
+        mock.stdout = json.dumps({"UserProfile": {"LoginName": "attacker@evil.com"}})
+        return mock
+
+    monkeypatch.setattr("server.auth.identity.subprocess.run", fake_whois)
+    app = create_app()
+    transport = ASGITransport(app=app, client=("127.0.0.1", 12345))
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/api/health",
+            headers={"X-Real-IP": "--version"},  # flag injection attempt
+        )
+    assert response.status_code == 401
+    assert len(whois_calls) == 0, "whois must not be called with an invalid IP"
