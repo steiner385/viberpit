@@ -57,8 +57,8 @@ When a unit of work is complete and verified (tests + lint green), finish it wit
    PR — a ready PR with auto-merge armed is the finished state.
 Only hold off if the user said it's a prototype/WIP, or if verification is failing.
 
-`master` is protected: PRs need the `lint-and-test` and `frontend` CI checks green and the branch
-up to date with `master` before merging. `allow_update_branch` auto-rebases an out-of-date PR and
+`master` is protected: PRs need the `lint-and-test`, `frontend` and `amendment` CI checks green and
+the branch up to date with `master` before merging. `allow_update_branch` auto-rebases an out-of-date PR and
 re-runs CI, so a green `--auto` PR lands without manual "Update branch" clicks. Branches are deleted
 server-side on merge — don't pass `--delete-branch` (the `master` deploy worktree makes the local
 delete fail). Merge queue is unavailable (user-owned repo); auto-merge + strict required checks
@@ -69,6 +69,32 @@ no position held — under a busy cadence (master advancing faster than a CI cyc
 be marked `BEHIND`, get rebased by `allow_update_branch`, and lose the race again, needing several
 rebase-and-recheck cycles before it lands; each cycle is also a fresh exposure to any flaky check.
 Admins may push directly in emergencies.
+
+### Docs-only PRs: admin-merge, don't wait
+
+A PR whose diff touches ONLY documentation may be squash-merged immediately with
+`gh pr merge <N> --squash --admin` instead of waiting on `--auto`. The required checks exist to
+catch broken code; none of them can be affected by a change that ships no code. Waiting makes a
+docs PR pay a full ~12-minute `lint-and-test` cycle — and, under the rebase livelock above, often
+several of them plus a fresh exposure to any flaky check — to prove nothing.
+
+**Docs-only means every changed path matches `^docs/` or `\.md$` AND none of these:**
+
+- `.specify/memory/constitution.md` — the governance document itself
+- `.agents/instructions/**`, `AGENTS.md`, `CLAUDE.md` — agent instructions. Markdown that changes
+  how every agent behaves is *behaviour*, not documentation
+- any path in `GUARDRAIL_PATHS` (`server/sdlc/governance.py`)
+- `.github/**` — templates sit beside workflows and CODEOWNERS
+
+The exclusions are the whole point. "It's only a `.md`" is exactly how a governance or behaviour
+change slips in unreviewed, and for those paths `amendment` is the check that matters — the one
+this shortcut would bypass. #1138 was a two-file `.md`-only PR that rewrote agent instructions;
+a naive extension check would have merged it unread.
+
+**Read the diff first** (`gh pr diff <N>`). The justification is "I read it and it ships no code",
+never "the extension is `.md`". Never admin-merge a PR you have not read, and never use `--admin`
+to bypass a check that is genuinely FAILING rather than merely pending — see
+`triaging-stuck-prs`.
 
 ## Dev / testing
 
