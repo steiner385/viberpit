@@ -92,6 +92,21 @@ def test_wrap_untrusted_escapes_only_tags():
     assert "a < b" in s and "&lt;tag&gt;" in s
 
 
+def test_tool_spec_keys_match_web_app_action_titles_fixture():
+    """Key-set parity between TOOL_SPECS and web's APP_ACTION_TITLES (Task 2.4,
+    spec §4.4). The two maps are hand-maintained in different languages; this
+    fixture is the tripwire that catches one side drifting from the other. A
+    new/renamed TOOL_SPECS entry must update both this file and
+    web/src/session/appActions.ts in the same PR."""
+    import json
+    from pathlib import Path
+
+    fixture = (Path(__file__).resolve().parents[2]
+               / "web/src/session/__fixtures__/appActionToolKeys.json")
+    keys = json.loads(fixture.read_text())
+    assert set(keys) == set(TOOL_SPECS.keys())
+
+
 # Tools whose every argument is optional — the SDK's protocol-level input schema for
 # each MUST validate `{}`, or the CLI rejects the call (jsonschema.validate runs in
 # mcp.server.lowlevel.server.Server.call_tool BEFORE the handler ever sees the args).
