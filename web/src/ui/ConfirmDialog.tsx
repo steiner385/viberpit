@@ -29,6 +29,11 @@ export function ConfirmDialog({
 }: ConfirmDialogProps) {
   const [text, setText] = React.useState('')
   const [pending, setPending] = React.useState(false)
+  // Per-instance, not the old static "confirm-typed": two ConfirmDialogs mounted
+  // at once (a section keeps its dialog rendered with `open=false`) would share
+  // one id, and a duplicate id means the `<label htmlFor>` names whichever input
+  // the document happens to hold first.
+  const typedId = React.useId()
   const inputRef = React.useRef<HTMLInputElement>(null)
   const cancelRef = React.useRef<HTMLButtonElement>(null)
 
@@ -65,10 +70,10 @@ export function ConfirmDialog({
       initialFocus={typed !== undefined ? inputRef : cancelRef}
     >
       {typed !== undefined && (
-        <Field label={`Type ${typed} to confirm`} htmlFor="confirm-typed">
+        <Field label={`Type ${typed} to confirm`} htmlFor={typedId}>
           <Input
             ref={inputRef}
-            id="confirm-typed"
+            id={typedId}
             value={text}
             onChange={(e) => setText(e.target.value)}
             autoComplete="off"

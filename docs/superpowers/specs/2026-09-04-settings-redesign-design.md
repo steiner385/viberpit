@@ -282,10 +282,10 @@ behavioural change beyond the contract in §7.
 
 | Section | Changes |
 |---|---|
-| **General** | Form. Groups: *Paths* (repo clone root with env default placeholder and description; archive storage path → Typed confirm on save when changed, shows archive count) · *Archive* (auto-archive `Checkbox`, max archived with "permanently purged" description, `Reset`) · *Capacity* (max active; description names the queue). |
+| **General** | Form. Groups: *Paths* (repo clone root with env default placeholder and description; archive storage path → Typed confirm on save when changed, shows archive count) · *Archive* (auto-archive `Checkbox`, max archived with "permanently purged" description, `Reset` (deferred from 5a; see §11)) · *Capacity* (max active; description names the queue). |
 | **Appearance** ★ | Immediate rows: Theme `RadioGroup` (System / Light / Dark); Show navigation labels `Switch` (`ccswitch.railExpanded`); Pipeline notifications `Switch` (`prdash.notifications` → migrated to `ccswitch.pipelineNotifications`, S31). *Layout* group: list width / drawer width read-only with `Reset`. Scope badge `This browser`. |
 | **Notifications** | *Push* group: `This device` badge; state text (enabled / unsupported / denied with the browser-settings hint) + `Switch`; Typed confirm not needed. *Quiet hours* form with `Clear` → Confirm. *Channels*: card per channel, `enabled` Switch immediate, **Edit** opens the same form as Add (S29), Delete → Typed (cascade count). *Rules*: same; priority `min=0 max=1000`; URL field `type="url"` with client validation (S25). Add forms become `Dialog`s opened from the group header's `+ Add` so the list is not pushed below a permanent form. |
-| **Sessions › Defaults** ★ | Form. *Tool approvals*: permission mode `Select` over `PERMISSION_MODES`; **fix S20** by extending `_VALID_MODES` on the server to the six values `PERMISSION_MODES` defines (the server is the source of truth for the set; the client imports it, and a test asserts the two sets are equal); choosing `full-auto` / `bypassPermissions` → Confirm on Save, warning text retained. *Model approval*: action `RadioGroup` (Server default shows the effective env value), denylist input validated as a comma list against known tiers. *Transcript*: tool calls `RadioGroup`, collapse thinking `Checkbox` defaulting from the server payload, never a hard-coded `false` (S21). |
+| **Sessions › Defaults** ★ | Form. *Tool approvals*: permission mode `Select` over `PERMISSION_MODES`; **fix S20** by extending `_VALID_MODES` on the server to the six values `PERMISSION_MODES` defines (the server is the source of truth for the set; the client imports it, and a test asserts the two sets are equal); choosing `full-auto` / `bypassPermissions` → Confirm on Save, warning text retained. *Model approval*: action `RadioGroup` (Server default shows the effective env value), denylist input validated as a comma list against known tiers (deferred from 5a; see §11). *Transcript*: tool calls `RadioGroup`, collapse thinking `Checkbox` defaulting from the server payload, never a hard-coded `false` (S21). |
 | **Presets** | Account → `Select` over `useAccounts()`; permission mode → `Select` over `PERMISSION_MODES` (S22); Delete → Confirm; empty → `EmptyState` with `New preset` action. |
 | **Templates** | `{{variable}}` placeholders listed under the content field as parsed chips (validation feedback, S25); Delete → Confirm. |
 | **Permission profiles** | Local `MODES` deleted, import `PERMISSION_MODES` (S22); patterns validated one-per-line non-empty; Delete → Confirm. |
@@ -294,7 +294,7 @@ behavioural change beyond the contract in §7.
 | **Plugins · Skills · Commands · MCP servers** | Re-hosted; plugin `enabled` becomes `Switch`; empties → `EmptyState`. |
 | **Hooks** | Banner stays (`Banner tone="warning"`); enable → `Switch`; Delete → Confirm (shows the command); Add form → `Dialog`. |
 | **Snapshots** | Restore / Apply import → Typed via `ConfirmDialog`, replacing `window.confirm` (S18); Export uses the api client's auth path, not a bare anchor. |
-| **About** ★ | Read-only. Version, commit, host, uptime from existing health endpoints; *Managed by env* table (S30) from `effectiveDefaults`; links. |
+| **About** ★ | Read-only. Version, commit, host, uptime (deferred from 5a; see §11) from existing health endpoints; *Managed by env* table (S30) from `effectiveDefaults`; links (deferred from 5a; see §11). |
 
 ## 9. API changes (small, additive)
 
@@ -351,7 +351,7 @@ These were decided in D1–D12 without a live answer; each is cheap to reverse b
 1. **Group names.** "Workspace / Sessions / Accounts / Claude config / About" — is "Claude config"
    the right name for the shared Claude config surfaces (plugins, skills, commands, MCP, hooks,
    snapshots), or should it match the July name "Library" plus Hooks/Snapshots?
-2. **Automation leaves Settings** (D3). Confirm nothing links to `/settings/automation` from docs
+2. **(superseded) Automation leaves Settings** (D3). Confirm nothing links to `/settings/automation` from docs
    or notifications that the redirect would not cover. **Resolved during implementation: section
    kept; see D3.**
 3. **Typed confirmation for archive-path change** (D6): is a count-plus-typed dialog too heavy for

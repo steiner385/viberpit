@@ -26,10 +26,4 @@ describe('RadioGroup', () => {
     expect(screen.getByText('Pinned by the kiosk URL')).toBeInTheDocument()
     expect(await axe(container)).toHaveNoViolations()
   })
-
-  it('hideLegend keeps the legend for AT but not on screen', () => {
-    render(<RadioGroup name="t" legend="Theme" hideLegend value="system" onChange={() => {}} options={[...OPTS]} />)
-    expect(screen.getByRole('group', { name: 'Theme' })).toBeInTheDocument()
-    expect(screen.getByText('Theme')).toHaveClass('sr-only')
-  })
 })

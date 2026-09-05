@@ -13,14 +13,6 @@ export interface RadioOption<V extends string> {
 export interface RadioGroupProps<V extends string> {
   name: string
   legend: string
-  /**
-   * Visually hide the legend when a visible heading elsewhere already names the
-   * group — a dialog title, say. NOT for a `SettingRow` label (R14b): a row
-   * label is a `<label htmlFor>` and `htmlFor` cannot name a group, so that
-   * pairing left a label dangling at an id no element carried. On a settings row
-   * the legend stays visible and the row passes `selfLabelled` with no label.
-   */
-  hideLegend?: boolean
   value: V
   onChange: (next: V) => void
   options: RadioOption<V>[]
@@ -28,13 +20,18 @@ export interface RadioGroupProps<V extends string> {
   className?: string
 }
 
-/** 2–5 mutually exclusive values, all visible (spec §7.4). Native radios in a fieldset. */
+/**
+ * 2–5 mutually exclusive values, all visible (spec §7.4). Native radios in a
+ * fieldset, named by a legend that is always visible: a `SettingRow` cannot name
+ * a group with `<label htmlFor>` (R14b), so on a settings row the legend IS the
+ * row's one visible label and the row passes `selfLabelled`.
+ */
 export function RadioGroup<V extends string>({
-  name, legend, hideLegend, value, onChange, options, className, ...aria
+  name, legend, value, onChange, options, className, ...aria
 }: RadioGroupProps<V>) {
   return (
     <fieldset className={cn('flex flex-col gap-1.5', className)} aria-describedby={aria['aria-describedby']}>
-      <legend className={cn('text-sm font-medium text-ink', hideLegend && 'sr-only')}>{legend}</legend>
+      <legend className="text-sm font-medium text-ink">{legend}</legend>
       {options.map((o) => {
         const id = `${name}-${o.value}`
         const reasonId = o.disabled && o.disabledReason ? `${id}-reason` : undefined

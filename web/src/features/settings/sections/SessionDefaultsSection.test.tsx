@@ -97,7 +97,7 @@ describe('SessionDefaultsSection', () => {
     expect(mutateAsync).toHaveBeenCalledWith(expect.objectContaining({ modelApprovalAction: null }))
   })
 
-  it('saves model approval as null for server default and trims the denylist', async () => {
+  it('saves the full payload and trims the denylist', async () => {
     mount()
     await userEvent.click(screen.getByRole('radio', { name: 'Block' }))
     await userEvent.type(screen.getByLabelText('Gated models'), ' fable, opus ')
