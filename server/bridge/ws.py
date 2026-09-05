@@ -55,6 +55,8 @@ from server.sessions.commands.catalog import parse_command_line
 from server.sessions.events import ErrorEvent, PermissionRequest, tool_kind
 from server.sessions.facade import call_with_deadline
 from server.sessions.replay import replay_window
+from server.sessions import session_actions
+from server.sessions.session_actions import ActionError
 from server.sessions.types import is_assistant
 
 if TYPE_CHECKING:
@@ -1151,75 +1153,65 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                                          "text": text, "attachmentIds": attachment_ids,
                                          "reason": status})
                 elif msg_type == "interrupt":
-                    await orchestrator.interrupt(session_id)
-                    try:
-                        async with db_session() as db:
-                            await record_audit(db, "session.interrupt", identity,
-                                               {"sessionId": session_id})
-                    except Exception:
-                        log.warning("ws.audit_failed event=%s session=%s",
-                                    "session.interrupt", session_id, exc_info=True)
+                    async with db_session() as db:
+                        await session_actions.interrupt(
+                            orchestrator, db, session_id=session_id, identity=identity)
                 elif msg_type == "permissionResponse":
                     decision = msg.get("decision", "")
                     perm_id = msg.get("permId", "")
-                    ok = await orchestrator.resolve_permission(
-                        session_id, perm_id, decision, identity)
-                    if not ok:
+                    # The helper records its audit event unconditionally (matching the
+                    # pre-extraction behaviour: a rejected decision still leaves an
+                    # audit trail), so it must run to completion — and therefore
+                    # commit — INSIDE this db_session block; only the ActionError is
+                    # caught here, to render the WS-specific error frame afterward.
+                    action_error: ActionError | None = None
+                    async with db_session() as db:
+                        try:
+                            await session_actions.resolve_permission(
+                                orchestrator, db, session_id=session_id, perm_id=perm_id,
+                                decision=decision, identity=identity)
+                        except ActionError as exc:
+                            action_error = exc
+                    if action_error is not None:
                         # Same silent-drop shape as answerQuestion below: an
                         # unresolvable decision must surface, not 200-and-vanish.
                         log.warning("ws.resolve_permission rejected session=%s perm=%s identity=%s",
                                     session_id, perm_id, identity)
-                        await _send({"type": "error", "code": "PERMISSION_NOT_PENDING",
+                        await _send({"type": "error", "code": action_error.code,
                                      "message": "That permission request is no longer pending "
                                                 "— the session may have moved on. Reload to "
                                                 "see its current state.",
                                      "sessionId": session_id})
-                    await orchestrator.note_user_interaction(session_id)
-                    try:
-                        async with db_session() as db:
-                            await record_audit(db, "permission." + decision, identity,
-                                               {"sessionId": session_id, "permId": perm_id})
-                    except Exception:
-                        log.warning("ws.audit_failed event=%s session=%s",
-                                    "permission." + decision, session_id, exc_info=True)
                 elif msg_type == "setPermissionMode":
                     mode = msg.get("mode", "")
-                    await orchestrator.set_permission_mode(session_id, mode)
-                    try:
-                        async with db_session() as db:
-                            await record_audit(db, "permission_mode.change", identity,
-                                               {"sessionId": session_id, "mode": mode})
-                    except Exception:
-                        log.warning("ws.audit_failed event=%s session=%s",
-                                    "permission_mode.change", session_id, exc_info=True)
+                    async with db_session() as db:
+                        await session_actions.set_permission_mode(
+                            orchestrator, db, session_id=session_id, mode=mode,
+                            identity=identity)
                 elif msg_type == "answerQuestion":
                     question_id = msg.get("questionId", "")
                     selected = msg.get("selected", [])
                     mode = msg.get("mode", "option")
-                    if mode not in ("option", "freeform", "chat"):
-                        mode = "option"
-                    ok = await orchestrator.answer_question(
-                        session_id, question_id, selected, identity, mode)
-                    if not ok:
+                    action_error = None
+                    async with db_session() as db:
+                        try:
+                            await session_actions.answer_question(
+                                orchestrator, db, session_id=session_id,
+                                question_id=question_id, selected=selected, mode=mode,
+                                identity=identity)
+                        except ActionError as exc:
+                            action_error = exc
+                    if action_error is not None:
                         # Never a silent no-op: an unresolvable answer (no such pending
                         # question, identity mismatch, no driver) used to return 200
                         # and leave the user staring at a card that never reacts.
                         log.warning("ws.answer_question rejected session=%s qid=%s identity=%s",
                                     session_id, question_id, identity)
-                        await _send({"type": "error", "code": "QUESTION_NOT_PENDING",
+                        await _send({"type": "error", "code": action_error.code,
                                      "message": "That question is no longer pending — the "
                                                 "session may have moved on. Reload to see "
                                                 "its current state.",
                                      "sessionId": session_id})
-                    await orchestrator.note_user_interaction(session_id)
-                    try:
-                        async with db_session() as db:
-                            await record_audit(db, "question.answer", identity,
-                                               {"sessionId": session_id, "questionId": question_id,
-                                                "selected": selected, "mode": mode})
-                    except Exception:
-                        log.warning("ws.audit_failed event=%s session=%s",
-                                    "question.answer", session_id, exc_info=True)
                 elif msg_type == "activity":
                     # Lightweight steering signal — user typing / interacting before send. Refreshes
                     # the human-deference window; no response frame.

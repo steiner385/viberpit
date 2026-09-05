@@ -38,6 +38,8 @@ from server.sessions.orchestrator import (
     InsufficientStorageError,
     ModelBlockedError,
 )
+from server.sessions import session_actions
+from server.sessions.session_actions import ActionError
 from server.ipc.client import DaemonError, DaemonUnavailable
 from server.sessions.facade import call_with_deadline
 from server.sessions.engine import AgentEngine, AgentEngineUnavailable
@@ -108,6 +110,9 @@ class AdoptRequest(BaseModel):
 
 class SendPromptRequest(BaseModel):
     text: str
+    # "Interrupt and post" (same contract as the WS `prompt` frame, ws.py ~1080):
+    # stop the in-flight turn and run this prompt next instead of queueing it.
+    interrupt: bool = False
 
 
 class ModelApprovalBody(BaseModel):
@@ -1306,10 +1311,125 @@ async def send_session_prompt(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "resume_failed", "message": "Session could not be resumed."},
         )
-    await orch.send_prompt(session_id, body.text)
+    await orch.send_prompt(session_id, body.text, interrupt=body.interrupt)
     await record_audit(db, "session.prompt", identity, {"sessionId": session_id})
     updated = await orch.get_session(session_id) or record
     return _record_to_dict(updated, repo=await _resolve_repo(updated))
+
+
+class PermissionResponseRequest(BaseModel):
+    decision: str
+
+
+class QuestionAnswerRequest(BaseModel):
+    selected: list[str] = Field(default_factory=list)
+    mode: str = "option"
+
+
+class PermissionModeRequest(BaseModel):
+    mode: str
+
+
+class SetModelRequest(BaseModel):
+    model: str | None = None
+
+
+def _action_error_response(exc: ActionError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.http,
+        content={"detail": {"code": exc.code, "message": exc.message}},
+    )
+
+
+@router.post("/{session_id}/interrupt")
+async def interrupt_session(
+    session_id: str,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Stop a session's in-flight turn (HTTP twin of the WS `interrupt` frame)."""
+    orch = _get_orchestrator(request)
+    via = getattr(request.state, "via", None)
+    return await session_actions.interrupt(orch, db, session_id=session_id, identity=identity, via=via)
+
+
+@router.post("/{session_id}/permissions/{perm_id}")
+async def resolve_session_permission(
+    session_id: str,
+    perm_id: str,
+    body: PermissionResponseRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+):
+    """Answer a pending permission card (HTTP twin of the WS `permissionResponse`
+    frame). 400 if the assistant token tries to grant `"always"`; 404 if the
+    permission is no longer pending."""
+    orch = _get_orchestrator(request)
+    via = getattr(request.state, "via", None)
+    try:
+        return await session_actions.resolve_permission(
+            orch, db, session_id=session_id, perm_id=perm_id,
+            decision=body.decision, identity=identity, via=via)
+    except ActionError as exc:
+        return _action_error_response(exc)
+
+
+@router.post("/{session_id}/questions/{question_id}")
+async def answer_session_question(
+    session_id: str,
+    question_id: str,
+    body: QuestionAnswerRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+):
+    """Answer a pending AskUserQuestion (HTTP twin of the WS `answerQuestion` frame).
+    404 if the question is no longer pending."""
+    orch = _get_orchestrator(request)
+    via = getattr(request.state, "via", None)
+    try:
+        return await session_actions.answer_question(
+            orch, db, session_id=session_id, question_id=question_id,
+            selected=body.selected, mode=body.mode, identity=identity, via=via)
+    except ActionError as exc:
+        return _action_error_response(exc)
+
+
+@router.post("/{session_id}/permission-mode")
+async def set_session_permission_mode(
+    session_id: str,
+    body: PermissionModeRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Change a session's permission mode (HTTP twin of the WS `setPermissionMode`
+    frame)."""
+    orch = _get_orchestrator(request)
+    via = getattr(request.state, "via", None)
+    return await session_actions.set_permission_mode(
+        orch, db, session_id=session_id, mode=body.mode, identity=identity, via=via)
+
+
+@router.post("/{session_id}/model")
+async def set_session_model(
+    session_id: str,
+    body: SetModelRequest,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+):
+    """Switch a session's model (→ `set_model_for_session`). 409 if the model is
+    blocked by policy."""
+    orch = _get_orchestrator(request)
+    via = getattr(request.state, "via", None)
+    try:
+        return await session_actions.set_model(
+            orch, db, session_id=session_id, model=body.model, identity=identity, via=via)
+    except ActionError as exc:
+        return _action_error_response(exc)
 
 
 @router.post("/{session_id}/suggest")

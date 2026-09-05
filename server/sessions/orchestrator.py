@@ -77,6 +77,7 @@ from server.sessions.engine import (
 )
 from server.sessions.orphaned_asks import orphaned_answer_prompt, orphaned_ask_kind
 from server.sessions.permissions import PermissionRegistry, resolve_permission_mode
+from server.sessions import session_actions
 from server.sessions.claude_sdk_factory import real_sdk_factory, real_suggestion_factory, real_summary_factory
 from server.sessions.replay import replay_events
 from server.sessions import status as _status_mod
@@ -9758,9 +9759,14 @@ class SessionOrchestrator:
             label = arg or "default"
             driver = self._drivers.get(session_id)
             was_busy = driver is not None and driver.turn_active
-            restarted = await self.set_model_for_session(
-                session_id, arg or None, when="after_turn" if after_turn else "now",
-                identity=identity)
+            # Routes through the same helper the HTTP `/model` endpoint calls (Task
+            # 3.1 / constitution VI: one implementation, not a WS-only copy that
+            # never records `session.model_change`).
+            async with db_session() as db:
+                model_result = await session_actions.set_model(
+                    self, db, session_id=session_id, model=arg or None,
+                    when="after_turn" if after_turn else "now", identity=identity)
+            restarted = model_result["restarted"]
             # A model-gated switch is parked (pending_model set), not applied: the
             # session keeps running on its current model until approved. Say so
             # instead of the misleading "Model → <alias>" (which reads as "applied").
