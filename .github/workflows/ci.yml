@@ -22,7 +22,7 @@ jobs:
     outputs:
       web: ${{ steps.detect.outputs.web }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Three-dot diff needs the merge base, which a shallow clone lacks.
           fetch-depth: 0
@@ -80,7 +80,7 @@ jobs:
           --health-cmd pg_isready --health-interval 10s
           --health-timeout 5s --health-retries 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -124,7 +124,7 @@ jobs:
         working-directory: web
     steps:
       - if: needs.changes.outputs.web == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - if: needs.changes.outputs.web == 'true'
         uses: actions/setup-node@v4
         with:
@@ -173,7 +173,7 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -208,7 +208,7 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
