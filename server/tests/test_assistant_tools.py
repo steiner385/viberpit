@@ -7,7 +7,8 @@ import jsonschema
 import pytest
 from mcp.types import ListToolsRequest
 
-from server.assistant.client import AssistantApi, AssistantApiError  # noqa: F401
+from server.assistant.client import (AssistantApi, AssistantApiError,  # noqa: F401
+                                     TOOL_CALL_CAPACITY)
 from server.assistant.server import build_server
 from server.assistant.tools import (ToolClass, TOOL_SPECS, annotation_for, build_tools,
                                     wrap_untrusted)
@@ -134,3 +135,221 @@ async def test_server_schemas_reflect_real_required_fields():
 
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate({}, tools_by_name["get_session"])
+
+
+# ---------------------------------------------------------------------------
+# Task 3.3 — mutation + destructive tools, rate limit, tool audit
+# ---------------------------------------------------------------------------
+
+_SID = "11111111-2222-3333-4444-555555555555"
+
+# (tool name, handler args, expected method, expected path, expected JSON body or None).
+# One row per mutation/destructive tool in spec §4.2; the point of the table is that a
+# handler is a THIN adapter — arg renaming (`prompt` → `initialPrompt`) and endpoint
+# choice are the only behaviour a tool is allowed to have.
+_MUTATION_CALLS = [
+    ("create_session",
+     {"prompt": "fix the flake", "repo": "o/r", "model": "opus",
+      "permission_mode": "interactive", "account": "acct"},
+     "POST", "/api/sessions",
+     {"name": None, "initialPrompt": "fix the flake", "repo": "o/r", "model": "opus",
+      "permissionMode": "interactive", "account": "acct"}),
+    ("send_prompt", {"id": _SID, "text": "carry on", "interrupt": True},
+     "POST", f"/api/sessions/{_SID}/prompt", {"text": "carry on", "interrupt": True}),
+    ("send_prompt", {"id": _SID, "text": "carry on"},
+     "POST", f"/api/sessions/{_SID}/prompt", {"text": "carry on", "interrupt": False}),
+    ("interrupt_session", {"id": _SID},
+     "POST", f"/api/sessions/{_SID}/interrupt", None),
+    ("answer_question", {"id": _SID, "question_id": "q1", "selected": ["yes"]},
+     "POST", f"/api/sessions/{_SID}/questions/q1", {"selected": ["yes"], "mode": "option"}),
+    ("resolve_permission", {"id": _SID, "perm_id": "p1", "decision": "deny"},
+     "POST", f"/api/sessions/{_SID}/permissions/p1", {"decision": "deny"}),
+    ("set_model", {"id": _SID, "model": "sonnet"},
+     "POST", f"/api/sessions/{_SID}/model", {"model": "sonnet"}),
+    ("set_permission_mode", {"id": _SID, "mode": "acceptEdits"},
+     "POST", f"/api/sessions/{_SID}/permission-mode", {"mode": "acceptEdits"}),
+    ("resolve_model_approval", {"id": _SID, "decision": "approve", "model": "opus"},
+     "POST", f"/api/sessions/{_SID}/model-approval", {"decision": "approve", "model": "opus"}),
+    ("resolve_model_approval", {"id": _SID, "decision": "deny"},
+     "POST", f"/api/sessions/{_SID}/model-approval", {"decision": "deny", "model": None}),
+    ("archive_session", {"id": _SID}, "DELETE", f"/api/sessions/{_SID}", None),
+    ("unarchive_session", {"id": _SID}, "POST", f"/api/sessions/{_SID}/unarchive", None),
+    ("set_autopilot_paused", {"id": _SID, "paused": True},
+     "POST", f"/api/sessions/{_SID}/autopilot", {"paused": True}),
+    ("fix_pr", {"id": _SID, "number": 42},
+     "POST", f"/api/sessions/{_SID}/fix-pr", {"number": 42}),
+    ("set_automation_enabled", {"id": "autopilot", "enabled": False},
+     "PATCH", "/api/automations/autopilot", {"enabled": False}),
+    ("delete_session", {"id": _SID}, "DELETE", f"/api/sessions/{_SID}/permanent", None),
+    ("cancel_queued_session", {"id": _SID}, "DELETE", f"/api/sessions/{_SID}/queue", None),
+    ("ready_merge_pr", {"repo": "o/r", "number": 7},
+     "POST", "/api/pipeline/pr/ready-merge", {"repo": "o/r", "number": 7}),
+]
+
+
+@pytest.mark.parametrize("name,args,method,path,body", _MUTATION_CALLS,
+                         ids=[f"{r[0]}-{i}" for i, r in enumerate(_MUTATION_CALLS)])
+@pytest.mark.asyncio
+async def test_mutation_tool_hits_exactly_one_endpoint(name, args, method, path, body):
+    seen = {}
+
+    def handler(req: httpx.Request):
+        seen["method"] = req.method
+        seen["path"] = req.url.path
+        seen["body"] = json.loads(req.content) if req.content else None
+        return httpx.Response(200, json={"id": "new-1"})
+
+    out = await _tool(build_tools(_api(handler)), name).handler(args)
+    assert "is_error" not in out, out
+    assert seen["method"] == method
+    assert seen["path"] == path
+    assert seen["body"] == body
+
+
+@pytest.mark.asyncio
+async def test_create_session_returns_id_and_url():
+    def handler(req):
+        return httpx.Response(201, json={"id": "sess-9", "name": "x", "cwd": "/secret"})
+
+    out = await _tool(build_tools(_api(handler)), "create_session").handler({"prompt": "go"})
+    data = json.loads(out["content"][0]["text"])["data"]
+    assert data == {"id": "sess-9", "url": "/sessions/sess-9"}
+
+
+@pytest.mark.asyncio
+async def test_204_mutation_reports_ok():
+    def handler(req):
+        return httpx.Response(204)
+
+    out = await _tool(build_tools(_api(handler)), "archive_session").handler({"id": _SID})
+    assert json.loads(out["content"][0]["text"])["data"] == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_resolve_permission_rejects_always_before_any_http_call():
+    calls = []
+
+    def handler(req):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={})
+
+    out = await _tool(build_tools(_api(handler)), "resolve_permission").handler(
+        {"id": _SID, "perm_id": "p1", "decision": "always"})
+    assert out["is_error"] is True
+    assert "allow" in out["content"][0]["text"] and "deny" in out["content"][0]["text"]
+    assert calls == [], "the tool must reject 'always' without touching the API"
+
+
+def test_mutation_and_destructive_annotations():
+    specs = TOOL_SPECS
+    assert specs["archive_session"].tool_class is ToolClass.MUTATION
+    for name in ("delete_session", "cancel_queued_session", "ready_merge_pr"):
+        assert specs[name].tool_class is ToolClass.DESTRUCTIVE, name
+    for t in build_tools(_api(lambda r: httpx.Response(200, json={}))):
+        spec = TOOL_SPECS[t.name]
+        assert t.annotations.destructiveHint is (spec.tool_class is ToolClass.DESTRUCTIVE)
+        assert t.annotations.readOnlyHint is (spec.tool_class is ToolClass.READ)
+    # Every tool named in spec §4.2 is registered.
+    assert set(TOOL_SPECS) == {t.name for t in
+                               build_tools(_api(lambda r: httpx.Response(200, json={})))}
+
+
+@pytest.mark.asyncio
+async def test_tool_calls_are_rate_limited_per_session():
+    api = _api(lambda r: httpx.Response(200, json=[]))
+    tool_ = _tool(build_tools(api), "list_sessions")
+    for i in range(int(TOOL_CALL_CAPACITY)):
+        assert "is_error" not in await tool_.handler({}), f"call {i} should be allowed"
+    out = await tool_.handler({})
+    assert out["is_error"] is True
+    assert "rate limited" in out["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_bucket_is_per_assistant_session():
+    """Two assistant sessions must not share one budget."""
+    a, b = _api(lambda r: httpx.Response(200, json=[])), _api(
+        lambda r: httpx.Response(200, json=[]))
+    for _ in range(int(TOOL_CALL_CAPACITY)):
+        await _tool(build_tools(a), "list_sessions").handler({})
+    assert "is_error" not in await _tool(build_tools(b), "list_sessions").handler({})
+
+
+@pytest.mark.asyncio
+async def test_tool_call_is_audited(tmp_path, monkeypatch):
+    from sqlalchemy import select
+
+    from server.db import db_session, init_db
+    from server.db.models import AuditEvent
+
+    url = f"sqlite+aiosqlite:///{tmp_path / 'audit.db'}"
+    monkeypatch.setenv("CCSWITCH_DB_URL", url)
+    await init_db(url)
+
+    api = AssistantApi(base_url="http://127.0.0.1:1", token="ccas1:x", session_id="asst-1",
+                       identity="u@example.com",
+                       transport=httpx.MockTransport(lambda r: httpx.Response(204)))
+    out = await _tool(build_tools(api), "archive_session").handler({"id": _SID})
+    assert "is_error" not in out
+
+    async with db_session() as db:
+        rows = (await db.execute(select(AuditEvent).where(
+            AuditEvent.type == "assistant.tool_call"))).scalars().all()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.via == "assistant"
+    assert row.identity == "u@example.com"
+    assert row.detail["tool"] == "archive_session"
+    assert row.detail["class"] == "mutation"
+    assert row.detail["ok"] is True
+    assert isinstance(row.detail["ms"], int)
+
+
+@pytest.mark.asyncio
+async def test_failed_tool_call_is_audited_as_not_ok(tmp_path, monkeypatch):
+    from sqlalchemy import select
+
+    from server.db import db_session, init_db
+    from server.db.models import AuditEvent
+
+    url = f"sqlite+aiosqlite:///{tmp_path / 'audit_err.db'}"
+    monkeypatch.setenv("CCSWITCH_DB_URL", url)
+    await init_db(url)
+
+    api = AssistantApi(
+        base_url="http://127.0.0.1:1", token="ccas1:x", session_id="asst-1",
+        identity="u@example.com",
+        transport=httpx.MockTransport(lambda r: httpx.Response(
+            404, json={"error": {"code": "SESSION_NOT_FOUND", "message": "no"}})))
+    out = await _tool(build_tools(api), "delete_session").handler({"id": _SID})
+    assert out["is_error"] is True
+
+    async with db_session() as db:
+        row = (await db.execute(select(AuditEvent).where(
+            AuditEvent.type == "assistant.tool_call"))).scalars().one()
+    assert row.detail == {"tool": "delete_session", "class": "destructive",
+                          "ok": False, "ms": row.detail["ms"]}
+
+
+@pytest.mark.asyncio
+async def test_audit_failure_never_fails_the_tool(monkeypatch):
+    """`db_session()` raises when the DB is not initialised (and can fail transiently
+    in prod). A tool call must still return its result."""
+    import server.db as db_mod
+
+    monkeypatch.setattr(db_mod, "_session_factory", None)
+    out = await _tool(build_tools(_api(lambda r: httpx.Response(204))),
+                      "archive_session").handler({"id": _SID})
+    assert "is_error" not in out
+
+
+def test_every_mutation_tool_path_is_in_the_assistant_route_allowlist():
+    """The token's route allowlist (server/assistant/policy.py) is enforced by
+    middleware BEFORE routing, and these tests drive tools through an httpx
+    MockTransport that never reaches it — so a tool whose endpoint was left out of
+    the allowlist passes every other test here and 403s in production. This is the
+    only place the two lists meet."""
+    from server.assistant.policy import route_allowed
+
+    for name, _args, method, path, _body in _MUTATION_CALLS:
+        assert route_allowed(method, path), f"{name}: {method} {path} is not allowlisted"

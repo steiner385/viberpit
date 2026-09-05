@@ -1178,7 +1178,8 @@ class SessionOrchestrator:
         from server.config import get_settings
         cfg = get_settings()
         api = AssistantApi(base_url=f"http://127.0.0.1:{cfg.port}",
-                           token=mint_token(identity, session_id), session_id=session_id)
+                           token=mint_token(identity, session_id), session_id=session_id,
+                           identity=identity)
         self.register_assistant_overlay(session_id, assistant_options(
             server=build_server(api), max_turns=cfg.assistant_max_turns,
             model=model or cfg.assistant_model))
@@ -10987,7 +10988,8 @@ class SessionOrchestrator:
                 settings = get_settings()
                 assistant_api = AssistantApi(
                     base_url=f"http://127.0.0.1:{settings.port}",
-                    token=mint_token(identity, record.id), session_id=record.id)
+                    token=mint_token(identity, record.id), session_id=record.id,
+                    identity=identity)
                 self.register_assistant_overlay(record.id, assistant_options(
                     server=build_server(assistant_api), max_turns=settings.assistant_max_turns,
                     model=record.model or settings.assistant_model))
