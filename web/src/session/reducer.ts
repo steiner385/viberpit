@@ -3,6 +3,7 @@ import type {
   PromptContext,
 } from './events'
 import type { ContextUsageExact } from '@/lib/contextWindow'
+import { type PromptStage, advancesStage, canStall } from './promptStage'
 import { clientLogger } from '@/obs/logger'
 
 /** Sentinel id for the optimistic user turn seeded before the SDK echoes the prompt. */
@@ -13,6 +14,9 @@ export const OPTIMISTIC_USER_ID = 'optimistic:user'
 // the drain path relies on to enforce FIFO durability.
 const PENDING_ID_PREFIX = 'pending:'
 const pendingSeq = (p: { id: string }): number => Number(p.id.slice(PENDING_ID_PREFIX.length))
+
+/** True for a turn that is a sent-but-unconfirmed prompt still awaiting its echo. */
+const isPendingTurn = (t: Turn): boolean => t.role === 'user' && t.id.startsWith(PENDING_ID_PREFIX)
 
 // ── Block types ───────────────────────────────────────────────────────────────
 
@@ -37,7 +41,11 @@ export type Block =
 // mid-logical-turn (see EvUser.ownerPrefix). It is the ONLY order signal a user turn
 // carries: user turns have no ordinal, so a misplaced prompt — the actual #1000 bug —
 // is invisible to the ordinal scan and detectable only through this mark.
-export interface Turn { id: string; role: 'user' | 'assistant'; blocks: Block[]; model?: string | null; ordinal?: number; ownerPrefix?: boolean; context?: PromptContext }
+// `pending` is set ONLY on a `pending:N` user turn — a prompt the user has sent that
+// no server echo has confirmed yet. It carries how far that prompt has got (see
+// promptStage.ts) so the bubble can say "waking session…" instead of nothing at all.
+// The real `user` echo adopts the turn and drops the mark; nothing else sets it.
+export interface Turn { id: string; role: 'user' | 'assistant'; blocks: Block[]; model?: string | null; ordinal?: number; ownerPrefix?: boolean; context?: PromptContext; pending?: PromptStage }
 
 /** A self-contained conversation thread (the main transcript, or one sub-agent). */
 export interface SubThread { turns: Turn[]; openBlockId: string | null; model?: string | null }
@@ -209,7 +217,10 @@ export type LocalAction =
   | { type: '_clear';  text: string }
   | { type: '_prependHistory'; events: SessionEvent[]; earliestTurn: number }
   | { type: '_setLoadingOlder'; value: boolean }
-  | { type: '_trackSentPrompt'; text: string }
+  | { type: '_trackSentPrompt'; text: string; stage?: PromptStage }
+  | { type: '_promptStage'; stage: PromptStage }
+  | { type: '_promptHeld'; text: string }
+  | { type: '_promptStalled' }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -944,13 +955,18 @@ export function transcriptReducer(
       // After a replayReset, the buffer holds only unconfirmed prompts: disk-confirmed
       // ones were already consumed in the `user` case during the replay (replaying=true
       // path), so every remaining entry is genuinely absent from the just-finished
-      // replay and needs re-asserting. No per-turn presence check is needed — after a
-      // reset the turns array was wiped, so `pending:N` ids cannot already be present.
+      // replay and needs re-asserting.
+      //
+      // The presence check is NOT redundant with the reset wipe: a prompt sent DURING
+      // the replay is rendered at send time (`_trackSentPrompt`) and is also still in
+      // the buffer, so re-asserting blindly would duplicate its bubble.
       let turns = state.turns
       if (state.hadReset && state.pendingSent.length > 0) {
-        const toAppend: Turn[] = state.pendingSent.map((p) =>
-          userTurn(p.id, userTurnBlocks(p.id, p.text)))
-        turns = [...turns, ...toAppend]
+        const onScreen = new Set(turns.filter(isPendingTurn).map((t) => t.id))
+        const toAppend: Turn[] = state.pendingSent
+          .filter((p) => !onScreen.has(p.id))
+          .map((p) => userTurn(p.id, userTurnBlocks(p.id, p.text)))
+        turns = toAppend.length ? [...turns, ...toAppend] : turns
       }
       warnIfOutOfOrder(turns, ev.earliestTurn ?? state.earliestTurn, 'replay')
       return {
@@ -1111,7 +1127,58 @@ export function transcriptReducer(
       const entry = { id: `${PENDING_ID_PREFIX}${state.pendingSentSeq}`, text: ev.text }
       const next = [...state.pendingSent, entry]
       const capped = next.length > MAX ? next.slice(next.length - MAX) : next
-      return { ...state, pendingSent: capped, pendingSentSeq: state.pendingSentSeq + 1 }
+      // Render the prompt AT SEND TIME, not just when a reconnect re-asserts it. The
+      // turn is retired by the `user` case's pending-adoption path, which re-keys it in
+      // place to the server's real turnId — so this never doubles up with the echo.
+      const turn: Turn = {
+        ...userTurn(entry.id, userTurnBlocks(entry.id, ev.text)),
+        pending: ev.stage ?? 'sent',
+      }
+      return {
+        ...state,
+        turns: [...state.turns, turn],
+        pendingSent: capped,
+        pendingSentSeq: state.pendingSentSeq + 1,
+      }
+    }
+
+    case '_promptStage': {
+      // Advance the OLDEST un-echoed prompt: acks are FIFO on one socket, so the first
+      // still-pending bubble is the one this ack belongs to. Monotonic — a late
+      // `received` must never demote a bubble that already reached `delivered`.
+      const idx = state.turns.findIndex((t) => isPendingTurn(t) && t.pending !== undefined
+        && advancesStage(t.pending, ev.stage))
+      if (idx === -1) return state
+      return { ...state, turns: replaceTurn(state.turns, idx, (t) => ({ ...t, pending: ev.stage })) }
+    }
+
+    case '_promptStalled': {
+      // The ack watchdog fired. Mark every prompt we put ON THE WIRE and heard nothing
+      // about — `canStall` excludes both the already-acked stages and a prompt we know
+      // is held in this browser, so a stall can never contradict a better-informed
+      // stage. A no-op (identical state reference) when nothing is actually stuck,
+      // which is the common case: the timer fires unconditionally after each send.
+      let changed = false
+      const turns = state.turns.map((t) => {
+        if (!isPendingTurn(t) || t.pending === undefined || !canStall(t.pending)) return t
+        changed = true
+        return { ...t, pending: 'stalled' as PromptStage }
+      })
+      return changed ? { ...state, turns } : state
+    }
+
+    case '_promptHeld': {
+      // The server refused this prompt (deploy drain / no driver) and the socket put it
+      // BACK in the browser's hold queue to retry on the next flush. So the prompt is
+      // not lost and must stay in the re-assert buffer — only its stage moves, and
+      // backwards, which is why this bypasses the monotonic `advancesStage` gate.
+      const idx = state.turns.findIndex((t) => isPendingTurn(t) && t.pending !== undefined
+        && t.blocks.some((b) => b.kind === 'text' && b.text === ev.text))
+      if (idx === -1) return state
+      return {
+        ...state,
+        turns: replaceTurn(state.turns, idx, (t) => ({ ...t, pending: 'buffered' as PromptStage })),
+      }
     }
 
     case '_clear': {
