@@ -50,6 +50,10 @@ def test_systemd_sandbox_exposes_only_read_only_runtime_mounts_outside_home():
     ) in unit
     assert "WorkingDirectory=/opt/ccswitch-codex-auth/app" in unit
     assert (
+        "Environment=PYTHONPATH=/opt/ccswitch-codex-auth/app:"
+        "/opt/ccswitch-codex-auth/app/src"
+    ) in unit
+    assert (
         "ExecStart=/usr/bin/env /opt/ccswitch-codex-auth/venv/bin/python "
         "-m server.codex.auth_main"
     ) in unit
