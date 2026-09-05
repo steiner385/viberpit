@@ -43,10 +43,12 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
 from server.aio import cancel_and_reap
+from server.api.ratelimit import TokenBucketRateLimiter
 from server.assistant.context import validate_context
 from server.audit import record_audit, redact_event
 from server.auth.identity import verify_identity
 from server.auth.middleware import require_ws_identity
+from server.config import get_settings
 from server.db import db_session
 from server.ipc import protocol as proto
 from server.ipc.client import DaemonTimeout, DaemonUnavailable
@@ -296,6 +298,14 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
     current orchestrator from the socket's app at connect time.
     """
     router = APIRouter()
+
+    # Per-identity assistant prompt cap (spec §4.6): a burst of max/6 (~10 min of
+    # steady use) refilling continuously to the configured hourly rate. Built once
+    # per router — i.e. once per app/process, not per connection — so the bucket is
+    # shared across every socket and assistant thread the identity has open.
+    _max_prompts_per_hour = max(1, get_settings().assistant_max_prompts_per_hour)
+    _assistant_prompt_limiter = TokenBucketRateLimiter(
+        _max_prompts_per_hour / 6, _max_prompts_per_hour / 3600)
 
     @router.websocket("/ws")
     async def ws_endpoint(
@@ -1097,31 +1107,43 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                         # forwarded when set so the plain contract is untouched.
                         interrupt = msg.get("interrupt") is True
                         extra: dict[str, bool | dict] = {"interrupt": True} if interrupt else {}
-                        # The context chip (spec §4.5): only the assistant drawer sends
-                        # `context`, and only an assistant-kind session may act on one —
-                        # a coding session ignores a supplied context outright.
-                        # get_session is per-session-routed to the owning host in fleet
-                        # mode (unlike a bare `record()`, which is not in
+                        # The context chip (spec §4.5) and the per-identity prompt rate
+                        # limit (spec §4.6) both apply only to an assistant-kind session,
+                        # so both need the record's kind up front — a coding session
+                        # ignores a supplied context outright and is never rate-limited
+                        # here. get_session is per-session-routed to the owning host in
+                        # fleet mode (unlike a bare `record()`, which is not in
                         # FleetOrchestrator's _PER_SESSION set and would resolve to
                         # RemoteOrchestrator, which has no such method at all).
                         raw_context = msg.get("context")
-                        if raw_context is not None:
+                        rec = None
+                        try:
+                            rec = await orchestrator.get_session(session_id)
+                        except Exception:
                             # Best-effort: in fleet mode this is a real RPC that can
                             # raise DaemonTimeout/DaemonUnavailable, and the prompt
                             # frame had no such dependency before the context chip. A
-                            # transient daemon hiccup must degrade to "no context",
-                            # never cost the user their message.
-                            rec = None
-                            try:
-                                rec = await orchestrator.get_session(session_id)
-                            except Exception:
-                                log.warning("ws.prompt context lookup failed session=%s "
-                                            "— sending without context", session_id,
-                                            exc_info=True)
-                            if is_assistant(rec):
-                                validated_context = validate_context(raw_context)
-                                if validated_context is not None:
-                                    extra["context"] = dict(validated_context)
+                            # transient daemon hiccup must degrade to "no context, no
+                            # rate limit", never cost the user their message.
+                            log.warning("ws.prompt session lookup failed session=%s "
+                                        "— sending without context/rate-limit check",
+                                        session_id, exc_info=True)
+                        assistant_record = is_assistant(rec)
+                        if assistant_record and raw_context is not None:
+                            validated_context = validate_context(raw_context)
+                            if validated_context is not None:
+                                extra["context"] = dict(validated_context)
+                        if (assistant_record
+                                and _assistant_prompt_limiter.check(identity) is not None):
+                            # Checked BEFORE send_prompt so a rate-limited prompt costs
+                            # nothing downstream (same principle as the tool-call
+                            # limiter in server/assistant/client.py).
+                            log.warning("ws.prompt rate_limited session=%s identity=%s",
+                                        session_id, identity)
+                            await _send({"type": "promptRejected", "sessionId": session_id,
+                                         "text": text, "attachmentIds": attachment_ids,
+                                         "reason": "RATE_LIMITED"})
+                            continue
                         status = await orchestrator.send_prompt(
                             session_id, text, attachment_ids, **extra)
                         if status == "no_driver":
