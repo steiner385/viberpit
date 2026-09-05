@@ -158,6 +158,15 @@ def register_orchestrator_rpc(app, orch) -> None:
         rec = orch.get_session(params["session_id"])
         return {"session": rec.to_dict() if rec is not None else None}
 
+    async def find_assistant(params: dict) -> dict:
+        # The drawer's owner-scoped lookup. Deliberately NOT served off list_sessions on
+        # the edge: that call excludes assistants by default, and the daemon-side
+        # find_assistant also adopts an idle-reaped `ended` row back into _records
+        # (_adopt_reaped_assistant, #1122) — a filter over the list would miss it and
+        # mint a second thread over the first one's transcript.
+        rec = await orch.find_assistant(owner_identity=params["owner_identity"])
+        return {"session": rec.to_dict() if rec is not None else None}
+
     async def create_session(params: dict) -> dict:
         launch = dict(params)
         if "engine" in launch:
@@ -267,6 +276,7 @@ def register_orchestrator_rpc(app, orch) -> None:
     register_rpc(app, "ring_tail", ring_tail)
     register_rpc(app, "list_sessions", list_sessions)
     register_rpc(app, "get_session", get_session)
+    register_rpc(app, "find_assistant", find_assistant)
     register_rpc(app, "create_session", create_session)
     register_rpc(app, "send_prompt", send_prompt)
     register_rpc(app, "pr_for", pr_for)
