@@ -29,7 +29,7 @@ def _gh_api_via_app(args: list[str], *, input: str | None = None) -> str:
     the moment it expired. ``gitrepos._run_gh`` strips ambient tokens, pins the gh
     config dir, and sets the App token when one is available (ambient/pinned fallback
     otherwise). Non-zero still raises ``CalledProcessError`` — the contract
-    ``_gh_err_reason`` and the ``ci_verdict``/``publish_deployment`` callers rely on
+    ``err_reason`` and the ``ci_verdict``/``publish_deployment`` callers rely on
     (they read ``.stderr`` and treat any raise as unavailable)."""
     from ccswitch import gitrepos
 
@@ -661,13 +661,18 @@ def _default_gh_api_json(path: str, body: str) -> str:
     return _gh_api_via_app(["api", "-X", "POST", path, "--input", "-"], input=body)
 
 
-def _gh_err_reason(e: Exception) -> str:
+def err_reason(e: Exception) -> str:
     """Concise one-line failure reason from a gh/subprocess error (prefers stderr tail).
 
     subprocess.CalledProcessError carries the useful diagnostic on .stderr (e.g. the
     ``gh: HTTP 307`` a POST hits when the repo was renamed and the git remote is stale);
     str(e) alone is just "returned non-zero exit status 1". Fall back to the exception
     text, then the class name, so the surfaced warning is never empty.
+
+    Public and deliberately *not* gh-specific: this is the one place that knows how to
+    get a reason out of a captured-output subprocess failure. ``DetectLoop.tick`` uses it
+    for the same reason ``ci_verdict`` does — anything run with ``capture_output=True``
+    keeps its diagnostic on an attribute that no traceback ever renders.
     """
     stderr = getattr(e, "stderr", None)
     if isinstance(stderr, str) and stderr.strip():
@@ -696,4 +701,4 @@ def publish_deployment(sha: str, gh_api_json: Callable[[str, str], str] | None =
                     json.dumps({"state": "success", "auto_inactive": True}))
         return None
     except Exception as e:
-        return _gh_err_reason(e)
+        return err_reason(e)
