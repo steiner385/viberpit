@@ -3,7 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
-import { SettingsView } from '../settings/SettingsView'
+import { AccountsManager } from '../AccountsManager'
 import * as hooks from '@/api/hooks'
 import type { Account, Session } from '@/api/types'
 import { appSettings } from '@/test/factories'
@@ -139,13 +139,9 @@ describe('AccountRow — Delete button', () => {
   })
 
   it('renders a Delete button for each account row', async () => {
-    const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work' })]))
 
-    render(<SettingsView />, { wrapper })
-
-    // Default tab is Sessions; switch to Accounts
-    await user.click(screen.getByRole('tab', { name: /accounts/i }))
+    render(<AccountsManager />, { wrapper })
 
     expect(screen.getByRole('button', { name: /delete account work/i })).toBeInTheDocument()
   })
@@ -154,10 +150,9 @@ describe('AccountRow — Delete button', () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work' })]))
 
-    render(<SettingsView />, { wrapper })
+    render(<AccountsManager />, { wrapper })
 
     // Switch to Accounts tab
-    await user.click(screen.getByRole('tab', { name: /accounts/i }))
 
     await user.click(screen.getByRole('button', { name: /delete account work/i }))
 
@@ -169,9 +164,8 @@ describe('AccountRow — Delete button', () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work' })]))
 
-    render(<SettingsView />, { wrapper })
+    render(<AccountsManager />, { wrapper })
 
-    await user.click(screen.getByRole('tab', { name: /accounts/i }))
     await user.click(screen.getByRole('button', { name: /delete account work/i }))
 
     // Click the destructive Delete button inside the dialog
@@ -185,9 +179,8 @@ describe('AccountRow — Delete button', () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work' })]))
 
-    render(<SettingsView />, { wrapper })
+    render(<AccountsManager />, { wrapper })
 
-    await user.click(screen.getByRole('tab', { name: /accounts/i }))
     await user.click(screen.getByRole('button', { name: /delete account work/i }))
 
     await user.click(screen.getByRole('button', { name: /cancel/i }))
@@ -202,9 +195,8 @@ describe('AccountRow — Delete button', () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work' })]))
 
-    render(<SettingsView />, { wrapper })
+    render(<AccountsManager />, { wrapper })
 
-    await user.click(screen.getByRole('tab', { name: /accounts/i }))
     await user.click(screen.getByRole('button', { name: /delete account work/i }))
 
     await user.keyboard('{Escape}')
@@ -226,9 +218,8 @@ describe('AccountRow — Delete button', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useSessions>)
 
-    render(<SettingsView />, { wrapper })
+    render(<AccountsManager />, { wrapper })
 
-    await user.click(screen.getByRole('tab', { name: /accounts/i }))
     await user.click(screen.getByRole('button', { name: /delete account work/i }))
 
     // Should warn about active sessions
@@ -240,9 +231,8 @@ describe('AccountRow — Delete button', () => {
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work' })]))
     vi.mocked(hooks.useSessions).mockReturnValue(queryResult([makeSession({ id: 'sess-1', accountName: 'personal', status: 'idle' })]))
 
-    render(<SettingsView />, { wrapper })
+    render(<AccountsManager />, { wrapper })
 
-    await user.click(screen.getByRole('tab', { name: /accounts/i }))
     await user.click(screen.getByRole('button', { name: /delete account work/i }))
 
     expect(screen.queryByText(/active session/i)).not.toBeInTheDocument()

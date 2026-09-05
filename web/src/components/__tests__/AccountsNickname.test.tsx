@@ -3,7 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
-import { SettingsView } from '../settings/SettingsView'
+import { AccountsManager } from '../AccountsManager'
 import { NewSessionDialog } from '@/features/sessions/NewSessionDialog'
 import * as hooks from '@/api/hooks'
 import type { Account } from '@/api/types'
@@ -101,12 +101,6 @@ function wrapper({ children }: { children: React.ReactNode }) {
   )
 }
 
-/** The Accounts section tab is pre-selected by the wrapper's ?section=accounts;
- *  clicking it again is a harmless no-op kept for test readability. */
-async function switchToAccountsTab(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(screen.getByRole('tab', { name: /accounts/i }))
-}
-
 describe('AccountsStrip — nickname display & edit', () => {
   const nicknameMutate = vi.fn()
 
@@ -139,21 +133,17 @@ describe('AccountsStrip — nickname display & edit', () => {
   })
 
   it('shows account name when no nickname is set', async () => {
-    const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', nickname: null })]))
 
-    render(<SettingsView />, { wrapper })
-    await switchToAccountsTab(user)
+    render(<AccountsManager />, { wrapper })
 
     expect(screen.getByText('work')).toBeInTheDocument()
   })
 
   it('shows only the nickname when set — the internal slug is never displayed', async () => {
-    const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', nickname: 'My Work Account' })]))
 
-    render(<SettingsView />, { wrapper })
-    await switchToAccountsTab(user)
+    render(<AccountsManager />, { wrapper })
 
     expect(screen.getByText('My Work Account')).toBeInTheDocument()
     // The internal slug must not leak into the UI once a nickname is chosen.
@@ -161,11 +151,9 @@ describe('AccountsStrip — nickname display & edit', () => {
   })
 
   it('shows pencil edit button with aria-label "Rename {name}"', async () => {
-    const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work' })]))
 
-    render(<SettingsView />, { wrapper })
-    await switchToAccountsTab(user)
+    render(<AccountsManager />, { wrapper })
 
     expect(screen.getByRole('button', { name: /rename work/i })).toBeInTheDocument()
   })
@@ -174,8 +162,7 @@ describe('AccountsStrip — nickname display & edit', () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', nickname: 'Work' })]))
 
-    render(<SettingsView />, { wrapper })
-    await switchToAccountsTab(user)
+    render(<AccountsManager />, { wrapper })
 
     await user.click(screen.getByRole('button', { name: /rename work/i }))
 
@@ -188,8 +175,7 @@ describe('AccountsStrip — nickname display & edit', () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', nickname: null })]))
 
-    render(<SettingsView />, { wrapper })
-    await switchToAccountsTab(user)
+    render(<AccountsManager />, { wrapper })
 
     await user.click(screen.getByRole('button', { name: /rename work/i }))
     const input = screen.getByRole('textbox', { name: /nickname for work/i })
@@ -204,8 +190,7 @@ describe('AccountsStrip — nickname display & edit', () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', nickname: null })]))
 
-    render(<SettingsView />, { wrapper })
-    await switchToAccountsTab(user)
+    render(<AccountsManager />, { wrapper })
 
     await user.click(screen.getByRole('button', { name: /rename work/i }))
     const input = screen.getByRole('textbox', { name: /nickname for work/i })
@@ -219,8 +204,7 @@ describe('AccountsStrip — nickname display & edit', () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', nickname: null })]))
 
-    render(<SettingsView />, { wrapper })
-    await switchToAccountsTab(user)
+    render(<AccountsManager />, { wrapper })
 
     await user.click(screen.getByRole('button', { name: /rename work/i }))
     const input = screen.getByRole('textbox', { name: /nickname for work/i })
@@ -237,8 +221,7 @@ describe('AccountsStrip — nickname display & edit', () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', nickname: 'Old Name' })]))
 
-    render(<SettingsView />, { wrapper })
-    await switchToAccountsTab(user)
+    render(<AccountsManager />, { wrapper })
 
     await user.click(screen.getByRole('button', { name: /rename work/i }))
     const input = screen.getByRole('textbox', { name: /nickname for work/i })
@@ -282,15 +265,13 @@ describe('AccountRow — null usage guard (needs-reauth accounts)', () => {
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'needs-relogin', usage: null, nickname: null })]))
 
     // Should not throw — previously crashed with "Cannot read properties of null"
-    expect(() => render(<SettingsView />, { wrapper })).not.toThrow()
+    expect(() => render(<AccountsManager />, { wrapper })).not.toThrow()
   })
 
   it('does not render any UsageBadge when account.usage is null', async () => {
-    const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'needs-relogin', usage: null, nickname: null })]))
 
-    render(<SettingsView />, { wrapper })
-    await switchToAccountsTab(user)
+    render(<AccountsManager />, { wrapper })
 
     // UsageBadge renders with aria-label "session usage: N%" / "weekly usage: N%".
     // Neither should be present when usage is null.
@@ -299,11 +280,9 @@ describe('AccountRow — null usage guard (needs-reauth accounts)', () => {
   })
 
   it('still renders the account name when usage is null', async () => {
-    const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'kindash', status: 'needs-relogin', usage: null, nickname: null })]))
 
-    render(<SettingsView />, { wrapper })
-    await switchToAccountsTab(user)
+    render(<AccountsManager />, { wrapper })
 
     expect(screen.getByText('kindash')).toBeInTheDocument()
   })

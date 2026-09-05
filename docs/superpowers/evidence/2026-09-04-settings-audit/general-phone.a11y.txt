@@ -1,0 +1,81 @@
+uid=11_0 RootWebArea "ccswitch" url="http://127.0.0.1:8787/settings/general"
+  uid=11_1 banner
+    uid=11_2 StaticText "ccswitch"
+    uid=11_3 button "Assistant"
+    uid=11_4 button "Help"
+  uid=11_5 main
+    uid=11_6 tab "General" selectable selected
+    uid=11_7 tab "Accounts" selectable
+    uid=11_8 tab "Automation" selectable
+    uid=11_9 tab "Notifications" selectable
+    uid=11_10 tab "Hooks" selectable
+    uid=11_11 tab "Plugins" selectable
+    uid=11_12 tab "Skills" selectable
+    uid=11_13 tab "Commands" selectable
+    uid=11_14 tab "MCP Servers" selectable
+    uid=11_15 tab "Presets" selectable
+    uid=11_16 tab "Templates" selectable
+    uid=11_17 tab "Profiles" selectable
+    uid=11_18 tab "Snapshots" selectable
+    uid=11_19 tab "Fleet" selectable
+    uid=11_20 StaticText "Default tool approvals"
+    uid=11_21 combobox "Default tool approvals" expandable haspopup="menu" value="Full auto — incl. shell ⚠"
+      uid=11_22 option "Ask each time" selectable value="Ask each time"
+      uid=11_23 option "Auto-approve safe tools" selectable value="Auto-approve safe tools"
+      uid=11_24 option "Allowlist read-only, prompt the rest" selectable value="Allowlist read-only, prompt the rest"
+      uid=11_25 option "Accept file edits, prompt the rest" selectable value="Accept file edits, prompt the rest"
+      uid=11_26 option "Full auto — incl. shell ⚠" selectable selected value="Full auto — incl. shell ⚠"
+      uid=11_27 option "Bypass all permissions — incl. shell ⚠" selectable value="Bypass all permissions — incl. shell ⚠"
+    uid=11_28 alert atomic live="assertive" relevant="additions text"
+      uid=11_29 StaticText "⚠ Full auto lets sessions run shell/edits without prompting. Anyone who can reach this server can run code as you."
+    uid=11_30 heading "Model approval" level="3"
+    uid=11_31 StaticText "Action for gated models"
+    uid=11_32 combobox "Action for gated models" expandable haspopup="menu" value="Server default (require approval)"
+      uid=11_33 option "Server default (require approval)" selectable selected value="Server default (require approval)"
+      uid=11_34 option "Require approval" selectable value="Require approval"
+      uid=11_35 option "Block" selectable value="Block"
+      uid=11_36 option "Allow" selectable value="Allow"
+    uid=11_37 StaticText "What to do when a session requests a model on the approval denylist."
+    uid=11_38 StaticText "Approval denylist "
+    uid=11_39 StaticText "(blank = default: fable)"
+    uid=11_40 textbox "Approval denylist (blank = default: fable)"
+    uid=11_41 StaticText "Comma-separated model ids or tier names that require approval."
+    uid=11_42 heading "Transcript display" level="3"
+    uid=11_43 StaticText "Tool calls default"
+    uid=11_44 combobox "Tool calls default" expandable haspopup="menu" value="Auto-fold long groups"
+      uid=11_45 option "Auto-fold long groups" selectable selected value="Auto-fold long groups"
+      uid=11_46 option "Expand all" selectable value="Expand all"
+      uid=11_47 option "Collapse all" selectable value="Collapse all"
+    uid=11_48 checkbox "Collapse thinking by default" checked
+    uid=11_49 StaticText "Repo clone root "
+    uid=11_50 StaticText "(optional)"
+    uid=11_51 textbox "Repo clone root (optional)" value="/home/tony/GitHub/"
+    uid=11_52 StaticText "Archive storage path "
+    uid=11_53 StaticText "(optional)"
+    uid=11_54 textbox "Archive storage path (optional)"
+    uid=11_55 StaticText "Where archived session files are stored. Blank uses the server default. Existing archives are moved when this changes."
+    uid=11_56 checkbox "Auto-archive completed sessions"
+    uid=11_57 StaticText "When on, a session that finishes its goal is archived automatically. Turn this off to keep completed sessions on the dashboard until you archive them yourself."
+    uid=11_58 StaticText "Max archived sessions "
+    uid=11_59 StaticText "(blank = unlimited)"
+    uid=11_60 spinbutton "Max archived sessions (blank = unlimited)" value="100" valuemax="0" valuemin="1" valuetext="100"
+    uid=11_61 StaticText "When the archived count exceeds this, the oldest are permanently purged."
+    uid=11_62 StaticText "Max active sessions "
+    uid=11_63 StaticText "(blank = default (5))"
+    uid=11_64 spinbutton "Max active sessions (blank = default (5))" value="7" valuemax="0" valuemin="1" valuetext="7"
+    uid=11_65 StaticText "Sessions beyond this limit are queued and start automatically when a slot frees."
+    uid=11_66 heading "Notifications" level="3"
+    uid=11_67 StaticText "Phone notifications"
+    uid=11_68 button "Enable"
+    uid=11_69 button "Save"
+  uid=11_70 navigation "Sections"
+    uid=11_71 link "Sessions (7)" url="http://127.0.0.1:8787/sessions"
+      uid=11_72 StaticText "Sessions (7)"
+    uid=11_73 link "Pipeline (10)" url="http://127.0.0.1:8787/pipeline"
+      uid=11_74 StaticText "Pipeline (10)"
+    uid=11_75 link "Automations (6)" url="http://127.0.0.1:8787/automations"
+      uid=11_76 StaticText "Automations (6)"
+    uid=11_77 link "Initiatives" url="http://127.0.0.1:8787/initiatives"
+      uid=11_78 StaticText "Initiatives"
+    uid=11_79 button "More (100)"
+  uid=11_80 region "Notifications alt+T" live="polite" relevant="additions text"

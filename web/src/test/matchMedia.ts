@@ -28,6 +28,7 @@ export const MEDIA = {
   drawerPush: '(min-width: 1280px)',
   wide: '(min-width: 1440px)',
   coarsePointer: '(pointer: coarse)',
+  portrait: '(orientation: portrait)',
 } as const
 
 /**

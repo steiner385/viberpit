@@ -1,4 +1,3 @@
-import * as React from 'react'
 import { useLocation } from 'react-router-dom'
 import { PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -6,6 +5,7 @@ import { IconButton } from '@/ui/IconButton'
 import { NAV_BY_ID, NAV_DEFS, navDefForPath } from '@/shell/navDefs'
 import { navBadgeProps, useNavBadges } from '@/shell/useNavBadges'
 import { useViewport } from '@/shell/useViewport'
+import { useRailExpanded } from '@/shell/railExpanded'
 import { GlobalActions } from './GlobalActions'
 import { NavItem } from './NavItem'
 
@@ -25,44 +25,18 @@ import { NavItem } from './NavItem'
  * the phone `NavBar`'s More sheet.
  */
 
-const RAIL_EXPANDED_KEY = 'ccswitch.railExpanded'
-
-// `web/src/lib/` has four bespoke persisted values (groupCollapse, sidebarWidth,
-// lastRepo, sessionOrder) but no generic persisted-boolean helper to route
-// through, so the rail keeps its own two-line pair here rather than inventing a
-// fifth shared abstraction on one caller's behalf. All access is wrapped: a
-// blocked/unavailable localStorage degrades to "collapsed", never a crash.
-function readRailExpanded(): boolean {
-  try {
-    return window.localStorage.getItem(RAIL_EXPANDED_KEY) === 'true'
-  } catch {
-    return false
-  }
-}
-
-function writeRailExpanded(v: boolean): void {
-  try {
-    window.localStorage.setItem(RAIL_EXPANDED_KEY, String(v))
-  } catch {
-    /* ignore — persistence is best-effort */
-  }
-}
-
 export function NavRail() {
   const { pathname } = useLocation()
   const badges = useNavBadges()
   const { width } = useViewport()
 
-  const [expandedPref, setExpandedPref] = React.useState(readRailExpanded)
+  const [expandedPref, setExpandedPref] = useRailExpanded()
   // Expansion is offered only at the wide tier; the stored preference survives a
   // trip through a narrower window instead of being cleared by it.
   const canExpand = width === 'wide'
   const expanded = canExpand && expandedPref
   const toggleExpanded = () => {
-    setExpandedPref((prev) => {
-      writeRailExpanded(!prev)
-      return !prev
-    })
+    setExpandedPref(!expandedPref)
   }
 
   const activeId = navDefForPath(pathname)?.id

@@ -3,7 +3,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
-import { SettingsView } from '../settings/SettingsView'
+import { AccountsManager } from '../AccountsManager'
 import * as hooks from '@/api/hooks'
 import type { Account } from '@/api/types'
 import { appSettings } from '@/test/factories'
@@ -96,12 +96,6 @@ function wrapper({ children }: { children: React.ReactNode }) {
   )
 }
 
-/** The Accounts section tab is pre-selected by the wrapper's ?section=accounts;
- *  clicking it again is a harmless no-op kept for test readability. */
-async function switchToAccountsTab(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(screen.getByRole('tab', { name: /accounts/i }))
-}
-
 describe('AccountRow — weekly reserve', () => {
   const updateMutate = vi.fn()
 
@@ -137,8 +131,7 @@ describe('AccountRow — weekly reserve', () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', weeklyReservePct: 90 })]))
 
-    render(<SettingsView />, { wrapper })
-    await switchToAccountsTab(user)
+    render(<AccountsManager />, { wrapper })
     await user.click(screen.getByRole('button', { name: /rename work/i }))
 
     const input = screen.getByRole('spinbutton', { name: /weekly reserve % for work/i })
@@ -149,8 +142,7 @@ describe('AccountRow — weekly reserve', () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', nickname: null, weeklyReservePct: null })]))
 
-    render(<SettingsView />, { wrapper })
-    await switchToAccountsTab(user)
+    render(<AccountsManager />, { wrapper })
     await user.click(screen.getByRole('button', { name: /rename work/i }))
     const reserveInput = screen.getByRole('spinbutton', { name: /weekly reserve % for work/i })
     await user.clear(reserveInput)
@@ -166,8 +158,7 @@ describe('AccountRow — weekly reserve', () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', weeklyReservePct: 90 })]))
 
-    render(<SettingsView />, { wrapper })
-    await switchToAccountsTab(user)
+    render(<AccountsManager />, { wrapper })
     await user.click(screen.getByRole('button', { name: /rename work/i }))
     await user.clear(screen.getByRole('spinbutton', { name: /weekly reserve % for work/i }))
     await user.click(screen.getByRole('button', { name: /save account settings/i }))
@@ -181,8 +172,7 @@ describe('AccountRow — weekly reserve', () => {
     const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', weeklyReservePct: 90 })]))
 
-    render(<SettingsView />, { wrapper })
-    await switchToAccountsTab(user)
+    render(<AccountsManager />, { wrapper })
     await user.click(screen.getByRole('button', { name: /rename work/i }))
     const reserveInput = screen.getByRole('spinbutton', { name: /weekly reserve % for work/i })
     await user.clear(reserveInput)
@@ -195,7 +185,6 @@ describe('AccountRow — weekly reserve', () => {
   })
 
   it('shows the over-reserve chip when weekly usage is at/over the reserve', async () => {
-    const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue({
       data: [makeAccount({
         name: 'work', weeklyReservePct: 90,
@@ -204,14 +193,12 @@ describe('AccountRow — weekly reserve', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
-    render(<SettingsView />, { wrapper })
-    await switchToAccountsTab(user)
+    render(<AccountsManager />, { wrapper })
 
     expect(screen.getByText('over reserve')).toBeInTheDocument()
   })
 
   it('no chip when below reserve or reserve unset', async () => {
-    const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue({
       data: [
         makeAccount({ name: 'below', weeklyReservePct: 90,
@@ -222,18 +209,15 @@ describe('AccountRow — weekly reserve', () => {
       isLoading: false,
     } as ReturnType<typeof hooks.useAccounts>)
 
-    render(<SettingsView />, { wrapper })
-    await switchToAccountsTab(user)
+    render(<AccountsManager />, { wrapper })
 
     expect(screen.queryByText('over reserve')).not.toBeInTheDocument()
   })
 
   it('weekly usage bar renders a marker at the reserve position', async () => {
-    const user = userEvent.setup()
     vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', weeklyReservePct: 90 })]))
 
-    render(<SettingsView />, { wrapper })
-    await switchToAccountsTab(user)
+    render(<AccountsManager />, { wrapper })
 
     const marker = screen.getByTestId('reserve-marker')
     expect(marker).toBeInTheDocument()

@@ -1,0 +1,72 @@
+uid=8_0 RootWebArea "ccswitch" url="http://127.0.0.1:8787/settings/commands"
+  uid=8_1 navigation "Sections"
+    uid=8_2 link "Sessions (6)" url="http://127.0.0.1:8787/sessions"
+      uid=8_3 StaticText "Sessions (6)"
+    uid=8_4 link "Pipeline (8)" url="http://127.0.0.1:8787/pipeline"
+      uid=8_5 StaticText "Pipeline (8)"
+    uid=8_6 link "Automations (4)" url="http://127.0.0.1:8787/automations"
+      uid=8_7 StaticText "Automations (4)"
+    uid=8_8 link "Initiatives" url="http://127.0.0.1:8787/initiatives"
+      uid=8_9 StaticText "Initiatives"
+    uid=8_10 link "Products" url="http://127.0.0.1:8787/projects"
+      uid=8_11 StaticText "Products"
+    uid=8_12 link "Archived (100)" url="http://127.0.0.1:8787/archived"
+      uid=8_13 StaticText "Archived (100)"
+    uid=8_14 link "Insights" url="http://127.0.0.1:8787/insights"
+      uid=8_15 StaticText "Insights"
+    uid=8_16 link "New session" url="http://127.0.0.1:8787/sessions?dialog=new"
+      uid=8_17 StaticText "New session"
+    uid=8_18 button "Assistant"
+    uid=8_19 button "Help"
+    uid=8_20 button "Theme"
+    uid=8_21 link "Settings" url="http://127.0.0.1:8787/settings"
+      uid=8_22 StaticText "Settings"
+    uid=8_23 button "Expand navigation" expandable
+  uid=8_24 main
+    uid=8_25 tab "General" selectable
+    uid=8_26 tab "Accounts" selectable
+    uid=8_27 tab "Automation" selectable
+    uid=8_28 tab "Notifications" selectable
+    uid=8_29 tab "Hooks" selectable
+    uid=8_30 tab "Plugins" selectable
+    uid=8_31 tab "Skills" selectable
+    uid=8_32 tab "Commands" selectable selected
+    uid=8_33 tab "MCP Servers" selectable
+    uid=8_34 tab "Presets" selectable
+    uid=8_35 tab "Templates" selectable
+    uid=8_36 tab "Profiles" selectable
+    uid=8_37 tab "Snapshots" selectable
+    uid=8_38 tab "Fleet" selectable
+    uid=8_39 heading "Your commands" level="3"
+    uid=8_40 button "New command"
+    uid=8_41 button "analyze-performance"
+    uid=8_42 button "auto-prioritize"
+    uid=8_43 button "debug-error"
+    uid=8_44 button "gh-fix"
+    uid=8_45 button "implement-loop"
+    uid=8_46 button "pr-review"
+    uid=8_47 button "prioritize-issues"
+    uid=8_48 button "fix-test-patterns"
+    uid=8_49 button "gh-fix"
+    uid=8_50 button "resolve-pr-conflicts"
+    uid=8_51 button "quick-commit"
+    uid=8_52 button "setup-project"
+    uid=8_53 heading "From plugins" level="3"
+    uid=8_54 button "revise-claude-md"
+    uid=8_55 button "code-review"
+    uid=8_56 button "clean_gone"
+    uid=8_57 button "commit-push-pr"
+    uid=8_58 button "commit"
+    uid=8_59 button "create-database-row"
+    uid=8_60 button "create-page"
+    uid=8_61 button "create-task"
+    uid=8_62 button "database-query"
+    uid=8_63 button "find"
+    uid=8_64 button "search"
+    uid=8_65 button "build"
+    uid=8_66 button "explain-diff"
+    uid=8_67 button "plan"
+    uid=8_68 button "setup"
+    uid=8_69 button "explain-error"
+    uid=8_70 button "test-cards"
+  uid=8_71 region "Notifications alt+T" live="polite" relevant="additions text"

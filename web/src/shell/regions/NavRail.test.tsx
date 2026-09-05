@@ -25,6 +25,7 @@ import { MEDIA, stubMatchMedia } from '@/test/matchMedia'
 import { ViewportProvider } from '@/shell/useViewport'
 import { ThemeProvider, THEME_STORAGE_KEY } from '@/shell/theme'
 import { NAV_DEFS } from '@/shell/navDefs'
+import { RAIL_EXPANDED_KEY } from '@/shell/railExpanded'
 import { NavRail } from './NavRail'
 
 /** A real `NavBadges` with every key present — no casts, so a key that stops
@@ -160,7 +161,7 @@ describe('NavRail', () => {
   it('expands at the wide tier and persists the choice', async () => {
     renderRail('/sessions', [W768, W1024, W1440])
     await userEvent.click(screen.getByRole('button', { name: 'Expand navigation' }))
-    expect(localStorage.getItem('ccswitch.railExpanded')).toBe('true')
+    expect(localStorage.getItem(RAIL_EXPANDED_KEY)).toBe('true')
     // Expanded: the label becomes visible; the accessible name is unchanged.
     const sessions = screen.getByRole('link', { name: 'Sessions (3)' })
     expect(sessions.querySelector('span[aria-hidden="true"]')?.textContent).toBe('Sessions')
@@ -172,7 +173,7 @@ describe('NavRail', () => {
   })
 
   it('restores the persisted expansion, and ignores it below wide', () => {
-    localStorage.setItem('ccswitch.railExpanded', 'true')
+    localStorage.setItem(RAIL_EXPANDED_KEY, 'true')
     renderRail('/sessions', [W768, W1024, W1440])
     expect(screen.getByRole('button', { name: 'Collapse navigation' })).toBeInTheDocument()
   })

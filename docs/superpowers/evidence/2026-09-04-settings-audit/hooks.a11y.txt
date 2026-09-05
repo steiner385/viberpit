@@ -1,0 +1,69 @@
+uid=5_0 RootWebArea "ccswitch" url="http://127.0.0.1:8787/settings/hooks"
+  uid=5_1 navigation "Sections"
+    uid=5_2 link "Sessions (4)" url="http://127.0.0.1:8787/sessions"
+      uid=5_3 StaticText "Sessions (4)"
+    uid=5_4 link "Pipeline (8)" url="http://127.0.0.1:8787/pipeline"
+      uid=5_5 StaticText "Pipeline (8)"
+    uid=5_6 link "Automations (5)" url="http://127.0.0.1:8787/automations"
+      uid=5_7 StaticText "Automations (5)"
+    uid=5_8 link "Initiatives" url="http://127.0.0.1:8787/initiatives"
+      uid=5_9 StaticText "Initiatives"
+    uid=5_10 link "Products" url="http://127.0.0.1:8787/projects"
+      uid=5_11 StaticText "Products"
+    uid=5_12 link "Archived (100)" url="http://127.0.0.1:8787/archived"
+      uid=5_13 StaticText "Archived (100)"
+    uid=5_14 link "Insights" url="http://127.0.0.1:8787/insights"
+      uid=5_15 StaticText "Insights"
+    uid=5_16 link "New session" url="http://127.0.0.1:8787/sessions?dialog=new"
+      uid=5_17 StaticText "New session"
+    uid=5_18 button "Assistant"
+    uid=5_19 button "Help"
+    uid=5_20 button "Theme"
+    uid=5_21 link "Settings" url="http://127.0.0.1:8787/settings"
+      uid=5_22 StaticText "Settings"
+    uid=5_23 button "Expand navigation" expandable
+  uid=5_24 main
+    uid=5_25 tab "General" selectable
+    uid=5_26 tab "Accounts" selectable
+    uid=5_27 tab "Automation" selectable
+    uid=5_28 tab "Notifications" selectable
+    uid=5_29 tab "Hooks" selectable selected
+    uid=5_30 tab "Plugins" selectable
+    uid=5_31 tab "Skills" selectable
+    uid=5_32 tab "Commands" selectable
+    uid=5_33 tab "MCP Servers" selectable
+    uid=5_34 tab "Presets" selectable
+    uid=5_35 tab "Templates" selectable
+    uid=5_36 tab "Profiles" selectable
+    uid=5_37 tab "Snapshots" selectable
+    uid=5_38 tab "Fleet" selectable
+    uid=5_39 alert atomic live="assertive" relevant="additions text"
+      uid=5_40 StaticText "⚠ Hooks run arbitrary shell commands on this host."
+      uid=5_41 StaticText " "
+      uid=5_42 StaticText "Hooks run arbitrary shell on the host on every session. Edit with care."
+    uid=5_43 heading "PreToolUse" level="3"
+    uid=5_44 checkbox "Enable PreToolUse hook" checked
+    uid=5_45 StaticText "Matcher: "
+    uid=5_46 StaticText "WebSearch"
+    uid=5_47 StaticText "node "/home/tony/.ccs/hooks/websearch-transformer.cjs""
+    uid=5_48 button "Dry run"
+    uid=5_49 button "Delete"
+    uid=5_50 heading "Add hook" level="3"
+    uid=5_51 StaticText "Event"
+    uid=5_52 combobox "Event" expandable haspopup="menu" value="PreToolUse"
+      uid=5_53 option "PreToolUse" selectable selected value="PreToolUse"
+      uid=5_54 option "PostToolUse" selectable value="PostToolUse"
+      uid=5_55 option "UserPromptSubmit" selectable value="UserPromptSubmit"
+      uid=5_56 option "Notification" selectable value="Notification"
+      uid=5_57 option "Stop" selectable value="Stop"
+      uid=5_58 option "SubagentStop" selectable value="SubagentStop"
+      uid=5_59 option "SessionStart" selectable value="SessionStart"
+      uid=5_60 option "SessionEnd" selectable value="SessionEnd"
+      uid=5_61 option "PreCompact" selectable value="PreCompact"
+    uid=5_62 StaticText "Matcher "
+    uid=5_63 StaticText "(optional)"
+    uid=5_64 textbox "Matcher (optional)"
+    uid=5_65 StaticText "Command"
+    uid=5_66 textbox "Command"
+    uid=5_67 button "Add"
+  uid=5_68 region "Notifications alt+T" live="polite" relevant="additions text"
