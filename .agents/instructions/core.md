@@ -168,6 +168,37 @@ but is wrong, fix it in place — adding a parallel "correct" copy *is* the anti
 
 Skill: `eliminating-parallel-implementations`.
 
+### Before implementing, check whether the same work is already in flight
+
+The rule above has a multi-agent twin: several sessions work this repo at once, so the
+duplicate you need to find may not be *in* the codebase yet — it may be an open PR. Check
+**before writing code**, not before opening the PR:
+
+```bash
+gh api graphql -f query='{repository(owner:"steiner385",name:"cc-account-switcher"){
+  pullRequests(states:OPEN,first:40,orderBy:{field:UPDATED_AT,direction:DESC}){
+    nodes{number title headRefName files(first:60){nodes{path}}}}}}' \
+  --jq '.data.repository.pullRequests.nodes[] | select([.files.nodes[].path] | any(test("<path regex>"))) | "\(.number)\t\(.headRefName)\t\(.title)"'
+```
+
+Search by the **files you are about to touch** and by the issue number — a branch name
+rarely matches what you would have called yours. On 2026-09-05 two sessions independently
+implemented issue #1131: #1142 opened 03:06Z, #1145 at 03:15Z, a full duplicate
+implementation of the same auth gate in the same file. Both were verified, both were green,
+and both had to be reconciled by hand afterwards.
+
+The "list in-flight PRs before opening a new PR" rule in the user's global instructions
+fires at `gh pr create` time — after the work is done. That is the wrong end: it catches the
+collision, it does not prevent the wasted cycle.
+
+If you find one already in flight:
+- **Review and extend it** rather than starting over — a second opinion on an open PR is
+  worth more than a second implementation of it.
+- If yours is genuinely better in parts, **combine into one PR and close the other with a
+  comment crediting what you took** and stating plainly which came first. Two open PRs on
+  one file conflict; whichever merges second needs a rebase.
+- Say who was first. The session that duplicated owns the mistake, not the one it landed on.
+
 ### Purge replaced code in the same change — no half-dead code
 
 When you replace a file, route, model, or function, delete the old version in the **same PR**. A
