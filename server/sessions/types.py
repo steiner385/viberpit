@@ -45,7 +45,7 @@ ASSISTANT_KIND = "assistant"
 class SessionRecord:
     """In-memory view of a running session — mirrors the DB row but stays process-local."""
 
-    id: str                  # UUID, also the session key in SessionOrchestrator/SessionDriver
+    id: str                  # UUID, also the session key in SessionOrchestrator/ClaudeAgentDriver
     name: str                # user-visible label
     account: str             # current account name (updated on rotation)
     claude_session_id: str   # value passed to --resume on rotation

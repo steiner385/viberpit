@@ -19,6 +19,7 @@ from server.assistant.context import PromptContext, render_context_header
 from server.hostname import self_host_name
 from . import events as ev
 from .failure import classify, TurnFailure
+from .engine import AgentCapabilities, AgentDriverConfig, AgentDriverFactory, AgentEngine
 from .translator import Translator
 from .permissions import PermissionRegistry, to_sdk_permission_mode
 from .questions import QuestionRegistry
@@ -122,7 +123,7 @@ class _MessageSource:
 class DriverStream:
     """One attach's atomically-opened view of a driver's event stream.
 
-    Built by ``SessionDriver.open_stream()`` with NO awaits between snapshotting
+    Built by ``ClaudeAgentDriver.open_stream()`` with NO awaits between snapshotting
     the in-progress turn buffer, registering the subscriber queue, and capturing
     ``turn_active``/``turn_started_at`` — so all four describe the SAME instant.
 
@@ -136,7 +137,7 @@ class DriverStream:
     queue and is delivered live.
     """
 
-    def __init__(self, driver: "SessionDriver", snapshot: list,
+    def __init__(self, driver: "ClaudeAgentDriver", snapshot: list,
                  queue: asyncio.Queue, turn_active: bool,
                  turn_started_at: float | None) -> None:
         self._driver = driver
@@ -170,13 +171,25 @@ class DriverStream:
         self._driver._subscribers.discard(self._queue)
 
 
-class SessionDriver:
+class ClaudeAgentDriver:
     """Drives one Claude session via an SDK client, exposing normalized events.
 
     The orchestrator composes the per-account config dir and passes it as `config_dir`;
     `sdk_factory(cwd, config_dir, can_use_tool, mode, resume) -> SDKClientProtocol` builds
     the client (production = real ClaudeSDKClient; tests = FakeSDKClient).
     """
+
+    engine = AgentEngine.CLAUDE_CODE
+    capabilities = AgentCapabilities(
+        models=True,
+        interrupt=True,
+        approvals=True,
+        questions=True,
+        adopt=True,
+        self_model_switch=True,
+        subagents=True,
+        attachments=True,
+    )
 
     def __init__(self, session_id, account, cwd, config_dir, *, mode, sdk_factory, registry,
                  identity, denylist=PermissionRegistry.DANGEROUS, resume=None,
@@ -287,6 +300,11 @@ class SessionDriver:
         self._source: _MessageSource | None = None
         self._listener: asyncio.Task | None = None
         self._closing: bool = False
+
+    @property
+    def engine_session_id(self) -> str | None:
+        """The Claude conversation id through the provider-neutral driver contract."""
+        return self.claude_session_id
 
     def _turn(self):
         return getattr(self._tr, "_turn_id", None) or "turn"
@@ -704,7 +722,7 @@ class SessionDriver:
         interaction, and it must not lose its header or its chip. Rendering and dedupe
         happen in ``_start_turn`` when the turn actually starts, never here."""
         if self._client is None:
-            raise RuntimeError("SessionDriver.send_prompt called before start()")
+            raise RuntimeError("ClaudeAgentDriver.send_prompt called before start()")
         images = images or []
         if interrupt and self._turn_live():
             # Queue-head insert BEFORE the interrupt: the SDK interrupt awaits the
@@ -1460,3 +1478,35 @@ class SessionDriver:
             await self._assistant_api.aclose()
         for q in self._subscribers:
             q.put_nowait(_STREAM_DONE)
+
+
+class ClaudeAgentDriverFactory(AgentDriverFactory):
+    """Construct Claude drivers while keeping the SDK factory below the engine seam."""
+
+    def __init__(self, sdk_factory_for_session: Callable[[str], object],
+                 permission_registry: PermissionRegistry) -> None:
+        self._sdk_factory_for_session = sdk_factory_for_session
+        self._permission_registry = permission_registry
+
+    def create(self, config: AgentDriverConfig) -> ClaudeAgentDriver:
+        return ClaudeAgentDriver(
+            config.session_id,
+            config.account,
+            config.cwd,
+            config.config_dir,
+            mode=config.mode,
+            sdk_factory=self._sdk_factory_for_session(config.session_id),
+            registry=self._permission_registry,
+            identity=config.identity,
+            resume=config.resume,
+            on_session_id=config.on_engine_session_id,
+            on_sync_back=config.on_sync_back,
+            on_status=config.on_status,
+            on_context_usage=config.on_context_usage,
+            on_record_condense_ms=config.on_record_condense_ms,
+            get_condense_estimate=config.get_condense_estimate,
+            on_recoverable_failure=config.on_recoverable_failure,
+            clock=config.clock,
+            suggester=config.suggester,
+            assistant_api=config.assistant_api,
+        )

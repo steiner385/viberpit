@@ -1,5 +1,5 @@
 import asyncio
-from server.sessions.driver import SessionDriver
+from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.permissions import PermissionRegistry
 from server.sessions.events import Suggestions, TextDelta, UserMessage, TurnEnd
 from claude_agent_sdk import TextBlock
@@ -29,7 +29,7 @@ def test_late_subscriber_replays_in_progress_turn_then_goes_live():
     factory = scripted_factory(_gated_stream(gate))
 
     async def run():
-        d = SessionDriver("s", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me")
         await d.start()
         # Subscriber A is a concurrent LIVE consumer while B replays the snapshot.
@@ -86,7 +86,7 @@ def test_interrupt_clears_turn_started_at():
     factory = scripted_factory(_gated_stream(gate))
 
     async def run():
-        d = SessionDriver("s3", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s3", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me")
         await d.start()
         seen = []
@@ -130,7 +130,7 @@ def test_buffer_cleared_at_settle_idle_subscriber_replays_nothing():
         return FakeSDKClient(msgs)
 
     async def run():
-        d = SessionDriver("s2", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s2", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=factory, registry=PermissionRegistry(), identity="me")
         await d.start()
         await d.send_prompt("hi")
@@ -163,9 +163,9 @@ def test_buffer_cleared_at_settle_idle_subscriber_replays_nothing():
 # open_stream(): the atomic attach handle (B3 settle-race fix)
 # ---------------------------------------------------------------------------
 
-def _bare_driver(session_id="so1") -> SessionDriver:
+def _bare_driver(session_id="so1") -> ClaudeAgentDriver:
     """A driver that is never start()ed — open_stream touches no SDK state."""
-    return SessionDriver(session_id, "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+    return ClaudeAgentDriver(session_id, "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                          sdk_factory=lambda *a, **k: None,
                          registry=PermissionRegistry(), identity="me")
 

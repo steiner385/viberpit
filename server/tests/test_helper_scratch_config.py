@@ -176,7 +176,7 @@ def test_mcp_login_is_the_only_write_back_call_site():
 def test_live_sessions_still_launch_against_the_real_account_dir():
     """Only stateless helpers are isolated: a session's history and token refreshes belong
     in the account dir, and routing it to scratch would silently fork every session's state."""
-    src = (Path(__file__).resolve().parents[1] / "sessions" / "sdk_factory.py").read_text()
+    src = (Path(__file__).resolve().parents[1] / "sessions" / "claude_sdk_factory.py").read_text()
     body = src.split("def real_sdk_factory", 1)[1].split("\ndef ", 1)[0]
     assert "CLAUDE_CONFIG_DIR=config_dir" in body
     assert "helper_config_dir" not in body and "helper_env" not in body

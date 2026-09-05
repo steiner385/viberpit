@@ -1,4 +1,4 @@
-"""Production factory: builds a real ClaudeSDKClient for a SessionDriver."""
+"""Production factory: builds a real ClaudeSDKClient for a ClaudeAgentDriver."""
 from __future__ import annotations
 import json
 import os

@@ -13,18 +13,18 @@ async def test_reassign_reapplies_persisted_model(monkeypatch):
     class _NewDriver:
         def __init__(self, *a, **k):
             self.cwd = "/tmp"; self.mode = "interactive"; self.identity = None
-            self.claude_session_id = "c1"
+            self.engine_session_id = "c1"
         async def start(self): pass
         async def send_prompt(self, p): pass
         async def set_model(self, m): calls["model"] = m
 
     class _OldDriver:
-        cwd = "/tmp"; mode = "interactive"; identity = None; claude_session_id = "c1"
+        cwd = "/tmp"; mode = "interactive"; identity = None; engine_session_id = "c1"
         async def interrupt(self): pass
         async def aclose(self): pass
 
     # Stub the collaborators _reassign reaches for.
-    monkeypatch.setattr(orch_mod, "SessionDriver", _NewDriver)
+    monkeypatch.setattr(orch_mod.SessionOrchestrator, "_create_driver", lambda self, **kw: _NewDriver(resume=kw.get("resume"), identity=kw.get("identity")))
     monkeypatch.setattr(orch_mod, "compose", lambda a: "/cfg")
     monkeypatch.setattr(orch_mod.configdir, "trust_project", lambda *a, **k: None)
 
@@ -64,17 +64,17 @@ async def test_reassign_fires_driver_replaced_hook(monkeypatch):
     class _NewDriver:
         def __init__(self, *a, **k):
             self.cwd = "/tmp"; self.mode = "interactive"; self.identity = None
-            self.claude_session_id = "c1"
+            self.engine_session_id = "c1"
         async def start(self): pass
         async def send_prompt(self, p): pass
         async def set_model(self, m): pass
 
     class _OldDriver:
-        cwd = "/tmp"; mode = "interactive"; identity = None; claude_session_id = "c1"
+        cwd = "/tmp"; mode = "interactive"; identity = None; engine_session_id = "c1"
         async def interrupt(self): pass
         async def aclose(self): pass
 
-    monkeypatch.setattr(orch_mod, "SessionDriver", _NewDriver)
+    monkeypatch.setattr(orch_mod.SessionOrchestrator, "_create_driver", lambda self, **kw: _NewDriver(resume=kw.get("resume"), identity=kw.get("identity")))
     monkeypatch.setattr(orch_mod, "compose", lambda a: "/cfg")
     monkeypatch.setattr(orch_mod.configdir, "trust_project", lambda *a, **k: None)
     monkeypatch.setattr(orch_mod, "db_session", lambda: _NullCtx())
@@ -133,17 +133,17 @@ async def test_reassign_rotated_event_carries_rev_token(monkeypatch):
     class _NewDriver:
         def __init__(self, *a, **k):
             self.cwd = "/tmp"; self.mode = "interactive"; self.identity = None
-            self.claude_session_id = "c1"
+            self.engine_session_id = "c1"
         async def start(self): pass
         async def send_prompt(self, p): pass
         async def set_model(self, m): pass
 
     class _OldDriver:
-        cwd = "/tmp"; mode = "interactive"; identity = None; claude_session_id = "c1"
+        cwd = "/tmp"; mode = "interactive"; identity = None; engine_session_id = "c1"
         async def interrupt(self): pass
         async def aclose(self): pass
 
-    monkeypatch.setattr(orch_mod, "SessionDriver", _NewDriver)
+    monkeypatch.setattr(orch_mod.SessionOrchestrator, "_create_driver", lambda self, **kw: _NewDriver(resume=kw.get("resume"), identity=kw.get("identity")))
     monkeypatch.setattr(orch_mod, "compose", lambda a: "/cfg")
     monkeypatch.setattr(orch_mod.configdir, "trust_project", lambda *a, **k: None)
     monkeypatch.setattr(orch_mod, "db_session", lambda: _NullCtx())

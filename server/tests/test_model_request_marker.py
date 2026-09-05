@@ -59,5 +59,5 @@ def test_instruction_names_every_tier():
 
 
 def test_sdk_factory_appends_the_instruction():
-    from server.sessions.sdk_factory import _build_append_string
+    from server.sessions.claude_sdk_factory import _build_append_string
     assert MODEL_REQUEST_INSTRUCTION in _build_append_string()

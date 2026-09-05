@@ -188,7 +188,11 @@ def test_check_stalls_interrupts_wedged_turn():
     o = _make_orch()
     interrupted = []
     class _StubDriver:
-        _turn_active = True
+        turn_active = True
+        drain_alive = False
+        in_api_backoff = False
+        awaiting_user_input = False
+        account = "kindash"
         last_progress_at = 0.0
         async def interrupt(self):
             interrupted.append(True)
@@ -199,7 +203,7 @@ def test_check_stalls_interrupts_wedged_turn():
 
 def test_check_stalls_escalates_zombie_to_recompose_after_cap():
     """A turn the watchdog already interrupted but that stayed wedged (the SDK ignored
-    the interrupt: _turn_active flipped False yet the drain never completed and progress
+    the interrupt: turn_active flipped False yet the drain never completed and progress
     is still frozen) must be recomposed in place once interrupts hit the stall cap —
     not silently abandoned."""
     o = _make_orch(); _rec(o)
@@ -208,8 +212,11 @@ def test_check_stalls_escalates_zombie_to_recompose_after_cap():
         reassigned.append((record.id, new_account, reason))
     o._reassign = spy_reassign
     class _Zombie:
-        _turn_active = False        # interrupt() already flipped it
+        turn_active = False         # interrupt() already flipped it
         drain_alive = True          # but the drain never completed → subprocess wedged
+        in_api_backoff = False
+        awaiting_user_input = False
+        account = "kindash"
         last_progress_at = 0.0      # progress frozen
         async def interrupt(self):
             raise AssertionError("must escalate, not interrupt again")
@@ -228,8 +235,11 @@ def test_check_stalls_zombie_pauses_after_crash_cap():
         o.calls.append(("reassign", record.id, reason))
     o._reassign = spy_reassign
     class _Zombie:
-        _turn_active = False
+        turn_active = False
         drain_alive = True
+        in_api_backoff = False
+        awaiting_user_input = False
+        account = "kindash"
         last_progress_at = 0.0
         async def interrupt(self): pass
     o._drivers["s1"] = _Zombie()
@@ -252,8 +262,11 @@ def test_check_stalls_leaves_resolved_turn_alone():
         reassigned.append(record.id)
     o._reassign = spy_reassign
     class _Done:
-        _turn_active = False
+        turn_active = False
         drain_alive = False
+        in_api_backoff = False
+        awaiting_user_input = False
+        account = "kindash"
         last_progress_at = 0.0
         async def interrupt(self):
             raise AssertionError("resolved turn must be left alone")
@@ -268,7 +281,11 @@ def test_check_stalls_leaves_progressing_turn_alone():
     o = _make_orch()
     interrupted = []
     class _StubDriver:
-        _turn_active = True
+        turn_active = True
+        drain_alive = False
+        in_api_backoff = False
+        awaiting_user_input = False
+        account = "kindash"
         last_progress_at = 9_990.0
         async def interrupt(self):
             interrupted.append(True)
@@ -283,9 +300,12 @@ def test_check_stalls_leaves_turn_blocked_on_user_alone():
     o = _make_orch()
     interrupted = []
     class _StubDriver:
-        _turn_active = True
+        turn_active = True
+        drain_alive = False
+        in_api_backoff = False
         last_progress_at = 0.0
         awaiting_user_input = True
+        account = "kindash"
         async def interrupt(self):
             interrupted.append(True)
     o._drivers["s1"] = _StubDriver()
@@ -297,7 +317,11 @@ def test_check_stalls_stops_after_stall_cap():
     o = _make_orch()
     interrupted = []
     class _StubDriver:
-        _turn_active = True
+        turn_active = True
+        drain_alive = False
+        in_api_backoff = False
+        awaiting_user_input = False
+        account = "kindash"
         last_progress_at = 0.0
         async def interrupt(self): interrupted.append(True)
     o._drivers["s1"] = _StubDriver()
@@ -325,9 +349,12 @@ def test_check_stalls_extends_timeout_for_throttled_turn():
     o = _make_orch()
     interrupted = []
     class _StubDriver:
-        _turn_active = True
+        turn_active = True
+        drain_alive = False
         last_progress_at = 0.0
         in_api_backoff = True
+        awaiting_user_input = False
+        account = "kindash"
         async def interrupt(self): interrupted.append(True)
     o._drivers["s1"] = _StubDriver()
     # Silence just past the base timeout but within the extended throttle window.
@@ -341,9 +368,12 @@ def test_check_stalls_interrupts_throttled_turn_past_extended_timeout():
     o = _make_orch()
     interrupted = []
     class _StubDriver:
-        _turn_active = True
+        turn_active = True
+        drain_alive = False
         last_progress_at = 0.0
         in_api_backoff = True
+        awaiting_user_input = False
+        account = "kindash"
         async def interrupt(self): interrupted.append(True)
     o._drivers["s1"] = _StubDriver()
     asyncio.run(o._check_stalls(now=R.STALL_TIMEOUT_THROTTLED + 1.0))
@@ -357,7 +387,10 @@ def test_check_stalls_extends_timeout_for_quarantined_account():
     o = _make_orch()
     interrupted = []
     class _StubDriver:
-        _turn_active = True
+        turn_active = True
+        drain_alive = False
+        in_api_backoff = False
+        awaiting_user_input = False
         last_progress_at = 0.0
         account = "kindash"
         async def interrupt(self): interrupted.append(True)

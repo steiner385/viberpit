@@ -1,8 +1,8 @@
 """On-demand suggestion generation (the sparkle ✨ "always ask the LLM" action).
 
 Covers:
-  - SessionDriver.generate_suggestions_now: awaits the suggester, caches + returns
-  - SessionDriver.generate_suggestions_now: [] when no suggester configured
+  - ClaudeAgentDriver.generate_suggestions_now: awaits the suggester, caches + returns
+  - ClaudeAgentDriver.generate_suggestions_now: [] when no suggester configured
   - POST /api/sessions/{id}/suggest: 200 {"suggestions": [...]}; 404 unknown
 
 Auth/TestClient setup mirrors test_send_prompt_route.py.
@@ -16,7 +16,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from server.app import create_app
-from server.sessions.driver import SessionDriver
+from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.permissions import PermissionRegistry
 from server.tests.fakes.fake_sdk import FakeSDKClient
@@ -52,7 +52,7 @@ def test_driver_generate_now_returns_and_caches():
     sug = _StubSuggester(["Run the tests", "Open a PR"])
 
     async def run():
-        d = SessionDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory(msgs), registry=PermissionRegistry(),
                           identity="me", suggester=sug)
         await d.start()
@@ -71,7 +71,7 @@ def test_driver_generate_now_no_suggester_returns_empty():
     msgs = [f.stream_start(uuid="t1"), f.stream_text("done", uuid="t1"), f.result(uuid="t1")]
 
     async def run():
-        d = SessionDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+        d = ClaudeAgentDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
                           sdk_factory=_factory(msgs), registry=PermissionRegistry(),
                           identity="me", suggester=None)
         await d.start()

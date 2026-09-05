@@ -1,7 +1,7 @@
 """Tests for Task 1: persist claude_session_id to DB the moment the driver captures it."""
 import asyncio
 from ccswitch.selector import Picked
-from server.sessions.driver import SessionDriver
+from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.permissions import PermissionRegistry
 from server.sessions.events import TurnEnd
 from server.tests.fakes.fake_sdk import FakeSDKClient
@@ -26,7 +26,7 @@ def test_driver_fires_on_session_id_once_when_captured():
         calls.append((session_id, claude_session_id))
 
     async def run():
-        d = SessionDriver("local-1", "primary", "/tmp/r", "/tmp/cfg",
+        d = ClaudeAgentDriver("local-1", "primary", "/tmp/r", "/tmp/cfg",
                           mode="interactive", sdk_factory=_factory(msgs),
                           registry=PermissionRegistry(), identity="me",
                           on_session_id=on_sid)

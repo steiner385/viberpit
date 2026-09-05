@@ -1,5 +1,5 @@
 from server.sessions.completion import COMPLETION_MARKER
-from server.sessions.sdk_factory import real_sdk_factory
+from server.sessions.claude_sdk_factory import real_sdk_factory
 
 
 def _captured_options(monkeypatch, mode="interactive"):
@@ -12,7 +12,7 @@ def _captured_options(monkeypatch, mode="interactive"):
     import claude_agent_sdk
     monkeypatch.setattr(claude_agent_sdk, "ClaudeSDKClient", _FakeClient)
 
-    from server.sessions.sdk_factory import real_sdk_factory as _rsf
+    from server.sessions.claude_sdk_factory import real_sdk_factory as _rsf
     _rsf("/tmp/cwd", "/tmp/cfg", lambda *a, **k: None, mode, None)
     return captured["options"]
 

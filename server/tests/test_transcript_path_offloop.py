@@ -41,7 +41,7 @@ async def test_resolve_transcript_path_keeps_the_event_loop_responsive():
     """The synchronous _find_transcript (glob/stat over sshfs) is pushed to a worker
     thread, so even a wedged mount can't starve the loop."""
     orch = object.__new__(SessionOrchestrator)  # skip heavy __init__
-    orch._drivers = {"s1": SimpleNamespace(config_dir="/cfg", claude_session_id="csid")}
+    orch._drivers = {"s1": SimpleNamespace(config_dir="/cfg", engine_session_id="csid")}
     orch._records = {"s1": SimpleNamespace(cwd=None)}
 
     def _slow_find(config_dir, csid, cwd=None):

@@ -110,7 +110,7 @@ def test_rethread_makes_question_asked_under_system_answerable(tmp_path):
         await orch.rehydrate()
         d_sys = await _ensure(orch, tmp_path, "s3")  # built by an internal path
         # The CLI asks a question while the driver still carries "system" — exactly
-        # what SessionDriver's AskUserQuestion handler registers.
+        # what ClaudeAgentDriver's AskUserQuestion handler registers.
         qid, fut = d_sys._qreg.request("s3", "t1", "H", "Q?", [{"label": "A"}], False,
                                        d_sys.identity)
         pid, pfut = await d_sys._reg.request(

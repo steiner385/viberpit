@@ -34,7 +34,7 @@ async def test_command_catalog_serves_cached_when_detached():
 async def test_command_catalog_persists_live_build_onto_record():
     """Building the catalog from a live driver caches it on the record so a later
     detached view can replay it."""
-    from server.sessions.driver import SessionDriver
+    from server.sessions.claude_driver import ClaudeAgentDriver
     from server.sessions.permissions import PermissionRegistry
     from server.sessions.types import SessionRecord
     orch, client = _orch_with_driver(server_info={"commands": [{"name": "review", "description": "Review a PR"}]})
@@ -42,7 +42,7 @@ async def test_command_catalog_persists_live_build_onto_record():
         id="s1", name="Live", account="a", claude_session_id="c",
         cols=80, rows=24, cwd="/tmp",
     )
-    d = SessionDriver("s1", "a", "/tmp", "/tmp/c", mode="interactive",
+    d = ClaudeAgentDriver("s1", "a", "/tmp", "/tmp/c", mode="interactive",
                       sdk_factory=lambda *a, **k: client, registry=PermissionRegistry(),
                       identity="t")
     await d.start()
@@ -55,9 +55,9 @@ async def test_command_catalog_persists_live_build_onto_record():
 @pytest.mark.anyio
 async def test_run_command_unknown_raises():
     orch, client = _orch_with_driver(server_info={"commands": [{"name": "help"}]})
-    from server.sessions.driver import SessionDriver
+    from server.sessions.claude_driver import ClaudeAgentDriver
     from server.sessions.permissions import PermissionRegistry
-    d = SessionDriver("s1", "a", "/tmp", "/tmp/c", mode="interactive",
+    d = ClaudeAgentDriver("s1", "a", "/tmp", "/tmp/c", mode="interactive",
                       sdk_factory=lambda *a, **k: client, registry=PermissionRegistry(),
                       identity="t")
     await d.start()
@@ -80,9 +80,9 @@ async def test_run_command_not_live_session_returns_notice():
 @pytest.mark.anyio
 async def test_run_command_dispatches_passthrough():
     orch, client = _orch_with_driver(server_info={"commands": [{"name": "review"}]})
-    from server.sessions.driver import SessionDriver
+    from server.sessions.claude_driver import ClaudeAgentDriver
     from server.sessions.permissions import PermissionRegistry
-    d = SessionDriver("s1", "a", "/tmp", "/tmp/c", mode="interactive",
+    d = ClaudeAgentDriver("s1", "a", "/tmp", "/tmp/c", mode="interactive",
                       sdk_factory=lambda *a, **k: client, registry=PermissionRegistry(),
                       identity="t")
     await d.start()

@@ -1,4 +1,5 @@
 import pytest
+from unittest import mock
 from server.sessions.fleet_orchestrator import FleetOrchestrator
 from server.sessions.facade import _DEADLINE_ATTR
 
@@ -279,6 +280,57 @@ async def test_prefer_is_forwarded_not_passed_to_daemon(monkeypatch):
     await fo.create_session(prefer="rocky", account="a")
     assert got["prefer"] == "rocky"
     assert "prefer" not in seen and seen["account"] == "a"  # prefer never reaches daemon
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("engine", ["openai", None])
+async def test_create_rejects_invalid_engine_before_host_ranking(monkeypatch, engine):
+    from server.sessions.engine import InvalidAgentEngine
+
+    router = _FakeRouter({"rocky": _FakeOrch("rocky")})
+    pick = mock.AsyncMock(return_value=["rocky"])
+    router.pick = pick
+    fleet = FleetOrchestrator(router, primary="rocky")
+
+    with pytest.raises(InvalidAgentEngine):
+        await fleet.create_session(engine=engine)
+
+    pick.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_codex_before_host_ranking_until_capabilities_exist():
+    from server.sessions.engine import AgentEngineUnavailable
+
+    router = _FakeRouter({"rocky": _FakeOrch("rocky")})
+    pick = mock.AsyncMock(return_value=["rocky"])
+    router.pick = pick
+    fleet = FleetOrchestrator(router, primary="rocky")
+
+    with pytest.raises(AgentEngineUnavailable):
+        await fleet.create_session(engine="codex")
+
+    pick.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_omits_explicit_claude_engine_for_legacy_runner(monkeypatch):
+    rocky = _FakeOrch("rocky")
+    seen = {}
+
+    async def create_session(self, **kwargs):
+        seen.update(kwargs)
+        return _Rec("s1")
+
+    rocky.create_session = create_session.__get__(rocky)
+    router = _FakeRouter({"rocky": rocky})
+    router.pick = mock.AsyncMock(return_value=["rocky"])
+    fleet = FleetOrchestrator(router, primary="rocky")
+    monkeypatch.setattr(fleet, "_stamp_host", lambda sid, host: _acoro(None))
+
+    await fleet.create_session(engine="claude_code", account="a")
+
+    assert seen == {"account": "a"}
 
 
 @pytest.mark.asyncio
