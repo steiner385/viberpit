@@ -189,11 +189,12 @@ export function ArchivedSessionList({ state, onReviewSession }: ArchivedSessionL
 
   // ── Per-row renderer ──────────────────────────────────────────────────────────
   // Returns a keyed <div role="listitem"> (not <li>) because GroupedList panels
-  // are <div role="group"> and bare <li> elements inside a <div> are invalid
-  // HTML — the ARIA role is what the outer `role="list"` wrapper (below) needs
-  // its owned elements to carry; a role-less div is transparent to the
-  // accessibility tree, so without this the list's real children were the
-  // checkbox `input` and the card's `article` (axe `aria-required-children`).
+  // are <div role="group"> (or `role="list"` here — see `panelRole` below) and
+  // bare <li> elements inside a <div> are invalid HTML — the ARIA role is what
+  // each panel needs its owned elements to carry; a role-less div is
+  // transparent to the accessibility tree, so without this the list's real
+  // children were the checkbox `input` and the card's `article` (axe
+  // `aria-required-children`).
   function renderArchivedRow(s: ArchivedSession) {
     const card = (
       <ArchivedSessionCard
@@ -306,12 +307,23 @@ export function ArchivedSessionList({ state, onReviewSession }: ArchivedSessionL
             <span className="text-xs text-gray-500 dark:text-gray-400">Select all</span>
           </div>
 
-          <div role="list" aria-label="Archived sessions">
+          {/* No `role="list"` HERE: with three grouping modes (none/account/repo)
+              a single outer list can own a `role="group"` panel per header —
+              disallowed for `list` — and orphan every `listitem` inside those
+              panels from any `list` ancestor (axe `aria-required-children` +
+              `aria-required-parent`, only surfaced by Group-by ≠ None, which
+              this file's own axe coverage never exercised). `panelRole="list"`
+              makes GroupedList put `role="list"` on each group's panel
+              instead — including the lone panel of the ungrouped ('none')
+              mode, which is why this one needs `ariaLabel` in its place. */}
+          <div>
             <GroupedList
               groups={ordering.groups}
               renderRow={renderArchivedRow}
               collapsedKeys={ordering.collapsedKeys}
               onToggleCollapse={ordering.toggleCollapse}
+              panelRole="list"
+              ariaLabel="Archived sessions"
             />
           </div>
         </div>

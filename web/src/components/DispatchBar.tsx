@@ -242,7 +242,12 @@ export function DispatchBar({
     const trimmed = text.trim()
     const refs = att.refs()
     if (!trimmed && refs.length === 0) {
-      onOpenHighlighted()
+      // List-cursor behaviour — with no list on screen there is nothing for an
+      // empty Enter to open. `nav`'s highlight is shell state that survives a
+      // scope switch, so without this gate a highlight set in the live scope
+      // stays live while the dock renders in the archived one and Enter would
+      // navigate to a session whose list is not even mounted.
+      if (drivesList) onOpenHighlighted()
       return
     }
     setDispatchError(null)
@@ -287,9 +292,14 @@ export function DispatchBar({
     }
 
     // Enter (no Shift) → toggle a highlighted header (empty prompt), else dispatch/open.
+    // The header-toggle branch is list-cursor behaviour, same as the rest of this
+    // function's `drivesList &&` guards — with no list on screen a held-over
+    // header highlight must not collapse an off-screen group. `dispatchNow`
+    // itself is NOT gated: with real text it must still start a session here,
+    // since the dock is the only way to do that without switching scope first.
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      if (empty && activeDescendantIsHeader) { onToggleHighlighted?.(); return }
+      if (drivesList && empty && activeDescendantIsHeader) { onToggleHighlighted?.(); return }
       dispatchNow()
       return
     }
