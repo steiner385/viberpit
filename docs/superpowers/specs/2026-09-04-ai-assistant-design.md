@@ -568,7 +568,7 @@ respawns with `resume`; the transcript replays from the ring/history; the compos
 | Runaway quota use | rate limits (tool calls, prompts), `max_turns`, idle reap, `effort=low`, Sonnet default, fable denylist |
 | Assistant reads another identity's data | identity comes from the token payload; every endpoint already scopes by identity where relevant; single-operator deployment today |
 | Cross-host confusion | pinned to primary; never migrated |
-| Kill switch | `CCSWITCH_ASSISTANT_ENABLED=false` → endpoint 404, existing assistant drivers reaped on next tick, drawer shows placeholder |
+| Kill switch | `CCSWITCH_ASSISTANT_ENABLED=false` → endpoint 404, drawer shows placeholder. As shipped this stops *new* assistants only: the sweep (`_reap_idle_assistants_once`) reaps on idle and does not read the flag, so an in-flight assistant keeps its driver until `CCSWITCH_ASSISTANT_IDLE_S` elapses. |
 
 Public-hosting hardening (P4 of spec 001) is unaffected: the token path is additive and
 loopback-only; the passkey path still gates the browser.
