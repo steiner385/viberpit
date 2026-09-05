@@ -9544,9 +9544,10 @@ class SessionOrchestrator:
                     )
 
         session_id = str(uuid.uuid4())
-        cfg_dir = compose(cand.account)
         Path(cand.cwd).mkdir(parents=True, exist_ok=True)
-        configdir.trust_project(cand.account, cand.cwd)
+        driver_config_dir = self._driver_config_dir(
+            AgentEngine.CLAUDE_CODE, cand.account, cand.cwd, None
+        )
 
         # Allocate a virtual X11 display for the adopted session (fresh allocation).
         if self._x11 is not None:
@@ -9571,7 +9572,7 @@ class SessionOrchestrator:
                 session_id=session_id,
                 account=cand.account,
                 cwd=cand.cwd,
-                config_dir=str(cfg_dir),
+                config_dir=driver_config_dir,
                 mode=permission_mode,
                 identity=identity,
                 resume=resume_arg,
@@ -11422,13 +11423,13 @@ class SessionOrchestrator:
                 await bounded_wait(old_driver.interrupt(), timeout=_DRIVER_CONTROL_TIMEOUT_S,
                                    phase=f"reassign.interrupt:{record.id}")
                 await old_driver.aclose()
-            cfg = compose(new_account)
-            configdir.trust_project(new_account, cwd)
-            # Rotation is the product's core loop; without this the assistant's isolated
-            # config dir would last only until its account hit a usage ceiling. Applied
-            # after compose + trust, for the reasons in _isolated_dir_for.
-            cfg = self._isolated_dir_for(cfg, getattr(record, "kind", None))
             Path(cwd).mkdir(parents=True, exist_ok=True)
+            driver_config_dir = self._driver_config_dir(
+                AgentEngine.CLAUDE_CODE,
+                new_account,
+                cwd,
+                getattr(record, "kind", None),
+            )
             _copilot = getattr(self, "_copilot", None)
             if _copilot is not None and _provider_of(new_account) == _copilot_mod.PROVIDER:
                 await _copilot.ensure(new_account)
@@ -11448,7 +11449,7 @@ class SessionOrchestrator:
                 session_id=record.id,
                 account=new_account,
                 cwd=cwd,
-                config_dir=str(cfg),
+                config_dir=driver_config_dir,
                 mode=mode,
                 identity=identity,
                 resume=claude_sid,
