@@ -9,7 +9,9 @@ from server.automations.base import validate_config
 from server.automations.model_pick import (
     AUTO_MODEL_POOL,
     AUTOMATION_MODEL_CHOICES,
+    assess_codex_effort,
     assess_model,
+    resolve_codex_model,
     resolve_model,
 )
 from server.sessions.model_catalog import ALIASES
@@ -205,3 +207,84 @@ def test_non_spawning_automations_do_not_carry_default_model():
     from server.automations.cicd_doctor import CicdDoctor
     for cls in (Autopilot, CicdDoctor, ArchiveAudit):
         assert "default_model" not in {f.key for f in cls.config_schema}
+
+
+# --------------------------------------------------------------------------- #
+# assess_codex_effort / resolve_codex_model — issue #1289                     #
+# --------------------------------------------------------------------------- #
+
+_CODEX_EFFORTS = ("minimal", "low", "medium", "high")
+
+
+@pytest.mark.asyncio
+async def test_assess_codex_effort_maps_cheapest_tier_to_cheapest_effort():
+    async def pick_haiku(task_summary):
+        return "haiku"  # cheapest AUTO_MODEL_POOL tier
+    got = await assess_codex_effort("typo fix", _CODEX_EFFORTS, _assess=pick_haiku)
+    assert got == "minimal"
+
+
+@pytest.mark.asyncio
+async def test_assess_codex_effort_maps_hardest_tier_to_hardest_effort():
+    async def pick_fable(task_summary):
+        return "fable"  # hardest AUTO_MODEL_POOL tier
+    got = await assess_codex_effort("huge refactor", _CODEX_EFFORTS, _assess=pick_fable)
+    assert got == "high"
+
+
+@pytest.mark.asyncio
+async def test_assess_codex_effort_never_returns_a_claude_alias():
+    # The mapped result must always come FROM the caller-supplied catalog
+    # slice, never from AUTO_MODEL_POOL/ALIASES — the leak this issue guards.
+    for tier in AUTO_MODEL_POOL:
+        async def pick(task_summary, _tier=tier):
+            return _tier
+        got = await assess_codex_effort("job", _CODEX_EFFORTS, _assess=pick)
+        assert got in _CODEX_EFFORTS
+        assert got not in AUTO_MODEL_POOL
+
+
+@pytest.mark.asyncio
+async def test_assess_codex_effort_empty_catalog_is_none():
+    async def never(task_summary):
+        raise AssertionError("must not consult the assessor with nothing to map onto")
+    assert await assess_codex_effort("job", (), _assess=never) is None
+
+
+@pytest.mark.asyncio
+async def test_assess_codex_effort_assessment_failure_is_none():
+    async def no_pick(task_summary):
+        return None
+    got = await assess_codex_effort("job", _CODEX_EFFORTS, _assess=no_pick)
+    assert got is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_codex_model_auto_uses_assessment():
+    async def pick_medium(task_summary, efforts):
+        assert efforts == _CODEX_EFFORTS
+        return "medium"
+    got = await resolve_codex_model(
+        {"default_model": "auto"}, "job", _CODEX_EFFORTS, _assess=pick_medium)
+    assert got == ("medium", "auto")
+
+
+@pytest.mark.asyncio
+async def test_resolve_codex_model_assessment_failure_falls_back():
+    async def no_pick(task_summary, efforts):
+        return None
+    got = await resolve_codex_model(
+        {"default_model": "auto"}, "job", _CODEX_EFFORTS, _assess=no_pick)
+    assert got == (None, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["default", "opus", "gpt-5", None])
+async def test_resolve_codex_model_non_auto_never_consults_assessor(value):
+    # A pinned Claude alias or "default" must never reach the Codex assessor —
+    # Codex pins go through its own codex_model/codex_reasoning_effort config.
+    async def never(task_summary, efforts):
+        raise AssertionError("assessor must not be consulted")
+    config = {} if value is None else {"default_model": value}
+    got = await resolve_codex_model(config, "job", _CODEX_EFFORTS, _assess=never)
+    assert got == (None, None)
