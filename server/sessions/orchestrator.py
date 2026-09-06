@@ -8396,6 +8396,7 @@ class SessionOrchestrator:
             pr_resolution=getattr(row, "pr_resolution", None),
             pr_resolution_source=getattr(row, "pr_resolution_source", None),
             host=getattr(row, "host", None),
+            display_mode=getattr(row, "display_mode", None),
             kind=getattr(row, "kind", None),
             owner_identity=getattr(row, "owner_identity", None),
             paused_reason=getattr(row, "paused_reason", None),
