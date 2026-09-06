@@ -113,10 +113,15 @@ def spawn_env(tmp_path):
     for p in patches: p.stop()
 
 
-async def _orch(spawn_env, x11, native):
+async def _orch(spawn_env, x11, native, *, max_active_sessions=None):
     from server.db import init_db
     db_url, repo_root = spawn_env
     await init_db(db_url=db_url)
+    if max_active_sessions is not None:
+        from server.db import db_session
+        from server.db.models import AppSettings
+        async with db_session() as db:
+            db.add(AppSettings(id="singleton", max_active_sessions=max_active_sessions))
     orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), x11=x11,
                                poll_interval=9999.0, usage_fn=_fake_usage, repo_root=repo_root)
     orch._native = native
@@ -227,3 +232,82 @@ async def test_rehydrate_keeps_native_and_skips_lease(spawn_env):
         assert orch2._display_env(sid) == {"DISPLAY": ":0"}
     finally:
         await orch2.stop()
+
+
+# --- queue / approval holds must not lose the display decision --------------------
+#
+# Round-1 review finding: create_session forwarded client_node/display only on the
+# DIRECT spawn. A session that instead queues (_enqueue_session) or parks for model
+# approval (_hold_for_approval) had its request silently dropped — the eventual
+# promotion spawn (_spawn_session(preexisting_row=True, **params/**spawn_kwargs))
+# ran with client_node=None, display=None, so resolve_display_mode always returned
+# "virtual". Per the controller's ruling, the fix resolves and persists the decision
+# at enqueue/hold time (on THIS daemon), never by widening the shared queue params
+# blob — a daemon whose _spawn_session predates a new params key would TypeError and
+# the drain would kill the session (see the comment on that blob in
+# _enqueue_session). Promotion picks the decision up through the existing
+# `getattr(_prior, "display_mode", None) or ...` precedence already covered above.
+
+@pytest.mark.asyncio
+async def test_queued_native_request_persists_and_promotes_native(spawn_env):
+    """A local operator at the capacity cap must not lose the native decision to the
+    queue: it is resolved and persisted on the row/in-memory record at enqueue time,
+    not deferred to a spawn that (per the shared-queue-blob constraint) never learns
+    the original client_node/display."""
+    x11, native = FakeX11(), FakeNative()
+    orch = await _orch(spawn_env, x11, native, max_active_sessions=1)
+    try:
+        a = await orch.create_session("one", account="acct")
+        assert a.status == "idle"
+        b = await orch.create_session("n", account="acct", client_node="dobby")
+        assert b.status == "queued"
+        assert b.display_mode == "native"
+        from server.db import db_session
+        from server.db.models import Session as DbSession
+        async with db_session() as db:
+            row = await db.get(DbSession, b.id)
+        assert row.display_mode == "native"
+        # The queue params JSON blob must NOT carry client_node/display (the
+        # mixed-daemon-version TypeError hazard the controller ruled against).
+        from server.sessions import session_queue as sq
+        entry = await sq.next_entry()
+        assert "client_node" not in entry.params and "display" not in entry.params
+
+        await orch.close_session(a.id)
+        started = await orch._maybe_start_queued()
+        assert started == 1
+        promoted = orch._records[b.id]
+        assert promoted.display_mode == "native"
+        assert b.id not in x11.started
+        assert orch._display_env(b.id) == {"DISPLAY": ":0"}
+    finally:
+        await orch.stop()
+
+
+@pytest.mark.asyncio
+async def test_held_native_request_persists_and_promotes_native(spawn_env):
+    """A model-gated session parked at pending_approval must not lose the native
+    decision either: resolved and persisted at hold time (same helper, same
+    precedence), so a human approving it minutes or hours later — or after a daemon
+    restart rebuilds the in-memory record from the row via rehydrate — still gets a
+    native session, not a silent fallback to the VNC viewport."""
+    x11, native = FakeX11(), FakeNative()
+    orch = await _orch(spawn_env, x11, native)
+    try:
+        rec = await orch.create_session(
+            "n", account="acct", client_node="dobby", model="fable")
+        assert rec.status == "pending_approval"
+        assert rec.display_mode == "native"
+        from server.db import db_session
+        from server.db.models import Session as DbSession
+        async with db_session() as db:
+            row = await db.get(DbSession, rec.id)
+        assert row.display_mode == "native"
+
+        out = await orch.resolve_model_approval(rec.id, "approve", identity="user@x")
+        assert out.status != "pending_approval"
+        assert out.display_mode == "native"
+        assert x11.started == []
+        assert orch._display_env(out.id) == {"DISPLAY": ":0"}
+    finally:
+        await orch.stop()

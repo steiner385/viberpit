@@ -1948,7 +1948,8 @@ class SessionOrchestrator:
                 attachment_ids=attachment_ids, name_is_auto=name_is_auto,
                 origin=origin, origin_ref=origin_ref, model=model,
                 reasoning_effort=reasoning_effort, kind=kind,
-                owner_identity=owner_identity, engine=selected_engine)
+                owner_identity=owner_identity, engine=selected_engine,
+                client_node=client_node, display=display)
 
         # Global active-session cap: at/over the cap the session is created as a
         # queued row (real session, no worktree/account/driver yet) and started
@@ -1964,7 +1965,8 @@ class SessionOrchestrator:
                 permission_mode=permission_mode, attachment_ids=attachment_ids,
                 name_is_auto=name_is_auto, origin=origin, origin_ref=origin_ref,
                 model=model, reasoning_effort=reasoning_effort, kind=kind,
-                owner_identity=owner_identity, engine=selected_engine)
+                owner_identity=owner_identity, engine=selected_engine,
+                client_node=client_node, display=display)
         return await self._spawn_session(
             session_id, name=name, account=account, initial_prompt=initial_prompt,
             cols=cols, rows=rows, cwd=cwd, branch=branch, repo=repo,
@@ -1992,10 +1994,24 @@ class SessionOrchestrator:
         val = getattr(s, "max_active_sessions", None) if s else None
         return max(1, val if val is not None else DEFAULT_MAX_ACTIVE_SESSIONS)
 
+    def _resolve_display_mode_for(self, display: str | None, client_node: str | None) -> str:
+        """The one call to ``resolve_display_mode`` for this daemon — used by the
+        spawn, enqueue and hold paths so the decision is made identically wherever a
+        session is born, not just where it happens to start a driver. A queued or
+        held session must persist this NOW, on the daemon that owns the request: the
+        client_node/display that produced it never survives into the shared queue
+        blob (see ``_enqueue_session``'s comment on why) or a restart, so waiting
+        until spawn time would silently lose it and fall back to virtual.
+        """
+        return resolve_display_mode(
+            requested=display, client_node=client_node, runner=self_host_name(),
+            native_available=self._native is not None and self._native.available())
+
     async def _enqueue_session(self, session_id: str, *, name, account,
                                initial_prompt, cols, rows, cwd, branch, repo,
                                identity, permission_mode, attachment_ids,
                                name_is_auto, origin, origin_ref, model,
+                               client_node=None, display=None,
                                reasoning_effort=None, kind=None, owner_identity=None,
                                engine=AgentEngine.CLAUDE_CODE) -> SessionRecord:
         from datetime import datetime
@@ -2003,6 +2019,12 @@ class SessionOrchestrator:
         now = datetime.utcnow()
         host = local_host_stamp()
         selected_engine = parse_agent_engine(engine)
+        # Resolve and persist the display decision NOW, on this daemon — the
+        # client_node/display that produced the request never survives into the
+        # shared `params` JSON blob below (mixed-daemon-version TypeError hazard,
+        # see the comment on that blob) or a restart, so this is the only place a
+        # queued session's native-vs-virtual choice can be captured durably.
+        display_mode = self._resolve_display_mode_for(display, client_node)
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name=name, account_name=account or "",
@@ -2012,7 +2034,8 @@ class SessionOrchestrator:
                 permission_mode=permission_mode, name_is_auto=name_is_auto,
                 origin=origin, origin_ref=origin_ref, model=model,
                 initial_prompt=initial_prompt, host=host,
-                kind=kind, owner_identity=owner_identity))
+                kind=kind, owner_identity=owner_identity,
+                display_mode=display_mode))
         params: dict = {
             "name": name, "account": account, "initial_prompt": initial_prompt,
             "cols": cols, "rows": rows, "cwd": cwd, "branch": branch,
@@ -2048,7 +2071,8 @@ class SessionOrchestrator:
             status="queued", name_is_auto=name_is_auto,
             created_at=now, updated_at=now, origin=origin, origin_ref=origin_ref,
             model=model, reasoning_effort=reasoning_effort, host=host,
-            kind=kind, owner_identity=owner_identity)
+            kind=kind, owner_identity=owner_identity,
+            display_mode=display_mode)
         self._records[session_id] = rec
         log.info("session.queued id=%s priority=%d origin=%s",
                  session_id, priority, origin)
@@ -2058,6 +2082,7 @@ class SessionOrchestrator:
                                  initial_prompt, cols, rows, cwd, branch, repo,
                                  identity, permission_mode, attachment_ids,
                                  name_is_auto, origin, origin_ref, model,
+                                 client_node=None, display=None,
                                  reasoning_effort=None, kind=None, owner_identity=None,
                                  engine=AgentEngine.CLAUDE_CODE) -> SessionRecord:
         """Park a model-gated session at 'pending_approval': persist a driverless row
@@ -2068,11 +2093,17 @@ class SessionOrchestrator:
         the requested_by/at provenance columns set. The full spawn kwargs are kept in
         self._pending_approvals so the approve path (Task 10) can spawn cleanly; that
         map is in-memory only — a restart rebuilds the row-backed record via rehydrate.
+
+        Like _enqueue_session, the display decision is resolved and persisted HERE:
+        an approval can sit for as long as a human takes to act on it (far longer
+        than a queue drain), so client_node/display must not depend on anything
+        in-memory-only surviving that wait.
         """
         from datetime import datetime
         now = datetime.utcnow()
         host = local_host_stamp()
         selected_engine = parse_agent_engine(engine)
+        display_mode = self._resolve_display_mode_for(display, client_node)
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name=name, account_name=account or "",
@@ -2085,7 +2116,8 @@ class SessionOrchestrator:
                 model=None, pending_model=model,
                 pending_model_requested_by=identity, pending_model_requested_at=now,
                 initial_prompt=initial_prompt, host=host,
-                kind=kind, owner_identity=owner_identity))
+                kind=kind, owner_identity=owner_identity,
+                display_mode=display_mode))
             await record_audit(db, type="model_approval.requested", identity=identity,
                                detail={"session_id": session_id, "model": model,
                                        "account": account})
@@ -2105,7 +2137,8 @@ class SessionOrchestrator:
             status="pending_approval", name_is_auto=name_is_auto,
             created_at=now, updated_at=now, origin=origin, origin_ref=origin_ref,
             model=None, reasoning_effort=reasoning_effort, pending_model=model, host=host,
-            kind=kind, owner_identity=owner_identity)
+            kind=kind, owner_identity=owner_identity,
+            display_mode=display_mode)
         self._records[session_id] = rec
         log.info("session.pending_approval id=%s model=%s origin=%s",
                  session_id, model, origin)
@@ -2926,9 +2959,8 @@ class SessionOrchestrator:
         # Decide where this session's GUI renders — ONCE, here — then either lease a
         # virtual Xvfb display or leave the host's real one to _display_env. A
         # previously-queued/resumed row keeps its persisted decision.
-        display_mode = getattr(_prior, "display_mode", None) or resolve_display_mode(
-            requested=display, client_node=client_node, runner=self_host_name(),
-            native_available=self._native is not None and self._native.available())
+        display_mode = (getattr(_prior, "display_mode", None)
+                        or self._resolve_display_mode_for(display, client_node))
         if display_mode == DISPLAY_VIRTUAL and self._x11 is not None:
             try:
                 await self._x11.start_display(session_id)
