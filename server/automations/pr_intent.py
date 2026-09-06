@@ -17,10 +17,14 @@ log = logging.getLogger(__name__)
 
 _SYSTEM = (
     "You judge whether a coding session has deliberately decided NOT to open a pull "
-    "request — either the work needed no code change ('not-needed') or the session/user "
-    "cancelled or abandoned the PR work ('cancelled'). You are NOT deciding whether a PR "
-    "would be nice; only whether the session has already RESOLVED not to open one. When "
-    "unsure, say resolved=false. Reply with ONLY a JSON object "
+    "request, judged against its GOAL — either the goal is already satisfied or genuinely "
+    "needs no code change ('not-needed'), or the session/user cancelled or abandoned the "
+    "PR work ('cancelled'). A goal that asks for a code change is NOT resolved by "
+    "investigating it and stopping: recommending a next step, proposing a spec or plan, "
+    "offering to continue, or waiting on the user is unfinished work, not a resolution — "
+    "say resolved=false. You are NOT deciding whether a PR would be nice; only whether "
+    "the session has already RESOLVED not to open one. When unsure, say resolved=false. "
+    "Reply with ONLY a JSON object "
     '{"resolved": bool, "reason": "cancelled"|"not-needed"|"", "confidence": "high"|"low"} '
     "— no prose, no code fences."
 )

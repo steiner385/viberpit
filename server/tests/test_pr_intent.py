@@ -51,3 +51,15 @@ async def test_sdk_import_failure_degrades(monkeypatch):
     monkeypatch.setattr(pi, "_default_sdk_query_fn", boom)
     v = await pi.classify_pr_intent([], "goal")
     assert v == pi.PrIntentVerdict(False, "", "low")
+
+
+def test_system_prompt_treats_deferral_as_unresolved():
+    """The classifier is the ONLY verification of a session's own no-PR claim on a
+    code goal, so it must judge against the goal: recommending a next step, offering
+    to continue, or waiting on the user is NOT a resolution that the goal needs no
+    code change (prod 2026-09-06, session fdc6b27a)."""
+    from server.automations.pr_intent import _SYSTEM
+    low = _SYSTEM.lower()
+    assert "goal" in low
+    assert "next step" in low
+    assert "offering to" in low or "offer to" in low
