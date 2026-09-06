@@ -15,6 +15,11 @@ export const OPTIMISTIC_USER_ID = 'optimistic:user'
 const PENDING_ID_PREFIX = 'pending:'
 const pendingSeq = (p: { id: string }): number => Number(p.id.slice(PENDING_ID_PREFIX.length))
 
+/** Id prefix for a synthetic turn created by a `notice` event (see the `notice` case). */
+const NOTICE_TURN_PREFIX = 'notice-turn:'
+/** A notice turn older than this, relative to the newest arrival, collapses into a count. */
+const NOTICE_COLLAPSE_AGE_MS = 24 * 60 * 60 * 1000
+
 /** True for a turn that is a sent-but-unconfirmed prompt still awaiting its echo. */
 const isPendingTurn = (t: Turn): boolean => t.role === 'user' && t.id.startsWith(PENDING_ID_PREFIX)
 
@@ -30,6 +35,12 @@ export type Block =
   | { kind: 'notice';     id: string; text: string; ts?: number }
   | { kind: 'error';      id: string; code: string; message: string; resetsAt?: string | null; ts?: number }
   | { kind: 'recovering'; id: string; message: string; ts?: number }
+  // A proactive watch notice (see EvNotice) — distinct from the plain-text 'notice'
+  // banner above, which is a client-local transient (e.g. "Model → sonnet"). Named
+  // `noticeKind` (not `kind`) to avoid colliding with the block discriminant.
+  | { kind: 'noticeCard';      id: string; noticeKind: string; title: string; body: string; url?: string | null; watchId?: string | null; ts?: number }
+  // A run of older noticeCard turns folded into a count — see the `notice` case.
+  | { kind: 'noticeCollapsed'; id: string; count: number; ts?: number }
 
 // ── Turn ─────────────────────────────────────────────────────────────────────
 
@@ -1090,6 +1101,43 @@ export function transcriptReducer(
       }
       const turns = replaceTurn(withTurn, idx, (t) => ({ ...t, blocks: [...t.blocks, block] }))
       return { ...state, turns }
+    }
+
+    // ── notice ────────────────────────────────────────────────────────────────
+    case 'notice': {
+      const ts = ev.ts ?? Date.now()
+      const card: Block = {
+        kind: 'noticeCard', id: `${NOTICE_TURN_PREFIX}${ts}:n`,
+        noticeKind: ev.kind, title: ev.title, body: ev.body,
+        url: ev.url ?? null, watchId: ev.watchId ?? null, ts,
+      }
+      // Collapse the TRAILING run of consecutive notice-only turns older than 24h
+      // (relative to this arrival) into one running count, so a long-lived drawer
+      // doesn't accumulate dozens of full cards. Only the trailing run is ever
+      // touched — a conversation turn in between stops the scan, so nothing is
+      // reordered and no other turn's position changes.
+      let trailingStart = state.turns.length
+      while (trailingStart > 0 && state.turns[trailingStart - 1].id.startsWith(NOTICE_TURN_PREFIX)) trailingStart--
+      let collapsedCount = 0
+      const kept: Turn[] = []
+      for (const t of state.turns.slice(trailingStart)) {
+        const b = t.blocks[0]
+        if (b?.kind === 'noticeCard' && ts - (b.ts ?? ts) > NOTICE_COLLAPSE_AGE_MS) { collapsedCount += 1; continue }
+        if (b?.kind === 'noticeCollapsed' && ts - (b.ts ?? ts) > NOTICE_COLLAPSE_AGE_MS) { collapsedCount += b.count; continue }
+        kept.push(t)
+      }
+      const collapsedTurn: Turn[] = collapsedCount > 0
+        ? [{
+            id: `${NOTICE_TURN_PREFIX}collapsed`, role: 'assistant',
+            blocks: [{ kind: 'noticeCollapsed', id: `${NOTICE_TURN_PREFIX}collapsed:n`, count: collapsedCount, ts }],
+          }]
+        : []
+      const newTurn: Turn = { id: `${NOTICE_TURN_PREFIX}${ts}`, role: 'assistant', blocks: [card] }
+      return {
+        ...state,
+        turns: [...state.turns.slice(0, trailingStart), ...collapsedTurn, ...kept, newTurn],
+        openBlockId: null,
+      }
     }
 
     // ── queueUpdate ───────────────────────────────────────────────────────────

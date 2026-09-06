@@ -41,6 +41,7 @@ export const STARTERS: Record<NavId, readonly string[]> = {
   settings: [
     'Which accounts are near their weekly limit?',
     'How many hosts are online?',
+    'Notify me if any account gets limited',
   ],
 }
 
@@ -50,6 +51,7 @@ const SESSION_OPEN: readonly string[] = [
   'Why is this session stuck?',
   'Draft the next prompt for this session',
   'Summarize this session so far',
+  'Tell me when this session finishes',
 ]
 
 /** The starter chips for the current view: session-specific when a session is open,
