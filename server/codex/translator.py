@@ -120,6 +120,7 @@ class TranslatorCounters:
     suppressed_duplicate_texts: int = 0
     truncated_outputs: int = 0
     skipped_context_usage: int = 0
+    collab_agent_states_seen: int = 0
 
 
 @dataclass
@@ -131,6 +132,7 @@ class _MutableCounters:
     suppressed_duplicate_texts: int = 0
     truncated_outputs: int = 0
     skipped_context_usage: int = 0
+    collab_agent_states_seen: int = 0
 
     def snapshot(self) -> TranslatorCounters:
         return TranslatorCounters(
@@ -141,6 +143,7 @@ class _MutableCounters:
             suppressed_duplicate_texts=self.suppressed_duplicate_texts,
             truncated_outputs=self.truncated_outputs,
             skipped_context_usage=self.skipped_context_usage,
+            collab_agent_states_seen=self.collab_agent_states_seen,
         )
 
 
@@ -544,14 +547,20 @@ class CodexEventTranslator:
             return ev.ToolResult(
                 item.id, item.status == _OK_STATUS, {"status": item.status}
             )
-        if isinstance(
-            item,
-            (
-                schema.McpToolCallItem,
-                schema.DynamicToolCallItem,
-                schema.CollabAgentToolCallItem,
-            ),
-        ):
+        if isinstance(item, (schema.McpToolCallItem, schema.DynamicToolCallItem)):
+            return ev.ToolResult(
+                item.id, item.status == _OK_STATUS, {"status": item.status}
+            )
+        if isinstance(item, schema.CollabAgentToolCallItem):
+            # `agentsStates` was unread before #1274; it is real per-collaborator
+            # progress (`CollabAgentState.status`/`.message`), but its keys are
+            # the collaborators' own thread ids, and per
+            # `test_sub_agent_activity_never_carries_the_native_agent_thread_id`
+            # a native id must never ride in a generic wire payload — so only the
+            # count reaches the counters (an operator signal that this vendor
+            # surface is actually exercised), never the ids or messages.
+            if item.agents_states:
+                self._counters.collab_agent_states_seen += len(item.agents_states)
             return ev.ToolResult(
                 item.id, item.status == _OK_STATUS, {"status": item.status}
             )
@@ -629,15 +638,34 @@ def _tool_shape(item: schema.ThreadItem) -> _ToolShape:
         return _ToolShape("Plan", ev.ToolKind.TODO, {"text": item.text})
     if isinstance(item, schema.SubAgentActivityItem):
         # `agent_thread_id` is a native id and stays out of the payload: ids
-        # belong only in the correlation fields.
+        # belong only in the correlation fields. `subagent_type`/`description`
+        # are the Claude-shaped keys `server/sessions/subagents.py` and its web
+        # mirror already read for the dashboard sub-agent summary (#1274) — the
+        # older `agent`/`kind` keys stay too, since they predate that contract
+        # and nothing has stopped reading them.
         return _ToolShape(
-            "Task", ev.ToolKind.TASK, {"agent": item.agent_path, "kind": item.kind}
+            "Task",
+            ev.ToolKind.TASK,
+            {
+                "agent": item.agent_path,
+                "kind": item.kind,
+                "subagent_type": item.agent_path,
+                "description": item.kind,
+            },
         )
     if isinstance(item, schema.CollabAgentToolCallItem):
         # Never the prompt — the upstream item carries one and schema.py does
-        # not even read it.
+        # not even read it. Same identity note as above: `subagent_type` names
+        # the collab tool invoked, never a receiver/sender thread id.
         return _ToolShape(
-            "Task", ev.ToolKind.TASK, {"tool": item.tool, "model": item.model}
+            "Task",
+            ev.ToolKind.TASK,
+            {
+                "tool": item.tool,
+                "model": item.model,
+                "subagent_type": item.tool,
+                "description": item.model or item.tool,
+            },
         )
     if isinstance(item, schema.DynamicToolCallItem):
         # A dynamic tool's name is chosen by the Codex side and only looks like

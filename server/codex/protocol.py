@@ -576,6 +576,15 @@ class CodexAppServerClient:
         assert isinstance(response, schema.ThreadArchiveResponse)
         return response
 
+    async def list_background_terminals(
+        self, params: schema.ThreadBackgroundTerminalsListParams
+    ) -> schema.ThreadBackgroundTerminalsListResponse:
+        response = await self.call(
+            schema.METHOD_THREAD_BACKGROUND_TERMINALS_LIST, params.to_wire()
+        )
+        assert isinstance(response, schema.ThreadBackgroundTerminalsListResponse)
+        return response
+
     async def start_turn(
         self, params: schema.TurnStartParams, *, timeout: float | None = None
     ) -> schema.TurnStartResponse:

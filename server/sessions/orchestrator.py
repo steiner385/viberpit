@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from server.assistant.client import AssistantApi
     from server.automations.completion_bar import PrFacts
     from server.codex.driver import CodexAgentDriver
+    from server.codex.replay import CodexThreadReplay
     from server.github.merge_queue import QueueEntry
     from server.github.pr_status import PipelinePr
     from server.pipeline.merge_train import MergeTrainState
@@ -79,6 +80,7 @@ from server.sessions.engine import (
     AgentEngine,
     AgentEngineUnavailable,
     AsyncCloser,
+    InvalidAgentEngine,
     SuggestionProvider,
     parse_agent_engine,
 )
@@ -155,6 +157,14 @@ _STALLED_STATUSES = frozenset({"needs_attention", "limited"})
 # _ACTIVE_STATUSES: waiting_question / ready_review don't block the deploy drain but
 # strand identically, so they belong here even though they're absent above.
 _RESTART_TRANSIENT_STATUSES = _ACTIVE_STATUSES | frozenset({"waiting_question", "ready_review"})
+
+# Wall-clock ceiling on one engine read of a session's open background work
+# (`_open_background_work`). Deliberately far below the Codex client's own
+# per-request timeout times its page cap: the read sits on the turn-end status write
+# and on the deploy drain, and neither may be held open by a slow app-server for the
+# sake of a "Waiting…" overlay. Exceeding it degrades to "nothing open", which the
+# next turn-end re-asks.
+_BG_WORK_READ_TIMEOUT_S = 15.0
 
 # Message surfaced to the user when auto-recovery gives up on a repeatedly-dropped turn.
 _TURN_DROPPED_GIVEUP = ("Auto-recovery gave up after repeated empty turns — the context "
@@ -3523,21 +3533,21 @@ class SessionOrchestrator:
         # Overlay: a turn that finished (`done`) but left the agent parked on an external
         # event — an open background task or an armed self-scheduled wakeup — is "Waiting…",
         # not "Your turn". Computed here (not in the pure `derive_status`) because it needs
-        # the transcript, like the `limited`/`ended` overlays. Scan only on `done` so the
+        # per-engine state, like the `limited`/`ended` overlays. Scan only on `done` so the
         # per-emit cost is paid once per turn-end. `waiting_external` is NOT in
         # ACTIVITY_STATUSES, so parking does NOT bump the "active … ago" clock below — the
         # card shows time since the last real turn, not a reset on every re-arm.
         completed_turn = status == "done"
         if completed_turn:
-            from .background_tasks import is_parked, last_turn_awaits_user
-            tpath = self.transcript_path(session_id)
-            if is_parked(tpath):
+            from .background_tasks import text_awaits_user
+            if await self._session_is_parked(session_id):
                 # A parked `done` turn normally reads "Waiting…". But if the turn handed
                 # a question/decision back to the user in prose (no structured
                 # `pending_question`, which would already win in derive_status), it needs
                 # the user — not a timer/process — so surface "Answer needed" instead of
                 # masking it as waiting_external.
-                status = ("waiting_question" if last_turn_awaits_user(tpath)
+                status = ("waiting_question"
+                          if text_awaits_user(self._last_assistant_prose(session_id))
                           else "waiting_external")
         # Advance the "active … ago" clock ONLY when the assistant hands output back —
         # a finished or user-paused turn (ACTIVITY_STATUSES). Bumping it on every status
@@ -3903,13 +3913,8 @@ class SessionOrchestrator:
         LLM classifier (heuristic degrade) AFTER stripping the completion markers —
         the marker trails the message, so it masks a closing "?" from any tail check.
 
-        The prose text is read differently per engine: ``transcript_path`` only ever
-        resolves for Claude (Codex keeps no JSONL — see its docstring), so a Codex
-        session falls back to the driver's in-memory turn buffer, extracted the same
-        way ``suggestions.last_turn_context`` does for idle-suggestion seeding. Both
-        feed the SAME classifier below. Without this fallback, Codex's structurally
-        false ``pending_question`` (no AskUserQuestion equivalent) combined with a
-        None transcript path left it with NO prose safeguard at all.
+        The prose text comes from ``_last_assistant_prose`` (per-engine, one reader),
+        stripped of the completion markers before the classifier sees it.
         Raises only to the caller's best-effort catch (reads as 'no question')."""
         driver = getattr(self, "_drivers", {}).get(session_id)
         if driver is not None:
@@ -3922,20 +3927,91 @@ class SessionOrchestrator:
                           session_id, exc_info=True)
         from .completion import strip_markers
         from .open_question import completion_awaits_user
-        tpath = self.transcript_path(session_id)
-        if tpath:
-            from .background_tasks import last_assistant_text
-            text = strip_markers(last_assistant_text(tpath))
-        elif driver is not None:
-            from .suggestions import last_turn_context
-            _, assistant_text = last_turn_context(list(getattr(driver, "_turn_buffer", [])))
-            text = strip_markers(assistant_text)
-        else:
-            return False
+        text = strip_markers(self._last_assistant_prose(session_id))
         if not text:
             return False
         rec = self._records.get(session_id)
         return await completion_awaits_user(text, cwd=getattr(rec, "cwd", None))
+
+    def _last_assistant_prose(self, session_id: str) -> str:
+        """The last assistant message's prose, whichever engine produced it.
+
+        THE per-engine reader — both the completion classifier above and the parked
+        overlay in ``_persist_status`` ask this same question, and a second copy of
+        the branch is how one of them silently keeps working for only one engine.
+
+        ``transcript_path`` resolves for Claude only (Codex keeps no JSONL — see its
+        docstring), so a Codex session falls back to the driver's in-memory turn
+        buffer, extracted the same way ``suggestions.last_turn_context`` does for
+        idle-suggestion seeding. Empty when neither source is available — a detached
+        Codex session has no buffer to read, and inventing prose for it would be worse
+        than admitting we cannot see the message.
+        """
+        tpath = self.transcript_path(session_id)
+        if tpath:
+            from .background_tasks import last_assistant_text
+            return last_assistant_text(tpath)
+        driver = getattr(self, "_drivers", {}).get(session_id)
+        if driver is None:
+            return ""
+        from .suggestions import last_turn_context
+        _, assistant_text = last_turn_context(list(getattr(driver, "_turn_buffer", [])))
+        return assistant_text
+
+    async def _session_is_parked(self, session_id: str) -> bool:
+        """True iff this session is waiting on work of its own rather than the user.
+
+        Engine-neutral by dispatch, because the two engines keep the answer in
+        genuinely different places and neither can be made to speak the other's:
+
+        * **Claude** — scanned out of the transcript ``.jsonl``: open ``Monitor`` /
+          ``run_in_background`` tool calls, or an armed ``ScheduleWakeup``. Needs no
+          driver, so it answers for a detached session too.
+        * **Codex** — a live `thread/backgroundTerminals/list` read through the
+          driver. No driver means no app-server, and no app-server means the
+          background terminals it owned are already dead — so **False** is the
+          correct answer for a detached Codex session, not a degraded one. That is
+          what un-parks a Codex session across a daemon restart (see
+          ``server/codex/background.py``). Codex has no wakeup half at all: its
+          ``clock.sleep`` blocks inside a turn, so a sleeping session is
+          ``in_progress`` and was never parked.
+
+        Never raises. A failed read reports "not parked": leaving a session pinned on
+        "Waiting…" because one RPC timed out is the worse failure — the next turn-end
+        asks again, while a stuck overlay needs a restart to clear.
+        """
+        if self._engine_of(session_id) is AgentEngine.CLAUDE_CODE:
+            from .background_tasks import is_parked
+            return await asyncio.to_thread(is_parked, self.transcript_path(session_id))
+        tasks = await self._open_background_work(session_id)
+        return bool(tasks)
+
+    async def _open_background_work(self, session_id: str) -> list[OpenBgTask]:
+        """This session's open background work, in the engine-neutral vocabulary.
+
+        The snapshot half of ``_session_is_parked`` — same two sources, but it hands
+        back the entries themselves so a drain can persist them. Returns ``[]`` on any
+        failure: a snapshot that cannot be taken must degrade to "nothing to report",
+        never to a partial one the restart would present as complete.
+        """
+        if self._engine_of(session_id) is AgentEngine.CLAUDE_CODE:
+            path = self.transcript_path(session_id)
+            if not path:
+                return []
+            return await asyncio.to_thread(scan_open_background_tasks, path)
+        driver = self._drivers.get(session_id)
+        reader = getattr(driver, "open_background_work", None)
+        if reader is None:
+            return []
+        try:
+            # Bounded independently of the engine client's own per-request timeout:
+            # this runs on the turn-end status write and on the deploy drain, and a
+            # paginated read of N pages inherits N times that timeout. A status
+            # overlay is not worth holding either path open for minutes.
+            return list(await asyncio.wait_for(reader(), _BG_WORK_READ_TIMEOUT_S))
+        except Exception:
+            log.debug("bg_work.read_failed sid=%s", session_id, exc_info=True)
+            return []
 
     async def _persist_context_usage(self, session_id: str, used_tokens: int, max_tokens: int) -> None:
         """Driver ``on_context_usage`` callback: persist the exact context-window occupancy.
@@ -6375,8 +6451,20 @@ class SessionOrchestrator:
         session was created (or an equivalent one already existed) so the caller
         advances the watermark; False when the firing should be retried next tick
         (no account had headroom). ``origin_ref`` is the fire minute, so two ticks
-        landing in the same minute reuse the one session rather than double-spawn."""
+        landing in the same minute reuse the one session rather than double-spawn.
+
+        ``spec["engine"]``/``spec["reasoningEffort"]`` (#1270) are never used to
+        pick the engine directly — that would let a recurring spec bypass this
+        origin's audited ceiling (``engine_policy.policy_for``), the one thing
+        Phase 7 exists to prevent. Instead ``ctx.launch_plan()`` resolves the
+        engine the same way every other spawn does (registry ceiling, or
+        ``claude_only`` for an ad-hoc/dynamic id), and a spec that named an
+        engine is checked against that answer: a match forwards
+        ``reasoning_effort`` through the ordinary ``create_session`` contract, a
+        mismatch is refused out loud instead of silently running the wrong
+        engine."""
         from server.automations.context import AutomationContext
+        from server.automations.engine_policy import EnginePolicyViolation
         ref = fire_at.isoformat(timespec="minutes") if fire_at else "now"
         name = spec.get("name") or f"scheduled {automation_id}"
         ctx = AutomationContext(automation_id, create_session=self.create_session)
@@ -6384,6 +6472,46 @@ class SessionOrchestrator:
         for key in ("repo", "branch", "account", "model"):
             if spec.get(key):
                 kwargs[key] = spec[key]
+        expected_engine_raw = spec.get("engine")
+        effort = spec.get("reasoningEffort")
+        if expected_engine_raw or effort:
+            try:
+                engine, _config = await ctx.launch_plan()
+            except EnginePolicyViolation as exc:
+                await ctx.emit(
+                    "error", f"scheduled run refused ({name}): {exc.reason}",
+                    kind="engine_policy_refused", target=ref,
+                    detail={"policy": exc.policy.value})
+                return True  # unaudited/unsafe config; retrying won't fix it
+            if expected_engine_raw:
+                try:
+                    expected_engine = parse_agent_engine(expected_engine_raw)
+                except InvalidAgentEngine:
+                    await ctx.emit(
+                        "error",
+                        f"scheduled run refused ({name}): unknown engine "
+                        f"{expected_engine_raw!r}",
+                        kind="engine_policy_refused", target=ref)
+                    return True
+                if expected_engine is not engine:
+                    await ctx.emit(
+                        "error",
+                        f"scheduled run refused ({name}): recurring session expects "
+                        f"engine {expected_engine.value} but this origin is only "
+                        f"audited to run {engine.value}",
+                        kind="engine_policy_refused", target=ref,
+                        detail={"expected": expected_engine.value,
+                                "resolved": engine.value})
+                    return True
+            if effort:
+                if engine is not AgentEngine.CODEX:
+                    await ctx.emit(
+                        "error",
+                        f"scheduled run refused ({name}): reasoning effort requires "
+                        f"the codex engine, this origin resolves to {engine.value}",
+                        kind="engine_policy_refused", target=ref)
+                    return True
+                kwargs["reasoning_effort"] = effort
         try:
             await ctx.spawn_session(origin_ref=ref, dedupe_key=ref,
                                     detail={"fireAt": ref, "scheduled": True}, **kwargs)
@@ -7306,8 +7434,10 @@ class SessionOrchestrator:
         seeded with that prompt. Emits the same ``attempted`` / ``spawn_failed``
         events as before. Returns ``(status, session_id)`` where status is
         ``"sent"`` | ``"spawned"`` (real injection) | ``"transient"`` |
-        ``"clone_failed"`` | ``"spawn_failed"``. Does NOT touch per-target engine
-        state — the caller records the attempt on a real injection.
+        ``"clone_failed"`` | ``"spawn_failed"`` | ``"refused"`` (fresh-spawn only —
+        the origin's engine policy refused the launch before any clone/model
+        cost was paid). Does NOT touch per-target engine state — the caller
+        records the attempt on a real injection.
 
         ``on_phase(phase)`` — optional progress hook the async manual trigger
         (issue #668) uses to advance its job through ``cloning`` → ``assessing``
@@ -7315,15 +7445,19 @@ class SessionOrchestrator:
         """
         phase = on_phase or (lambda _p: None)
         target = f"{repo}#{info.number}"
-        # Select the branch-aware first prompt by failure kind. Single source of
-        # truth for both the live-driver inject and the fresh-spawn seed.
-        if kind == "merge_conflict":
-            prompt = build_conflict_fix_prompt(repo, info)
-        else:  # "failing_ci"
-            prompt = build_pr_fix_prompt(repo, info)
 
         live_rec = rec if (rec is not None and rec.id in self._drivers) else None
         if live_rec is not None:
+            # Injection into an already-live session reuses THAT session's own
+            # already-resolved engine (decided once, at its original spawn) via
+            # the shared, engine-neutral AgentDriver.send_prompt contract
+            # (request_pr_fix routes through it too) — there is no fresh engine
+            # decision to make here, but the prompt's commit-trailer instruction
+            # still has to name the engine actually running the session.
+            if kind == "merge_conflict":
+                prompt = build_conflict_fix_prompt(repo, info, engine=live_rec.engine)
+            else:  # "failing_ci"
+                prompt = build_pr_fix_prompt(repo, info, engine=live_rec.engine)
             # LIVE driver → near-instant injection, no clone/assess. Report the
             # spawning phase so a polling job still sees forward motion.
             phase("spawning")
@@ -7360,6 +7494,19 @@ class SessionOrchestrator:
         # `spawned`; a repeated poll for the same target returns the existing
         # session instead of a second spawn.
         #
+        # Engine FIRST, before any network or disk work: the seed prompt states a
+        # commit trailer so it has to be built for the engine that will actually
+        # run (Phase 7, #1267, mirrors _backlog_spawn) — and a refused launch must
+        # cost nothing, not a full clone + model assessment.
+        plan = await self._pr_doctor_ctx.launch_plan_or_refuse(target)
+        if plan is None:                       # out of policy — the ctx recorded why
+            return "refused", None
+        eng, _launch_config = plan
+        if kind == "merge_conflict":
+            prompt = build_conflict_fix_prompt(repo, info, engine=eng)
+        else:  # "failing_ci"
+            prompt = build_pr_fix_prompt(repo, info, engine=eng)
+
         # Resolve the ccswitch-owned clone `cwd` first (mirrors the New-Session
         # API): create_session's worktree block only runs when `cwd` is a real git
         # repo, so without it the spawn falls to an empty scratch dir with
@@ -7378,14 +7525,29 @@ class SessionOrchestrator:
                 "error", f"clone failed for {target}: {exc}",
                 kind="spawn_failed", target=target)
             return "clone_failed", None
-        from server.automations.model_pick import resolve_model
         phase("assessing")
-        failing = ", ".join(
-            d.name for d in info.checks_detail if d.conclusion == "failure")
-        model, model_source = await resolve_model(
-            await self._pr_doctor_config(),
-            f"{kind} fix for PR {target}: {info.title}"
-            + (f"\nfailing checks: {failing}" if failing else ""))
+        model = model_source = None
+        detail: dict = {"engine": eng.value}
+        if eng is AgentEngine.CLAUDE_CODE:
+            # `resolve_model` is a Claude complexity assessor returning Claude
+            # catalog aliases — skip it for another engine rather than making the
+            # call and dropping the answer (Phase 7, Task 7.1).
+            from server.automations.model_pick import resolve_model
+            failing = ", ".join(
+                d.name for d in info.checks_detail if d.conclusion == "failure")
+            model, model_source = await resolve_model(
+                await self._pr_doctor_config(),
+                f"{kind} fix for PR {target}: {info.title}"
+                + (f"\nfailing checks: {failing}" if failing else ""))
+            if model is not None:
+                detail.update(model=model, model_source=model_source)
+        # Codex auto-effort assessment (mirrors _backlog_spawn's Codex branch) is
+        # skipped here: unlike backlog-runner, PR Doctor does not pre-resolve an
+        # account (create_session picks a healthy one below), and the assessor
+        # needs a resolved account to query that account's live model catalog. A
+        # Codex spawn therefore runs on the account's/engine's own default model
+        # rather than an auto-picked effort tier — refining that is a follow-up,
+        # not a blocker for widening the ceiling.
         phase("spawning")
         try:
             rec2 = await self._pr_doctor_ctx.spawn_session(
@@ -7395,11 +7557,11 @@ class SessionOrchestrator:
                 branch=branch,
                 cwd=cwd,
                 account=None,  # create_session picks a healthy account
+                engine=eng,
                 name=f"pr-doctor fix {target}",
                 initial_prompt=prompt,
                 model=model,
-                detail={"model": model, "model_source": model_source}
-                if model is not None else None,
+                detail=detail,
             )
         except AllAccountsBusy as exc:
             # Distinguish genuine ceiling (all accounts exhausted) from a transient
@@ -7420,6 +7582,11 @@ class SessionOrchestrator:
                 "error", f"spawn failed for {target}: {exc}",
                 kind="spawn_failed", target=target)
             return "spawn_failed", None
+        if rec2 is None:
+            # spawn_session already emitted why (engine_launch_refused /
+            # engine_policy_refused) — e.g. a Codex engine resolved under a
+            # sandboxed permission mode that cannot push. Attempt NOT consumed.
+            return "refused", None
         # Real successful spawn.
         sid = getattr(rec2, "id", None)
         await self._pr_doctor_ctx.emit(
@@ -7582,13 +7749,21 @@ class SessionOrchestrator:
         from server.sessions.pr_fix import build_consolidation_prompt
 
         try:
+            # Engine FIRST, before any network or disk work — same reasoning as
+            # _pr_doctor_session_fix's fresh-spawn branch (Phase 7, #1267): the
+            # seed prompt states a commit trailer, and a refused launch must cost
+            # nothing, not a remote branch listing + full clone + model call.
+            plan = await self._pr_doctor_ctx.launch_plan_or_refuse(target)
+            if plan is None:                   # out of policy — the ctx recorded why
+                return
+            eng, _launch_config = plan
             try:
                 default_branch = await asyncio.to_thread(
                     lambda: gitrepos.list_remote_branches(repo).get("default") or "master"
                 )
             except Exception:
                 default_branch = "master"
-            prompt = build_consolidation_prompt(repo, default_branch, prs)
+            prompt = build_consolidation_prompt(repo, default_branch, prs, engine=eng)
             url = f"https://github.com/{repo}.git"
             try:
                 cwd = await asyncio.to_thread(
@@ -7598,20 +7773,26 @@ class SessionOrchestrator:
                     "error", f"clone failed for {target}: {exc}",
                     kind="spawn_failed", target=target)
                 return
-            from server.automations.model_pick import resolve_model
-            model, model_source = await resolve_model(
-                await self._pr_doctor_config(),
-                f"consolidate {len(prs)} PRs in {repo}:\n"
-                + "\n".join(f"#{p.number}  {p.title}" for p in prs))
+            model = model_source = None
+            detail: dict = {"engine": eng.value}
+            if eng is AgentEngine.CLAUDE_CODE:
+                # See _pr_doctor_session_fix: skip the Claude complexity assessor
+                # for another engine rather than making the call and dropping it.
+                from server.automations.model_pick import resolve_model
+                model, model_source = await resolve_model(
+                    await self._pr_doctor_config(),
+                    f"consolidate {len(prs)} PRs in {repo}:\n"
+                    + "\n".join(f"#{p.number}  {p.title}" for p in prs))
+                if model is not None:
+                    detail.update(model=model, model_source=model_source)
             try:
                 rec = await self._pr_doctor_ctx.spawn_session(
                     origin_ref=target, dedupe_key=target, repo=repo,
-                    account=None, cwd=cwd,
+                    account=None, cwd=cwd, engine=eng,
                     name=f"pr-doctor consolidate {repo} ({len(prs)} PRs)",
                     initial_prompt=prompt,
                     model=model,
-                    detail={"model": model, "model_source": model_source}
-                    if model is not None else None)
+                    detail=detail)
             except AllAccountsBusy:
                 await self._pr_doctor_ctx.emit(
                     "warn", f"consolidate deferred for {target}: all accounts at/above usage ceiling",
@@ -7621,6 +7802,10 @@ class SessionOrchestrator:
                 await self._pr_doctor_ctx.emit(
                     "error", f"consolidate spawn failed for {target}: {exc}",
                     kind="spawn_failed", target=target)
+                return
+            if rec is None:
+                # spawn_session already emitted why (engine_launch_refused /
+                # engine_policy_refused) — nothing further to record here.
                 return
             sid = getattr(rec, "id", None)
             await self._pr_doctor_ctx.emit(
@@ -7810,26 +7995,112 @@ class SessionOrchestrator:
         self._last_title_sig[rec.id] = sig
         return title
 
+    async def _generate_codex_fallback_title(
+        self, session_id: str, rec: SessionRecord,
+    ) -> str | None:
+        """Codex's analogue of ``_generate_fallback_title``.
+
+        A Codex account has no Claude credential slot of its own for ``_title_fn``
+        to spend (``rec.account`` names an OpenAI-scoped identity, not an
+        Anthropic one), so this cannot reuse it directly. It reads the thread's
+        own prompts over the supported app-server RPC (``_codex_replay`` ->
+        ``CodexThreadReplay.user_prompts``) and, for the actual summarization,
+        borrows the SAME cross-engine helper-account pattern
+        ``_autopilot_helper_config_dir`` already established for autopilot's
+        decider/composer (and, since, session summaries): pick the first live,
+        enabled ANTHROPIC account and spend a Haiku query under ITS credentials —
+        never the Codex session's own. When no Anthropic account is available at
+        all (a Codex-only install), this degrades to
+        ``server/codex/titles.py``'s local, LLM-free heuristic rather than
+        leaving the session nameless.
+
+        Shares ``_last_title_sig`` with the Claude path's dedup gate — same
+        purpose (skip recomputation when nothing new was said), same dict, keyed
+        by session id so the two engines never collide.
+
+        Cost guard: the app-server READ only runs when the account's app-server
+        is ALREADY live (``client_for`` is a pure lookup, never a spawn).
+        ``_codex_replay`` would happily call ``codex.ensure(account)`` to start
+        one — appropriate for a user re-attaching to see history, wrong for a
+        background sweep that would otherwise wake (and keep alive) an idle
+        account's runner, on a timer, purely to see whether its title needs a
+        refresh. The common case — a session mid-conversation — always has a
+        live client already, since this also fires on every turn-completion
+        (``_set_status``'s ``completed_turn`` call). The Haiku query itself is
+        protected the same way every other cross-engine helper call is: shared
+        backoff/circuit-breaker in ``run_helper_call``, keyed by config_dir — no
+        separate ceiling check, matching ``model_pick``/``prompt_refiner``.
+        Best-effort throughout: any miss leaves the name unchanged.
+        """
+        if self._codex is None or self._codex.client_for(rec.account) is None:
+            return None
+        replay = await self._codex_replay(session_id)
+        if replay is None:
+            return None
+        prompts = await replay.user_prompts()
+        if not prompts:
+            return None
+        sig = hashlib.sha1("\n".join(prompts).encode("utf-8", "surrogatepass")).hexdigest()
+        if sig == self._last_title_sig.get(rec.id):
+            return None
+        # Recorded now, once generation is actually attempted (regardless of
+        # outcome) — mirrors the Claude path: a genuinely new prompt still gets
+        # a fresh attempt next sweep, but a failed attempt against unchanged
+        # prompts does not retry every 15s.
+        self._last_title_sig[rec.id] = sig
+        title = await self._codex_semantic_title(prompts, rec)
+        if title:
+            return title
+        from server.codex.titles import codex_fallback_title
+        return codex_fallback_title(prompts)
+
+    async def _codex_semantic_title(
+        self, prompts: list[str], rec: SessionRecord,
+    ) -> str | None:
+        """Best-effort Haiku title for a Codex session's *prompts*, or ``None``.
+
+        Same working directory as every other borrowed-account helper call on
+        this session (``rec.cwd``, the Codex session's own) — the query is
+        stateless and tool-free (``generate_title`` sets ``allowed_tools=[]``),
+        so it never needs to belong to the account whose credentials answer it.
+        ``None`` covers both "no Anthropic account available" and "the query
+        ran but failed" — the caller treats them identically (fall back to the
+        local heuristic).
+        """
+        from server.sessions.helper_call import pick_helper_config_dir
+        config_dir = pick_helper_config_dir()
+        if config_dir is None:
+            return None
+        return await generate_title(prompts, config_dir=config_dir, cwd=rec.cwd)
+
     async def _maybe_apply_auto_name(self, session_id: str) -> None:
         """If the session name is still auto, adopt a title for it.
 
         Prefers Claude's own transcript ``ai-title``; when absent (SDK-driven
-        sessions never get one) falls back to summarizing the user prompts. Updates
-        the DB + in-memory record and, when a live driver exists, pushes a ``Title``
-        event so the in-session header converges with the dashboard. Idempotent: a
-        title equal to the current name is a no-op.
+        sessions never get one) falls back to summarizing the user prompts. Codex
+        sessions have no transcript file at all (``transcript_path`` returns
+        ``None`` for them by design — see there), so they route to
+        ``_generate_codex_fallback_title`` instead, which reads the thread back
+        over the supported app-server RPC rather than a Claude-shaped file.
+        Updates the DB + in-memory record and, when a live driver exists, pushes
+        a ``Title`` event so the in-session header converges with the dashboard.
+        Idempotent: a title equal to the current name is a no-op.
         """
         rec = self._records.get(session_id)
         if rec is None or not rec.name_is_auto:
             return
-        path = self.transcript_path(session_id)
-        if not path:
-            return
-        title = await asyncio.to_thread(read_ai_title_from_file, path)
-        source = "claude"
-        if not title:
-            title = await self._generate_fallback_title(rec, path)
+        if self._engine_of(session_id) is not AgentEngine.CLAUDE_CODE:
+            title = await self._generate_codex_fallback_title(session_id, rec)
             source = "generated"
+        else:
+            path = self.transcript_path(session_id)
+            if not path:
+                return
+            title = await asyncio.to_thread(read_ai_title_from_file, path)
+            source = "claude"
+            if not title:
+                title = await self._generate_fallback_title(rec, path)
+                source = "generated"
         rec = self._records.get(session_id)
         if rec is None or not rec.name_is_auto or not title or title == rec.name:
             return
@@ -8082,7 +8353,6 @@ class SessionOrchestrator:
                     "(%d with host=NULL -> primary)", me, len(foreign),
                     sum(1 for r in foreign if r.host is None))
             rows = [r for r in rows if r.host == me]
-        from .background_tasks import is_parked
         added = 0
         backfilled: dict[str, str] = {}
         healed: dict[str, str] = {}
@@ -8138,10 +8408,15 @@ class SessionOrchestrator:
             # longer parked — e.g. its background pollers were killed by a deploy and are
             # now dead, or a self-scheduled wakeup was lost — its true status is `done`.
             # Restore it so the card stops showing "Waiting…" forever. Cheap: only the
-            # (few) waiting_external rows hit the transcript scan.
+            # (few) waiting_external rows are asked at all.
+            #
+            # `_session_is_parked` answers per engine. A Codex row ALWAYS un-parks here
+            # and that is the correct answer rather than a shortcut: its background
+            # terminals were grandchildren of an app-server this daemon has not started
+            # yet, and the boot sweep reaps any that outlived the last one
+            # (server/codex/background.py).
             if status == "waiting_external":
-                path = self.transcript_path(row.id)
-                if not await asyncio.to_thread(is_parked, path):
+                if not await self._session_is_parked(row.id):
                     self._records[row.id].status = "done"
                     healed[row.id] = "done"
                     log_event(log, logging.INFO, "session.unpark",
@@ -9006,7 +9281,7 @@ class SessionOrchestrator:
             return "no_pr"
         if info.state not in ("open", "draft"):
             return "not_actionable"
-        prompt = build_pr_fix_prompt(rec.repo, info)
+        prompt = build_pr_fix_prompt(rec.repo, info, engine=rec.engine)
         return await self.send_prompt(session_id, prompt)
 
     def _pr_doctor_owning_rec(self, repo: str, branch: str):
@@ -9175,19 +9450,26 @@ class SessionOrchestrator:
             q.put_nowait(event)
 
     async def _snapshot_open_tasks(self) -> None:
-        """At drain, persist each live session's open background tasks so the post-restart
-        daemon can relaunch them. Only sessions with a live driver can have live tasks."""
+        """At drain, persist each live session's open background work so the post-restart
+        daemon can act on it. Only sessions with a live driver can have live work.
+
+        "Act on it" is engine-dependent and the snapshot says which: Claude tasks come
+        back ``replayable`` and are relaunched, while Codex background terminals come
+        back ``replayable=False`` and are only reported, because they died with the
+        app-server and re-running their command lines would duplicate whatever they did
+        (#1284). ``build_rearm_prompt`` is where that distinction is honoured."""
         from sqlalchemy import update as sa_update
         session_ids = list(self._drivers.keys())
         if not session_ids:
             return
 
         async def _scan(sid: str):
-            path = self.transcript_path(sid)
-            if not path:
-                return sid, []
-            tasks = await asyncio.to_thread(scan_open_background_tasks, path)
-            log_event(log, logging.INFO, "bg_task_rescan", session_id=sid, open=len(tasks))
+            tasks = await self._open_background_work(sid)
+            # Emitted even at zero: "we asked and found nothing" and "we never asked"
+            # are different forensic answers, and only the breadcrumb tells them apart.
+            log_event(log, logging.INFO, "bg_task_rescan", session_id=sid,
+                      open=len(tasks),
+                      replayable=sum(1 for t in tasks if t.replayable))
             return sid, [t.to_dict() for t in tasks]
 
         results = await asyncio.gather(*(_scan(s) for s in session_ids),
@@ -13313,7 +13595,7 @@ class SessionOrchestrator:
         )
 
     async def _codex_replay(self, session_id: str, *,
-                            ref: "_RowEngineRef | None" = None) -> "EngineReplay | None":
+                            ref: "_RowEngineRef | None" = None) -> "CodexThreadReplay | None":
         """`CodexThreadReplay` bound to this session's thread on its OWN runner.
 
         A Codex thread can only be read by the app-server that owns the account, so a

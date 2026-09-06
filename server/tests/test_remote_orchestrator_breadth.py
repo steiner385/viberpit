@@ -186,6 +186,17 @@ def _build():
     app = create_daemon_app()
     orch = SessionOrchestrator(sdk_factory=mock.MagicMock(), poll_interval=9999.0,
                                usage_fn=lambda n: None)
+    # Pin "s1" as a known CLAUDE session. Without a record OR a driver,
+    # `_engine_replay` falls through to `_row_engine_ref`, which reads the
+    # PROCESS-GLOBAL DB — so the engine these tests replay through would be
+    # decided by whichever test file last called `init_db()`. Several files seed
+    # an `id="s1"` row with `engine="codex"` (test_codex_background_work,
+    # test_codex_transcript_export_search, test_remote_orchestrator), and under
+    # `-n auto --dist loadfile` any of them can share this worker: the Codex
+    # adapter is then chosen and `replay_window` is never called. Registering the
+    # record short-circuits that DB read and states the intent these tests always
+    # had, instead of inheriting it from ambient state.
+    orch._records["s1"] = _rec("s1")
     register_orchestrator_rpc(app, orch)
     return app, orch
 

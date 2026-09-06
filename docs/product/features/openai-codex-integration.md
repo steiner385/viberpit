@@ -13,9 +13,10 @@ links:
 > `CCSWITCH_CODEX_ENABLED` and `CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED` are both
 > `false` everywhere, and `CCSWITCH_CODEX_AUTOMATIONS_ENABLED` stays false. The two
 > SDLC origins and the two PM session origins are `codex_allowed` on live-boundary
-> evidence (#1265/#1266, #1268/#1269). `backlog-runner` is also `codex_allowed`
-> (#1264) on its offline acceptance suite alone — a live Codex session landing a
-> real PR in a disposable repo remains unverified there, an owner-accepted gap.
+> evidence (#1265/#1266, #1268/#1269). `backlog-runner` and `pr-doctor` are also
+> `codex_allowed` (#1264, #1267) on their offline acceptance suites alone — a
+> live Codex session landing a real PR / restoring or consolidating a real PR
+> remains unverified there, an owner-accepted gap in both cases.
 > Every other automation origin is still `claude_only`. In every case the global
 > kill switch, each automation's own `engine` config opt-in, and
 > `CCSWITCH_CODEX_UNATTENDED_NETWORK_OPT_IN` still default off, so none of this
@@ -100,9 +101,9 @@ compatibility audit; API-key authentication in v1.
   (default `false`) is the global kill switch — it forces every `codex_allowed` origin back to
   Claude without an operator unwinding each config, and it is separate from `CCSWITCH_CODEX_ENABLED`
   so enabling Codex for humans does not enable it for control loops. **`backlog-runner` (#1264), the
-  two SDLC origins (`sdlc-intake`, `sdlc-synthesizer`, #1265/#1266) and the two PM session origins
-  (`pm-onboard`, `pm-classify`, #1268/#1269) are `codex_allowed`; every other origin is still
-  `claude_only`** — widening one is gated on that origin's Codex acceptance suite passing
+  two SDLC origins (`sdlc-intake`, `sdlc-synthesizer`, #1265/#1266), the two PM session origins
+  (`pm-onboard`, `pm-classify`, #1268/#1269), and `pr-doctor` (#1267) are `codex_allowed`; every
+  other origin is still `claude_only`** — widening one is gated on that origin's Codex acceptance suite passing
   (Tasks 7.2 and 7.3), and the current map is asserted whole in
   `server/tests/test_automation_engine_policy.py`. A ceiling is only half the mechanism: the
   operator's opt-in is a key in the origin's ordinary automation config row, so an origin that is
@@ -183,6 +184,32 @@ compatibility audit; API-key authentication in v1.
   second, the default branch is never touched, both commits carry the Codex trailer and never
   Claude's, and neither writes outside `docs/product/features/`. The same three gates as the SDLC
   origins still ship off in front of any of it.
+- **PR Doctor enabled (#1267).** `pr-doctor`'s ceiling is now `codex_allowed`, on its offline
+  acceptance suite (`server/tests/test_pr_doctor_codex_acceptance.py`): the seed prompts (CI-fix,
+  merge-conflict, consolidation) carry their whole contract with no Claude-only syntax and the right
+  commit trailer for either engine; the shared launch preconditions hold; and both fresh-spawn call
+  sites (`_pr_doctor_session_fix`'s no-live-driver branch, `_pr_doctor_consolidate_spawn`) resolve
+  the engine before their clone/model-assessment tail, same as every other origin's Task 7.1 shape.
+  PR Doctor also has an injection path unique among these origins — a fix/conflict prompt sent into
+  an *already-live* session via the shared `AgentDriver.send_prompt` contract rather than a fresh
+  spawn. That path needed no new engine-policy gate (the engine was decided once, at the live
+  session's own original spawn), but it was silently building every injected prompt with the Claude
+  trailer regardless of which engine the live session was actually running; it now threads the live
+  session's own `rec.engine` through.
+
+  The widening also fixed the same phantom-spawn defect #1264's own suite found and named for
+  backlog-runner: `AutomationContext.spawn_session` returns `None` when the resolved engine/mode pair
+  cannot complete the automation's push+PR contract (e.g. a Codex spawn under the unattended
+  `full-auto` default), but both PR Doctor spawn tails assumed any return value was a real session
+  record — under `claude_only` this was unreachable (Claude is never blocked by the sandbox check),
+  but widening the ceiling made a Codex-configured spawn hit it and get reported as `"spawned"` with
+  a null session id and a phantom `attempted` feed event. Both tails now treat a `None` return as a
+  refusal that consumes no attempt.
+
+  Not covered, deliberately: a live Codex session actually restoring or consolidating a real PR —
+  live-boundary work the owner accepted as outstanding to widen the ceiling now rather than block on
+  it, the same call already made for `backlog-runner`. The same three gates as the SDLC/PM origins
+  still ship off in front of any of it.
 - Users explicitly select Claude Code or Codex. V1 Codex controls are model, reasoning effort, and
   permission profile. The data model supports multiple named OpenAI accounts immediately, while
   automatic OpenAI-account rotation is deferred.
@@ -196,9 +223,44 @@ compatibility audit; API-key authentication in v1.
   AND path — never by writing `/name` into the prompt, which the app-server does not parse and would
   hand the model as literal text. Listing and invoking skills is not the "plugin/skill management"
   named in Non-goals: nothing here installs, edits, enables, or scopes a skill.
+- **Background work: observed, never restored (#1284).** A Codex session that leaves a long-running
+  process behind now parks on `waiting_external` ("Waiting…") at turn end exactly like a Claude
+  session parked on a `Monitor`, read from the pinned `thread/backgroundTerminals/list`
+  (`server/codex/background.py`). Codex is *better* than Claude here, not merely at parity: Claude's
+  answer is inferred by replaying a transcript, while Codex's is a live register kept by the process
+  that owns the terminals. The prose safeguard that keeps a parked turn holding a real question from
+  reading "Waiting…" instead of "Answer needed" is engine-neutral too — one reader
+  (`SessionOrchestrator._last_assistant_prose`) resolves it from the transcript for Claude and the
+  driver's turn buffer for Codex.
+
+  **There is no restore half, and that is a verified boundary rather than an unfinished one.** A
+  background terminal is a grandchild of the `codex app-server` child; daemon shutdown drains that
+  child and the boot sweep reaps any survivor by process *tree*, so none can outlive a restart. The
+  app-server publishes `list`, `terminate` and `clean` for them — three ways to observe or end one,
+  none to start one (asserted against the generated method inventory in
+  `server/tests/test_codex_background_work.py`, so a future release that adds one fails the test
+  rather than leaving this note stale). ccswitch therefore snapshots lost terminals at drain with
+  `replayable=False` and, after the restart, **names them to the session and stops** — the command
+  lines are the agent's own, and re-issuing one unasked is how a deploy runs a push, a migration, or
+  an install a second time. Claude's snapshot still carries the relaunch instruction it always did;
+  `build_rearm_prompt` keeps the two halves in separate sections. Codex has no wakeup half to lose
+  either: its `clock.sleep` blocks *inside* a turn, so a sleeping session is `in_progress` and was
+  never parked.
 - The owner accepted the version-pinned experimental external-token dependency with the design's
   mandatory compatibility, redaction, live-test, kill-switch, and fail-closed safeguards.
 - PR #1088 configures Codex as a repository development agent; it does not implement this feature.
+- **Sub-agent capability (#1274).** `subagents=False` was found declared-but-unwired, not absent:
+  the app-server has real `subAgentActivity` and `collabAgentToolCall` thread items (`agentPath`/
+  `agentThreadId`/lifecycle `kind`; `tool`/`senderThreadId`/`receiverThreadIds`/`agentsStates`),
+  already normalized to `Task` `ToolCall`/`ToolResult` events by `server/codex/translator.py` and
+  already recognized by `server/sessions/subagents.py`'s dashboard summary. The flag stays False
+  because two things are unverified against a live binary: whether a multi-call collab sequence
+  (spawn → sendInput/wait → close) collapses into one dashboard entry (there is no session-wide
+  "agent id" in the wire payload — the real identity lives in `receiverThreadIds`/`agentsStates`,
+  whose values are native thread ids that must not ride in a generic wire payload, so they surface
+  only as an observability counter, `TranslatorCounters.collab_agent_states_seen`), and there is no
+  transcript-drill-down for a child agent's own conversation yet (the natural mechanism is
+  `CodexThreadReplay` over the already-wired `thread/read` RPC, given a designed fetch-by-id path).
 
 **Evidence** — current engine and normalized stream in `server/sessions/claude_driver.py` and
 `server/sessions/events.py`; orchestration/fleet routing in `server/sessions/orchestrator.py` and
