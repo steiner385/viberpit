@@ -23,11 +23,12 @@ _SPEC.loader.exec_module(eval_assistant)
 EvalCase = eval_assistant.EvalCase
 load_cases = eval_assistant.load_cases
 grade_tool_sequence = eval_assistant.grade_tool_sequence
+select_cases = eval_assistant.select_cases
 
 
 def _case(**kw):
     defaults = dict(id="c1", prompt="p", route="/sessions",
-                    expect_tools=(), forbid_tools=(), rubric="")
+                    expect_tools=(), forbid_tools=(), rubric="", operator=False)
     defaults.update(kw)
     return EvalCase(**defaults)
 
@@ -92,6 +93,30 @@ def test_load_cases_skips_blank_lines_and_defaults_missing_fields(tmp_path):
     assert cases[0].expect_tools == ()
     assert cases[0].forbid_tools == ()
     assert cases[0].rubric == ""
+    assert cases[0].operator is False
+
+
+def test_load_cases_reads_the_operator_flag(tmp_path):
+    path = tmp_path / "cases.jsonl"
+    path.write_text('{"id": "a", "prompt": "x", "route": "/sessions", "operator": true}\n')
+    cases = load_cases(path)
+    assert cases[0].operator is True
+
+
+# ---------------------------------------------------------------------------
+# select_cases — a case's `operator` flag must match the run mode (Task 9.3): an
+# operator-tier case run without --operator would call a tool that is not registered.
+# ---------------------------------------------------------------------------
+
+
+def test_select_cases_default_run_excludes_operator_cases():
+    cases = [_case(id="a"), _case(id="b", operator=True)]
+    assert [c.id for c in select_cases(cases, operator=False)] == ["a"]
+
+
+def test_select_cases_operator_run_includes_only_operator_cases():
+    cases = [_case(id="a"), _case(id="b", operator=True)]
+    assert [c.id for c in select_cases(cases, operator=True)] == ["b"]
 
 
 # ---------------------------------------------------------------------------

@@ -112,6 +112,64 @@ async def test_operator_tool_calls_audit_operator_tier(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_start_deploy_omits_target_sha_when_ref_absent():
+    def handler(req):
+        assert (req.method, req.url.path) == ("POST", "/api/deploy/start")
+        assert req.content == b""
+        return httpx.Response(200, json={"state": "deploying"})
+
+    tools = build_tools(_api(handler), operator=True)
+    out = await _tool(tools, "start_deploy").handler({})
+    assert "is_error" not in out
+
+
+@pytest.mark.asyncio
+async def test_start_deploy_passes_ref_as_target_sha():
+    def handler(req):
+        assert (req.method, req.url.path) == ("POST", "/api/deploy/start")
+        assert json.loads(req.content) == {"targetSha": "abc123"}
+        return httpx.Response(200, json={"state": "deploying"})
+
+    tools = build_tools(_api(handler), operator=True)
+    out = await _tool(tools, "start_deploy").handler({"ref": "abc123"})
+    assert "is_error" not in out
+
+
+@pytest.mark.asyncio
+async def test_upgrade_host_posts_to_the_named_host():
+    def handler(req):
+        assert (req.method, req.url.path) == ("POST", "/api/fleet/hosts/rocky/upgrade")
+        return httpx.Response(200, json={"ok": True})
+
+    tools = build_tools(_api(handler), operator=True)
+    out = await _tool(tools, "upgrade_host").handler({"name": "rocky"})
+    assert "is_error" not in out
+
+
+@pytest.mark.asyncio
+async def test_set_account_enabled_patches_the_enabled_flag():
+    def handler(req):
+        assert (req.method, req.url.path) == ("PATCH", "/api/accounts/a1/enabled")
+        assert json.loads(req.content) == {"enabled": False}
+        return httpx.Response(200, json={"ok": True})
+
+    tools = build_tools(_api(handler), operator=True)
+    out = await _tool(tools, "set_account_enabled").handler({"name": "a1", "enabled": False})
+    assert "is_error" not in out
+
+
+@pytest.mark.asyncio
+async def test_start_reauth_posts_to_the_named_account():
+    def handler(req):
+        assert (req.method, req.url.path) == ("POST", "/api/accounts/a1/reauth")
+        return httpx.Response(202, json={"state": "pending"})
+
+    tools = build_tools(_api(handler), operator=True)
+    out = await _tool(tools, "start_reauth").handler({"name": "a1"})
+    assert "is_error" not in out
+
+
+@pytest.mark.asyncio
 async def test_list_initiatives_filters_status():
     def handler(req):
         assert (req.method, req.url.path) == ("GET", "/api/sdlc/initiatives")
