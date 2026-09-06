@@ -107,7 +107,9 @@ def test_the_two_engines_really_do_differ_in_capability(tmp_path):
     codex, claude = offers["codex"]["capabilities"], offers["claude_code"]["capabilities"]
     assert codex["reasoningEffort"] is True and claude["reasoningEffort"] is False
     assert codex["subagents"] is False and claude["subagents"] is True
-    assert codex["questions"] is False and claude["questions"] is True
+    # `questions` is deliberate parity (#1271), not a case of one dict aliasing
+    # the other — reasoningEffort/subagents above already prove they differ.
+    assert codex["questions"] is True and claude["questions"] is True
 
 
 def test_codex_is_not_offered_without_a_credential_authority(tmp_path):
