@@ -45,14 +45,16 @@ def test_codex_advertises_the_planned_controls():
     assert CODEX_CAPABILITIES.models and CODEX_CAPABILITIES.reasoning_effort
     assert CODEX_CAPABILITIES.steer and CODEX_CAPABILITIES.interrupt
     assert CODEX_CAPABILITIES.approvals and CODEX_CAPABILITIES.attachments
+    # `item/tool/requestUserInput` is Codex's AskUserQuestion equivalent (#1271):
+    # pinned, answered through the same QuestionRegistry the Claude driver uses.
+    assert CODEX_CAPABILITIES.questions
     # Claude-CLI-private surfaces have no app-server equivalent in v1.
     assert not CODEX_CAPABILITIES.fork
     assert not CODEX_CAPABILITIES.adopt
     assert not CODEX_CAPABILITIES.self_model_switch
     assert not CODEX_CAPABILITIES.subagents
-    # No interactive-question channel on the app-server, and rotation composes the
-    # target account's CLAUDE config dir — a Codex session is refused by that path.
-    assert not CODEX_CAPABILITIES.questions
+    # Rotation composes the target account's CLAUDE config dir — a Codex
+    # session is refused by that path.
     assert not CODEX_CAPABILITIES.account_rotation
     # ...but a fresh thread on the target account's OWN app-server needs none of
     # that Claude-specific machinery, so the honest fallback is available (#1275).

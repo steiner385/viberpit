@@ -295,7 +295,8 @@ async def test_the_driver_satisfies_the_agent_driver_protocol(harness):
     assert (caps.models, caps.steer, caps.interrupt, caps.approvals) == (
         True, True, True, True,
     )
-    assert not caps.questions and not caps.self_model_switch and not caps.fork
+    assert caps.questions
+    assert not caps.self_model_switch and not caps.fork
 
 
 @pytest.mark.asyncio
@@ -1198,10 +1199,17 @@ async def test_archive_archives_the_thread_then_closes(harness):
 async def test_surfaces_codex_does_not_have_answer_honestly(harness):
     driver = await harness.boot()
     assert await driver.server_info() is None
-    assert driver.pending_questions() == []
-    assert driver.answer_question("q", ["a"], "user@example.com", "option") is False
     assert driver.seed_idle_suggestions("u", "a") is None
     assert driver.in_api_backoff is False
+
+
+@pytest.mark.asyncio
+async def test_answer_question_on_an_unknown_id_reports_not_pending(harness):
+    """No question ever raised — the same "no longer pending" honesty the
+    driver reports for any id the registry does not recognize."""
+    driver = await harness.boot()
+    assert driver.pending_questions() == []
+    assert driver.answer_question("q", ["a"], "user@example.com", "option") is False
 
 
 @pytest.mark.asyncio

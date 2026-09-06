@@ -804,6 +804,10 @@ async def test_invalid_refresh_params_return_invalid_params_not_a_refresh() -> N
         # grant, which ccswitch has no vocabulary for, so it stays unsupported
         # even though the other two approval callbacks are now answerable.
         "item/permissions/requestApproval",
+        # A DIFFERENT surface from `item/tool/requestUserInput` (#1271): a
+        # third-party MCP tool server prompting the user. No MCP server is
+        # wired up for a Codex thread, so no live session can ever raise this.
+        "mcpServer/elicitation/request",
         "execCommandApproval",
         "applyPatchApproval",
         "totally/made/up",
@@ -843,6 +847,30 @@ async def test_a_supported_approval_without_a_handler_is_never_granted(
                 request_id=94,
             )
             reply = await fake.receive_reply(94)
+            assert "result" not in reply
+            assert reply["error"]["code"] == protocol.JSONRPC_METHOD_NOT_FOUND
+            assert client.counters.unhandled_server_requests == 1
+        finally:
+            await client.aclose()
+
+
+async def test_a_supported_user_input_request_without_a_handler_is_never_answered() -> None:
+    """Supported does not mean answerable: with no handler there is no answer."""
+    async with FakeCodexAppServer() as fake:
+        client = await _ready(fake, refresh_handler=_refresh)
+        try:
+            fake.request(
+                "item/tool/requestUserInput",
+                {
+                    "threadId": "t1",
+                    "turnId": "u1",
+                    "itemId": "i1",
+                    "isBlocking": True,
+                    "questions": [{"id": "q1", "header": "H", "question": "Q?"}],
+                },
+                request_id=95,
+            )
+            reply = await fake.receive_reply(95)
             assert "result" not in reply
             assert reply["error"]["code"] == protocol.JSONRPC_METHOD_NOT_FOUND
             assert client.counters.unhandled_server_requests == 1

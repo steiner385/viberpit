@@ -34,7 +34,7 @@ grows a different answer per call site:
 * **Fail closed inbound.** Unknown notifications are counted and dropped, never
   delivered. Every server-initiated request outside
   `schema.SUPPORTED_SERVER_REQUESTS` is answered with a JSON-RPC ``method not
-  found`` error. There is no generic server-request dispatch table: the three
+  found`` error. There is no generic server-request dispatch table: the four
   supported methods are routed by name to one explicit handler each, and each
   handler answers only from an *installed* callback. With no callback there is
   no reply value to invent, so an approval is `-32601` rather than a default
@@ -262,6 +262,10 @@ RefreshHandler = Callable[
 ApprovalHandler = Callable[
     [str, schema.ApprovalParams], Awaitable[schema.ApprovalResponse]
 ]
+#: Answers one `item/tool/requestUserInput` request.
+UserInputHandler = Callable[
+    [schema.ToolRequestUserInputParams], Awaitable[schema.ToolRequestUserInputResponse]
+]
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +286,7 @@ class CodexAppServerClient:
         notification_handler: NotificationHandler | None = None,
         refresh_handler: RefreshHandler | None = None,
         approval_handler: ApprovalHandler | None = None,
+        user_input_handler: UserInputHandler | None = None,
         max_buffered_notifications: int = DEFAULT_MAX_BUFFERED_NOTIFICATIONS,
         max_inflight_server_requests: int = DEFAULT_MAX_INFLIGHT_SERVER_REQUESTS,
         max_outbound_requests: int = DEFAULT_MAX_OUTBOUND_REQUESTS,
@@ -294,6 +299,7 @@ class CodexAppServerClient:
         self._notification_handler = notification_handler
         self._refresh_handler = refresh_handler
         self._approval_handler = approval_handler
+        self._user_input_handler = user_input_handler
         self._notifications: asyncio.Queue[
             tuple[str, schema.ServerNotificationParams]
         ] = asyncio.Queue(maxsize=max(1, max_buffered_notifications))
@@ -923,6 +929,12 @@ class CodexAppServerClient:
                 self._handle_approval_request(request_id, method, frame.get("params")),
             )
             return False
+        if method == schema.METHOD_ITEM_TOOL_REQUEST_USER_INPUT:
+            self._spawn_reply(
+                request_id,
+                self._handle_user_input_request(request_id, frame.get("params")),
+            )
+            return False
         self._spawn_reply(
             request_id, self._handle_refresh_request(request_id, frame.get("params"))
         )
@@ -1141,4 +1153,65 @@ class CodexAppServerClient:
         log_event(
             logger, logging.INFO, "codex.protocol.approval_answered", method=method
         )
+        await self._reply_result(request_id, wire)
+
+    async def _handle_user_input_request(self, request_id: int, params: Any) -> None:
+        """Answer `item/tool/requestUserInput` through the installed handler.
+
+        Mirrors `_handle_approval_request`'s failure shape exactly: no handler
+        is `-32601`, unparseable params are `-32602`, a raising handler is
+        `-32603`. None of those paths can invent an answer — the one property
+        that matters here is that a question ccswitch cannot service is never
+        answered with a guess.
+        """
+        handler = self._user_input_handler
+        if handler is None:
+            self._counters.unhandled_server_requests += 1
+            log_event(
+                logger, logging.WARNING, "codex.protocol.user_input_unhandled"
+            )
+            await self._reply_error(
+                request_id,
+                JSONRPC_METHOD_NOT_FOUND,
+                "no user-input handler is configured",
+            )
+            return
+        try:
+            parsed = schema.parse_tool_request_user_input_params(params)
+        except schema.CodexSchemaError as exc:
+            log_event(
+                logger,
+                logging.WARNING,
+                "codex.protocol.user_input_invalid_params",
+                error=redaction.scrub_exception(exc),
+            )
+            await self._reply_error(
+                request_id, JSONRPC_INVALID_PARAMS, "invalid user-input request"
+            )
+            return
+        try:
+            response = await handler(parsed)
+            if not isinstance(response, schema.ToolRequestUserInputResponse):
+                raise schema.CodexSchemaError(
+                    "user-input handler answered with the wrong response type"
+                )
+            wire = response.to_wire()
+            # Re-parse against the same contract used inbound: the handler is
+            # external code, and this is the last point before an answer goes
+            # on the wire.
+            schema.parse_tool_request_user_input_response(wire)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 -- a handler failure must stay closed
+            log_event(
+                logger,
+                logging.ERROR,
+                "codex.protocol.user_input_failed",
+                error=redaction.scrub_exception(exc),
+            )
+            await self._reply_error(
+                request_id, JSONRPC_INTERNAL_ERROR, "user-input handling failed"
+            )
+            return
+        log_event(logger, logging.INFO, "codex.protocol.user_input_answered")
         await self._reply_result(request_id, wire)

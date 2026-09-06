@@ -3,7 +3,7 @@
 Scope. ccswitch speaks a deliberately tiny slice of the app-server protocol: the
 `codex app-server generate-json-schema --experimental` output declares 155 client
 requests, 11 server requests, and 81 server notifications, and this phase supports
-fourteen requests, one client notification, three server requests, and fourteen
+fourteen requests, one client notification, four server requests, and fourteen
 server notifications. Everything else is *declared* (recognized by name, counted,
 never acted on) or *unrecognized* (counted under one bucket).
 `server/codex/protocol.py` enforces that split; this module owns the vocabulary
@@ -54,7 +54,7 @@ from server.codex.redaction import Redacted, contains_secret_shaped_value
 
 PINNED_CLI_VERSION: Final = "codex-cli 0.153.2"
 PINNED_CONTRACT_SHA256: Final = (
-    "3caf4b92e54c19755ecc0386d6e2a64501aa9a7736fa7681d2514c09580d07a0"
+    "e6381998acfed041c94358d3fb5149e6a8a85839c123cfa65e3643948b5ae4cc"
 )
 
 #: Schema documents copied verbatim into the fixtures and covered by the hash.
@@ -109,6 +109,10 @@ CURATED_SCHEMA_FILES: Final[tuple[str, ...]] = (
     # CLI's `get_server_info()["commands"]` list (#1286).
     "v2/SkillsListParams.json",
     "v2/SkillsListResponse.json",
+    # Task: structured Codex question/answer parity (#1271) — the
+    # `request_user_input` surface the audit found declared but unpinned.
+    "ToolRequestUserInputParams.json",
+    "ToolRequestUserInputResponse.json",
 )
 
 #: Envelope files contributing only their method-name inventory to the hash.
@@ -184,6 +188,16 @@ METHOD_TURN_SETTINGS_UPDATE: Final = "turn/settings/update"
 METHOD_COMMAND_EXECUTION_APPROVAL: Final = "item/commandExecution/requestApproval"
 METHOD_FILE_CHANGE_APPROVAL: Final = "item/fileChange/requestApproval"
 
+# Structured question/answer (server -> client request). Marked EXPERIMENTAL by
+# the vendor schema itself (see `ToolRequestUserInputParams.json`), the same way
+# the external-token login surface is marked UNSTABLE — supported anyway, behind
+# the same version pin, because the audit that named this gap (#1271) found it
+# is what `AskUserQuestion` parity actually requires. `mcpServer/elicitation/
+# request` is a DIFFERENT surface (third-party MCP tool servers prompting the
+# user) that no ccswitch Codex session can currently trigger — no MCP server is
+# wired up for Codex threads — so it stays declared-but-unsupported until one is.
+METHOD_ITEM_TOOL_REQUEST_USER_INPUT: Final = "item/tool/requestUserInput"
+
 # Thread / turn / item stream (server -> client notifications).
 METHOD_THREAD_STARTED: Final = "thread/started"
 METHOD_THREAD_STATUS_CHANGED: Final = "thread/status/changed"
@@ -237,6 +251,7 @@ SUPPORTED_SERVER_REQUESTS: Final[frozenset[str]] = frozenset(
         METHOD_AUTH_TOKENS_REFRESH,
         METHOD_COMMAND_EXECUTION_APPROVAL,
         METHOD_FILE_CHANGE_APPROVAL,
+        METHOD_ITEM_TOOL_REQUEST_USER_INPUT,
     }
 )
 SUPPORTED_SERVER_NOTIFICATIONS: Final[frozenset[str]] = frozenset(
@@ -2648,6 +2663,139 @@ def parse_approval_response(method: str, payload: Any) -> ApprovalResponse:
     if method == METHOD_FILE_CHANGE_APPROVAL:
         return parse_file_change_approval_response(payload)
     raise CodexSchemaError("unsupported approval response method")
+
+
+# ---------------------------------------------------------------------------
+# Structured question/answer (`item/tool/requestUserInput`)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ToolRequestUserInputOption:
+    """One selectable answer, exactly as offered on the wire."""
+
+    label: str
+    description: str
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ToolRequestUserInputQuestion:
+    """One question of a (possibly multi-question) `request_user_input` call.
+
+    ``options`` is ``None`` for a free-text-only question, distinct from an
+    empty tuple (offered options, none of which happen to exist yet — the
+    vendor schema keeps the two states apart, so parsing does too). ``is_other``
+    signals the vendor UI would offer a typed answer alongside the listed
+    options; ccswitch's question card already offers one unconditionally (the
+    "write your own answer" escape hatch), so it needs no special handling.
+    ``is_secret`` marks an answer that should never render in cleartext — no
+    ccswitch surface masks input yet, so it is threaded through as metadata for
+    a future card to consume rather than acted on here.
+    """
+
+    id: str
+    header: str
+    question: str
+    options: tuple[ToolRequestUserInputOption, ...] | None
+    is_other: bool = False
+    is_secret: bool = False
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ToolRequestUserInputParams:
+    thread_id: str
+    turn_id: str
+    item_id: str
+    is_blocking: bool
+    questions: tuple[ToolRequestUserInputQuestion, ...]
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ToolRequestUserInputAnswer:
+    """One question's answer(s). Empty means "no answer was given" — the
+    honest reply when a turn is interrupted or a driver is torn down while the
+    question was still pending; the schema has no separate decline/cancel
+    variant to invent one from."""
+
+    answers: tuple[str, ...]
+
+    def to_wire(self) -> dict[str, Any]:
+        return {"answers": list(self.answers)}
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ToolRequestUserInputResponse:
+    answers: Mapping[str, ToolRequestUserInputAnswer]
+
+    def to_wire(self) -> dict[str, Any]:
+        return {"answers": {qid: answer.to_wire() for qid, answer in self.answers.items()}}
+
+
+def _parse_tool_request_user_input_option(
+    payload: Any, what: str
+) -> ToolRequestUserInputOption:
+    body = _as_mapping(payload, what)
+    return ToolRequestUserInputOption(
+        label=_require_str(body, "label", what),
+        description=_require_str(body, "description", what),
+    )
+
+
+def _parse_tool_request_user_input_question(
+    payload: Any, what: str
+) -> ToolRequestUserInputQuestion:
+    body = _as_mapping(payload, what)
+    raw_options = body.get("options")
+    options: tuple[ToolRequestUserInputOption, ...] | None = None
+    if raw_options is not None:
+        if not isinstance(raw_options, list):
+            raise CodexSchemaError(f"{what} field 'options' must be an array or null")
+        options = tuple(
+            _parse_tool_request_user_input_option(option, what) for option in raw_options
+        )
+    return ToolRequestUserInputQuestion(
+        id=_require_str(body, "id", what),
+        header=_require_str(body, "header", what),
+        question=_require_str(body, "question", what),
+        options=options,
+        is_other=_optional_bool(body, "isOther", what) or False,
+        is_secret=_optional_bool(body, "isSecret", what) or False,
+    )
+
+
+def parse_tool_request_user_input_params(payload: Any) -> ToolRequestUserInputParams:
+    what = "item/tool/requestUserInput params"
+    body = _as_mapping(payload, what)
+    raw_questions = body.get("questions")
+    if not isinstance(raw_questions, list) or not raw_questions:
+        raise CodexSchemaError(f"{what} field 'questions' must be a non-empty array")
+    return ToolRequestUserInputParams(
+        thread_id=_require_str(body, "threadId", what),
+        turn_id=_require_str(body, "turnId", what),
+        item_id=_require_str(body, "itemId", what),
+        is_blocking=_require_bool(body, "isBlocking", what),
+        questions=tuple(
+            _parse_tool_request_user_input_question(question, what)
+            for question in raw_questions
+        ),
+    )
+
+
+def parse_tool_request_user_input_response(payload: Any) -> ToolRequestUserInputResponse:
+    """Re-validate a `request_user_input` reply immediately before it is written."""
+    what = "item/tool/requestUserInput response"
+    body = _as_mapping(payload, what)
+    raw_answers = _as_mapping(body.get("answers"), f"{what} field 'answers'")
+    answers: dict[str, ToolRequestUserInputAnswer] = {}
+    for question_id, raw_answer in raw_answers.items():
+        if not isinstance(question_id, str):
+            raise CodexSchemaError(f"{what} field 'answers' has a non-string key")
+        entry_what = f"{what} field 'answers[{question_id}]'"
+        entry = _as_mapping(raw_answer, entry_what)
+        answers[question_id] = ToolRequestUserInputAnswer(
+            answers=_parse_string_tuple(entry, "answers", entry_what, ())
+        )
+    return ToolRequestUserInputResponse(answers=answers)
 
 
 # ---------------------------------------------------------------------------

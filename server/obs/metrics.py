@@ -289,3 +289,8 @@ codex_approval_ms = Histogram(
     "Time from a Codex approval request arriving to its decision (ms)",
     labelnames=("outcome",),
 )
+codex_user_input_ms = Histogram(
+    "codex_user_input_ms",
+    "Time from a Codex request_user_input request arriving to its answer (ms)",
+    labelnames=("outcome",),
+)

@@ -77,6 +77,7 @@ from server.obs.metrics import (
     codex_runner_restarts_total,
     codex_threads_active,
     codex_turns_active,
+    codex_user_input_ms,
 )
 from server.sessions.adopt import _proc_lister, terminate_process_tree
 
@@ -175,6 +176,10 @@ ThreadNotifier = Callable[[RunnerNotice], None]
 ThreadEventSink = Callable[[str, "schema.ServerNotificationParams"], None]
 #: Answers one approval request raised by ONE thread's turn.
 ApprovalSink = Callable[[str, "schema.ApprovalParams"], Awaitable["schema.ApprovalResponse"]]
+#: Answers one `item/tool/requestUserInput` request raised by ONE thread's turn.
+UserInputSink = Callable[
+    ["schema.ToolRequestUserInputParams"], Awaitable["schema.ToolRequestUserInputResponse"]
+]
 ProcessFactory = Callable[..., CodexProcessHandle]
 ClientFactory = Callable[..., CodexAppServerClient]
 HomeFactory = Callable[[Path, str], Path]
@@ -278,6 +283,10 @@ class CodexRunnerManager:
         #: account, so an approval must reach the ONE session whose turn raised
         #: it — an account-wide handler would let session A answer B's prompt.
         self._approval_sinks: dict[str, dict[str, ApprovalSink]] = {}
+        #: account -> thread -> structured-question handler. Same per-thread
+        #: keying and the same reason: a `request_user_input` call belongs to
+        #: the one session whose turn raised it.
+        self._user_input_sinks: dict[str, dict[str, UserInputSink]] = {}
         self._turns: dict[str, dict[str, int]] = {}  # account -> thread -> generation
         #: Monotonic per account for the life of the manager. Owned here rather than
         #: on `_Runner` precisely so that stop(), the idle reaper and `_give_up` —
@@ -291,6 +300,7 @@ class CodexRunnerManager:
         #: that no ccswitch session is attached to.
         self.unrouted_events = 0
         self.unrouted_approvals = 0
+        self.unrouted_user_input = 0
         #: Set by ``build_codex_manager`` to the provider backing
         #: ``credential_supplier``. ``invalidate_credentials`` needs it; nothing
         #: else in this class does, which is why it is not a constructor argument.
@@ -356,6 +366,7 @@ class CodexRunnerManager:
             # decision below (which thread, which session) is scoped by it.
             notification_handler=partial(self._on_notification, account),
             approval_handler=partial(self._on_approval, account),
+            user_input_handler=partial(self._on_user_input, account),
             refresh_handler=(
                 None
                 if self._refresh_handler_factory is None
@@ -668,13 +679,14 @@ class CodexRunnerManager:
         *,
         events: ThreadEventSink | None = None,
         approvals: ApprovalSink | None = None,
+        user_input: UserInputSink | None = None,
     ) -> None:
         """Subscribe one thread driver to everything addressed to its thread.
 
-        One registration call for all three streams — supervision notices, the
-        app-server's notifications, and its approval requests — so a driver
-        cannot end up half-subscribed, and :meth:`unregister_thread` has exactly
-        one inverse to keep correct.
+        One registration call for all four streams — supervision notices, the
+        app-server's notifications, its approval requests and its structured
+        questions — so a driver cannot end up half-subscribed, and
+        :meth:`unregister_thread` has exactly one inverse to keep correct.
         """
         notifiers = self._notifiers.setdefault(account, {})
         # Re-registering the same thread (a driver reattach) is one thread, not two.
@@ -685,6 +697,8 @@ class CodexRunnerManager:
             self._event_sinks.setdefault(account, {})[thread_id] = events
         if approvals is not None:
             self._approval_sinks.setdefault(account, {})[thread_id] = approvals
+        if user_input is not None:
+            self._user_input_sinks.setdefault(account, {})[thread_id] = user_input
 
     def unregister_thread(self, account: str, thread_id: str) -> None:
         if self._notifiers.get(account, {}).pop(thread_id, None) is not None:
@@ -694,6 +708,7 @@ class CodexRunnerManager:
         # finds no handler and takes the protocol's fail-closed `-32601` path
         # rather than reaching a driver that is already closing.
         self._approval_sinks.get(account, {}).pop(thread_id, None)
+        self._user_input_sinks.get(account, {}).pop(thread_id, None)
         self._close_turn(account, thread_id)
 
     # -- app-server stream routing ----------------------------------------
@@ -819,6 +834,34 @@ class CodexRunnerManager:
             outcome = "decided"
         finally:
             codex_approval_ms.labels(outcome).observe((time.monotonic() - started) * 1000.0)
+        return response
+
+    async def _on_user_input(
+        self, account: str, params: schema.ToolRequestUserInputParams
+    ) -> schema.ToolRequestUserInputResponse:
+        """Route one `item/tool/requestUserInput` call to the thread whose turn
+        raised it. Mirrors :meth:`_on_approval` exactly, including the fail-
+        closed shape: no handler raises rather than answering with a guess."""
+        sink = self._user_input_sinks.get(account, {}).get(params.thread_id)
+        if sink is None:
+            self.unrouted_user_input += 1
+            codex_user_input_ms.labels("unrouted").observe(0.0)
+            log_event(
+                logger,
+                logging.WARNING,
+                "codex.manager.unrouted_user_input",
+                account=account,
+            )
+            raise CodexRunnerMissingError(
+                "no live ccswitch session owns this codex user-input request"
+            )
+        started = time.monotonic()
+        outcome = "error"
+        try:
+            response = await sink(params)
+            outcome = "decided"
+        finally:
+            codex_user_input_ms.labels(outcome).observe((time.monotonic() - started) * 1000.0)
         return response
 
     def _notify(self, notice: RunnerNotice) -> None:

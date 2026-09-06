@@ -49,12 +49,21 @@ CODEX_ENGINE: Final = AgentEngine.CODEX
 #: additionally folds text/CSV/JSON files and zip archives into an inline
 #: `TextUserInput` (there is no native document modality on the wire); PDF has
 #: neither and stays refused.
+#: ``questions`` is True too (#1271): the app-server declares `item/tool/
+#: requestUserInput` — Codex's own `AskUserQuestion` equivalent (header,
+#: question, options, free text, per-question secrecy), marked EXPERIMENTAL by
+#: the vendor schema the same way the external-token login surface is marked
+#: UNSTABLE. It was found declared-but-unpinned when this gap was audited, not
+#: absent — pinning its schema and answering it through the SAME
+#: ``QuestionRegistry``/``ev.Question`` the Claude driver uses (never a parallel
+#: question stack) is what closes the gap. `mcpServer/elicitation/request` is a
+#: *different* surface (a third-party MCP tool server prompting the user) that
+#: stays declared-but-unsupported: no MCP server is wired up for a Codex thread
+#: yet, so no live session can ever raise it.
 #:
 #: The ``False`` entries are equally deliberate: ccswitch's fork, adopt,
 #: self-directed model switching and subagent surfaces are all implemented against
 #: the Claude CLI's private state and have no app-server equivalent in v1.
-#: ``questions`` joins them — the app-server has no interactive-question channel, so
-#: ``CodexAgentDriver.answer_question`` can only ever report "no longer pending".
 #: ``account_rotation`` is False because rotation composes the target account's
 #: Claude config dir and syncs Claude credentials back; a Codex session is refused
 #: by that path rather than rebuilt as some other engine's driver. That refusal is
@@ -74,7 +83,7 @@ CODEX_CAPABILITIES: Final[AgentCapabilities] = AgentCapabilities(
     steer=True,
     interrupt=True,
     approvals=True,
-    questions=False,
+    questions=True,
     fork=False,
     adopt=False,
     self_model_switch=False,
