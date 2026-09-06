@@ -2,6 +2,7 @@
 import fcntl
 import logging
 import os
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -634,6 +635,36 @@ def pick_account(cfg: Config, exclude: set[str] = frozenset(),
                  load: dict[str, float] | None = None) -> str:
     """Pick for the legacy Claude launchers; never cross into Codex accounts."""
     return pick_account_detailed(cfg, exclude, load).name
+
+
+def codex_cli_launch_gate(cfg: Config, prog: str) -> int:
+    """Fail closed for an ``--engine codex`` request from a synchronous CLI launcher.
+
+    ``ccrun``/``ccmax`` are non-daemon CLI wrappers; the only vetted Codex launch
+    surface in this repo is the daemon-supervised ``codex app-server`` (credentials
+    reach it only over JSON-RPC stdin — see ``server/codex/process.py``). There is
+    no supported way for a bare CLI process to launch Codex without either
+    inventing a new credential path or duplicating that orchestration stack, both
+    of which #1287's acceptance criteria rule out. This reuses the canonical
+    account authority (a read-only probe, ``reserve=False``) to confirm a Codex
+    account is configured — for a useful error message — then refuses the launch
+    outright. It never falls back to Claude.
+    """
+    try:
+        pick_account_detailed(
+            cfg, reserve=False,
+            require_engine=AgentEngine.CODEX.value, default_engine=None,
+        )
+    except AllAccountsBusy as busy:
+        when = busy.earliest_reset.astimezone() if busy.earliest_reset else "unknown"
+        print(f"{prog}: no codex account available (earliest reset: {when})", file=sys.stderr)
+        return 2
+    print(
+        f"{prog}: engine 'codex' has no supported launch surface here yet — "
+        "run Codex sessions through the ccswitch daemon/web UI instead",
+        file=sys.stderr,
+    )
+    return 3
 
 
 def sync_back(name: str) -> None:

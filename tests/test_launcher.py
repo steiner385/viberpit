@@ -108,6 +108,38 @@ class TestLauncher(unittest.TestCase):
             self.assertEqual(len(captured_envs), 1)
             self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", captured_envs[0])
 
+    def test_engine_codex_rejects_when_no_codex_account_configured(self):
+        """--engine codex fails closed on the canonical 'no usable accounts' error
+        when no Codex-provider account is registered — never falls back to Claude."""
+        with temp_env():
+            from ccswitch import launcher
+            _seed("alpha")  # a Claude-only account; not eligible for engine=codex
+            with mock.patch.object(launcher, "spawn_claude") as fake_spawn:
+                rc = launcher.main(["--engine", "codex"])
+            self.assertEqual(rc, 2)
+            fake_spawn.assert_not_called()
+
+    def test_engine_codex_gated_when_account_configured(self):
+        """A configured Codex account still gets an explicit 'not supported yet'
+        refusal — ccmax has no synchronous Codex launch surface — not a Claude run."""
+        with temp_env():
+            from ccswitch import launcher, account_registry
+            from ccswitch.engines import AgentEngine
+            account_registry.register_account(
+                "codexy", account_registry.PROVIDER_OPENAI, engine=AgentEngine.CODEX.value)
+            with mock.patch.object(launcher, "spawn_claude") as fake_spawn:
+                rc = launcher.main(["--engine", "codex"])
+            self.assertEqual(rc, 3)
+            fake_spawn.assert_not_called()
+
+    def test_engine_rejects_unknown_value(self):
+        with temp_env():
+            from ccswitch import launcher
+            with mock.patch.object(launcher, "spawn_claude") as fake_spawn:
+                rc = launcher.main(["--engine", "bogus"])
+            self.assertEqual(rc, 64)
+            fake_spawn.assert_not_called()
+
     def test_proactive_switch_when_less_loaded_account_exists(self):
         with temp_env():
             from ccswitch import launcher, accounts

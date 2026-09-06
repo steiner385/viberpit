@@ -93,6 +93,49 @@ class TestRunner(unittest.TestCase):
             self.assertEqual(len(captured_envs), 1)
             self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", captured_envs[0])
 
+    def test_engine_codex_rejects_when_no_codex_account_configured(self):
+        """--engine codex fails closed on the canonical 'no usable accounts' error
+        when no Codex-provider account is registered — never falls back to Claude."""
+        with temp_env():
+            from ccswitch import runner
+            _seed("alpha")  # a Claude-only account; not eligible for engine=codex
+            with mock.patch.object(runner, "run_claude") as fake_run:
+                rc = runner.main(["--engine", "codex", "--", "-p", "hi"])
+            self.assertEqual(rc, 2)
+            fake_run.assert_not_called()
+
+    def test_engine_codex_gated_when_account_configured(self):
+        """A configured Codex account still gets an explicit 'not supported yet'
+        refusal — ccrun has no synchronous Codex launch surface — not a Claude run."""
+        with temp_env():
+            from ccswitch import runner, account_registry
+            from ccswitch.engines import AgentEngine
+            account_registry.register_account(
+                "codexy", account_registry.PROVIDER_OPENAI, engine=AgentEngine.CODEX.value)
+            with mock.patch.object(runner, "run_claude") as fake_run:
+                rc = runner.main(["--engine", "codex", "--", "-p", "hi"])
+            self.assertEqual(rc, 3)
+            fake_run.assert_not_called()
+
+    def test_engine_defaults_to_claude_when_unspecified(self):
+        """No --engine flag preserves the exact legacy Claude behaviour."""
+        with temp_env():
+            from ccswitch import runner, accounts
+            from tests.helpers import usage
+            _seed("alpha")
+            os.environ["CCSWITCH_CLAUDE_BIN"] = f"{sys.executable} {os.path.abspath('tests/fake_claude.py')}"
+            with mock.patch.object(accounts, "usage_for", return_value=usage(session=5.0)):
+                rc = runner.main(["--", "-p", "hi"])
+            self.assertEqual(rc, 0)
+
+    def test_engine_rejects_unknown_value(self):
+        with temp_env():
+            from ccswitch import runner
+            with mock.patch.object(runner, "run_claude") as fake_run:
+                rc = runner.main(["--engine", "bogus", "--", "-p", "hi"])
+            self.assertEqual(rc, 64)
+            fake_run.assert_not_called()
+
     def test_last_result_ignores_non_json_and_non_result_lines(self):
         from ccswitch.runner import _last_result
         stdout = "\n".join([
