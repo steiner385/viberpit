@@ -199,6 +199,18 @@ compatibility audit; API-key authentication in v1.
 - The owner accepted the version-pinned experimental external-token dependency with the design's
   mandatory compatibility, redaction, live-test, kill-switch, and fail-closed safeguards.
 - PR #1088 configures Codex as a repository development agent; it does not implement this feature.
+- **Sub-agent capability (#1274).** `subagents=False` was found declared-but-unwired, not absent:
+  the app-server has real `subAgentActivity` and `collabAgentToolCall` thread items (`agentPath`/
+  `agentThreadId`/lifecycle `kind`; `tool`/`senderThreadId`/`receiverThreadIds`/`agentsStates`),
+  already normalized to `Task` `ToolCall`/`ToolResult` events by `server/codex/translator.py` and
+  already recognized by `server/sessions/subagents.py`'s dashboard summary. The flag stays False
+  because two things are unverified against a live binary: whether a multi-call collab sequence
+  (spawn → sendInput/wait → close) collapses into one dashboard entry (there is no session-wide
+  "agent id" in the wire payload — the real identity lives in `receiverThreadIds`/`agentsStates`,
+  whose values are native thread ids that must not ride in a generic wire payload, so they surface
+  only as an observability counter, `TranslatorCounters.collab_agent_states_seen`), and there is no
+  transcript-drill-down for a child agent's own conversation yet (the natural mechanism is
+  `CodexThreadReplay` over the already-wired `thread/read` RPC, given a designed fetch-by-id path).
 
 **Evidence** — current engine and normalized stream in `server/sessions/claude_driver.py` and
 `server/sessions/events.py`; orchestration/fleet routing in `server/sessions/orchestrator.py` and
