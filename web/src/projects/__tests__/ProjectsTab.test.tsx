@@ -1,11 +1,19 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 
 import { ApiRequestError } from '@/api/client'
 
 import { ProjectsTab } from '../ProjectsTab'
+
+// The embedded phase-2 triage list is gone; what is left is a LINK to /triage
+// whose label carries the queue depth, so the tab still reads the triage query.
+vi.mock('@/api/triage', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/triage')>()),
+  fetchTriage: vi.fn().mockResolvedValue([{ id: 'p1' }, { id: 'p2' }]),
+}))
 
 vi.mock('@/api/pm', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/api/pm')>()),
@@ -43,7 +51,7 @@ function renderTab() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
-      <ProjectsTab />
+      <MemoryRouter><ProjectsTab /></MemoryRouter>
     </QueryClientProvider>,
   )
 }
@@ -55,6 +63,15 @@ describe('ProjectsTab', () => {
     expect(screen.getByText('steiner385/KinDash')).toBeInTheDocument()
     expect(screen.getByText(/registered/i)).toBeInTheDocument()
     expect(screen.getByText(/12 work items/i)).toBeInTheDocument()
+  })
+
+  it('links to the Triage inbox with the queue depth instead of embedding a list', async () => {
+    renderTab()
+    const cta = await screen.findByRole('link', { name: /review 2 proposals in triage/i })
+    expect(cta).toHaveAttribute('href', '/triage')
+    // The phase-2 list is gone: no Accept/Reject buttons live on this tab.
+    expect(screen.queryByRole('button', { name: /^accept$/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^reject$/i })).toBeNull()
   })
 
   it('shows the empty state when there are no projects', async () => {

@@ -9,6 +9,7 @@ describe('navDefs', () => {
       ['pipeline', 'Pipeline'],
       ['automations', 'Automations'],
       ['initiatives', 'Initiatives'],
+      ['triage', 'Triage'],
       ['projects', 'Products'],
       ['insights', 'Insights'],
       ['settings', 'Settings'],

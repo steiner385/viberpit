@@ -21,15 +21,15 @@
 //
 // ## Two harnesses, on purpose
 //
-// Everything above the "44-cell matrix" divider mounts the table under
+// Everything above the "48-cell matrix" divider mounts the table under
 // `TestLayout`, a stand-in that renders an `<Outlet/>` and the URL. That keeps
 // the redirect and page tests about the TABLE.
 //
 // The matrix at the bottom mounts the REAL `AppShell` as the layout, because its
 // claim is not about the table alone: "every route renders in every layout mode"
 // is only worth asserting if the layout mode is load-bearing. Under `TestLayout`
-// the four modes would be four identical renders and the matrix would be eleven
-// tests wearing a forty-four-cell costume.
+// the four modes would be four identical renders and the matrix would be twelve
+// tests wearing a forty-eight-cell costume.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import { createMemoryRouter, matchRoutes, Outlet, RouterProvider, useLocation } from 'react-router-dom'
@@ -67,6 +67,7 @@ vi.mock('@/features/sessions/ArchivedWelcome', () => ({ ArchivedWelcome: stub('a
 vi.mock('@/pipeline/PipelineTab', () => ({ PipelineTab: stub('pipeline') }))
 vi.mock('@/automations/AutomationsTab', () => ({ AutomationsTab: stub('automations') }))
 vi.mock('@/initiatives/InitiativesTab', () => ({ InitiativesTab: stub('initiatives') }))
+vi.mock('@/triage/TriageInbox', () => ({ TriageInbox: stub('triage') }))
 vi.mock('@/projects/ProjectsTab', () => ({ ProjectsTab: stub('projects') }))
 vi.mock('@/components/InsightsView', () => ({ InsightsView: stub('insights') }))
 // The Settings pages are stubbed like every other page, and for one extra
@@ -388,10 +389,10 @@ describe('route table — every nav destination exists', () => {
   )
 })
 
-// ── the 44-cell matrix: every route × every layout mode ──────────────────────
+// ── the 48-cell matrix: every route × every layout mode ──────────────────────
 //
 // Umbrella §9: "Every route in §6 renders the same page at 390, 820, 1440 and
-// `?kiosk=1`." This is the jsdom half — 11 non-redirect paths × 4 layout modes.
+// `?kiosk=1`." This is the jsdom half — 12 non-redirect paths × 4 layout modes.
 // (The Playwright half, which asserts it at real pixel widths, is PR 10.)
 //
 // ## What each cell asserts, and why it is not one assertion
@@ -411,7 +412,7 @@ describe('route table — every nav destination exists', () => {
 //   3. the URL is still the path asked for (no redirect swallowed it);
 //   4. `app.main` is mounted exactly once (the shell laid out, once);
 //   5. the rail shape MATCHES THE MODE. This is the assertion that makes the
-//      forty-four-ness real: without it the four modes are four identical
+//      forty-eight-ness real: without it the four modes are four identical
 //      renders and `stubMatchMedia` might as well not be called.
 //
 // Assertion 1 is presence, not visibility, and that is deliberate: at `/sessions`
@@ -420,7 +421,7 @@ describe('route table — every nav destination exists', () => {
 // visibility here would encode "phone shows the welcome pane over its own list"
 // as the requirement, which is the opposite of the layout.
 
-/** The 11 non-redirect paths, each with the page it must land on. */
+/** The 12 non-redirect paths, each with the page it must land on. */
 const MATRIX_PATHS: ReadonlyArray<readonly [path: string, testid: string]> = [
   ['/sessions', 'page-sessions'],
   ['/sessions/abc', 'page-session-detail'],
@@ -428,6 +429,7 @@ const MATRIX_PATHS: ReadonlyArray<readonly [path: string, testid: string]> = [
   ['/pipeline', 'page-pipeline'],
   ['/automations', 'page-automations'],
   ['/initiatives', 'page-initiatives'],
+  ['/triage', 'page-triage'],
   ['/projects', 'page-projects'],
   ['/insights', 'page-insights'],
   ['/sessions/archived', 'page-archived'],
@@ -518,8 +520,8 @@ describe('every route renders in every layout mode', () => {
     })
 
     expect([...new Set(covered)].sort()).toEqual([...pageRoutes].sort())
-    expect(pageRoutes).toHaveLength(11)
-    expect(MATRIX_PATHS).toHaveLength(11)
+    expect(pageRoutes).toHaveLength(12)
+    expect(MATRIX_PATHS).toHaveLength(12)
   })
 
   /**
@@ -558,17 +560,19 @@ describe('every route renders in every layout mode', () => {
     }),
   )
 
-  it('the matrix is 44 cells', () => {
-    expect(CELLS).toHaveLength(44)
+  it('the matrix is 48 cells', () => {
+    expect(CELLS).toHaveLength(48)
   })
 
-  // The nine refused cells are exactly the kiosk rows for a section that is not
+  // The ten refused cells are exactly the kiosk rows for a section that is not
   // kiosk-safe — pinned so a `showInKiosk` flip has to come here and say so.
+  // `/triage` is the newest of them, and the least negotiable: the inbox accepts
+  // and bulk-accepts on a single unconfirmed keystroke.
   it('kiosk refuses exactly the sections that are not kiosk-safe', () => {
     const refused = CELLS.filter(([mode, path, , url]) => mode === 'kiosk' && url !== path)
     expect(refused.map(([, path]) => path)).toEqual([
       '/sessions', '/sessions/abc', '/sessions/abc/agents/x',
-      '/automations', '/initiatives', '/projects',
+      '/automations', '/initiatives', '/triage', '/projects',
       '/sessions/archived', '/sessions/archived/abc', '/settings/general',
     ])
     expect(refused.every(([, , testid, url]) => testid === 'page-pipeline' && url === '/pipeline')).toBe(true)

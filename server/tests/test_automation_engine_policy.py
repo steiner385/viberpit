@@ -51,6 +51,7 @@ def test_every_registered_origin_declares_its_audited_policy():
         "sdlc-intake": EnginePolicy.CODEX_ALLOWED,
         "sdlc-synthesizer": EnginePolicy.CODEX_ALLOWED,
         "pm-sync": EnginePolicy.CLAUDE_ONLY,
+        "pm-triage": EnginePolicy.CLAUDE_ONLY,
         "gh-reconcile": EnginePolicy.CLAUDE_ONLY,
     }
 

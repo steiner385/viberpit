@@ -117,8 +117,6 @@ describe('inline-owned mutations opt out of the global error toast', () => {
     ['useSyncProject', useSyncProject],
     ['useProposeMap', useProposeMap],
     ['useClassify', useClassify],
-    ['useAcceptProposal', () => useAcceptProposal()],
-    ['useRejectProposal', () => useRejectProposal()],
   ]
 
   it.each(cases)('%s rejects without toasting', async (_name, useHook) => {
@@ -130,6 +128,32 @@ describe('inline-owned mutations opt out of the global error toast', () => {
     await waitFor(() => expect(result.current.isError).toBe(true))
 
     expect(toast.error).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * The optimistic triage mutations are the other half of the same rule. They
+ * remove the row on `onMutate`, which unmounts the only place an inline error
+ * could render, so each owns its failure message as a toast — and KEEPS the
+ * `suppressErrorToast` meta so the global handler does not say it a second time.
+ * Exactly one toast is the invariant: two means the meta was dropped, zero means
+ * the hook's own onError was.
+ */
+describe('optimistic triage mutations toast exactly once', () => {
+  const cases: [string, () => { mutate: (v: never) => void; isError: boolean }][] = [
+    ['useAcceptProposal', () => useAcceptProposal()],
+    ['useRejectProposal', () => useRejectProposal()],
+  ]
+
+  it.each(cases)('%s toasts its own message and only its own', async (_name, useHook) => {
+    const client = makeClient()
+    const wrapper = makeWrapper(client)
+    const { result } = renderHook(() => useHook(), { wrapper })
+
+    result.current.mutate({ id: 'p1' } as never)
+    await waitFor(() => expect(result.current.isError).toBe(true))
+
+    expect(toast.error).toHaveBeenCalledTimes(1)
   })
 })
 

@@ -6,6 +6,7 @@ slug identity, 409 on conflicts.
 """
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime, timezone
 
@@ -18,6 +19,7 @@ from server.auth.middleware import current_identity
 from server.db import get_db
 from server.db.models import (
     PROJECT_EDGE_KINDS,
+    WORK_ITEM_TRIAGE_STATES,
     Feature,
     GhProject,
     GhProjectItem,
@@ -32,7 +34,11 @@ from server.pm.desired_state import STATUS_READY
 from server.pm.mirror_store import deps_in_repos
 from server.pm.queue import MIN_STATUS_OPTIONS, rank
 from server.pm.queue_store import load_queue_rows
+from server.pm.repo_project import owning_projects_by_repo
+from server.pm.score import RICE_FIELDS, validate_rice
 from server.pm.sync_request import request_project_sync
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/pm", tags=["pm"])
 
@@ -647,11 +653,12 @@ async def classify(
 
 
 def _triage_to_dict(prop: TriageProposal, wi: WorkItem | None,
-                    feat_slug: str | None) -> dict:
+                    feat_slug: str | None, project_slug: str | None) -> dict:
     return {
         "id": prop.id,
         "workItemId": prop.work_item_id,
         "repo": wi.repo if wi else None,
+        "projectSlug": project_slug,
         "number": wi.number if wi else None,
         "kind": wi.kind if wi else None,
         "title": wi.title if wi else None,
@@ -693,6 +700,12 @@ async def list_triage(
     feat_slugs: dict[str, str | None] = dict((await db.execute(
         select(Feature.id, Feature.slug).where(Feature.id.in_(feat_ids)))).all()) \
         if feat_ids else {}
+    # repo → owning project slug, resolved server-side in ONE query so the inbox
+    # header can group rows by project (the client must not infer it from repo).
+    repos = {w.repo for w in work_items.values() if w.repo}
+    slug_by_repo: dict[str, str] = {
+        repo: owner.slug for repo, owner
+        in (await owning_projects_by_repo(db, repos)).items()}
     allowed_repos: set[str] | None = None
     if projectSlug:
         proj = (await db.execute(select(Project).where(
@@ -708,7 +721,8 @@ async def list_triage(
         if allowed_repos is not None and (wi is None or wi.repo not in allowed_repos):
             continue
         out.append(_triage_to_dict(
-            p, wi, feat_slugs.get(p.proposed_feature_id)))
+            p, wi, feat_slugs.get(p.proposed_feature_id),
+            slug_by_repo.get(wi.repo) if wi and wi.repo else None))
     return out
 
 
@@ -722,6 +736,38 @@ async def _load_pending_proposal(db, proposal_id: str) -> TriageProposal:
             "error": "already_resolved",
             "message": f"proposal is '{prop.status}', not pending"})
     return prop
+
+
+async def _repropose_siblings(db, accepted: TriageProposal, feature_id: str,
+                              *, project_id: str) -> list[str]:
+    """Other pending no_fit proposals sharing this suggestion get re-pointed at
+    the newly-merged feature so the human confirms them against the real map.
+
+    Scoped to ``project_id``: the suggestion is a bare feature slug, which is
+    unique only WITHIN a project, so an unscoped sweep would re-point unrelated
+    projects' proposals at a feature they have nothing to do with — and destroy
+    their ``no_fit_suggestion`` (the classifier's original suggestion) while doing
+    it. Returns the ids actually mutated so the caller can audit them.
+    """
+    candidates = (await db.execute(
+        select(TriageProposal, WorkItem.repo)
+        .join(WorkItem, WorkItem.id == TriageProposal.work_item_id)
+        .where(
+            TriageProposal.id != accepted.id,
+            TriageProposal.status == "pending",
+            TriageProposal.no_fit_suggestion == accepted.no_fit_suggestion)
+    )).all()
+    owners = await owning_projects_by_repo(
+        db, {repo for _sib, repo in candidates if repo})
+    moved: list[str] = []
+    for sib, repo in candidates:
+        owner = owners.get(repo) if repo else None
+        if owner is None or owner.project_id != project_id:
+            continue
+        sib.proposed_feature_id = feature_id
+        sib.no_fit_suggestion = None  # now has a home; no longer a drift item
+        moved.append(sib.id)
+    return moved
 
 
 async def _apply_accept(db, proposal: TriageProposal, identity: str, *,
@@ -740,7 +786,40 @@ async def _apply_accept(db, proposal: TriageProposal, identity: str, *,
         raise HTTPException(status_code=404, detail={"error": "work_item_missing"})
     now = datetime.now(timezone.utc)
     edits = edits or {}
-    wi.feature_id = edits.get("featureId", proposal.proposed_feature_id)
+    feature_id = edits.get("featureId", proposal.proposed_feature_id)
+    # Drift resolution: a no_fit whose suggested name is now a real feature
+    # (the merged map-diff). Link it and re-propose orphaned siblings.
+    #
+    # SCOPED to the work item's own project. ``Feature.slug`` is unique only per
+    # project (models.py ``uq_feature_slug``), and drift suggestions are generic
+    # names ("offline-mode", "sessions", "auth") that several projects hold at
+    # once — an unscoped lookup silently binds the item to ANOTHER project's
+    # feature row, corrupting every consumer keyed on feature→project (the GH
+    # Projects reconciler, board panes, roadmap scoring). If the item's repo maps
+    # to no project we cannot scope the lookup, so the branch does not fire.
+    if feature_id is None and proposal.no_fit_suggestion:
+        owner = (await owning_projects_by_repo(
+            db, {wi.repo} if wi.repo else set())).get(wi.repo or "")
+        if owner is not None:
+            feat = (await db.execute(select(Feature).where(
+                Feature.project_id == owner.project_id,
+                Feature.slug == proposal.no_fit_suggestion))).scalar_one_or_none()
+            if feat is not None:
+                feature_id = feat.id
+                moved = await _repropose_siblings(db, proposal, feat.id,
+                                                  project_id=owner.project_id)
+                if moved:
+                    # Spec §7: every accept mutation is audited, and this one
+                    # rewrites proposals the caller never named (destroying their
+                    # no_fit_suggestion irrecoverably).
+                    await record_audit(
+                        db=db, type="pm.triage.repropose", identity=identity,
+                        detail={"proposalId": proposal.id,
+                                "projectId": owner.project_id,
+                                "featureId": feat.id,
+                                "featureSlug": proposal.no_fit_suggestion,
+                                "siblingProposalIds": moved})
+    wi.feature_id = feature_id
     wi.reach = edits.get("reach", proposal.reach)
     wi.impact = edits.get("impact", proposal.impact)
     wi.effort = edits.get("effort", proposal.effort)
@@ -764,7 +843,8 @@ async def accept_triage(
     (spec §7), via the shared ``_apply_accept`` helper. An OPTIONAL request body
     ``{edits?: {reach?, impact?, effort?, confidence?, featureId?}}`` overrides
     the copied values (lets phase-3 edit-then-accept work without a route
-    change); absent body = plain accept. No accept-bulk (phase 3)."""
+    change); absent body = plain accept. The batch form is ``accept-bulk``,
+    which reuses the same helper."""
     prop = await _load_pending_proposal(db, proposal_id)
     edits = (body or {}).get("edits")
     await _apply_accept(db, prop, identity, edits=edits)
@@ -795,3 +875,128 @@ async def reject_triage(
     await record_audit(db=db, type="pm.triage.reject", identity=identity,
                        detail={"proposalId": proposal_id})
     return {"id": prop.id, "status": "rejected"}
+
+
+class AcceptBulkBody(BaseModel):
+    ids: list[str]
+
+
+@router.post("/triage/accept-bulk")
+async def accept_bulk(
+    body: AcceptBulkBody,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Accept many proposals in one call (the keyboard inbox's bulk action).
+    Every id runs the SAME ``_apply_accept`` path as single-accept; per-id
+    failures are reported in ``results`` rather than failing the batch, so the
+    response is always HTTP 200 with a 207-style aggregate.
+
+    Each id runs inside its OWN savepoint. Without one, any exception that is not
+    an ``HTTPException`` escapes the route, ``get_db`` rolls the whole session
+    back, and the ids that already succeeded are silently reverted behind a
+    generic 500 — the inbox's bulk key would lose the entire selection."""
+    results: list[dict] = []
+    landed: list[str] = []          # ids that actually committed, for the audit
+    for pid in body.ids:
+        proposal = (await db.execute(
+            select(TriageProposal).where(TriageProposal.id == pid)
+        )).scalar_one_or_none()
+        if proposal is None:
+            results.append({"id": pid, "ok": False, "error": "not_found"})
+            continue
+        if proposal.status != "pending":
+            results.append({"id": pid, "ok": False, "error": "not_pending"})
+            continue
+        try:
+            async with db.begin_nested():
+                await _apply_accept(db, proposal, identity)
+            results.append({"id": pid, "ok": True})
+            landed.append(pid)
+        except HTTPException as e:
+            detail = e.detail if isinstance(e.detail, dict) else {"error": "failed"}
+            results.append({"id": pid, "ok": False, "error": detail.get("error")})
+        except Exception:
+            log.warning("accept-bulk: proposal %s failed", pid, exc_info=True)
+            results.append({"id": pid, "ok": False, "error": "failed"})
+    await db.flush()
+    await record_audit(db=db, type="pm.triage.accept_bulk", identity=identity,
+                       # the ids that actually landed, NOT the requested list
+                       detail={"proposalIds": landed, "requestedIds": body.ids,
+                               "accepted": len(landed)})
+    return {"accepted": len(landed), "results": results}
+
+
+def _work_item_to_dict(w: WorkItem) -> dict:
+    return {
+        "id": w.id, "repo": w.repo, "number": w.number, "kind": w.kind,
+        "title": w.title, "state": w.state,
+        "featureId": w.feature_id,
+        "reach": w.reach, "impact": w.impact, "effort": w.effort,
+        "confidence": w.confidence,
+        "triageState": w.triage_state,
+        "classifiedBy": w.classified_by,
+        "classifiedAt": w.classified_at.isoformat() if w.classified_at else None,
+        "url": w.url,
+    }
+
+
+class OverlayPatchBody(BaseModel):
+    featureId: str | None = None
+    reach: int | None = None
+    impact: int | None = None
+    effort: int | None = None
+    confidence: int | None = None
+    triageState: str | None = None
+
+
+@router.patch("/work-items/{item_id}/overlay")
+async def patch_overlay(
+    item_id: str,
+    body: OverlayPatchBody,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Manual classify / inline score edit on the ccswitch-owned overlay. All
+    fields optional; any write marks the item human-classified (spec §7). A body
+    that sets NO field is a read-through no-op — stamping ``classified_by=human``
+    for an empty PATCH would flip an AI-classified item to human-classified with
+    no human decision behind it."""
+    if body.triageState is not None and body.triageState not in WORK_ITEM_TRIAGE_STATES:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "bad_triage_state",
+                    "message": f"triageState must be one of {WORK_ITEM_TRIAGE_STATES}"})
+    # Range bounds live in server/pm/score.py next to the formula they protect —
+    # an out-of-range value reaches the GitHub Projects Score field and inverts
+    # roadmap ordering. Do NOT inline a second copy of the bounds here.
+    for attr in RICE_FIELDS:
+        msg = validate_rice(attr, getattr(body, attr))
+        if msg:
+            raise HTTPException(status_code=422, detail={
+                "error": "bad_rice_value", "message": msg})
+    wi = (await db.execute(
+        select(WorkItem).where(WorkItem.id == item_id))).scalar_one_or_none()
+    if wi is None:
+        raise HTTPException(status_code=404, detail={"error": "not_found"})
+    if not body.model_dump(exclude_none=True):
+        return _work_item_to_dict(wi)
+    if body.featureId is not None:
+        feat = (await db.execute(
+            select(Feature).where(Feature.id == body.featureId))).scalar_one_or_none()
+        if feat is None:
+            raise HTTPException(status_code=404,
+                                detail={"error": "feature_not_found"})
+        wi.feature_id = body.featureId
+    for attr in RICE_FIELDS:
+        val = getattr(body, attr)
+        if val is not None:
+            setattr(wi, attr, val)
+    if body.triageState is not None:
+        wi.triage_state = body.triageState
+    wi.classified_by = "human"
+    wi.classified_at = datetime.now(timezone.utc)
+    await db.flush()
+    await record_audit(db=db, type="pm.workitem.overlay", identity=identity,
+                       detail={"workItemId": item_id})
+    return _work_item_to_dict(wi)

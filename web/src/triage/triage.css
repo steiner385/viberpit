@@ -1,0 +1,166 @@
+/* Triage Inbox (design §8). Tokens only — the same set `projects.css` uses, so
+   the inbox tracks the theme rather than carrying its own colours. */
+
+.triage-inbox {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  overflow-y: auto;
+  height: 100%;
+}
+
+.triage-header {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.triage-hint {
+  font-family: monospace;
+  margin-right: auto;
+}
+
+.triage-depth {
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.triage-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.triage-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.triage-row.is-cursor {
+  border-color: var(--accent);
+  background: var(--surface);
+}
+
+.triage-row.is-selected {
+  outline: 2px solid var(--accent);
+}
+
+.triage-title {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.triage-title a {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.triage-title a:hover {
+  text-decoration: underline;
+}
+
+.triage-ref,
+.triage-scores {
+  font-size: 11px;
+  font-family: monospace;
+  color: var(--muted);
+}
+
+.triage-feature {
+  padding: 0 6px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.triage-nofit {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--amber);
+}
+
+.triage-conf {
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.triage-conf.conf-high { color: var(--accent); border-color: var(--accent); }
+.triage-conf.conf-medium { color: var(--amber); border-color: var(--amber); }
+.triage-conf.conf-low { color: var(--muted); border-color: var(--border); }
+
+/* The classifier's reason. Full-width under the row's summary line so it never
+   competes with the scores for the flex row. */
+.triage-rationale {
+  flex-basis: 100%;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+/* Pointer parity for the keys (`/triage` is in the phone nav). Kept quiet —
+   muted, borderless until hovered — so the keyboard flow stays the primary one. */
+.triage-actions {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+  align-items: center;
+}
+
+.triage-act {
+  padding: 1px 6px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: none;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+  /* Comfortable on touch without growing the row on the desktop list. */
+  min-height: 24px;
+}
+
+.triage-act:hover,
+.triage-act:focus-visible {
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.triage-act[aria-pressed='true'] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.triage-editor {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-basis: 100%;
+  margin-top: 4px;
+}
+
+.triage-editor input {
+  width: 64px;
+}
+
+.triage-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+}

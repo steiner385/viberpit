@@ -1,6 +1,6 @@
 import {
   MessagesSquare, GitPullRequest, Workflow, Target,
-  Package, LineChart, Settings,
+  Inbox, Package, LineChart, Settings,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -89,11 +89,16 @@ const DEFS = [
   // initiative to the next SDLC stage) and `create.mutate(...)`.
   { id: 'initiatives', label: 'Initiatives', icon: Target,          path: '/initiatives',                       showInKiosk: false, hasList: false,
     help: 'The SDLC boards: every initiative as a stage track, with the artifact each gate needs.' },
+  // showInKiosk:false — and this is the row the flag exists for. `TriageInbox`
+  // is keyboard-first: `a` accepts, `r` rejects and `A` bulk-accepts the
+  // selection on ONE keystroke, with no confirm and a `window` keydown listener,
+  // so a passer-by (or a stray keyboard on a wall display) empties the queue.
+  { id: 'triage',      label: 'Triage',      icon: Inbox,           path: '/triage',                            showInKiosk: false, hasList: false,
+    help: 'The cross-project triage queue: every proposed classification awaiting a human. j/k to move, a to accept, e to edit the scores first, r to reject, x then A to accept a selection.' },
   // showInKiosk:false — `ProjectsTab` has `create.mutate` and `sync.mutate(slug)`;
-  // `TriageReviewList` has `accept.mutate`/`reject.mutate`; `OnboardingWizard` has
-  // `proposeMap.mutate`/`classify.mutate`.
+  // `OnboardingWizard` has `proposeMap.mutate`/`classify.mutate`.
   { id: 'projects',    label: 'Products',    icon: Package,         path: '/projects',                          showInKiosk: false, hasList: false,
-    help: 'The product registry: the repos ccswitch tracks, plus onboarding and triage review.' },
+    help: 'The product registry: the repos ccswitch tracks, their onboarding and their dependency edges. Triage review is its own section.' },
   // showInKiosk:true — verified read-only: `InsightsView` is two `<select>`s over
   // local state, two `useQuery` hooks, and `CheckTable`, which renders a table.
   { id: 'insights',    label: 'Insights',    icon: LineChart,       path: '/insights',                          showInKiosk: true,  hasList: false,

@@ -29,6 +29,12 @@ export const STARTERS: Record<NavId, readonly string[]> = {
     'What needs my attention?',
     'Which PRs are blocked, and why?',
   ],
+  // The one section whose own subject the assistant already has tools for, so
+  // these are section-specific rather than the G1 stand-ins above.
+  triage: [
+    "What's waiting in the triage inbox?",
+    'Which project has the most open work?',
+  ],
   projects: [
     'What needs my attention?',
     'Which sessions are limited or queued?',
