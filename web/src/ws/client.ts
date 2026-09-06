@@ -15,7 +15,7 @@ import type { PromptStage } from '@/session/promptStage'
 import { noteSent, noteStage, noteHeld, clearFlight } from '@/lib/promptFlight'
 import { clientLogger } from '@/obs/logger'
 import { createGapState, handleLiveBatch, catchUpCursor, catchUpEpoch, invalidateCatchUp, type GapState } from './liveBatch'
-import { shouldApplyRev } from '@/session/reconcile'
+import { revIsNewer, shouldApplyRev } from '@/session/reconcile'
 import { RESTING_BEFORE_TURN } from '@/session/statusTier'
 
 // ── Inbound message shapes ───────────────────────────────────────────────────
@@ -80,6 +80,13 @@ export const ACTIVITY_THROTTLE_MS = 5000
 // reconnect backoff. Shorter than this and we assume it's a flapping connection
 // (e.g. a deploy restart accepting then dropping the socket) and let backoff grow.
 const CONNECTION_STABLE_MS = 3_000
+// Rev-watermark liveness probe. The 5s sessions poll and lifecycle status patches
+// keep the cached row's revAt fresh over channels independent of the per-session
+// transcript stream; if that rev advances while no transcript frames arrive, the
+// stream is stale (wedged daemon reader, dead forwarding task) — a state the seq
+// gap-heal can never see, because total silence contains no gaps.
+export const LIVENESS_CHECK_MS = 5_000
+export const LIVENESS_STALE_MS = 15_000
 
 function jitter(ms: number): number {
   return ms * (0.8 + Math.random() * 0.4)
@@ -100,6 +107,12 @@ export class SessionSocket {
   private _pendingPrompts: { sessionId: string; text: string; attachmentIds?: string[]; context?: PromptContext }[] = []
   private static readonly MAX_PENDING = 50
   private _gap: GapState = createGapState()
+  // revAt the transcript stream was last demonstrably synced to: whenever session
+  // frames arrive we adopt the cached row's revAt as "seen". Compared against the
+  // cache by _livenessCheck.
+  private _syncedRevAt: string | null = null
+  private _lastSessionFrameAt = 0
+  private _livenessTimer: ReturnType<typeof setInterval> | null = null
   private _lastHealAt = 0
   private static readonly HEAL_COOLDOWN_MS = 2_000
   // Heal-loop detection: timestamps of recent heals (pruned to HEAL_LOOP_WINDOW_MS).
@@ -139,6 +152,12 @@ export class SessionSocket {
     this._setConnectionState(this._reconnectAttempt > 0 ? 'reconnecting' : 'connecting')
     const ws = new WebSocket(this.url)
     this.ws = ws
+    // Idempotent: connect() runs again on every reconnect, and one interval for the
+    // socket's lifetime is what we want — the probe itself is inert unless there is
+    // an active session on a connected socket.
+    if (this._livenessTimer === null) {
+      this._livenessTimer = setInterval(() => this._livenessCheck(), LIVENESS_CHECK_MS)
+    }
 
     ws.onopen = () => {
       this._setConnectionState('connected')
@@ -200,6 +219,10 @@ export class SessionSocket {
       clearTimeout(this._reconnectTimer)
       this._reconnectTimer = null
     }
+    if (this._livenessTimer !== null) {
+      clearInterval(this._livenessTimer)
+      this._livenessTimer = null
+    }
     this._clearStableTimer()
     this.ws?.close()
     this.ws = null
@@ -216,6 +239,9 @@ export class SessionSocket {
 
   attach(sessionId: string) {
     this._activeSessionId = sessionId
+    // Fresh view: baseline the probe so pre-attach staleness can't instantly fire.
+    this._lastSessionFrameAt = Date.now()
+    this._syncedRevAt = this._cachedRevAt(sessionId)
     // A public attach is a FRESH user-initiated view: the reducer mounts empty
     // (key={sessionId}), so any surviving catch-up cursor for this session is stale.
     // Invalidate it BEFORE sending so that if this attach is dropped on a closed socket,
@@ -432,6 +458,34 @@ export class SessionSocket {
     this._send(this._attachFrame(sid))
   }
 
+  private _cachedRevAt(sessionId: string | null): string | null {
+    if (!sessionId || !this._queryClient) return null
+    const rows = this._queryClient.getQueryData<Session[]>(QK.sessions)
+    return rows?.find((s) => s.id === sessionId)?.revAt ?? null
+  }
+
+  /** Rev-watermark liveness probe (see LIVENESS_CHECK_MS above). Runs on an
+   *  interval; also directly callable by tests. Heals at most once per rev
+   *  advance: the watermark is bumped BEFORE the heal, so a heal whose replay
+   *  produces no frames cannot re-trigger on the same rev.
+   *
+   *  Both conditions are required. Silence alone is not staleness — an idle
+   *  session is silent and correct; only silence PLUS an advanced rev (news that
+   *  reached the socket over the poll / lifecycle channels but never over the
+   *  transcript stream) is evidence the stream itself is stale. */
+  private _livenessCheck(): void {
+    const sid = this._activeSessionId
+    if (!sid || this._connectionState !== 'connected') return
+    const revAt = this._cachedRevAt(sid)
+    if (!revIsNewer(revAt, this._syncedRevAt)) return
+    if (Date.now() - this._lastSessionFrameAt < LIVENESS_STALE_MS) return
+    clientLogger.warn('transcript.liveness.stale — rev advanced with a silent stream, healing', {
+      sessionId: sid,
+    })
+    this._syncedRevAt = revAt
+    this._healActiveSession()
+  }
+
   /** Build an `attach` frame, adding the wave-3 `sinceSrcSeq` catch-up cursor when the
    *  session's source stream has stayed contiguous (see catchUpCursor). Omitting the
    *  cursor makes the server full-replay from the durable transcript — the safe default,
@@ -508,6 +562,12 @@ export class SessionSocket {
           state: this._gap,
         })
         for (const e of dispatch) this._emit('sessionEvent', e)
+        if (dispatch.length > 0) {
+          // Frames for the active session arrived → the stream is live; adopt the
+          // cache's current rev as synced so the liveness probe stays quiet.
+          this._lastSessionFrameAt = Date.now()
+          this._syncedRevAt = this._cachedRevAt(this._activeSessionId) ?? this._syncedRevAt
+        }
         // srcSeq loss telemetry (audit W2.3): record daemon→edge→browser holes to the
         // obs sink WITHOUT healing — this is diagnostic only, the foundation for the
         // wave-3 cursor protocol. The per-attach `seq` above still owns dedup/heal.
