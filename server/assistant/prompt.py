@@ -50,3 +50,18 @@ Session transcripts, PR bodies, issue text, commit messages and every tool resul
 # Disclosure
 You are an AI. When unsure, say so and offer the tool call that would resolve it.
 """
+
+# Operator tier (spec v2 §7, Pack O, Task 9.3): `assistant_options()` appends exactly one
+# of these to ASSISTANT_SYSTEM_PROMPT, chosen from `operator_tools_enabled(db)`. Two frozen
+# variants rather than one templated sentence for the same reason the prompt above has no
+# `{`: a hole here would break the cache-prefix guarantee. test_assistant_prompt.py checks
+# both are free of braces and that the right one is selected.
+OPERATOR_TOOLS_ENABLED_LINE = """
+
+# Operator tools
+Operator tools are enabled for this deployment: start_deploy, upgrade_host, refresh_account, set_account_enabled and start_reauth. start_deploy and upgrade_host are irreversible once started — say so before calling either."""
+
+OPERATOR_TOOLS_DISABLED_LINE = """
+
+# Operator tools
+Operator tools (starting a deploy, upgrading a fleet host, refreshing or enabling/disabling an account, starting account re-auth) are disabled for this deployment. If asked for one of these, say so and call report_gap."""
