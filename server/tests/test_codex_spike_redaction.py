@@ -766,6 +766,22 @@ async def test_callback_error_reply_transport_failure_is_sanitized(
     assert str(write_failure) not in output
 
 
+# Budgets for the fence tests that assert it *does* quiesce. These tests are
+# about semantics (drained / not misattributed / reset), never about speed, so
+# the deadline only has to outlast event-loop scheduling jitter. A shared CI
+# runner (2 vCPUs, 4 shards x xdist workers) stalls the loop well past 100ms,
+# and every over-budget exit from callback_failures_after_quiescence synthesizes
+# "runner callback activity did not quiesce" — indistinguishable from a real
+# hang. A short quiet interval keeps the happy path fast (the fence returns as
+# soon as it elapses; it never waits out the deadline), while the generous
+# deadline is what the loop actually needs headroom against.
+_FENCE_QUIET_S = 0.001
+_FENCE_MAX_WAIT_S = 5.0
+# The reset test asserts the fence is still pending mid-interval, so its quiet
+# window itself has to outlast a stall.
+_FENCE_RESET_QUIET_S = 0.2
+
+
 @pytest.mark.asyncio
 async def test_callback_error_reply_cancellation_preserves_identity(monkeypatch):
     cancellation = spike.asyncio.CancelledError("callback cancellation detail")
@@ -789,8 +805,8 @@ async def test_callback_error_reply_cancellation_preserves_identity(monkeypatch)
     assert client._background_errors[-1] is cancellation
     assert await client.callback_failures_after_quiescence(
         0,
-        quiet_interval=0.001,
-        max_wait=0.1,
+        quiet_interval=_FENCE_QUIET_S,
+        max_wait=_FENCE_MAX_WAIT_S,
     ) == (handler_failure, cancellation)
 
 
@@ -842,8 +858,8 @@ async def test_callback_registered_before_quiescence_fence_is_drained(monkeypatc
 
     failures = await client.callback_failures_after_quiescence(
         checkpoint,
-        quiet_interval=0.001,
-        max_wait=0.1,
+        quiet_interval=_FENCE_QUIET_S,
+        max_wait=_FENCE_MAX_WAIT_S,
     )
 
     assert failures == ()
@@ -857,8 +873,8 @@ async def test_callback_registered_within_quiet_interval_resets_fence(monkeypatc
     fence = spike.asyncio.create_task(
         client.callback_failures_after_quiescence(
             checkpoint,
-            quiet_interval=0.02,
-            max_wait=0.2,
+            quiet_interval=_FENCE_RESET_QUIET_S,
+            max_wait=_FENCE_MAX_WAIT_S,
         )
     )
     await spike.asyncio.sleep(0)
@@ -877,15 +893,15 @@ async def test_callback_registered_after_quiet_boundary_is_not_misattributed(mon
 
     assert await client.callback_failures_after_quiescence(
         checkpoint,
-        quiet_interval=0.001,
-        max_wait=0.1,
+        quiet_interval=_FENCE_QUIET_S,
+        max_wait=_FENCE_MAX_WAIT_S,
     ) == ()
 
     client._start_server_request(_safe_callback_frame(33))
     assert await client.callback_failures_after_quiescence(
         checkpoint,
-        quiet_interval=0.001,
-        max_wait=0.1,
+        quiet_interval=_FENCE_QUIET_S,
+        max_wait=_FENCE_MAX_WAIT_S,
     ) == ()
 
 
@@ -896,6 +912,11 @@ async def test_callback_fence_deadline_records_static_anomalous_failure(monkeypa
     checkpoint = client.callback_checkpoint()
     client._start_server_request(_safe_callback_frame(34))
 
+    # Deliberately NOT the shared budgets above: this test asserts the fence
+    # gives up, and its handler blocks until `release`, so max_wait < the quiet
+    # interval makes the deadline fire immediately instead of stalling the
+    # suite. Load can only make an already-guaranteed timeout more certain, so
+    # this is the one fence budget that is safe to keep sub-millisecond.
     failures = await client.callback_failures_after_quiescence(
         checkpoint,
         quiet_interval=0.01,
