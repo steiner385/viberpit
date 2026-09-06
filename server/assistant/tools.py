@@ -55,6 +55,8 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("list_automations", ToolClass.READ, "List automations"),
     ToolSpec("get_automation_events", ToolClass.READ, "Get automation events"),
     ToolSpec("get_deploy_status", ToolClass.READ, "Get deploy status"),
+    ToolSpec("list_adoptable_sessions", ToolClass.READ, "List adoptable sessions"),
+    ToolSpec("suggest_next_prompt", ToolClass.READ, "Suggest next prompt"),
     ToolSpec("list_notification_channels", ToolClass.READ, "List notification channels"),
     ToolSpec("list_notification_rules", ToolClass.READ, "List notification rules"),
     ToolSpec("list_watches", ToolClass.READ, "List watches"),
@@ -92,6 +94,12 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("set_autopilot_paused", ToolClass.MUTATION, "Pause/resume autopilot"),
     ToolSpec("fix_pr", ToolClass.MUTATION, "Fix a pull request"),
     ToolSpec("set_automation_enabled", ToolClass.MUTATION, "Enable/disable automation"),
+    ToolSpec("rename_session", ToolClass.MUTATION, "Rename session"),
+    ToolSpec("move_in_queue", ToolClass.MUTATION, "Reorder queued session"),
+    ToolSpec("pin_account", ToolClass.MUTATION, "Pin session to account"),
+    ToolSpec("rotate_session", ToolClass.MUTATION, "Rotate to a different account"),
+    ToolSpec("reload_session", ToolClass.MUTATION, "Reload session"),
+    ToolSpec("adopt_session", ToolClass.MUTATION, "Adopt an untracked session"),
     ToolSpec("create_notification_rule", ToolClass.MUTATION, "Create notification rule"),
     ToolSpec("delete_notification_rule", ToolClass.MUTATION, "Delete notification rule"),
     ToolSpec("watch", ToolClass.MUTATION, "Create a watch"),
@@ -550,6 +558,21 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
     async def get_deploy_status(args: dict[str, Any]) -> Any:
         return await api.get("/api/deploy/status")
 
+    @spec_tool("list_adoptable_sessions",
+               "Discover live claude sessions running outside ccswitch that could be adopted "
+               "(force-taken-over) into tracking. Each candidate is flagged with a skipReason "
+               "when it is not actually adoptable.", {})
+    @guarded
+    async def list_adoptable_sessions(args: dict[str, Any]) -> Any:
+        return await api.get("/api/sessions/adoptable")
+
+    @spec_tool("suggest_next_prompt",
+               "Ask the model to suggest what to prompt a session next, based on its current "
+               "state. Read-only: this only proposes a prompt, it never sends one.", {"id": str})
+    @guarded
+    async def suggest_next_prompt(args: dict[str, Any]) -> Any:
+        return await api.post(f"/api/sessions/{args['id']}/suggest")
+
     @spec_tool("list_notification_channels",
                "Configured notification channels (webhook targets etc). URLs are reduced to "
                "just their host — never the full webhook URL, which can embed a secret.", {})
@@ -895,6 +918,64 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
         return await api.patch(f"/api/automations/{args['id']}",
                                {"enabled": bool(args["enabled"])})
 
+    @spec_tool("rename_session", "Rename a session. name must be 1-120 characters after "
+               "trimming whitespace.", {"id": str, "name": str})
+    @guarded
+    async def rename_session(args: dict[str, Any]) -> Any:
+        name = str(args.get("name") or "").strip()
+        if not name or len(name) > 120:
+            raise ToolArgError("name must be 1-120 characters")
+        return await api.patch(f"/api/sessions/{args['id']}", {"name": name})
+
+    @spec_tool("move_in_queue",
+               "Reorder a QUEUED session: op is 'up', 'down', 'top' or 'position' (with "
+               "position as a 0-based index, required only for 'position'). Fails if the "
+               "session is not currently queued.",
+               _schema(("id", "op"), id=str, op=str, position=int))
+    @guarded
+    async def move_in_queue(args: dict[str, Any]) -> Any:
+        op = args.get("op")
+        if op not in ("up", "down", "top", "position"):
+            raise ToolArgError("op must be 'up', 'down', 'top' or 'position'")
+        if op == "position" and not isinstance(args.get("position"), int):
+            raise ToolArgError("position is required (an integer) when op is 'position'")
+        return await api.post(f"/api/sessions/{args['id']}/queue-move",
+                              {"op": op, "position": args.get("position")})
+
+    @spec_tool("pin_account",
+               "Pin a session to keep using its CURRENT account (pinned=true), or clear the "
+               "pin so it can rotate freely again (pinned=false). Unpinning a limited session "
+               "rotates it immediately.", {"id": str, "pinned": bool})
+    @guarded
+    async def pin_account(args: dict[str, Any]) -> Any:
+        return await api.post(f"/api/sessions/{args['id']}/account-pin",
+                              {"pinned": bool(args["pinned"])})
+
+    @spec_tool("rotate_session",
+               "Move a session to whichever account currently has the most headroom and "
+               "continue the conversation there. Fails if nothing has headroom or the "
+               "session is parked somewhere a move makes no sense.", {"id": str})
+    @guarded
+    async def rotate_session(args: dict[str, Any]) -> Any:
+        return await api.post(f"/api/sessions/{args['id']}/rotate")
+
+    @spec_tool("reload_session",
+               "Rebuild a session's driver in place — the recovery for a session that stopped "
+               "responding (answers rejected, a stuck turn, a driver the daemon lost).",
+               {"id": str})
+    @guarded
+    async def reload_session(args: dict[str, Any]) -> Any:
+        return await api.post(f"/api/sessions/{args['id']}/reload")
+
+    @spec_tool("adopt_session",
+               "Force-take-over an untracked live claude session found by "
+               "list_adoptable_sessions: terminate it and resume it under ccswitch tracking.",
+               {"claude_session_id": str})
+    @guarded
+    async def adopt_session(args: dict[str, Any]) -> Any:
+        return await api.post("/api/sessions/adopt",
+                              {"claudeSessionId": args["claude_session_id"]})
+
     @spec_tool("create_notification_rule",
                "Add a notification routing rule: which event class routes to which channel "
                "(or 'push'/'ignore'), optionally scoped to a repo, account or automation.",
@@ -1109,6 +1190,7 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
             export_session, search_sessions,
             list_archived_sessions, list_accounts, list_hosts, list_prs, get_pipeline_health,
             list_automations, get_automation_events, get_deploy_status,
+            list_adoptable_sessions, suggest_next_prompt,
             list_notification_channels, list_notification_rules, get_quiet_hours,
             test_notification, list_watches,
             list_repos, list_branches, list_stage_models,
@@ -1122,7 +1204,10 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
             create_session, send_prompt, interrupt_session, answer_question,
             resolve_permission, set_model, set_permission_mode, resolve_model_approval,
             archive_session, unarchive_session, set_autopilot_paused, fix_pr,
-            set_automation_enabled, create_notification_rule, delete_notification_rule,
+            set_automation_enabled,
+            rename_session, move_in_queue, pin_account, rotate_session, reload_session,
+            adopt_session,
+            create_notification_rule, delete_notification_rule,
             watch, delete_watch,
             set_quiet_hours, advance_initiative, resolve_triage, request_product_sync,
             delete_session, cancel_queued_session, ready_merge_pr,
