@@ -15,7 +15,7 @@ import type { PromptStage } from '@/session/promptStage'
 import { noteSent, noteStage, noteHeld, clearFlight } from '@/lib/promptFlight'
 import { clientLogger } from '@/obs/logger'
 import { createGapState, handleLiveBatch, catchUpCursor, catchUpEpoch, invalidateCatchUp, type GapState } from './liveBatch'
-import { shouldApplyRev } from '@/session/reconcile'
+import { revIsNewer, shouldApplyRev } from '@/session/reconcile'
 import { RESTING_BEFORE_TURN } from '@/session/statusTier'
 
 // ── Inbound message shapes ───────────────────────────────────────────────────
@@ -80,6 +80,13 @@ export const ACTIVITY_THROTTLE_MS = 5000
 // reconnect backoff. Shorter than this and we assume it's a flapping connection
 // (e.g. a deploy restart accepting then dropping the socket) and let backoff grow.
 const CONNECTION_STABLE_MS = 3_000
+// Rev-watermark liveness probe. The 5s sessions poll and lifecycle status patches
+// keep the cached row's revAt fresh over channels independent of the per-session
+// transcript stream; if that rev advances while no transcript frames arrive, the
+// stream is stale (wedged daemon reader, dead forwarding task) — a state the seq
+// gap-heal can never see, because total silence contains no gaps.
+export const LIVENESS_CHECK_MS = 5_000
+export const LIVENESS_STALE_MS = 15_000
 
 function jitter(ms: number): number {
   return ms * (0.8 + Math.random() * 0.4)
@@ -100,6 +107,21 @@ export class SessionSocket {
   private _pendingPrompts: { sessionId: string; text: string; attachmentIds?: string[]; context?: PromptContext }[] = []
   private static readonly MAX_PENDING = 50
   private _gap: GapState = createGapState()
+  // revAt the transcript stream was last demonstrably synced to: whenever session
+  // frames arrive we adopt the cached row's revAt as "seen". Compared against the
+  // cache by _livenessCheck.
+  private _syncedRevAt: string | null = null
+  private _lastSessionFrameAt = 0
+  private _livenessTimer: ReturnType<typeof setInterval> | null = null
+  // Consecutive probe-triggered heals that delivered no session frames. The probe's
+  // job is to recover a RECOVERABLE stream; once this many full replays in a row have
+  // produced nothing, more will not help and the 5s retry is pure harm — a whole
+  // browser population detach/attach-storming a server that is already sick. So the
+  // probe stands down for this session until frames actually arrive (which resets the
+  // counter, along with a fresh public attach). Deliberately NOT exponential backoff:
+  // there is no useful middle ground between "this heals it" and "stop".
+  private _fruitlessProbeHeals = 0
+  private static readonly LIVENESS_MAX_FRUITLESS_HEALS = 3
   private _lastHealAt = 0
   private static readonly HEAL_COOLDOWN_MS = 2_000
   // Heal-loop detection: timestamps of recent heals (pruned to HEAL_LOOP_WINDOW_MS).
@@ -144,6 +166,12 @@ export class SessionSocket {
     this._setConnectionState(this._reconnectAttempt > 0 ? 'reconnecting' : 'connecting')
     const ws = new WebSocket(this.url)
     this.ws = ws
+    // Idempotent: connect() runs again on every reconnect, and one interval for the
+    // socket's lifetime is what we want — the probe itself is inert unless there is
+    // an active session on a connected socket.
+    if (this._livenessTimer === null) {
+      this._livenessTimer = setInterval(() => this._livenessCheck(), LIVENESS_CHECK_MS)
+    }
 
     ws.onopen = () => {
       this._setConnectionState('connected')
@@ -161,19 +189,20 @@ export class SessionSocket {
       // wave-3 catch-up cursor when the source stream stayed contiguous — the server
       // then catches us up from the daemon ring (resumeOk) instead of a full replay.
       if (this._activeSessionId) {
+        // Re-baseline the liveness probe's silence clock with the re-attach. Across a
+        // laptop sleep or a deploy restart _lastSessionFrameAt is minutes stale while
+        // revAt advanced over the still-running HTTP poll; if the catch-up dispatches
+        // zero frames (a legitimate resumeOk on a quiet session), the very next tick
+        // would heal 0–5s after the attach we are sending right here — from every open
+        // browser at once, at a server that just came back. The probe gets a fresh
+        // LIVENESS_STALE_MS to observe the reconnected stream before judging it.
+        this._lastSessionFrameAt = Date.now()
         this._send(this._attachFrame(this._activeSessionId))
       }
       if (this._pendingPrompts.length) this._flushPending()
     }
 
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data as string) as WsInboundMsg
-        this._handleInbound(msg)
-      } catch {
-        // malformed frame — ignore
-      }
-    }
+    ws.onmessage = (event) => this._onRawMessage(event.data as string)
 
     ws.onerror = () => {
       clientLogger.warn('ws error', { sessionId: this._activeSessionId ?? undefined })
@@ -205,6 +234,10 @@ export class SessionSocket {
       clearTimeout(this._reconnectTimer)
       this._reconnectTimer = null
     }
+    if (this._livenessTimer !== null) {
+      clearInterval(this._livenessTimer)
+      this._livenessTimer = null
+    }
     this._clearStableTimer()
     this.ws?.close()
     this.ws = null
@@ -221,6 +254,10 @@ export class SessionSocket {
 
   attach(sessionId: string) {
     this._activeSessionId = sessionId
+    // Fresh view: baseline the probe so pre-attach staleness can't instantly fire.
+    this._lastSessionFrameAt = Date.now()
+    this._syncedRevAt = this._cachedRevAt(sessionId)
+    this._fruitlessProbeHeals = 0
     // A public attach is a FRESH user-initiated view: the reducer mounts empty
     // (key={sessionId}), so any surviving catch-up cursor for this session is stale.
     // Invalidate it BEFORE sending so that if this attach is dropped on a closed socket,
@@ -409,12 +446,16 @@ export class SessionSocket {
    *  We use raw _send() rather than the public detach()/attach() methods because those
    *  mutate _activeSessionId; the heal must leave it intact.
    *
-   *  Rate-limited so a persistently gappy stream cannot storm the server. */
-  private _healActiveSession() {
+   *  Rate-limited so a persistently gappy stream cannot storm the server.
+ *
+ *  Returns whether a heal was actually written to the wire (false = no active session,
+ *  or suppressed by the cooldown), so callers that count their own heals — the liveness
+ *  probe's fruitless-heal budget — count real ones only. */
+  private _healActiveSession(): boolean {
     const sid = this._activeSessionId
-    if (!sid) return
+    if (!sid) return false
     const now = Date.now()
-    if (now - this._lastHealAt < SessionSocket.HEAL_COOLDOWN_MS) return
+    if (now - this._lastHealAt < SessionSocket.HEAL_COOLDOWN_MS) return false
     this._lastHealAt = now
     // Heal-loop detection: the cooldown rate-limits heals but cannot tell converging
     // (one heal, done) from diverging (every replay ends in a fresh gap). Count heals in
@@ -435,6 +476,72 @@ export class SessionSocket {
     // Catch-up cursor when contiguous → server resumes from the ring (resumeOk); a gap
     // that broke contiguity (the usual heal trigger) yields null → full replay.
     this._send(this._attachFrame(sid))
+    return true
+  }
+
+  /** The cached sessions-list row for a session, or null. The single read point for
+   *  everything the socket needs off the poll's snapshot (rev token AND status). */
+  private _cachedRow(sessionId: string | null): Session | null {
+    if (!sessionId || !this._queryClient) return null
+    const rows = this._queryClient.getQueryData<Session[]>(QK.sessions)
+    return rows?.find((s) => s.id === sessionId) ?? null
+  }
+
+  private _cachedRevAt(sessionId: string | null): string | null {
+    return this._cachedRow(sessionId)?.revAt ?? null
+  }
+
+  /** Rev-watermark liveness probe (see LIVENESS_CHECK_MS above). Runs on an
+   *  interval; also directly callable by tests. Heals at most once per rev
+   *  advance: the watermark is bumped BEFORE the heal, so a heal whose replay
+   *  produces no frames cannot re-trigger on the same rev.
+   *
+   *  THREE conditions are required, and each one exists to keep a full replay
+   *  (which is what a heal costs) off a healthy socket:
+   *
+   *  1. A baseline we actually established. `revIsNewer(x, null)` is TRUE by design
+   *     (reconcile.ts: an absent existing token is no basis to reject), so a null
+   *     `_syncedRevAt` reads as "the rev advanced" against literally anything. On a
+   *     cold deep-link `attach()` runs before the sessions query resolves, so the
+   *     baseline IS null; the first poll would then "advance" the rev and heal a
+   *     perfectly healthy stream at t=15s. Adopt the first non-null cached read as
+   *     the baseline instead, and judge nothing until we have one.
+   *  2. The rev advanced past that baseline.
+   *  3. The cached row is NOT resting. `revAt` is `iso_utc(updated_at)`
+   *     (server/sessions/types.py) and `updated_at` is a ROW-WRITE token that bumps on
+   *     every persist (orchestrator.py) — auto-naming, sub-agent persistence, archive
+   *     and usage-stall bookkeeping, queue updates — most of which emit no transcript
+   *     event at all. On a finished session that background write is indistinguishable
+   *     from a stalled stream by rev alone, and the false heal is expensive twice over:
+   *     `attach()` invalidated the catch-up cursor, so it is a FULL replay, and it logs
+   *     a warn that pollutes the very heal signal that is supposed to mean something.
+   *     Status is the right discriminator, not a patch: this probe exists for a wedged
+   *     daemon reader starving the stream of a session that is ACTUALLY RUNNING, and in
+   *     that failure mode the independent poll shows it working. Resting + silent is the
+   *     normal, correct state. Reuses RESTING_BEFORE_TURN — the existing status-vocabulary
+   *     source of truth — rather than a second list to drift from it. */
+  private _livenessCheck(): void {
+    const sid = this._activeSessionId
+    if (!sid || this._connectionState !== 'connected') return
+    // Budget spent: this session's stream did not come back for three replays. Stay
+    // quiet until frames arrive (see _fruitlessProbeHeals).
+    if (this._fruitlessProbeHeals >= SessionSocket.LIVENESS_MAX_FRUITLESS_HEALS) return
+    const row = this._cachedRow(sid)
+    const revAt = row?.revAt ?? null
+    if (this._syncedRevAt === null) {
+      // (1) No baseline yet — adopt, never judge. A null baseline is the absence of
+      // evidence, not evidence of an advance.
+      if (revAt !== null) this._syncedRevAt = revAt
+      return
+    }
+    if (!revIsNewer(revAt, this._syncedRevAt)) return                 // (2)
+    if (!row || RESTING_BEFORE_TURN.has(row.status)) return           // (3)
+    if (Date.now() - this._lastSessionFrameAt < LIVENESS_STALE_MS) return
+    clientLogger.warn('transcript.liveness.stale — rev advanced with a silent stream, healing', {
+      sessionId: sid,
+    })
+    this._syncedRevAt = revAt
+    if (this._healActiveSession()) this._fruitlessProbeHeals++
   }
 
   /** Build an `attach` frame, adding the wave-3 `sinceSrcSeq` catch-up cursor when the
@@ -494,6 +601,59 @@ export class SessionSocket {
     }
   }
 
+  /** Parse + route one raw inbound frame. Extracted from `ws.onmessage` so tests can
+   *  drive it directly.
+   *
+   *  TWO stages, two catches, deliberately. The single `catch {}` this replaced wrapped
+   *  `JSON.parse` AND `_handleInbound`, so a throw from anywhere downstream (a listener,
+   *  the batch pipeline) was swallowed as if the wire frame had been malformed — the
+   *  worse of the two bugs, and one a `parse_error` label would actively misdirect: the
+   *  next debugger would go hunting a server encoding bug that never existed. Each stage
+   *  now reports under its own name, so the log says which one actually threw.
+   *
+   *  Neither stage rethrows. A bad frame must never kill the socket (unchanged
+   *  behaviour) — but it must no longer vanish without a trace: a truncated frame or a
+   *  server encoding bug used to resurface days later as an unexplained "chat got
+   *  stuck" report with nothing in client_logs. */
+  private _onRawMessage(data: string): void {
+    let msg: WsInboundMsg
+    try {
+      msg = JSON.parse(data) as WsInboundMsg
+    } catch (e) {
+      // Frame length and error KIND, never the frame or the error's MESSAGE: the payload
+      // may carry transcript text, and this sink is shipped to the server. V8 builds the
+      // SyntaxError message out of the offending input — `String(e)` on a corrupted
+      // transcript frame yields `Unexpected token ']', ..."S3CR3T"},]}" is not valid JSON`,
+      // i.e. verbatim payload bytes — and `stack` would ride through ClientLogger.push
+      // untruncated (only `msg` is capped). The label says which stage threw and dataLen
+      // gives the size, so the error's name is the whole remaining diagnostic.
+      // (clientLogger's `extra` is a fixed Partial<ClientLogEntry> envelope, so the
+      // detail rides in the message.)
+      clientLogger.warn(
+        `ws.message.parse_error dataLen=${data?.length ?? 0} kind=${e instanceof Error ? e.name : 'unknown'}`,
+        { sessionId: this._activeSessionId ?? undefined },
+      )
+      return
+    }
+    try {
+      this._handleInbound(msg)
+    } catch (e) {
+      // Deliberately NOT redacted like the parse leg above, and the asymmetry is the
+      // point: this exception is raised by OUR code (the reducer, cache patches — since
+      // #1313 `_emit` isolates listeners, so their throws report themselves and never
+      // reach here), not built out of the wire bytes. Nothing on this path parses or
+      // interpolates frame content into a thrown message — no nested JSON.parse, no
+      // `throw new Error(\`…${event}\`)` — so the message carries no payload, while being
+      // the only thing that localizes the fault. Revisit the moment either appears in the
+      // dispatch path: then this leg leaks exactly the way the parse leg did.
+      const frame = msg as { type?: string; sessionId?: string } | null
+      clientLogger.warn(`ws.message.handler_error type=${frame?.type ?? 'unknown'}`, {
+        sessionId: frame?.sessionId ?? this._activeSessionId ?? undefined,
+        stack: e instanceof Error ? (e.stack ?? String(e)) : String(e),
+      })
+    }
+  }
+
   /** Report a thrown listener to the obs sink, aggregated per event type.
    *
    *  A listener that throws once throws on every event after it, and clientLogger's
@@ -549,7 +709,28 @@ export class SessionSocket {
           activeSessionId: this._activeSessionId,
           state: this._gap,
         })
-        for (const e of dispatch) this._emit('sessionEvent', e)
+        // `finally`, because the bookkeeping below is evidence about the WIRE, not
+        // about the listeners: frames demonstrably arrived, so recording the stream as
+        // live is correct however this loop ends. Losing that evidence is not a silent
+        // cost — the watermark stays stale and the liveness probe fires a spurious
+        // full-replay heal seconds later.
+        // #1313 has since made `_emit` isolate listeners, so the loop can no longer be
+        // aborted by one throwing listener — the case this `finally` was added for.
+        // It stays: the two facts are worth keeping independent rather than resting the
+        // probe's correctness on another method's error handling.
+        try {
+          for (const e of dispatch) this._emit('sessionEvent', e)
+        } finally {
+          if (dispatch.length > 0) {
+            // Frames for the active session arrived → the stream is live; adopt the
+            // cache's current rev as synced so the liveness probe stays quiet, and give
+            // the probe its fruitless-heal budget back (a heal that DID deliver frames,
+            // or an unaided recovery, both land here).
+            this._lastSessionFrameAt = Date.now()
+            this._syncedRevAt = this._cachedRevAt(this._activeSessionId) ?? this._syncedRevAt
+            this._fruitlessProbeHeals = 0
+          }
+        }
         // srcSeq loss telemetry (audit W2.3): record daemon→edge→browser holes to the
         // obs sink WITHOUT healing — this is diagnostic only, the foundation for the
         // wave-3 cursor protocol. The per-attach `seq` above still owns dedup/heal.
