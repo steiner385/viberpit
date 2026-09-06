@@ -266,6 +266,51 @@ def unattended_launch_blocker(engine: AgentEngine, permission_mode: str) -> str 
             "Claude.")
 
 
+#: What the network opt-in escalates an unattended Codex launch TO. The only
+#: profile whose sandbox permits network egress at all (server/codex/permissions.py
+#: — the pinned app-server schema has no settable network knob short of this).
+CODEX_NETWORK_OPT_IN_MODE = "bypassPermissions"
+
+
+def escalate_for_codex_network_opt_in(
+    engine: AgentEngine, permission_mode: str, *, network_opt_in: bool,
+) -> tuple[str, str | None]:
+    """``(mode, note)`` — *mode* escalated to a network-capable Codex profile when
+    the operator has explicitly opted in via ``CCSWITCH_CODEX_UNATTENDED_NETWORK_OPT_IN``,
+    *note* is a human-readable record of the escalation, or ``None`` when nothing
+    changed.
+
+    This is the ONE place ``unattended_launch_blocker``'s refusal can be
+    overridden, and it is narrow on purpose (#1263):
+
+    * Only Codex, and only *network_opt_in* — the flag defaults off, so with it
+      unset this is always a no-op and the blocker's refusal stands.
+    * Only escalates ``full-auto`` — an automation's own unattended fallback
+      (see ``resolve_permission_mode``). It never touches ``plan``, an
+      operator's explicit ``permission_mode``, or an account-pinned mode: those
+      are a deliberate choice this function must not override, only the
+      fallback's inability to complete the automation's own contract is.
+    * Only fires when the mode would otherwise lack network egress — an
+      already-egress-capable mode (``bypassPermissions`` itself) is untouched,
+      and an unmapped mode is left for ``unattended_launch_blocker`` to refuse
+      with its own diagnostic rather than escalated blind.
+    """
+    if not network_opt_in or engine is not AgentEngine.CODEX or permission_mode != "full-auto":
+        return permission_mode, None
+    from server.codex.permissions import UnsupportedCodexPermissionMode, permits_network_egress
+
+    try:
+        if permits_network_egress(permission_mode):
+            return permission_mode, None
+    except UnsupportedCodexPermissionMode:
+        return permission_mode, None
+    return CODEX_NETWORK_OPT_IN_MODE, (
+        f"escalated Codex permission mode from {permission_mode!r} to "
+        f"{CODEX_NETWORK_OPT_IN_MODE!r} for network egress "
+        "(CCSWITCH_CODEX_UNATTENDED_NETWORK_OPT_IN=true) so the automation's own "
+        "push/PR contract can complete")
+
+
 def _default_provider_of(name: str) -> str | None:
     from ccswitch import accounts as _accts
 
