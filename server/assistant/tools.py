@@ -67,6 +67,14 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("get_priority_queue", ToolClass.READ, "Get priority queue"),
     ToolSpec("list_triage", ToolClass.READ, "List triage proposals"),
     ToolSpec("get_onboarding_status", ToolClass.READ, "Get product onboarding status"),
+    ToolSpec("get_automation_actionable", ToolClass.READ, "Get automation actionable items"),
+    ToolSpec("list_automation_sessions", ToolClass.READ, "List automation sessions"),
+    ToolSpec("list_backlog_candidates", ToolClass.READ, "List backlog candidates"),
+    ToolSpec("get_backlog_groups", ToolClass.READ, "Get backlog groups"),
+    ToolSpec("get_cicd_findings", ToolClass.READ, "Get CI/CD doctor findings"),
+    ToolSpec("get_pr_doctor_consolidation", ToolClass.READ, "Get PR consolidation candidates"),
+    ToolSpec("get_pr_doctor_job", ToolClass.READ, "Get PR doctor job status"),
+    ToolSpec("preview_schedule", ToolClass.READ, "Preview an automation schedule"),
     # READ because it changes nothing a user can see: it increments a counter and
     # writes an audit row. The ONE tool that calls no endpoint (see build_tools).
     ToolSpec("report_gap", ToolClass.READ, "Record a capability gap"),
@@ -117,24 +125,35 @@ class ToolArgError(ValueError):
     corrective message without the API ever seeing the request (spec §4.4)."""
 
 
-# Matches the allowlist's initiative- and product-slug character class
+# Matches the allowlist's initiative-, product- and automation-id character class
 # (server/assistant/policy.py) so a bad slug fails locally, not as a 403 from the route
-# allowlist. `server/api/pm.py:_slugify` mints product slugs from the same class.
+# allowlist. `server/api/pm.py:_slugify` mints product slugs from the same class, and every
+# registered automation id (`autopilot`, `backlog-runner`, `cicd-doctor`, `pr-doctor`…) is
+# already in it — one class for all three rather than a near-duplicate per pack.
 _SLUG = re.compile(r"\A[a-z0-9][a-z0-9-]{0,63}\Z")
 
-# Triage proposal ids are `_new_uuid` strings (server/db/models.py:TriageProposal), but the
-# allowlist row is the looser `[A-Za-z0-9-]+`; keep the local check to the same class so a
-# rejection is a corrective message rather than a 403.
-_PROPOSAL_ID = re.compile(r"\A[A-Za-z0-9-]{1,64}\Z")
+# Opaque server-minted ids the assistant only ever echoes back: triage proposal ids
+# (`_new_uuid` strings, server/db/models.py:TriageProposal) and pr-doctor job ids
+# (`prd-<hex>`, server/automations/pr_doctor_jobs.py). The allowlist rows for both are the
+# looser `[A-Za-z0-9-]+`; keep the local check to the same class so a rejection is a
+# corrective message rather than a 403.
+_OPAQUE_ID = re.compile(r"\A[A-Za-z0-9-]{1,64}\Z")
 
 # The priority queue can rank every open issue across every onboarded product. Only the
 # head of it is decision-relevant, and the whole thing would crowd out the conversation.
 _QUEUE_ENTRY_CAP = 50
 
+# Same reasoning for the automations' unbounded detection lists: CI/CD findings are served
+# 200-at-a-time and every eligible backlog issue is a candidate. `Trimmed` reports the drop,
+# so a capped list is never mistaken for the whole one.
+_AUTOMATION_LIST_CAP = 50
 
-def _slug(s: str) -> str:
+
+def _slug(s: str, *, field: str = "slug") -> str:
+    # `field` names the ARGUMENT in the corrective message: a tool whose argument is `id`
+    # must not tell the model to fix a "slug" it was never given.
     if not _SLUG.match(s):
-        raise ToolArgError("slug must be lowercase letters, digits and dashes")
+        raise ToolArgError(f"{field} must be lowercase letters, digits and dashes")
     return s
 
 
@@ -638,6 +657,92 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
     async def get_onboarding_status(args: dict[str, Any]) -> Any:
         return await api.get(f"/api/pm/projects/{_slug(args['slug'])}/onboarding")
 
+    # -- Automations control, read half (spec v2 §4.3, Pack A) -------------------------
+    # What each automation has DETECTED and would act on — the half of Pack A that only
+    # looks. The fan-out half (trigger/dispatch/consolidate) is DESTRUCTIVE and lands in
+    # Task 6.4; nothing here starts work.
+
+    @spec_tool("get_automation_actionable",
+               "Items one automation has detected and could act on right now (a failing "
+               "PR, a stale branch…), each with the action kinds it offers. Use the id "
+               "from list_automations. Looking is free — acting on an item is a separate, "
+               "unattended action.", {"id": str})
+    @guarded
+    async def get_automation_actionable(args: dict[str, Any]) -> Any:
+        return await api.get(f"/api/automations/{_slug(args['id'], field='id')}/actionable")
+
+    @spec_tool("list_automation_sessions",
+               "The most recent sessions one automation spawned, with their status and the "
+               "issue or PR each was started for. Use it to answer 'what has the backlog "
+               "runner been working on?'.", {"id": str})
+    @guarded
+    async def list_automation_sessions(args: dict[str, Any]) -> Any:
+        return await api.get(f"/api/automations/{_slug(args['id'], field='id')}/sessions")
+
+    @spec_tool("list_backlog_candidates",
+               "Issues the backlog runner considers eligible right now — unclaimed, open "
+               "and label-gated — in the order it would pick them. This is what it WOULD "
+               "do next; it dispatches nothing.", {})
+    @guarded
+    async def list_backlog_candidates(args: dict[str, Any]) -> Any:
+        data = await api.get("/api/automations/backlog-runner/candidates")
+        rows = data.get("candidates") or []
+        return Trimmed({**data, "candidates": rows[:_AUTOMATION_LIST_CAP]},
+                       max(0, len(rows) - _AUTOMATION_LIST_CAP))
+
+    @spec_tool("get_backlog_groups",
+               "The backlog runner's current grouping plan in priority order: which issues "
+               "it intends to batch into one session, and the generation the plan came "
+               "from.", {})
+    @guarded
+    async def get_backlog_groups(args: dict[str, Any]) -> Any:
+        return await api.get("/api/automations/backlog-runner/groups")
+
+    @spec_tool("get_cicd_findings",
+               "CI/CD doctor findings (flaky checks, broken workflows, stuck runs), newest "
+               "first, each with its repo, kind, status and any issue it filed. status "
+               "defaults to 'open'; pass 'all' to include resolved ones, or a repo "
+               "'owner/name' to narrow it.",
+               _schema(status=str, repo=str))
+    @guarded
+    async def get_cicd_findings(args: dict[str, Any]) -> Any:
+        params = {k: args[k] for k in ("status", "repo") if args.get(k)}
+        rows = await api.get("/api/automations/cicd-doctor/findings", params=params or None)
+        return Trimmed(rows[:_AUTOMATION_LIST_CAP],
+                       max(0, len(rows) - _AUTOMATION_LIST_CAP))
+
+    @spec_tool("get_pr_doctor_consolidation",
+               "Open pull requests per repo plus the PR doctor's suggested consolidation "
+               "clusters — which PRs it thinks should be combined into one. A proposal "
+               "only; nothing is consolidated by reading it.", {})
+    @guarded
+    async def get_pr_doctor_consolidation(args: dict[str, Any]) -> Any:
+        return await api.get("/api/automations/pr-doctor/consolidation")
+
+    @spec_tool("get_pr_doctor_job",
+               "Live phase of one async PR-doctor job (cloning → assessing → spawning → "
+               "ready) by its job id, and which phase failed if it errored. The job is "
+               "gone — and this returns not-found — after a daemon restart.",
+               {"job_id": str})
+    @guarded
+    async def get_pr_doctor_job(args: dict[str, Any]) -> Any:
+        jid = str(args["job_id"])
+        if not _OPAQUE_ID.match(jid):
+            raise ToolArgError("job_id must be a pr-doctor job id (e.g. 'prd-1a2b3c4d')")
+        return await api.get(f"/api/automations/pr-doctor/jobs/{jid}")
+
+    @spec_tool("preview_schedule",
+               "Validate a candidate automation schedule and return its next 3 fire times "
+               "plus the named presets. schedule is an object with an optional 5-field "
+               "'cron' ('0 8 * * *') and an optional 'activeHours' "
+               "({start:'09:00', end:'18:00', days:[0-6], 0=Monday}). Changes nothing — it "
+               "only answers 'when would this run?'.",
+               _schema(("schedule",), schedule={"type": "object"}))
+    @guarded
+    async def preview_schedule(args: dict[str, Any]) -> Any:
+        return await api.post("/api/automations/schedule/preview",
+                              {"schedule": args["schedule"]})
+
     # -- Mutations (spec §4.2, class M) ------------------------------------------------
     # Each is a thin adapter over ONE endpoint: rename args to the endpoint's field
     # names, call, return. Business logic lives behind the endpoint
@@ -798,7 +903,7 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
         if decision not in ("accept", "reject"):
             raise ToolArgError("decision must be 'accept' or 'reject'")
         pid = str(args["proposal_id"])
-        if not _PROPOSAL_ID.match(pid):
+        if not _OPAQUE_ID.match(pid):
             raise ToolArgError("proposal_id must be a proposal id from list_triage")
         return await api.post(f"/api/pm/triage/{pid}/{decision}")
 
@@ -893,7 +998,11 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
             list_repos, list_branches, list_stage_models,
             list_initiatives, get_initiative,
             list_products, get_product, get_product_deps, get_priority_queue, list_triage,
-            get_onboarding_status, report_gap,
+            get_onboarding_status,
+            get_automation_actionable, list_automation_sessions, list_backlog_candidates,
+            get_backlog_groups, get_cicd_findings, get_pr_doctor_consolidation,
+            get_pr_doctor_job, preview_schedule,
+            report_gap,
             create_session, send_prompt, interrupt_session, answer_question,
             resolve_permission, set_model, set_permission_mode, resolve_model_approval,
             archive_session, unarchive_session, set_autopilot_paused, fix_pr,
