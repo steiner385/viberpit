@@ -24,6 +24,7 @@ from unittest.mock import patch
 
 import pytest
 
+from ccswitch.engines import AgentEngine
 from server.automations.context import AutomationContext
 from server.automations.pm_triage import PendingItemView
 from server.db import db_session, init_db
@@ -50,10 +51,21 @@ class _Emitter:
 
 
 class _SpawnRec:
-    """Fake AutomationContext capturing spawn_session calls."""
+    """Fake AutomationContext capturing spawn_session calls.
+
+    Models BOTH calls a PM spawn site makes: the engine resolution (#1268/#1269
+    moved it ahead of the account probe and the clone, so a refused launch costs
+    nothing) and the spawn itself. Answers Claude — the Codex half of the
+    contract lives in ``test_pm_codex_acceptance.py``.
+    """
 
     def __init__(self):
         self.calls = []
+        self.plans = []
+
+    async def launch_plan_or_refuse(self, origin_ref):
+        self.plans.append(origin_ref)
+        return AgentEngine.CLAUDE_CODE, {}
 
     async def spawn_session(self, **kw):
         self.calls.append(kw)
