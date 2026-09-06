@@ -110,6 +110,17 @@ compatibility audit; API-key authentication in v1.
   that pair up front with an operator-legible reason rather than spending a session to discover it.
   Enabling automation parity therefore needs a separate, explicit decision about the authority an
   unattended Codex session runs with — not just a ceiling widening.
+- **Owner-authorized network opt-in (#1263).** `CCSWITCH_CODEX_UNATTENDED_NETWORK_OPT_IN` (default
+  `false`) is that separate decision. It changes nothing by itself: with it unset, an unattended
+  Codex launch is refused exactly as above. Set, it escalates ONLY the automation's own `full-auto`
+  fallback — never an operator's explicit `permission_mode` or an account-pinned default — to
+  `bypassPermissions`, the one profile whose sandbox actually permits network egress, so the
+  automation's own contract (push a branch, open a PR) can complete instead of failing at the last
+  step. The escalation is recorded as an `engine_network_opt_in_escalated` activity event, never
+  silent (`server/automations/engine_policy.py:escalate_for_codex_network_opt_in`). This does not
+  claim a live end-to-end push/PR has been proven against a real Codex binary in a disposable repo —
+  that verification is still outstanding and should precede flipping the flag in any environment
+  that matters.
 - Users explicitly select Claude Code or Codex. V1 Codex controls are model, reasoning effort, and
   permission profile. The data model supports multiple named OpenAI accounts immediately, while
   automatic OpenAI-account rotation is deferred.
