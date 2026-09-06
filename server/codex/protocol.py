@@ -266,6 +266,14 @@ ApprovalHandler = Callable[
 UserInputHandler = Callable[
     [schema.ToolRequestUserInputParams], Awaitable[schema.ToolRequestUserInputResponse]
 ]
+#: Runs one client-declared (`dynamicTools`) tool for the app-server. Unlike the
+#: three handlers above, this one does not relay a human decision — it EXECUTES,
+#: which is exactly why the assistant's tool surface is safe on Codex: a
+#: connection with no handler installed answers `-32601` and no declared tool can
+#: run at all.
+DynamicToolHandler = Callable[
+    [schema.DynamicToolCallParams], Awaitable[schema.DynamicToolCallResponse]
+]
 
 
 # ---------------------------------------------------------------------------
@@ -287,6 +295,7 @@ class CodexAppServerClient:
         refresh_handler: RefreshHandler | None = None,
         approval_handler: ApprovalHandler | None = None,
         user_input_handler: UserInputHandler | None = None,
+        dynamic_tool_handler: DynamicToolHandler | None = None,
         max_buffered_notifications: int = DEFAULT_MAX_BUFFERED_NOTIFICATIONS,
         max_inflight_server_requests: int = DEFAULT_MAX_INFLIGHT_SERVER_REQUESTS,
         max_outbound_requests: int = DEFAULT_MAX_OUTBOUND_REQUESTS,
@@ -300,6 +309,7 @@ class CodexAppServerClient:
         self._refresh_handler = refresh_handler
         self._approval_handler = approval_handler
         self._user_input_handler = user_input_handler
+        self._dynamic_tool_handler = dynamic_tool_handler
         self._notifications: asyncio.Queue[
             tuple[str, schema.ServerNotificationParams]
         ] = asyncio.Queue(maxsize=max(1, max_buffered_notifications))
@@ -935,6 +945,12 @@ class CodexAppServerClient:
                 self._handle_user_input_request(request_id, frame.get("params")),
             )
             return False
+        if method == schema.METHOD_ITEM_TOOL_CALL:
+            self._spawn_reply(
+                request_id,
+                self._handle_dynamic_tool_call(request_id, frame.get("params")),
+            )
+            return False
         self._spawn_reply(
             request_id, self._handle_refresh_request(request_id, frame.get("params"))
         )
@@ -1214,4 +1230,67 @@ class CodexAppServerClient:
             )
             return
         log_event(logger, logging.INFO, "codex.protocol.user_input_answered")
+        await self._reply_result(request_id, wire)
+
+    async def _handle_dynamic_tool_call(self, request_id: int, params: Any) -> None:
+        """Run one `item/tool/call` through the installed handler.
+
+        Same failure shape as `_handle_approval_request` and
+        `_handle_user_input_request`: no handler is `-32601`, unparseable params
+        are `-32602`, a raising handler is `-32603`. The property that matters
+        differs, though — the failure paths here must never *fabricate a tool
+        result*. A connection with no handler is the fail-closed state for a
+        thread that declared `dynamicTools`: the model is told the call failed
+        rather than being handed an invented answer it would then reason from.
+        """
+        handler = self._dynamic_tool_handler
+        if handler is None:
+            self._counters.unhandled_server_requests += 1
+            log_event(
+                logger, logging.WARNING, "codex.protocol.dynamic_tool_unhandled"
+            )
+            await self._reply_error(
+                request_id,
+                JSONRPC_METHOD_NOT_FOUND,
+                "no dynamic-tool handler is configured",
+            )
+            return
+        try:
+            parsed = schema.parse_dynamic_tool_call_params(params)
+        except schema.CodexSchemaError as exc:
+            log_event(
+                logger,
+                logging.WARNING,
+                "codex.protocol.dynamic_tool_invalid_params",
+                error=redaction.scrub_exception(exc),
+            )
+            await self._reply_error(
+                request_id, JSONRPC_INVALID_PARAMS, "invalid dynamic tool call"
+            )
+            return
+        try:
+            response = await handler(parsed)
+            if not isinstance(response, schema.DynamicToolCallResponse):
+                raise schema.CodexSchemaError(
+                    "dynamic-tool handler answered with the wrong response type"
+                )
+            wire = response.to_wire()
+            # Re-parse against the same contract used inbound: the handler is
+            # application code, and this is the last point before a tool result
+            # reaches the model.
+            schema.parse_dynamic_tool_call_response(wire)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 -- a handler failure must stay closed
+            log_event(
+                logger,
+                logging.ERROR,
+                "codex.protocol.dynamic_tool_failed",
+                error=redaction.scrub_exception(exc),
+            )
+            await self._reply_error(
+                request_id, JSONRPC_INTERNAL_ERROR, "dynamic tool call failed"
+            )
+            return
+        log_event(logger, logging.INFO, "codex.protocol.dynamic_tool_answered")
         await self._reply_result(request_id, wire)

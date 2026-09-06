@@ -153,6 +153,7 @@ class Harness:
         model: str | None = None,
         cwd: str | None = None,
         start: bool = True,
+        assistant_overlay: Any = None,
     ) -> CodexAgentDriver:
         self.manager = CodexRunnerManager(
             availability=CodexAvailability(available=True, binary_path="/usr/bin/codex"),
@@ -204,6 +205,7 @@ class Harness:
             on_status=_on_status,
             on_context_usage=_on_context_usage,
             on_recoverable_failure=_on_recoverable_failure,
+            assistant_overlay=assistant_overlay,
         )
         self._collector = asyncio.create_task(self._collect())
         await asyncio.sleep(0)

@@ -75,6 +75,21 @@ sharing, voice, or proactive/unsolicited messages — the assistant only speaks 
   `POST /api/assistant/session` return 404 and the drawer show its disabled placeholder — it stops
   **new** threads; a thread already running keeps its driver until the idle reap
   (`CCSWITCH_ASSISTANT_IDLE_S`) ends it (spec §8).
+- **Engine-neutral, with two different boundaries** — the drawer is not architecturally
+  Claude-only. `CCSWITCH_ASSISTANT_ENGINE` (default `claude_code`) selects the overlay via
+  `assistant_overlay_for` (`server/assistant/options.py`), and the two overlays are deliberately
+  siblings rather than one parameterised thing, because they reach the same property by opposite
+  mechanisms. Claude **subtracts**: `tools=[]` plus a `disallowed_tools` denylist removes the
+  built-ins, and an in-process MCP server adds the ccswitch surface back. Codex cannot subtract —
+  `thread/start` has no `disallowed_tools` equivalent — so it **inverts** instead: the ccswitch
+  tools are client-declared `dynamicTools` that ccswitch itself executes (`item/tool/call`), and the
+  built-ins are held by `sandbox: read-only` + `approvalPolicy: untrusted` + a handler that declines
+  every approval. Both route tool calls through the same `PermissionRegistry` under the same
+  `mcp__ccswitch__*` names, so the permission cards are identical. Two Codex-only consequences worth
+  knowing: an assistant thread starts in a repository-free `cwd` (`thread/start` otherwise folds the
+  repo's `AGENTS.md` into thread context on its own), and it is never resumed (`thread/resume`
+  cannot re-declare `dynamicTools`, so a resume would return the built-ins and drop the tools).
+  Evidence: `docs/superpowers/spikes/2026-09-06-assistant-codex-findings.md` (#1321, #1290).
 - **Capability roadmap (v2)** — the as-built audit, the core/extended/ancillary use-case map and
   the nine capability packs that extend the tool surface (product & delivery, automations control,
   session power tools, GitHub, proactive notices, opt-in operator tier, external MCP/CLI access) are

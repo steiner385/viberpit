@@ -18,6 +18,10 @@ export interface AssistantStatus {
    * is on — server/assistant/policy.py:operator_tools_enabled, mirrored regardless of
    * whether an assistant session exists yet. */
   operatorTools: boolean
+  /** Which agent engine answers this drawer — `claude_code` or `codex`
+   * (CCSWITCH_ASSISTANT_ENGINE). A running thread reports its OWN engine, which can
+   * differ from the deployment default after the setting is changed. */
+  engine: string
 }
 
 export interface AssistantSessionInput {
@@ -28,6 +32,7 @@ export interface AssistantSessionInput {
 export interface AssistantSession {
   id: string
   model: string
+  engine: string
   state: 'created' | 'resumed' | 'existing'
 }
 
