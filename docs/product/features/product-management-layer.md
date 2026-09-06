@@ -4,7 +4,7 @@ title: Product-Management Layer
 state: delivering
 links:
   code: [server/pm/onboarding.py, server/pm/classification.py, server/pm/engine.py, server/pm/featuredoc.py, server/pm/feature_index.py, server/pm/github_sync.py, server/pm/repo_project.py, server/pm/score.py, server/automations/pm_triage.py, server/api/pm.py, web/src/projects/OnboardingWizard.tsx, web/src/projects/ProjectsTab.tsx, web/src/triage/TriageInbox.tsx, web/src/initiatives/InitiativesTab.tsx]
-  prs: ['#866', '#879', '#893', '#897', '#899']
+  prs: ['#866', '#879', '#893', '#897', '#899', '#1327']
 ---
 
 # Product-Management Layer
@@ -99,4 +99,4 @@ mechanical auto-link pass, one engine action per tick, rolling daily classify-se
 optimistic accept, cursor anchored to a proposal id so a queue that reorders under the user cannot
 misdirect a keystroke), `web/src/initiatives/InitiativesTab.tsx`;
 `specs/001-ccswitch-web/spec.md` (§§3–7). PRs: #866 (design spec), #879 (phase 2–4 plans),
-#893 (Phase 1), #897 (Phase 2), #899 (remote-mode seam fix).
+#893 (Phase 1), #897 (Phase 2), #899 (remote-mode seam fix), #1327 (Phase 3).
