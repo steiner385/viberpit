@@ -43,7 +43,8 @@ def _open_pr_facts():
 # ---------------------------------------------------------------------------
 
 def test_returns_stored_resolution_without_classifier(monkeypatch):
-    """If rec.pr_resolution is already set, return it immediately — no model call."""
+    """If rec.pr_resolution is already VERIFIED (classifier-sourced), return it
+    immediately — no model call."""
     calls = []
 
     async def fake_classify(tail, goal, **kw):
@@ -54,7 +55,7 @@ def test_returns_stored_resolution_without_classifier(monkeypatch):
     monkeypatch.setattr("server.automations.pr_intent.classify_pr_intent", fake_classify)
 
     orch = _bare_orch()
-    rec = _rec(pr_resolution="not-needed", pr_resolution_source="marker")
+    rec = _rec(pr_resolution="not-needed", pr_resolution_source="classifier")
 
     async def run():
         result = await orch._autopilot_resolve_pr_intent(
@@ -64,6 +65,88 @@ def test_returns_stored_resolution_without_classifier(monkeypatch):
     result = asyncio.run(run())
     assert result == "not-needed"
     assert calls == [], "classifier must NOT be called when resolution is already stored"
+
+
+def test_marker_cancelled_is_returned_without_classifier(monkeypatch):
+    """A marker-sourced 'cancelled' is a decision, not a completion claim — trusted."""
+    calls = []
+
+    async def fake_classify(tail, goal, **kw):
+        calls.append(goal)
+        from server.automations.pr_intent import PrIntentVerdict
+        return PrIntentVerdict(resolved=True, reason="cancelled", confidence="high")
+
+    monkeypatch.setattr("server.automations.pr_intent.classify_pr_intent", fake_classify)
+    orch = _bare_orch()
+    rec = _rec(pr_resolution="cancelled", pr_resolution_source="marker")
+    result = asyncio.run(orch._autopilot_resolve_pr_intent(
+        rec, "fix ci", "explicit", _no_pr_facts(), []))
+    assert result == "cancelled"
+    assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# (a2) Self-certified: a marker-sourced 'not-needed' on a code goal is a CLAIM
+# ---------------------------------------------------------------------------
+#
+# Prod 2026-09-06 (session fdc6b27a): the agent's own `<!-- ccswitch:no-pr -->` on
+# "Ship PR adding persistent color field …" — zero code, a recommended spec, an
+# offer to draft it — satisfied the bar as a stored resolution. The classifier is
+# the verification of that claim, so it MUST run here and judge against the goal.
+
+def test_marker_not_needed_on_code_goal_is_verified_by_classifier(monkeypatch):
+    """Marker-sourced not-needed + code goal + no PR → classifier runs; a high-
+    confidence confirmation upgrades the source to 'classifier' and is returned."""
+    from server.automations.pr_intent import PrIntentVerdict
+    calls = []
+
+    async def fake_classify(tail, goal, **kw):
+        calls.append(goal)
+        return PrIntentVerdict(resolved=True, reason="not-needed", confidence="high")
+
+    monkeypatch.setattr("server.automations.pr_intent.classify_pr_intent", fake_classify)
+    orch = _bare_orch()
+    rec = _rec(pr_resolution="not-needed", pr_resolution_source="marker")
+    result = asyncio.run(orch._autopilot_resolve_pr_intent(
+        rec, "ship the color field PR", "inferred", _no_pr_facts(), []))
+    assert calls == ["ship the color field PR"]
+    assert result == "not-needed"
+    assert rec.pr_resolution_source == "classifier"
+
+
+def test_marker_not_needed_unverified_returns_none_and_keeps_marker(monkeypatch):
+    """When the classifier does NOT confirm the claim, the resolution is unusable
+    (None → the bar's code-goal branch nudges) but the marker token is kept for audit."""
+    from server.automations.pr_intent import PrIntentVerdict
+
+    async def fake_classify(tail, goal, **kw):
+        return PrIntentVerdict(resolved=False, reason="", confidence="high")
+
+    monkeypatch.setattr("server.automations.pr_intent.classify_pr_intent", fake_classify)
+    orch = _bare_orch()
+    rec = _rec(pr_resolution="not-needed", pr_resolution_source="marker")
+    result = asyncio.run(orch._autopilot_resolve_pr_intent(
+        rec, "ship the color field PR", "inferred", _no_pr_facts(), []))
+    assert result is None
+    assert rec.pr_resolution == "not-needed" and rec.pr_resolution_source == "marker"
+
+
+def test_marker_not_needed_on_research_goal_is_trusted(monkeypatch):
+    """No verification needed where the bar would accept a bare no-PR anyway."""
+    calls = []
+
+    async def fake_classify(tail, goal, **kw):
+        calls.append(goal)
+        from server.automations.pr_intent import PrIntentVerdict
+        return PrIntentVerdict(resolved=False, reason="", confidence="high")
+
+    monkeypatch.setattr("server.automations.pr_intent.classify_pr_intent", fake_classify)
+    orch = _bare_orch()
+    rec = _rec(pr_resolution="not-needed", pr_resolution_source="marker")
+    result = asyncio.run(orch._autopilot_resolve_pr_intent(
+        rec, "investigate the flaky job", "explicit", _no_pr_facts(), []))
+    assert result == "not-needed"
+    assert calls == []
 
 
 # ---------------------------------------------------------------------------

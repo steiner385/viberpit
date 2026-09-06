@@ -27,3 +27,14 @@ def test_sdk_factory_append_contains_no_pr_marker():
     from server.sessions.claude_sdk_factory import _build_append_string
     append = _build_append_string()
     assert NO_PR_MARKER in append
+
+
+def test_no_pr_instruction_excludes_unfinished_code_objectives():
+    """A no-pr marker is NOT the way to hand back an implementation objective that
+    turned out to need a spec / decision / more work (prod 2026-09-06, fdc6b27a):
+    the instruction must say so and route that case to a question with no marker."""
+    from server.sessions.completion import NO_PR_INSTRUCTION
+    low = NO_PR_INSTRUCTION.lower()
+    assert "already satisfied" in low
+    assert "not a reason" in low
+    assert "no marker" in low
