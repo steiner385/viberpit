@@ -151,15 +151,27 @@ export function useSessionRuntime(
 
   // Attach / detach + subscribe to session events
   useEffect(() => {
+    // The session-scope rule for frames whose `sessionId` is OPTIONAL: a frame tagged
+    // for a different session is dropped, an untagged one passes through. Untagged
+    // means connection-level (or a legacy server) — there is no other view it could
+    // belong to, so applying it here is the only sane reading. One helper for THIS
+    // hook's handlers, not one copy per handler: the predicate has to mean the same
+    // thing for every optional-id frame reaching this view's reducer, and it previously
+    // drifted (`error` frames were not scoped at all). It is deliberately not shared
+    // with ws/liveBatch.ts's same-shaped check — that one is socket-level (against the
+    // socket's `activeSessionId`, and a no-op while that is null), a different scope
+    // with a different null rule, so merging them would broaden one of the two.
+    // Handlers below whose frame type REQUIRES a sessionId keep the strict `!==` form.
+    const isForOtherSession = (frameSessionId: string | undefined): boolean =>
+      Boolean(frameSessionId) && frameSessionId !== sessionId
+
     const onEvent = (e: SessionEvent) => {
-      // Ignore any event tagged for a DIFFERENT session. Replay frames (replayReset,
-      // replay content, replayComplete) are now stamped server-side with their owning
-      // sessionId, just like live events. A stale replay for a session the user has
-      // navigated away from must not reach this reducer — its replayReset would wipe
-      // this session's transcript to empty (the blank-on-navigation bug). Untagged
-      // frames (no sessionId) pass through unchanged.
-      const sid = (e as { sessionId?: string }).sessionId
-      if (sid && sid !== sessionId) return
+      // Replay frames (replayReset, replay content, replayComplete) are stamped
+      // server-side with their owning sessionId, just like live events. A stale replay
+      // for a session the user has navigated away from must not reach this reducer —
+      // its replayReset would wipe this session's transcript to empty (the
+      // blank-on-navigation bug).
+      if (isForOtherSession((e as { sessionId?: string }).sessionId)) return
       dispatch(e)
     }
     const onRotated = (msg: WsRotatedMsg) => {
@@ -170,6 +182,10 @@ export function useSessionRuntime(
     }
     // I3 — surface direct `error` frames (SESSION_NOT_FOUND, frame_too_large, etc.)
     const onError = (msg: WsErrorMsg) => {
+      // Session-scoped errors must not land on whichever session happens to be open:
+      // an async failure from another session carries that session's id and would
+      // otherwise paint this view's error banner.
+      if (isForOtherSession(msg.sessionId)) return
       dispatch({ type: 'error', code: msg.code, message: msg.message, resetsAt: msg.resetsAt ?? null })
     }
 

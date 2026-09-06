@@ -25,6 +25,7 @@ const mockPermissionResponse = vi.fn()
 const mockSetPermissionMode = vi.fn()
 const mockInterruptAndPrompt = vi.fn()
 let capturedSessionEventHandler: ((e: unknown) => void) | undefined
+let capturedErrorHandler: ((e: unknown) => void) | undefined
 // Controllable so tests can simulate a reconnect (reconnecting → connected).
 let mockConnectionState: 'connecting' | 'connected' | 'disconnected' | 'reconnecting' = 'connected'
 
@@ -45,6 +46,7 @@ vi.mock('@/ws/client', async (importOriginal) => {
       interruptAndPrompt: mockInterruptAndPrompt,
       on: (event: string, handler: (e: unknown) => void) => {
         if (event === 'sessionEvent') capturedSessionEventHandler = handler
+        if (event === 'error') capturedErrorHandler = handler
       },
       off: vi.fn(),
       connectionState: mockConnectionState,
@@ -319,6 +321,43 @@ describe('useSessionRuntime.onLoadOlder', () => {
     await act(async () => { result.current.onLoadOlder() })
 
     expect(fetchOlderTurns).toHaveBeenCalledWith('sid-older2', 10)
+  })
+})
+
+describe('useSessionRuntime — error frames are session-scoped', () => {
+  beforeEach(() => {
+    mockConnectionState = 'connected'
+    capturedErrorHandler = undefined
+  })
+
+  const errorFrame = (extra: Record<string, unknown>) => ({
+    type: 'error', code: 'boom', message: 'something failed', ...extra,
+  })
+
+  it('ignores an error frame addressed to a different session', () => {
+    const { result } = renderHook(() => useSessionRuntime('esess1'), { wrapper })
+
+    // An async failure in ANOTHER session (its frame carries that session's id)
+    // must not paint this view's error banner.
+    act(() => { capturedErrorHandler?.(errorFrame({ sessionId: 'other-session' })) })
+
+    expect(result.current.state.error).toBeNull()
+  })
+
+  it('applies an error frame tagged for this session', () => {
+    const { result } = renderHook(() => useSessionRuntime('esess2'), { wrapper })
+
+    act(() => { capturedErrorHandler?.(errorFrame({ sessionId: 'esess2' })) })
+
+    expect(result.current.state.error?.code).toBe('boom')
+  })
+
+  it('applies an untagged error frame (connection-level / legacy)', () => {
+    const { result } = renderHook(() => useSessionRuntime('esess3'), { wrapper })
+
+    act(() => { capturedErrorHandler?.(errorFrame({})) })
+
+    expect(result.current.state.error?.code).toBe('boom')
   })
 })
 
