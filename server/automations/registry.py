@@ -62,6 +62,8 @@ from .sdlc_intake import SdlcIntake  # noqa: E402
 from .sdlc_synthesizer import SdlcSynthesizer  # noqa: E402
 from .pm_sync import PmSync  # noqa: E402
 from .pm_triage import PmTriage  # noqa: E402
+from .pm_onboard import PmOnboard  # noqa: E402
+from .pm_classify import PmClassify  # noqa: E402
 from .gh_reconcile import GhReconcile  # noqa: E402
 
 registry.register(PrDoctor())
@@ -73,4 +75,6 @@ registry.register(SdlcIntake())
 registry.register(SdlcSynthesizer())
 registry.register(PmSync())
 registry.register(PmTriage())
+registry.register(PmOnboard())
+registry.register(PmClassify())
 registry.register(GhReconcile())

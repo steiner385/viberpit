@@ -28,6 +28,12 @@ export interface Automation {
    *  engine selector — the absence IS the enforcement, and the card must not
    *  synthesize one. Optional so older fixtures still compile. */
   enginePolicy?: 'claude_only' | 'codex_allowed' | 'codex_only'
+  /** True for an origin with no control loop: it spawns only when an operator (or
+   *  another automation) calls its seam, so there is nothing to enable or
+   *  schedule and the server 422s a PATCH that tries. Decided server-side in
+   *  `automations.base.operator_triggered`; the `modes` fallback below is only so
+   *  older fixtures compile. */
+  operatorTriggered?: boolean
   configSchema: ConfigField[]
   config: Record<string, unknown>
   /** Optional user-configured cadence ({activeHours?, cron?}), or null (#603).
