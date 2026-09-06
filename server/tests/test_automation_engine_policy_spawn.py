@@ -167,9 +167,9 @@ def test_the_api_publishes_the_engine_selector_only_where_the_ceiling_admits_one
     origin must publish no ``engine`` field, and an audited one must publish it.
 
     Asserted over whatever the registry declares rather than a hardcoded list, so
-    widening an origin (#1264 widened backlog-runner, #1265/#1266 the two SDLC
-    ones) moves a row from one branch to the other instead of quietly weakening
-    the check."""
+    widening an origin (#1264 backlog-runner, #1265/#1266 the two SDLC ones,
+    #1267 pr-doctor) moves a row from one branch to the other instead of
+    quietly weakening the check."""
     with _client() as c:
         rows = c.get("/api/automations", headers=H).json()
         assert rows, "expected the registered automations"
@@ -181,12 +181,14 @@ def test_the_api_publishes_the_engine_selector_only_where_the_ceiling_admits_one
             else:
                 assert has_selector, f"{row['id']} is audited but offers no selector"
                 audited += 1
-        assert audited, "expected at least one audited origin (backlog-runner/sdlc-intake/-synthesizer)"
+        assert audited, "expected at least one audited origin (backlog-runner/sdlc-intake/-synthesizer/pr-doctor)"
 
 
 def test_the_api_rejects_an_engine_key_on_an_unaudited_origin():
+    # autopilot is still claude_only — pr-doctor was widened to codex_allowed
+    # by #1267, so it can no longer stand in as the "unaudited" exemplar here.
     with _client() as c:
-        resp = c.patch("/api/automations/pr-doctor",
+        resp = c.patch("/api/automations/autopilot",
                        json={"config": {"engine": "codex"}}, headers=H)
         assert resp.status_code == 422
         assert "engine" in resp.json()["detail"]

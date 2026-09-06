@@ -19,25 +19,20 @@ export const STARTERS: Record<NavId, readonly string[]> = {
   automations: [
     'What did autopilot do in the last hour?',
     'Which automations are failing?',
+    'What is the PR doctor proposing?',
   ],
-  // INTERIM (audit gap G1). Initiatives and projects had chips no tool could serve —
-  // the assistant has no SDLC-initiative or PM-product tools yet, so tapping one bought
-  // an apology. These stand in until plan Task 6.5 restores section-specific chips on
-  // top of Pack P; the conformance tests (server + web) hold the line that every chip
-  // is backed by a tool and an eval case.
   initiatives: [
-    'What needs my attention?',
-    'Which PRs are blocked, and why?',
+    'Which initiatives have no active session?',
+    'Summarize initiative progress',
   ],
-  // The one section whose own subject the assistant already has tools for, so
-  // these are section-specific rather than the G1 stand-ins above.
   triage: [
     "What's waiting in the triage inbox?",
     'Which project has the most open work?',
   ],
   projects: [
-    'What needs my attention?',
-    'Which sessions are limited or queued?',
+    'Which project has the most open work?',
+    'What is blocked by a dependency?',
+    "What's at the top of the priority queue?",
   ],
   insights: [
     'What regressed in CI recently?',
