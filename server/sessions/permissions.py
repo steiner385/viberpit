@@ -124,7 +124,8 @@ class PermissionRegistry:
             return False
         return True
 
-    async def request(self, session_id, turn_id, tool, input, *, mode, denylist, allowlist, identity):
+    async def request(self, session_id, turn_id, tool, input, *, mode, denylist, allowlist, identity,
+                      items: list[str] | None = None):
         now = time.time()
         # ccswitch's own MCP server (`mcp__ccswitch__*`) is the app talking to
         # itself, not a third-party integration trusted unconditionally like the
@@ -149,7 +150,7 @@ class PermissionRegistry:
                 fut = asyncio.get_running_loop().create_future()
                 self._pending[pid] = {"future": fut, "identity": identity, "session_id": session_id,
                                       "tool": tool, "input": input, "turn_id": turn_id,
-                                      "always_allowed": False}
+                                      "always_allowed": False, "items": items}
                 return pid, fut, False
             # MUTATION, or an unknown/not-yet-registered ccswitch tool (treated
             # conservatively as mutation-like rather than raising on a None
@@ -165,7 +166,7 @@ class PermissionRegistry:
             fut = asyncio.get_running_loop().create_future()
             self._pending[pid] = {"future": fut, "identity": identity, "session_id": session_id,
                                   "tool": tool, "input": input, "turn_id": turn_id,
-                                  "always_allowed": True}
+                                  "always_allowed": True, "items": items}
             return pid, fut, True
         if mode in ("full-auto", "bypassPermissions"):
             # Full auto / bypass-permissions — incl. shell: approve everything
@@ -213,10 +214,10 @@ class PermissionRegistry:
             # materially larger blast radius — remain gated.
             return None, _resolved(True), True
         pid = _uuid.uuid4().hex
-        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        fut = asyncio.get_running_loop().create_future()
         self._pending[pid] = {"future": fut, "identity": identity, "session_id": session_id,
                               "tool": tool, "input": input, "turn_id": turn_id,
-                              "always_allowed": True}
+                              "always_allowed": True, "items": items}
         return pid, fut, True
 
     async def request_external(self, session_id, turn_id, tool, input, *, identity,
@@ -277,7 +278,8 @@ class PermissionRegistry:
         return True
 
     def pending(self, session_id) -> list[dict]:
-        return [{"permId": pid, "tool": r["tool"], "input": r["input"], "turn_id": r["turn_id"]}
+        return [{"permId": pid, "tool": r["tool"], "input": r["input"], "turn_id": r["turn_id"],
+                 "items": r.get("items")}
                 for pid, r in self._pending.items() if r["session_id"] == session_id]
 
     def rethread_identity(self, session_id, old, new) -> int:

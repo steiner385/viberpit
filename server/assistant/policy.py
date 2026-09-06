@@ -135,6 +135,8 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("POST", r"/api/pm/projects/[a-z0-9-]+/sync"),
         ("POST", r"/api/pm/triage/[A-Za-z0-9-]+/(accept|reject)"),
         ("POST", r"/api/sessions"),
+        # Batch tools (spec v2 B4) — each acts on up to 20 session ids in one call.
+        ("POST", r"/api/sessions/batch/(archive|unarchive|resume|rotate|permanent-delete)"),
         ("POST", _S + r"/prompt"),
         ("POST", _S + r"/interrupt"),
         ("POST", _S + r"/questions/[A-Za-z0-9-]+"),

@@ -269,3 +269,37 @@ def test_assistant_session_allows_ccswitch_mcp_tool_through_to_registry():
         assert isinstance(result, PermissionResultAllow)
 
     _run(run())
+
+
+def test_batch_tool_card_carries_items():
+    """A batch ccswitch tool's card enumerates its targets (spec v2 B4): the driver
+    computes `items` from the tool input BEFORE calling registry.request, and the
+    emitted PermissionRequest carries them through. Uses the real (registered)
+    archive_sessions spec — no monkeypatching needed."""
+    from claude_agent_sdk import PermissionResultAllow
+
+    async def run():
+        d = ClaudeAgentDriver(
+            "sa3", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+            sdk_factory=lambda *a, **k: None, registry=PermissionRegistry(),
+            identity="me", assistant_api=object())
+        out_q: asyncio.Queue = asyncio.Queue()
+        d._subscribers.add(out_q)
+        callback_task = asyncio.create_task(d._can_use_tool(
+            "mcp__ccswitch__archive_sessions",
+            {"ids": ["a", "b"], "titles": ["Fix auth", "CSV importer"]}))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        seen = []
+        while not out_q.empty():
+            seen.append(out_q.get_nowait())
+        requests = [e for e in seen if isinstance(e, ev.PermissionRequest)]
+        assert len(requests) == 1
+        assert requests[0].items == ["Fix auth", "CSV importer"]
+
+        assert d.resolve_permission(requests[0].perm_id, "allow", "me") is True
+        result = await asyncio.wait_for(callback_task, timeout=2.0)
+        assert isinstance(result, PermissionResultAllow)
+
+    _run(run())

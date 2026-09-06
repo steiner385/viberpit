@@ -85,13 +85,19 @@ _UUID = "3f2a9c1e-7b4d-4e0a-9c7d-1a2b3c4d5e6f"
     ("GET", "/api/settings", False),
     ("POST", "/api/auth/logout", False),
     ("POST", "/api/fleet/hosts/rocky/upgrade", False),
-    ("POST", "/api/sessions/batch/permanent-delete", False),
-    # Regression: static route segments must never be matched as a session id (a real
-    # session id is a UUID4 — see server/api/sessions.py:816-819 for why the real router
-    # registers these batch/collection routes before the dynamic /{session_id} routes).
-    ("POST", "/api/sessions/batch/unarchive", False),
-    ("POST", "/api/sessions/batch/archive", False),
-    ("POST", "/api/sessions/batch/resume", False),
+    # Batch tools (spec v2 B4): archive_sessions/unarchive_sessions/resume_sessions/
+    # delete_sessions call these routes directly, so the allowlist must admit them now.
+    # Regression coverage moves to the malformed-id cases below: static route segments
+    # must never be matched as a session id (a real session id is a UUID4 — see
+    # server/api/sessions.py:816-819 for why the real router registers these batch/
+    # collection routes before the dynamic /{session_id} routes).
+    ("POST", "/api/sessions/batch/permanent-delete", True),
+    ("POST", "/api/sessions/batch/unarchive", True),
+    ("POST", "/api/sessions/batch/archive", True),
+    ("POST", "/api/sessions/batch/resume", True),
+    ("POST", "/api/sessions/batch/rotate", True),
+    ("POST", "/api/sessions/batch/bogus-verb", False),
+    ("POST", f"/api/sessions/batch/{_UUID}", False),
     # Task 7.1: adoption and single-session power tools.
     ("GET", "/api/sessions/adoptable", True),
     ("POST", "/api/sessions/adopt", True),

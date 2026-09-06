@@ -25,7 +25,7 @@ export type Block =
   | { kind: 'thinking';   id: string; text: string; ts?: number }
   | { kind: 'image';      id: string; images: Array<{ url: string; mime: string; name: string }>; ts?: number }
   | { kind: 'tool';       id: string; toolId: string; name: string; toolKind: ToolKind; input: Record<string, unknown>; result?: { ok: boolean; payload: Record<string, unknown>; ts?: number }; ts?: number }
-  | { kind: 'permission'; id: string; permId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean; alwaysAllowed?: boolean; ts?: number }
+  | { kind: 'permission'; id: string; permId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean; alwaysAllowed?: boolean; items?: string[] | null; ts?: number }
   | { kind: 'question';   id: string; questionId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; live?: boolean; orphaned?: boolean; answered?: string[]; ts?: number }
   | { kind: 'notice';     id: string; text: string; ts?: number }
   | { kind: 'error';      id: string; code: string; message: string; resetsAt?: string | null; ts?: number }
@@ -801,7 +801,7 @@ export function transcriptReducer(
 
     // ── permissionRequest ─────────────────────────────────────────────────────
     case 'permissionRequest': {
-      const { permId, turnId, tool, toolKind, input, plan, alwaysAllowed } = ev
+      const { permId, turnId, tool, toolKind, input, plan, alwaysAllowed, items } = ev
       const [turns, idx] = ensureAssistantTurn(state.turns, turnId, ev.type)
       const turn = turns[idx]
 
@@ -810,7 +810,7 @@ export function transcriptReducer(
         return { ...state, turns }
       }
 
-      const newBlock: Block = { kind: 'permission', id: permId, permId, tool, toolKind, input, plan, alwaysAllowed, ts: ev.ts }
+      const newBlock: Block = { kind: 'permission', id: permId, permId, tool, toolKind, input, plan, alwaysAllowed, items, ts: ev.ts }
       const nextTurns = replaceTurn(turns, idx, (t) => ({
         ...t,
         blocks: [...t.blocks, newBlock],
