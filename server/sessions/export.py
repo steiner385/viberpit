@@ -73,6 +73,13 @@ def normalized_ndjson(events: list[dict[str, Any]], *, session_id: str,
     ``format`` up front makes the difference machine-checkable on line 1, which is
     the honesty #1277 asks for — an export that says what it is beats one that
     pretends to be something a downstream tool already knows how to read.
+
+    ``default=str`` makes this total. Everything here is normally JSON-native, but
+    the caller assembles the header from ``getattr`` reads off a session record and
+    the events come from whatever the replay adapter produced — so one unexpected
+    value would otherwise raise ``TypeError`` AFTER a replay that is allowed to run
+    for two minutes, turning a completed export into a 500. Stringifying the odd
+    field degrades one value; raising loses the whole download.
     """
     header: dict[str, Any] = {
         "type": "ccswitchExportMeta",
@@ -84,8 +91,8 @@ def normalized_ndjson(events: list[dict[str, Any]], *, session_id: str,
     }
     if model:
         header["model"] = model
-    lines = [json.dumps(header, ensure_ascii=False)]
-    lines += [json.dumps(e, ensure_ascii=False) for e in events]
+    lines = [json.dumps(header, ensure_ascii=False, default=str)]
+    lines += [json.dumps(e, ensure_ascii=False, default=str) for e in events]
     return "\n".join(lines) + "\n"
 
 

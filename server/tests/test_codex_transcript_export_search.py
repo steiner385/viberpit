@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -389,8 +390,13 @@ class TestClaudeExportUnchanged:
         orch = _orch(tmp_path)
         orch.resolve_transcript_path = AsyncMock(return_value=path)  # type: ignore[method-assign]
         orch.transcript_path = lambda session_id: path  # type: ignore[method-assign]
-        orch.get_session = MagicMock(return_value=MagicMock(  # type: ignore[method-assign]
-            id="claude-1", name="Claude Session", title=None))
+        # A real-shaped record, not a bare MagicMock: the export route reads `engine`
+        # and `model` off it and serialises them, and a MagicMock silently satisfies
+        # every getattr — so a double that is "close enough" turns a serialisation
+        # contract into an untested one.
+        orch.get_session = MagicMock(return_value=SimpleNamespace(  # type: ignore[method-assign]
+            id="claude-1", name="Claude Session", title=None,
+            engine=AgentEngine.CLAUDE_CODE, model="claude-x"))
         return create_app(orchestrator=orch)
 
     def test_export_jsonl_streams_the_native_transcript_verbatim(self, tmp_path, _db_env):
@@ -431,15 +437,40 @@ class TestClaudeExportUnchanged:
 
     def test_export_jsonl_does_not_open_a_foreign_hosts_path(self, tmp_path, _db_env):
         """In fleet mode the resolved path belongs to a WORKER daemon's filesystem.
-        Opening it here would raise inside the streaming generator — after the
-        response had already begun — producing a truncated download rather than an
-        error. A path this process cannot read must fall through, not be streamed."""
+        Opening it here raises inside the streaming generator — AFTER the response has
+        already begun — so the user gets a truncated download rather than an error.
+
+        The contract is therefore about which BRANCH is taken, not about the status
+        code: a path this process cannot read must fall through to the (host-independent)
+        replay, which in fleet mode is an RPC to the owning daemon and returns the real
+        history. Here the replay has nothing behind it, so the body is just the header —
+        but the header's presence is the proof that nothing was streamed off a path we
+        could not read."""
         app = self._claude_app(tmp_path, "/not/on/this/host/t.jsonl")
         with TestClient(app, raise_server_exceptions=False) as client:
             r = client.get("/api/sessions/claude-1/export.jsonl", headers=_IDENT)
-        # No local file and no replay behind it → an honest 404, never a half-written
-        # 200 whose body dies mid-stream.
-        assert r.status_code == 404
+        assert r.status_code == 200, r.text
+        header = json.loads(r.text.strip().split("\n")[0])
+        assert header["type"] == "ccswitchExportMeta"
+        assert ".events.jsonl" in r.headers["content-disposition"]
+
+    def test_normalized_export_survives_an_unserialisable_record_field(
+            self, tmp_path, _db_env):
+        """The header is assembled from getattr reads off a session record, and the
+        events are whatever the replay produced. One odd value must degrade that field,
+        not raise TypeError after a replay that is allowed to run for two minutes and
+        turn a finished export into a 500."""
+        from server.app import create_app
+        orch = _orch(tmp_path)
+        orch.resolve_transcript_path = AsyncMock(return_value="/not/here.jsonl")  # type: ignore[method-assign]
+        orch.transcript_path = lambda session_id: None  # type: ignore[method-assign]
+        orch.get_session = MagicMock(return_value=MagicMock(  # type: ignore[method-assign]
+            id="claude-1", name="S", title=None))          # model is a MagicMock
+        app = create_app(orchestrator=orch)
+        with TestClient(app, raise_server_exceptions=False) as client:
+            r = client.get("/api/sessions/claude-1/export.jsonl", headers=_IDENT)
+        assert r.status_code == 200, r.text
+        assert json.loads(r.text.strip().split("\n")[0])["type"] == "ccswitchExportMeta"
 
 
 class TestCodexSearchEndpoint:
