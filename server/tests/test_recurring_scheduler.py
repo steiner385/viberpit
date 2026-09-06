@@ -185,3 +185,133 @@ def test_watermark_not_advanced_when_all_accounts_busy(tmp_path):
         assert (await _row()).last_fired_at == datetime(2026, 7, 15, 7, 59)
 
     asyncio.run(run())
+
+
+# --------------------------------------------------------------------------- #
+# Engine / reasoning-effort preservation (#1270)
+# --------------------------------------------------------------------------- #
+
+
+def test_engine_naming_what_it_actually_resolves_to_still_fires(tmp_path):
+    """A recurring spec that names its own (correctly unaudited) engine is not
+    penalized for saying so out loud — it fires exactly as an unlabeled spec
+    would."""
+
+    async def run():
+        await _init_db(tmp_path)
+        orch, spawns = _build_orch()
+        await _seed(last_fired_at=datetime(2026, 7, 15, 7, 59), config={
+            "recurringSession": {"name": "nightly", "prompt": "run nightly job",
+                                 "engine": "claude_code"}})
+
+        await orch._recurring_tick_once(now=datetime(2026, 7, 15, 8, 0, 8))
+
+        assert len(spawns) == 1
+
+    asyncio.run(run())
+
+
+def test_engine_forwarded_and_reasoning_effort_preserved_for_an_audited_origin(
+        tmp_path, monkeypatch):
+    """When this origin's own audited ceiling resolves to Codex, a recurring
+    spec's ``reasoningEffort`` reaches ``create_session`` through the ordinary
+    contract — no parallel Codex-only path. ``AutomationContext.spawn_session``
+    (already covered end to end by ``test_automation_engine_policy_spawn.py``)
+    is faked here so this test isolates the new gate in ``_recurring_spawn``
+    itself rather than re-exercising the sanitize/permission-mode machinery."""
+
+    async def run():
+        from ccswitch.engines import AgentEngine
+        from server.automations.context import AutomationContext
+
+        await _init_db(tmp_path)
+        orch, spawns = _build_orch()
+        spawn_calls: list[dict] = []
+
+        async def _fake_launch_plan(self):
+            return AgentEngine.CODEX, {}
+
+        async def _fake_spawn_session(self, *, origin_ref, dedupe_key=None,
+                                      detail=None, **kwargs):
+            spawn_calls.append(kwargs)
+            return type("Rec", (), {"id": "sess-1"})()
+
+        monkeypatch.setattr(AutomationContext, "launch_plan", _fake_launch_plan)
+        monkeypatch.setattr(AutomationContext, "spawn_session", _fake_spawn_session)
+        await _seed(last_fired_at=datetime(2026, 7, 15, 7, 59), config={
+            "recurringSession": {"name": "nightly", "prompt": "run nightly job",
+                                 "engine": "codex", "reasoningEffort": "medium"}})
+
+        await orch._recurring_tick_once(now=datetime(2026, 7, 15, 8, 0, 8))
+
+        assert len(spawn_calls) == 1
+        assert spawn_calls[0]["reasoning_effort"] == "medium"
+        assert spawns == []  # create_session bypassed by the faked spawn_session
+        assert (await _row()).last_fired_at == datetime(2026, 7, 15, 8, 0)
+
+    asyncio.run(run())
+
+
+def test_engine_mismatch_is_refused_visibly_not_run_as_claude(tmp_path):
+    """A spec naming an engine this (unaudited, ad-hoc) origin cannot run must
+    be refused loudly, not silently downgraded to Claude."""
+
+    async def run():
+        from server.automations.context import AutomationContext
+
+        await _init_db(tmp_path)
+        orch, spawns = _build_orch()
+        await _seed(last_fired_at=datetime(2026, 7, 15, 7, 59), config={
+            "recurringSession": {"name": "nightly", "prompt": "run nightly job",
+                                 "engine": "codex"}})
+
+        await orch._recurring_tick_once(now=datetime(2026, 7, 15, 8, 0, 8))
+
+        assert spawns == []
+        # A persistent misconfiguration is not retriable — the watermark still
+        # advances so it doesn't retry-storm every tick.
+        assert (await _row()).last_fired_at == datetime(2026, 7, 15, 8, 0)
+        events = await AutomationContext(RECURRING_ID).list_events()
+        assert any(e["kind"] == "engine_policy_refused" for e in events)
+
+    asyncio.run(run())
+
+
+def test_unknown_engine_name_is_refused_visibly(tmp_path):
+    async def run():
+        await _init_db(tmp_path)
+        orch, spawns = _build_orch()
+        await _seed(last_fired_at=datetime(2026, 7, 15, 7, 59), config={
+            "recurringSession": {"name": "nightly", "prompt": "run nightly job",
+                                 "engine": "gpt-9"}})
+
+        await orch._recurring_tick_once(now=datetime(2026, 7, 15, 8, 0, 8))
+
+        assert spawns == []
+        assert (await _row()).last_fired_at == datetime(2026, 7, 15, 8, 0)
+
+    asyncio.run(run())
+
+
+def test_reasoning_effort_without_codex_is_refused_visibly(tmp_path):
+    """``reasoningEffort`` only means something for Codex; asking for it on an
+    origin that resolves to Claude must refuse rather than pass the kwarg
+    through to a driver that has no use for it."""
+
+    async def run():
+        from server.automations.context import AutomationContext
+
+        await _init_db(tmp_path)
+        orch, spawns = _build_orch()
+        await _seed(last_fired_at=datetime(2026, 7, 15, 7, 59), config={
+            "recurringSession": {"name": "nightly", "prompt": "run nightly job",
+                                 "reasoningEffort": "medium"}})
+
+        await orch._recurring_tick_once(now=datetime(2026, 7, 15, 8, 0, 8))
+
+        assert spawns == []
+        assert (await _row()).last_fired_at == datetime(2026, 7, 15, 8, 0)
+        events = await AutomationContext(RECURRING_ID).list_events()
+        assert any(e["kind"] == "engine_policy_refused" for e in events)
+
+    asyncio.run(run())

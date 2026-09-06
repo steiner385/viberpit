@@ -79,6 +79,7 @@ from server.sessions.engine import (
     AgentEngine,
     AgentEngineUnavailable,
     AsyncCloser,
+    InvalidAgentEngine,
     SuggestionProvider,
     parse_agent_engine,
 )
@@ -6368,8 +6369,20 @@ class SessionOrchestrator:
         session was created (or an equivalent one already existed) so the caller
         advances the watermark; False when the firing should be retried next tick
         (no account had headroom). ``origin_ref`` is the fire minute, so two ticks
-        landing in the same minute reuse the one session rather than double-spawn."""
+        landing in the same minute reuse the one session rather than double-spawn.
+
+        ``spec["engine"]``/``spec["reasoningEffort"]`` (#1270) are never used to
+        pick the engine directly — that would let a recurring spec bypass this
+        origin's audited ceiling (``engine_policy.policy_for``), the one thing
+        Phase 7 exists to prevent. Instead ``ctx.launch_plan()`` resolves the
+        engine the same way every other spawn does (registry ceiling, or
+        ``claude_only`` for an ad-hoc/dynamic id), and a spec that named an
+        engine is checked against that answer: a match forwards
+        ``reasoning_effort`` through the ordinary ``create_session`` contract, a
+        mismatch is refused out loud instead of silently running the wrong
+        engine."""
         from server.automations.context import AutomationContext
+        from server.automations.engine_policy import EnginePolicyViolation
         ref = fire_at.isoformat(timespec="minutes") if fire_at else "now"
         name = spec.get("name") or f"scheduled {automation_id}"
         ctx = AutomationContext(automation_id, create_session=self.create_session)
@@ -6377,6 +6390,46 @@ class SessionOrchestrator:
         for key in ("repo", "branch", "account", "model"):
             if spec.get(key):
                 kwargs[key] = spec[key]
+        expected_engine_raw = spec.get("engine")
+        effort = spec.get("reasoningEffort")
+        if expected_engine_raw or effort:
+            try:
+                engine, _config = await ctx.launch_plan()
+            except EnginePolicyViolation as exc:
+                await ctx.emit(
+                    "error", f"scheduled run refused ({name}): {exc.reason}",
+                    kind="engine_policy_refused", target=ref,
+                    detail={"policy": exc.policy.value})
+                return True  # unaudited/unsafe config; retrying won't fix it
+            if expected_engine_raw:
+                try:
+                    expected_engine = parse_agent_engine(expected_engine_raw)
+                except InvalidAgentEngine:
+                    await ctx.emit(
+                        "error",
+                        f"scheduled run refused ({name}): unknown engine "
+                        f"{expected_engine_raw!r}",
+                        kind="engine_policy_refused", target=ref)
+                    return True
+                if expected_engine is not engine:
+                    await ctx.emit(
+                        "error",
+                        f"scheduled run refused ({name}): recurring session expects "
+                        f"engine {expected_engine.value} but this origin is only "
+                        f"audited to run {engine.value}",
+                        kind="engine_policy_refused", target=ref,
+                        detail={"expected": expected_engine.value,
+                                "resolved": engine.value})
+                    return True
+            if effort:
+                if engine is not AgentEngine.CODEX:
+                    await ctx.emit(
+                        "error",
+                        f"scheduled run refused ({name}): reasoning effort requires "
+                        f"the codex engine, this origin resolves to {engine.value}",
+                        kind="engine_policy_refused", target=ref)
+                    return True
+                kwargs["reasoning_effort"] = effort
         try:
             await ctx.spawn_session(origin_ref=ref, dedupe_key=ref,
                                     detail={"fireAt": ref, "scheduled": True}, **kwargs)
