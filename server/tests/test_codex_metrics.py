@@ -107,6 +107,7 @@ CODEX_SERIES = (
     m.codex_auth_generation,
     m.codex_quota_last_read_timestamp_s,
     m.codex_approval_ms,
+    m.codex_user_input_ms,
 )
 
 #: Label names that would carry a native Codex identifier or user content. A

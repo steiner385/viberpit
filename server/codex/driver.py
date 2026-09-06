@@ -89,6 +89,7 @@ from server.sessions.engine import (
     AgentEngine,
 )
 from server.sessions.permissions import PermissionRegistry
+from server.sessions.questions import QuestionRegistry
 from server.sessions.status import SEEDABLE_STATUSES, StatusSignals, derive_status
 
 logger = logging.getLogger(__name__)
@@ -240,6 +241,18 @@ class _PendingApproval:
     turn_id: str
 
 
+@dataclass(frozen=True, slots=True)
+class _PendingUserInput:
+    """The triple a `request_user_input` reply must still satisfy when the
+    human answers. Same fencing rationale as :class:`_PendingApproval`: a
+    decision is only valid for the process (and thread) that asked."""
+
+    thread_id: str
+    item_id: str
+    generation: int
+    turn_id: str
+
+
 @dataclass
 class _Counters:
     """Observability only — no method- or content-derived keys (Phase 2 rule)."""
@@ -247,6 +260,7 @@ class _Counters:
     untranslated_notifications: int = 0
     dropped_user_echoes: int = 0
     stale_approvals: int = 0
+    stale_user_input: int = 0
     steer_fallbacks: int = 0
     pump_errors: int = 0
 
@@ -344,6 +358,8 @@ class CodexAgentDriver:
         self._last_progress_at: float = self._clock()
         self._context_usage: dict = {}
         self._pending_approvals: dict[str, _PendingApproval] = {}
+        self._qreg = QuestionRegistry()
+        self._pending_user_input: dict[str, _PendingUserInput] = {}
         self._closing = False
         self.counters = _Counters()
         #: Set once `_ensure_staging_ignored` has run for this driver's cwd —
@@ -377,7 +393,7 @@ class CodexAgentDriver:
 
     @identity.setter
     def identity(self, value: str) -> None:
-        """Re-thread the driver AND its pending approvals to *value*.
+        """Re-thread the driver AND its pending approvals/questions to *value*.
 
         Same failure this closes for the Claude driver: ``request_external``
         snapshots the identity, and ``resolve`` gates on it, so a card raised
@@ -388,6 +404,7 @@ class CodexAgentDriver:
         self._identity = value
         if old != value:
             self._reg.rethread_identity(self.session_id, old, value)
+            self._qreg.rethread_identity(self.session_id, old, value)
 
     @property
     def turn_active(self) -> bool:
@@ -415,7 +432,9 @@ class CodexAgentDriver:
 
     @property
     def awaiting_user_input(self) -> bool:
-        return bool(self._reg.pending(self.session_id))
+        return bool(self._reg.pending(self.session_id)) or bool(
+            self._qreg.pending(self.session_id)
+        )
 
     @property
     def last_progress_at(self) -> float:
@@ -489,6 +508,7 @@ class CodexAgentDriver:
             self._on_notice,
             events=self._on_event,
             approvals=self._on_approval,
+            user_input=self._on_user_input,
         )
         self._closing = False
         self._pump = asyncio.create_task(
@@ -514,7 +534,7 @@ class CodexAgentDriver:
             # no handler and takes the protocol's fail-closed `-32601` path
             # instead of reaching a driver that is already closing.
             self._manager.unregister_thread(self.account, thread_id)
-        self._dismiss_pending_approvals()
+        self._dismiss_pending_prompts()
         self._finish_turn()
         pump, self._pump = self._pump, None
         await cancel_and_reap(
@@ -534,7 +554,7 @@ class CodexAgentDriver:
         deleting one must not leave an archivable thread behind.
         """
         thread_id = self._thread_id
-        self._dismiss_pending_approvals()
+        self._dismiss_pending_prompts()
         if thread_id is not None:
             with contextlib.suppress(Exception):
                 await self._client().archive_thread(
@@ -563,7 +583,7 @@ class CodexAgentDriver:
             timeout=_CLOSE_GRACE_S,
         )
         self._inbox = asyncio.Queue()
-        self._dismiss_pending_approvals()
+        self._dismiss_pending_prompts()
         self._finish_turn()
         self._queue.clear()
         self._turn_active = False
@@ -701,7 +721,7 @@ class CodexAgentDriver:
     async def interrupt(self, *, keep_queue: bool = False) -> None:
         """Stop the live turn. A Stop abandons the queue; ``keep_queue`` (the
         interrupt-and-post path) keeps it and drains it immediately."""
-        self._dismiss_pending_approvals()
+        self._dismiss_pending_prompts()
         if not keep_queue:
             self._queue.clear()
         turn_id, thread_id = self._turn_id, self._thread_id
@@ -1061,6 +1081,117 @@ class CodexAgentDriver:
     def resolve_permission(self, perm_id: str, decision: str, identity: str) -> bool:
         return self._reg.resolve(perm_id, decision, identity)
 
+    # -- structured questions ------------------------------------------------
+
+    async def _on_user_input(
+        self, params: schema.ToolRequestUserInputParams
+    ) -> schema.ToolRequestUserInputResponse:
+        """Turn one `item/tool/requestUserInput` call into ccswitch question
+        card(s) and await the human's answer(s) — Codex's `AskUserQuestion`
+        equivalent, reusing the SAME ``QuestionRegistry``/``ev.Question`` the
+        Claude driver uses rather than a parallel question stack.
+
+        The app-server raises one request carrying a *batch* of questions and
+        expects one reply carrying a batch of answers, so all of a call's
+        questions share one fencing check and resolve into one JSON-RPC
+        result — never several partial replies.
+        """
+        thread_id = self._thread_id
+        generation = self._manager.generation_for(self.account)
+        if (
+            self._closing
+            or thread_id is None
+            or params.thread_id != thread_id
+            or generation is None
+            or generation != self._generation
+        ):
+            self.counters.stale_user_input += 1
+            log_event(
+                logger,
+                logging.WARNING,
+                "codex.driver.user_input_refused",
+                session=self.session_id,
+                reason="stale_request",
+            )
+            return schema.ToolRequestUserInputResponse(
+                answers={
+                    question.id: schema.ToolRequestUserInputAnswer(answers=())
+                    for question in params.questions
+                }
+            )
+        pending: list[tuple[schema.ToolRequestUserInputQuestion, str, asyncio.Future]] = []
+        for question in params.questions:
+            options = [
+                {"label": option.label, "description": option.description}
+                for option in (question.options or [])
+            ]
+            qid, fut = self._qreg.request(
+                self.session_id,
+                params.turn_id,
+                question.header,
+                question.question,
+                options,
+                False,  # Codex offers no multi-select variant of this question.
+                self.identity,
+            )
+            self._pending_user_input[qid] = _PendingUserInput(
+                thread_id=thread_id,
+                item_id=params.item_id,
+                generation=generation,
+                turn_id=params.turn_id,
+            )
+            self._emit(
+                ev.Question(
+                    question_id=qid,
+                    turn_id=params.turn_id,
+                    header=question.header,
+                    question=question.question,
+                    options=options,
+                    multi_select=False,
+                )
+            )
+            pending.append((question, qid, fut))
+        # A question is now pending for the user → waiting_question.
+        await self._emit_status()
+        answers = await asyncio.gather(*(fut for _, _, fut in pending))
+        # Question(s) resolved → back to in_progress.
+        await self._emit_status()
+        result: dict[str, schema.ToolRequestUserInputAnswer] = {}
+        for (question, qid, _), answer in zip(pending, answers):
+            record = self._pending_user_input.pop(qid, None)
+            # Re-check validity BEFORE emitting or replying: a human can take
+            # minutes, and the app-server that asked may have been replaced
+            # meanwhile (same re-check `_on_approval` makes via
+            # `_approval_still_valid`). Downgrade to the dismissed shape here
+            # so the emitted event and the wire reply always agree — neither
+            # may report a selection the new process never asked for.
+            if answer is not None and not self._user_input_still_valid(record):
+                self.counters.stale_user_input += 1
+                answer = None
+            self._emit(
+                ev.QuestionResolved(
+                    question_id=qid,
+                    turn_id=params.turn_id,
+                    selected=None if answer is None else answer[0],
+                    mode="dismissed" if answer is None else answer[1],
+                )
+            )
+            if answer is None:
+                result[question.id] = schema.ToolRequestUserInputAnswer(answers=())
+                continue
+            selected, _mode = answer
+            result[question.id] = schema.ToolRequestUserInputAnswer(
+                answers=tuple(selected)
+            )
+        return schema.ToolRequestUserInputResponse(answers=result)
+
+    def _user_input_still_valid(self, pending: _PendingUserInput | None) -> bool:
+        if pending is None or self._closing:
+            return False
+        if pending.thread_id != self._thread_id:
+            return False
+        return self._manager.generation_for(self.account) == pending.generation
+
     def _dismiss_pending_approvals(self) -> None:
         """Settle every pending prompt so no app-server request is stranded.
 
@@ -1082,6 +1213,34 @@ class CodexAgentDriver:
                 ev.PermissionResolved(record["permId"], record.get("turn_id") or "", False)
             )
         self._pending_approvals.clear()
+
+    def _dismiss_pending_questions(self) -> None:
+        """Settle every pending `request_user_input` question so no app-server
+        request is stranded. Same rationale and call sites as
+        :meth:`_dismiss_pending_approvals` — see there."""
+        pending = self._qreg.pending(self.session_id)
+        self._qreg.deny_all(self.session_id)
+        for record in pending:
+            # Emitted HERE for the same reason `_dismiss_pending_approvals` emits
+            # its own copy rather than leaving it to the waiter: on a teardown
+            # path the stream closes before the awaiting `_on_user_input` coroutine
+            # resumes, and an unresolved card is a question that never goes away.
+            self._emit(
+                ev.QuestionResolved(
+                    question_id=record["question_id"],
+                    turn_id=record["turn_id"],
+                    selected=None,
+                    mode="dismissed",
+                )
+            )
+        self._pending_user_input.clear()
+
+    def _dismiss_pending_prompts(self) -> None:
+        """Settle every pending approval AND question — the one call every exit
+        path (stop, crash, auth loss, interrupt, archive) makes, so a new prompt
+        kind added later has exactly one place to be added to."""
+        self._dismiss_pending_approvals()
+        self._dismiss_pending_questions()
 
     # -- inbound streams ---------------------------------------------------
 
@@ -1144,7 +1303,7 @@ class CodexAgentDriver:
         if kind == "auth_401":
             # Credentials are gone: a human's answer can no longer be honoured,
             # so nothing may sit waiting on one.
-            self._dismiss_pending_approvals()
+            self._dismiss_pending_prompts()
         self._emit(ev.TurnFailure(kind=kind, account=self.account))
         await self._signal_recoverable(kind)
 
@@ -1227,12 +1386,12 @@ class CodexAgentDriver:
     async def _handle_notice(self, notice: RunnerNotice) -> None:
         """React to one supervision verdict about this thread's app-server."""
         if notice.kind is RunnerNoticeKind.UNRECOVERABLE:
-            self._dismiss_pending_approvals()
+            self._dismiss_pending_prompts()
             await self._abandon_turn(_UNRECOVERABLE_CODE, _UNRECOVERABLE_MESSAGE)
             await self._signal_recoverable("process_crash")
             return
         if notice.kind is RunnerNoticeKind.CRASHED:
-            self._dismiss_pending_approvals()
+            self._dismiss_pending_prompts()
             await self._abandon_turn(_CRASH_CODE, _CRASH_MESSAGE)
             return
         # RESTARTED: a fresh process with a fresh generation is serving this
@@ -1345,9 +1504,9 @@ class CodexAgentDriver:
         return StatusSignals(
             turn_active=self._turn_active,
             pending_permission=bool(self._reg.pending(self.session_id)),
-            # Codex has no AskUserQuestion equivalent and no plan-approval tool,
-            # so these two signals are structurally false rather than unimplemented.
-            pending_question=False,
+            pending_question=bool(self._qreg.pending(self.session_id)),
+            # Codex has no plan-approval tool, so this signal is structurally
+            # false rather than unimplemented.
             pending_plan=False,
             turns_completed=self._turns_completed,
             last_turn_outcome=self._last_turn_outcome,
@@ -1435,19 +1594,21 @@ class CodexAgentDriver:
         await self._emit_status()
         return True
 
-    # -- surfaces Codex does not have --------------------------------------
-
-    def answer_question(
-        self, question_id: str, selected: list[str], identity: str, mode: str
-    ) -> bool:
-        """Always False: Codex has no interactive-question channel
-        (``AgentCapabilities.questions=False``), so there is never a waiter to
-        answer. Returning False is what the REST route reports as "no longer
-        pending", which is exactly true."""
-        return False
+    def answer_question(self, question_id: str, selected: list[str], identity: str,
+                        mode: str = "option") -> bool:
+        """Resolve a pending `request_user_input` question. Mirrors
+        ``ClaudeAgentDriver.answer_question`` exactly, including the
+        session-scoped reconciliation for a replay-derived id on reattach."""
+        return self._qreg.resolve(question_id, selected, identity, mode,
+                                  session_id=self.session_id)
 
     def pending_questions(self) -> list[dict]:
-        return []
+        """Still-pending question payloads for this session. Mirrors
+        ``ClaudeAgentDriver.pending_questions`` — used by the WS bridge to
+        re-emit question events on client reattach."""
+        return self._qreg.pending(self.session_id)
+
+    # -- surfaces Codex does not have --------------------------------------
 
     def seed_idle_suggestions(self, user_text: str, assistant_text: str) -> None:
         """No-op: follow-up suggestions are generated by a Claude sub-session the

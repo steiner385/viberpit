@@ -1,6 +1,6 @@
 {
  "cliVersion": "codex-cli 0.153.2",
- "contractSha256": "3caf4b92e54c19755ecc0386d6e2a64501aa9a7736fa7681d2514c09580d07a0",
+ "contractSha256": "e6381998acfed041c94358d3fb5149e6a8a85839c123cfa65e3643948b5ae4cc",
  "documents": [
   "v1/InitializeParams.json",
   "v1/InitializeResponse.json",
@@ -48,7 +48,9 @@
   "FileChangeRequestApprovalParams.json",
   "FileChangeRequestApprovalResponse.json",
   "v2/SkillsListParams.json",
-  "v2/SkillsListResponse.json"
+  "v2/SkillsListResponse.json",
+  "ToolRequestUserInputParams.json",
+  "ToolRequestUserInputResponse.json"
  ],
  "envelopes": {
   "ClientNotification.json": {
