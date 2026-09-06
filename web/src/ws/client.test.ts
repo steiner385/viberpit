@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { QueryClient } from '@tanstack/react-query'
 import { SessionSocket } from './client'
 import { QK } from '@/api/hooks'
+import { clientLogger } from '@/obs/logger'
 
 // ── WebSocket mock ────────────────────────────────────────────────────────────
 
@@ -476,5 +477,58 @@ describe('SessionSocket update-pending queue', () => {
     ws = lastSock()
     ws.simulateOpen()
     expect(ws.sent.some((s) => s.includes('"type":"prompt"') && s.includes('refused'))).toBe(true)
+  })
+})
+
+// ── Inbound frame robustness ─────────────────────────────────────────────────
+// A frame the socket cannot process must never kill the socket — but it must also
+// not vanish. Both failure stages (JSON.parse, and downstream handling) are logged
+// under their OWN label, so a report of "the chat got stuck" can be traced to the
+// stage that actually threw instead of guessing.
+
+describe('SessionSocket._onRawMessage', () => {
+  beforeEach(() => { MockWebSocket.instances = [] })
+
+  type Raw = { _onRawMessage: (d: string) => void }
+
+  it('logs malformed inbound frames instead of dropping them silently', () => {
+    const sock = new SessionSocket('/ws') as unknown as Raw
+    const warn = vi.spyOn(clientLogger, 'warn').mockImplementation(() => {})
+
+    sock._onRawMessage('{not json')
+
+    // The frame length rides in the message (clientLogger's `extra` is a fixed
+    // Partial<ClientLogEntry> envelope — arbitrary keys do not typecheck).
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('ws.message.parse_error'),
+      expect.anything(),
+    )
+    expect(warn.mock.calls[0][0]).toContain('dataLen=9')
+    warn.mockRestore()
+  })
+
+  it('logs a downstream handler throw under its own label, and keeps the socket alive', () => {
+    const sock = new SessionSocket('/ws')
+    const warn = vi.spyOn(clientLogger, 'warn').mockImplementation(() => {})
+    // A listener that throws makes the HANDLING stage fail on a perfectly valid
+    // frame — labelling that 'parse_error' would send the next debugger hunting a
+    // server encoding bug that does not exist.
+    sock.on('error', () => { throw new Error('listener boom') })
+
+    expect(() => {
+      ;(sock as unknown as Raw)._onRawMessage(
+        JSON.stringify({ type: 'error', sessionId: 's1', code: 'X', message: 'y' }),
+      )
+    }).not.toThrow()
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('ws.message.handler_error'),
+      expect.objectContaining({ sessionId: 's1' }),
+    )
+    expect(warn).not.toHaveBeenCalledWith(
+      expect.stringContaining('parse_error'),
+      expect.anything(),
+    )
+    warn.mockRestore()
   })
 })

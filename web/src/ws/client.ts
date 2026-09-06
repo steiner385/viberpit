@@ -180,14 +180,7 @@ export class SessionSocket {
       if (this._pendingPrompts.length) this._flushPending()
     }
 
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data as string) as WsInboundMsg
-        this._handleInbound(msg)
-      } catch {
-        // malformed frame — ignore
-      }
-    }
+    ws.onmessage = (event) => this._onRawMessage(event.data as string)
 
     ws.onerror = () => {
       clientLogger.warn('ws error', { sessionId: this._activeSessionId ?? undefined })
@@ -526,6 +519,45 @@ export class SessionSocket {
     if (!set) return
     for (const cb of set) {
       ;(cb as (...a: unknown[]) => void)(...(args as unknown[]))
+    }
+  }
+
+  /** Parse + route one raw inbound frame. Extracted from `ws.onmessage` so tests can
+   *  drive it directly.
+   *
+   *  TWO stages, two catches, deliberately. The single `catch {}` this replaced wrapped
+   *  `JSON.parse` AND `_handleInbound`, so a throw from anywhere downstream (a listener,
+   *  the batch pipeline) was swallowed as if the wire frame had been malformed — the
+   *  worse of the two bugs, and one a `parse_error` label would actively misdirect: the
+   *  next debugger would go hunting a server encoding bug that never existed. Each stage
+   *  now reports under its own name, so the log says which one actually threw.
+   *
+   *  Neither stage rethrows. A bad frame must never kill the socket (unchanged
+   *  behaviour) — but it must no longer vanish without a trace: a truncated frame or a
+   *  server encoding bug used to resurface days later as an unexplained "chat got
+   *  stuck" report with nothing in client_logs. */
+  private _onRawMessage(data: string): void {
+    let msg: WsInboundMsg
+    try {
+      msg = JSON.parse(data) as WsInboundMsg
+    } catch (e) {
+      // Frame length, not the frame: the payload may carry transcript text, and this
+      // sink is shipped to the server. (clientLogger's `extra` is a fixed
+      // Partial<ClientLogEntry> envelope, so the detail rides in the message.)
+      clientLogger.warn(`ws.message.parse_error dataLen=${data?.length ?? 0}`, {
+        sessionId: this._activeSessionId ?? undefined,
+        stack: String(e),
+      })
+      return
+    }
+    try {
+      this._handleInbound(msg)
+    } catch (e) {
+      const frame = msg as { type?: string; sessionId?: string } | null
+      clientLogger.warn(`ws.message.handler_error type=${frame?.type ?? 'unknown'}`, {
+        sessionId: frame?.sessionId ?? this._activeSessionId ?? undefined,
+        stack: e instanceof Error ? (e.stack ?? String(e)) : String(e),
+      })
     }
   }
 
