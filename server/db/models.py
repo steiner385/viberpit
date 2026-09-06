@@ -452,7 +452,9 @@ class SessionQueue(Base):
 class NotificationChannel(Base):
     """A user-defined delivery channel for notifications (#602). v1 kind is
     'webhook' — a POST to a user-supplied URL (covers ntfy/Slack/Discord).
-    Server-side delivery avoids the prod insecure-context constraint entirely."""
+    Server-side delivery avoids the prod insecure-context constraint entirely.
+    'assistant' (#1210 Pack N) delivers into the assistant drawer for the
+    identity whose watch created the routing rule, instead of an outbound URL."""
 
     __tablename__ = "notification_channel"
 
@@ -491,6 +493,15 @@ class NotificationRule(Base):
     critical: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    # Assistant watches (#1210 Pack N): a one-shot rule disables itself after it
+    # fires once; owner_session_id scopes it to the assistant session that
+    # created it (for listing/deleting a caller's own watches); expires_at is
+    # the watch's TTL — select_rule skips a rule once now() passes it. All
+    # nullable: plain #602 routing rules never set them.
+    once: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
+    owner_session_id: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None)
 
 
 class Automation(Base):
