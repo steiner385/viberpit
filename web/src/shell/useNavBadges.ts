@@ -1,5 +1,6 @@
 import type { NavBadgeKey, NavDef } from './navDefs'
 import { useAccounts, useSessions, useAllPrs, useAutomations } from '@/api/hooks'
+import { useDeployState } from '@/lib/deployState'
 import { inFlightPrCount } from '@/session/prStatus'
 
 export type NavBadges = Record<NavBadgeKey, number | boolean | undefined>
@@ -25,6 +26,7 @@ export function useNavBadges(): NavBadges {
   const { data: prs = [] } = useAllPrs()
   const { data: automationsData = [] } = useAutomations()
   const { data: accounts = [] } = useAccounts()
+  const deploy = useDeployState()
 
   const automationsActiveSessions = automationsData.reduce((n, a) => n + a.activeSessions, 0)
   const hasNeedsReauth = accounts.some(
@@ -35,7 +37,12 @@ export function useNavBadges(): NavBadges {
     sessions: sessions.length || undefined,
     pipeline: inFlightPrCount(prs) || undefined,
     automations: automationsActiveSessions || undefined,
-    settings: hasNeedsReauth || undefined,
+    // A FAILED deploy, not a pending one. The deploy banner is hidden on phone
+    // (`useAppBanners`, `hideOn: ['phone']`), so without this dot a lost session
+    // would be silent there — Settings › Deploy has the detail but nothing would
+    // send you to it. Pending commits are deliberately excluded: master advances
+    // all day, and a dot that is always lit is not a signal.
+    settings: hasNeedsReauth || deploy.hasFailure || undefined,
   }
 }
 

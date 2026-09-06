@@ -33,6 +33,8 @@ interface Props {
    *  the assistant's own thread; none exist inline in this component today). Rendered
    *  as `data-variant` only; default 'session' keeps every existing caller unchanged. */
   variant?: 'session' | 'assistant'
+  /** Wired to a noticeCard's "Ask about it" button (assistant variant only — see Turn). */
+  onAsk?: (text: string) => void
 }
 
 /**
@@ -49,7 +51,7 @@ interface Props {
  *  - scrolling near the top pages in older turns and the prior scroll anchor is
  *    restored so the viewport doesn't jump.
  */
-export function TranscriptView({ turns, rotations = [], model, toolDetailMode, thinkingCollapsed, streamingBlockId = null, onAnswer, subAgents = {}, earliestTurn, loadingOlder, onLoadOlder, variant = 'session' }: Props) {
+export function TranscriptView({ turns, rotations = [], model, toolDetailMode, thinkingCollapsed, streamingBlockId = null, onAnswer, subAgents = {}, earliestTurn, loadingOlder, onLoadOlder, variant = 'session', onAsk }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   // Track whether the user is at/near the bottom so we auto-scroll only when appropriate.
@@ -176,6 +178,8 @@ export function TranscriptView({ turns, rotations = [], model, toolDetailMode, t
             onAnswer={onAnswer}
             subAgents={subAgents}
             sessionModel={model}
+            variant={variant}
+            onAsk={onAsk}
           />
         )
     }

@@ -96,8 +96,8 @@ sharing, voice, or proactive/unsolicited messages — the assistant only speaks 
   session power tools, GitHub, proactive notices, opt-in operator tier, external MCP/CLI access) are
   in `docs/superpowers/specs/2026-09-05-ai-assistant-capabilities-v2-design.md`; plan:
   `docs/superpowers/plans/2026-09-05-ai-assistant-capabilities-v2.md`.
-- **Tool surface (v2)** — 84 tools are registered in `server/assistant/tools.py`; 79 are exposed by
-  default, Pack O's operator tools registering only once the operator tier is enabled. Packs C, G
+- **Tool surface (v2)** — 88 tools are registered in `server/assistant/tools.py`; 83 are exposed by
+  default, Pack O's operator tools registering only once the operator tier is enabled. Packs G
   and X are not yet built.
 
   | Pack | Tools | Surface |
@@ -107,6 +107,7 @@ sharing, voice, or proactive/unsolicited messages — the assistant only speaks 
   | P — product & delivery | 11 | SDLC initiatives, PM products/queue/triage/onboarding |
   | A — automations control | 11 | actionable items, backlog candidates, CI/CD findings, PR-doctor consolidation, plus the three destructive trigger/dispatch/consolidate tools |
   | S — session power | 13 | rename, queue-move, account pin, rotate, reload, suggest, adopt, and the five batch tools with an enumerating card |
+  | C — session-start conveniences | 4 | presets, templates + render, permission profiles |
   | N — proactive notices | 10 | notification channels/rules, watches, quiet hours, test notification |
   | O — operator tier | 5 | deploy/host/account administration, flag-gated off by default |
 

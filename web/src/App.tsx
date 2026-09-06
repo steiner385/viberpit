@@ -24,7 +24,7 @@
  * ## Where `DeployControllerProvider` is
  *
  * `AppShell` mounts it (`AppShell.tsx`), because `Overlays` requires it and
- * `DeployPanel` — rendered by the Settings page, INSIDE the router — must share
+ * `DeploySection` — rendered by the Settings page, INSIDE the router — must share
  * the same controller instance. Everything that consumes the controller is
  * therefore below the router, so a second provider out here would be a second
  * controller with no consumers: dead state polling the same query. See the
