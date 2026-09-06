@@ -254,6 +254,10 @@ export function AutomationCard({ automation: a }: {
   const [open, setOpen] = useState(false)
   const patch = usePatchAutomation()
   const hasConfig = a.configSchema.length > 0
+  // No control loop → no toggle and no schedule editor. Both would be controls
+  // the server refuses (422) and, worse, an operator reading a grey switch as
+  // "PM classification is off" when it is simply not a thing you turn on.
+  const operatorTriggered = a.operatorTriggered ?? a.modes.length === 0
 
   return (
     <div className="rounded-lg border border-edge bg-surface">
@@ -300,6 +304,7 @@ export function AutomationCard({ automation: a }: {
             )}
           </div>
         )}
+        {!operatorTriggered && (
         <button
           type="button"
           role="switch"
@@ -323,6 +328,7 @@ export function AutomationCard({ automation: a }: {
           <span className={cn('absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform',
             a.enabled && 'translate-x-4')} />
         </button>
+        )}
         {hasConfig && (
           <button
             type="button"
@@ -343,7 +349,7 @@ export function AutomationCard({ automation: a }: {
       {open && hasConfig && (
         <div className="border-t border-edge p-4 space-y-5">
           <ConfigPanel automation={a} />
-          <SchedulePanel automation={a} />
+          {!operatorTriggered && <SchedulePanel automation={a} />}
         </div>
       )}
     </div>

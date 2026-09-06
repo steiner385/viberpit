@@ -257,10 +257,16 @@ def build_coverage_critic_prompt(
     branch: str,
     open_count: int,
     closed_count: int,
+    engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
 ) -> str:
     """Independent completeness-critic (design §3.2). A FRESH agent, no synthesis
     context, whose only job is to catch capabilities the map omitted — especially
-    low-churn foundations (CLI, auth, storage, isolation, config)."""
+    low-churn foundations (CLI, auth, storage, isolation, config).
+
+    *engine* only selects the commit-attribution trailer, exactly as it does for
+    the synthesis prompt: the critic commits and pushes, so it owes the same
+    attribution. It shipped with no trailer line at all, which read as "Claude"
+    by omission and left every critic commit unattributed on either engine."""
     return (
         f"You are an independent COVERAGE CRITIC for the product `{slug}` "
         f"(repo `{repo}`). A prior session drafted a feature map on the open PR "
@@ -280,6 +286,8 @@ def build_coverage_critic_prompt(
         f"5. Commit your additions and PUSH to `{branch}` to update the SAME PR. "
         f"DO NOT open a new pull request. DO NOT arm auto-merge. Leave the PR for "
         f"human review.\n"
+        f"6. End every commit message with:\n"
+        f"   `{commit_trailer(engine)}`\n"
     )
 
 

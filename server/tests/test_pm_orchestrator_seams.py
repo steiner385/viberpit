@@ -12,18 +12,9 @@ from unittest.mock import patch
 import pytest
 
 from server.db import db_session, init_db
+from server.tests.fakes.fake_automation_ctx import FakeAutomationContext
 from server.db.models import (
     Feature, Project, ProjectRepo, TriageProposal, WorkItem)
-
-
-class _SpawnRec:
-    """Fake AutomationContext capturing spawn_session calls."""
-    def __init__(self):
-        self.calls = []
-
-    async def spawn_session(self, **kw):
-        self.calls.append(kw)
-        return SimpleNamespace(id=f"sess-{len(self.calls)}", model=None)
 
 
 def _bare_orch():
@@ -62,7 +53,7 @@ def db_env():
 async def test_spawn_map_sets_state_and_dedup(db_env):
     await _seed(db_env)
     orch = _bare_orch()
-    rec = _SpawnRec()
+    rec = FakeAutomationContext()
     orch._pm_onboard_ctx = rec
     orch._backlog_healthy_account = _mk_async("acct1")
     orch._effective_repo_root = _mk_async("/tmp/root")
@@ -83,7 +74,7 @@ async def test_spawn_map_sets_state_and_dedup(db_env):
 async def test_spawn_map_no_account_returns_none(db_env):
     await _seed(db_env)
     orch = _bare_orch()
-    orch._pm_onboard_ctx = _SpawnRec()
+    orch._pm_onboard_ctx = FakeAutomationContext()
     orch._backlog_healthy_account = _mk_async(None)
     orch._effective_repo_root = _mk_async("/tmp/root")
     orch._sdlc_default_branch = _mk_async("master")
@@ -95,7 +86,7 @@ async def test_spawn_map_no_account_returns_none(db_env):
 async def test_classify_run_dispatches_open_items(db_env):
     await _seed(db_env)
     orch = _bare_orch()
-    rec = _SpawnRec()
+    rec = FakeAutomationContext()
     orch._pm_classify_ctx = rec
     orch._backlog_healthy_account = _mk_async("acct1")
     orch._effective_repo_root = _mk_async("/tmp/root")
@@ -116,7 +107,7 @@ async def test_spawn_map_diff_scope_dedup_and_no_state_change(db_env):
     # advance onboarding_state (the seam is one method, parameterized).
     await _seed(db_env)
     orch = _bare_orch()
-    rec = _SpawnRec()
+    rec = FakeAutomationContext()
     orch._pm_onboard_ctx = rec
     orch._backlog_healthy_account = _mk_async("acct1")
     orch._effective_repo_root = _mk_async("/tmp/root")
@@ -139,7 +130,7 @@ async def test_classify_run_accepts_injected_batch(db_env):
     # Phase-3 reuse: items=[(repo, number, kind), ...] classifies exactly that set.
     await _seed(db_env)
     orch = _bare_orch()
-    rec = _SpawnRec()
+    rec = FakeAutomationContext()
     orch._pm_classify_ctx = rec
     orch._backlog_healthy_account = _mk_async("acct1")
     orch._effective_repo_root = _mk_async("/tmp/root")
@@ -360,7 +351,7 @@ async def test_classify_run_schedules_ingest_chain(db_env):
     orch = _bare_orch()
     orch._backlog_healthy_account = _mk_async("acct1")
     orch._effective_repo_root = _mk_async("/tmp/root")
-    orch._pm_classify_ctx = _SpawnRec()
+    orch._pm_classify_ctx = FakeAutomationContext()
     chained = []
     async def fake_chain(session_id, slug, **kw):
         chained.append((session_id, slug)); return 0
@@ -463,7 +454,7 @@ async def test_spawn_critic_dedupes_and_builds_prompt(db_env):
     orch._backlog_healthy_account = _mk_async("acct1")
     orch._effective_repo_root = _mk_async("/tmp/root")
     orch._sdlc_default_branch = _mk_async("master")
-    rec = _SpawnRec()
+    rec = FakeAutomationContext()
     orch._pm_onboard_ctx = rec
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
         out = await orch._pm_onboard_spawn_critic(
@@ -483,7 +474,7 @@ async def test_spawn_critic_returns_none_without_account(db_env):
     orch._backlog_healthy_account = _mk_async(None)
     orch._effective_repo_root = _mk_async("/tmp/root")
     orch._sdlc_default_branch = _mk_async("master")
-    orch._pm_onboard_ctx = _SpawnRec()
+    orch._pm_onboard_ctx = FakeAutomationContext()
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
         out = await orch._pm_onboard_spawn_critic("ccswitch", "o/r", "pm/feature-map-ccswitch")
     assert out is None
@@ -543,7 +534,7 @@ async def test_initial_map_spawn_schedules_critic_chain(db_env):
     orch._backlog_healthy_account = _mk_async("acct1")
     orch._effective_repo_root = _mk_async("/tmp/root")
     orch._sdlc_default_branch = _mk_async("master")
-    orch._pm_onboard_ctx = _SpawnRec()
+    orch._pm_onboard_ctx = FakeAutomationContext()
     chained = []
     async def fake_chain(slug, repo, branch, **kw):
         chained.append((slug, repo, branch))
@@ -567,7 +558,7 @@ async def test_diff_map_spawn_does_not_schedule_critic(db_env):
     orch._backlog_healthy_account = _mk_async("acct1")
     orch._effective_repo_root = _mk_async("/tmp/root")
     orch._sdlc_default_branch = _mk_async("master")
-    orch._pm_onboard_ctx = _SpawnRec()
+    orch._pm_onboard_ctx = FakeAutomationContext()
     scheduled = []
     orch._spawn = lambda coro, name=None: scheduled.append(coro)
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):

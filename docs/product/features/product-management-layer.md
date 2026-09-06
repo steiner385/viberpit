@@ -80,6 +80,19 @@ The classification, onboarding and triage engines are pure functions (no I/O) mi
 `server/sdlc/engine.py`, so the wizard UI is a thin view over `next_onboarding_action` and the
 triage loop is a thin executor over `next_triage_action`.
 
+The three sessions this capability spawns — map synthesis, its completeness critic, and
+classification — are provider-neutral as of #1268/#1269. `pm-onboard` and `pm-classify` are
+registered automation origins with a `codex_allowed` engine ceiling, so an operator may run them on
+Codex from the same per-origin `engine` config every other origin uses; `codex_allowed` grants the
+option, not the traffic, and the default stays Claude behind two further kill switches. They are
+*operator-triggered* origins (`modes = ()`): registered for their audited ceiling and their config
+row, not because anything ticks them, so the Automations card shows their config and no enable
+toggle. Each spawn site resolves the engine ONCE, ahead of the account probe and the clone, and
+threads it into the seed prompt's commit-attribution trailer, the engine-scoped account gate and the
+session — a refused launch costs nothing and advances no onboarding state. Live evidence for the
+bounded classification batch and for synthesis/critic review separation on the real `codex` binary:
+`server/tests/test_pm_codex_live.py` (opt-in, `CCSWITCH_TEST_CODEX_LIVE=1`).
+
 **Evidence** — `server/pm/onboarding.py` (pure onboarding state machine + `next_onboarding_action`);
 `server/pm/classification.py` (`build_map_synthesis_prompt` archaeology + drift prompts,
 `build_classification_prompt`, RICE-lite parse, `FEATURE_DOCS_DIR = "docs/product/features"`);
@@ -90,6 +103,8 @@ triage loop is a thin executor over `next_triage_action`.
 with the latch above); `server/automations/pm_triage.py` (`PmTriage` + `PmTriageLoop`: the
 mechanical auto-link pass, one engine action per tick, rolling daily classify-session cap);
 `server/sessions/orchestrator.py` (`_pm_triage_*` seams + the loop's primary-only task);
+`server/automations/pm_onboard.py`, `server/automations/pm_classify.py` (the two session
+origins' audited engine ceilings and their operator-triggered `modes = ()` declaration);
 `server/pm/repo_project.py` (the one repo→project resolver); `server/pm/score.py`
 (`rice_score` + `validate_rice` — the RICE formula and its input bounds in one place);
 `server/api/pm.py` (project registry, sync-now, edges, `/onboarding`, `/propose-map`, `/classify`,
@@ -99,4 +114,5 @@ mechanical auto-link pass, one engine action per tick, rolling daily classify-se
 optimistic accept, cursor anchored to a proposal id so a queue that reorders under the user cannot
 misdirect a keystroke), `web/src/initiatives/InitiativesTab.tsx`;
 `specs/001-ccswitch-web/spec.md` (§§3–7). PRs: #866 (design spec), #879 (phase 2–4 plans),
-#893 (Phase 1), #897 (Phase 2), #899 (remote-mode seam fix), #1327 (Phase 3).
+#893 (Phase 1), #897 (Phase 2), #899 (remote-mode seam fix), #1327 (Phase 3),
+#1268/#1269 (Codex parity for the onboarding, critic and classification sessions).
