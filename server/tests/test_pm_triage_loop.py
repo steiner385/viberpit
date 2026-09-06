@@ -219,6 +219,40 @@ async def test_an_explicit_non_zero_day_spawn_count_from_the_seam_is_honoured():
 
 
 @pytest.mark.asyncio
+async def test_the_larger_of_seam_and_ledger_day_spawns_binds():
+    """Seam and ledger are two partial views of the same budget, so the SAFE
+    combination is ``max`` — never ``or``.
+
+    Here the seam answers a lagging ``day_spawns=1`` (one persisted session)
+    while this process's ledger fills to 3. ``or`` picks the seam whenever it is
+    non-zero, so the engine would keep seeing ``1 < 3`` and the loop would
+    overrun ``max_spawns_per_day`` forever."""
+    ctx = Ctx()
+    st = TriageState(mode="propose", unclassified_count=20, pending_count=0,
+                     no_fit_clusters=(), stale_features=(), day_spawns=1, day_cap=8)
+    loop, rec = _loop(ctx, pending=[_item(n) for n in range(1, 21)], state=st,
+                      config={"batch_size": 1, "drift_threshold": 5,
+                              "max_spawns_per_day": 3, "stale_days": 14})
+    for _ in range(4):
+        await loop.tick()
+    assert len(rec["classified"]) == 3  # ledger (3) binds, not the seam's 1
+
+
+@pytest.mark.asyncio
+async def test_a_zero_day_cap_from_the_seam_stops_all_spawns():
+    """``day_cap=0`` is the STRICTEST budget, not "unset": treating it as falsy
+    would turn the tightest value into the laxest (the config cap)."""
+    ctx = Ctx()
+    st = TriageState(mode="propose", unclassified_count=5, pending_count=0,
+                     no_fit_clusters=(), stale_features=(), day_spawns=0, day_cap=0)
+    loop, rec = _loop(ctx, pending=[_item(1)], state=st,
+                      config={"batch_size": 50, "drift_threshold": 5,
+                              "max_spawns_per_day": 8, "stale_days": 14})
+    await loop.tick()
+    assert rec["classified"] == []
+
+
+@pytest.mark.asyncio
 async def test_config_cap_binds_below_the_seam_day_cap():
     """``max_spawns_per_day`` is THE cap: a seam view reporting a laxer
     ``day_cap`` must not let the loop overrun the operator's configured value."""
@@ -254,16 +288,118 @@ async def test_only_items_from_list_pending_are_ever_classified():
 @pytest.mark.asyncio
 async def test_no_classify_session_when_every_pending_item_auto_linked():
     """The auto-link pass runs BEFORE the classifier, so a queue made entirely of
-    mechanical PRs costs zero sessions."""
+    mechanical PRs costs zero sessions — and the tick is NOT consumed: the engine
+    is asked once per tick, so an emptied classify batch must fall through to the
+    rest of the ladder rather than silently dropping the tick."""
     ctx = Ctx()
     pending = [_item(10, kind="pr", links=[3]), _item(12, kind="pr", links=[4])]
     st = TriageState(mode="propose", unclassified_count=2, pending_count=0,
-                     no_fit_clusters=(), stale_features=(), day_spawns=0, day_cap=8)
+                     no_fit_clusters=(),
+                     stale_features=(StaleFeature("billing", "delivering", 30),),
+                     day_spawns=0, day_cap=8)
     loop, rec = _loop(ctx, pending=pending, state=st,
                       autolink_pred=lambda i: True)
     await loop.tick()
     assert rec["autolinked"] == [10, 12]
     assert rec["classified"] == []
+    assert rec["stale"] == [("billing",)]
+
+
+@pytest.mark.asyncio
+async def test_drift_still_proposed_when_every_pending_item_auto_linked():
+    """``unclassified_count`` handed to the engine must agree with what the loop
+    can actually classify.
+
+    ``count_state``'s query can keep counting a row the auto-link pass just
+    linked (same tick, write not yet visible). Forwarding that count makes the
+    engine pick ``ClassifyBatch`` off the top of the ladder, the loop finds an
+    empty batch, and the tick does NOTHING — so a qualifying drift cluster is
+    never proposed, tick after tick, with no feed event explaining why."""
+    ctx = Ctx()
+    pending = [_item(10, kind="pr", links=[3]), _item(12, kind="pr", links=[4])]
+    cluster = NoFitCluster(suggestion="offline-mode",
+                           item_numbers=(1, 2, 3, 4, 5), repo="o/r")
+    st = TriageState(mode="propose", unclassified_count=2, pending_count=0,
+                     no_fit_clusters=(cluster,), stale_features=(),
+                     day_spawns=0, day_cap=8)
+    loop, rec = _loop(ctx, pending=pending, state=st, autolink_pred=lambda i: True)
+    await loop.tick()
+    assert rec["classified"] == []
+    assert rec["map_diffs"] == [("offline-mode", (1, 2, 3, 4, 5), "o/r")]
+
+
+# --------------------------------------------------------------------------- #
+# Feed hygiene: failures are visible, the ceiling does not evict the feed       #
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_the_ceiling_event_is_emitted_once_per_capped_run_not_per_tick():
+    """``AutomationContext`` keeps 500 events and the UI reads 100, so a ceiling
+    re-emitted every 60 s tick evicts every record of what this propose-only
+    automation actually did. Emit on the TRANSITION into the capped state."""
+    ctx = Ctx()
+    st = TriageState(mode="propose", unclassified_count=5, pending_count=0,
+                     no_fit_clusters=(), stale_features=(), day_spawns=8, day_cap=8)
+    loop, _rec = _loop(ctx, pending=[_item(1)], state=st)
+    await loop.tick()
+    await loop.tick()
+    assert sum(1 for _, _, kw in ctx.events if kw.get("kind") == "ceiling") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failing_auto_link_warns_and_the_tick_continues():
+    """The auto-link pass is per-item and independent: one GitHub 404 on item 2
+    must not abandon classify/drift/stale for the whole tick, and it must reach
+    the feed as ``warn`` (the notification route fires on error/warn only)."""
+    ctx = Ctx()
+    pending = [_item(10, kind="pr", links=[3]), _item(11, kind="pr", links=[4]),
+               _item(12, kind="issue")]
+    st = TriageState(mode="propose", unclassified_count=3, pending_count=0,
+                     no_fit_clusters=(), stale_features=(), day_spawns=0, day_cap=8)
+
+    def pred(item):
+        if item.number == 11:
+            raise RuntimeError("gh 404")
+        return item.number == 10
+
+    loop, rec = _loop(ctx, pending=pending, state=st, autolink_pred=pred)
+    await loop.tick()
+    warns = [kw for lvl, _, kw in ctx.events if lvl == "warn"]
+    assert any(kw.get("target") == "o/r#11" for kw in warns)
+    assert rec["autolinked"] == [10]
+    # The failed item stays in the queue and the tick still classifies.
+    assert rec["classified"] == [[11, 12]]
+
+
+@pytest.mark.asyncio
+async def test_a_tick_level_failure_reaches_the_feed_as_warn():
+    ctx = Ctx()
+
+    async def boom():
+        raise RuntimeError("nope")
+
+    loop, _rec = _loop(ctx, pending=[_item(1)], list_pending=boom)
+    await loop.tick()
+    assert any(lvl == "warn" for lvl, _, _ in ctx.events)
+
+
+@pytest.mark.asyncio
+async def test_status_drift_count_excludes_latched_suggestions():
+    """The status card and the engine must agree on which clusters qualify:
+    ``no_fit`` clusters never shrink, so a re-implemented count that ignores the
+    latch reports "N drift" (and ``level="active"``) forever after every cluster
+    has been proposed."""
+    ctx = Ctx()
+    cluster = NoFitCluster(suggestion="offline-mode",
+                           item_numbers=(1, 2, 3, 4, 5), repo="o/r")
+    st = TriageState(mode="propose", unclassified_count=0, pending_count=0,
+                     no_fit_clusters=(cluster,), stale_features=(),
+                     day_spawns=0, day_cap=8,
+                     open_map_diff_suggestions=("offline-mode",))
+    loop, rec = _loop(ctx, pending=[], state=st)
+    await loop.tick()
+    assert rec["map_diffs"] == []  # latched — the engine is Idle
+    assert ctx.pm_triage_counts == {"unclassified": 0, "pending": 0, "drift": 0}
 
 
 @pytest.mark.asyncio

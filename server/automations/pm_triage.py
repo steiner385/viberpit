@@ -19,17 +19,19 @@ A tick, in order (design §6):
      highest-priority action; execute it. Classify sessions are bounded by a
      rolling daily cap (like SdlcIntakeLoop).
 
-**The day cap is bounded by real state.** ``count_state`` cannot see the loop's
-in-memory spawn ledger, so the loop — not the seam — owns the budget numbers it
-hands the engine (:meth:`PmTriageLoop._budgeted`). Forwarding the seam's
-``day_spawns`` verbatim would leave the engine's own ``day_spawns < day_cap``
-check permanently dead and put the only real bound in a second, duplicated
-guard down in the dispatch path. There is exactly one cap check, and it is the
-engine's.
+**The engine is told the truth about budget and backlog.** ``count_state``
+cannot see the loop's in-memory spawn ledger and its unclassified query can
+outrun the auto-link pass, so the loop — not the seam — owns the numbers it
+hands the engine (:meth:`PmTriageLoop._budgeted`): ``max`` of the two spawn
+counts, ``min`` of the two caps, and ``unclassified_count`` clamped to the queue
+that survived auto-linking. Every one of those is a *stricter-wins* composition,
+which keeps all decisions in the engine: there is exactly one cap check and one
+classify check, and both are the engine's.
 """
 from __future__ import annotations
 
 import logging
+from contextlib import suppress
 from dataclasses import dataclass, replace
 from typing import Any, Awaitable, Callable
 
@@ -40,6 +42,7 @@ from server.pm.engine import (
     ProposeFeatureMapDiff,
     TriageState,
     next_triage_action,
+    qualifying_clusters,
 )
 
 from .base import AutomationStatus, ConfigField
@@ -144,12 +147,19 @@ class PmTriageLoop:
         self._mark_stale = mark_stale
         self._clock = clock
         self._spawns_today: list[float] = []
+        self._was_capped = False
 
     async def tick(self) -> None:
         try:
             await self._run()
-        except Exception:  # pragma: no cover — belt+braces, mirrors the mold
+        except Exception as exc:
+            # A warn (not just a log line): every other event this loop emits is
+            # ``info``, and the notification route fires on error/warn only, so a
+            # silently-logged tick failure is invisible to an operator.
             log.warning("pm_triage.tick_error", exc_info=True)
+            with suppress(Exception):  # tick() is the supervised boundary
+                await self._ctx.emit("warn", f"pm-triage tick failed: {exc}",
+                                     kind="tick_error")
 
     async def _run(self) -> None:
         mode, config = await self._read_config()
@@ -162,10 +172,21 @@ class PmTriageLoop:
         # 0. Mechanical auto-link pass (design §6.2): PRs whose closing refs point
         #    at a classified issue inherit that feature with no AI session. Linked
         #    items leave the queue so only unlinked ones reach the classifier.
+        #    The pass is per-item and independent, so it is guarded per item: an
+        #    ordinary GitHub 404/timeout on item 3 of 50 must not abandon the
+        #    whole tick (no classify, no drift, no stale, no status refresh).
         still_pending: list[PendingItemView] = []
         for item in pending:
             if item.kind == "pr" and item.linked_issue_numbers:
-                if await self._auto_link(item):
+                try:
+                    linked = await self._auto_link(item)
+                except Exception as exc:
+                    log.warning("pm_triage.auto_link_failed", exc_info=True)
+                    await self._ctx.emit(
+                        "warn", f"auto-link failed for {item.repo}#{item.number}: {exc}",
+                        kind="auto_link_failed", target=f"{item.repo}#{item.number}")
+                    linked = False
+                if linked:
                     await self._ctx.emit(
                         "info", f"auto-linked {item.repo}#{item.number}",
                         kind="auto_linked", target=f"{item.repo}#{item.number}")
@@ -173,16 +194,20 @@ class PmTriageLoop:
             still_pending.append(item)
 
         self._prune_day()
-        state = self._budgeted(await self._count_state(), config)
+        state = self._budgeted(await self._count_state(), config, still_pending)
         action = next_triage_action(state, config)
 
-        if state.unclassified_count > 0 and state.day_spawns >= state.day_cap:
-            # Reported once per capped tick, whatever the engine chose to do
-            # instead: the classify backlog is not draining and an operator has
-            # to know it is the budget, not a stall.
+        capped = state.unclassified_count > 0 and state.day_spawns >= state.day_cap
+        if capped and not self._was_capped:
+            # Emitted on the TRANSITION into the capped state, not every capped
+            # tick: the condition persists as long as the backlog does, and at a
+            # 60 s cadence a re-emit would push every auto_linked/classify/
+            # drift_proposed record off the 100-row feed within ~2 h. The
+            # standing condition is what ``status()`` is for.
             await self._ctx.emit(
                 "info", "daily classify-session cap reached; deferring",
                 kind="ceiling")
+        self._was_capped = capped
 
         if isinstance(action, ClassifyBatch):
             await self._classify_batch(still_pending, action.count)
@@ -200,12 +225,15 @@ class PmTriageLoop:
             await self._ctx.emit("info", action.reason, kind="needs_human")
         # Idle: nothing.
 
-        drift = sum(1 for c in state.no_fit_clusters
-                    if len(c.item_numbers) >= int(config.get("drift_threshold", 5)))
-        self._stash(state.unclassified_count, state.pending_count, drift)
+        # The status card counts drift through the ENGINE's own rule — threshold
+        # AND latch. Re-implementing the threshold half here would pin the card
+        # at "N drift" forever, since ``no_fit`` clusters never shrink.
+        self._stash(state.unclassified_count, state.pending_count,
+                    len(qualifying_clusters(state, config)))
 
-    def _budgeted(self, state: TriageState, config: dict) -> TriageState:
-        """*state* with the classify budget the loop actually knows about.
+    def _budgeted(self, state: TriageState, config: dict,
+                  still_pending: list[PendingItemView]) -> TriageState:
+        """*state* with the classify budget and backlog the loop actually knows.
 
         ``count_state`` builds its view from the DB, which holds no record of the
         sessions THIS process spawned this window, so it answers ``day_spawns=0``
@@ -213,17 +241,28 @@ class PmTriageLoop:
         it — otherwise the engine's ``day_spawns < day_cap`` check could never
         fail and the cap would have to be re-implemented in the dispatch path.
 
-        A non-zero ``day_spawns`` from the seam wins: that is a real persisted
-        count (e.g. after a restart), and spending the day's budget twice because
-        a fresh process has an empty ledger is exactly what the cap exists to
-        stop. ``max_spawns_per_day`` is THE cap — it is the operator's own
-        configured value, so it binds even when the seam reports a laxer one.
+        Seam and ledger are two partial views of one budget, so the SAFE
+        combination is ``max``: the seam's persisted count wins after a restart
+        (a fresh process must not spend the day's budget twice), and the ledger
+        wins when the seam lags. ``or`` would take the seam whenever it is
+        non-zero and let a lagging count overrun the cap. Likewise the caps
+        compose with a plain ``min`` — ``max_spawns_per_day`` is the operator's
+        value and a seam ``day_cap=0`` is the STRICTEST budget, not "unset".
+
+        ``unclassified_count`` is clamped to what is really classifiable after
+        the auto-link pass. ``ClassifyBatch`` is the top of the engine's ladder
+        and is gated on the count alone, so a count that outruns the queue (the
+        auto-link write is not yet visible to ``count_state``'s query) makes the
+        engine pick a batch the loop cannot fill — and the tick does nothing at
+        all, starving drift and stale silently. Told the truth, the engine
+        declines ``ClassifyBatch`` and falls through on its own.
         """
         cap = int(config.get("max_spawns_per_day", state.day_cap))
         return replace(
             state,
-            day_spawns=state.day_spawns or len(self._spawns_today),
-            day_cap=min(cap, state.day_cap) if state.day_cap else cap)
+            unclassified_count=min(state.unclassified_count, len(still_pending)),
+            day_spawns=max(state.day_spawns, len(self._spawns_today)),
+            day_cap=min(cap, state.day_cap))
 
     async def _classify_batch(self, pending: list[PendingItemView], count: int) -> None:
         batch = pending[:count]

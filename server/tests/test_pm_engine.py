@@ -16,6 +16,7 @@ from server.pm.engine import (
     StaleFeature,
     TriageState,
     next_triage_action,
+    qualifying_clusters,
 )
 
 _DEFAULT_CONFIG = {"drift_threshold": 5, "batch_size": 50, "stale_days": 14}
@@ -164,6 +165,37 @@ def test_unlatched_cluster_still_wins_when_a_larger_one_is_latched():
     act = next_triage_action(st, _DEFAULT_CONFIG)
     assert act == ProposeFeatureMapDiff(
         suggestion="realtime-sync", item_numbers=(1, 2, 3, 4, 5), repo="o/r2")
+
+
+# --------------------------------------------------------------------------- #
+# qualifying_clusters — the ONE definition of "this cluster warrants a diff"    #
+# --------------------------------------------------------------------------- #
+
+def test_qualifying_clusters_applies_threshold_and_latch():
+    """The status card counts drift too. If it re-implements the rule it drifts
+    from the engine — notably by omitting the latch, which pins the card at
+    "N drift" forever once every cluster has been proposed."""
+    st = _state(no_fit_clusters=(_cluster("under", n=4),
+                                 _cluster("latched", n=9),
+                                 _cluster("open", n=5, repo="o/r2")),
+                open_map_diff_suggestions=("latched",))
+    assert tuple(c.suggestion for c in qualifying_clusters(st, _DEFAULT_CONFIG)) \
+        == ("open",)
+
+
+def test_qualifying_clusters_honours_a_custom_threshold():
+    st = _state(no_fit_clusters=(_cluster("small", n=2),))
+    assert qualifying_clusters(st, {"drift_threshold": 2}) == st.no_fit_clusters
+    assert qualifying_clusters(st, {"drift_threshold": 3}) == ()
+
+
+def test_next_triage_action_proposes_only_qualifying_clusters():
+    # The decision and the count are the same rule: whatever the helper returns
+    # empty for, the engine must not propose.
+    st = _state(no_fit_clusters=(_cluster("latched", n=9),),
+                open_map_diff_suggestions=("latched",))
+    assert qualifying_clusters(st, _DEFAULT_CONFIG) == ()
+    assert next_triage_action(st, _DEFAULT_CONFIG) == Idle()
 
 
 # --------------------------------------------------------------------------- #

@@ -142,6 +142,26 @@ TriageAction = ClassifyBatch | ProposeFeatureMapDiff | NudgeStale | Idle | Needs
 # --------------------------------------------------------------------------- #
 
 
+def qualifying_clusters(state: TriageState,
+                        config: dict) -> tuple[NoFitCluster, ...]:
+    """The ``no_fit`` clusters that warrant a feature-map diff right now.
+
+    THE definition of "qualifying", used by both :func:`next_triage_action` (to
+    decide) and the loop's status card (to count). The rule has two halves —
+    at/over ``drift_threshold`` **and** not latched — and a count that knows only
+    the first half would report "N drift" forever: ``no_fit`` clusters never
+    shrink, so once every cluster has been proposed the engine correctly goes
+    ``Idle`` while the card stays pinned to ``level="active"``. Pure; input order
+    is preserved.
+    """
+    threshold = int(config.get("drift_threshold", 5))
+    latched = set(state.open_map_diff_suggestions)
+    return tuple(
+        c for c in state.no_fit_clusters
+        if len(c.item_numbers) >= threshold and c.suggestion not in latched
+    )
+
+
 def next_triage_action(state: TriageState, config: dict) -> TriageAction:
     """Decide the next pm-triage action. Pure + total.
 
@@ -160,12 +180,7 @@ def next_triage_action(state: TriageState, config: dict) -> TriageAction:
     # 2. Drift: the largest cluster at/over threshold becomes a map-diff PR.
     #    Latched suggestions (diff in flight or already merged onto the map) are
     #    excluded so one capability is proposed exactly once — see module docs.
-    threshold = int(config.get("drift_threshold", 5))
-    latched = set(state.open_map_diff_suggestions)
-    qualifying = [
-        c for c in state.no_fit_clusters
-        if len(c.item_numbers) >= threshold and c.suggestion not in latched
-    ]
+    qualifying = qualifying_clusters(state, config)
     if qualifying:
         # Secondary key on ``suggestion``: cluster order comes from an unordered
         # SELECT, so equal-size clusters must not alternate between ticks.
