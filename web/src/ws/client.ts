@@ -115,6 +115,11 @@ export class SessionSocket {
   private _srcGapCounts: Map<string, number> = new Map()
   private _srcGapLastLogAt: Map<string, number> = new Map()
   private static readonly SRC_GAP_LOG_INTERVAL_MS = 10_000
+  // Thrown-listener telemetry (#1310), aggregated per event type on the same
+  // first-immediately-then-throttled schedule as the srcSeq gaps above.
+  private _listenerErrCounts: Map<keyof EventMap, number> = new Map()
+  private _listenerErrLastLogAt: Map<keyof EventMap, number> = new Map()
+  private static readonly LISTENER_ERR_LOG_INTERVAL_MS = 10_000
 
   constructor(url: string = '/ws') {
     this.url = url
@@ -467,12 +472,49 @@ export class SessionSocket {
     }, delay)
   }
 
+  /** Fan an event out to its listeners, isolating each one (#1310).
+   *
+   *  A throwing listener used to abort the whole dispatch loop, and for the `batch`
+   *  case that loses the rest of the batch SILENTLY AND UNHEALABLY: handleLiveBatch
+   *  advances the seq bookkeeping for every event before dispatch runs, so the
+   *  gap-heal — which fires only on seq holes — sees a contiguous stream and has
+   *  nothing to detect. The throw also escaped `_handleInbound` entirely, skipping
+   *  the post-dispatch heal and the TanStack cache patches, and was then swallowed
+   *  by `ws.onmessage`'s catch. No listener relies on a throw propagating out of
+   *  `_emit` (nothing here inspects or forwards one), so containment is safe. */
   private _emit<K extends keyof EventMap>(event: K, ...args: Parameters<EventMap[K]>) {
     const set = this._listeners[event] as Set<EventMap[K]> | undefined
     if (!set) return
     for (const cb of set) {
-      ;(cb as (...a: unknown[]) => void)(...(args as unknown[]))
+      try {
+        ;(cb as (...a: unknown[]) => void)(...(args as unknown[]))
+      } catch (err) {
+        this._noteListenerError(event, err)
+      }
     }
+  }
+
+  /** Report a thrown listener to the obs sink, aggregated per event type.
+   *
+   *  A listener that throws once throws on every event after it, and clientLogger's
+   *  ring is bounded at 200 entries (drop-oldest) — one unthrottled batch would evict
+   *  every other diagnostic in the buffer. Same shape as the srcSeq gap aggregation
+   *  above: the first throw logs immediately, further throws inside the interval only
+   *  bump a cumulative count that rides the next flush ("total=N"). */
+  private _noteListenerError(event: keyof EventMap, err: unknown) {
+    const total = (this._listenerErrCounts.get(event) ?? 0) + 1
+    this._listenerErrCounts.set(event, total)
+    const lastLog = this._listenerErrLastLogAt.get(event)
+    const now = Date.now()
+    if (lastLog !== undefined && now - lastLog < SessionSocket.LISTENER_ERR_LOG_INTERVAL_MS) return
+    this._listenerErrLastLogAt.set(event, now)
+    clientLogger.error(
+      `ws.listener.handler_error event=${event} total=${total} ${
+        err instanceof Error ? err.message : String(err)}`,
+      {
+        sessionId: this._activeSessionId ?? undefined,
+        stack: err instanceof Error ? err.stack : undefined,
+      })
   }
 
   private _handleInbound(msg: WsInboundMsg) {
