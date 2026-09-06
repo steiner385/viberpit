@@ -3,12 +3,15 @@ the assistant bearer token may reach (spec §4.3, §4.11). One module so the mid
 API and the tool client agree."""
 from __future__ import annotations
 
+import logging
 import re
 
 from sqlalchemy import select
 
 from server.config import get_settings
 from server.db.models import AppSettings
+
+log = logging.getLogger(__name__)
 
 
 async def _row(db) -> AppSettings | None:
@@ -35,6 +38,28 @@ async def operator_tools_enabled(db) -> bool:
     if row is not None and row.assistant_operator_tools is not None:
         return bool(row.assistant_operator_tools)
     return bool(get_settings().assistant_operator_tools)
+
+
+def assistant_engine():
+    """The engine the drawer runs on, clamped to one this build can build an
+    overlay for.
+
+    Env only — deliberately NOT an ``AppSettings`` row like ``assistant_model``.
+    The engine decides which security overlay applies
+    (``server/assistant/options_codex.py``), and a browser-editable setting would
+    make that an in-app toggle rather than a deployment decision. An unparseable
+    value resolves to Claude with a warning: the failure mode of a typo must be
+    "the drawer runs on the audited engine", never "the drawer refuses to open".
+    """
+    from ccswitch.engines import AgentEngine, InvalidAgentEngine, parse_agent_engine
+
+    raw = get_settings().assistant_engine
+    try:
+        return parse_agent_engine(raw, legacy_default=True)
+    except InvalidAgentEngine:
+        log.warning("CCSWITCH_ASSISTANT_ENGINE=%r is not a known engine; "
+                    "the assistant will run on %s", raw, AgentEngine.CLAUDE_CODE.value)
+        return AgentEngine.CLAUDE_CODE
 
 
 async def assistant_model(db) -> str:

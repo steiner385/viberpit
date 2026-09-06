@@ -254,6 +254,14 @@ try:
         # they were excluded from v1 — and AppSettings.assistant_operator_tools overrides.
         assistant_operator_tools: bool = Field(
             default=False, alias="CCSWITCH_ASSISTANT_OPERATOR_TOOLS")
+        # Which engine the drawer runs on (#1321/#1290). Default Claude: the Codex
+        # overlay is implemented and unit-tested, but "the drawer's boundary holds
+        # against the real app-server" has only been verified by the Task 9.4 spike,
+        # not by an end-to-end acceptance run, so the capability stays gated —
+        # constitution I (gate experimental vendor surfaces) and III (verify against
+        # the real binary before claiming parity).
+        assistant_engine: str = Field(
+            default="claude_code", alias="CCSWITCH_ASSISTANT_ENGINE")
 
         model_config = {"populate_by_name": True, "env_file": ".env", "extra": "ignore"}
 
@@ -511,6 +519,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         assistant_operator_tools: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_ASSISTANT_OPERATOR_TOOLS", "false").lower() in ("1", "true", "yes", "on")
+        )
+        assistant_engine: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_ASSISTANT_ENGINE", "claude_code")
         )
 
         @property

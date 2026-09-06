@@ -62,14 +62,18 @@ def test_supported_method_sets_are_subsets_of_the_declared_inventory() -> None:
     # app-server a permissions grant ccswitch has no vocabulary to describe.
     # `item/tool/requestUserInput` (#1271) is Codex's structured-question
     # surface — answered through the same QuestionRegistry the Claude driver
-    # uses. `mcpServer/elicitation/request` stays excluded: no MCP server is
-    # wired up for a Codex thread, so no live session can ever raise it.
+    # uses. `item/tool/call` (#1321) is the assistant drawer's tool surface:
+    # ccswitch declares the tools on `thread/start` and EXECUTES them here, which
+    # is what makes mounting and gating the same mechanism.
+    # `mcpServer/elicitation/request` stays excluded: no MCP server is wired up
+    # for a Codex thread, so no live session can ever raise it.
     assert schema.SUPPORTED_SERVER_REQUESTS == frozenset(
         {
             "account/chatgptAuthTokens/refresh",
             "item/commandExecution/requestApproval",
             "item/fileChange/requestApproval",
             "item/tool/requestUserInput",
+            "item/tool/call",
         }
     )
     # Only the credential-bearing refresh is gated on the experimental surface.

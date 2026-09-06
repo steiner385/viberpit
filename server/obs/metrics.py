@@ -294,3 +294,8 @@ codex_user_input_ms = Histogram(
     "Time from a Codex request_user_input request arriving to its answer (ms)",
     labelnames=("outcome",),
 )
+codex_dynamic_tool_ms = Histogram(
+    "codex_dynamic_tool_ms",
+    "Time from a Codex item/tool/call arriving to its result (ms)",
+    labelnames=("outcome",),
+)

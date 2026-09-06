@@ -53,7 +53,7 @@ import os
 import subprocess
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
@@ -61,6 +61,9 @@ from typing import Any, Final
 from ccswitch import paths
 from server.aio import cancel_and_reap
 from server.assistant.context import PromptContext
+from server.assistant.options_codex import (ASSISTANT_CODEX_RESUME_UNSUPPORTED,
+                                            CodexAssistantOverlay,
+                                            assistant_approval_decision, tool_error)
 from server.codex import schema
 from server.codex.capabilities import CODEX_CAPABILITIES
 from server.codex.manager import (
@@ -72,6 +75,7 @@ from server.codex.manager import (
     TurnToken,
 )
 from server.codex.permissions import (
+    ASSISTANT_PROFILE,
     CodexPermissionProfile,
     UnsupportedCodexPermissionMode,
     profile_for_mode,
@@ -261,6 +265,8 @@ class _Counters:
     dropped_user_echoes: int = 0
     stale_approvals: int = 0
     stale_user_input: int = 0
+    stale_dynamic_tools: int = 0
+    assistant_builtins_declined: int = 0
     steer_fallbacks: int = 0
     pump_errors: int = 0
 
@@ -301,6 +307,7 @@ class CodexAgentDriver:
         on_recoverable_failure: Any = None,
         on_context_usage: Any = None,
         clock: Callable[[], float] | None = None,
+        assistant_overlay: CodexAssistantOverlay | None = None,
     ) -> None:
         self.session_id = session_id
         self.account = account
@@ -322,8 +329,22 @@ class CodexAgentDriver:
         self._on_recoverable_failure = on_recoverable_failure
         self._on_context_usage = on_context_usage
         self._clock = clock or time.time
+        #: Set only for an assistant-kind session (server/assistant/options_codex.py).
+        #: Its presence changes four things about this driver, all in the
+        #: fail-closed direction: the thread is started with a host-executed tool
+        #: surface and a neutral cwd, it is never resumed, its permission mode is
+        #: pinned, and every built-in approval is declined without a card.
+        self._assistant = assistant_overlay
 
-        self._profile: CodexPermissionProfile = profile_for_mode(mode)
+        # An assistant thread's authority comes from its overlay, not from the
+        # session's permission mode: the mode is a coding-session concept and the
+        # drawer has no coding surface for it to describe. Pinned at construction
+        # so `turn/start` — which sends `self._profile.approval_policy` on EVERY
+        # turn — cannot quietly downgrade the thread from `untrusted` after a
+        # `thread/start` that pinned it.
+        self._profile: CodexPermissionProfile = (
+            ASSISTANT_PROFILE if assistant_overlay is not None
+            else profile_for_mode(mode))
         #: A profile whose sandbox differs from the live one, waiting for the
         #: next turn boundary (the sandbox is immutable mid-thread).
         self._pending_profile: tuple[str, CodexPermissionProfile] | None = None
@@ -459,8 +480,27 @@ class CodexAgentDriver:
         """Open (or resume) this session's thread and subscribe to its streams."""
         client = self._client()
         profile = self._profile
-        if self.resume:
-            response: schema.ThreadResumeResponse | schema.ThreadStartResponse = (
+        overlay = self._assistant
+        response: schema.ThreadResumeResponse | schema.ThreadStartResponse
+        if overlay is not None:
+            # An assistant thread is ALWAYS started, never resumed, even when the
+            # row carries an engine_session_id: `thread/resume` has no
+            # `dynamicTools` field on the pinned contract, so resuming would hand
+            # the drawer back with the built-ins still declared and every ccswitch
+            # tool gone. Losing the model's context is the recoverable half of that
+            # trade; the ccswitch transcript is stored by ccswitch, not replayed
+            # from the thread.
+            if self.resume:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "codex.driver.assistant_thread_restarted",
+                    session=self.session_id,
+                    reason=ASSISTANT_CODEX_RESUME_UNSUPPORTED,
+                )
+            response = await client.start_thread(overlay.thread_start_params())
+        elif self.resume:
+            response = (
                 await client.resume_thread(
                     schema.ThreadResumeParams(
                         thread_id=self.resume,
@@ -509,6 +549,7 @@ class CodexAgentDriver:
             events=self._on_event,
             approvals=self._on_approval,
             user_input=self._on_user_input,
+            dynamic_tools=None if overlay is None else self._on_dynamic_tool,
         )
         self._closing = False
         self._pump = asyncio.create_task(
@@ -908,6 +949,19 @@ class CodexAgentDriver:
         because the alternative (a default) is how a session ends up with more
         authority than its mode name promises.
         """
+        if self._assistant is not None:
+            # The assistant overlay pins `read-only` + `untrusted` for the life of
+            # the thread. Honouring a mode change would mean either widening the
+            # sandbox (the boundary the built-ins are held by) or re-resuming to
+            # apply it — and a resume drops `dynamicTools`. Both roads end at a
+            # drawer with more authority and fewer tools, so this is a no-op.
+            log_event(
+                logger,
+                logging.INFO,
+                "codex.driver.assistant_mode_pinned",
+                session=self.session_id,
+            )
+            return
         resolved = mode
         if mode == "plan" and self.mode != "plan":
             self._pre_plan_mode = self.mode
@@ -999,6 +1053,24 @@ class CodexAgentDriver:
         JSON-RPC reply, and the one outcome that must be unreachable by accident
         is an accept.
         """
+        if self._assistant is not None:
+            # An assistant thread declares no built-in it may use, so every
+            # approval it raises is the model reaching outside its surface — a
+            # prompt-injection surface, not a user decision. Declined here without
+            # ever touching the permission registry, mirroring
+            # `ClaudeAgentDriver._can_use_tool`'s hard deny for a
+            # non-`mcp__ccswitch__` tool. A card would be worse than useless: it
+            # would invite an operator to grant an authority the drawer's whole
+            # design says it does not have.
+            self.counters.assistant_builtins_declined += 1
+            log_event(
+                logger,
+                logging.WARNING,
+                "codex.driver.assistant_builtin_declined",
+                session=self.session_id,
+                method=method,
+            )
+            return assistant_approval_decision(method)
         thread_id = self._thread_id
         generation = self._manager.generation_for(self.account)
         if (
@@ -1080,6 +1152,114 @@ class CodexAgentDriver:
 
     def resolve_permission(self, perm_id: str, decision: str, identity: str) -> bool:
         return self._reg.resolve(perm_id, decision, identity)
+
+    # -- client-declared tools (assistant threads only) ----------------------
+
+    async def _on_dynamic_tool(
+        self, params: schema.DynamicToolCallParams
+    ) -> schema.DynamicToolCallResponse:
+        """Run one ccswitch tool the assistant thread declared as a `dynamicTool`.
+
+        This is the Codex half of the drawer's tool surface, and it is
+        deliberately the same *decision* as the Claude half rather than a
+        parallel one: the call is gated through
+        ``PermissionRegistry.request`` under the canonical
+        ``mcp__ccswitch__<tool>`` name, so a read auto-allows, a mutation offers a
+        card that can be remembered, and a destructive tool always prompts and
+        never offers "always allow" — one policy, two engines.
+
+        Nothing here can execute a built-in: this handler only ever sees a tool
+        the overlay declared, and `run_tool` refuses a name that is not in its
+        table.
+        """
+        overlay = self._assistant
+        thread_id = self._thread_id
+        generation = self._manager.generation_for(self.account)
+        if (
+            overlay is None
+            or self._closing
+            or thread_id is None
+            or params.thread_id != thread_id
+            or generation is None
+            or generation != self._generation
+        ):
+            self.counters.stale_dynamic_tools += 1
+            log_event(
+                logger,
+                logging.WARNING,
+                "codex.driver.dynamic_tool_refused",
+                session=self.session_id,
+                reason="stale_request",
+            )
+            return tool_error(
+                "ccswitch tool error: this session is no longer accepting tool calls"
+            )
+        if not overlay.declares(params.tool):
+            # Refused BEFORE the permission gate, not after. An undeclared name
+            # can never execute, and the registry's `mcp__ccswitch__` branch
+            # treats an unannotated tool conservatively as mutation-like — so
+            # letting it through would raise a confirmation card for a tool that
+            # does not exist, and park the turn until a human answered it.
+            log_event(
+                logger,
+                logging.WARNING,
+                "codex.driver.dynamic_tool_refused",
+                session=self.session_id,
+                reason="undeclared_tool",
+            )
+            return await overlay.run_tool(params.tool, params.arguments)
+        tool = overlay.mcp_name(params.tool)
+        arguments = (
+            dict(params.arguments) if isinstance(params.arguments, Mapping) else {}
+        )
+        perm_id, future, always_allowed = await self._reg.request(
+            self.session_id,
+            params.turn_id,
+            tool,
+            arguments,
+            mode=self.mode,
+            denylist=(),
+            allowlist=True,
+            identity=self.identity,
+        )
+        if perm_id is not None:
+            self._emit(
+                ev.PermissionRequest(
+                    perm_id,
+                    params.turn_id,
+                    tool,
+                    ev.tool_kind(tool),
+                    arguments,
+                    always_allowed=always_allowed,
+                )
+            )
+            await self._emit_status()
+        allowed = await future
+        if perm_id is not None:
+            self._emit(ev.PermissionResolved(perm_id, params.turn_id, allowed))
+            await self._emit_status()
+        if not allowed:
+            return tool_error("denied by user")
+        # Re-check the fence after the wait, exactly as `_on_approval` does: a
+        # human can take minutes, and running a mutation against an app-server
+        # that was replaced in the meantime is the same confused-deputy shape.
+        if (
+            self._closing
+            or self._thread_id != thread_id
+            or self._manager.generation_for(self.account) != generation
+        ):
+            self.counters.stale_dynamic_tools += 1
+            log_event(
+                logger,
+                logging.WARNING,
+                "codex.driver.dynamic_tool_refused",
+                session=self.session_id,
+                reason="generation_changed",
+            )
+            return tool_error(
+                "ccswitch tool error: the session was replaced before this tool ran"
+            )
+        return await overlay.run_tool(params.tool, arguments)
 
     # -- structured questions ------------------------------------------------
 
@@ -1808,16 +1988,29 @@ class CodexAgentDriverFactory(AgentDriverFactory):
         manager: CodexRunnerManager,
         permission_registry: PermissionRegistry,
         model_for_session: Callable[[str], str | None] | None = None,
+        assistant_overlay_for_session: (
+            Callable[[str], CodexAssistantOverlay | None] | None
+        ) = None,
     ) -> None:
         self._manager = manager
         self._permission_registry = permission_registry
         self._model_for_session = model_for_session
+        self._assistant_overlay_for_session = assistant_overlay_for_session
 
     def create(self, config: AgentDriverConfig) -> CodexAgentDriver:
         model = (
             None
             if self._model_for_session is None
             else self._model_for_session(config.session_id)
+        )
+        # Resolved through a callable for the same reason the model is: the
+        # overlay holds a live tool table bound to THIS session's loopback
+        # `AssistantApi`, so it can neither be persisted on the row nor carried
+        # over RPC in `AgentDriverConfig`.
+        overlay = (
+            None
+            if self._assistant_overlay_for_session is None
+            else self._assistant_overlay_for_session(config.session_id)
         )
         return CodexAgentDriver(
             config.session_id,
@@ -1836,4 +2029,5 @@ class CodexAgentDriverFactory(AgentDriverFactory):
             on_recoverable_failure=config.on_recoverable_failure,
             on_context_usage=config.on_context_usage,
             clock=config.clock,
+            assistant_overlay=overlay,
         )

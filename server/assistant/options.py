@@ -69,3 +69,32 @@ def assistant_options(*, server: Any, max_turns: int, model: str,
         "model": model,
         "effort": "low",
     }
+
+
+def assistant_overlay_for(engine: Any, *, api: Any, server: Any, max_turns: int,
+                          model: str, operator: bool = False) -> Any:
+    """THE entry point: the overlay for one assistant session on *engine*.
+
+    One function so "which overlay does an assistant get?" has a single answer,
+    and adding an engine is one branch here rather than an `if` at every driver
+    build site. The two overlays are different *types* on purpose — a dict of
+    ``ClaudeAgentOptions`` kwargs for Claude, a
+    :class:`~server.assistant.options_codex.CodexAssistantOverlay` for Codex —
+    because they share only two of five concepts (see that module's table); a
+    common shape would be a lie the driver would have to unpick anyway.
+
+    Both are built from the SAME ``AssistantApi``-backed tool table
+    (``server.assistant.tools.build_tools``), which is what keeps the tool surface
+    one thing across engines. *server* is the pre-built in-process MCP server the
+    Claude path needs; the Codex path builds its specs from *api* directly and
+    ignores it.
+    """
+    from ccswitch.engines import AgentEngine, parse_agent_engine
+
+    selected = parse_agent_engine(engine, legacy_default=True)
+    if selected is AgentEngine.CODEX:
+        from .options_codex import assistant_codex_options
+
+        return assistant_codex_options(api=api, model=model, operator=operator)
+    return assistant_options(
+        server=server, max_turns=max_turns, model=model, operator=operator)

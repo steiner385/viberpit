@@ -74,6 +74,7 @@ from server.obs.context import log_event
 from server.obs.metrics import (
     codex_approval_ms,
     codex_build_info,
+    codex_dynamic_tool_ms,
     codex_runner_restarts_total,
     codex_threads_active,
     codex_turns_active,
@@ -179,6 +180,13 @@ ApprovalSink = Callable[[str, "schema.ApprovalParams"], Awaitable["schema.Approv
 #: Answers one `item/tool/requestUserInput` request raised by ONE thread's turn.
 UserInputSink = Callable[
     ["schema.ToolRequestUserInputParams"], Awaitable["schema.ToolRequestUserInputResponse"]
+]
+#: Runs one client-declared (`dynamicTools`) tool for ONE thread's turn. Same
+#: per-thread keying as the sinks above, and for a stronger reason: this sink
+#: EXECUTES rather than relaying a decision, so routing it account-wide would let
+#: one session's model run another session's tool table.
+DynamicToolSink = Callable[
+    ["schema.DynamicToolCallParams"], Awaitable["schema.DynamicToolCallResponse"]
 ]
 ProcessFactory = Callable[..., CodexProcessHandle]
 ClientFactory = Callable[..., CodexAppServerClient]
@@ -287,6 +295,11 @@ class CodexRunnerManager:
         #: keying and the same reason: a `request_user_input` call belongs to
         #: the one session whose turn raised it.
         self._user_input_sinks: dict[str, dict[str, UserInputSink]] = {}
+        #: account -> thread -> dynamic-tool executor. Only assistant threads
+        #: register one; a coding thread declares no `dynamicTools`, so the
+        #: app-server never raises `item/tool/call` for it and its absence here
+        #: is what makes the protocol's `-32601` the fail-closed default.
+        self._dynamic_tool_sinks: dict[str, dict[str, DynamicToolSink]] = {}
         self._turns: dict[str, dict[str, int]] = {}  # account -> thread -> generation
         #: Monotonic per account for the life of the manager. Owned here rather than
         #: on `_Runner` precisely so that stop(), the idle reaper and `_give_up` —
@@ -301,6 +314,7 @@ class CodexRunnerManager:
         self.unrouted_events = 0
         self.unrouted_approvals = 0
         self.unrouted_user_input = 0
+        self.unrouted_dynamic_tools = 0
         #: Set by ``build_codex_manager`` to the provider backing
         #: ``credential_supplier``. ``invalidate_credentials`` needs it; nothing
         #: else in this class does, which is why it is not a constructor argument.
@@ -367,6 +381,7 @@ class CodexRunnerManager:
             notification_handler=partial(self._on_notification, account),
             approval_handler=partial(self._on_approval, account),
             user_input_handler=partial(self._on_user_input, account),
+            dynamic_tool_handler=partial(self._on_dynamic_tool, account),
             refresh_handler=(
                 None
                 if self._refresh_handler_factory is None
@@ -680,13 +695,15 @@ class CodexRunnerManager:
         events: ThreadEventSink | None = None,
         approvals: ApprovalSink | None = None,
         user_input: UserInputSink | None = None,
+        dynamic_tools: DynamicToolSink | None = None,
     ) -> None:
         """Subscribe one thread driver to everything addressed to its thread.
 
-        One registration call for all four streams — supervision notices, the
-        app-server's notifications, its approval requests and its structured
-        questions — so a driver cannot end up half-subscribed, and
-        :meth:`unregister_thread` has exactly one inverse to keep correct.
+        One registration call for all five streams — supervision notices, the
+        app-server's notifications, its approval requests, its structured
+        questions and its client-declared tool calls — so a driver cannot end up
+        half-subscribed, and :meth:`unregister_thread` has exactly one inverse to
+        keep correct.
         """
         notifiers = self._notifiers.setdefault(account, {})
         # Re-registering the same thread (a driver reattach) is one thread, not two.
@@ -699,6 +716,8 @@ class CodexRunnerManager:
             self._approval_sinks.setdefault(account, {})[thread_id] = approvals
         if user_input is not None:
             self._user_input_sinks.setdefault(account, {})[thread_id] = user_input
+        if dynamic_tools is not None:
+            self._dynamic_tool_sinks.setdefault(account, {})[thread_id] = dynamic_tools
 
     def unregister_thread(self, account: str, thread_id: str) -> None:
         if self._notifiers.get(account, {}).pop(thread_id, None) is not None:
@@ -709,6 +728,7 @@ class CodexRunnerManager:
         # rather than reaching a driver that is already closing.
         self._approval_sinks.get(account, {}).pop(thread_id, None)
         self._user_input_sinks.get(account, {}).pop(thread_id, None)
+        self._dynamic_tool_sinks.get(account, {}).pop(thread_id, None)
         self._close_turn(account, thread_id)
 
     # -- app-server stream routing ----------------------------------------
@@ -862,6 +882,41 @@ class CodexRunnerManager:
             outcome = "decided"
         finally:
             codex_user_input_ms.labels(outcome).observe((time.monotonic() - started) * 1000.0)
+        return response
+
+    async def _on_dynamic_tool(
+        self, account: str, params: schema.DynamicToolCallParams
+    ) -> schema.DynamicToolCallResponse:
+        """Route one `item/tool/call` to the thread that declared the tool.
+
+        Mirrors :meth:`_on_user_input`, and fails closed the same way: an
+        unrouted call RAISES rather than answering. The protocol turns that into
+        a JSON-RPC error, so the model is told its tool call failed instead of
+        being handed a fabricated result — which is the only outcome that would
+        be worse than no answer at all.
+        """
+        sink = self._dynamic_tool_sinks.get(account, {}).get(params.thread_id)
+        if sink is None:
+            self.unrouted_dynamic_tools += 1
+            codex_dynamic_tool_ms.labels("unrouted").observe(0.0)
+            log_event(
+                logger,
+                logging.WARNING,
+                "codex.manager.unrouted_dynamic_tool",
+                account=account,
+            )
+            raise CodexRunnerMissingError(
+                "no live ccswitch session owns this codex tool call"
+            )
+        started = time.monotonic()
+        outcome = "error"
+        try:
+            response = await sink(params)
+            outcome = "ok" if response.success else "tool_error"
+        finally:
+            codex_dynamic_tool_ms.labels(outcome).observe(
+                (time.monotonic() - started) * 1000.0
+            )
         return response
 
     def _notify(self, notice: RunnerNotice) -> None:

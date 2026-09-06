@@ -127,3 +127,25 @@ names `gpt-5.6-sol` and takes `CCSWITCH_CODEX_SPIKE_MODEL` as an override.
   repository's `AGENTS.md` — for a drawer whose whole point is a locked-down, loopback-only tool
   surface, inheriting a coding agent's instructions is a confidentiality regression.
 - **Follow-up issue, not this PR:** #1321 carries the overlay design above.
+
+## Implemented (2026-09-06)
+
+The overlay landed in #1321/#1290: `server/assistant/options_codex.py`
+(`CodexAssistantOverlay`, selected by `server/assistant/options.py:assistant_overlay_for`),
+`dynamicTools` on `ThreadStartParams` and `item/tool/call` in `SUPPORTED_SERVER_REQUESTS`
+(`server/codex/schema.py`), the handler and per-thread routing (`server/codex/protocol.py`,
+`server/codex/manager.py`), and the driver wiring (`server/codex/driver.py`). Gated on
+`CCSWITCH_ASSISTANT_ENGINE=codex`, default Claude.
+
+Two things this spike did not surface, found while implementing:
+
+* **`thread/resume` has no `dynamicTools`.** `v2/ThreadResumeParams.json` declares
+  `baseInstructions` but no tool field, so a resumed assistant thread would come back with the
+  built-ins still declared and every ccswitch tool gone. Assistant threads are therefore always
+  started, never resumed — the drawer trades model context (recoverable) for the boundary
+  (not recoverable). `_apply_profile` re-resumes to change a sandbox, which is why an assistant
+  thread's permission mode is pinned too.
+* **Half the ccswitch tools use the SDK's schema shorthand** (`{"id": str}`), which
+  `create_sdk_mcp_server` expands at build time and Codex has no expander for. The overlay
+  performs the same expansion (`options_codex.input_schema_for`), pinned by a test that compares
+  every declared schema against what the real Claude MCP server publishes.

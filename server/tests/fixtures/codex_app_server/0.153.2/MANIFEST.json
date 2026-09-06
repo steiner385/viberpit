@@ -1,6 +1,6 @@
 {
  "cliVersion": "codex-cli 0.153.2",
- "contractSha256": "e6381998acfed041c94358d3fb5149e6a8a85839c123cfa65e3643948b5ae4cc",
+ "contractSha256": "02cb1ad1dc30f9cf305ede6b7e37cd942d11302a80b49911ab3dff012f6b1f32",
  "documents": [
   "v1/InitializeParams.json",
   "v1/InitializeResponse.json",
@@ -50,7 +50,9 @@
   "v2/SkillsListParams.json",
   "v2/SkillsListResponse.json",
   "ToolRequestUserInputParams.json",
-  "ToolRequestUserInputResponse.json"
+  "ToolRequestUserInputResponse.json",
+  "DynamicToolCallParams.json",
+  "DynamicToolCallResponse.json"
  ],
  "envelopes": {
   "ClientNotification.json": {
