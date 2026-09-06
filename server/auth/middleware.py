@@ -11,6 +11,10 @@ cannot be verified.
 """
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import hmac
+import logging
 import os
 import secrets
 import uuid
@@ -19,7 +23,7 @@ from typing import TYPE_CHECKING
 
 from fastapi import HTTPException, Request, WebSocket, status
 from itsdangerous import BadSignature, TimestampSigner
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
@@ -29,7 +33,21 @@ from server.config import get_settings
 from server.db.models import AppSession
 
 if TYPE_CHECKING:
-    from server.assistant.token import AssistantClaims
+    from server.assistant.token import AssistantClaims, UserClaims
+
+log = logging.getLogger(__name__)
+
+# Fire-and-forget background tasks (e.g. the ccas2 last_used_at bump below) must be
+# referenced somewhere or the event loop is free to garbage-collect them mid-run —
+# this set plus a done-callback is the standard asyncio idiom to keep them alive
+# without making the request wait on them.
+_bg_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_bg(coro) -> None:
+    task = asyncio.create_task(coro)
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
 
 # Paths that bypass identity enforcement (unauthenticated probes).
 _EXEMPT_PATHS = frozenset({"/healthz"})
@@ -106,6 +124,88 @@ def _assistant_claims(request: Request) -> "AssistantClaims | None":
     return verify_token(auth[len("Bearer "):], max_age_s=get_settings().assistant_idle_s * 4)
 
 
+async def _bump_last_used_at(token_id: str) -> None:
+    """Best-effort `AssistantToken.last_used_at` bump. Failure is logged, never
+    surfaced — the request this token authenticated has already been decided by the
+    time this runs, so a DB hiccup here must not turn a successful call into one."""
+    try:
+        from server.db import db_session as _bump_db_session  # noqa: PLC0415
+        from server.db.models import AssistantToken  # noqa: PLC0415
+        async with _bump_db_session() as db:
+            await db.execute(
+                update(AssistantToken).where(AssistantToken.id == token_id)
+                .values(last_used_at=datetime.now(timezone.utc))
+            )
+            await db.commit()
+    except Exception:
+        log.debug("assistant external token last_used_at bump failed", exc_info=True)
+
+
+async def _dispatch_user_token(request: Request, call_next, token: str):
+    """Handle a `Bearer ccas2:…` request end to end (spec v2 §5/§7, Task 9.5).
+
+    Unlike `ccas1:`, this token is accepted from any peer — it is meant for an
+    external client reaching the edge over the tailnet, not just the local daemon —
+    so the signature plus the DB row (revocation, per-token expiry, scope) is the
+    whole trust boundary rather than a loopback check. Always returns a Response:
+    the caller only reaches this function once the `ccas2:` prefix is confirmed, and
+    a token that fails here has nothing else to fall back on (`verify_identity` can
+    only ever fail it too), so failure paths terminate the request rather than
+    falling through.
+    """
+    settings = get_settings()
+    if not settings.assistant_external_tokens:
+        return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"error": {
+            "code": "UNAUTHORIZED", "message": "external assistant tokens are disabled"}})
+
+    from server.assistant.token import verify_user_token  # noqa: PLC0415
+    claims: "UserClaims | None" = verify_user_token(
+        token, max_age_s=settings.assistant_token_max_days * 86400)
+    if claims is None:
+        return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"error": {
+            "code": "UNAUTHORIZED", "message": "invalid or expired token"}})
+
+    from server.db import db_session as _token_db_session  # noqa: PLC0415
+    from server.db.models import AssistantToken  # noqa: PLC0415
+    # Naive UTC: assistant_tokens.expires_at is DateTime(timezone=True), which round-
+    # trips AWARE on Postgres but NAIVE on SQLite (SQLite has no real datetime type —
+    # see server/db/clock.py's docstring on the same asymmetry). Comparing two aware
+    # values or two naive values both work; comparing one of each raises TypeError, so
+    # both sides are normalized to naive UTC before the comparison.
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    async with _token_db_session() as db:
+        row = (await db.execute(
+            select(AssistantToken).where(AssistantToken.id == claims.token_id)
+        )).scalar_one_or_none()
+    valid = False
+    if row is not None and row.revoked_at is None:
+        expires_at = row.expires_at
+        if expires_at.tzinfo is not None:
+            expires_at = expires_at.astimezone(timezone.utc).replace(tzinfo=None)
+        valid = expires_at > now and hmac.compare_digest(row.token_hash, token_hash)
+    if not valid:
+        return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"error": {
+            "code": "UNAUTHORIZED", "message": "invalid or expired token"}})
+    _spawn_bg(_bump_last_used_at(claims.token_id))
+
+    from server.assistant.policy import route_allowed  # noqa: PLC0415
+    # `operator=False` unconditionally: an external ccas2 token may never reach the
+    # operator tier even when AppSettings.assistant_operator_tools is on for the
+    # in-process assistant (spec v2 §7) — a `read` scope is further limited to GET.
+    if not (route_allowed(request.method, request.url.path, operator=False)
+            and (claims.scope == "act" or request.method.upper() == "GET")):
+        return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={"error": {
+            "code": "ASSISTANT_ROUTE_FORBIDDEN",
+            "message": "this token may not call this route"}})
+
+    request.state.identity = claims.identity
+    request.state.via = "mcp-external"
+    request.state.assistant_scope = claims.scope
+    request.state.app_session_id = None
+    return await call_next(request)
+
+
 class IdentityMiddleware(BaseHTTPMiddleware):
     """ASGI middleware that enforces identity on every request.
 
@@ -143,6 +243,12 @@ class IdentityMiddleware(BaseHTTPMiddleware):
             request.state.assistant_session_id = claims.session_id
             request.state.app_session_id = None      # no cookie session for a bearer call
             return await call_next(request)
+
+        from server.assistant.token import USER_PREFIX  # noqa: PLC0415
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.startswith("Bearer " + USER_PREFIX):
+            return await _dispatch_user_token(
+                request, call_next, auth_header[len("Bearer "):])
 
         identity = verify_identity(request)
         if identity is None:
