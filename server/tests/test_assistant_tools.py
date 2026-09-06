@@ -502,6 +502,8 @@ async def test_test_notification_is_read_classed_but_calls_post():
     assert "is_error" not in out
     assert seen == {"method": "POST", "path": "/api/notifications/test",
                     "body": {"eventClass": "session.done", "repo": "o/r"}}
+
+
 @pytest.mark.asyncio
 async def test_envelope_carries_now_and_truncated():
     """`now` is the model's only clock (B6), and `truncated` tells it a list is partial
@@ -666,3 +668,125 @@ async def test_export_session_returns_tail_text():
     # 100 is below the 500 floor, so the cap clamps UP to 500 — the tail is what matters.
     assert data["markdown"].endswith("TAIL")
     assert len(data["markdown"]) <= 500 and data["truncatedChars"] > 0
+
+
+# --- PM product-layer tools (plan Task 6.2, Pack P) ---------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name,args,method,path", [
+    ("list_products", {}, "GET", "/api/pm/projects"),
+    ("get_product", {"slug": "kindash"}, "GET", "/api/pm/projects/kindash"),
+    ("get_product_deps", {"slug": "kindash"}, "GET", "/api/pm/projects/kindash/deps"),
+    ("get_onboarding_status", {"slug": "kindash"}, "GET",
+     "/api/pm/projects/kindash/onboarding"),
+    ("list_triage", {}, "GET", "/api/pm/triage"),
+    ("request_product_sync", {"slug": "kindash"}, "POST", "/api/pm/projects/kindash/sync"),
+])
+async def test_product_tools_hit_one_endpoint(name, args, method, path):
+    seen: list[tuple[str, str]] = []
+
+    def handler(req: httpx.Request):
+        seen.append((req.method, req.url.path))
+        return httpx.Response(200, json={"ok": True})
+
+    out = await _tool(build_tools(_api(handler)), name).handler(args)
+    assert "is_error" not in out
+    assert seen == [(method, path)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["get_product", "get_product_deps", "get_onboarding_status",
+                                  "request_product_sync"])
+async def test_product_tools_reject_a_bad_slug_locally(name):
+    calls: list[str] = []
+
+    def handler(req: httpx.Request):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={})
+
+    out = await _tool(build_tools(_api(handler)), name).handler({"slug": "../etc"})
+    assert out["is_error"] is True
+    assert calls == [], "a locally-rejected slug must never reach the API"
+
+
+@pytest.mark.asyncio
+async def test_get_priority_queue_forwards_min_status_and_caps_entries():
+    seen = {}
+
+    def handler(req: httpx.Request):
+        seen["method"] = req.method
+        seen["path"] = req.url.path
+        seen["params"] = dict(req.url.params)
+        return httpx.Response(200, json={
+            "entries": [{"ref": f"o/r#{i}", "score": 100 - i} for i in range(60)],
+            "skipped": {"deps": 4, "status": 9},
+            "generatedAt": "2026-09-05T00:00:00+00:00",
+        })
+
+    out = await _tool(build_tools(_api(handler)), "get_priority_queue").handler(
+        {"min_status": "backlog"})
+    assert seen == {"method": "GET", "path": "/api/pm/queue",
+                    "params": {"min_status": "backlog"}}
+    body = json.loads(out["content"][0]["text"])
+    # Capped, but the envelope still reports the drop, so the model never states a
+    # truncated queue as if it were the whole one.
+    assert len(body["data"]["entries"]) == 50
+    assert body["truncated"] == 10
+    # `skipped` (reason -> count) is what answers "what is blocked by a dependency?",
+    # so it must survive the trim untouched.
+    assert body["data"]["skipped"] == {"deps": 4, "status": 9}
+
+
+@pytest.mark.asyncio
+async def test_get_priority_queue_omits_min_status_when_unset():
+    seen = {}
+
+    def handler(req: httpx.Request):
+        seen["params"] = dict(req.url.params)
+        return httpx.Response(200, json={"entries": [], "skipped": {}})
+
+    await _tool(build_tools(_api(handler)), "get_priority_queue").handler({})
+    assert seen["params"] == {}, "an unset min_status must let the server default apply"
+
+
+@pytest.mark.asyncio
+async def test_resolve_triage_routes_by_decision_and_rejects_others():
+    seen: list[str] = []
+
+    def handler(req: httpx.Request):
+        seen.append(req.url.path)
+        return httpx.Response(200, json={"ok": True})
+
+    tools = build_tools(_api(handler))
+    await _tool(tools, "resolve_triage").handler({"proposal_id": "p1", "decision": "accept"})
+    await _tool(tools, "resolve_triage").handler({"proposal_id": "p1", "decision": "reject"})
+    bad = await _tool(tools, "resolve_triage").handler({"proposal_id": "p1", "decision": "maybe"})
+    assert seen == ["/api/pm/triage/p1/accept", "/api/pm/triage/p1/reject"]
+    assert bad["is_error"] is True
+
+
+@pytest.mark.asyncio
+async def test_resolve_triage_rejects_a_bad_proposal_id_locally():
+    calls: list[str] = []
+
+    def handler(req: httpx.Request):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={})
+
+    out = await _tool(build_tools(_api(handler)), "resolve_triage").handler(
+        {"proposal_id": "../../sessions", "decision": "accept"})
+    assert out["is_error"] is True
+    assert calls == [], "a locally-rejected proposal id must never reach the API"
+
+
+def test_product_tool_classes():
+    """The six reads must never be classed as mutations (they would then take a
+    permission card), and the two writers must never be classed READ (they would
+    then skip one)."""
+    for name in ("list_products", "get_product", "get_product_deps", "get_priority_queue",
+                 "list_triage", "get_onboarding_status"):
+        assert TOOL_SPECS[name].tool_class is ToolClass.READ
+    for name in ("resolve_triage", "request_product_sync"):
+        assert TOOL_SPECS[name].tool_class is ToolClass.MUTATION
+        assert annotation_for(f"mcp__ccswitch__{name}").tool_class is ToolClass.MUTATION

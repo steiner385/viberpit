@@ -43,6 +43,11 @@ ARGS: dict[str, dict] = {
     "ready_merge_pr": {"repo": "o/n", "number": 1},
     "list_initiatives": {"status": "build"}, "get_initiative": {"slug": "a"},
     "advance_initiative": {"slug": "a"},
+    "list_products": {}, "get_product": {"slug": "a"}, "get_product_deps": {"slug": "a"},
+    "get_priority_queue": {"min_status": "ready"}, "list_triage": {},
+    "get_onboarding_status": {"slug": "a"},
+    "resolve_triage": {"proposal_id": "p1", "decision": "accept"},
+    "request_product_sync": {"slug": "a"},
 }
 
 
