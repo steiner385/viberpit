@@ -32,6 +32,9 @@ interface GeneralDraft {
   assistantEnabled: boolean
   // '' = server default (CCSWITCH_ASSISTANT_MODEL); payload turns it back into null.
   assistantModel: string
+  // Operator tier. Null coalesces to FALSE, not true like assistantEnabled above: this
+  // one is opt-in by design (spec v2 B1), so an unset server value must render as off.
+  assistantOperatorTools: boolean
 }
 
 function toDraft(s: AppSettings): GeneralDraft {
@@ -43,6 +46,7 @@ function toDraft(s: AppSettings): GeneralDraft {
     maxActive: s.maxActiveSessions != null ? String(s.maxActiveSessions) : '',
     assistantEnabled: s.assistantEnabled ?? true,
     assistantModel: s.assistantModel ?? '',
+    assistantOperatorTools: s.assistantOperatorTools ?? false,
   }
 }
 
@@ -69,6 +73,7 @@ function toPayload(d: GeneralDraft): Partial<AppSettings> {
     autoArchiveEnabled: d.autoArchiveEnabled,
     assistantEnabled: d.assistantEnabled,
     assistantModel: d.assistantModel.trim() || null,
+    assistantOperatorTools: d.assistantOperatorTools,
   }
 }
 
@@ -320,6 +325,31 @@ export function GeneralSection() {
               <option key={m.id} value={m.id}>{m.label}</option>
             ))}
           </Select>
+        </SettingRow>
+        <SettingRow
+          label="Operator tools"
+          htmlFor="general-assistant-operator-tools"
+          // The consequence sentence is deliberately in the always-visible description
+          // and not a tooltip (S24): this is the switch that widens the assistant from
+          // reading the fleet to changing it, so the blast radius has to be readable
+          // before the click, not after it.
+          description={(
+            <>
+              Lets the assistant start deploys, upgrade hosts and refresh accounts — each still
+              asks for confirmation. Takes effect on the next New chat.
+              <span className="mt-0.5 block text-warning">
+                These actions change live infrastructure and some cannot be undone once started.
+              </span>
+            </>
+          )}
+          selfLabelled
+        >
+          <Checkbox
+            id="general-assistant-operator-tools"
+            label="Enable operator tools"
+            checked={draft.assistantOperatorTools}
+            onChange={(v) => set('assistantOperatorTools', v)}
+          />
         </SettingRow>
       </SettingsGroup>
 

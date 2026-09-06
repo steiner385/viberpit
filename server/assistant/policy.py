@@ -23,6 +23,20 @@ async def assistant_enabled(db) -> bool:
     return bool(get_settings().assistant_enabled)
 
 
+async def operator_tools_enabled(db) -> bool:
+    """Whether the operator tier (deploy, host upgrade, account refresh/enable/reauth) is on.
+
+    Same env → AppSettings precedence as `assistant_enabled`, but opt-in: the env default
+    is false (spec v2 §7, decision B1). Callers use this at BOTH enforcement points — tool
+    registration and the route allowlist — so an off setting means the model cannot even
+    attempt an operator call, not merely that the call is denied.
+    """
+    row = await _row(db)
+    if row is not None and row.assistant_operator_tools is not None:
+        return bool(row.assistant_operator_tools)
+    return bool(get_settings().assistant_operator_tools)
+
+
 async def assistant_model(db) -> str:
     row = await _row(db)
     if row is not None and row.assistant_model is not None:

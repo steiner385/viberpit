@@ -99,6 +99,7 @@ it reuses the normal session stack, so there is no extra venv extra and no model
 | `CCSWITCH_ASSISTANT_IDLE_S` | `900` | Idle grace before an assistant's driver is closed. **Also sets the assistant bearer token's max age (`idle_s × 4`, `server/auth/middleware.py`)** — raising it lengthens a credential's lifetime, so treat it as a security knob, not just a timeout. |
 | `CCSWITCH_ASSISTANT_MAX_TURNS` | `30` | SDK turn cap per assistant session. |
 | `CCSWITCH_ASSISTANT_MAX_PROMPTS_PER_HOUR` | `120` | Per-identity prompt rate limit; over it the WS replies `promptRejected` / `RATE_LIMITED`. |
+| `CCSWITCH_ASSISTANT_OPERATOR_TOOLS` | `false` | Opt-in operator tier: deploy start, host upgrade, account refresh/enable and re-auth kick-off. Off by default because of the blast radius. `AppSettings.assistant_operator_tools` (Settings → General → AI assistant → Operator tools) overrides it with the same precedence as the kill switch below. Takes effect for a thread on its **next** spawn — the tools are registered at session start, so an assistant already running keeps the surface it started with until the idle reap. |
 
 **The Settings toggle overrides the env var, not the other way round.** `assistant_enabled` in
 `server/assistant/policy.py` reads `app_settings.assistant_enabled` first and only falls back to
@@ -106,7 +107,8 @@ the env when that column is NULL. So once anyone has flipped Settings → Genera
 editing `CCSWITCH_ASSISTANT_ENABLED` in `ccswitch.env` has **no effect** — to disable a deployment
 for good, turn the switch off in Settings (or `UPDATE app_settings SET assistant_enabled = false
 WHERE id = 'singleton';`). Set it back to NULL to hand control to the env var again.
-`CCSWITCH_ASSISTANT_MODEL` / `assistant_model` follow the same precedence.
+`CCSWITCH_ASSISTANT_MODEL` / `assistant_model` and `CCSWITCH_ASSISTANT_OPERATOR_TOOLS` /
+`assistant_operator_tools` follow the same precedence.
 
 Check what a running edge actually resolved — this is the assistant's analogue of `sttEnabled`,
 and unlike STT it is **not** in `GET /api/config`, because the answer depends on DB state:

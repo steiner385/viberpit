@@ -5,7 +5,8 @@ from unittest.mock import patch
 
 import pytest
 
-from server.assistant.policy import (assistant_enabled, assistant_model, route_allowed)
+from server.assistant.policy import (
+    assistant_enabled, assistant_model, operator_tools_enabled, route_allowed)
 from server.db.models import AppSettings
 
 
@@ -28,6 +29,31 @@ async def test_model_default_sonnet(isolated_db, monkeypatch):
     monkeypatch.delenv("CCSWITCH_ASSISTANT_MODEL", raising=False)
     async with db_session() as db:
         assert await assistant_model(db) == "sonnet"
+
+
+# Operator tier (spec v2 §7, decision B1): unlike `assistant_enabled` this defaults
+# OFF, so the no-env / no-row case is the one that matters most — a deployment that
+# never touches the setting must not get deploy/upgrade/account tools.
+@pytest.mark.asyncio
+async def test_operator_tools_default_off(isolated_db, monkeypatch):
+    from server.db import db_session
+    monkeypatch.delenv("CCSWITCH_ASSISTANT_OPERATOR_TOOLS", raising=False)
+    async with db_session() as db:
+        assert await operator_tools_enabled(db) is False
+
+
+@pytest.mark.asyncio
+async def test_operator_tools_env_then_settings_override(isolated_db):
+    from server.db import db_session
+    with patch.dict(os.environ, {"CCSWITCH_ASSISTANT_OPERATOR_TOOLS": "true"}):
+        async with db_session() as db:
+            assert await operator_tools_enabled(db) is True
+            # An explicit stored False beats the env's True: the switch in Settings is
+            # the operator's last word, and `is not None` (not truthiness) is what makes
+            # storing False distinguishable from "unset".
+            db.add(AppSettings(id="singleton", assistant_operator_tools=False))
+            await db.commit()
+            assert await operator_tools_enabled(db) is False
 
 
 _UUID = "3f2a9c1e-7b4d-4e0a-9c7d-1a2b3c4d5e6f"

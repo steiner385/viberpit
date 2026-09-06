@@ -237,6 +237,11 @@ try:
         assistant_max_turns: int = Field(default=30, alias="CCSWITCH_ASSISTANT_MAX_TURNS")
         assistant_max_prompts_per_hour: int = Field(
             default=120, alias="CCSWITCH_ASSISTANT_MAX_PROMPTS_PER_HOUR")
+        # Operator tier (v2 spec §7, decision B1): deploy start, host upgrade, account
+        # refresh/enable and re-auth kick-off. Default OFF — the blast radius is why
+        # they were excluded from v1 — and AppSettings.assistant_operator_tools overrides.
+        assistant_operator_tools: bool = Field(
+            default=False, alias="CCSWITCH_ASSISTANT_OPERATOR_TOOLS")
 
         model_config = {"populate_by_name": True, "env_file": ".env", "extra": "ignore"}
 
@@ -488,6 +493,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         assistant_max_prompts_per_hour: int = dataclasses.field(
             default_factory=lambda: int(os.environ.get("CCSWITCH_ASSISTANT_MAX_PROMPTS_PER_HOUR", "120"))
+        )
+        assistant_operator_tools: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_ASSISTANT_OPERATOR_TOOLS", "false").lower() in ("1", "true", "yes", "on")
         )
 
         @property

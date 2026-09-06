@@ -291,6 +291,9 @@ export interface AppSettings {
   // CCSWITCH_ASSISTANT_MODEL) for both.
   assistantEnabled?: boolean | null
   assistantModel?: string | null
+  // Operator tier (v2 spec B1): deploy start, host upgrade, account refresh/enable/reauth.
+  // null = server env default (CCSWITCH_ASSISTANT_OPERATOR_TOOLS), which is OFF.
+  assistantOperatorTools?: boolean | null
   /** The modes PUT accepts, in display order. The client's PERMISSION_MODES must equal this set. */
   acceptedPermissionModes: string[]
   effectiveDefaults: EffectiveDefaults
