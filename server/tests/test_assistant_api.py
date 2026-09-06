@@ -72,6 +72,16 @@ def test_disabled_is_404(tmp_path):
         assert r.status_code == 404 and r.json()["error"]["code"] == "ASSISTANT_DISABLED"
 
 
+def test_status_reports_operator_tools_off_by_default(tmp_path):
+    with _client(tmp_path) as c:
+        assert c.get("/api/assistant/status", headers=_H).json()["operatorTools"] is False
+
+
+def test_status_reports_operator_tools_on_via_env(tmp_path):
+    with _client(tmp_path, {"CCSWITCH_ASSISTANT_OPERATOR_TOOLS": "true"}) as c:
+        assert c.get("/api/assistant/status", headers=_H).json()["operatorTools"] is True
+
+
 def test_create_is_idempotent_per_identity_and_hidden(tmp_path):
     with _client(tmp_path) as c:
         r1 = c.post("/api/assistant/session", json={}, headers=_H)

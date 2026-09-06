@@ -123,8 +123,18 @@ class IdentityMiddleware(BaseHTTPMiddleware):
 
         claims = _assistant_claims(request)
         if claims is not None:
-            from server.assistant.policy import route_allowed  # noqa: PLC0415
-            if not route_allowed(request.method, request.url.path):
+            from server.assistant.policy import operator_tools_enabled, route_allowed  # noqa: PLC0415
+            from server.db import db_session as _assistant_db_session  # noqa: PLC0415
+            operator = False
+            try:
+                async with _assistant_db_session() as _db:
+                    operator = await operator_tools_enabled(_db)
+            except Exception:
+                # DB unavailable: fail closed on the privileged operator tier rather
+                # than fail the request — the ordinary assistant allowlist below is
+                # unaffected (it needs no DB read at all).
+                operator = False
+            if not route_allowed(request.method, request.url.path, operator=operator):
                 return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={"error": {
                     "code": "ASSISTANT_ROUTE_FORBIDDEN",
                     "message": "the assistant may not call this route"}})

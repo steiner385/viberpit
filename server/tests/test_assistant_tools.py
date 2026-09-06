@@ -10,8 +10,8 @@ from mcp.types import ListToolsRequest
 from server.assistant.client import (AssistantApi, AssistantApiError,  # noqa: F401
                                      TOOL_CALL_CAPACITY)
 from server.assistant.server import build_server
-from server.assistant.tools import (ToolClass, TOOL_SPECS, annotation_for, build_tools,
-                                    wrap_untrusted)
+from server.assistant.tools import (OPERATOR_TOOLS, ToolClass, TOOL_SPECS, annotation_for,
+                                    build_tools, wrap_untrusted)
 
 
 def _api(handler):
@@ -76,6 +76,39 @@ async def test_api_error_becomes_tool_error():
     out = await _tool(tools, "get_session").handler({"id": "zzz"})
     assert out["is_error"] is True
     assert "SESSION_NOT_FOUND" in out["content"][0]["text"]
+
+
+def test_operator_tools_absent_by_default():
+    names = {t.name for t in build_tools(_api(lambda r: httpx.Response(200, json={})))}
+    assert not (names & OPERATOR_TOOLS)
+    names_on = {t.name for t in build_tools(_api(lambda r: httpx.Response(200, json={})),
+                                            operator=True)}
+    assert OPERATOR_TOOLS <= names_on
+
+
+@pytest.mark.asyncio
+async def test_operator_tool_calls_audit_operator_tier(monkeypatch):
+    captured = {}
+
+    async def fake_record_audit(db, type_, identity, detail, **kw):
+        captured["detail"] = detail
+
+    monkeypatch.setattr("server.audit.record_audit", fake_record_audit)
+
+    class _FakeDb:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    monkeypatch.setattr("server.db.db_session", lambda: _FakeDb())
+
+    tools = build_tools(_api(lambda r: httpx.Response(200, json={})), operator=True)
+    out = await _tool(tools, "refresh_account").handler({"name": "a1"})
+    assert "is_error" not in out
+    assert captured["detail"]["operatorTier"] is True
+    assert captured["detail"]["tool"] == "refresh_account"
 
 
 @pytest.mark.asyncio
@@ -180,7 +213,7 @@ _ALL_OPTIONAL_TOOLS = ("list_sessions", "list_prs", "list_accounts", "list_hosts
 @pytest.mark.asyncio
 async def test_server_schemas_reflect_real_required_fields():
     api = _api(lambda r: httpx.Response(200, json={}))
-    server_config = build_server(api)
+    server_config = build_server(api, operator=True)
     server = server_config["instance"]
     # `_build_schema` (inside claude_agent_sdk.create_sdk_mcp_server) is a private
     # closure with no public accessor; go through the low-level MCP server's own
@@ -323,13 +356,14 @@ def test_mutation_and_destructive_annotations():
     assert specs["archive_session"].tool_class is ToolClass.MUTATION
     for name in ("delete_session", "cancel_queued_session", "ready_merge_pr"):
         assert specs[name].tool_class is ToolClass.DESTRUCTIVE, name
-    for t in build_tools(_api(lambda r: httpx.Response(200, json={}))):
+    for t in build_tools(_api(lambda r: httpx.Response(200, json={})), operator=True):
         spec = TOOL_SPECS[t.name]
         assert t.annotations.destructiveHint is (spec.tool_class is ToolClass.DESTRUCTIVE)
         assert t.annotations.readOnlyHint is (spec.tool_class is ToolClass.READ)
-    # Every tool named in spec §4.2 is registered.
+    # Every tool named in spec §4.2 is registered (operator tools only with operator=True).
     assert set(TOOL_SPECS) == {t.name for t in
-                               build_tools(_api(lambda r: httpx.Response(200, json={})))}
+                               build_tools(_api(lambda r: httpx.Response(200, json={})),
+                                          operator=True)}
 
 
 @pytest.mark.asyncio

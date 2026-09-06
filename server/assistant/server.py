@@ -10,8 +10,8 @@ from .client import AssistantApi
 from .tools import build_tools
 
 
-def build_server(api: AssistantApi) -> McpSdkServerConfig:
+def build_server(api: AssistantApi, *, operator: bool = False) -> McpSdkServerConfig:
     # `running_git_sha()` is the one version identity the server already exposes
     # (/healthz, deploy gate); an MCP `version` string may be any text.
     return create_sdk_mcp_server(name="ccswitch", version=running_git_sha()[:12] or "dev",
-                                 tools=build_tools(api))
+                                 tools=build_tools(api, operator=operator))

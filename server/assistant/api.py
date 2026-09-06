@@ -16,7 +16,7 @@ from server.db import get_db
 from server.sessions.model_policy import resolve_model_policy
 from server.sessions.types import ASSISTANT_KIND
 
-from .policy import assistant_enabled, assistant_model
+from .policy import assistant_enabled, assistant_model, operator_tools_enabled
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/assistant", tags=["assistant"])
@@ -43,9 +43,11 @@ def _scratch_cwd(identity: str) -> str:
 async def status_(request: Request, identity: str = Depends(current_identity), db=Depends(get_db)):
     orch = request.app.state.sessions
     enabled = await assistant_enabled(db)
+    operator = await operator_tools_enabled(db)
     rec = await orch.find_assistant(identity) if enabled else None
     return {"enabled": enabled, "sessionId": rec.id if rec else None,
-            "model": (rec.model if rec and rec.model else await assistant_model(db))}
+            "model": (rec.model if rec and rec.model else await assistant_model(db)),
+            "operatorTools": operator}
 
 
 @router.post("/session", status_code=status.HTTP_201_CREATED)

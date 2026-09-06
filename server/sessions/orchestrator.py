@@ -1162,8 +1162,8 @@ class SessionOrchestrator:
             overlays = self._assistant_overlays = {}
         overlays[session_id] = overlay
 
-    def _setup_assistant_overlay(self, session_id: str, *, identity: str,
-                                 model: str | None) -> "AssistantApi":
+    async def _setup_assistant_overlay(self, session_id: str, *, identity: str,
+                                       model: str | None) -> "AssistantApi":
         """Everything that makes one session an ASSISTANT rather than a coding agent:
         mint its loopback bearer token, build the in-process ``ccswitch`` MCP server on
         top of it, and register the resulting ``ClaudeAgentOptions`` overlay. Returns
@@ -1194,15 +1194,19 @@ class SessionOrchestrator:
         """
         from server.assistant.client import AssistantApi
         from server.assistant.options import assistant_options
+        from server.assistant.policy import operator_tools_enabled
         from server.assistant.server import build_server
         from server.assistant.token import mint_token
         from server.config import get_settings
+        from server.db import db_session
         cfg = get_settings()
         api = AssistantApi(base_url=f"http://127.0.0.1:{cfg.port}",
                            token=mint_token(identity, session_id), session_id=session_id,
                            identity=identity)
+        async with db_session() as db:
+            operator = await operator_tools_enabled(db)
         self.register_assistant_overlay(session_id, assistant_options(
-            server=build_server(api), max_turns=cfg.assistant_max_turns,
+            server=build_server(api, operator=operator), max_turns=cfg.assistant_max_turns,
             model=model or cfg.assistant_model))
         return api
 
@@ -2878,7 +2882,7 @@ class SessionOrchestrator:
             # driver.start() below.
             assistant_api = None
             if is_assistant_kind(kind):
-                assistant_api = self._setup_assistant_overlay(
+                assistant_api = await self._setup_assistant_overlay(
                     session_id, identity=identity, model=model)
 
             driver = self._create_driver(
@@ -9492,12 +9496,12 @@ class SessionOrchestrator:
             # driver, and with it the first AssistantApi — also gets a live one.
             built_assistant_apis: list[AssistantApi] = []
 
-            def _build(resume_arg):
+            async def _build(resume_arg):
                 assistant_api = None
                 if is_assistant(rec):
                     # Must run before _create_driver: the SDK factory reads
                     # self._assistant_overlays[session_id] when it builds the client.
-                    assistant_api = self._setup_assistant_overlay(
+                    assistant_api = await self._setup_assistant_overlay(
                         session_id, identity=identity, model=rec.model)
                     built_assistant_apis.append(assistant_api)
                 return self._create_driver(
@@ -9523,7 +9527,7 @@ class SessionOrchestrator:
             swap_done: asyncio.Future = asyncio.get_running_loop().create_future()
             self._swapping[session_id] = swap_done
             try:
-                driver = _build(resume)
+                driver = await _build(resume)
                 try:
                     await driver.start()
                 except Exception:
@@ -9580,7 +9584,7 @@ class SessionOrchestrator:
                     log.warning("session.resume id=%s could not resume claude_sid=%s "
                                 "(no transcript on disk); starting fresh",
                                 session_id, resume, exc_info=True)
-                    driver = _build(None)
+                    driver = await _build(None)
                     await driver.start()
                 self._drivers[session_id] = driver
                 # Re-claim the account's Codex app-server, paired with the driver
@@ -11812,7 +11816,7 @@ class SessionOrchestrator:
             # _setup_assistant_overlay the spawn and the resume use (#1125).
             assistant_api = None
             if is_assistant_kind(getattr(record, "kind", None)):
-                assistant_api = self._setup_assistant_overlay(
+                assistant_api = await self._setup_assistant_overlay(
                     record.id, identity=identity, model=record.model)
             new_driver = self._create_driver(
                 engine=record.engine,

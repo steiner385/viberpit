@@ -11,7 +11,7 @@ import pytest
 
 from server.assistant.client import AssistantApi
 from server.assistant.policy import READ_POSTS, route_allowed
-from server.assistant.tools import TOOL_SPECS, ToolClass, build_tools
+from server.assistant.tools import OPERATOR_TOOLS, TOOL_SPECS, ToolClass, build_tools
 
 CASES = Path("docs/superpowers/evals/assistant/cases.jsonl")
 UUID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -48,6 +48,10 @@ ARGS: dict[str, dict] = {
     "get_onboarding_status": {"slug": "a"},
     "resolve_triage": {"proposal_id": "p1", "decision": "accept"},
     "request_product_sync": {"slug": "a"},
+    "start_deploy": {"ref": "abc123"}, "upgrade_host": {"name": "rocky"},
+    "refresh_account": {"name": "a1"},
+    "set_account_enabled": {"name": "a1", "enabled": False},
+    "start_reauth": {"name": "a1"},
 }
 
 
@@ -63,7 +67,7 @@ def _recording_api(seen: list[tuple[str, str]]) -> AssistantApi:
 @pytest.mark.parametrize("name", sorted(TOOL_SPECS))
 async def test_every_tool_hits_an_allowed_route(name):
     seen: list[tuple[str, str]] = []
-    tools = build_tools(_recording_api(seen))
+    tools = build_tools(_recording_api(seen), operator=True)
     tool = next(t for t in tools if t.name == name)
     await tool.handler(ARGS[name])
     if name == "report_gap":
@@ -73,7 +77,8 @@ async def test_every_tool_hits_an_allowed_route(name):
         return
     assert len(seen) == 1, f"{name} made {len(seen)} calls; a tool is ONE endpoint"
     method, path = seen[0]
-    assert route_allowed(method, path), f"{name} hit {method} {path}, not allowlisted"
+    assert route_allowed(method, path, operator=(name in OPERATOR_TOOLS)), (
+        f"{name} hit {method} {path}, not allowlisted")
     if TOOL_SPECS[name].tool_class is ToolClass.READ:
         assert method == "GET" or name in READ_POSTS, f"READ tool {name} used {method}"
 
