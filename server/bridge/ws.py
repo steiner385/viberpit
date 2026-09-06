@@ -46,7 +46,8 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from functools import partial
 from typing import TYPE_CHECKING
 
@@ -412,14 +413,56 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
         # the nav-away-and-back bug. _forward_events watches lifecycle status events
         # against this set and re-runs the attach path to converge the viewer.
         attached: set[str] = set()
-        # Serialises attach/detach/ensure-live across their two callers: the per-session
-        # work chains and the lifecycle-triggered auto re-attach task. Without it, an
-        # auto re-attach can interleave with a user attach/prompt and register two
-        # forwarding tasks for one session (duplicate events, leaked subscriber).
-        attach_lock = asyncio.Lock()
-        # Auto re-attach bookkeeping: per-session in-flight guard + last-fire time.
+        # Set once the handler's `finally` starts. Read by every path that could
+        # register a NEW forwarding task, so teardown never has to take a lock to
+        # fence them (see the teardown block).
+        closing = False
+        # PER-SESSION attach locks, created on demand. Serialises attach/detach/
+        # ensure-live across their two callers: the per-session work chains and the
+        # lifecycle-triggered auto re-attach task. Without it, an auto re-attach can
+        # interleave with a user attach/prompt and register two forwarding tasks for
+        # one session (duplicate events, leaked subscriber).
+        #
+        # Keyed per session because the invariant it protects — live_tasks[sid] and
+        # sid's membership in `attached` — is per session; there is no cross-session
+        # invariant here. A socket-global lock put an unrelated session's user prompt
+        # behind a wedged auto re-attach for up to _RESUME_TIMEOUT (90 s), undoing
+        # exactly the cross-session independence #1180's per-session work chains
+        # introduced — and, unlike a slow user attach, it was triggerable with no
+        # user action at all.
+        attach_locks: dict[str, asyncio.Lock] = {}
+        attach_lock_users: dict[str, int] = {}
+        # Auto re-attach bookkeeping: per-session in-flight guard, last-fire time, and
+        # the in-flight tasks themselves (so teardown can reap them by name).
         auto_reattach_pending: set[str] = set()
         auto_reattach_last: dict[str, float] = {}
+        auto_reattach_tasks: dict[str, asyncio.Task] = {}
+
+        @asynccontextmanager
+        async def _attach_lock(session_id: str) -> AsyncIterator[None]:
+            """Hold this session's attach lock, creating it on demand.
+
+            The entry is dropped again once the LAST holder/waiter leaves, so the map
+            stays bounded by concurrently-attaching sessions rather than by every
+            session this socket ever touched. The refcount is what makes that safe:
+            deleting an entry while anyone still held or awaited it would hand the
+            next caller a DIFFERENT Lock object than the current holder's, silently
+            breaking mutual exclusion.
+            """
+            lock = attach_locks.get(session_id)
+            if lock is None:
+                lock = attach_locks[session_id] = asyncio.Lock()
+            attach_lock_users[session_id] = attach_lock_users.get(session_id, 0) + 1
+            try:
+                async with lock:
+                    yield
+            finally:
+                remaining = attach_lock_users[session_id] - 1
+                if remaining:
+                    attach_lock_users[session_id] = remaining
+                else:
+                    del attach_lock_users[session_id]
+                    attach_locks.pop(session_id, None)
 
         # Subscribe to orchestrator lifecycle events (rotated, etc.). In remote
         # mode an unreachable daemon must close the socket cleanly (1013 = try
@@ -509,13 +552,19 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                     if (event.get("type") == "status" and sid
                             and sid in attached
                             and sid not in live_tasks
-                            and sid not in auto_reattach_pending):
-                        now = time.monotonic()
-                        if (now - auto_reattach_last.get(sid, 0.0)
+                            and sid not in auto_reattach_pending
+                            and not closing):
+                        # The interval floor spaces REPLAYS, not spawns: _auto_reattach
+                        # stamps auto_reattach_last only when it actually re-attaches.
+                        # A run that skips (record gone / still detached) costs one
+                        # get_session and must not spend the budget — otherwise the
+                        # first status event of a resume, handled a hair before the
+                        # driver registers, would silence the one that follows it and
+                        # the viewer would stay stale for a whole turn.
+                        if (time.monotonic() - auto_reattach_last.get(sid, 0.0)
                                 >= _AUTO_REATTACH_MIN_INTERVAL_S):
-                            auto_reattach_last[sid] = now
                             auto_reattach_pending.add(sid)
-                            supervise(
+                            auto_reattach_tasks[sid] = supervise(
                                 asyncio.create_task(
                                     _auto_reattach(sid),
                                     name=f"ws-auto-reattach-{sid}"),
@@ -570,7 +619,29 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 frame["epoch"] = ep
             return frame
 
-        async def _resume_driver_or_error(session_id: str):
+        async def _attach_failed(session_id: str, code: str, message: str,
+                                 auto: bool) -> None:
+            """Report an attach failure: an error banner plus the replayComplete the
+            client's loading state waits on. The ONE place the three failure branches
+            below pay that debt.
+
+            Silent when *auto* — a lifecycle-triggered re-attach is background
+            convergence the user never asked for. Nothing set a loading state (the
+            replay had not started), so there is no replayComplete debt, and an error
+            banner for a session that may not even be in the foreground is noise about
+            a failure whose entire consequence is "the viewer keeps the snapshot it
+            already had", retried by the next status event.
+            """
+            if auto:
+                return
+            # The error frame stays a direct top-level send (it's a banner, not
+            # transcript state), but replayComplete IS transcript state — route it
+            # through out_q so it can never overtake queued session frames.
+            await _send({"type": "error", "code": code, "message": message,
+                         "sessionId": session_id})
+            out_q.put_nowait(_error_complete(session_id))
+
+        async def _resume_driver_or_error(session_id: str, *, auto: bool = False):
             """Resume (or fetch) the live driver, bounded by _RESUME_TIMEOUT.
 
             Threads the connection's verified identity onto the resumed driver so that
@@ -578,6 +649,12 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             resolved with this WS identity) actually match. On any failure emits an
             error frame plus a replayComplete (so the client's loading state always
             clears) and returns None.
+
+            *auto* marks a re-attach this socket decided on by itself (the
+            lifecycle-triggered auto re-attach). It must fail SOFT: no error frames
+            (see _attach_failed) and above all no socket close — a transient daemon
+            blip would otherwise take a dashboard socket's other five attached
+            sessions down with the one that happened to emit a status event.
             """
             try:
                 # The deadline goes INTO the RPC (call_with_deadline), never around it:
@@ -594,18 +671,15 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # socket forever — surface it so the client can stop spinning and retry.
                 log.warning("ws.attach: ensure_driver timed out for %s after %.0fs",
                             session_id, _RESUME_TIMEOUT)
-                await _send({"type": "error", "code": "SESSION_RESUME_TIMEOUT",
-                             "message": "This session is taking too long to resume — the "
-                                        "server may be busy. Try again in a moment.",
-                             "sessionId": session_id})
-                # The error frame stays a direct top-level send (it's a banner, not
-                # transcript state), but replayComplete IS transcript state — route
-                # it through out_q so it can never overtake queued session frames.
-                out_q.put_nowait(_error_complete(session_id))
+                await _attach_failed(
+                    session_id, "SESSION_RESUME_TIMEOUT",
+                    "This session is taking too long to resume — the server may be "
+                    "busy. Try again in a moment.", auto)
                 return None
             except DaemonUnavailable:
                 log.warning("ws.attach: session daemon unavailable for %s", session_id)
-                await websocket.close(code=1013)
+                if not auto:
+                    await websocket.close(code=1013)
                 return None
             except Exception:
                 # A resumed/rehydrated session can fail to start its SDK subprocess —
@@ -615,20 +689,19 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # the client reconnect-loop forever on a blank screen. Report it and
                 # keep the socket alive (replayComplete clears the loading state).
                 log.warning("ws.attach: ensure_driver failed for %s", session_id, exc_info=True)
-                rec = await orchestrator.get_session(session_id)
-                acct = rec.account if rec else None
-                hint = (f" Its account '{acct}' may need re-authentication — check the Accounts tab."
-                        if acct else "")
-                await _send({"type": "error", "code": "SESSION_START_FAILED",
-                             "message": f"Couldn't resume this session.{hint}",
-                             "sessionId": session_id})
-                out_q.put_nowait(_error_complete(session_id))
+                if not auto:
+                    # Only looked up for the banner's account hint, so it is skipped
+                    # entirely on the silent auto path (one fewer RPC in remote mode).
+                    rec = await orchestrator.get_session(session_id)
+                    acct = rec.account if rec else None
+                    hint = (f" Its account '{acct}' may need re-authentication — check the Accounts tab."
+                            if acct else "")
+                    await _attach_failed(session_id, "SESSION_START_FAILED",
+                                         f"Couldn't resume this session.{hint}", auto)
                 return None
             if driver is None:
-                await _send({"type": "error", "code": "SESSION_NOT_FOUND",
-                             "message": f"Session {session_id!r} not found",
-                             "sessionId": session_id})
-                out_q.put_nowait(_error_complete(session_id))
+                await _attach_failed(session_id, "SESSION_NOT_FOUND",
+                                     f"Session {session_id!r} not found", auto)
                 return None
             return driver
 
@@ -857,7 +930,17 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             """Forward an opened driver stream's events into the batcher for this
             session. The stream was opened by driver.open_stream() BEFORE the replay
             (see _handle_attach's settle-race note); once this task starts, the
-            stream's events() generator owns queue teardown."""
+            stream's events() generator owns queue teardown.
+
+            Refuses to register anything once the socket is tearing down: the
+            teardown loop has already snapshotted live_tasks, so a task started
+            after it would outlive the socket as a leaked driver subscriber
+            buffering into an out_q with no batcher. Nothing has consumed the
+            stream yet, so closing it is the complete disposal (same reasoning as
+            _handle_attach's failure path)."""
+            if closing:
+                stream.close()
+                return
             task = supervise(
                 asyncio.create_task(
                     _forward_live(stream, out_q, session_id), name=f"ws-live-{session_id}"),
@@ -994,7 +1077,8 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             await cancel_and_reap(task, phase=f"ws.live:{session_id}", timeout=0.5)
 
         async def _handle_attach(session_id: str, since_src_seq: int | None = None,
-                                 since_epoch: str | None = None) -> None:
+                                 since_epoch: str | None = None, *,
+                                 auto: bool = False) -> None:
             attached.add(session_id)
             # Idempotent-with-replay (Hole 2): a re-attach of a session already live on THIS
             # socket is NOT a silent no-op. That silent return dropped the remounted view's
@@ -1018,9 +1102,13 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 rec = await orchestrator.get_session(session_id)
             except DaemonUnavailable:
                 # In remote mode get_session is an RPC to the daemon; if it's down,
-                # close 1013 (try again later) rather than crashing the handler.
+                # close 1013 (try again later) rather than crashing the handler —
+                # unless this is an auto re-attach, which must never cost the user a
+                # socket it shares with every other session it is viewing (see
+                # _resume_driver_or_error's `auto`).
                 log.warning("ws.attach: session daemon unavailable for %s", session_id)
-                await websocket.close(code=1013)
+                if not auto:
+                    await websocket.close(code=1013)
                 return
 
             # Replay the last EXACT context usage so the ctx% readout is right immediately —
@@ -1046,7 +1134,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             # LIVE session (or unknown — let ensure_driver decide): a live record's
             # driver already exists and ensure_driver fast-returns it; an unknown
             # session yields None and surfaces SESSION_NOT_FOUND below.
-            driver = await _resume_driver_or_error(session_id)
+            driver = await _resume_driver_or_error(session_id, auto=auto)
             if driver is None:
                 return
             # Wave-3 cursor catch-up (remote mode only): if the client's srcSeq cursor is
@@ -1187,25 +1275,68 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
 
         async def _handle_detach(session_id: str) -> None:
             attached.discard(session_id)
+            # Drop the auto re-attach rate stamp with the view it throttled: kept, it
+            # would suppress the FIRST legitimate re-attach after a detach-then-attach
+            # inside the interval, and it would accumulate an entry per session this
+            # socket ever touched. The in-flight guard is NOT cleared here — it is
+            # owned by the running task's finally, and clearing it early would let a
+            # second task spawn alongside the first.
+            auto_reattach_last.pop(session_id, None)
             await _teardown_live_task(session_id)
 
         async def _auto_reattach(session_id: str) -> None:
             """Re-run the attach path because a lifecycle status event showed this
             attached session changed while the socket had no live forwarding task
-            for it (snapshot viewer). Re-checks its preconditions under attach_lock:
-            the user may have detached, or a user attach/prompt may have raced ahead
-            and already made the session live on this socket. No cursor is passed —
-            the full-replay path is the safe converger, and the client's reducer
-            double-buffers replayReset so the view doesn't flash."""
+            for it (snapshot viewer). No cursor is passed — the full-replay path is
+            the safe converger, and the client's reducer double-buffers replayReset
+            so the view doesn't flash.
+
+            Reads the record FIRST, outside the attach, for two reasons.
+
+            1. Fail soft. Both of _handle_attach's daemon-down paths close the whole
+               socket (1013), which is right for a user-initiated attach and wrong
+               here: on a dashboard socket viewing six sessions, a 5 s daemon blip
+               plus one status event would close the socket for all six. Nothing the
+               user did asked for this attach, so nothing it does may cost them the
+               connection — hence `auto=True` below and this guard here.
+
+            2. Skip a session that is still DETACHED. Re-attaching one replays the
+               exact snapshot the client already has, so there is nothing to converge
+               to — and _handle_attach's detached branch registers no live task, so
+               the session stays attached-and-not-live and EVERY later status event
+               would re-run a full disk replay and push replayReset + the whole
+               transcript window at a session that is not even running. Driver-less
+               _persist_status writes happen for paused / needs_attention / queued
+               sessions, so a user parked on one would watch its transcript reset on
+               a loop. The event worth reacting to is the session becoming LIVE,
+               which is exactly the autopilot-resume case this feature exists for:
+               ensure_driver registers the driver (or its in-flight spawn) before the
+               status flip, so the record already reads live here.
+
+            Preconditions are then re-checked under the session's attach lock: the
+            user may have detached, or a user attach/prompt may have raced ahead and
+            already made the session live on this socket.
+            """
             try:
-                async with attach_lock:
-                    if session_id not in attached or session_id in live_tasks:
+                try:
+                    rec = await orchestrator.get_session(session_id)
+                except DaemonUnavailable:
+                    log.warning("ws.auto_reattach: session daemon unavailable for %s",
+                                session_id)
+                    return
+                if rec is None or getattr(rec, "detached", False):
+                    return
+                async with _attach_lock(session_id):
+                    if (closing or session_id not in attached
+                            or session_id in live_tasks):
                         return
                     log_event(log, logging.INFO, "ws.auto_reattach",
                               session_id=session_id)
-                    await _handle_attach(session_id)
+                    auto_reattach_last[session_id] = time.monotonic()
+                    await _handle_attach(session_id, auto=True)
             finally:
                 auto_reattach_pending.discard(session_id)
+                auto_reattach_tasks.pop(session_id, None)
 
         # ------------------------------------------------------------------
         # Per-session work chains — the receive loop must never block (#1180)
@@ -1363,11 +1494,19 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             queued, so it still lands in milliseconds (see the dispatch site).
             """
             started = time.monotonic()
-            # Only the mutator is locked. _ensure_live can start a live forwarding
-            # task, so it must not interleave with an auto re-attach for the same
-            # session; send_prompt below must NOT hold the lock — it can block on a
-            # resuming turn and would starve auto re-attaches for other sessions.
-            async with attach_lock:
+            # Only the mutator is locked: _ensure_live can start a live forwarding
+            # task, so it must not interleave with an auto re-attach for the SAME
+            # session. The lock is per session, so nothing here can delay another
+            # session's prompt or attach.
+            #
+            # Note what that does and does not exclude: _ensure_live's tail calls
+            # _send_deferred_initial_prompt, so a spawn-deferred prompt IS sent under
+            # this lock. That is deliberate — it must land before the typed prompt
+            # below — and it is bounded to this one session's lock. The typed
+            # send_prompt stays outside because it can block on a whole resuming
+            # turn, which would keep this session's own auto re-attach out for the
+            # duration.
+            async with _attach_lock(session_id):
                 live_ok = await _ensure_live(session_id)
             if not live_ok:
                 return
@@ -1439,7 +1578,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # Same rule as the first _ensure_live above: the rebuild mutates
                 # live_tasks, the retried send does not — so only the rebuild is
                 # locked.
-                async with attach_lock:
+                async with _attach_lock(session_id):
                     await _teardown_live_task(session_id)
                     rebuilt = await _ensure_live(session_id)
                 if rebuilt:
@@ -1512,13 +1651,13 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # gate treats it as a mismatch and full-replays (conservative default).
                 raw_epoch = msg.get("sinceEpoch")
                 since_epoch = raw_epoch if isinstance(raw_epoch, str) else None
-                # attach_lock: this chain and the lifecycle-triggered auto re-attach
-                # are the two mutators of live_tasks/attached, and they run on
-                # independent tasks.
-                async with attach_lock:
+                # The session's attach lock: this chain and the lifecycle-triggered
+                # auto re-attach are the two mutators of live_tasks/attached for it,
+                # and they run on independent tasks.
+                async with _attach_lock(session_id):
                     await _handle_attach(session_id, since_src_seq, since_epoch)
             elif msg_type == "detach":
-                async with attach_lock:
+                async with _attach_lock(session_id):
                     await _handle_detach(session_id)
             elif msg_type == "prompt":
                 await _handle_prompt(msg, session_id)
@@ -1701,24 +1840,40 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 work_tasks.clear()
                 work_queues.clear()
 
-                # Cancel live streams. The whole loop runs under attach_lock, and
-                # empties `attached` first, because event_task is still running here
-                # and can still spawn an auto re-attach: an in-flight one finishes
-                # before the teardown (so its task IS torn down), and one that
-                # acquires the lock afterwards finds an empty attached-set and
-                # returns. Locking per-iteration instead would leave a gap in which a
-                # re-attach registers a forwarding task the already-taken
-                # live_tasks snapshot no longer covers — a leaked driver subscriber
-                # buffering forever on a closed socket.
-                async with attach_lock:
-                    attached.clear()
+                # Fence the auto re-attach path with plain assignments, BEFORE any
+                # await. event_task is still running here and can still spawn one,
+                # and a re-attach that registered a forwarding task after the loop
+                # below took its live_tasks snapshot would leak a driver subscriber
+                # buffering forever on a closed socket. `closing` + an empty
+                # `attached` stop that at three checks (the spawn site,
+                # _auto_reattach's post-lock re-check, _start_live_stream).
+                #
+                # Deliberately NOT by taking a lock: a teardown must unwind promptly
+                # and must never sit on an unbounded await (#1164). A _handle_attach
+                # wedged on a cold MCP fleet holds its session's lock for up to
+                # _RESUME_TIMEOUT (90 s); a cancellation arriving while we waited for
+                # it would skip the reaps and unsubscribe_events below, orphaning the
+                # forwarding tasks and leaving a lifecycle queue the orchestrator
+                # publishes into forever.
+                closing = True
+                attached.clear()
+                try:
+                    # Reap the forwarder first — it is the only spawner of auto
+                    # re-attach tasks, so the set below cannot grow while we drain it.
+                    await cancel_and_reap(event_task, phase="ws.events", timeout=0.5)
+                    for sid, auto_task in list(auto_reattach_tasks.items()):
+                        await cancel_and_reap(auto_task, phase=f"ws.auto_reattach:{sid}",
+                                              timeout=0.5)
+                    auto_reattach_tasks.clear()
+                    # Cancel live streams (bounded per session by _teardown_live_task).
                     for sid in list(live_tasks.keys()):
                         await _handle_detach(sid)
-
-                await cancel_and_reap(event_task, phase="ws.events", timeout=0.5)
-                await cancel_and_reap(batcher_task, phase="ws.batcher", timeout=0.5)
-
-                await orchestrator.unsubscribe_events(event_q)
+                    await cancel_and_reap(batcher_task, phase="ws.batcher", timeout=0.5)
+                finally:
+                    # Unconditional: an unsubscribed-from queue is one the orchestrator
+                    # keeps publishing into for the life of the process, so it must
+                    # survive a cancellation or failure anywhere above.
+                    await orchestrator.unsubscribe_events(event_q)
                 log.debug("ws.disconnect identity=%s", identity)
 
     return router
