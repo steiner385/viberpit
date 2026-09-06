@@ -1093,6 +1093,99 @@ def test_automation_read_tool_classes_and_the_read_post_escape_hatch():
     assert "preview_schedule" in READ_POSTS
 
 
+# --- Session-start conveniences (plan Task 7.3, Pack C) ------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_presets_reads_the_presets_route():
+    def h(req: httpx.Request):
+        assert req.method == "GET"
+        assert req.url.path == "/api/presets"
+        return httpx.Response(200, json=[{"id": "p1", "name": "review"}])
+
+    out = await _tool(build_tools(_api(h)), "list_presets").handler({})
+    assert "is_error" not in out
+    data = json.loads(out["content"][0]["text"])["data"]
+    assert data == [{"id": "p1", "name": "review"}]
+
+
+@pytest.mark.asyncio
+async def test_list_templates_passes_tag_only_when_given():
+    seen = {}
+
+    def h(req: httpx.Request):
+        seen["params"] = dict(req.url.params)
+        return httpx.Response(200, json=[{"id": "t1", "name": "standup", "tags": ["bugfix"]}])
+
+    out = await _tool(build_tools(_api(h)), "list_templates").handler({"tag": "bugfix"})
+    assert "is_error" not in out
+    assert seen["params"] == {"tag": "bugfix"}
+
+    seen.clear()
+    await _tool(build_tools(_api(h)), "list_templates").handler({})
+    assert seen["params"] == {}, "an unset tag must let the server return everything"
+
+
+@pytest.mark.asyncio
+async def test_render_template_is_a_read_shaped_post():
+    from server.assistant.policy import READ_POSTS
+
+    def h(req: httpx.Request):
+        assert req.method == "POST"
+        assert req.url.path == "/api/templates/t1/render"
+        assert json.loads(req.content) == {"variables": {"name": "x"}}
+        return httpx.Response(200, json={"rendered": "hi x"})
+
+    out = await _tool(build_tools(_api(h)), "render_template").handler(
+        {"id": "t1", "vars": {"name": "x"}})
+    assert "is_error" not in out
+    assert json.loads(out["content"][0]["text"])["data"] == {"rendered": "hi x"}
+    assert TOOL_SPECS["render_template"].tool_class is ToolClass.READ
+    assert "render_template" in READ_POSTS
+
+
+@pytest.mark.asyncio
+async def test_render_template_defaults_vars_to_an_empty_object():
+    def h(req: httpx.Request):
+        assert json.loads(req.content) == {"variables": {}}
+        return httpx.Response(200, json={"rendered": ""})
+
+    out = await _tool(build_tools(_api(h)), "render_template").handler({"id": "t1"})
+    assert "is_error" not in out
+
+
+@pytest.mark.asyncio
+async def test_render_template_rejects_a_bad_id_locally():
+    calls: list[str] = []
+
+    def h(req: httpx.Request):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={"rendered": ""})
+
+    out = await _tool(build_tools(_api(h)), "render_template").handler(
+        {"id": "../templates", "vars": {}})
+    assert out["is_error"] is True
+    assert calls == [], "a locally-rejected template id must never reach the API"
+
+    out = await _tool(build_tools(_api(h)), "render_template").handler(
+        {"id": "not a valid id", "vars": {}})
+    assert out["is_error"] is True
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_list_permission_profiles_reads_the_permission_profiles_route():
+    def h(req: httpx.Request):
+        assert req.method == "GET"
+        assert req.url.path == "/api/permission-profiles"
+        return httpx.Response(200, json=[{"id": "pp1", "name": "read-only"}])
+
+    out = await _tool(build_tools(_api(h)), "list_permission_profiles").handler({})
+    assert "is_error" not in out
+    data = json.loads(out["content"][0]["text"])["data"]
+    assert data == [{"id": "pp1", "name": "read-only"}]
+
+
 # --- Automation fan-out tools (plan Task 6.4, Pack A) --------------------------------
 # The half of Pack A that STARTS unattended work: each of these spawns a coding session
 # that acts on its own. Every test here is about that fact — the class, the card, and
