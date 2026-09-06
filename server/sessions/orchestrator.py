@@ -3971,21 +3971,31 @@ class SessionOrchestrator:
         ceiling is per-origin, not per-issue."""
         return await self._automation_account_for(self._backlog_ctx, "backlog-runner")
 
-    async def _automation_account_for(self, ctx, origin_ref: str) -> str | None:
+    async def _automation_account_for(self, ctx, origin_ref: str, *,
+                                      engine: AgentEngine | None = None) -> str | None:
         """The healthy account for *ctx*'s next launch, selected for its engine.
 
         One helper for every automation spawn site so the engine decision and the
         account gate cannot disagree. A refused launch plan resolves to Claude for
         the purposes of the probe only — the refusal itself is reported by the
-        spawn path, which must stay the single place that decides not to run."""
+        spawn path, which must stay the single place that decides not to run.
+
+        *engine* short-circuits the resolution for a caller that has already run
+        ``launch_plan_or_refuse`` — every spawn site that builds its own seed
+        prompt has, because the prompt states a commit trailer. Re-resolving here
+        would read the origin's config a second time for an answer the caller is
+        already holding, and a second read is a second chance to disagree with
+        the prompt that was built from the first."""
+        if engine is not None:
+            return await self._backlog_healthy_account(engine=engine)
         plan = None
         try:
             plan = await ctx.launch_plan()
         except Exception:
             log.debug("automation: launch plan unresolved for %s; probing the "
                       "Claude account pool", origin_ref, exc_info=True)
-        engine = plan[0] if plan else AgentEngine.CLAUDE_CODE
-        return await self._backlog_healthy_account(engine=engine)
+        resolved = plan[0] if plan else AgentEngine.CLAUDE_CODE
+        return await self._backlog_healthy_account(engine=resolved)
 
     async def _backlog_pr_status_for(self, target: str) -> PullRequestInfo | None:
         """The PullRequestInfo for a runner target, or None.
@@ -4576,14 +4586,20 @@ class SessionOrchestrator:
                 initiative_id=row.id, kind="intent", repo_path=repo_path,
                 session_id=session_id))
 
-    async def _sdlc_intake_spawn(self, trigger, prompt: str):
+    async def _sdlc_intake_spawn(self, trigger, prompt: str, engine: AgentEngine):
         """Spawn a de-duped intent session for *trigger*, seeded with *prompt*.
 
         Resolves the repo clone cwd + a healthy account off the event loop, then
         spawns via the de-dup-safe context spawner (origin_ref=``<slug>:intent``);
-        ``create_session`` falls back to its own account/cwd if these are None."""
+        ``create_session`` falls back to its own account/cwd if these are None.
+
+        *engine* is the loop's own already-resolved answer (it needed one to put
+        the right commit trailer in *prompt*), threaded through to BOTH the
+        account gate and the session — the way ``_sdlc_spawn_synth`` and
+        ``_backlog_spawn`` already do it. Without it this helper picked from the
+        Claude pool and let ``spawn_session`` resolve the engine a third time."""
         account = await self._automation_account_for(
-            self._sdlc_intake_ctx, f"{trigger.slug}:intent")
+            self._sdlc_intake_ctx, f"{trigger.slug}:intent", engine=engine)
         cwd = None
         if trigger.repo:
             url = f"https://github.com/{trigger.repo}.git"
@@ -4600,9 +4616,11 @@ class SessionOrchestrator:
             repo=trigger.repo or None,
             cwd=cwd,
             account=account,
+            engine=engine,
             name=f"sdlc intake {trigger.slug}",
             initial_prompt=prompt,
-            detail={"slug": trigger.slug, "kind": "intent"},
+            detail={"slug": trigger.slug, "kind": "intent",
+                    "engine": engine.value},
         )
 
     async def _sdlc_intake_tick_loop(self, interval: float) -> None:
@@ -5613,8 +5631,19 @@ class SessionOrchestrator:
             return None
         if kind not in ("spec", "plan"):  # pragma: no cover — loop only asks these
             return None
+        # Engine FIRST, before any account, network or disk work. Two reasons,
+        # and ``_backlog_spawn`` already moved its own check here for both:
+        # the artifact instructions state a commit trailer (the one
+        # engine-specific line in them), and a refusal must COST nothing — this
+        # ran an account probe, a full ``ensure_clone`` and a remote branch
+        # listing ahead of the policy check, and repeated all three every tick an
+        # out-of-policy origin was ticked.
+        plan = await self._sdlc_synth_ctx.launch_plan_or_refuse(f"{slug}:{kind}")
+        if plan is None:
+            return None
+        engine, _launch_config = plan
         account = await self._automation_account_for(
-            self._sdlc_synth_ctx, f"{slug}:{kind}")
+            self._sdlc_synth_ctx, f"{slug}:{kind}", engine=engine)
         if account is None:
             return None
         _mode, config = await self._sdlc_synth_read_config()
@@ -5623,13 +5652,6 @@ class SessionOrchestrator:
             gitrepos.ensure_clone, await self._effective_repo_root(), repo, url)
         default_branch = await self._sdlc_default_branch(repo)
         upstream = artifact_path(slug, "intent" if kind == "spec" else "spec")
-
-        # Engine before the prompt: the artifact instructions state a commit
-        # trailer, which is the one engine-specific line in them (Phase 7).
-        plan = await self._sdlc_synth_ctx.launch_plan_or_refuse(f"{slug}:{kind}")
-        if plan is None:
-            return None
-        engine, _launch_config = plan
 
         def build(cwd: str, default_branch: str) -> str:
             content = self._sdlc_show_committed_file(

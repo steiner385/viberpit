@@ -11,9 +11,9 @@ links:
 
 > **State.** Phases 1–6 and Phase 7 Tasks 7.1–7.3 have landed behind fail-closed flags:
 > `CCSWITCH_CODEX_ENABLED` and `CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED` are both
-> `false` everywhere, and `CCSWITCH_CODEX_AUTOMATIONS_ENABLED` stays false: every
-> automation origin is still `claude_only`, blocked on the sandbox-egress finding
-> below rather than on the prompt contract. This becomes `live` only when Part 2
+> `false` everywhere, and `CCSWITCH_CODEX_AUTOMATIONS_ENABLED` stays false. The two
+> SDLC origins are now `codex_allowed` on live-boundary evidence (#1265/#1266);
+> every other automation origin is still `claude_only`. This becomes `live` only when Part 2
 > of the acceptance record —
 > the real-boundary runs on dobby and rocky — passes and the owner enables the
 > flags. Operator procedures: `docs/runbooks/codex-credential-authority.md`.
@@ -93,10 +93,12 @@ compatibility audit; API-key authentication in v1.
   completion-marker mismatch is not a degraded experience. `CCSWITCH_CODEX_AUTOMATIONS_ENABLED`
   (default `false`) is the global kill switch — it forces every `codex_allowed` origin back to
   Claude without an operator unwinding each config, and it is separate from `CCSWITCH_CODEX_ENABLED`
-  so enabling Codex for humans does not enable it for control loops. **Every origin is still
-  `claude_only`;** widening one is gated on that origin's Codex acceptance suite passing
-  (Tasks 7.2 and 7.3).
-- **Automation parity is blocked on the Codex sandbox, not on the prompt contract (Phase 7, Tasks
+  so enabling Codex for humans does not enable it for control loops. **The two SDLC origins
+  (`sdlc-intake`, `sdlc-synthesizer`) are `codex_allowed`; every other origin is still
+  `claude_only`** — widening one is gated on that origin's Codex acceptance suite passing
+  (Tasks 7.2 and 7.3), and the current map is asserted whole in
+  `server/tests/test_automation_engine_policy.py`.
+- **Automation parity was blocked on the Codex sandbox, not on the prompt contract (Phase 7, Tasks
   7.2/7.3).** The offline half of both acceptance gates passes — the backlog and SDLC seed prompts
   carry their whole contract with no Claude-only syntax, the loops handle a refused launch without
   stranding a claim, and permission tiers map without weakening the propose-only human gates
@@ -117,10 +119,31 @@ compatibility audit; API-key authentication in v1.
   `bypassPermissions`, the one profile whose sandbox actually permits network egress, so the
   automation's own contract (push a branch, open a PR) can complete instead of failing at the last
   step. The escalation is recorded as an `engine_network_opt_in_escalated` activity event, never
-  silent (`server/automations/engine_policy.py:escalate_for_codex_network_opt_in`). This does not
-  claim a live end-to-end push/PR has been proven against a real Codex binary in a disposable repo —
-  that verification is still outstanding and should precede flipping the flag in any environment
-  that matters.
+  silent (`server/automations/engine_policy.py:escalate_for_codex_network_opt_in`). The push half of
+  that escalation is now proven live (see the SDLC bullet below); the `gh pr create` half is not,
+  and it is the one step of the contract that is plain shell and identical on either engine.
+- **SDLC origins enabled (#1265 intake, #1266 synthesizer).** Both SDLC ceilings are now
+  `codex_allowed`, on the evidence of an opt-in initiative driven intent → design → plan on the real
+  `codex` binary (`codex-cli 0.153.2` — the same version the app-server contract is pinned to). The
+  harness is committed as `server/tests/test_sdlc_codex_live_artifact.py` and is opt-in
+  (`CCSWITCH_TEST_CODEX_LIVE=1`), so CI never spends OpenAI quota on it. It runs each stage's **real**
+  prompt from `server/sdlc/prompts.py` in a throwaway repository whose `origin` is a local *bare*
+  repo, in the `danger-full-access` profile #1263's opt-in escalates a `full-auto` automation launch
+  to. Each stage was verified to produce exactly its own artifact at
+  `docs/sdlc/<slug>/<kind>.md`, branch off `origin/<default>`, carry
+  `Co-Authored-By: Codex <noreply@openai.com>` (and never Claude's trailer), leave its upstream
+  artifacts byte-identical, and push the branch. The human gate is structural rather than asserted:
+  the harness merges each artifact to the default branch by hand between stages, and the next stage
+  is seeded from that committed file — so a stage that advanced the chain on its own would be caught
+  by the following stage finding an upstream nobody merged. Not covered, deliberately:
+  `gh pr create` (needs GitHub) and therefore the non-draft/no-auto-merge PR attributes, which stay
+  prompt-level guarantees checked in `server/tests/test_sdlc_codex_acceptance.py`.
+  **`codex_allowed` grants the option, not the traffic.** Three gates still ship off between this
+  and an unattended Codex artifact session: `default_engine` still answers Claude for a config that
+  says nothing, `CCSWITCH_CODEX_AUTOMATIONS_ENABLED=false` clamps an opted-in origin back to Claude,
+  and without `CCSWITCH_CODEX_UNATTENDED_NETWORK_OPT_IN` the launch is refused by
+  `unattended_launch_blocker`. Each is pinned by its own test in section 5 of
+  `server/tests/test_sdlc_codex_acceptance.py`.
 - Users explicitly select Claude Code or Codex. V1 Codex controls are model, reasoning effort, and
   permission profile. The data model supports multiple named OpenAI accounts immediately, while
   automatic OpenAI-account rotation is deferred.

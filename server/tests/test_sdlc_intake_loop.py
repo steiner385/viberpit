@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 
+from ccswitch.engines import AgentEngine
 from server.automations.context import AutomationContext
 from server.db import db_session, init_db
 from server.sdlc.engine import ArtifactView, InitiativeView
@@ -61,7 +62,7 @@ def build_loop(*, mode="propose", config=None, clock=None,
 
     class Recorders:
         def __init__(self):
-            self.spawns: list = []       # (Trigger, prompt)
+            self.spawns: list = []       # (Trigger, prompt, engine)
             self.records: list = []      # (slug, repo_path, session_id)
             self.initiatives: dict = {}  # slug -> InitiativeView
             self.artifacts: dict = dict(existing_artifacts or {})  # slug -> [ArtifactView]
@@ -87,8 +88,8 @@ def build_loop(*, mode="propose", config=None, clock=None,
         rec.artifacts.setdefault(slug, []).append(
             ArtifactView(kind="intent", commit_sha=None))
 
-    async def _default_spawn(trigger, prompt):
-        rec.spawns.append((trigger, prompt))
+    async def _default_spawn(trigger, prompt, engine):
+        rec.spawns.append((trigger, prompt, engine))
         return _Sess(f"sess-{trigger.slug}")
 
     loop = SdlcIntakeLoop(
@@ -124,10 +125,14 @@ def test_propose_mode_spawns_intent_and_records_artifact(tmp_path):
 
         # one intent session spawned, seeded with the pure intent prompt
         assert len(rec.spawns) == 1
-        t, prompt = rec.spawns[0]
+        t, prompt, engine = rec.spawns[0]
         assert t.slug == "dark-mode"
         assert "users want dark mode" in prompt
         assert "docs/sdlc/dark-mode/intent.md" in prompt
+        # The engine the loop resolved travels with the prompt it shaped. This
+        # origin's ceiling admits Codex (#1265), but an origin whose config says
+        # nothing still launches Claude — widening grants the option, not traffic.
+        assert engine is AgentEngine.CLAUDE_CODE
 
         # the initiative was created at the intake stage
         assert "dark-mode" in rec.initiatives

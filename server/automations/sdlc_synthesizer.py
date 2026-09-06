@@ -54,10 +54,19 @@ class SdlcSynthesizer:
     name = "SDLC Synthesizer"
     description = "Carries initiatives intent→spec→plan as artifact PRs (propose-only v1)."
     modes: tuple[str, ...] = ("off", "propose", "auto")
-    # Audited engine ceiling (Phase 7, Task 7.1). This origin has no Codex
-    # acceptance evidence, so it launches Claude only. Widening it is a
-    # reviewable one-line change gated on its acceptance suite passing.
-    engine_policy: EnginePolicy = EnginePolicy.CLAUDE_ONLY
+    # Audited engine ceiling (Phase 7, Task 7.3; widened by #1266). Same gate and
+    # same evidence as sdlc-intake — the offline suite in
+    # `server/tests/test_sdlc_codex_acceptance.py` plus the live intent → spec →
+    # plan run in `server/tests/test_sdlc_codex_live_artifact.py`.
+    #
+    # This ceiling is independent of sdlc-intake's on purpose: the handoff between
+    # stages is the committed artifact FILE, not the producing session, so an
+    # initiative whose intent ran on Claude can have its spec run on Codex and
+    # neither stage inherits the other's engine.
+    #
+    # `codex_allowed` grants the option, not the traffic; see the sdlc_intake
+    # comment for the three gates that still ship off.
+    engine_policy: EnginePolicy = EnginePolicy.CODEX_ALLOWED
     config_schema = [
         ConfigField(key="default_model", label="Model", type="enum",
                     default="default", choices=list(AUTOMATION_MODEL_CHOICES),
