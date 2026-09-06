@@ -935,3 +935,119 @@ def test_parse_refresh_response_validates_an_outbound_payload() -> None:
     for payload in invalid:
         with pytest.raises(CodexSchemaError):
             schema.parse_chatgpt_auth_tokens_refresh_response(payload)
+
+
+# ---------------------------------------------------------------------------
+# skills/list — the vendor command/skill catalog (#1286)
+# ---------------------------------------------------------------------------
+
+
+def test_the_skills_surface_is_pinned_against_the_real_binary() -> None:
+    """Not synthesized: both documents are in the curated set, so the contract
+    hash moves if upstream reshapes either one."""
+    index = _fixture_contract().method_index
+    assert schema.METHOD_SKILLS_LIST in index["clientRequests"]
+    assert schema.METHOD_SKILLS_LIST in schema.SUPPORTED_CLIENT_REQUESTS
+    documents = _fixture_contract().documents
+    assert "v2/SkillsListParams.json" in documents
+    assert "v2/SkillsListResponse.json" in documents
+    # It carries prompts and skill paths, never a credential, so it must work on
+    # a runner configured with `experimentalApi=false`.
+    assert schema.METHOD_SKILLS_LIST not in schema.EXTERNAL_AUTH_ONLY_CLIENT_REQUESTS
+
+
+def test_skills_list_params_name_the_cwds_explicitly() -> None:
+    assert schema.SkillsListParams().to_wire() == {}
+    assert schema.SkillsListParams(cwds=("/work",), force_reload=True).to_wire() == {
+        "cwds": ["/work"],
+        "forceReload": True,
+    }
+    assert schema.validate_client_request_params(
+        schema.METHOD_SKILLS_LIST, {"cwds": ["/work"]}
+    ) == {"cwds": ["/work"]}
+    with pytest.raises(CodexSchemaError):
+        schema.validate_client_request_params(
+            schema.METHOD_SKILLS_LIST, {"unexpected": 1}
+        )
+
+
+def test_skills_list_response_reports_only_dispatchable_enabled_skills() -> None:
+    parsed = schema.parse_skills_list_response(
+        {
+            "data": [
+                {
+                    "cwd": "/work",
+                    "skills": [
+                        {"name": "a", "path": "/s/a", "description": "A",
+                         "enabled": True, "scope": "repo"},
+                        {"name": "off", "path": "/s/off", "description": "",
+                         "enabled": False, "scope": "user"},
+                        # No path: identity is (name, path), so it can never be
+                        # dispatched and is dropped rather than offered.
+                        {"name": "pathless", "description": "", "enabled": True,
+                         "scope": "user"},
+                    ],
+                    "errors": [{"path": "/s/bad", "message": "unparseable"}],
+                },
+                # A second root can repeat a name; the first answered wins, so
+                # one name never maps to two paths.
+                {"cwd": "/other", "skills": [
+                    {"name": "a", "path": "/other/a", "description": "shadowed",
+                     "enabled": True, "scope": "user"},
+                ], "errors": []},
+            ]
+        }
+    )
+    assert [s.name for s in parsed.enabled_skills()] == ["a"]
+    assert parsed.enabled_skills()[0].path == "/s/a"
+    # Scan errors are carried, so "we could not read them" stays distinguishable
+    # from "this project has no skills".
+    assert parsed.data[0].errors == ("unparseable",)
+
+
+def test_a_skill_prefers_its_short_description_when_it_has_one() -> None:
+    skill = schema.parse_skill(
+        {"name": "a", "path": "/s/a", "description": "the long one",
+         "shortDescription": "the short one", "enabled": True, "scope": "repo"},
+        "skill",
+    )
+    assert skill is not None and skill.summary == "the short one"
+
+
+def test_skills_list_response_rejects_a_malformed_envelope() -> None:
+    malformed: tuple[Any, ...] = ({}, {"data": {}}, {"data": [{"cwd": "/w", "skills": {}}]})
+    for payload in malformed:
+        with pytest.raises(CodexSchemaError):
+            schema.parse_skills_list_response(payload)
+
+
+def test_skill_user_input_round_trips_and_refuses_a_half_identity() -> None:
+    """The variant that makes native dispatch possible. Both fields are required
+    upstream, and a half-identity would start a turn on a guessed skill."""
+    wire = schema.SkillUserInput(name="pr-review", path="/s/pr-review").to_wire()
+    assert wire == {"type": "skill", "name": "pr-review", "path": "/s/pr-review"}
+    assert schema.parse_user_input(wire) == schema.SkillUserInput(
+        name="pr-review", path="/s/pr-review"
+    )
+    for bad in ({"name": "", "path": "/p"}, {"name": "n", "path": ""}):
+        with pytest.raises(CodexSchemaError):
+            schema.SkillUserInput(**bad)
+
+
+def test_a_skill_input_survives_the_outbound_turn_start_rebuild() -> None:
+    """Everything ccswitch sends is re-parsed from its own wire form, so a skill
+    invocation has to be modelled on BOTH sides or it never reaches the peer."""
+    params = schema.TurnStartParams(
+        thread_id="t1",
+        input=(
+            schema.SkillUserInput(name="pr-review", path="/s/pr-review"),
+            schema.TextUserInput(text="PR #42"),
+        ),
+    )
+    rebuilt = schema.validate_client_request_params(
+        schema.METHOD_TURN_START, params.to_wire()
+    )
+    assert rebuilt["input"] == [
+        {"type": "skill", "name": "pr-review", "path": "/s/pr-review"},
+        {"type": "text", "text": "PR #42"},
+    ]

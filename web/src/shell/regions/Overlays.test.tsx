@@ -74,7 +74,7 @@ vi.mock('@/api/hooks', async (importOriginal) => ({
 }))
 
 const COMMANDS: Command[] = [
-  { name: 'help', description: 'List the available commands', argumentHint: null, kind: 'client' },
+  { name: 'help', description: 'List the available commands', argumentHint: null, kind: 'client', source: 'app' },
 ]
 
 /** The region node, read from the document: everything here portals out of the

@@ -124,6 +124,16 @@ compatibility audit; API-key authentication in v1.
 - Users explicitly select Claude Code or Codex. V1 Codex controls are model, reasoning effort, and
   permission profile. The data model supports multiple named OpenAI accounts immediately, while
   automatic OpenAI-account rotation is deferred.
+- **Command palette (#1286).** A session's palette has two halves, and which half an entry belongs
+  to is on the wire (`source`). *App-owned* commands are ccswitch's own orchestrator operations
+  (`/help`, `/context`, `/clear`, `/model`, `/account`), declared once in
+  `server/sessions/commands/catalog.py` with the engine capability each needs, so they render on any
+  engine that can actually perform them. *Vendor* commands are whatever the engine publishes about
+  itself: the Claude CLI's `get_server_info()` list, and for Codex the app-server's `skills/list`.
+  A Codex skill is dispatched through the pinned `SkillUserInput` variant of `turn/start` — by name
+  AND path — never by writing `/name` into the prompt, which the app-server does not parse and would
+  hand the model as literal text. Listing and invoking skills is not the "plugin/skill management"
+  named in Non-goals: nothing here installs, edits, enables, or scopes a skill.
 - The owner accepted the version-pinned experimental external-token dependency with the design's
   mandatory compatibility, redaction, live-test, kill-switch, and fail-closed safeguards.
 - PR #1088 configures Codex as a repository development agent; it does not implement this feature.

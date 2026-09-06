@@ -1,16 +1,31 @@
 # server/tests/test_account_command.py
 import pytest
+from server.codex.capabilities import CODEX_CAPABILITIES
+from server.sessions.claude_driver import ClaudeAgentDriver
 from server.sessions.commands.catalog import build_catalog
+from server.sessions.engine import AgentCapabilities
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
-def test_account_command_is_in_catalog():
-    names = {c.name for c in build_catalog({"commands": []})}
+@pytest.mark.parametrize("caps", [ClaudeAgentDriver.capabilities, CODEX_CAPABILITIES])
+def test_account_command_is_in_catalog(caps):
+    """Offered on every engine that can actually move a session's account —
+    losslessly (Claude) or as a fresh thread (Codex)."""
+    names = {c.name for c in build_catalog({"commands": []}, caps)}
     assert "account" in names
-    acct = next(c for c in build_catalog({"commands": []}) if c.name == "account")
+    acct = next(c for c in build_catalog({"commands": []}, caps) if c.name == "account")
     assert acct.kind == "control"
+    assert acct.source == "app"
+
+
+def test_account_command_is_withheld_from_an_engine_that_cannot_switch():
+    """An engine with neither account capability must not advertise `/account`:
+    the command can only park the session on its original account there, and the
+    palette offering it is how a user learns that the hard way."""
+    stuck = AgentCapabilities(account_rotation=False, account_switch_new_thread=False)
+    assert "account" not in {c.name for c in build_catalog({"commands": []}, stuck)}
 
 
 @pytest.mark.asyncio

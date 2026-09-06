@@ -78,3 +78,38 @@ async def test_unknown_control_raises():
         await dispatch(d, _cmd("future-control", "control"), "")
     # Must NOT have sent any prompt.
     assert d.prompts == []
+
+
+# --- #1286: native skill dispatch, never slash-text passthrough --------------
+
+
+class SkillDriver(FakeDriver):
+    """A driver whose engine invokes catalog entries by identity."""
+
+    def __init__(self):
+        super().__init__()
+        self.skills: list[tuple[str, str]] = []
+
+    async def send_skill(self, name, args=""):
+        self.skills.append((name, args))
+
+
+@pytest.mark.anyio
+async def test_skill_kind_uses_the_native_call_not_a_slash_prompt():
+    d = SkillDriver()
+    res = await dispatch(d, _cmd("pr-review", "skill"), "64")
+    assert res is None, "a skill streams as a normal turn"
+    assert d.skills == [("pr-review", "64")]
+    assert d.prompts == [], "the engine never sees `/pr-review` as prompt text"
+
+
+@pytest.mark.anyio
+async def test_a_skill_on_a_driver_that_cannot_run_one_raises():
+    """Falling back to `/name` passthrough here would silently re-create exactly
+    the untruthful dispatch the skill kind replaces."""
+    from server.sessions.commands.dispatcher import UnsupportedCommandDispatch
+
+    d = FakeDriver()
+    with pytest.raises(UnsupportedCommandDispatch):
+        await dispatch(d, _cmd("pr-review", "skill"), "")
+    assert d.prompts == []

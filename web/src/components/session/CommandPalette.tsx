@@ -16,8 +16,17 @@ interface Props {
   onDismiss: () => void
 }
 
+// Built-ins first, then whatever the engine itself publishes. `skill` joins
+// `passthrough` because both mean "the engine runs this"; they only differ in
+// how the server hands it over (see server/sessions/commands/dispatcher.py).
 function rank(c: Command): number {
-  return c.kind === 'passthrough' ? 1 : 0  // built-ins first, custom after
+  return c.kind === 'passthrough' || c.kind === 'skill' ? 1 : 0
+}
+
+// One engine publishes one kind of catalog, so the heading follows the first
+// entry in the group rather than trying to describe a mix that cannot occur.
+function groupLabel(c: Command): string {
+  return c.kind === 'skill' ? 'Skills' : 'Custom'
 }
 
 export const CommandPalette = forwardRef<CommandPaletteHandle, Props>(function CommandPalette(
@@ -68,7 +77,7 @@ export const CommandPalette = forwardRef<CommandPaletteHandle, Props>(function C
         return (
           <div key={c.name}>
             {showDivider && (
-              <div className="px-3 py-1 text-[10px] uppercase tracking-wide text-gray-400 dark:text-gray-500">Custom</div>
+              <div className="px-3 py-1 text-[10px] uppercase tracking-wide text-gray-400 dark:text-gray-500">{groupLabel(c)}</div>
             )}
             <button
               type="button"

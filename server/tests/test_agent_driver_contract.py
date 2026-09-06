@@ -50,6 +50,10 @@ def test_claude_adapter_satisfies_provider_neutral_driver_contract():
         # and syncs credentials back — Claude-specific machinery, so the orchestrator
         # gates the rotation path on this rather than on `if engine == ...`.
         account_rotation=True,
+        # The CLI enumerates its own built-ins, custom commands and skills through
+        # `get_server_info()`. `vendor_skills` stays False: the CLI parses `/name`
+        # itself, so text passthrough IS this engine's native dispatch (#1286).
+        vendor_commands=True,
     )
 
     driver._engine_session_id = "native-1"
