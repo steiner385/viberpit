@@ -1077,7 +1077,7 @@ async def batch_rotate_sessions(
             log.warning("batch rotate failed for %s: %s", session_id, exc)
             failed.append({"id": session_id, "error": str(exc)})
             continue
-        if result == "rotated":
+        if result in ("rotated", "rotated_new_thread"):
             succeeded.append(session_id)
             await record_audit(db=db, type="session.rotate", identity=identity,
                                detail={"session_id": session_id, "batch": True})
@@ -1586,7 +1586,7 @@ async def rotate_session(
             detail={"code": "not_found", "message": f"Session {session_id!r} not found"},
         )
     result = await orch.rotate_to_best(session_id, identity)
-    if result != "rotated":
+    if result not in ("rotated", "rotated_new_thread"):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": result, "message": f"Session could not be rotated: {result}"},

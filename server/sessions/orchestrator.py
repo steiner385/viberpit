@@ -3039,8 +3039,14 @@ class SessionOrchestrator:
         that is about to run on Codex, no app-server means no session, and failing
         the spawn is the fail-closed answer. It cannot reach another engine's spawn
         because the gate above never lets it run there.
+
+        ``getattr`` rather than ``self._codex`` directly: a caller reached from a
+        Claude-only rebuild path (_reassign_locked) may run against a partially
+        constructed orchestrator in tests (``SessionOrchestrator.__new__``, no
+        ``__init__``) that never set the attribute at all — the engine check below
+        already refuses anything but Codex, so there is nothing to gate twice on.
         """
-        if self._codex is None or engine != AgentEngine.CODEX:
+        if engine != AgentEngine.CODEX or getattr(self, "_codex", None) is None:
             return
         await self._codex.ensure(account)
 
@@ -9095,7 +9101,7 @@ class SessionOrchestrator:
           failed. A session parked on a question / permission / review resumes
           and waits, the reload rule.
 
-        Returns "rotated" | "skipped:<reason>" | "no_driver".
+        Returns "rotated" | "rotated_new_thread" | "skipped:<reason>" | "no_driver".
         """
         record = self._records.get(session_id)
         if record is None:
@@ -9122,15 +9128,21 @@ class SessionOrchestrator:
             record.account_pinned = False
             await self._persist_pin(record.id, False)
         replay = record.status in _ROTATE_REPLAY_STATUSES
-        await self._reassign(record, new_account, reason="manual_rotate",
-                             replay_last_prompt=replay)
+        result = await self._reassign(record, new_account, reason="manual_rotate",
+                                      replay_last_prompt=replay)
+        # _reassign refuses without touching the driver (engine_rotation_unsupported /
+        # invalid_target) or pauses after a failed rebuild (failed) — either way the
+        # session did NOT move, so this must not fall through to the driver-presence
+        # check below and report "rotated" off a stale, untouched driver handle.
+        if result not in ("rotated", "rotated_new_thread"):
+            return "skipped:reassign_failed" if result == "failed" else f"skipped:{result}"
         driver = self._drivers.get(session_id)
         if driver is None:
             return "no_driver"
         _rethread_identity(driver, identity)
         log_event(log, logging.INFO, "session.rotate_to_best", session_id=session_id,
                   identity=identity, to_account=new_account, replayed=replay)
-        return "rotated"
+        return result
 
     async def set_account_pin(self, session_id: str, pinned: bool) -> str:
         """Pin the session to its CURRENT account (usage-ceiling rotation then marks
@@ -10372,12 +10384,27 @@ class SessionOrchestrator:
                 return {"name": "account", "render": "notice",
                         "data": {"text": "Usage: /account <account>"}}
             try:
-                await self.switch_account_manual(session_id, acct)
+                result = await self.switch_account_manual(session_id, acct)
             except (InvalidAccountName, KeyError):
                 return {"name": "account", "render": "notice",
                         "data": {"text": f"Unknown account: {acct}"}}
-            return {"name": "account", "render": "notice",
-                    "data": {"text": f"Account → {acct}"}}
+            # Say what actually happened — switch_account_manual can silently refuse
+            # (an engine with neither account_rotation nor account_switch_new_thread
+            # is parked instead of moved) or succeed lossily (a fresh thread on an
+            # engine that can't carry a live one across accounts). Reporting a bare
+            # "Account → acct" regardless of `result` was the bug: it told the user a
+            # Codex switch worked when the session had actually just been paused on
+            # its ORIGINAL account.
+            if result == "rotated":
+                text = f"Account → {acct}"
+            elif result == "rotated_new_thread":
+                text = (f"Account → {acct} — this engine can't carry a live "
+                        f"conversation across accounts, so this started a new one")
+            else:
+                text = (f"Can't switch accounts on a running session for this engine "
+                        f"({result}). End this session and start a new one on {acct} "
+                        f"instead.")
+            return {"name": "account", "render": "notice", "data": {"text": text}}
         # /model is likewise orchestrator-level (record + DB, driver optional): it
         # must sit ABOVE the driver guard so a detached session persists the model
         # instead of getting "isn't live" — the picker was a silent no-op there.
@@ -10924,6 +10951,16 @@ class SessionOrchestrator:
                 continue
             if record.status != "needs_attention":
                 continue
+            if record.paused_reason == "engine_rotation_unsupported":
+                # Unlike the other needs_attention causes this sweep exists to retry
+                # (all_accounts_busy, crash_cap, rotation_cap, stall_cap,
+                # turn_dropped_cap — every one a "wait for an account to free up"),
+                # this one is never recoverable by retrying: the engine will not
+                # suddenly grow account_rotation or account_switch_new_thread between
+                # sweeps. Retrying anyway re-parks the session on the identical
+                # capability check every _STUCK_SESSION_SWEEP_INTERVAL forever — a
+                # silent no-op loop, not a recovery attempt.
+                continue
             if not self._owns_record(record, enabled_hosts):
                 log.debug("stuck-sweep.skip_foreign session=%s host=%s",
                           record.id, record.host)
@@ -11150,10 +11187,19 @@ class SessionOrchestrator:
         except Exception:
             log.warning("mark_needs_reauth_audit failed account=%s", account, exc_info=True)
 
-    async def switch_account_manual(self, session_id: str, new_account: str) -> None:
-        """User-initiated account switch. Pins the session against usage-ceiling
-        rotation, then resumes the conversation on new_account via the shared
-        _reassign primitive (same path as auto-rotation / recovery)."""
+    async def switch_account_manual(self, session_id: str, new_account: str) -> str:
+        """User-initiated account switch: resumes the conversation on new_account via
+        the shared _reassign primitive (same path as auto-rotation / recovery), then
+        pins the session against usage-ceiling rotation IFF the switch actually
+        happened.
+
+        Returns _reassign's result code ("rotated" / "rotated_new_thread" /
+        "unsupported" / "invalid_target" / "failed"). The pin must follow success, not
+        precede the attempt: an engine that can't rotate leaves the session on its
+        ORIGINAL account (_reassign refuses without touching the driver), so pinning
+        first recorded "pinned to new_account" against a session still running on the
+        old one — the account badge and the ledger's rotation-eligibility both lied.
+        """
         record = self._records.get(session_id)
         if record is None:
             raise KeyError(session_id)
@@ -11166,9 +11212,11 @@ class SessionOrchestrator:
         known = {a["name"] for a in ccswitch_accounts.list_accounts()}
         if new_account not in known:
             raise KeyError(f"Unknown account: {new_account}")
-        record.account_pinned = True
-        await self._persist_pin(session_id, True)
-        await self._reassign(record, new_account, reason="manual")
+        result = await self._reassign(record, new_account, reason="manual")
+        if result in ("rotated", "rotated_new_thread"):
+            record.account_pinned = True
+            await self._persist_pin(session_id, True)
+        return result
 
     async def _persist_pin(self, session_id: str, pinned: bool) -> None:
         async with db_session() as db:
@@ -11503,7 +11551,7 @@ class SessionOrchestrator:
             cb(session_id, driver)
 
     async def _reassign(self, record: SessionRecord, new_account: str, *, reason: str,
-                        replay_last_prompt: bool = True) -> None:
+                        replay_last_prompt: bool = True) -> str:
         """Resume the session's claude conversation on *new_account* (may equal the
         current account, for a 401 recompose). Relaunches the driver, replays the last
         prompt (unless ``replay_last_prompt`` is False — see reload_session for the one
@@ -11513,6 +11561,14 @@ class SessionOrchestrator:
         Works for both live sessions (closes the old driver first) and driverless ones
         (e.g. the driver died while the session was idle — in that case params are
         derived from the SessionRecord instead of the old driver).
+
+        Returns "rotated" (same thread preserved), "rotated_new_thread" (moved, but the
+        engine can only start a fresh conversation there — see
+        ``account_switch_new_thread``), "invalid_target", "unsupported" (neither
+        capability declared — the session is parked for a human), or "failed" (the
+        swap itself raised; also parked). Callers that must be honest about whether the
+        account actually changed (switch_account_manual, the ``/account`` command) read
+        this instead of assuming success.
         """
         # Validate BEFORE touching anything. switch_account_manual() validated its own
         # argument, but _rotate_away() did not — so a phantom account name out of
@@ -11524,21 +11580,27 @@ class SessionOrchestrator:
             log.error("reassign.invalid_account session=%s account=%r reason=%s — "
                       "keeping the current driver", record.id, new_account, reason)
             await self._pause_session(record, reason="invalid_rotation_target")
-            return
+            return "invalid_target"
 
         # Rotation is engine work, not generic session work: everything below composes
         # the target account's Claude config dir, re-trusts the project and syncs Claude
         # credentials back, and the rebuild used to hardcode CLAUDE_CODE — so rotating a
         # Codex session would have replaced it with a Claude driver resuming a Codex
         # thread id. Gate on the capability rather than on the engine name, so an engine
-        # that grows real rotation support is enabled by declaring it. Refusing parks the
-        # session for a human (the same landing as a bad rotation target) instead of
-        # silently leaving a rate-limited session running into the same wall.
+        # that grows real rotation support is enabled by declaring it. An engine that
+        # cannot preserve the thread but CAN start a fresh one on the target account
+        # (account_switch_new_thread) still moves — honestly, as a new conversation —
+        # rather than being refused outright. Only an engine with neither capability is
+        # parked for a human (the same landing as a bad rotation target).
+        new_thread = False
         if not self._engine_supports(record.engine, "account_rotation"):
-            log.error("reassign.unsupported_engine session=%s engine=%s reason=%s — "
-                      "keeping the current driver", record.id, record.engine, reason)
-            await self._pause_session(record, reason="engine_rotation_unsupported")
-            return
+            if self._engine_supports(record.engine, "account_switch_new_thread"):
+                new_thread = True
+            else:
+                log.error("reassign.unsupported_engine session=%s engine=%s reason=%s — "
+                          "keeping the current driver", record.id, record.engine, reason)
+                await self._pause_session(record, reason="engine_rotation_unsupported")
+                return "unsupported"
 
         # Serialise with any other in-flight driver swap for this session (#1040):
         # two recoverable-failure callbacks firing back to back (e.g. two
@@ -11558,18 +11620,28 @@ class SessionOrchestrator:
         swap_done: asyncio.Future = asyncio.get_running_loop().create_future()
         self._swapping[record.id] = swap_done
         try:
-            await self._reassign_locked(record, new_account, reason=reason,
-                                        replay_last_prompt=replay_last_prompt)
+            ok = await self._reassign_locked(record, new_account, reason=reason,
+                                             replay_last_prompt=replay_last_prompt,
+                                             new_thread=new_thread)
         finally:
             if self._swapping.get(record.id) is swap_done:
                 del self._swapping[record.id]
             if not swap_done.done():
                 swap_done.set_result(None)
+        if not ok:
+            return "failed"
+        return "rotated_new_thread" if new_thread else "rotated"
 
     async def _reassign_locked(self, record: SessionRecord, new_account: str, *,
-                               reason: str, replay_last_prompt: bool = True) -> None:
+                               reason: str, replay_last_prompt: bool = True,
+                               new_thread: bool = False) -> bool:
         """The actual reassign body, run with an entry in `self._swapping` held for
-        `record.id` by the caller (`_reassign`) — see there for why."""
+        `record.id` by the caller (`_reassign`) — see there for why.
+
+        ``new_thread`` is the ``account_switch_new_thread`` fallback: the new driver
+        starts a fresh conversation on ``record.engine`` instead of resuming the old
+        thread id under the new account. Returns True on success, False if the swap
+        raised (the session is left parked — see the except clause below)."""
         # Same defer contract as a model swap: the dance below flips the session
         # through actionable statuses autopilot would otherwise act on mid-restart.
         self._turn_restart_at[record.id] = self._clock()
@@ -11608,7 +11680,7 @@ class SessionOrchestrator:
                 await old_driver.aclose()
             Path(cwd).mkdir(parents=True, exist_ok=True)
             driver_config_dir = self._driver_config_dir(
-                AgentEngine.CLAUDE_CODE,
+                record.engine,
                 new_account,
                 cwd,
                 getattr(record, "kind", None),
@@ -11616,6 +11688,10 @@ class SessionOrchestrator:
             _copilot = getattr(self, "_copilot", None)
             if _copilot is not None and _provider_of(new_account) == _copilot_mod.PROVIDER:
                 await _copilot.ensure(new_account)
+            # No-op for every engine but Codex: the target account's app-server must be
+            # up before a driver can attach to it, exactly as a fresh spawn or a
+            # detached resume already requires (see ensure_driver).
+            await self._ensure_codex_runner(record.engine, new_account)
             # An assistant-kind session's overlay carries an AssistantApi whose MCP
             # tool handlers close over a live httpx.AsyncClient. old_driver.aclose()
             # above already closed that client (it belonged to old_driver), so every
@@ -11628,14 +11704,19 @@ class SessionOrchestrator:
                 assistant_api = self._setup_assistant_overlay(
                     record.id, identity=identity, model=record.model)
             new_driver = self._create_driver(
-                engine=AgentEngine.CLAUDE_CODE,
+                engine=record.engine,
                 session_id=record.id,
                 account=new_account,
                 cwd=cwd,
                 config_dir=driver_config_dir,
                 mode=mode,
                 identity=identity,
-                resume=claude_sid,
+                # A thread-preserving rotation resumes the old handle under the new
+                # account; the new_thread fallback (account_switch_new_thread) starts a
+                # fresh conversation instead — there is no cross-account resume for an
+                # engine that only declares that capability, so passing the old handle
+                # would either error or silently attach to the wrong account's thread.
+                resume=None if new_thread else claude_sid,
                 on_sync_back=functools.partial(ccswitch_accounts.sync_back, new_account),
                 suggester=self._suggester_for(getattr(record, "kind", None)),
                 assistant_api=assistant_api,
@@ -11685,17 +11766,19 @@ class SessionOrchestrator:
             # apart and the stale poll silently reverts the account badge.
             from datetime import datetime
             record.updated_at = datetime.utcnow()
-            log.info("reassign.complete session=%s %s→%s reason=%s",
-                     record.id, old, new_account, reason)
+            log.info("reassign.complete session=%s %s→%s reason=%s new_thread=%s",
+                     record.id, old, new_account, reason, new_thread)
             self._publish_event({
                 "type": "rotated", "sessionId": record.id, "fromAccount": old,
                 "toAccount": new_account, "reason": reason,
                 "turnRestarted": bool(last),
+                "newThread": new_thread,
                 "revAt": record.rev_at,
             })
             log_event(log, logging.INFO, "session.rotate",
                       session_id=record.id,
                       from_account=old, to_account=new_account, reason=reason)
+            return True
         except Exception:
             log.exception("reassign.error session=%s", record.id)
             # The old driver is already closed by this point, so the session now has
@@ -11706,6 +11789,7 @@ class SessionOrchestrator:
                 await self._pause_session(record, reason=f"reassign_failed:{reason}")
             except Exception:
                 log.warning("reassign.pause_failed session=%s", record.id, exc_info=True)
+            return False
 
     # ------------------------------------------------------------------
     # Archive / unarchive / permanent-delete

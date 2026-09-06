@@ -21,10 +21,53 @@ async def test_run_command_account_calls_manual_switch(monkeypatch):
     orch._records = {"s1": rec}
     orch._drivers = {"s1": object()}
     seen = {}
-    async def _switch(self, sid, acct): seen["acct"] = acct
+    async def _switch(self, sid, acct):
+        seen["acct"] = acct
+        return "rotated"
     monkeypatch.setattr(SessionOrchestrator, "switch_account_manual", _switch)
 
     result = await orch.run_command("s1", "account", "acct-b")
     assert seen["acct"] == "acct-b"
     assert result["name"] == "account"
     assert result["render"] == "notice"
+    assert result["data"]["text"] == "Account → acct-b"
+
+
+@pytest.mark.asyncio
+async def test_run_command_account_reports_a_new_thread_switch_honestly(monkeypatch):
+    """An engine that can only start a fresh thread (account_switch_new_thread,
+    e.g. Codex) must say so — not the same "Account → x" text a thread-preserving
+    switch gets, which would read as "your conversation continued"."""
+    orch = SessionOrchestrator.__new__(SessionOrchestrator)
+    rec = SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CODEX, engine_session_id="c1",
+                        cols=80, rows=24, cwd="/tmp")
+    orch._records = {"s1": rec}
+    orch._drivers = {"s1": object()}
+    async def _switch(self, sid, acct):
+        return "rotated_new_thread"
+    monkeypatch.setattr(SessionOrchestrator, "switch_account_manual", _switch)
+
+    result = await orch.run_command("s1", "account", "acct-b")
+    text = result["data"]["text"]
+    assert "acct-b" in text
+    assert "fresh" in text.lower() or "new one" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_run_command_account_refuses_honestly_when_the_engine_cannot_switch(monkeypatch):
+    """#1275: the old handler reported "Account → acct" unconditionally, even when
+    switch_account_manual had silently refused and left the session on its
+    ORIGINAL account. The command must say the switch did not happen."""
+    orch = SessionOrchestrator.__new__(SessionOrchestrator)
+    rec = SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CODEX, engine_session_id="c1",
+                        cols=80, rows=24, cwd="/tmp")
+    orch._records = {"s1": rec}
+    orch._drivers = {"s1": object()}
+    async def _switch(self, sid, acct):
+        return "unsupported"
+    monkeypatch.setattr(SessionOrchestrator, "switch_account_manual", _switch)
+
+    result = await orch.run_command("s1", "account", "acct-b")
+    text = result["data"]["text"]
+    assert not text.startswith("Account →"), "must not claim the switch happened"
+    assert "Can't switch" in text

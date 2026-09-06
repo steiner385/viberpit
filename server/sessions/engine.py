@@ -43,6 +43,17 @@ class AgentCapabilities:
     #: for free. An engine that leaves this False must be REFUSED by the rotation
     #: path rather than rebuilt as some other engine's driver.
     account_rotation: bool = False
+    #: The session can be moved to a different account WITHOUT preserving the
+    #: live conversation — the old thread is closed and a fresh one is started
+    #: under the new account, on the SAME engine. This is the fallback for an
+    #: engine that isolates accounts per-process (no shared credential-swap
+    #: primitive to resume a thread under a different identity) but has no
+    #: reason a brand-new thread can't start there instead. Distinct from
+    #: ``account_rotation`` (True there means resume the SAME thread); an engine
+    #: may declare either, both, or neither. _reassign tries account_rotation
+    #: first and only falls back to this — never silently prefers a lossy switch
+    #: over a lossless one.
+    account_switch_new_thread: bool = False
 
 
 def capabilities_to_wire(caps: AgentCapabilities) -> dict[str, bool]:

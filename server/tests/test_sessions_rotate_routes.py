@@ -90,6 +90,25 @@ def test_rotate_one_returns_record(cf):
     assert r.json()["id"] == "s1"
 
 
+def test_rotate_one_200_on_new_thread_switch(cf):
+    """rotated_new_thread (#1275, account_switch_new_thread) is a real success —
+    the engine just couldn't preserve the live thread — so it must return 200
+    like "rotated", not 409 as if nothing happened."""
+    client, fake = cf
+    fake.rotate_map = {"s1": "rotated_new_thread"}
+    r = client.post("/api/sessions/s1/rotate", headers=_H)
+    assert r.status_code == 200, r.text
+    assert r.json()["id"] == "s1"
+
+
+def test_batch_rotate_counts_new_thread_switch_as_succeeded(cf):
+    client, fake = cf
+    fake.rotate_map = {"s1": "rotated_new_thread"}
+    body = client.post("/api/sessions/batch/rotate", json={"ids": ["s1"]}, headers=_H).json()
+    assert body["succeeded"] == ["s1"]
+    assert body["failed"] == []
+
+
 def test_rotate_one_409_on_skip(cf):
     client, fake = cf
     fake.rotate_map = {"s1": "skipped:all_accounts_busy"}

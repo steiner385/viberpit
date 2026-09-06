@@ -57,7 +57,17 @@ CODEX_ENGINE: Final = AgentEngine.CODEX
 #: ``CodexAgentDriver.answer_question`` can only ever report "no longer pending".
 #: ``account_rotation`` is False because rotation composes the target account's
 #: Claude config dir and syncs Claude credentials back; a Codex session is refused
-#: by that path rather than rebuilt as some other engine's driver.
+#: by that path rather than rebuilt as some other engine's driver. That refusal is
+#: architectural, not a gap to close later (#1275): Codex isolates every account
+#: through its own `codex app-server` process and `CODEX_HOME`
+#: (server/codex/process.py), so there is no in-process credential swap and no
+#: app-server surface to resume a live thread under a different account's
+#: identity — verified against the pinned app-server protocol
+#: (server/codex/schema.py), not assumed.
+#: ``account_switch_new_thread`` is True, though: nothing stops a fresh thread
+#: from starting on the target account's own app-server, so a manual switch or a
+#: usage-ceiling rotation still moves the session — honestly, as a new
+#: conversation rather than a silently continued one.
 CODEX_CAPABILITIES: Final[AgentCapabilities] = AgentCapabilities(
     models=True,
     reasoning_effort=True,
@@ -71,6 +81,7 @@ CODEX_CAPABILITIES: Final[AgentCapabilities] = AgentCapabilities(
     subagents=False,
     attachments=True,
     account_rotation=False,
+    account_switch_new_thread=True,
 )
 
 #: What an unavailable engine advertises. Not "unknown" — *nothing*.
