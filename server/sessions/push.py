@@ -9,6 +9,10 @@ from pywebpush import WebPushException, webpush
 from server import config
 from server.db import db_session
 from server.sessions import push_store
+# Same literal server/sessions/types.py defines for SessionRecord.kind — reused
+# here for NotificationChannel.kind rather than adding a second constant that
+# would carry the identical value.
+from server.sessions.types import ASSISTANT_KIND
 
 if TYPE_CHECKING:
     # Typing-only: importing SessionOrchestrator at runtime would cycle back here
@@ -213,7 +217,7 @@ async def notify_event(
         chan = channels.get(decision.channel_id)
         if chan is None or not chan.enabled:
             return
-        if chan.kind == "assistant":
+        if chan.kind == ASSISTANT_KIND:
             owner_session_id = (owner_session_by_rule.get(decision.rule_id)
                                if decision.rule_id is not None else None)
             await _deliver_assistant_notice(
