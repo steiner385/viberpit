@@ -8,25 +8,24 @@ import uvicorn
 
 from server.deploy.app import build_controller_app
 from server.deploy.__main__ import _daemon_enabled
+from server.hostpaths import DEPLOY_SOCKET as DEFAULT_DEPLOY_SOCKET, DEPLOY_STATUS_PATH as DEFAULT_DEPLOY_STATUS_PATH
 
 log = logging.getLogger("server.deploy.serve")
-DEFAULT_DEPLOY_SOCKET = "/run/ccswitch/deploy.sock"
 # Same directory as the socket: the unit's RuntimeDirectory=ccswitch makes it writable
 # and RuntimeDirectoryPreserve=yes keeps it across the controller's own restart — the
 # exact window the persisted status must survive (#865). Wiped on reboot, which is
 # fine: after a reboot "no deploy in progress" is the truth.
-DEFAULT_DEPLOY_STATUS_PATH = "/run/ccswitch/deploy-status.json"
 
 
 def deploy_socket() -> str:
     """Return the UDS socket path for the deploy controller, from CCSWITCH_DEPLOY_SOCKET env
-    or the default /run/ccswitch/deploy.sock."""
+    or the default under hostpaths.RUN_DIR."""
     return os.environ.get("CCSWITCH_DEPLOY_SOCKET", DEFAULT_DEPLOY_SOCKET)
 
 
 def deploy_status_path() -> str:
     """Where the controller persists its DeployStatus across its own self-restart, from
-    CCSWITCH_DEPLOY_STATUS_PATH env or the default under /run/ccswitch."""
+    CCSWITCH_DEPLOY_STATUS_PATH env or the default under hostpaths.RUN_DIR."""
     return os.environ.get("CCSWITCH_DEPLOY_STATUS_PATH", DEFAULT_DEPLOY_STATUS_PATH)
 
 

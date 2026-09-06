@@ -5,6 +5,8 @@ Reads settings from environment variables. Copy .env.example → .env and fill i
 import os
 from pathlib import Path
 
+from server import hostpaths
+
 
 def env_float(name: str, default: float, *, minimum: float | None = None) -> float:
     """Parse a float tuning knob from the environment, tolerating a bad value.
@@ -196,7 +198,7 @@ try:
         log_level: str = Field(default="INFO", alias="CCSWITCH_LOG_LEVEL")
         log_dir: str = Field(
             default_factory=lambda: os.environ.get("CCSWITCH_LOG_DIR")
-            or ("/var/log/ccswitch" if os.access("/var/log", os.W_OK)
+            or (hostpaths.LOG_DIR if os.access("/var/log", os.W_OK)
                 else str(Path.home() / ".claude-accounts" / "logs")),
             alias="CCSWITCH_LOG_DIR",
         )
@@ -489,7 +491,7 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         log_dir: str = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_LOG_DIR")
-            or ("/var/log/ccswitch" if os.access("/var/log", os.W_OK)
+            or (hostpaths.LOG_DIR if os.access("/var/log", os.W_OK)
                 else str(Path.home() / ".claude-accounts" / "logs"))
         )
         client_log_level: str = dataclasses.field(

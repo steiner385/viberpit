@@ -302,8 +302,9 @@ def generate_vapid_keys() -> tuple[str, str]:
 
 if __name__ == "__main__":  # pragma: no cover
     import sys
+    from server import hostpaths
     if "--keygen" in sys.argv:
         priv, pub = generate_vapid_keys()
-        print("# Paste into /etc/ccswitch/ccswitch.env, then restart the services:")
+        print(f"# Paste into {hostpaths.ENV_FILE}, then restart the services:")
         print(f"CCSWITCH_VAPID_PRIVATE_KEY={priv!r}")
         print(f"CCSWITCH_VAPID_PUBLIC_KEY={pub}")

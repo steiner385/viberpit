@@ -9,6 +9,7 @@ from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.db import get_db
 from server.deploy.client import DeployControllerClient, DeployControllerUnavailable
+from server import hostpaths
 
 router = APIRouter(prefix="/api/deploy", tags=["deploy"])
 
@@ -16,7 +17,7 @@ router = APIRouter(prefix="/api/deploy", tags=["deploy"])
 def get_deploy_client(request: Request) -> DeployControllerClient:
     client = getattr(request.app.state, "deploy_client", None)
     if client is None:
-        sock = os.environ.get("CCSWITCH_DEPLOY_SOCKET", "/run/ccswitch/deploy.sock")
+        sock = os.environ.get("CCSWITCH_DEPLOY_SOCKET", hostpaths.DEPLOY_SOCKET)
         client = DeployControllerClient(sock)
         request.app.state.deploy_client = client
     return client
