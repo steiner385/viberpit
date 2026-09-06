@@ -78,6 +78,65 @@ async def test_api_error_becomes_tool_error():
     assert "SESSION_NOT_FOUND" in out["content"][0]["text"]
 
 
+@pytest.mark.asyncio
+async def test_list_initiatives_filters_status():
+    def handler(req):
+        assert (req.method, req.url.path) == ("GET", "/api/sdlc/initiatives")
+        return httpx.Response(200, json=[{"slug": "a", "status": "build"},
+                                         {"slug": "b", "status": "spec"}])
+
+    out = await _tool(build_tools(_api(handler)), "list_initiatives").handler({"status": "spec"})
+    assert [i["slug"] for i in json.loads(out["content"][0]["text"])["data"]] == ["b"]
+
+
+@pytest.mark.asyncio
+async def test_get_initiative_fetches_by_slug():
+    def handler(req):
+        assert (req.method, req.url.path) == ("GET", "/api/sdlc/initiatives/foo-bar")
+        return httpx.Response(200, json={"slug": "foo-bar", "stage": "plan"})
+
+    out = await _tool(build_tools(_api(handler)), "get_initiative").handler({"slug": "foo-bar"})
+    assert json.loads(out["content"][0]["text"])["data"]["stage"] == "plan"
+
+
+@pytest.mark.asyncio
+async def test_advance_initiative_posts():
+    def handler(req):
+        assert (req.method, req.url.path) == ("POST", "/api/sdlc/initiatives/a/advance")
+        return httpx.Response(200, json={"slug": "a", "status": "plan"})
+
+    out = await _tool(build_tools(_api(handler)), "advance_initiative").handler({"slug": "a"})
+    assert json.loads(out["content"][0]["text"])["data"]["status"] == "plan"
+
+
+@pytest.mark.asyncio
+async def test_get_initiative_rejects_bad_slug():
+    calls = []
+
+    def handler(req):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={})
+
+    out = await _tool(build_tools(_api(handler)), "get_initiative").handler(
+        {"slug": "../etc"})
+    assert out["is_error"] is True
+    assert calls == [], "a locally-rejected slug must never reach the API"
+
+
+@pytest.mark.asyncio
+async def test_advance_initiative_rejects_bad_slug():
+    calls = []
+
+    def handler(req):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={})
+
+    out = await _tool(build_tools(_api(handler)), "advance_initiative").handler(
+        {"slug": "../etc"})
+    assert out["is_error"] is True
+    assert calls == [], "a locally-rejected slug must never reach the API"
+
+
 def test_specs_and_annotations():
     assert TOOL_SPECS["list_sessions"].tool_class is ToolClass.READ
     assert annotation_for("mcp__ccswitch__list_sessions").tool_class is ToolClass.READ
@@ -114,7 +173,8 @@ def test_tool_spec_keys_match_web_app_action_titles_fixture():
 _ALL_OPTIONAL_TOOLS = ("list_sessions", "list_prs", "list_accounts", "list_hosts",
                        "list_automations", "get_deploy_status", "list_archived_sessions",
                        "list_notification_channels", "list_notification_rules",
-                       "get_quiet_hours", "test_notification", "set_quiet_hours")
+                       "get_quiet_hours", "test_notification", "set_quiet_hours",
+                       "list_initiatives")
 
 
 @pytest.mark.asyncio
@@ -182,6 +242,8 @@ _MUTATION_CALLS = [
      "POST", f"/api/sessions/{_SID}/fix-pr", {"number": 42}),
     ("set_automation_enabled", {"id": "autopilot", "enabled": False},
      "PATCH", "/api/automations/autopilot", {"enabled": False}),
+    ("advance_initiative", {"slug": "foo-bar"},
+     "POST", "/api/sdlc/initiatives/foo-bar/advance", None),
     ("delete_session", {"id": _SID}, "DELETE", f"/api/sessions/{_SID}/permanent", None),
     ("cancel_queued_session", {"id": _SID}, "DELETE", f"/api/sessions/{_SID}/queue", None),
     ("ready_merge_pr", {"repo": "o/r", "number": 7},

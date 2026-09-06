@@ -41,6 +41,8 @@ ARGS: dict[str, dict] = {
     "delete_notification_rule": {"id": "rule-1"}, "set_quiet_hours": {"start": "22:00"},
     "delete_session": {"id": UUID}, "cancel_queued_session": {"id": UUID},
     "ready_merge_pr": {"repo": "o/n", "number": 1},
+    "list_initiatives": {"status": "build"}, "get_initiative": {"slug": "a"},
+    "advance_initiative": {"slug": "a"},
 }
 
 

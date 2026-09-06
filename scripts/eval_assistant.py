@@ -233,6 +233,27 @@ def _deploy_status() -> dict[str, Any]:
     return {"state": "idle", "runningSha": "abc1234", "lastDeployAt": "2026-09-05T00:00:00"}
 
 
+def _initiatives() -> list[dict[str, Any]]:
+    return [
+        {"id": "i1", "slug": "billing-auth-refactor", "repo": "acme/billing",
+         "title": "Refactor billing auth", "stage": "build", "status": "active",
+         "origin": "github-epic", "originRef": "42"},
+        {"id": "i2", "slug": "checkout-redesign", "repo": "acme/checkout",
+         "title": "Checkout redesign", "stage": "spec", "status": "active",
+         "origin": None, "originRef": None},
+        {"id": "i3", "slug": "csv-export", "repo": "acme/billing",
+         "title": "CSV export", "stage": "plan", "status": "blocked",
+         "origin": None, "originRef": None},
+    ]
+
+
+def _initiative(slug: str) -> dict[str, Any] | None:
+    row = next((i for i in _initiatives() if i["slug"] == slug), None)
+    if row is None:
+        return None
+    return {**row, "artifacts": [], "buildSessions": [], "nextAction": {"type": "unknown"}}
+
+
 def _transcript(session_id: str) -> dict[str, Any]:
     if session_id == S_TRANSCRIPT_MAL:
         events = [
@@ -327,6 +348,15 @@ def _fixture_handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json=_stage_models())
         if path.startswith("/api/sessions/") and path.endswith("/export.md"):
             return httpx.Response(200, text=_export_md(path.split("/")[3]))
+        if path == "/api/sdlc/initiatives":
+            return httpx.Response(200, json=_initiatives())
+        if path.startswith("/api/sdlc/initiatives/"):
+            slug = path.split("/")[4]
+            row = _initiative(slug)
+            if row is None:
+                return httpx.Response(
+                    404, json={"error": {"code": "NOT_FOUND", "message": "no such initiative"}})
+            return httpx.Response(200, json=row)
         if path.startswith("/api/sessions/") and path.endswith("/transcript"):
             return httpx.Response(200, json=_transcript(path.split("/")[3]))
         if path.startswith("/api/sessions/"):
@@ -340,6 +370,15 @@ def _fixture_handler(request: httpx.Request) -> httpx.Response:
 
     if method == "POST" and path == "/api/sessions":
         return httpx.Response(201, json={"id": "new-eval-session-id", "name": None})
+    if method == "POST" and path.startswith("/api/sdlc/initiatives/") and path.endswith("/advance"):
+        slug = path.split("/")[4]
+        row = _initiative(slug)
+        if row is None:
+            return httpx.Response(
+                404, json={"error": {"code": "NOT_FOUND", "message": "no such initiative"}})
+        stages = ("intent", "spec", "plan", "build", "done")
+        next_stage = stages[min(stages.index(row["stage"]) + 1, len(stages) - 1)]
+        return httpx.Response(200, json={**row, "stage": next_stage, "status": "active"})
     if method == "DELETE":
         return httpx.Response(204)
     return httpx.Response(200, json={"ok": True})

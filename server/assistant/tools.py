@@ -59,6 +59,8 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("list_notification_rules", ToolClass.READ, "List notification rules"),
     ToolSpec("get_quiet_hours", ToolClass.READ, "Get quiet hours"),
     ToolSpec("test_notification", ToolClass.READ, "Preview notification routing"),
+    ToolSpec("list_initiatives", ToolClass.READ, "List initiatives"),
+    ToolSpec("get_initiative", ToolClass.READ, "Get initiative"),
     # READ because it changes nothing a user can see: it increments a counter and
     # writes an audit row. The ONE tool that calls no endpoint (see build_tools).
     ToolSpec("report_gap", ToolClass.READ, "Record a capability gap"),
@@ -78,6 +80,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("create_notification_rule", ToolClass.MUTATION, "Create notification rule"),
     ToolSpec("delete_notification_rule", ToolClass.MUTATION, "Delete notification rule"),
     ToolSpec("set_quiet_hours", ToolClass.MUTATION, "Set quiet hours"),
+    ToolSpec("advance_initiative", ToolClass.MUTATION, "Advance initiative"),
     # DESTRUCTIVE — irreversible. `PermissionRegistry.request` gives these a card in
     # EVERY mode (including full-auto) and never offers "Always allow" (spec §4.4).
     ToolSpec("delete_session", ToolClass.DESTRUCTIVE, "Permanently delete session"),
@@ -89,6 +92,17 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
 class ToolArgError(ValueError):
     """An argument a handler rejects LOCALLY, before any HTTP call — so the model gets a
     corrective message without the API ever seeing the request (spec §4.4)."""
+
+
+# Matches the allowlist's initiative-slug character class (server/assistant/policy.py) so
+# a bad slug fails locally, not as a 403 from the route allowlist.
+_SLUG = re.compile(r"\A[a-z0-9][a-z0-9-]{0,63}\Z")
+
+
+def _slug(s: str) -> str:
+    if not _SLUG.match(s):
+        raise ToolArgError("slug must be lowercase letters, digits and dashes")
+    return s
 
 
 def annotation_for(mcp_name: str) -> ToolSpec | None:
@@ -510,6 +524,20 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
             log.warning("assistant.gap audit failed", exc_info=True)
         return {"recorded": cap}
 
+    @spec_tool("list_initiatives",
+               "Delivery initiatives (intent → spec → plan → build) with status, linked repos and "
+               "the session working on each. Optional status filter.", _schema(status=str))
+    @guarded
+    async def list_initiatives(args: dict[str, Any]) -> Any:
+        rows = await api.get("/api/sdlc/initiatives")
+        return [r for r in rows if not args.get("status") or r.get("status") == args["status"]]
+
+    @spec_tool("get_initiative", "One initiative by slug: artifacts, stage history, blockers.",
+               {"slug": str})
+    @guarded
+    async def get_initiative(args: dict[str, Any]) -> Any:
+        return await api.get(f"/api/sdlc/initiatives/{_slug(args['slug'])}")
+
     # -- Mutations (spec §4.2, class M) ------------------------------------------------
     # Each is a thin adapter over ONE endpoint: rename args to the endpoint's field
     # names, call, return. Business logic lives behind the endpoint
@@ -652,6 +680,13 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
         return await api.put("/api/notifications/quiet-hours",
                              {"start": args.get("start"), "end": args.get("end")})
 
+    @spec_tool("advance_initiative",
+               "Move an initiative to its next stage (e.g. spec → plan). The stage's gate must "
+               "already be satisfied; the API refuses otherwise.", {"slug": str})
+    @guarded
+    async def advance_initiative(args: dict[str, Any]) -> Any:
+        return await api.post(f"/api/sdlc/initiatives/{_slug(args['slug'])}/advance")
+
     # -- Destructive (spec §4.2, class D) ----------------------------------------------
     # Irreversible. These always surface a permission card, in every mode, and the card
     # never offers "Always allow" (server/sessions/permissions.py).
@@ -687,10 +722,10 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
             list_notification_channels, list_notification_rules, get_quiet_hours,
             test_notification,
             list_repos, list_branches, list_stage_models,
-            list_automations, get_automation_events, get_deploy_status, report_gap,
+            list_initiatives, get_initiative, report_gap,
             create_session, send_prompt, interrupt_session, answer_question,
             resolve_permission, set_model, set_permission_mode, resolve_model_approval,
             archive_session, unarchive_session, set_autopilot_paused, fix_pr,
             set_automation_enabled, create_notification_rule, delete_notification_rule,
-            set_quiet_hours,
+            set_quiet_hours, advance_initiative,
             delete_session, cancel_queued_session, ready_merge_pr]
