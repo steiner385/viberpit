@@ -61,6 +61,12 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("test_notification", ToolClass.READ, "Preview notification routing"),
     ToolSpec("list_initiatives", ToolClass.READ, "List initiatives"),
     ToolSpec("get_initiative", ToolClass.READ, "Get initiative"),
+    ToolSpec("list_products", ToolClass.READ, "List products"),
+    ToolSpec("get_product", ToolClass.READ, "Get product"),
+    ToolSpec("get_product_deps", ToolClass.READ, "Get product dependencies"),
+    ToolSpec("get_priority_queue", ToolClass.READ, "Get priority queue"),
+    ToolSpec("list_triage", ToolClass.READ, "List triage proposals"),
+    ToolSpec("get_onboarding_status", ToolClass.READ, "Get product onboarding status"),
     # READ because it changes nothing a user can see: it increments a counter and
     # writes an audit row. The ONE tool that calls no endpoint (see build_tools).
     ToolSpec("report_gap", ToolClass.READ, "Record a capability gap"),
@@ -81,6 +87,8 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("delete_notification_rule", ToolClass.MUTATION, "Delete notification rule"),
     ToolSpec("set_quiet_hours", ToolClass.MUTATION, "Set quiet hours"),
     ToolSpec("advance_initiative", ToolClass.MUTATION, "Advance initiative"),
+    ToolSpec("resolve_triage", ToolClass.MUTATION, "Accept/reject triage proposal"),
+    ToolSpec("request_product_sync", ToolClass.MUTATION, "Request product sync"),
     # DESTRUCTIVE — irreversible. `PermissionRegistry.request` gives these a card in
     # EVERY mode (including full-auto) and never offers "Always allow" (spec §4.4).
     ToolSpec("delete_session", ToolClass.DESTRUCTIVE, "Permanently delete session"),
@@ -94,9 +102,19 @@ class ToolArgError(ValueError):
     corrective message without the API ever seeing the request (spec §4.4)."""
 
 
-# Matches the allowlist's initiative-slug character class (server/assistant/policy.py) so
-# a bad slug fails locally, not as a 403 from the route allowlist.
+# Matches the allowlist's initiative- and product-slug character class
+# (server/assistant/policy.py) so a bad slug fails locally, not as a 403 from the route
+# allowlist. `server/api/pm.py:_slugify` mints product slugs from the same class.
 _SLUG = re.compile(r"\A[a-z0-9][a-z0-9-]{0,63}\Z")
+
+# Triage proposal ids are `_new_uuid` strings (server/db/models.py:TriageProposal), but the
+# allowlist row is the looser `[A-Za-z0-9-]+`; keep the local check to the same class so a
+# rejection is a corrective message rather than a 403.
+_PROPOSAL_ID = re.compile(r"\A[A-Za-z0-9-]{1,64}\Z")
+
+# The priority queue can rank every open issue across every onboarded product. Only the
+# head of it is decision-relevant, and the whole thing would crowd out the conversation.
+_QUEUE_ENTRY_CAP = 50
 
 
 def _slug(s: str) -> str:
@@ -538,6 +556,71 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
     async def get_initiative(args: dict[str, Any]) -> Any:
         return await api.get(f"/api/sdlc/initiatives/{_slug(args['slug'])}")
 
+    # -- PM product layer (spec v2 Pack P) ---------------------------------------------
+    # "Product" is the product vocabulary for what the PM API calls a project; the tools
+    # are named for the word the user says and the path does the renaming.
+
+    @spec_tool("list_products",
+               "Onboarded products (the PM layer's projects) with their repos, "
+               "cross-product dependency edges, onboarding state and how many features "
+               "and work items each has. workItemCount is the open+closed issue count "
+               "mirrored for the product's repos.", {})
+    @guarded
+    async def list_products(args: dict[str, Any]) -> Any:
+        return await api.get("/api/pm/projects")
+
+    @spec_tool("get_product",
+               "One product by slug: description, status, portfolio tags, onboarding "
+               "state, its repos and its dependency edges to other products.",
+               {"slug": str})
+    @guarded
+    async def get_product(args: dict[str, Any]) -> Any:
+        return await api.get(f"/api/pm/projects/{_slug(args['slug'])}")
+
+    @spec_tool("get_product_deps",
+               "Issue-level dependency edges for a product (what blocks what), each with "
+               "the target's state, plus a drift audit: prose-only deps, dependency "
+               "targets that resolve to nothing, issues missing from the GitHub board and "
+               "checklist-style epics.", {"slug": str})
+    @guarded
+    async def get_product_deps(args: dict[str, Any]) -> Any:
+        return await api.get(f"/api/pm/projects/{_slug(args['slug'])}/deps")
+
+    @spec_tool("get_priority_queue",
+               "The global priority queue — what agents will pick up next, ranked across "
+               "every onboarded product. `skipped` counts why items did NOT make the "
+               "queue, keyed by reason ('deps' = blocked by an open dependency). "
+               "min_status limits to items at or above a status ('backlog' or 'ready'; "
+               "default 'ready').",
+               _schema(min_status=str))
+    @guarded
+    async def get_priority_queue(args: dict[str, Any]) -> Any:
+        params = {"min_status": args["min_status"]} if args.get("min_status") else None
+        data = await api.get("/api/pm/queue", params=params)
+        # `skipped` (reason -> count) is small and is the whole answer to "what is
+        # blocked?", so only `entries` is cut. The drop count rides the envelope, so a
+        # model seeing 50 rows never reports "50 items queued".
+        entries = data.get("entries") or []
+        return Trimmed({**data, "entries": entries[:_QUEUE_ENTRY_CAP]},
+                       max(0, len(entries) - _QUEUE_ENTRY_CAP))
+
+    @spec_tool("list_triage",
+               "The AI triage inbox: classification proposals awaiting a human decision, "
+               "newest first — each with the issue it is about, the feature it proposes, "
+               "RICE scores, the model's rationale and its confidence level. Use "
+               "resolve_triage to accept or reject one.", {})
+    @guarded
+    async def list_triage(args: dict[str, Any]) -> Any:
+        return await api.get("/api/pm/triage")
+
+    @spec_tool("get_onboarding_status",
+               "Where a product is in the onboarding wizard: its state, the next action "
+               "to take (register, await_backfill, propose_map, classify, live…) and the "
+               "counts behind that decision.", {"slug": str})
+    @guarded
+    async def get_onboarding_status(args: dict[str, Any]) -> Any:
+        return await api.get(f"/api/pm/projects/{_slug(args['slug'])}/onboarding")
+
     # -- Mutations (spec §4.2, class M) ------------------------------------------------
     # Each is a thin adapter over ONE endpoint: rename args to the endpoint's field
     # names, call, return. Business logic lives behind the endpoint
@@ -687,6 +770,29 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
     async def advance_initiative(args: dict[str, Any]) -> Any:
         return await api.post(f"/api/sdlc/initiatives/{_slug(args['slug'])}/advance")
 
+    @spec_tool("resolve_triage",
+               "Accept or reject ONE AI triage proposal from the inbox — list_triage gives "
+               "the ids. Accepting copies the proposed feature and RICE scores onto the "
+               "issue and marks it classified; rejecting sends the issue to needs_human. "
+               "decision is 'accept' or 'reject'.", {"proposal_id": str, "decision": str})
+    @guarded
+    async def resolve_triage(args: dict[str, Any]) -> Any:
+        decision = args.get("decision")
+        if decision not in ("accept", "reject"):
+            raise ToolArgError("decision must be 'accept' or 'reject'")
+        pid = str(args["proposal_id"])
+        if not _PROPOSAL_ID.match(pid):
+            raise ToolArgError("proposal_id must be a proposal id from list_triage")
+        return await api.post(f"/api/pm/triage/{pid}/{decision}")
+
+    @spec_tool("request_product_sync",
+               "Ask the reconciler to re-sync a product from GitHub on its next pass. It "
+               "is a request, not the sync itself — nothing is synced by the time this "
+               "returns.", {"slug": str})
+    @guarded
+    async def request_product_sync(args: dict[str, Any]) -> Any:
+        return await api.post(f"/api/pm/projects/{_slug(args['slug'])}/sync")
+
     # -- Destructive (spec §4.2, class D) ----------------------------------------------
     # Irreversible. These always surface a permission card, in every mode, and the card
     # never offers "Always allow" (server/sessions/permissions.py).
@@ -722,10 +828,12 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
             list_notification_channels, list_notification_rules, get_quiet_hours,
             test_notification,
             list_repos, list_branches, list_stage_models,
-            list_initiatives, get_initiative, report_gap,
+            list_initiatives, get_initiative,
+            list_products, get_product, get_product_deps, get_priority_queue, list_triage,
+            get_onboarding_status, report_gap,
             create_session, send_prompt, interrupt_session, answer_question,
             resolve_permission, set_model, set_permission_mode, resolve_model_approval,
             archive_session, unarchive_session, set_autopilot_paused, fix_pr,
             set_automation_enabled, create_notification_rule, delete_notification_rule,
-            set_quiet_hours, advance_initiative,
+            set_quiet_hours, advance_initiative, resolve_triage, request_product_sync,
             delete_session, cancel_queued_session, ready_merge_pr]

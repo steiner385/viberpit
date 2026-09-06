@@ -80,6 +80,18 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("GET", r"/api/sdlc/initiatives"),
         ("GET", r"/api/sdlc/initiatives/[a-z0-9-]+"),
         ("POST", r"/api/sdlc/initiatives/[a-z0-9-]+/advance"),
+        # PM product layer. The bare-slug row is anchored (every row gets a trailing `$`),
+        # so it admits only `GET /api/pm/projects/{slug}` itself — the sibling sub-routes
+        # the assistant must NOT reach (`POST …/edges`, `…/propose-map`, `…/advance-map`,
+        # `…/classify`, `DELETE …/edges/{id}`) each need their own row and have none.
+        ("GET", r"/api/pm/projects"),
+        ("GET", r"/api/pm/projects/[a-z0-9-]+"),
+        ("GET", r"/api/pm/projects/[a-z0-9-]+/deps"),
+        ("GET", r"/api/pm/projects/[a-z0-9-]+/onboarding"),
+        ("GET", r"/api/pm/queue"),
+        ("GET", r"/api/pm/triage"),
+        ("POST", r"/api/pm/projects/[a-z0-9-]+/sync"),
+        ("POST", r"/api/pm/triage/[A-Za-z0-9-]+/(accept|reject)"),
         ("POST", r"/api/sessions"),
         ("POST", _S + r"/prompt"),
         ("POST", _S + r"/interrupt"),

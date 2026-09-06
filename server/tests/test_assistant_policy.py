@@ -110,6 +110,28 @@ _UUID = "3f2a9c1e-7b4d-4e0a-9c7d-1a2b3c4d5e6f"
     ("PUT", "/api/notifications/rules/rule-1", False),
     ("DELETE", "/api/notifications/rules/rule-1/extra", False),
     ("GET", "/api/notifications/test", False),
+    # Task 6.2 — PM product-layer tools.
+    ("GET", "/api/pm/projects", True),
+    ("GET", "/api/pm/projects/acme-billing", True),
+    ("GET", "/api/pm/projects/acme-billing/deps", True),
+    ("GET", "/api/pm/projects/acme-billing/onboarding", True),
+    ("GET", "/api/pm/queue", True),
+    ("GET", "/api/pm/triage", True),
+    ("POST", "/api/pm/projects/acme-billing/sync", True),
+    ("POST", "/api/pm/triage/tp-1/accept", True),
+    ("POST", "/api/pm/triage/tp-1/reject", True),
+    # Regression: the product routes the assistant has NO tool for stay closed. The
+    # bare-slug GET row must not swallow its sibling sub-routes, and the graph-editing
+    # and onboarding-driving POSTs are a human's to make, not the assistant's.
+    ("POST", "/api/pm/projects", False),
+    ("POST", "/api/pm/projects/acme-billing/edges", False),
+    ("DELETE", "/api/pm/projects/acme-billing/edges/e1", False),
+    ("POST", "/api/pm/projects/acme-billing/propose-map", False),
+    ("POST", "/api/pm/projects/acme-billing/advance-map", False),
+    ("POST", "/api/pm/projects/acme-billing/classify", False),
+    ("GET", "/api/pm/reconcile/journal", False),
+    ("POST", "/api/pm/triage/tp-1/accept-bulk", False),
+    ("POST", "/api/pm/triage/tp-1", False),
 ])
 def test_route_allowlist(method, path, ok):
     assert route_allowed(method, path) is ok

@@ -309,6 +309,83 @@ def test_question_hold_does_not_consume_nudge_cap(monkeypatch):
     asyncio.run(run())
 
 
+# --------------------------------------------------------- Codex prose fallback
+#
+# `transcript_path` only ever resolves for Claude (Codex keeps no JSONL), and Codex's
+# `pending_question` is structurally always False (no AskUserQuestion equivalent) — so
+# without a turn-buffer fallback, a Codex session's prose question next to the
+# completion marker had NO safeguard at all (#1283).
+
+def _codex_driver(events):
+    from server.sessions.status import StatusSignals
+    return types.SimpleNamespace(
+        _dash_signals=lambda: StatusSignals(
+            turn_active=False, pending_permission=False, pending_question=False,
+            pending_plan=False, turns_completed=1, last_turn_outcome="complete"),
+        _turn_buffer=events)
+
+
+def test_codex_prose_question_holds_via_turn_buffer(monkeypatch):
+    """A Codex driver has no transcript and always reports pending_question=False;
+    the fallback must still find the open question in its in-memory turn buffer."""
+    import server.sessions.open_question as oq_mod
+    from server.sessions import events as ev
+
+    async def run():
+        rec = _rec("s1", origin=None)
+        orch, archived, nudged = _orch({"s1": rec}, _armed_pr())
+        orch.transcript_path = lambda sid: None  # type: ignore[method-assign]
+        orch._drivers = {"s1": _codex_driver([
+            ev.UserMessage(turn_id="t1", text="do the thing"),
+            ev.TextDelta(turn_id="t1", text="Done. Want me to also do Y next? "
+                                            "<!-- ccswitch:complete -->"),
+        ])}
+
+        async def _stub_awaits(text, **kw):
+            assert "Want me to also do Y next?" in text
+            return True
+
+        monkeypatch.setattr(oq_mod, "completion_awaits_user", _stub_awaits)
+
+        statuses: list[tuple[str, str]] = []
+
+        async def _spy_persist(session_id, status):
+            statuses.append((session_id, status))
+
+        orch._persist_status = _spy_persist  # type: ignore[method-assign]
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _drain()
+        assert archived == [], "an open Codex question must block the archive"
+        assert statuses == [("s1", "waiting_question")]
+    asyncio.run(run())
+
+
+def test_codex_clean_completion_archives_via_turn_buffer(monkeypatch):
+    """Ordinary Codex completion prose (no question) still archives — the fallback
+    must not manufacture a hold where there is none."""
+    import server.sessions.open_question as oq_mod
+    from server.sessions import events as ev
+
+    async def run():
+        rec = _rec("s1", origin=None)
+        orch, archived, nudged = _orch({"s1": rec}, _armed_pr())
+        orch.transcript_path = lambda sid: None  # type: ignore[method-assign]
+        orch._drivers = {"s1": _codex_driver([
+            ev.UserMessage(turn_id="t1", text="do the thing"),
+            ev.TextDelta(turn_id="t1", text="Done. Let me know if anything looks off. "
+                                            "<!-- ccswitch:complete -->"),
+        ])}
+
+        async def _stub_awaits(text, **kw):
+            return False
+
+        monkeypatch.setattr(oq_mod, "completion_awaits_user", _stub_awaits)
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _drain()
+        assert [a["session_id"] for a in archived] == ["s1"]
+    asyncio.run(run())
+
+
 def test_global_disable_blocks_autoarchive():
     """When the app-wide auto-archive toggle is OFF, a completed session with an armed
     PR (bar met, would normally archive) is left untouched — no archive, no nudge, no
