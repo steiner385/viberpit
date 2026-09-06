@@ -92,8 +92,15 @@ _UUID = "3f2a9c1e-7b4d-4e0a-9c7d-1a2b3c4d5e6f"
     ("POST", "/api/sessions/batch/unarchive", False),
     ("POST", "/api/sessions/batch/archive", False),
     ("POST", "/api/sessions/batch/resume", False),
-    ("GET", "/api/sessions/adoptable", False),
-    ("POST", "/api/sessions/adopt", False),
+    # Task 7.1: adoption and single-session power tools.
+    ("GET", "/api/sessions/adoptable", True),
+    ("POST", "/api/sessions/adopt", True),
+    ("PATCH", f"/api/sessions/{_UUID}", True),
+    ("POST", f"/api/sessions/{_UUID}/queue-move", True),
+    ("POST", f"/api/sessions/{_UUID}/account-pin", True),
+    ("POST", f"/api/sessions/{_UUID}/rotate", True),
+    ("POST", f"/api/sessions/{_UUID}/reload", True),
+    ("POST", f"/api/sessions/{_UUID}/suggest", True),
     ("DELETE", "/api/sessions/abc", False),
     # Task 8.1 — notification channel/rule/quiet-hours tools.
     ("GET", "/api/notifications/channels", True),

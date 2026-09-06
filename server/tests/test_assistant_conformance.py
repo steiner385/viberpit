@@ -64,6 +64,12 @@ ARGS: dict[str, dict] = {
     "refresh_account": {"name": "a1"},
     "set_account_enabled": {"name": "a1", "enabled": False},
     "start_reauth": {"name": "a1"},
+    "list_adoptable_sessions": {}, "suggest_next_prompt": {"id": UUID},
+    "rename_session": {"id": UUID, "name": "New name"},
+    "move_in_queue": {"id": UUID, "op": "top"},
+    "pin_account": {"id": UUID, "pinned": True},
+    "rotate_session": {"id": UUID}, "reload_session": {"id": UUID},
+    "adopt_session": {"claude_session_id": "ext-1"},
 }
 
 
