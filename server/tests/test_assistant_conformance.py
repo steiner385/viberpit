@@ -14,6 +14,7 @@ from server.assistant.policy import READ_POSTS, route_allowed
 from server.assistant.tools import OPERATOR_TOOLS, TOOL_SPECS, ToolClass, build_tools
 
 CASES = Path("docs/superpowers/evals/assistant/cases.jsonl")
+FEATURE_DOC = Path("docs/product/features/ai-assistant.md")
 UUID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 
 # Minimal valid args per tool so every handler reaches its HTTP call. A tool missing here
@@ -130,3 +131,49 @@ def test_every_starter_has_an_eval_case():
     prompts = {c["prompt"] for c in _cases()}
     missing = chips - prompts
     assert not missing, f"starter chips with no eval case: {sorted(missing)}"
+
+
+# The feature doc's "Tool surface (v2)" bullet: the headline totals, then one table row
+# per pack (`| Pack A — automations control | 11 | … |`). The header and rule rows can't
+# match because column two must be digits.
+_DOC_TOTALS = re.compile(r"\*\*Tool surface \(v2\)\*\* — (\d+) tools are registered.*?"
+                         r"(\d+) are exposed by default")
+_DOC_PACK_ROW = re.compile(r"^ *\| *([^|]+?) *\| *(\d+) *\|", re.M)
+
+
+def _tool_surface_section() -> str:
+    """The Tool surface bullet only, so sibling bullets' tables can't be miscounted."""
+    text = FEATURE_DOC.read_text()
+    start = text.index("**Tool surface (v2)**")
+    end = text.find("\n- **", start)
+    return text[start:end if end != -1 else len(text)]
+
+
+def test_feature_doc_tool_counts_match_the_registry():
+    """The feature doc's pack table is a hand-copy of TOOL_SPECS, so the code checks it.
+
+    Task 6.5 wrote these counts as prose ("68 tools ... 35 base ... Packs S, C, G, N and X
+    are not yet built") and they were wrong within the day: Packs S and N landed beside it
+    and the registry reached 84. A number describing a list that lives in code has to be
+    verified by that code — otherwise the next reader is the only thing standing between a
+    stale doc and a wrong one, and this is the doc the assistant's own operators read.
+    """
+    section = _tool_surface_section()
+    # Totals match against a whitespace-collapsed copy so a prose line wrap can't fail the
+    # gate; the pack rows keep the raw text, since their regex is line-anchored.
+    totals = _DOC_TOTALS.search(" ".join(section.split()))
+    assert totals, "the Tool surface bullet must state 'N tools are registered' and 'M are exposed by default'"
+    registered, exposed = (int(n) for n in totals.groups())
+    packs = {m.group(1): int(m.group(2)) for m in _DOC_PACK_ROW.finditer(section)}
+
+    assert registered == len(TOOL_SPECS), (
+        f"doc says {registered} tools registered; TOOL_SPECS has {len(TOOL_SPECS)}")
+    assert exposed == len(build_tools(_recording_api([]))), (
+        f"doc says {exposed} exposed by default; build_tools() returns "
+        f"{len(build_tools(_recording_api([])))} with the operator tier off")
+    assert sum(packs.values()) == len(TOOL_SPECS), (
+        f"pack rows sum to {sum(packs.values())}, registry has {len(TOOL_SPECS)} — every "
+        f"tool belongs to exactly one pack row, so a new tool must land in one")
+    operator_rows = [v for k, v in packs.items() if "operator" in k.lower()]
+    assert operator_rows == [len(OPERATOR_TOOLS)], (
+        f"the operator-tier row must count OPERATOR_TOOLS ({len(OPERATOR_TOOLS)}), got {operator_rows}")
