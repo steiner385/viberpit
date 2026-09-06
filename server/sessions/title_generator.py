@@ -42,11 +42,12 @@ def _default_query_fn():
     return query
 
 
-def _sanitize(text: str) -> str | None:
+def sanitize_title(text: str) -> str | None:
     """Strip wrapping quotes, collapse whitespace, clamp length. ``None`` if empty.
 
     Over-length output is clamped on a word boundary so the title never ends
-    mid-word.
+    mid-word. Public: also used by ``server.codex.titles`` to clean up a
+    heuristic (non-LLM) Codex title candidate the same way an LLM one is cleaned.
     """
     cleaned = re.sub(r"\s+", " ", text).strip().strip("\"'").strip()
     if not cleaned:
@@ -139,9 +140,9 @@ async def generate_title(
             log.warning("generate_title HTTP %s config_dir=%s: %s",
                         outcome.api_error_status, config_dir, outcome.error)
             return None
-        salvaged = _sanitize(_extract_text(outcome.messages))
+        salvaged = sanitize_title(_extract_text(outcome.messages))
         if salvaged is None:
             log.warning("generate_title failed for config_dir=%s: %s", config_dir, outcome.error)
         return salvaged
 
-    return _sanitize(_extract_text(outcome.messages))
+    return sanitize_title(_extract_text(outcome.messages))

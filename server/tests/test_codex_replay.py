@@ -204,3 +204,37 @@ async def test_a_turn_with_no_user_message_still_opens_a_turn():
     ]).window()
     assert [type(e).__name__ for e in window.events] == [
         "SessionMeta", "TurnStart", "TextDelta", "TurnEnd"]
+
+
+@pytest.mark.asyncio
+async def test_user_prompts_reads_every_turns_prompt_in_order():
+    replay = _replay([
+        _turn("t1", text="fix the flaky test"),
+        _turn("t2", text="now add a regression test"),
+    ])
+    assert await replay.user_prompts() == ["fix the flaky test", "now add a regression test"]
+
+
+@pytest.mark.asyncio
+async def test_user_prompts_skips_turns_with_no_user_message():
+    replay = _replay([
+        {"id": "t1", "status": "completed",
+         "items": [{"type": "agentMessage", "id": "a1", "text": "solo"}]},
+        _turn("t2", text="the real ask"),
+    ])
+    assert await replay.user_prompts() == ["the real ask"]
+
+
+@pytest.mark.asyncio
+async def test_user_prompts_empty_thread_returns_empty_list():
+    assert await _replay([]).user_prompts() == []
+
+
+@pytest.mark.asyncio
+async def test_user_prompts_never_raises_on_a_read_failure():
+    class _BoomClient:
+        async def read_thread(self, params):
+            raise RuntimeError("app-server is down")
+
+    replay = CodexThreadReplay(_BoomClient(), "thread-1", model="gpt-5-codex")
+    assert await replay.user_prompts() == []
