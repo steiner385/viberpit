@@ -45,6 +45,31 @@ from . import failure
 log = logging.getLogger(__name__)
 
 
+def _pick_enabled_account(provider: str) -> str | None:
+    """Return the name of the first live, enabled account for *provider*.
+
+    Shared selection rule behind every helper-provider picker below: enabled,
+    not needs-reauth. Fail-open: returns None (including on any ledger lookup
+    failure) so callers degrade safely rather than raising out of a
+    best-effort helper call.
+    """
+    try:
+        from ccswitch import accounts as _accts
+        from ccswitch import ledger as _ledger
+        with _ledger.locked_ledger() as led:
+            for name, acct_provider in _accts.all_accounts():
+                if acct_provider != provider:
+                    continue
+                if not _ledger.is_account_enabled(led, name):
+                    continue
+                if _ledger.get_status(led, name) == "needs-reauth":
+                    continue
+                return name
+    except Exception:
+        pass
+    return None
+
+
 def pick_helper_config_dir() -> str | None:
     """Return the config_dir of the first live, enabled Anthropic account.
 
@@ -53,22 +78,27 @@ def pick_helper_config_dir() -> str | None:
     the cheapest usable credential: enabled, not needs-reauth.  Fail-open:
     returns None when no account is available so callers degrade safely.
     """
+    name = _pick_enabled_account("anthropic")
+    if name is None:
+        return None
     try:
-        from ccswitch import accounts as _accts
-        from ccswitch import ledger as _ledger
         from ccswitch import paths as _paths
-        with _ledger.locked_ledger() as led:
-            for name, provider in _accts.all_accounts():
-                if provider != "anthropic":
-                    continue
-                if not _ledger.is_account_enabled(led, name):
-                    continue
-                if _ledger.get_status(led, name) == "needs-reauth":
-                    continue
-                return str(_paths.account_cfg_dir(name))
+        return str(_paths.account_cfg_dir(name))
     except Exception:
-        pass
-    return None
+        return None
+
+
+def pick_helper_openai_account() -> str | None:
+    """Return the name of the first live, enabled OpenAI (Codex) account.
+
+    The Codex sibling of :func:`pick_helper_config_dir`. Unlike Claude, Codex
+    has no host-local config-dir concept a caller can just hand to a fresh SDK
+    call (its account state lives behind the daemon-owned
+    ``CodexRunnerManager``, see ``server/codex/manager.py``), so this returns
+    the bare account name for a caller to route through that manager instead
+    of a directory path. Fail-open, same contract as the Anthropic picker.
+    """
+    return _pick_enabled_account("openai")
 
 # Backoff budget: 3 retries at 1s/2s/4s. Mirrors ccswitch.config.retry_max_retries.
 _MAX_RETRIES = 3

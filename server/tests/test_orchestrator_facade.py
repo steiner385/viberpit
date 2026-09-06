@@ -57,6 +57,18 @@ async def test_sync_method_is_wrapped_awaitable():
 
 
 @pytest.mark.asyncio
+async def test_refine_prompt_codex_is_forwarded_and_awaited():
+    orch = _orch()
+    orch.refine_prompt_codex = mock.AsyncMock(return_value="Refined via Codex.")
+    facade = InProcessOrchestratorAdapter(orch)
+
+    result = await facade.refine_prompt_codex("codex-bot", "fix the bug", timeout_s=20.0)
+
+    assert result == "Refined via Codex."
+    orch.refine_prompt_codex.assert_awaited_once_with("codex-bot", "fix the bug", timeout_s=20.0)
+
+
+@pytest.mark.asyncio
 async def test_usage_wraps_poller_get():
     orch = _orch()
     f = InProcessOrchestratorAdapter(orch)

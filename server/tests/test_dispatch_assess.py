@@ -279,3 +279,185 @@ def test_pick_helper_config_dir_fail_open_on_exception():
         result = _pick_helper_config_dir()
 
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# pick_helper_openai_account unit tests (#1288)
+# ---------------------------------------------------------------------------
+
+
+def test_pick_helper_openai_account_returns_first_ok_openai():
+    """First live OpenAI account name is returned (no config_dir concept for Codex)."""
+    from server.sessions.helper_call import pick_helper_openai_account
+
+    with (
+        patch(
+            "ccswitch.accounts.all_accounts",
+            return_value=[("alice", "anthropic"), ("codex-bot", "openai")],
+        ),
+        patch(
+            "ccswitch.ledger.locked_ledger",
+            new=_fake_locked_ledger({"alice": "ok", "codex-bot": "ok"}),
+        ),
+    ):
+        assert pick_helper_openai_account() == "codex-bot"
+
+
+def test_pick_helper_openai_account_skips_needs_reauth_and_disabled():
+    from server.sessions.helper_call import pick_helper_openai_account
+
+    with (
+        patch(
+            "ccswitch.accounts.all_accounts",
+            return_value=[("dead", "openai"), ("off", "openai"), ("live", "openai")],
+        ),
+        patch(
+            "ccswitch.ledger.locked_ledger",
+            new=_fake_locked_ledger(
+                {"dead": "needs-reauth", "off": "ok", "live": "ok"},
+                enabled_map={"off": False},
+            ),
+        ),
+    ):
+        assert pick_helper_openai_account() == "live"
+
+
+def test_pick_helper_openai_account_none_when_only_anthropic():
+    from server.sessions.helper_call import pick_helper_openai_account
+
+    with (
+        patch("ccswitch.accounts.all_accounts", return_value=[("alice", "anthropic")]),
+        patch("ccswitch.ledger.locked_ledger", new=_fake_locked_ledger({"alice": "ok"})),
+    ):
+        assert pick_helper_openai_account() is None
+
+
+def test_pick_helper_openai_account_fail_open_on_exception():
+    from server.sessions.helper_call import pick_helper_openai_account
+
+    with patch("ccswitch.accounts.all_accounts", side_effect=RuntimeError("boom")):
+        assert pick_helper_openai_account() is None
+
+
+# ---------------------------------------------------------------------------
+# POST /api/dispatch/assess — native Codex refinement fallback (#1288)
+# ---------------------------------------------------------------------------
+
+
+def _make_client_with_codex(factory):
+    """Like _make_client, but wires a fake Codex manager + driver registry so
+    refine_prompt_codex runs for real end-to-end through the facade/orchestrator."""
+    from server.sessions.engine import AgentDriverRegistry, AgentEngine
+    from server.sessions.orchestrator import SessionOrchestrator
+    from server.tests.fakes.fake_factory import fake_sdk_factory
+    from server.tests.test_refine_prompt_codex import _FakeCodexManager
+    from server.app import create_app
+
+    class _ClaudeFactory:
+        capabilities = None
+
+        def create(self, config):
+            raise AssertionError("this test never spawns a Claude session")
+
+    codex = _FakeCodexManager()
+    registry = AgentDriverRegistry({
+        AgentEngine.CLAUDE_CODE: _ClaudeFactory(),
+        AgentEngine.CODEX: factory,
+    })
+    with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+        orch = SessionOrchestrator(
+            sdk_factory=fake_sdk_factory(),
+            poll_interval=9999.0,
+            codex=codex,
+            driver_registry=registry,
+        )
+        app = create_app(orchestrator=orch)
+    return TestClient(app, raise_server_exceptions=False), codex
+
+
+def test_assess_falls_back_to_native_codex_when_no_anthropic_account():
+    """No Anthropic account (config_dir=None, refine_prompt=None) but an OpenAI
+    account is configured and the flag is on → response is refined via Codex,
+    with provenance recorded."""
+    from server.sessions import events as ev
+    from server.tests.test_refine_prompt_codex import _FakeCodexFactory
+
+    factory = _FakeCodexFactory(events=[
+        ev.TextDelta(turn_id="t1", text="Refined via Codex."),
+        ev.TurnEnd(turn_id="t1", outcome="success"),
+    ])
+    client, codex = _make_client_with_codex(factory)
+    with client:
+        with (
+            patch("server.api.dispatch.pick_helper_config_dir", return_value=None),
+            patch("server.api.dispatch.assess_model", new=AsyncMock(return_value=None)),
+            patch("server.api.dispatch.refine_prompt", new=AsyncMock(return_value=None)),
+            patch("server.api.dispatch.pick_helper_openai_account", return_value="codex-bot"),
+            patch.dict(os.environ, {"CCSWITCH_CODEX_REFINE_ENABLED": "true"}),
+        ):
+            resp = client.post(
+                "/api/dispatch/assess",
+                json={"prompt": "Fix the login bug"},
+                headers=IDENTITY_HEADERS,
+            )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["refined_prompt"] == "Refined via Codex."
+    assert data["refined_by"] == "openai"
+    assert codex.ensured == ["codex-bot"]
+
+
+def test_assess_never_falls_back_when_anthropic_already_refined():
+    """An Anthropic account is available and refine_prompt succeeded → the OpenAI
+    picker is never even consulted (no cross-provider composition)."""
+    from server.tests.test_refine_prompt_codex import _FakeCodexFactory
+
+    factory = _FakeCodexFactory(events=[])
+    client, codex = _make_client_with_codex(factory)
+    with client:
+        with (
+            patch("server.api.dispatch.pick_helper_config_dir", return_value="/fake/cfg"),
+            patch("server.api.dispatch.assess_model", new=AsyncMock(return_value="sonnet")),
+            patch(
+                "server.api.dispatch.refine_prompt",
+                new=AsyncMock(return_value="Refined via Claude."),
+            ),
+            patch("server.api.dispatch.pick_helper_openai_account") as picker,
+            patch.dict(os.environ, {"CCSWITCH_CODEX_REFINE_ENABLED": "true"}),
+        ):
+            resp = client.post(
+                "/api/dispatch/assess",
+                json={"prompt": "Fix the login bug"},
+                headers=IDENTITY_HEADERS,
+            )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["refined_prompt"] == "Refined via Claude."
+    assert data["refined_by"] == "anthropic"
+    picker.assert_not_called()
+    assert factory.created == []
+
+
+def test_assess_codex_fallback_none_when_no_openai_account_either():
+    """Neither provider available → refined_prompt/refined_by stay None (fail-open)."""
+    from server.tests.test_refine_prompt_codex import _FakeCodexFactory
+
+    factory = _FakeCodexFactory(events=[])
+    client, codex = _make_client_with_codex(factory)
+    with client:
+        with (
+            patch("server.api.dispatch.pick_helper_config_dir", return_value=None),
+            patch("server.api.dispatch.assess_model", new=AsyncMock(return_value=None)),
+            patch("server.api.dispatch.refine_prompt", new=AsyncMock(return_value=None)),
+            patch("server.api.dispatch.pick_helper_openai_account", return_value=None),
+        ):
+            resp = client.post(
+                "/api/dispatch/assess",
+                json={"prompt": "Fix the login bug"},
+                headers=IDENTITY_HEADERS,
+            )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["refined_prompt"] is None
+    assert data["refined_by"] is None
+    assert factory.created == []

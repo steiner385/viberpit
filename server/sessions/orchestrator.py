@@ -24,13 +24,14 @@ import time
 import uuid
 from pathlib import Path
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, cast
 
 if TYPE_CHECKING:
     from datetime import datetime
 
     from server.assistant.client import AssistantApi
     from server.automations.completion_bar import PrFacts
+    from server.codex.driver import CodexAgentDriver
     from server.github.merge_queue import QueueEntry
     from server.github.pr_status import PipelinePr
     from server.pipeline.merge_train import MergeTrainState
@@ -3049,6 +3050,102 @@ class SessionOrchestrator:
         if engine != AgentEngine.CODEX or getattr(self, "_codex", None) is None:
             return
         await self._codex.ensure(account)
+
+    async def refine_prompt_codex(
+        self, account: str, prompt: str, *, timeout_s: float | None = None,
+    ) -> str | None:
+        """One-shot, tool-less Codex thread that returns a refined version of *prompt*.
+
+        The native-Codex sibling of ``server/sessions/prompt_refiner.py:refine_prompt``
+        (#1288): that function can only ever help a Claude dispatch (it hardcodes the
+        Claude Agent SDK), so a fleet with only OpenAI accounts configured got no
+        refinement at all. This drives a real, throwaway Codex thread through the
+        SAME canonical driver/manager contract every real Codex session uses
+        (``self._engine_registry`` + ``CodexRunnerManager``) — no separate
+        subprocess/protocol code, no parallel orchestration stack.
+
+        Gated on ``CCSWITCH_CODEX_REFINE_ENABLED`` (default off): unlike the Claude
+        path, this has not been verified against a live ``codex`` binary/account, and
+        constitution Principle III forbids claiming vendor parity from assumptions.
+        Flip the flag once verified end-to-end.
+
+        The thread runs in ``mode="plan"`` (read-only sandbox, no network egress) —
+        the closest Codex equivalent of the Claude path's ``allowed_tools=[]`` — and
+        any approval it raises anyway is auto-denied so a wedged approval can never
+        hang a helper call. Nothing is persisted: no DB row, no ``SessionRecord``, no
+        WebSocket fan-out, matching the Claude path's contract that a helper call is
+        not a session. Fail-open on any error, exactly like every other helper call
+        in this module family.
+
+        ``timeout_s`` defaults to the same ``REFINE_TIMEOUT_S`` the Claude path uses —
+        never unbounded, since a caller (or an older RPC peer forwarding no value)
+        forgetting to pass one must not leave the turn-collection loop, and the
+        thread it holds open, running forever.
+        """
+        if self._codex is None:
+            return None
+        if os.environ.get("CCSWITCH_CODEX_REFINE_ENABLED", "false").lower() not in (
+            "1", "true", "yes",
+        ):
+            return None
+        from server.sessions.prompt_refiner import REFINE_TIMEOUT_S, build_codex_refine_prompt
+        if timeout_s is None:
+            timeout_s = REFINE_TIMEOUT_S
+        session_id = f"helper-refine-{uuid.uuid4().hex}"
+        attached = False
+        driver: CodexAgentDriver | None = None
+        try:
+            await self._ensure_codex_runner(AgentEngine.CODEX, account)
+            driver = cast("CodexAgentDriver", self._engine_registry.create(AgentEngine.CODEX, AgentDriverConfig(
+                session_id=session_id,
+                account=account,
+                cwd=os.getcwd(),
+                config_dir="",
+                mode="plan",
+                identity=SYSTEM_IDENTITY,
+            )))
+            await driver.start()
+            # Attach only AFTER start() succeeds, matching create_session's ordering:
+            # attaching earlier would leak a runner claim whenever start() fails (a
+            # runner nobody attached to is idle-reaped by the manager either way).
+            self._codex.attach(account, session_id)
+            attached = True
+            await driver.send_prompt(build_codex_refine_prompt(prompt))
+            return await self._collect_codex_reply(driver, timeout=timeout_s)
+        except Exception:
+            log.warning("refine_prompt_codex: failed account=%s", account, exc_info=True)
+            return None
+        finally:
+            if driver is not None:
+                with contextlib.suppress(Exception):
+                    await driver.archive()
+            if attached:
+                with contextlib.suppress(Exception):
+                    self._codex.detach(session_id)
+
+    async def _collect_codex_reply(
+        self, driver: AgentDriver, *, timeout: float | None,
+    ) -> str | None:
+        """Drain *driver*'s event stream for one turn's assistant text.
+
+        Auto-denies any approval the turn raises (a one-shot helper has no human to
+        ask) and stops at the turn's end — success yields the joined text, anything
+        else yields None so the caller degrades exactly like a failed API call.
+        """
+        parts: list[str] = []
+        async def _drain() -> str | None:
+            async for event in driver.events():
+                if isinstance(event, ev.TextDelta):
+                    parts.append(event.text)
+                elif isinstance(event, ev.PermissionRequest):
+                    driver.resolve_permission(event.perm_id, "deny", SYSTEM_IDENTITY)
+                elif isinstance(event, ev.TurnEnd):
+                    return "".join(parts).strip() or None if event.outcome == "success" else None
+            return None
+        if timeout is not None:
+            async with asyncio.timeout(timeout):
+                return await _drain()
+        return await _drain()
 
     async def _teardown_driver_state(self, session_id: str) -> AgentDriver | None:
         """Unregister a session's live driver plus every per-session dict keyed off it,

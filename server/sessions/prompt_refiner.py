@@ -31,6 +31,22 @@ _REFINE_SYSTEM = (
 )
 
 
+def build_codex_refine_prompt(text: str) -> str:
+    """Compose the one-shot Codex turn text for prompt refinement.
+
+    Codex threads have no separate system-prompt slot a one-shot caller can set
+    (``CodexAgentDriver.start()`` bakes its own fixed developer instructions) — see
+    ``server.sessions.orchestrator.SessionOrchestrator.refine_prompt_codex`` — so the
+    instruction and the user's draft are folded into a single turn instead. Kept
+    behaviourally aligned with ``_REFINE_SYSTEM`` above (same intent, same
+    constraints) so the two providers refine a prompt the same way.
+    """
+    return (
+        f"{_REFINE_SYSTEM}\n\n"
+        f"Here is the draft prompt to rewrite:\n\n{text.strip()}"
+    )
+
+
 def _default_sdk_query_fn():
     from claude_agent_sdk import query  # lazy import — not available in tests
     return query
