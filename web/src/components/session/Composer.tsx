@@ -3,6 +3,7 @@ import { Paperclip, X, Sparkles, Loader2, ChevronUp } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { QUICK_REPLIES } from '@/lib/quickReplies'
+import { useSessions } from '@/api/hooks'
 import { useImageAttachments } from './useImageAttachments'
 import { useSessionDraft, type DraftAttachment } from './useSessionDraft'
 import { AttachmentChips } from './AttachmentChips'
@@ -46,11 +47,18 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
   const fileRef = useRef<HTMLInputElement>(null)
   const paletteRef = useRef<CommandPaletteHandle>(null)
   const isWorking = statusTier(status.state) === 'busy'
+  // Engine-aware attachment gating (Codex has no PDF ingestion path — see
+  // useImageAttachments.ts). Looked up from the sessions list cache rather
+  // than threaded as a prop: SessionRuntime carries no engine field, and this
+  // query is already warm everywhere the Composer mounts.
+  const { data: sessions = [] } = useSessions()
+  const engine = sessions.find((s) => s.id === sessionId)?.engine
   const att = useImageAttachments(
     draft.initial.attachments.map((a, i) => ({
       key: `draft-${i}`, id: a.id, mime: a.mime, name: a.name,
       previewUrl: `/api/attachments/${a.id}`,
     })),
+    { engine },
   )
 
   // Persist the unsent draft so it survives navigation (the Composer remounts

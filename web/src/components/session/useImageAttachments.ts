@@ -1,5 +1,6 @@
 // web/src/components/session/useImageAttachments.ts
 import { useCallback, useState } from 'react'
+import type { AgentEngine } from '@/api/types'
 import { maybeConvertHeic } from './heicConvert'
 
 export const ALLOWED = [
@@ -9,6 +10,13 @@ export const ALLOWED = [
 ]
 export const MAX_BYTES = 10 * 1024 * 1024
 export const MAX_IMAGES = 5
+
+// Codex's `turn/start` has no document modality on the wire (only text and
+// localImage — see server/codex/driver.py:_build_inputs); text/CSV/JSON/zip
+// are inlined as text, same as Claude, but a PDF has no vetted extraction
+// path for either engine and stays refused there. Gating it client-side turns
+// a send-then-reject round trip into an immediate, actionable error chip.
+const CODEX_UNSUPPORTED = new Set(['application/pdf'])
 
 // One attached image. `key` is a stable local handle for React + removal
 // (dedup means two files can resolve to the same server `id`). `id` is the
@@ -21,8 +29,9 @@ export type Attachment = {
 let _tmpId = 0
 const _nextKey = () => `att-${_tmpId++}`
 
-export function useImageAttachments(initial?: Attachment[]) {
+export function useImageAttachments(initial?: Attachment[], opts?: { engine?: AgentEngine }) {
   const [attachments, setAttachments] = useState<Attachment[]>(initial ?? [])
+  const unsupportedForEngine = opts?.engine === 'codex' ? CODEX_UNSUPPORTED : undefined
 
   const addFiles = useCallback(async (files: FileList | File[]) => {
     const list = Array.from(files)
@@ -45,6 +54,13 @@ export function useImageAttachments(initial?: Attachment[]) {
         setAttachments((a) => [...a, {
           key: _nextKey(), mime: file.type, name: file.name,
           previewUrl: '', error: 'Unsupported file type' }])
+        accepted++
+        continue
+      }
+      if (unsupportedForEngine?.has(file.type)) {
+        setAttachments((a) => [...a, {
+          key: _nextKey(), mime: file.type, name: file.name,
+          previewUrl: '', error: 'Not supported by Codex sessions' }])
         accepted++
         continue
       }
@@ -73,7 +89,7 @@ export function useImageAttachments(initial?: Attachment[]) {
         accepted++
       }
     }
-  }, [attachments.length])
+  }, [attachments.length, unsupportedForEngine])
 
   const remove = useCallback((key: string) => {
     setAttachments((a) => {

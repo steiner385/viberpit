@@ -10,12 +10,15 @@ opinion of the protocol rather than the protocol.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import subprocess
 from pathlib import Path
 from typing import Any
 
 import pytest
 import pytest_asyncio
 
+from ccswitch import paths as ccswitch_paths
 from server.codex import schema
 from server.codex.capabilities import CodexAvailability
 from server.codex.driver import (
@@ -814,6 +817,215 @@ async def test_a_non_image_attachment_is_refused_rather_than_dropped(harness, tm
     with pytest.raises(CodexAttachmentRejected):
         await driver.send_prompt(
             "read this", images=[{"path": str(doc), "mime": "application/pdf"}]
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_global_store_image_is_staged_into_the_workspace(
+    harness, tmp_path, monkeypatch
+):
+    """#1291 — a normal upload lives in the content-addressed global store,
+    outside cwd. Codex only accepts a `localImage` inside realpath(cwd), so the
+    driver must stage a copy rather than reject a completely ordinary upload."""
+    store = tmp_path / "store"
+    store.mkdir()
+    monkeypatch.setattr(ccswitch_paths, "attachments_dir", lambda: store)
+    payload = b"png-bytes"
+    upload = store / f"{hashlib.sha256(payload).hexdigest()}.png"
+    upload.write_bytes(payload)
+    work = tmp_path / "work"
+    work.mkdir()
+    driver = await harness.boot(cwd=str(work))
+
+    await driver.send_prompt(
+        "look", images=[{"path": str(upload), "mime": "image/png", "name": "shot.png"}]
+    )
+    await harness.settle()
+
+    staged_path = harness.params(schema.METHOD_TURN_START)["input"][1]["path"]
+    staged = Path(staged_path)
+    assert staged.is_relative_to(work.resolve())
+    assert staged.read_bytes() == payload
+    assert upload.exists()  # the original upload is left in place
+
+
+@pytest.mark.asyncio
+async def test_staging_a_resent_image_reuses_the_same_file(
+    harness, tmp_path, monkeypatch
+):
+    """Content-addressed: resending the same bytes must not grow the staging
+    dir unbounded across turns."""
+    store = tmp_path / "store"
+    store.mkdir()
+    monkeypatch.setattr(ccswitch_paths, "attachments_dir", lambda: store)
+    payload = b"png-bytes"
+    upload = store / f"{hashlib.sha256(payload).hexdigest()}.png"
+    upload.write_bytes(payload)
+    work = tmp_path / "work"
+    work.mkdir()
+    driver = await harness.boot(cwd=str(work))
+
+    await harness.run_turn("first")
+    await driver.send_prompt(
+        "look", images=[{"path": str(upload), "mime": "image/png", "name": "shot.png"}]
+    )
+    harness.notify_turn_completed()
+    await harness.settle()
+    await driver.send_prompt(
+        "look again",
+        images=[{"path": str(upload), "mime": "image/png", "name": "shot.png"}],
+    )
+    await harness.settle()
+
+    staged_paths = {
+        f["params"]["input"][1]["path"]
+        for f in harness.frames(schema.METHOD_TURN_START)
+        if len(f["params"]["input"]) > 1
+    }
+    assert len(staged_paths) == 1
+    staging_dir = work / ccswitch_paths.codex_attachment_staging_dirname()
+    assert len(list(staging_dir.iterdir())) == 1
+
+
+@pytest.mark.asyncio
+async def test_staging_registers_a_git_exclude_entry(harness, tmp_path, monkeypatch):
+    """The staging dir must never surface in `git status` for the user's repo
+    — otherwise it reads as uncommitted work and blocks worktree cleanup
+    (src/ccswitch/worktrees.py:remove_worktree)."""
+    store = tmp_path / "store"
+    store.mkdir()
+    monkeypatch.setattr(ccswitch_paths, "attachments_dir", lambda: store)
+    payload = b"png-bytes"
+    upload = store / f"{hashlib.sha256(payload).hexdigest()}.png"
+    upload.write_bytes(payload)
+    work = tmp_path / "work"
+    work.mkdir()
+    subprocess.run(["git", "init", str(work)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(work), "config", "user.email", "t@example.com"], check=True)
+    subprocess.run(["git", "-C", str(work), "config", "user.name", "Test"], check=True)
+    driver = await harness.boot(cwd=str(work))
+
+    await driver.send_prompt(
+        "look", images=[{"path": str(upload), "mime": "image/png", "name": "shot.png"}]
+    )
+    await harness.settle()
+
+    exclude = (work / ".git" / "info" / "exclude").read_text()
+    assert f"/{ccswitch_paths.codex_attachment_staging_dirname()}/" in exclude.splitlines()
+    status = subprocess.run(
+        ["git", "-C", str(work), "status", "--porcelain"],
+        check=True, capture_output=True, text=True,
+    )
+    assert status.stdout.strip() == ""
+
+
+@pytest.mark.asyncio
+async def test_a_symlinked_attachment_pretending_to_be_from_the_store_is_refused(
+    harness, tmp_path, monkeypatch
+):
+    """The store-membership check must resolve the REAL path — a symlink
+    planted inside the store must not smuggle an outside file through staging."""
+    store = tmp_path / "store"
+    store.mkdir()
+    monkeypatch.setattr(ccswitch_paths, "attachments_dir", lambda: store)
+    outside = tmp_path / "secret.png"
+    outside.write_bytes(b"secret")
+    link = store / "innocent.png"
+    link.symlink_to(outside)
+    work = tmp_path / "work"
+    work.mkdir()
+    driver = await harness.boot(cwd=str(work))
+
+    with pytest.raises(CodexAttachmentRejected):
+        await driver.send_prompt(
+            "look", images=[{"path": str(link), "mime": "image/png"}]
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_text_attachment_is_inlined_rather_than_refused(harness, tmp_path):
+    """#1276 — Codex has no document modality on the wire, but a plain-text
+    file can be decoded and folded into the turn's text input, same as Claude
+    does for the identical mime type."""
+    work = tmp_path / "work"
+    work.mkdir()
+    doc = work / "notes.txt"
+    doc.write_text("hello from a text attachment")
+    driver = await harness.boot(cwd=str(work))
+
+    await driver.send_prompt(
+        "read this", images=[{"path": str(doc), "mime": "text/plain", "name": "notes.txt"}]
+    )
+    await harness.settle()
+
+    assert harness.params(schema.METHOD_TURN_START)["input"] == [
+        {"type": "text", "text": "read this"},
+        {"type": "text", "text": "hello from a text attachment"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_csv_and_json_attachment_are_inlined_too(harness, tmp_path):
+    work = tmp_path / "work"
+    work.mkdir()
+    csv = work / "data.csv"
+    csv.write_text("a,b\n1,2")
+    js = work / "data.json"
+    js.write_text('{"a": 1}')
+    driver = await harness.boot(cwd=str(work))
+
+    await driver.send_prompt(
+        "read these",
+        images=[
+            {"path": str(csv), "mime": "text/csv", "name": "data.csv"},
+            {"path": str(js), "mime": "application/json", "name": "data.json"},
+        ],
+    )
+    await harness.settle()
+
+    assert harness.params(schema.METHOD_TURN_START)["input"] == [
+        {"type": "text", "text": "read these"},
+        {"type": "text", "text": "a,b\n1,2"},
+        {"type": "text", "text": '{"a": 1}'},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_zip_attachment_is_described_not_read(harness, tmp_path):
+    work = tmp_path / "work"
+    work.mkdir()
+    archive = work / "bundle.zip"
+    archive.write_bytes(b"PK\x03\x04zip-bytes")
+    driver = await harness.boot(cwd=str(work))
+
+    await driver.send_prompt(
+        "what's in this",
+        images=[{"path": str(archive), "mime": "application/zip", "name": "bundle.zip"}],
+    )
+    await harness.settle()
+
+    assert harness.params(schema.METHOD_TURN_START)["input"] == [
+        {"type": "text", "text": "what's in this"},
+        {"type": "text", "text": "[Attached: bundle.zip (zip archive, 13 bytes)]"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_text_attachment_outside_both_roots_is_still_refused(
+    harness, tmp_path
+):
+    """Extending non-image support must not weaken containment: a text file
+    is read into the prompt, so leaking an arbitrary host path here is worse
+    than the image case, not equivalent."""
+    work = tmp_path / "work"
+    work.mkdir()
+    outside = tmp_path / "host-secret.txt"
+    outside.write_text("do not leak me")
+    driver = await harness.boot(cwd=str(work))
+
+    with pytest.raises(CodexAttachmentRejected):
+        await driver.send_prompt(
+            "read this", images=[{"path": str(outside), "mime": "text/plain"}]
         )
 
 

@@ -6,6 +6,10 @@ import { Composer } from '../Composer'
 import { useDictationField } from '@/lib/useDictationField'
 
 vi.mock('@/lib/useDictationField', () => ({ useDictationField: vi.fn() }))
+// Composer looks up the session's engine (for attachment gating) via the
+// sessions list cache; no test here passes a sessionId that resolves, so an
+// empty list keeps `engine` undefined (unrestricted) for every case.
+vi.mock('@/api/hooks', () => ({ useSessions: () => ({ data: [] }) }))
 const mockField = useDictationField as unknown as Mock
 
 const baseProps = {

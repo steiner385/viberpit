@@ -4,6 +4,11 @@ import userEvent from '@testing-library/user-event'
 import { Composer } from '../Composer'
 import type { Command } from '@/session/events'
 
+// Composer looks up the session's engine (for attachment gating) via the
+// sessions list cache; no test here passes a sessionId that resolves, so an
+// empty list keeps `engine` undefined (unrestricted) for every case.
+vi.mock('@/api/hooks', () => ({ useSessions: () => ({ data: [] }) }))
+
 describe('Composer', () => {
   const defaults = {
     status: { state: 'idle', count: 0 },

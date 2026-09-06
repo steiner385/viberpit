@@ -153,7 +153,6 @@ export function DispatchBar({
   const [dispatchError, setDispatchError] = useState<string | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
-  const att = useImageAttachments()
   const voice = useDictationField({ value: text, setValue: setText, textareaRef })
   const { assess } = useAssessDispatch()
 
@@ -174,6 +173,9 @@ export function DispatchBar({
       : DEFAULT_AGENT_ENGINE
   const engineOffer = engines.find((e) => e.engine === engine)
   const capabilities = engineOffer?.capabilities
+  // Below `engine`: the attachment allowlist is engine-aware (Codex has no
+  // PDF ingestion path — see useImageAttachments.ts).
+  const att = useImageAttachments(undefined, { engine })
 
   // Changing the agent invalidates every downstream pick: a Claude account
   // cannot run Codex, and the model/effort catalogues do not overlap at all.

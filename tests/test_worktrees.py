@@ -126,6 +126,18 @@ class WorktreeTests(unittest.TestCase):
         ).stdout
         self.assertNotIn(info.branch, branches.split())
 
+    def test_remove_ignores_leftover_codex_attachment_staging(self) -> None:
+        """#1291 — a Codex session may leave workspace-local staged attachment
+        copies behind (server/codex/driver.py:_stage_in_workspace). Untracked,
+        they must not read as "dirty" and block the worktree's own removal."""
+        info = worktrees.create_worktree(str(self.repo), "main", "def67890-1111", str(self.root))
+        from ccswitch import paths
+        staging = Path(info.path) / paths.codex_attachment_staging_dirname()
+        staging.mkdir()
+        (staging / "deadbeef.png").write_bytes(b"staged")
+        self.assertTrue(worktrees.remove_worktree(info.path))
+        self.assertFalse(os.path.isdir(info.path))
+
     def test_remove_keeps_dirty_worktree(self) -> None:
         info = worktrees.create_worktree(str(self.repo), "feature", "abc12345-0000", str(self.root))
         (Path(info.path) / "scratch.txt").write_text("uncommitted work\n")

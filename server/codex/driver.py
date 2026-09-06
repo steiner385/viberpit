@@ -47,14 +47,18 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import hashlib
 import logging
 import os
+import subprocess
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Final
 
+from ccswitch import paths
 from server.aio import cancel_and_reap
 from server.assistant.context import PromptContext
 from server.codex import schema
@@ -89,12 +93,32 @@ from server.sessions.status import StatusSignals, derive_status
 
 logger = logging.getLogger(__name__)
 
-#: Attachment mime types Codex can accept. `localImage` is the only attachment
-#: variant on the wire, so a PDF or an archive is refused rather than quietly
-#: dropped from a prompt the user believes carried it.
+#: Attachment mime types Codex sends as a native `localImage` input.
 _IMAGE_MIMES: Final[frozenset[str]] = frozenset(
     {"image/png", "image/jpeg", "image/gif", "image/webp"}
 )
+
+#: Text-family mime types with no reliable binary representation on the Codex
+#: wire (`turn/start` accepts only `text` and `localImage` — see schema.py's
+#: `UserInput` union). These are decoded and folded into a `TextUserInput`
+#: instead, mirroring `claude_driver._start_turn`'s inline-text fallback so the
+#: two engines answer about the same file the same way.
+_TEXT_INLINE_MIMES: Final[frozenset[str]] = frozenset(
+    {"text/plain", "text/csv", "application/json"}
+)
+
+#: A zip has no text extraction story either engine implements; both describe
+#: it rather than reading its contents (see claude_driver._start_turn).
+_ZIP_MIME: Final = "application/zip"
+
+#: Content-addressed staging dir created INSIDE a session's cwd so an
+#: attachment that lives in the global store (outside cwd) can still satisfy
+#: Codex's own realpath(cwd) containment for `localImage`. Dot-prefixed and
+#: registered in `.git/info/exclude` (best-effort, see `_ensure_staging_ignored`)
+#: so it never appears in `git status` for the user's repo. Name is shared
+#: with `worktrees.remove_worktree`'s pre-removal safety net — see
+#: `paths.codex_attachment_staging_dirname`.
+_STAGING_DIRNAME: Final = paths.codex_attachment_staging_dirname()
 
 #: Events that reconstruct a turn's transcript — the only ones retained in the
 #: in-progress-turn buffer and replayed to a late subscriber. Mirrors
@@ -317,6 +341,10 @@ class CodexAgentDriver:
         self._pending_approvals: dict[str, _PendingApproval] = {}
         self._closing = False
         self.counters = _Counters()
+        #: Set once `_ensure_staging_ignored` has run for this driver's cwd —
+        #: the git subprocess it shells out to is a one-time cost, not a
+        #: per-attachment one.
+        self._staging_ignored = False
 
     def __repr__(self) -> str:
         return (
@@ -741,31 +769,82 @@ class CodexAgentDriver:
     ) -> tuple[schema.UserInput, ...]:
         """Compose `turn/start` input, rejecting attachments Codex must not get.
 
-        Path containment is checked here — before the app-server ever sees the
+        Path containment is checked here — before the app-server ever sees any
         value — and against the REAL path, so a symlink planted inside the
         workspace cannot smuggle a file from outside it into the model's context.
+        An attachment resolving OUTSIDE the workspace is accepted only when it
+        resolves inside the ccswitch-managed content-addressed attachments store
+        (the normal upload path — see `server/sessions/attachments.py`); anything
+        else outside cwd is refused. Never widen this to "any external path":
+        that is exactly the containment bypass this check exists to prevent.
         """
         inputs: list[schema.UserInput] = []
         if text:
             inputs.append(schema.TextUserInput(text=text))
+        if not images:
+            return tuple(inputs)
         root = os.path.realpath(self.cwd)
+        attachments_root = os.path.realpath(str(paths.attachments_dir()))
         for im in images:
             mime = im.get("mime", "")
-            if mime not in _IMAGE_MIMES:
-                raise CodexAttachmentRejected(
-                    "Codex sessions accept image attachments only; this file was "
-                    "not sent."
-                )
+            name = im.get("name") or "file"
             path = im.get("path") or ""
             resolved = os.path.realpath(path)
-            if not (resolved == root or resolved.startswith(root + os.sep)):
+            in_workspace = resolved == root or resolved.startswith(root + os.sep)
+            in_store = (
+                resolved == attachments_root
+                or resolved.startswith(attachments_root + os.sep)
+            )
+            if not (in_workspace or in_store):
                 # No path in the message: it reaches logs and every attached
                 # browser, and Phase 4 forbids native paths in both.
                 raise CodexAttachmentRejected(
                     "the attachment is outside this session's working directory"
                 )
-            inputs.append(schema.LocalImageUserInput(path=resolved))
+            if mime in _IMAGE_MIMES:
+                send_path = resolved if in_workspace else self._stage_in_workspace(
+                    resolved, root
+                )
+                inputs.append(schema.LocalImageUserInput(path=send_path))
+            elif mime in _TEXT_INLINE_MIMES:
+                data = Path(resolved).read_bytes()
+                inputs.append(
+                    schema.TextUserInput(text=data.decode("utf-8", errors="replace"))
+                )
+            elif mime == _ZIP_MIME:
+                data = Path(resolved).read_bytes()
+                inputs.append(schema.TextUserInput(
+                    text=f"[Attached: {name} (zip archive, {len(data)} bytes)]"
+                ))
+            else:
+                raise CodexAttachmentRejected(
+                    "Codex sessions accept images, text/CSV/JSON files and zip "
+                    "archives only; this file was not sent."
+                )
         return tuple(inputs)
+
+    def _stage_in_workspace(self, source: str, root: str) -> str:
+        """Copy an attachment from the global store into a workspace-local
+        staging dir so it satisfies Codex's own realpath(cwd) containment.
+
+        Content-addressed by sha256: resending the same image across turns (or
+        across a queued retry) reuses one on-disk file rather than growing the
+        staging dir unbounded.
+        """
+        data = Path(source).read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        ext = Path(source).suffix
+        staging_dir = Path(root) / _STAGING_DIRNAME
+        staging_dir.mkdir(parents=True, exist_ok=True)
+        dest = staging_dir / f"{digest}{ext}"
+        if not dest.exists():
+            tmp = dest.with_name(f"{dest.name}.{os.getpid()}.tmp")
+            tmp.write_bytes(data)
+            tmp.replace(dest)
+        if not self._staging_ignored:
+            _ensure_staging_ignored(root)
+            self._staging_ignored = True
+        return str(dest)
 
     # -- model / effort / permission mode ----------------------------------
 
@@ -1359,6 +1438,40 @@ class CodexAgentDriver:
         if self._thread_id is None:
             raise CodexThreadNotStarted("this codex driver has no thread")
         return self._thread_id
+
+
+def _ensure_staging_ignored(root: str) -> None:
+    """Best-effort: hide `_STAGING_DIRNAME` from `git status` for *root*.
+
+    Written to `.git/info/exclude` (the common git dir, shared by every linked
+    worktree of the same repo) rather than the repo's tracked `.gitignore` —
+    editing a tracked file would itself show up as a diff in the user's repo.
+    Never raises: a session's cwd is not always a git repo (scratch sessions
+    have none at all), and a failure here must not block sending the
+    attachment. Worst case the staging dir shows up as untracked, which
+    `worktrees.remove_worktree`'s dirty guard already treats conservatively
+    (kept, not destroyed) rather than unsafely.
+    """
+    try:
+        common = subprocess.run(
+            ["git", "-C", root, "rev-parse", "--path-format=absolute",
+             "--git-common-dir"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if common.returncode != 0:
+            return
+        exclude_path = Path(common.stdout.strip()) / "info" / "exclude"
+        exclude_path.parent.mkdir(parents=True, exist_ok=True)
+        line = f"/{_STAGING_DIRNAME}/"
+        existing = exclude_path.read_text() if exclude_path.exists() else ""
+        if line in existing.splitlines():
+            return
+        with exclude_path.open("a") as fh:
+            if existing and not existing.endswith("\n"):
+                fh.write("\n")
+            fh.write(line + "\n")
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def _normalize_model(model: str | None) -> str | None:
