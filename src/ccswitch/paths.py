@@ -141,3 +141,14 @@ def attachments_dir() -> Path:
     d = root() / "attachments"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def codex_attachment_staging_dirname() -> str:
+    """Dirname ``CodexAgentDriver`` stages workspace-local attachment copies
+    under, inside a session's cwd (never a full path: callers join it under
+    different roots — the driver at a live session's cwd,
+    ``worktrees.remove_worktree`` at the worktree root as a pre-removal
+    safety net). Kept here, not in ``server/codex/driver.py``, so
+    ``src/ccswitch`` never has to import ``server`` to agree on the name.
+    """
+    return ".ccswitch-codex-attachments"

@@ -23,11 +23,13 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
 import subprocess
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+from ccswitch import paths
 from ccswitch.gitrepos import git_env_for_remote
 
 log = logging.getLogger(__name__)
@@ -462,6 +464,16 @@ def remove_worktree(worktree_path: str, force: bool = False) -> bool:
     wt = os.path.abspath(worktree_path)
     if not os.path.isdir(wt):
         return False
+
+    # A Codex session may have staged attachment copies under the workspace
+    # (server/codex/driver.py:_stage_in_workspace). That dir is registered in
+    # `.git/info/exclude` on first use, but the write is best-effort and older
+    # worktrees predate the feature — remove it here too, BEFORE the dirty
+    # check below, so a leftover staging dir never falsely marks an otherwise
+    # untouched worktree dirty and blocks its own removal.
+    staging = os.path.join(wt, paths.codex_attachment_staging_dirname())
+    if os.path.isdir(staging):
+        shutil.rmtree(staging, ignore_errors=True)
 
     # Resolve the main repo this worktree belongs to (its common git dir is
     # <repo>/.git; the worktree's own .git is just a pointer file).

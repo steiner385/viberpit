@@ -102,6 +102,24 @@ describe('useImageAttachments', () => {
     expect(result.current.refs()).toEqual(['att-1'])
   })
 
+  it('rejects a PDF for a codex session (no ingestion path on the wire)', async () => {
+    const { result } = renderHook(() => useImageAttachments(undefined, { engine: 'codex' }))
+    const pdf = new File([new Uint8Array(10)], 'spec.pdf', { type: 'application/pdf' })
+    await act(async () => { await result.current.addFiles([pdf]) })
+    expect(result.current.attachments[0].error).toMatch(/not supported by codex/i)
+    expect(result.current.refs()).toHaveLength(0)
+  })
+
+  it('still allows a PDF for a claude_code session', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      ({ ok: true, json: async () => ({ id: 'att-1', mediaType: 'application/pdf', filename: 'spec.pdf' }) })))
+    const { result } = renderHook(() => useImageAttachments(undefined, { engine: 'claude_code' }))
+    const pdf = new File([new Uint8Array(10)], 'spec.pdf', { type: 'application/pdf' })
+    await act(async () => { await result.current.addFiles([pdf]) })
+    await waitFor(() => expect(result.current.attachments).toHaveLength(1))
+    expect(result.current.attachments[0].error).toBeUndefined()
+  })
+
   it('shows an error chip when HEIC conversion fails', async () => {
     heic2any.mockRejectedValueOnce(new Error('decode failed'))
     const fetchSpy = vi.fn(async () =>

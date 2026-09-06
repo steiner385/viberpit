@@ -45,7 +45,10 @@ CODEX_ENGINE: Final = AgentEngine.CODEX
 #: "create/send/steer/interrupt/approve/replay/recover works through normalized
 #: events" — which is exactly ``steer``, ``interrupt`` and ``approvals``.
 #: ``attachments`` follows the app-server model contract, whose input modalities
-#: include images (``schema.DEFAULT_INPUT_MODALITIES``).
+#: include images (``schema.DEFAULT_INPUT_MODALITIES``). ``CodexAgentDriver``
+#: additionally folds text/CSV/JSON files and zip archives into an inline
+#: `TextUserInput` (there is no native document modality on the wire); PDF has
+#: neither and stays refused.
 #:
 #: The ``False`` entries are equally deliberate: ccswitch's fork, adopt,
 #: self-directed model switching and subagent surfaces are all implemented against
