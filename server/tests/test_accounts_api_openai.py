@@ -320,6 +320,38 @@ def test_add_openai_cancel_cannot_delete_an_authorized_account(authority):
     assert "forget:chatgpt-pro" not in authority.calls
 
 
+def test_add_openai_cancel_refuses_a_login_that_authorized_before_the_cancel_call(
+    authority,
+):
+    """The manifest's ``enabled`` flag is only set by polling ``/add/openai``, so
+    it can still read disabled even after the login has actually succeeded. The
+    cancel route must trust the authority's own (live) answer, not just that
+    stale flag, or a Cancel click racing a just-completed login deletes a real
+    credential (#1206)."""
+    from ccswitch import account_registry
+
+    async def fake_login_cancel(account: str) -> LoginSnapshot:
+        authority.calls.append(f"login_cancel:{account}")
+        return LoginSnapshot(state="authorized", generation=1)
+
+    with temp_env():
+        _register_openai("chatgpt-pro", enabled=False)
+        authority.login_cancel = fake_login_cancel
+        client, _ = _make_client(authority)
+        with client:
+            resp = client.post(
+                "/api/accounts/add/openai/cancel",
+                json={"name": "chatgpt-pro"},
+                headers=IDENTITY_HEADERS,
+            )
+            assert resp.status_code == 409
+            assert resp.json()["detail"]["error"] == "account_already_authorized"
+            assert account_registry.has_account("chatgpt-pro")
+            assert account_registry.entry("chatgpt-pro").enabled is True
+
+    assert "forget:chatgpt-pro" not in authority.calls
+
+
 def test_openai_routes_503_without_an_authority(monkeypatch):
     """No authority configured is a fixable operator state, not a 500."""
     import server.api.accounts as accounts_mod

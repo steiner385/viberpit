@@ -1231,6 +1231,28 @@ async def openai_add_cancel(
             detail={"error": "authority_unreachable", "message": str(exc)},
         ) from None
 
+    if state.state == "authorized":
+        # The device login finished authorizing this account in the window
+        # between the manifest check above and the cancel call itself: the
+        # placeholder guard raced a real credential into existence. Self-heal
+        # the same way /add/openai's status poll would, and refuse to delete it.
+        if account_registry.has_account(name):
+            entry = account_registry.entry(name)
+            if not entry.enabled:
+                set_account_enabled(name, True)
+        await _sync_authority(client, required=False)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "account_already_authorized",
+                "name": name,
+                "message": (
+                    "The OpenAI account is already authorized; remove it "
+                    "through account settings instead."
+                ),
+            },
+        )
+
     with contextlib.suppress(Exception):
         await client.forget(name)
     # Use the canonical account cleanup so the placeholder's operative ledger

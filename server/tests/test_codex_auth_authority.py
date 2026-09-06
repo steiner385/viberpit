@@ -953,6 +953,29 @@ async def test_login_cancel_settles_a_running_login(tmp_path):
     release.set()
 
 
+@pytest.mark.asyncio
+async def test_login_cancel_never_discards_an_already_authorized_login(tmp_path):
+    """A cancel that arrives after the login already succeeded must not relabel
+    it failed: the add-flow route uses this state to decide whether it is safe
+    to delete the account's credential (#1206)."""
+    clock = FakeClock()
+
+    async def login_runner(account: str, home: Path) -> None:
+        write_auth_json(home, make_access_token(exp=int(clock.now + 3600)))
+
+    authority = make_authority(make_store(tmp_path), clock=clock, login_runner=login_runner)
+    await install_sync(authority, record())
+    await authority.login_start(ACCOUNT)
+    assert (await finish_login(authority, ACCOUNT)).state == LOGIN_AUTHORIZED
+
+    snapshot = await authority.login_cancel(ACCOUNT)
+
+    assert snapshot.state == LOGIN_AUTHORIZED
+    assert snapshot.error is None
+    # The authority's own status must agree with what cancel just returned.
+    assert authority.login_status(ACCOUNT).state == LOGIN_AUTHORIZED
+
+
 def test_note_login_prompt_lifts_the_uri_and_code_out_of_vendor_output(tmp_path):
     authority = make_authority(make_store(tmp_path))
     authority._set_login(ACCOUNT, LoginSnapshot(state=LOGIN_PENDING))
