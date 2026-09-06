@@ -276,6 +276,23 @@ class Suggestions:
                                "turnId": self.turn_id, "items": self.items}
 
 @dataclass
+class Notice:
+    """A proactive notice delivered into the assistant drawer from a fired watch
+    (a NotificationRule whose channel kind is "assistant" — spec v2 §4.7 Pack N,
+    Task 8.4). ``session_id`` identifies the assistant thread the notice belongs
+    to; it is bookkeeping only, mirroring every other driver-emitted event whose
+    wire frame gets its ``sessionId`` stamped by the WS forwarding layer
+    (``_forward_live``/the attach re-emit blocks) rather than by ``to_wire()``
+    itself. ``watch_id`` is the NotificationRule id that fired, so the client can
+    (eventually) let a user manage/delete the watch from its card."""
+    session_id: str; kind: str; title: str; body: str
+    url: str | None = None; watch_id: str | None = None
+    ts: float | None = field(default_factory=_now_ms)
+    def to_wire(self): return {"type": "notice", "kind": self.kind, "title": self.title,
+                               "body": self.body, "url": self.url, "watchId": self.watch_id,
+                               "ts": self.ts}
+
+@dataclass
 class ContextUsage:
     """Exact context-window occupancy, pulled from the SDK once a turn settles —
     the same data the `/context` command shows (totalTokens / maxTokens). Drives

@@ -693,6 +693,13 @@ class SessionOrchestrator:
         self._pending_initial_prompt: dict[str, str] = {}
         # Deferred attachment ids for the initial prompt, sent on first WS attach.
         self._pending_initial_attachment_ids: dict[str, list[str]] = {}
+        # Proactive watch notices (Task 8.4, spec v2 §4.7 Pack N) queued because the
+        # target assistant thread had no live driver when post_notice fired. Flushed
+        # by the WS bridge's attach handler via pop_pending_notices — same in-memory,
+        # orchestrator-level, session_id-keyed shape as _pending_initial_prompt above
+        # (SessionRecord stays a plain mirror-the-DB-row dataclass; this is transient
+        # process state, not a session field).
+        self._pending_notices: dict[str, list[dict]] = {}
         # session_id → ClaudeAgentOptions overlay for an assistant-kind session
         # (see register_assistant_overlay). In-memory only: the overlay holds a live
         # in-process MCP server bound to that session, so it is neither persisted nor
@@ -2737,7 +2744,7 @@ class SessionOrchestrator:
                 f"could not be replayed — the work was never started.",
                 repo=getattr(row, "repo", None),
                 automation=getattr(row, "origin", None),
-                fanout_when_unconfigured=False)
+                fanout_when_unconfigured=False, orch=self)
         except Exception:  # pragma: no cover — surfacing must never break the reap
             log.warning("session_queue.orphan_announce_failed id=%s", row.id,
                         exc_info=True)
@@ -3965,7 +3972,7 @@ class SessionOrchestrator:
                     "needs_input", "ccswitch — needs you", f"{name}: {status}",
                     repo=getattr(rec, "repo", None),
                     account=getattr(rec, "account_name", None),
-                    url=f"/session/{session_id}")
+                    url=f"/session/{session_id}", orch=self)
         else:
             self._pushed.discard(session_id)
 
@@ -7102,7 +7109,7 @@ class SessionOrchestrator:
         await push_mod.notify_event(
             "pr_broke", "ccswitch — PR broke", f"{rec.name}: {repo} CI failing",
             repo=repo, account=getattr(rec, "account_name", None),
-            url=f"/session/{rec.id}",
+            url=f"/session/{rec.id}", orch=self,
         )
 
     async def _pr_doctor_sweep(self) -> None:
@@ -8469,6 +8476,40 @@ class SessionOrchestrator:
         log_event(log, logging.INFO, "session.reattach", session_id=row.id,
                   **{"from": "ended", "to": "ended", "reason": "assistant_adopt"})
         return self._sync_detached(rec)
+
+    async def post_notice(self, identity: str, notice: dict) -> bool:
+        """Deliver a proactive watch notice into *identity*'s assistant drawer
+        (Task 8.4, spec v2 §4.7 Pack N). ``notice`` carries
+        {"kind","title","body","url","watchId"} — the same shape push.notify_event
+        builds from the fired NotificationRule.
+
+        Reuses find_assistant's identity lookup (including its idle-reaped-thread
+        adoption, #1122) rather than re-scanning _records. If the thread's driver
+        is live, emits ev.Notice through it immediately via the same out-of-band
+        `driver.emit()` path _auto_name uses for a Title rename — the notice rides
+        the live stream straight to an attached client. Otherwise the notice is
+        queued (pop_pending_notices flushes it on the next WS attach, mirroring
+        pop_pending_initial_prompt).
+
+        Returns whether delivery was live. Never raises: push.notify_event's
+        assistant-channel branch already wraps this in try/except and fails open
+        to the web push it sends unconditionally, but an unreachable identity
+        (no assistant thread at all) is not an error here either — it just means
+        nothing to deliver to yet.
+        """
+        rec = await self.find_assistant(identity)
+        if rec is None:
+            return False
+        driver = self._drivers.get(rec.id)
+        if driver is not None:
+            driver.emit(ev.Notice(
+                session_id=rec.id, kind=notice.get("kind", ""),
+                title=notice.get("title", ""), body=notice.get("body", ""),
+                url=notice.get("url"), watch_id=notice.get("watchId"),
+            ))
+            return True
+        self._pending_notices.setdefault(rec.id, []).append(notice)
+        return False
 
     def get_session(self, session_id: str) -> SessionRecord | None:
         """Return the in-memory SessionRecord for session_id, or None
@@ -10474,6 +10515,14 @@ class SessionOrchestrator:
         Clears the entry so subsequent attaches (reconnects) do not re-send them.
         """
         return self._pending_initial_attachment_ids.pop(session_id, None)
+
+    def pop_pending_notices(self, session_id: str) -> list[dict]:
+        """Return and clear the queued proactive watch notices for session_id
+        (Task 8.4). Called by the WS bridge on attach, alongside
+        pop_pending_initial_prompt/pop_pending_initial_attachment_ids, so a notice
+        queued by post_notice while the drawer had no live driver is delivered on
+        the next open rather than lost."""
+        return self._pending_notices.pop(session_id, [])
 
     async def send_prompt(self, session_id, text, attachment_ids=None, *,
                           interrupt: bool = False,

@@ -887,6 +887,8 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             # Send the deferred initial prompt (if any) now that the client is watching
             # a live stream.
             await _send_deferred_initial_prompt(session_id)
+            # Flush any proactive watch notices queued while this drawer was closed.
+            await _flush_pending_notices(session_id)
 
         async def _send_deferred_initial_prompt(session_id: str) -> None:
             """Pop + send the session's deferred initial prompt, if one is staged.
@@ -931,6 +933,27 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                         session_id, pending_prompt or "", pending_attachment_ids)
             except Exception:
                 log.warning("ws.attach: deferred initial prompt send failed for %s",
+                            session_id, exc_info=True)
+
+        async def _flush_pending_notices(session_id: str) -> None:
+            """Deliver any proactive watch notices queued while this session's
+            drawer had no live driver (Task 8.4, spec v2 §4.7 Pack N —
+            SessionOrchestrator.post_notice queues one there when it fires with no
+            driver attached). Called from the SAME two places as
+            _send_deferred_initial_prompt, for the same reason: a live stream may
+            open before OR after the notice was queued, so only a call at the
+            moment a live stream actually opens can guarantee delivery either way.
+            Best-effort — a raise here must not abort the attach."""
+            from server.sessions import events as ev
+            try:
+                for notice in await orchestrator.pop_pending_notices(session_id):
+                    out_q.put_nowait({**ev.Notice(
+                        session_id=session_id, kind=notice.get("kind", ""),
+                        title=notice.get("title", ""), body=notice.get("body", ""),
+                        url=notice.get("url"), watch_id=notice.get("watchId"),
+                    ).to_wire(), "sessionId": session_id})
+            except Exception:
+                log.warning("ws.attach: pending notice flush failed for %s",
                             session_id, exc_info=True)
 
         def _start_live_stream(session_id: str, stream) -> None:
@@ -1262,6 +1285,8 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             # the detached path before the session was spawned (see the helper), and
             # the user's typed prompt must queue behind the original one, not replace it.
             await _send_deferred_initial_prompt(session_id)
+            # Flush any proactive watch notices queued while this drawer was closed.
+            await _flush_pending_notices(session_id)
             # Flip the header from the read-only 'Ready' to the live state as the
             # resumed turn begins. Best-effort; rides out_q like every other
             # session-scoped frame (raw + tagged, batcher redacts — and batching is

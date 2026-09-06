@@ -477,6 +477,10 @@ def test_every_remote_method_is_classified():
         # sessions to the primary, so no worker can hold the thread this looks for.
         # See test_find_assistant_asks_only_the_primary.
         "find_assistant",
+        # Same reasoning as find_assistant just above, and used together with it:
+        # post_notice's first arg is an identity, not a session_id, so it cannot
+        # use _make_per_session's calling convention either (Task 8.4).
+        "post_notice",
         "copilot_add_start", "copilot_add_status", "copilot_add_cancel", "copilot_usage",
         # Codex: the model list and model+effort validation are account-scoped and
         # give the same answer on any host that can start the app-server, so asking

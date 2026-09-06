@@ -71,6 +71,9 @@ def _rule_view(r: NotificationRule) -> RuleView:
         critical=r.critical,
         priority=r.priority,
         created_at=r.created_at,
+        once=bool(r.once),
+        owner_session_id=r.owner_session_id,
+        expires_at=r.expires_at,
     )
 
 

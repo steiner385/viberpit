@@ -80,6 +80,12 @@ class Decision:
     channel_id: str | None
     deliver: bool
     suppressed_by_quiet: bool
+    # The rule that decided this outcome, or None when no rule matched (the
+    # "default"/no-rules-configured and "ignore"/no-match cases). Lets the caller
+    # (push.notify_event) disable a fired once-rule without re-querying the DB for
+    # which rule won (Task 8.4, spec v2 §4.7 Pack N).
+    rule_id: str | None = None
+    once: bool = False
 
 
 def event_class_matches(rule_class: str, event_class: str) -> bool:
@@ -166,15 +172,18 @@ def plan(
         return Decision(action="ignore", channel_id=None, deliver=False, suppressed_by_quiet=False)
 
     if rule.action == "ignore":
-        return Decision(action="ignore", channel_id=None, deliver=False, suppressed_by_quiet=False)
+        return Decision(action="ignore", channel_id=None, deliver=False, suppressed_by_quiet=False,
+                        rule_id=rule.id, once=rule.once)
 
     # push | channel
     channel_id = rule.channel_id if rule.action == "channel" else None
     quiet = in_quiet_hours(quiet_start, quiet_end, now) and not rule.critical
     if quiet:
         return Decision(
-            action=rule.action, channel_id=channel_id, deliver=False, suppressed_by_quiet=True
+            action=rule.action, channel_id=channel_id, deliver=False, suppressed_by_quiet=True,
+            rule_id=rule.id, once=rule.once,
         )
     return Decision(
-        action=rule.action, channel_id=channel_id, deliver=True, suppressed_by_quiet=False
+        action=rule.action, channel_id=channel_id, deliver=True, suppressed_by_quiet=False,
+        rule_id=rule.id, once=rule.once,
     )

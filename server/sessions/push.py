@@ -1,6 +1,7 @@
 """Fire-and-forget push to an external webhook (ntfy / generic). Never raises."""
 from __future__ import annotations
 import asyncio, json, logging, urllib.request, base64
+from typing import TYPE_CHECKING
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from pywebpush import WebPushException, webpush
@@ -8,6 +9,11 @@ from pywebpush import WebPushException, webpush
 from server import config
 from server.db import db_session
 from server.sessions import push_store
+
+if TYPE_CHECKING:
+    # Typing-only: importing SessionOrchestrator at runtime would cycle back here
+    # (orchestrator.py imports this module to call notify_event).
+    from server.sessions.orchestrator import SessionOrchestrator
 
 log = logging.getLogger(__name__)
 
@@ -121,6 +127,7 @@ async def notify_event(
     url: str | None = None,
     critical: bool = False,
     fanout_when_unconfigured: bool = True,
+    orch: "SessionOrchestrator | None" = None,
 ) -> None:
     """Route a *classified* event through the user's notification rules (#602).
 
@@ -129,6 +136,16 @@ async def notify_event(
     which always alerted); False stays silent unless a rule explicitly matches
     (used by automation error/warn, which never alerted before rules existed —
     so enabling rules must not suddenly spam every automation warning).
+
+    ``orch`` is the calling daemon's SessionOrchestrator, needed only to reach
+    ``post_notice`` when the winning rule's channel is an assistant watch (Task
+    8.4, spec v2 §4.7 Pack N). Every call site inside orchestrator.py passes
+    ``self``. AutomationContext.emit (server/automations/context.py) has no
+    orchestrator reference at all and passes None — fine, since that path is
+    already narrow (fanout_when_unconfigured=False) and this whole branch fails
+    open to the unconditional web push either way; a worker daemon's local
+    notify_event call similarly finds no assistant record for an identity whose
+    thread lives on the primary and just fails open the same way.
 
     Loads rules/channels/quiet-hours from the DB, evaluates the pure routing
     engine, and delivers to web-push or a webhook channel accordingly. Fails
@@ -151,9 +168,18 @@ async def notify_event(
                     scope_automation=r.scope_automation, action=r.action,
                     channel_id=r.channel_id, critical=r.critical,
                     priority=r.priority, created_at=r.created_at,
+                    once=bool(r.once), owner_session_id=r.owner_session_id,
+                    expires_at=r.expires_at,
                 )
                 for r in rows
             ]
+            # owner_session_id lives on the RULE, not the channel (a watch's
+            # NotificationChannel(kind="assistant") is one per IDENTITY, shared by
+            # every watch that identity creates — see server/assistant/api.py's
+            # _get_or_create_assistant_channel). The decision only carries back
+            # rule_id, so the assistant-delivery branch below looks the owner
+            # session up from these already-loaded rows rather than re-querying.
+            owner_session_by_rule = {r.id: r.owner_session_id for r in rows}
             settings = (await db.execute(select(AppSettings).where(
                 AppSettings.id == "singleton"))).scalar_one_or_none()
             q_start = settings.quiet_hours_start if settings else None
@@ -187,6 +213,12 @@ async def notify_event(
         chan = channels.get(decision.channel_id)
         if chan is None or not chan.enabled:
             return
+        if chan.kind == "assistant":
+            owner_session_id = (owner_session_by_rule.get(decision.rule_id)
+                               if decision.rule_id is not None else None)
+            await _deliver_assistant_notice(
+                decision, event_class, title, body, url, orch, owner_session_id)
+            return
         payload = {"title": title, "message": body, "body": body}
         if url:
             payload["url"] = url
@@ -195,6 +227,52 @@ async def notify_event(
                 _deliver_channel, chan.url, chan.headers, payload, urllib.request.urlopen)
         except Exception:
             log.warning("notify_event.channel_failed", exc_info=True)
+
+
+async def _deliver_assistant_notice(
+    decision, event_class: str, title: str, body: str, url: str | None,
+    orch: "SessionOrchestrator | None", owner_session_id: str | None,
+) -> None:
+    """The assistant-channel half of a "channel" decision (Task 8.4, spec v2
+    §4.7 Pack N): web push fires regardless (same payload the plain "push"
+    action sends — the spec's "Web push is sent regardless"), then the notice
+    is delivered into the owner's drawer via ``orch.post_notice``, then a
+    once-rule is disabled so it never fires again. Never raises — every step is
+    independently best-effort, matching the rest of this module."""
+    payload = {"title": title, "body": body}
+    if url:
+        payload["url"] = url
+    try:
+        await _webpush_sink(payload)
+    except Exception:
+        log.warning("notify_event.webpush_failed", exc_info=True)
+
+    if orch is not None and owner_session_id is not None:
+        try:
+            rec = orch.get_session(owner_session_id)
+            identity = getattr(rec, "owner_identity", None) if rec is not None else None
+            if identity:
+                await orch.post_notice(identity, {
+                    "kind": event_class, "title": title, "body": body,
+                    "url": url, "watchId": decision.rule_id,
+                })
+        except Exception:
+            log.warning("notify_event.assistant_notice_failed", exc_info=True)
+
+    if decision.once and decision.rule_id:
+        try:
+            from sqlalchemy import update as sa_update
+
+            from server.db.models import NotificationRule
+            async with db_session() as db:
+                await db.execute(
+                    sa_update(NotificationRule)
+                    .where(NotificationRule.id == decision.rule_id)
+                    .values(enabled=False)
+                )
+                await db.commit()
+        except Exception:
+            log.warning("notify_event.once_disable_failed", exc_info=True)
 
 
 def generate_vapid_keys() -> tuple[str, str]:
