@@ -31,6 +31,8 @@ from typing import Iterator
 from ccswitch.clone_doctor import clone_dir_from_gitdir, read_gitdir_pointer
 from ccswitch.worktrees import remove_worktree
 
+from . import brand
+
 log = logging.getLogger(__name__)
 
 # A dirty worktree older than this is eligible for stash-eviction when no
@@ -281,8 +283,8 @@ def _emit_orphan_alert(orphaned: int, clones: set[str]) -> None:
         return
     log.critical(
         "worktree-janitor: orphaned=%d worktree(s) reference missing clone(s) %s — "
-        "working files are intact; recover with `ccswitch clones repair`",
-        orphaned, ", ".join(sorted(clones)),
+        "working files are intact; recover with `%s clones repair`",
+        orphaned, ", ".join(sorted(clones)), brand.CLI_NAME,
     )
 
 

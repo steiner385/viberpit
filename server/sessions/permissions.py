@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio, os, time, uuid as _uuid
 from pathlib import Path
 
+from ccswitch import brand
 from ccswitch import paths as _paths
 
 # File-writing tools whose target is a single path argument.
@@ -136,7 +137,7 @@ class PermissionRegistry:
         # even in full-auto. Local import avoids a module-load-order cycle with
         # server.assistant.tools (which itself does not import server.sessions,
         # but keeping this import lazy is cheap insurance).
-        if tool.startswith("mcp__ccswitch__"):
+        if tool.startswith(brand.MCP_TOOL_PREFIX):
             from server.assistant import tools as assistant_tools
             ann = assistant_tools.annotation_for(tool)
             if ann is not None and ann.tool_class == assistant_tools.ToolClass.READ:

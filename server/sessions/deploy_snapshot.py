@@ -2,7 +2,7 @@ from __future__ import annotations
 import json
 import os
 
-DEFAULT_PATH = "/var/lib/ccswitch/deploy-snapshot/live.json"
+from server.hostpaths import DEPLOY_SNAPSHOT_PATH as DEFAULT_PATH
 
 
 def snapshot_path() -> str:

@@ -13,6 +13,7 @@ from collections import deque
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from server.ipc import protocol as proto
+from ccswitch import brand
 
 log = logging.getLogger("server.ipc.daemon")
 
@@ -26,7 +27,7 @@ def create_daemon_app() -> FastAPI:
     # watches this in /info to detect a daemon restart (seq-reset gap recovery).
     _app_epoch = f"{PROC_EPOCH}-{_uuid.uuid4().hex[:8]}"
 
-    app = FastAPI(title="ccswitch-sessiond")
+    app = FastAPI(title=f"{brand.SLUG}-sessiond")
     app.state.rpc = {}
     # Published for RPC handlers that must report the daemon's CURRENT epoch in-band, not
     # just via /info: the wave-3 cursor-catchup coverage probe (ring_covers) returns it so

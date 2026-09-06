@@ -8,6 +8,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
+from . import brand
 from .quota import QuotaSnapshot, anthropic_snapshot
 
 try:
@@ -20,7 +21,7 @@ except importlib.metadata.PackageNotFoundError:  # pragma: no cover — running 
 # `error code: 1010` to the default `Python-urllib/x.y` UA, so a header-less
 # refresh is blocked at the edge before Anthropic sees it — and that 403 was
 # being misread as a dead grant, mass-flipping every account to needs-reauth.
-USER_AGENT = f"ccswitch/{_VERSION}"
+USER_AGENT = f"{brand.SLUG}/{_VERSION}"
 
 # Backoff bounds for transient (429 / 5xx / network) retries.
 _BACKOFF_BASE = 0.5   # seconds — first retry waits up to this (with jitter)

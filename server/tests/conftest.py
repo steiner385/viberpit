@@ -197,7 +197,11 @@ import pytest
 # Test modules that exercise the daemon/IPC layer itself assert on the real
 # DEFAULT_SOCKET_PATH (value, precedence, live-socket probing), so the redirect
 # below must NOT apply to them. They manage their own daemon/socket state.
-_DAEMON_LAYER_MODULE_PREFIXES = ("test_ipc_", "test_remote_", "test_daemon_")
+# test_hostpaths asserts server.ipc.paths.DEFAULT_SOCKET_PATH `is` the
+# server.hostpaths.SESSIOND_SOCKET string it aliases — an identity check the
+# monkeypatch below would defeat.
+_DAEMON_LAYER_MODULE_PREFIXES = ("test_ipc_", "test_remote_", "test_daemon_",
+                                 "test_hostpaths")  # exact module; identity test on ipc_paths.DEFAULT_SOCKET_PATH
 
 
 @pytest.fixture(autouse=True)
