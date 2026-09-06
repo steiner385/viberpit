@@ -205,7 +205,7 @@ class Gauge:
 
 
 # Assistant metrics (spec §4.10). Instantiated here, at module level, so every
-# call site imports the SAME instance — the one source of truth for these five
+# call site imports the SAME instance — the one source of truth for these six
 # series.
 assistant_prompts_total = Counter("assistant_prompts_total", "Assistant prompts submitted")
 assistant_tool_calls_total = Counter(
@@ -213,6 +213,12 @@ assistant_tool_calls_total = Counter(
 assistant_ttft_ms = Histogram("assistant_ttft_ms", "Assistant time-to-first-token (ms)")
 assistant_turn_ms = Histogram("assistant_turn_ms", "Assistant turn duration (ms)")
 assistant_sessions_live = Gauge("assistant_sessions_live", "Live assistant sessions")
+# Counts the times the assistant told a user "no tool can do that" (spec v2 §4.0,
+# gap G15). The `capability` label is a short kebab-case slug the model supplies,
+# so the product team can rank what the drawer is asked for but cannot do.
+assistant_gap_reports_total = Counter(
+    "assistant_gap_reports_total", "Capability gaps the assistant reported",
+    labelnames=("capability",))
 
 # Codex boundary metrics (plan Task 6.1: "engine/provider/host/version/method
 # latency, active threads/turns, restarts, auth generation/health, quota age, and

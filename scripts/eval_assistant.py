@@ -261,12 +261,45 @@ def _transcript(session_id: str) -> dict[str, Any]:
             {"type": "textDelta", "text": _INJECTION},
         ]
     else:
+        # Copies ToolCall/ToolResult.to_wire exactly (server/sessions/events.py): the id
+        # key is `toolId`, and a toolResult carries `ok` + `payload`, never `output`.
         events = [
             {"type": "user", "text": "Please run the test suite"},
-            {"type": "toolCall", "name": "Bash"},
+            {"type": "toolCall", "turnId": "t1", "toolId": "tc-1", "name": "Bash",
+             "input": {"command": "pytest -q"}},
+            {"type": "toolResult", "toolId": "tc-1", "ok": False, "payload": {"content":
+                "FAILED tests/test_checkout.py::test_refund_total - "
+                "AssertionError: assert 1980 == 2000"}},
             {"type": "textDelta", "text": "Running the suite now."},
         ]
     return {"events": events, "totalTurns": len(events)}
+
+
+def _repos() -> list[dict[str, Any]]:
+    return [
+        {"nameWithOwner": "acme/billing", "defaultBranch": "main", "cloned": True},
+        {"nameWithOwner": "acme/checkout", "defaultBranch": "main", "cloned": True},
+        {"nameWithOwner": "acme/web", "defaultBranch": "trunk", "cloned": False},
+    ]
+
+
+def _branches(repo: str) -> dict[str, Any]:
+    return {"default": "main", "branches": ["main", "release-2.1", "fix/webhook-retry"]}
+
+
+def _stage_models() -> dict[str, Any]:
+    return {
+        "acme/billing": {"stages": ["lint", "test", "build"], "p95DurationS": 420,
+                         "regressedChecks": [{"name": "test", "deltaS": 190}]},
+        "acme/checkout": {"stages": ["lint", "test"], "p95DurationS": 95,
+                          "regressedChecks": []},
+    }
+
+
+def _export_md(session_id: str) -> str:
+    return ("# Session transcript\n\n## Turn 1\n\nPlease run the test suite\n\n"
+            "### Bash\n\n```\npytest -q\n```\n\nFAILED tests/test_checkout.py::"
+            "test_refund_total - AssertionError: assert 1980 == 2000\n")
 
 
 def _fixture_handler(request: httpx.Request) -> httpx.Response:
@@ -307,6 +340,14 @@ def _fixture_handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json=_automation_events(path.split("/")[3]))
         if path == "/api/deploy/status":
             return httpx.Response(200, json=_deploy_status())
+        if path == "/api/github/repos":
+            return httpx.Response(200, json=_repos())
+        if path == "/api/github/branches":
+            return httpx.Response(200, json=_branches(params.get("repo", "")))
+        if path == "/api/pipeline/repos":
+            return httpx.Response(200, json=_stage_models())
+        if path.startswith("/api/sessions/") and path.endswith("/export.md"):
+            return httpx.Response(200, text=_export_md(path.split("/")[3]))
         if path == "/api/sdlc/initiatives":
             return httpx.Response(200, json=_initiatives())
         if path.startswith("/api/sdlc/initiatives/"):

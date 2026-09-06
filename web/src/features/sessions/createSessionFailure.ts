@@ -12,7 +12,7 @@
  * the failure inline next to the form that raised it, and this is the shape it
  * renders from.
  */
-import { ApiRequestError } from '@/api/client'
+import { ApiRequestError, apiErrorCode } from '@/api/client'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 
 export const REAUTH_MESSAGE = 'No usable accounts — check Settings → Accounts to re-authenticate.'
@@ -89,9 +89,9 @@ function readErrorBody(body: unknown): {
     }
   }
   return {
-    // `code` is the create endpoint's spelling; `error` the domain dicts'. One
-    // field here so every branch below asks the same question once.
-    code: pick('code') ?? pick('error'),
+    // Delegated so there is ONE decoder for "what is this error's code"
+    // (@/api/client owns ApiRequestError, so it owns its body's shape).
+    code: apiErrorCode(body) ?? undefined,
     message: pick('message'),
     model: pick('model') ?? null,
     effort: pick('effort') ?? null,

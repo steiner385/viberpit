@@ -51,6 +51,24 @@ export function useAssistantSession() {
 }
 
 /**
+ * Switch the assistant's own session model.
+ *
+ * Posts to the ordinary session model route — the assistant IS a session — and the
+ * server refuses a gated tier with 400 MODEL_GATED for `kind == assistant` rather
+ * than parking it, because a parked assistant is a drawer that never answers again.
+ */
+export function useSetAssistantModel() {
+  const qc = useQueryClient()
+  return useMutation<void, ApiRequestError, { sessionId: string; model: string }>({
+    mutationFn: ({ sessionId, model }) =>
+      api.post<void>(`/sessions/${sessionId}/model`, { model }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ASSISTANT_STATUS_KEY })
+    },
+  })
+}
+
+/**
  * Reset the assistant to a fresh session — always forces `fresh: true`,
  * regardless of what the caller passes.
  */

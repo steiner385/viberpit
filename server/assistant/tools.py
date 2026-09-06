@@ -7,6 +7,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 from urllib.parse import urlparse
@@ -14,7 +15,7 @@ from urllib.parse import urlparse
 from claude_agent_sdk import SdkMcpTool, tool
 from mcp.types import ToolAnnotations
 
-from server.obs.metrics import assistant_tool_calls_total
+from server.obs.metrics import assistant_gap_reports_total, assistant_tool_calls_total
 
 from .client import AssistantApi, AssistantApiError
 
@@ -40,12 +41,17 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("list_sessions", ToolClass.READ, "List sessions"),
     ToolSpec("get_session", ToolClass.READ, "Get session"),
     ToolSpec("get_session_transcript", ToolClass.READ, "Read session transcript"),
+    ToolSpec("get_tool_result", ToolClass.READ, "Read a tool result"),
+    ToolSpec("export_session", ToolClass.READ, "Export session transcript"),
     ToolSpec("search_sessions", ToolClass.READ, "Search sessions"),
     ToolSpec("list_archived_sessions", ToolClass.READ, "List archived sessions"),
     ToolSpec("list_accounts", ToolClass.READ, "List accounts"),
     ToolSpec("list_hosts", ToolClass.READ, "List fleet hosts"),
     ToolSpec("list_prs", ToolClass.READ, "List pull requests"),
     ToolSpec("get_pipeline_health", ToolClass.READ, "Get CI check health"),
+    ToolSpec("list_repos", ToolClass.READ, "List repositories"),
+    ToolSpec("list_branches", ToolClass.READ, "List branches"),
+    ToolSpec("list_stage_models", ToolClass.READ, "Get CI stage models"),
     ToolSpec("list_automations", ToolClass.READ, "List automations"),
     ToolSpec("get_automation_events", ToolClass.READ, "Get automation events"),
     ToolSpec("get_deploy_status", ToolClass.READ, "Get deploy status"),
@@ -55,6 +61,9 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("test_notification", ToolClass.READ, "Preview notification routing"),
     ToolSpec("list_initiatives", ToolClass.READ, "List initiatives"),
     ToolSpec("get_initiative", ToolClass.READ, "Get initiative"),
+    # READ because it changes nothing a user can see: it increments a counter and
+    # writes an audit row. The ONE tool that calls no endpoint (see build_tools).
+    ToolSpec("report_gap", ToolClass.READ, "Record a capability gap"),
     ToolSpec("create_session", ToolClass.MUTATION, "Start a session"),
     ToolSpec("send_prompt", ToolClass.MUTATION, "Send a prompt"),
     ToolSpec("interrupt_session", ToolClass.MUTATION, "Interrupt session"),
@@ -127,13 +136,32 @@ def _scrub(v: Any) -> Any:
     return v
 
 
-def wrap_untrusted(data: Any) -> str:
-    return json.dumps({"source": "ccswitch-api", "trust": "untrusted-data",
-                       "data": _scrub(data)}, separators=(",", ":"), ensure_ascii=False)
+@dataclass(frozen=True)
+class Trimmed:
+    """A list a handler cut down: `guarded` reports `dropped` in the envelope so the
+    model knows it is looking at a partial answer and can ask for more, rather than
+    stating a truncated list as if it were the whole one."""
+    data: Any
+    dropped: int
 
 
-def _ok(data: Any) -> dict[str, Any]:
-    return {"content": [{"type": "text", "text": wrap_untrusted(data)}]}
+def wrap_untrusted(data: Any, *, truncated: int = 0) -> str:
+    env: dict[str, Any] = {
+        "source": "ccswitch-api", "trust": "untrusted-data",
+        # B6: the model's ONLY clock. The system prompt is a frozen cache prefix with
+        # no timestamp, and tool results are never part of that prefix, so stamping
+        # every result costs no cache hit and is what makes "in the last hour" or
+        # "today" answerable at all.
+        "now": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "data": _scrub(data),
+    }
+    if truncated:
+        env["truncated"] = truncated
+    return json.dumps(env, separators=(",", ":"), ensure_ascii=False)
+
+
+def _ok(data: Any, truncated: int = 0) -> dict[str, Any]:
+    return {"content": [{"type": "text", "text": wrap_untrusted(data, truncated=truncated)}]}
 
 
 def _err(msg: str) -> dict[str, Any]:
@@ -170,6 +198,25 @@ def _schema(required: tuple[str, ...] = (), **fields: Any) -> dict[str, Any]:
                        for k, t in fields.items()},
         "required": list(required),
     }
+
+
+def _result_text(payload: Any) -> str:
+    """Render a `ToolResult` payload to plain text.
+
+    `ToolResult.to_wire` (server/sessions/events.py) carries `payload = {"content": …}`
+    where the SDK's content is EITHER a plain string OR a list of content blocks
+    (`{"type": "text", "text": …}`), depending on the tool — so both shapes are handled
+    here rather than at the call site.
+    """
+    if not isinstance(payload, dict):
+        return "" if payload is None else str(payload)
+    content = payload.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            b.get("text", "") if isinstance(b, dict) else str(b) for b in content)
+    return "" if content is None else str(content)
 
 
 def _trim_session(s: dict[str, Any]) -> dict[str, Any]:
@@ -222,7 +269,8 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
             t0 = time.monotonic()
             ok = True
             try:
-                return _ok(await fn(args or {}))
+                res = await fn(args or {})
+                return _ok(res.data, res.dropped) if isinstance(res, Trimmed) else _ok(res)
             except ToolArgError as e:
                 ok = False
                 return _err(str(e))
@@ -265,7 +313,9 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
     @spec_tool("get_session_transcript",
                "The last N turns of a session: user prompts, assistant text and tool NAMES. "
                "Tool inputs/outputs are elided. Use to explain what a session is doing or why "
-               "it is stuck.", _schema(("id",), id=str, last_n=int))
+               "it is stuck. Each tool row carries a toolId — pass it to get_tool_result to "
+               "read that one tool call's input and output.",
+               _schema(("id",), id=str, last_n=int))
     @guarded
     async def get_session_transcript(args: dict[str, Any]) -> Any:
         n = max(1, min(int(args.get("last_n") or 20), 50))
@@ -278,10 +328,52 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
             elif t == "textDelta":
                 events.append({"role": "assistant", "text": (ev.get("text") or "")[:1000]})
             elif t == "toolCall":
-                events.append({"tool": ev.get("name")})
+                # `turnId`/`toolId` are the wire names from ToolCall.to_wire
+                # (server/sessions/events.py); toolId is what get_tool_result matches on.
+                events.append({"tool": ev.get("name"), "turnId": ev.get("turnId"),
+                               "toolId": ev.get("toolId")})
             elif t in ("permissionRequest", "question"):
                 events.append({"pending": t, "tool": ev.get("tool"), "text": ev.get("question")})
-        return {"events": events[-n * 4:], "totalTurns": data.get("totalTurns")}
+        keep = events[-n * 4:]
+        # Counts rows dropped by THIS tail cut. The `[-400:]` above is a scan bound on
+        # raw events, not rows, and only some raw types become rows — so folding it in
+        # would report a number that is neither rows nor events. `totalTurns` is the
+        # honest whole-transcript size, and it is already in the payload.
+        return Trimmed({"events": keep, "totalTurns": data.get("totalTurns")},
+                       len(events) - len(keep))
+
+    @spec_tool("get_tool_result",
+               "The full input and output of ONE tool call in a session's transcript, by the "
+               "toolId from get_session_transcript. Use it to read a failing test's output "
+               "or a command's result. Output is cut at 4000 characters.",
+               {"id": str, "tool_id": str})
+    @guarded
+    async def get_tool_result(args: dict[str, Any]) -> Any:
+        data = await api.get(f"/api/sessions/{args['id']}/transcript", params={"limit": 50})
+        call = result = None
+        for ev in data.get("events", []):
+            if ev.get("toolId") != args["tool_id"]:
+                continue
+            if ev.get("type") == "toolCall":
+                call = ev
+            elif ev.get("type") == "toolResult":
+                result = ev
+        if call is None and result is None:
+            raise ToolArgError("no tool call with that toolId in the last 50 turns")
+        out = _result_text((result or {}).get("payload"))
+        return {"tool": (call or {}).get("name"), "input": (call or {}).get("input"),
+                "ok": (result or {}).get("ok"),
+                "output": out if len(out) <= 4000 else out[:4000] + "…"}
+
+    @spec_tool("export_session",
+               "The session's transcript as markdown, tail-first, capped at max_chars "
+               "(default 20000). The escape hatch when get_session_transcript is too coarse.",
+               _schema(("id",), id=str, max_chars=int))
+    @guarded
+    async def export_session(args: dict[str, Any]) -> Any:
+        cap = max(500, min(int(args.get("max_chars") or 20000), 60000))
+        text = await api.get_text(f"/api/sessions/{args['id']}/export.md")
+        return {"markdown": text[-cap:], "truncatedChars": max(0, len(text) - cap)}
 
     @spec_tool("search_sessions", "Find sessions whose name or transcript mention all the given "
                "words. Returns ids; call get_session for details.", {"query": str})
@@ -294,7 +386,8 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
     @guarded
     async def list_archived_sessions(args: dict[str, Any]) -> Any:
         rows = await api.get("/api/sessions/archived")
-        return [_trim_archived(s) for s in rows[: max(1, min(int(args.get("limit") or 50), 200))]]
+        lim = max(1, min(int(args.get("limit") or 50), 200))
+        return Trimmed([_trim_archived(s) for s in rows[:lim]], max(0, len(rows) - lim))
 
     @spec_tool("list_accounts", "Accounts with provider, enabled flag, auth status, session/weekly "
                "usage percent and reset times, and how many sessions each is running.", {})
@@ -320,6 +413,32 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
     async def get_pipeline_health(args: dict[str, Any]) -> Any:
         return await api.get("/api/pipeline/insights/checks",
                              params={"repo": args["repo"], "window": args.get("window") or "7d"})
+
+    @spec_tool("list_repos",
+               "GitHub repositories the operator's credentials can access, as owner/name with "
+               "default branch. Use it to resolve a repo the user names loosely ('the billing "
+               "repo') BEFORE create_session. Optional query filters by substring.",
+               _schema(query=str))
+    @guarded
+    async def list_repos(args: dict[str, Any]) -> Any:
+        rows = await api.get("/api/github/repos")
+        q = (args.get("query") or "").lower()
+        out = [r for r in rows if not q or q in str(r.get("nameWithOwner", "")).lower()]
+        return Trimmed(out[:100], max(0, len(out) - 100))
+
+    @spec_tool("list_branches",
+               "Branches of one repository ('owner/name'), with which one is the default.",
+               {"repo": str})
+    @guarded
+    async def list_branches(args: dict[str, Any]) -> Any:
+        return await api.get("/api/github/branches", params={"repo": args["repo"]})
+
+    @spec_tool("list_stage_models",
+               "Per-repository CI stage model: which checks run, typical durations and recent "
+               "regressions. Pair with get_pipeline_health for a window.", {})
+    @guarded
+    async def list_stage_models(args: dict[str, Any]) -> Any:
+        return await api.get("/api/pipeline/repos")
 
     @spec_tool("list_automations", "Automations (autopilot, backlog runner, PR doctor, CI/CD "
                "doctor…) with enabled flag, last run and last error.", {})
@@ -381,6 +500,29 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
         if args.get("automation") is not None:
             body["automation"] = args["automation"]
         return await api.post("/api/notifications/test", body)
+    # The one tool with NO backing endpoint: the gap it records is precisely that no
+    # endpoint exists. `test_every_tool_hits_an_allowed_route` exempts it by name.
+    @spec_tool("report_gap",
+               "Call this whenever you tell the user that NO tool can do what they asked "
+               "(a deploy, a settings change, a code edit…). capability is a short kebab-case "
+               "label ('deploy', 'edit-settings', 'merge-pr'); detail is one sentence. It "
+               "records the gap for the product team and returns immediately.",
+               _schema(("capability",), capability=str, detail=str))
+    @guarded
+    async def report_gap(args: dict[str, Any]) -> Any:
+        cap = re.sub(r"[^a-z0-9-]", "-", str(args["capability"]).lower())[:40] or "unknown"
+        assistant_gap_reports_total.labels(cap).inc()
+        try:
+            from server.audit import record_audit
+            from server.db import db_session
+            async with db_session() as db:
+                await record_audit(db, "assistant.gap", api.identity,
+                                   {"capability": cap, "detail": str(args.get("detail") or "")[:300]},
+                                   via="assistant")
+                await db.commit()
+        except Exception:  # noqa: BLE001 - telemetry must never fail the answer
+            log.warning("assistant.gap audit failed", exc_info=True)
+        return {"recorded": cap}
 
     @spec_tool("list_initiatives",
                "Delivery initiatives (intent → spec → plan → build) with status, linked repos and "
@@ -573,11 +715,14 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
         return await api.post("/api/pipeline/pr/ready-merge",
                               {"repo": args["repo"], "number": int(args["number"])})
 
-    return [list_sessions, get_session, get_session_transcript, search_sessions,
+    return [list_sessions, get_session, get_session_transcript, get_tool_result,
+            export_session, search_sessions,
             list_archived_sessions, list_accounts, list_hosts, list_prs, get_pipeline_health,
             list_automations, get_automation_events, get_deploy_status,
             list_notification_channels, list_notification_rules, get_quiet_hours,
-            test_notification, list_initiatives, get_initiative,
+            test_notification,
+            list_repos, list_branches, list_stage_models,
+            list_initiatives, get_initiative, report_gap,
             create_session, send_prompt, interrupt_session, answer_question,
             resolve_permission, set_model, set_permission_mode, resolve_model_approval,
             archive_session, unarchive_session, set_autopilot_paused, fix_pr,

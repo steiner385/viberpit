@@ -28,6 +28,12 @@ def test_prompt_is_frozen_and_has_trust_boundary():
     assert "{" not in ASSISTANT_SYSTEM_PROMPT   # no f-string holes → stable cache prefix
 
 
+def test_prompt_directs_the_model_to_report_capability_gaps():
+    """The report_gap metric only has data if the prompt tells the model to call it."""
+    assert "report_gap" in ASSISTANT_SYSTEM_PROMPT
+    assert "{" not in ASSISTANT_SYSTEM_PROMPT
+
+
 def test_prompt_overrides_inherited_coding_instructions():
     """The persistent client cannot take setting_sources=[] (it hangs), and user memory
     is anchored to HOME, so ~/.claude/CLAUDE.md still loads. The prompt must say plainly

@@ -102,9 +102,16 @@ _SHIPPED_CASES = load_cases()
 
 
 def test_shipped_case_file_has_around_fifty_cases():
-    # Task 5.1 (spec v2 §4.0) added 15 starter-chip cases on top of the original ~40.
-    # Task 8.1 added 8 notification-tool cases on top of that ~55.
-    assert 45 <= len(_SHIPPED_CASES) <= 70
+    # Grew from the original ~40: Task 5.1 added 15 starter-chip cases, Task 8.1 added 8
+    # notification-tool cases, Tasks 5.3/5.4 added 5 for repo-discovery and transcript depth.
+    #
+    # The ceiling is deliberately far above today's total rather than just clear of it. This
+    # is a smoke check that the file was not truncated or duplicated, not a budget — and the
+    # conformance rule "one eval case per tool" means every new tool RAISES the count, so a
+    # ceiling pinned near the current size turns each new tool into an unrelated failure
+    # here. Two Phase-5/8 branches hit the old ceiling within an hour of each other; Phase 6
+    # alone adds 22 more tools.
+    assert 45 <= len(_SHIPPED_CASES) <= 120
 
 
 def test_shipped_case_file_has_at_least_six_injection_cases():

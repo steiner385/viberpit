@@ -118,6 +118,36 @@ async def set_model(
     stays in ``run_command``, reading this call's ``restarted`` result; this helper
     owns the single apply-and-audit path both entry points share."""
     from server.sessions.orchestrator import ModelBlockedError  # noqa: PLC0415
+    from server.sessions.types import is_assistant  # noqa: PLC0415
+
+    # A gated model must never PARK the AI-drawer session: `set_model_for_session`
+    # would file a model-approval hold, and the card that clears it renders inside the
+    # very drawer that just stopped answering — an assistant no one can un-park. Refuse
+    # up front instead, with the same MODEL_GATED code POST /api/assistant/session
+    # already returns when it creates one (server/assistant/api.py).
+    #
+    # Sits here rather than in the route so the WS `/model` slash command, which reaches
+    # this same helper via run_command, is gated too.
+    #
+    # Asks "is this the assistant?" BEFORE consulting policy, so an ordinary session
+    # never pays a policy read this function does not use — `set_model_for_session`
+    # re-runs `resolve_model_policy` itself, and doing it here first would just be the
+    # same query twice on every model switch.
+    #
+    # `_maybe_await` because `orch` is TWO different things here: the HTTP route hands
+    # in the facade / RemoteOrchestrator, whose `get_session` is async, while the WS
+    # `/model` slash command reaches this from inside `orchestrator.run_command` and
+    # hands in the raw SessionOrchestrator, whose `get_session` is sync. Awaiting the
+    # raw one raises "object SessionRecord can't be used in 'await' expression".
+    from server.sessions.facade import _maybe_await  # noqa: PLC0415
+
+    rec = await _maybe_await(orch.get_session(session_id))
+    if rec is not None and is_assistant(rec):
+        from server.sessions.model_policy import resolve_model_policy  # noqa: PLC0415
+        if await resolve_model_policy(db, model=model) != "allow":
+            raise ActionError(
+                "MODEL_GATED", f"{model} needs approval and cannot run the assistant", 400,
+            )
 
     try:
         restarted = await orch.set_model_for_session(session_id, model, when=when,

@@ -502,3 +502,167 @@ async def test_test_notification_is_read_classed_but_calls_post():
     assert "is_error" not in out
     assert seen == {"method": "POST", "path": "/api/notifications/test",
                     "body": {"eventClass": "session.done", "repo": "o/r"}}
+@pytest.mark.asyncio
+async def test_envelope_carries_now_and_truncated():
+    """`now` is the model's only clock (B6), and `truncated` tells it a list is partial
+    — without which it states a cut-down list as if it were the whole one."""
+    tools = build_tools(_api(lambda r: httpx.Response(200, json=[{"id": "a"}] * 3)))
+    out = await _tool(tools, "list_archived_sessions").handler({"limit": 1})
+    body = json.loads(out["content"][0]["text"])
+    assert body["now"].endswith("Z") or "+00:00" in body["now"]
+    assert body["truncated"] == 2
+    # A handler that dropped nothing must not carry the key at all, so the model
+    # never sees `truncated: 0` and wonders what it means.
+    out2 = await _tool(tools, "list_hosts").handler({})
+    assert "truncated" not in json.loads(out2["content"][0]["text"])
+
+
+@pytest.mark.asyncio
+async def test_report_gap_makes_no_http_call_and_counts():
+    from server.obs.metrics import assistant_gap_reports_total
+
+    calls = []
+    tools = build_tools(_api(lambda r: calls.append(r) or httpx.Response(500)))
+    before = assistant_gap_reports_total.value("deploy")
+    out = await _tool(tools, "report_gap").handler({"capability": "deploy",
+                                                    "detail": "asked to ship"})
+    assert calls == []
+    assert out.get("is_error") is not True
+    assert assistant_gap_reports_total.value("deploy") == before + 1
+
+
+@pytest.mark.asyncio
+async def test_report_gap_slugifies_the_capability_label():
+    """The label is a metric dimension the model supplies freely, so it is coerced to
+    a bounded kebab-case slug — an unbounded label set is a cardinality leak."""
+    from server.obs.metrics import assistant_gap_reports_total
+
+    tools = build_tools(_api(lambda r: httpx.Response(500)))
+    before = assistant_gap_reports_total.value("edit-settings-")
+    out = await _tool(tools, "report_gap").handler({"capability": "Edit Settings!"})
+    assert json.loads(out["content"][0]["text"])["data"] == {"recorded": "edit-settings-"}
+    assert assistant_gap_reports_total.value("edit-settings-") == before + 1
+
+
+# -- Task 5.3: repo discovery + CI stage models ------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_repos_filters_by_substring():
+    def h(req):
+        assert req.url.path == "/api/github/repos"
+        return httpx.Response(200, json=[{"nameWithOwner": "acme/billing"},
+                                         {"nameWithOwner": "acme/web"}])
+
+    out = await _tool(build_tools(_api(h)), "list_repos").handler({"query": "bill"})
+    data = json.loads(out["content"][0]["text"])["data"]
+    assert [r["nameWithOwner"] for r in data] == ["acme/billing"]
+
+
+@pytest.mark.asyncio
+async def test_list_branches_passes_repo_and_returns_the_endpoint_shape():
+    """`GET /api/github/branches` answers `{"default":…, "branches":[…]}` (see
+    server/api/repos.py) — NOT a bare list. The tool passes it through unchanged so
+    the model can see which branch is the default."""
+    def h(req):
+        assert req.url.path == "/api/github/branches"
+        assert req.url.params["repo"] == "acme/billing"
+        return httpx.Response(200, json={"default": "main", "branches": ["main", "dev"]})
+
+    out = await _tool(build_tools(_api(h)), "list_branches").handler({"repo": "acme/billing"})
+    assert json.loads(out["content"][0]["text"])["data"] == {
+        "default": "main", "branches": ["main", "dev"]}
+
+
+@pytest.mark.asyncio
+async def test_list_stage_models_reads_the_pipeline_repos_route():
+    def h(req):
+        assert req.url.path == "/api/pipeline/repos"
+        return httpx.Response(200, json={"acme/billing": {"stages": ["lint", "test"]}})
+
+    out = await _tool(build_tools(_api(h)), "list_stage_models").handler({})
+    assert json.loads(out["content"][0]["text"])["data"] == {
+        "acme/billing": {"stages": ["lint", "test"]}}
+
+
+# -- Task 5.4: transcript depth ----------------------------------------------------
+
+# The transcript endpoint serves `ToolCall.to_wire` / `ToolResult.to_wire` verbatim
+# (server/sessions/events.py): the id key is `toolId`, a toolResult carries `ok` and
+# `payload`, and it has NO turnId. These fixtures copy that shape exactly.
+
+
+@pytest.mark.asyncio
+async def test_transcript_tool_rows_carry_ids():
+    def h(req):
+        return httpx.Response(200, json={"events": [
+            {"type": "toolCall", "turnId": "t1", "toolId": "c1", "name": "Bash",
+             "toolKind": "bash", "input": {"command": "pytest"}},
+        ], "totalTurns": 1})
+
+    out = await _tool(build_tools(_api(h)), "get_session_transcript").handler({"id": _SID})
+    row = json.loads(out["content"][0]["text"])["data"]["events"][0]
+    assert row == {"tool": "Bash", "turnId": "t1", "toolId": "c1"}
+
+
+@pytest.mark.asyncio
+async def test_get_tool_result_selects_one_and_caps():
+    def h(req):
+        assert req.url.path.endswith("/transcript")
+        return httpx.Response(200, json={"events": [
+            {"type": "toolCall", "turnId": "t1", "toolId": "c1", "name": "Bash",
+             "input": {"command": "pytest -x"}},
+            {"type": "toolResult", "toolId": "c1", "ok": False,
+             "payload": {"content": "F" * 9000}},
+            {"type": "toolResult", "toolId": "c2", "ok": True,
+             "payload": {"content": "other"}},
+        ]})
+
+    out = await _tool(build_tools(_api(h)), "get_tool_result").handler(
+        {"id": _SID, "tool_id": "c1"})
+    data = json.loads(out["content"][0]["text"])["data"]
+    assert data["tool"] == "Bash" and data["input"] == {"command": "pytest -x"}
+    assert data["ok"] is False
+    assert len(data["output"]) <= 4001 and data["output"].endswith("…")
+    assert "other" not in data["output"]
+
+
+@pytest.mark.asyncio
+async def test_get_tool_result_renders_block_list_content():
+    """The SDK's tool_result content is a string for some tools and a list of content
+    blocks for others; both must render."""
+    def h(req):
+        return httpx.Response(200, json={"events": [
+            {"type": "toolResult", "toolId": "c1", "ok": True,
+             "payload": {"content": [{"type": "text", "text": "line one"},
+                                     {"type": "text", "text": "line two"}]}},
+        ]})
+
+    out = await _tool(build_tools(_api(h)), "get_tool_result").handler(
+        {"id": _SID, "tool_id": "c1"})
+    assert json.loads(out["content"][0]["text"])["data"]["output"] == "line one\nline two"
+
+
+@pytest.mark.asyncio
+async def test_get_tool_result_unknown_id_is_a_local_arg_error():
+    def h(req):
+        return httpx.Response(200, json={"events": []})
+
+    out = await _tool(build_tools(_api(h)), "get_tool_result").handler(
+        {"id": _SID, "tool_id": "nope"})
+    assert out["is_error"] is True
+    assert "toolId" in out["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_export_session_returns_tail_text():
+    def h(req):
+        assert req.url.path.endswith("/export.md")
+        return httpx.Response(200, text="# head\n" + "x" * 30000 + "\nTAIL")
+
+    out = await _tool(build_tools(_api(h)), "export_session").handler(
+        {"id": _SID, "max_chars": 100})
+    data = json.loads(out["content"][0]["text"])["data"]
+    # 100 is below the 500 floor, so the cap clamps UP to 500 — the tail is what matters.
+    assert data["markdown"].endswith("TAIL")
+    assert len(data["markdown"]) <= 500 and data["truncatedChars"] > 0

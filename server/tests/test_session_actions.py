@@ -6,6 +6,7 @@ without touching a real DB.
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -22,6 +23,10 @@ class FakeOrch:
         self.answer_question = AsyncMock(return_value=True)
         self.set_permission_mode = AsyncMock()
         self.set_model_for_session = AsyncMock(return_value=False)
+        # `set_model` reads the record to decide whether this is the AI-drawer session
+        # (a gated model is refused there rather than parked). None = an ordinary
+        # session, which is what every test here drives.
+        self.get_session = AsyncMock(return_value=None)
 
 
 @pytest.fixture
@@ -223,3 +228,59 @@ async def test_audit_failure_never_raises(orch):
                new_callable=AsyncMock, side_effect=RuntimeError("db down")):
         result = await sa.interrupt(orch, db=object(), session_id="s1", identity="u@example.com")
     assert result == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_set_model_refuses_a_gated_model_for_the_assistant_instead_of_parking(orch):
+    """The drawer must never be left parked on a model-approval hold: the card that
+    clears one renders inside the drawer the hold just silenced. Gated here, in the
+    shared helper, so the WS `/model` command is covered as well as the HTTP route."""
+    from server.sessions.types import ASSISTANT_KIND
+
+    orch.get_session = AsyncMock(return_value=SimpleNamespace(kind=ASSISTANT_KIND))
+    with patch("server.sessions.session_actions.record_audit", new_callable=AsyncMock), \
+         patch("server.sessions.model_policy.resolve_model_policy",
+               new_callable=AsyncMock, return_value="require_approval"):
+        with pytest.raises(sa.ActionError) as exc:
+            await sa.set_model(orch, db=object(), session_id="s1", model="fable",
+                               identity="u@example.com")
+    assert exc.value.code == "MODEL_GATED" and exc.value.http == 400
+    orch.set_model_for_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_set_model_leaves_an_ordinary_session_to_the_normal_park_path(orch):
+    """The gate is assistant-only: a gated model on a normal session still reaches
+    set_model_for_session, which parks it for human approval as it always has."""
+    orch.get_session = AsyncMock(return_value=SimpleNamespace(kind=None))
+    with patch("server.sessions.session_actions.record_audit", new_callable=AsyncMock):
+        result = await sa.set_model(orch, db=object(), session_id="s1", model="fable",
+                                    identity="u@example.com")
+    orch.set_model_for_session.assert_awaited_once()
+    assert result == {"ok": True, "restarted": False}
+
+
+@pytest.mark.asyncio
+async def test_set_model_accepts_a_sync_get_session_orchestrator():
+    """`orch` is two different objects depending on the caller.
+
+    The HTTP route passes the facade / RemoteOrchestrator, whose `get_session` is
+    async. The WS `/model` slash command reaches this helper from inside
+    `orchestrator.run_command`, which passes the RAW SessionOrchestrator — whose
+    `get_session` is a plain sync method. Awaiting that raises
+    "object SessionRecord can't be used in 'await' expression", which is exactly how
+    the assistant gate broke every /model command test when it was first written.
+    """
+    class SyncGetSessionOrch:
+        def __init__(self):
+            self.set_model_for_session = AsyncMock(return_value=False)
+
+        def get_session(self, session_id):        # sync, like SessionOrchestrator's
+            return SimpleNamespace(kind=None)
+
+    orch = SyncGetSessionOrch()
+    with patch("server.sessions.session_actions.record_audit", new_callable=AsyncMock):
+        result = await sa.set_model(orch, db=object(), session_id="s1", model="opus",
+                                    identity="u@example.com")
+    assert result == {"ok": True, "restarted": False}
+    orch.set_model_for_session.assert_awaited_once()

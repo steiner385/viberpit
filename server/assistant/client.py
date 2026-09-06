@@ -47,7 +47,9 @@ class AssistantApi:
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    async def _call(self, method: str, path: str, **kw: Any) -> Any:
+    async def _request(self, method: str, path: str, **kw: Any) -> httpx.Response:
+        """Rate-limit, send, and raise on any error status. Returns the raw response so
+        both the JSON path (`_call`) and the text path (`get_text`) share one policy."""
         # Checked BEFORE the request so a rate-limited call costs nothing downstream.
         # Surfaced as a normal AssistantApiError, so `guarded()` in tools.py turns it
         # into an is_error tool result the model can read and back off from.
@@ -64,12 +66,21 @@ class AssistantApi:
             except ValueError:
                 msg = r.text[:200]
             raise AssistantApiError(r.status_code, msg)
+        return r
+
+    async def _call(self, method: str, path: str, **kw: Any) -> Any:
+        r = await self._request(method, path, **kw)
         if r.status_code == 204 or not r.content:
             return None
         return r.json()
 
     async def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         return await self._call("GET", path, params=params)
+
+    async def get_text(self, path: str, params: dict[str, Any] | None = None) -> str:
+        """GET a route that answers with text rather than JSON (e.g. `/export.md`,
+        which is `text/markdown`). `.json()` would raise on those bodies."""
+        return (await self._request("GET", path, params=params)).text
 
     async def post(self, path: str, json: Any = None) -> Any:
         return await self._call("POST", path, json=json)

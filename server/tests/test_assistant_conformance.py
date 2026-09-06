@@ -20,11 +20,14 @@ UUID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 # fails loudly (KeyError) — add its args when you add the tool.
 ARGS: dict[str, dict] = {
     "list_sessions": {}, "get_session": {"id": UUID}, "get_session_transcript": {"id": UUID},
+    "get_tool_result": {"id": UUID, "tool_id": "c1"}, "export_session": {"id": UUID},
     "search_sessions": {"query": "x"}, "list_archived_sessions": {}, "list_accounts": {},
     "list_hosts": {}, "list_prs": {}, "get_pipeline_health": {"repo": "o/n"},
+    "list_repos": {}, "list_branches": {"repo": "o/n"}, "list_stage_models": {},
     "list_automations": {}, "get_automation_events": {"id": "autopilot"}, "get_deploy_status": {},
     "list_notification_channels": {}, "list_notification_rules": {}, "get_quiet_hours": {},
     "test_notification": {"event_class": "session.done"},
+    "report_gap": {"capability": "x"},
     "create_session": {"prompt": "p"}, "send_prompt": {"id": UUID, "text": "t"},
     "interrupt_session": {"id": UUID},
     "answer_question": {"id": UUID, "question_id": "q1", "selected": ["a"]},
@@ -58,6 +61,11 @@ async def test_every_tool_hits_an_allowed_route(name):
     tools = build_tools(_recording_api(seen))
     tool = next(t for t in tools if t.name == name)
     await tool.handler(ARGS[name])
+    if name == "report_gap":
+        # The sole exemption: the gap it records IS that no endpoint exists, so it
+        # must reach the API zero times. Asserted rather than skipped.
+        assert seen == [], "report_gap must not call the API"
+        return
     assert len(seen) == 1, f"{name} made {len(seen)} calls; a tool is ONE endpoint"
     method, path = seen[0]
     assert route_allowed(method, path), f"{name} hit {method} {path}, not allowlisted"
@@ -75,21 +83,17 @@ def test_every_tool_has_an_eval_case():
     assert not missing, f"tools with no eval case: {sorted(missing)}"
 
 
-# Starter chips with no backing tool yet (spec v2 G1): Task 5.3 adds list_repos /
-# list_stage_models for the initiatives/projects chips, Task 6.5 restores the CI-regression
-# insights chip. Tracked explicitly — rather than just excluded — so this test still catches
-# a genuinely NEW gap (an added chip with no case, or one of these regaining a case without
-# the set being updated) while it stays green until those tasks land.
-KNOWN_STARTER_GAPS: frozenset[str] = frozenset({
-    "Which project has the most open work?",
-    "What is blocked by a dependency?",
-    "What regressed in CI recently?",
-})
-
-
 def test_every_starter_has_an_eval_case():
+    """No exceptions list: the five G1 gaps this test was born tracking are closed.
+
+    Task 5.3 backed the insights chip with list_stage_models, and Task 5.6 replaced the
+    initiatives/projects chips that no tool could serve. The tracking set that stood in
+    for them is deleted rather than left empty — an empty allow-list is the same
+    assertion with a stale comment attached. Task 6.5 restores section-specific chips on
+    top of Pack P, and it has to add their eval cases in the same change to stay green.
+    """
     src = Path("web/src/features/assistant/starters.ts").read_text()
     chips = set(re.findall(r"^\s+'([^']+)',\s*$", src, re.M))
     prompts = {c["prompt"] for c in _cases()}
     missing = chips - prompts
-    assert missing == KNOWN_STARTER_GAPS, f"starter chips with no eval case: {sorted(missing)}"
+    assert not missing, f"starter chips with no eval case: {sorted(missing)}"
