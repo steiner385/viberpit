@@ -61,6 +61,13 @@ export const APP_ACTION_TITLES: Record<string, string> = {
   delete_session: 'Deleted session permanently',
   cancel_queued_session: 'Cancelled queued session',
   ready_merge_pr: 'Readied + auto-merged PR',
+  // Operator tier (spec v2 §7, Pack O) — only ever called when operator tools are
+  // enabled (server/assistant/policy.py:operator_tools_enabled).
+  start_deploy: 'Started a deploy',
+  upgrade_host: 'Upgraded host',
+  refresh_account: 'Refreshed account',
+  set_account_enabled: 'Changed account enabled state',
+  start_reauth: 'Started account re-auth',
 }
 
 /** `fullToolName` is the wire name, e.g. `mcp__ccswitch__list_sessions`. Returns

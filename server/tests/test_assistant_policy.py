@@ -6,7 +6,8 @@ from unittest.mock import patch
 import pytest
 
 from server.assistant.policy import (
-    assistant_enabled, assistant_model, operator_tools_enabled, route_allowed)
+    ASSISTANT_ROUTE_ALLOW, assistant_enabled, assistant_model, operator_tools_enabled,
+    route_allowed)
 from server.db.models import AppSettings
 
 
@@ -135,3 +136,41 @@ _UUID = "3f2a9c1e-7b4d-4e0a-9c7d-1a2b3c4d5e6f"
 ])
 def test_route_allowlist(method, path, ok):
     assert route_allowed(method, path) is ok
+
+
+@pytest.mark.parametrize("method,path", [
+    ("POST", "/api/deploy/start"),
+    ("POST", "/api/fleet/hosts/rocky/upgrade"),
+    ("POST", "/api/accounts/a1/refresh"),
+    ("PATCH", "/api/accounts/a1/enabled"),
+    ("POST", "/api/accounts/a1/reauth"),
+])
+def test_operator_routes_need_the_flag(method, path):
+    assert route_allowed(method, path) is False
+    assert route_allowed(method, path, operator=True) is True
+
+
+@pytest.mark.parametrize("method,path", [
+    ("GET", "/api/sessions"),
+    ("POST", "/api/sessions"),
+    ("GET", "/api/auth/me"),
+])
+def test_operator_true_does_not_regress_ordinary_routes(method, path):
+    # operator=True must not narrow or otherwise change behaviour for routes that
+    # were already allowed via ASSISTANT_ROUTE_ALLOW.
+    assert route_allowed(method, path) is True
+    assert route_allowed(method, path, operator=True) is True
+
+
+@pytest.mark.parametrize("method,path", [
+    ("POST", "/api/deploy/start"),
+    ("POST", "/api/fleet/hosts/rocky/upgrade"),
+    ("POST", "/api/accounts/a1/refresh"),
+    ("PATCH", "/api/accounts/a1/enabled"),
+    ("POST", "/api/accounts/a1/reauth"),
+])
+def test_operator_routes_not_matched_by_ordinary_allowlist(method, path):
+    # ASSISTANT_ROUTE_ALLOW and OPERATOR_ROUTE_ALLOW must stay disjoint: an operator
+    # route must never become reachable just because ASSISTANT_ROUTE_ALLOW happens to
+    # match it, independent of the `operator` flag.
+    assert not any(m == method and rx.match(path) for m, rx in ASSISTANT_ROUTE_ALLOW)

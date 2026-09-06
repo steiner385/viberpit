@@ -119,9 +119,29 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
 )
 
 
-def route_allowed(method: str, path: str) -> bool:
+# Operator-tier routes (spec v2 §7, Task 9.2): deploy, host upgrade, and account
+# refresh/enable/reauth. Disjoint from ASSISTANT_ROUTE_ALLOW on purpose — these are
+# reachable ONLY when `operator=True` is passed to `route_allowed`, which in turn is
+# gated on `operator_tools_enabled(db)`. A path here must never also appear above.
+OPERATOR_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
+    (m, re.compile(p + r"$")) for m, p in [
+        ("POST", r"/api/deploy/start"),
+        ("POST", r"/api/fleet/hosts/[A-Za-z0-9_.-]+/upgrade"),
+        ("POST", r"/api/accounts/[A-Za-z0-9_.-]+/refresh"),
+        ("PATCH", r"/api/accounts/[A-Za-z0-9_.-]+/enabled"),
+        ("POST", r"/api/accounts/[A-Za-z0-9_.-]+/reauth"),
+    ]
+)
+
+
+def route_allowed(method: str, path: str, *, operator: bool = False) -> bool:
     path = path.split("?", 1)[0]
-    return any(m == method.upper() and rx.match(path) for m, rx in ASSISTANT_ROUTE_ALLOW)
+    method = method.upper()
+    if any(m == method and rx.match(path) for m, rx in ASSISTANT_ROUTE_ALLOW):
+        return True
+    if operator:
+        return any(m == method and rx.match(path) for m, rx in OPERATOR_ROUTE_ALLOW)
+    return False
 
 
 # READ-class tools whose backing route is a POST that mutates nothing (a dry-run or a
