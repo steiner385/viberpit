@@ -750,6 +750,15 @@ class RemoteOrchestrator:
     async def pop_pending_initial_attachment_ids(self, session_id):
         return await self._client.call("pop_pending_initial_attachment_ids", session_id=session_id)
 
+    async def post_notice(self, identity: str, notice: dict) -> bool:
+        """Deliver a proactive watch notice into identity's assistant drawer, via
+        the daemon (Task 8.4). See SessionOrchestrator.post_notice."""
+        return bool(await self._client.call("post_notice", identity=identity, notice=notice))
+
+    async def pop_pending_notices(self, session_id):
+        r = await self._client.call("pop_pending_notices", session_id=session_id)
+        return r if isinstance(r, list) else []
+
     async def command_catalog(self, session_id):
         return await self._client.call("command_catalog", session_id=session_id)
 

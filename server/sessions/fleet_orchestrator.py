@@ -116,6 +116,12 @@ _PER_SESSION: frozenset[str] = frozenset({
     "transcript_search_text", "has_transcript",
     "command_catalog", "run_command", "latest_suggestions", "generate_suggestions_now",
     "latest_summary", "pop_pending_initial_prompt", "pop_pending_initial_attachment_ids",
+    # Task 8.4: same "queued while detached, flushed on this session's own host's
+    # attach" shape as the two siblings above. `post_notice` is NOT here — its
+    # first arg is an identity, not a session_id, so it does not fit
+    # _make_per_session's calling convention; it falls through __getattr__ to the
+    # primary instead (assistant sessions are pinned to primary at create_session).
+    "pop_pending_notices",
     "request_pr_fix", "prs_for", "ring_covers", "ring_tail", "unarchive",
     "x11_open_browser", "resolve_model_approval", "resume_interrupted",
     "reload_session", "rotate_to_best", "set_account_pin",
