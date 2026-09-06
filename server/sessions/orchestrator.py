@@ -467,7 +467,8 @@ def daemon_role() -> str:
 # start() gates their creation on daemon_role()=="primary"; the single source of
 # truth for the completeness test in test_primary_lease.
 _PRIMARY_ONLY_LOOP_ATTRS: frozenset[str] = frozenset({
-    "_backlog_task", "_sdlc_intake_task", "_pm_sync_task", "_gh_reconcile_task",
+    "_backlog_task", "_sdlc_intake_task", "_pm_sync_task", "_pm_triage_task",
+    "_gh_reconcile_task",
     "_sdlc_synth_task",
     "_autopilot_task", "_cicd_task", "_archaudit_task", "_sweep_task",
     "_archive_limit_task", "_recurring_task", "_mirror_task",
@@ -952,6 +953,28 @@ class SessionOrchestrator:
             "pm-onboard", create_session=self.create_session)
         self._pm_classify_ctx = AutomationContext(
             "pm-classify", create_session=self.create_session)
+        # PM Triage control loop (design §6): the continuous curation loop —
+        # auto-link mechanical PRs, classify the new (REUSING the phase-2
+        # ``pm_classify_run`` session path), cluster map drift into a map-diff PR
+        # (REUSING ``pm_onboard_spawn_map(scope="diff")``), nudge stale features.
+        # Same injected-seam mold as pm-sync; propose-only, and it owns no spawn
+        # context of its own — every session it causes is spawned by the phase-2
+        # seam that already owns that origin (constitution VI: one classify path,
+        # one map-synthesis path).
+        from server.automations.pm_triage import PmTriageLoop
+        self._pm_triage_ctx = AutomationContext("pm-triage")
+        self._pm_triage_loop = PmTriageLoop(
+            self._pm_triage_ctx,
+            read_config=self._pm_triage_read_config,
+            list_pending=self._pm_triage_list_pending,
+            auto_link=self._pm_triage_auto_link,
+            count_state=self._pm_triage_count_state,
+            classify=self._pm_triage_classify,
+            propose_map_diff=self._pm_triage_propose_map_diff,
+            mark_stale=self._pm_triage_mark_stale,
+            clock=time.monotonic,
+        )
+        self._pm_triage_task: asyncio.Task | None = None
         # SDLC Synthesizer control loop (#800): carries initiatives intent→spec→
         # plan by proposing each stage's artifact PR and enriching artifact index
         # rows with PR metadata (number/url, then merge sha). Same injected-seam
@@ -1524,6 +1547,12 @@ class SessionOrchestrator:
             self._pm_sync_task = asyncio.create_task(
                 self._pm_sync_tick_loop(interval=60.0), name="pm-sync-loop"
             )
+            # PM Triage control loop: one tick per interval (auto-link, then the
+            # ONE engine action for this tick). Off by default; the DB row enables
+            # it, and "propose" is the only non-off mode there is.
+            self._pm_triage_task = asyncio.create_task(
+                self._pm_triage_tick_loop(interval=60.0), name="pm-triage-loop"
+            )
             # GitHub Reconcile control loop: one converge pass per interval. Slower
             # than pm-sync on purpose — it writes to GitHub, and each cycle's inputs
             # only move as fast as the mirror pm-sync refreshes. Off by default (DB
@@ -1738,7 +1767,7 @@ class SessionOrchestrator:
         # pins the full set by task name.
         for attr in ("_titling_task", "_goal_task", "_rotation_task", "_stall_task",
                      "_token_refresh_task", "_backlog_task", "_sdlc_intake_task",
-                     "_pm_sync_task", "_gh_reconcile_task",
+                     "_pm_sync_task", "_pm_triage_task", "_gh_reconcile_task",
                      "_sdlc_synth_task",
                      "_autopilot_task", "_mirror_task",
                      "_cicd_task", "_archaudit_task", "_sweep_task",
@@ -5026,6 +5055,348 @@ class SessionOrchestrator:
                 await self._bump_automation_active("pm-sync")
         except Exception:  # pragma: no cover — a heartbeat failure must not stall
             log.debug("pm_sync.bump_active_failed", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # PM Triage control-loop dependencies (injected into PmTriageLoop, design §6)
+    #
+    # Every seam is a thin adapter over db_session() or an EXISTING phase-2 seam.
+    # There is no classify path and no map-synthesis path here: classify is
+    # ``pm_classify_run(slug, items=…)`` and drift is
+    # ``pm_onboard_spawn_map(slug, scope="diff", …)``.
+    # ------------------------------------------------------------------
+
+    async def _pm_project_slug_for_repo(self, repo: str) -> str | None:
+        """The slug of the project that owns *repo*, or ``None``.
+
+        ``None`` means "no project owns this repo" and every caller treats it as
+        *skip, do not spawn*: the phase-2 seams are keyed by project slug, so
+        there is nothing to classify against and no map to diff. Guessing a
+        project would bind items to another product's feature rows.
+
+        The API layer answers the same question in
+        ``server/api/pm.py:_owning_projects_by_repo`` (it needs the project *id*
+        too); the tie-break MUST agree with it — ``ProjectRepo``'s uniqueness is
+        ``(project_id, repo)`` and nothing forbids two projects registering one
+        repo, so the lowest ``Project.slug`` wins deterministically rather than
+        an arbitrary row flipping between ticks.
+        """
+        async with db_session() as db:
+            return (await self._pm_owning_project_slugs(db, {repo})).get(repo)
+
+    @staticmethod
+    async def _pm_owning_project_slugs(db, repos: set[str]) -> dict[str, str]:
+        """``repo`` → owning project slug for *repos*, in ONE query.
+
+        The batched core of :meth:`_pm_project_slug_for_repo`; the loop resolves a
+        whole classify batch / every drift cluster at once, so this must not be a
+        per-repo round trip."""
+        from sqlalchemy import select
+        from server.db.models import Project, ProjectRepo
+        wanted = {r for r in repos if r}
+        if not wanted:
+            return {}
+        rows = (await db.execute(
+            select(ProjectRepo.repo, Project.slug)
+            .join(Project, Project.id == ProjectRepo.project_id)
+            .where(ProjectRepo.repo.in_(wanted))
+            .order_by(Project.slug))).all()
+        out: dict[str, str] = {}
+        for repo, slug in rows:
+            if repo and slug and repo not in out:  # first row wins → lowest slug
+                out[repo] = slug
+        return out
+
+    async def _pm_triage_read_config(self) -> tuple[str, dict]:
+        """The pm-triage row's (mode, config) merged onto schema defaults.
+
+        Mirrors ``_pm_sync_read_config``: mode is ``off`` unless the row is
+        enabled AND carries ``propose`` — an absent/invalid row falls back to
+        ``off`` + pure defaults, so a bad config never proposes anything. There is
+        deliberately no ``auto`` mode (design §6)."""
+        from server.automations.config_store import read_automation_config
+        from server.automations.pm_triage import PmTriage
+        return await read_automation_config(
+            "pm-triage", PmTriage.config_schema, modes=("propose",),
+            log_key="pm_triage")
+
+    async def _pm_triage_list_pending(self) -> list:
+        """Open, unclassified work items with NO pending proposal — the classify
+        candidate set.
+
+        ``needs_human`` items are excluded by construction (the filter is
+        ``triage_state == "unclassified"``): a rejected proposal moves its item to
+        ``needs_human``, and rejection is signal — the loop never blind-retries
+        it (design §6)."""
+        from sqlalchemy import select
+        from server.automations.pm_triage import PendingItemView
+        from server.db.models import TriageProposal, WorkItem
+        async with db_session() as db:
+            pending_ids = set((await db.execute(
+                select(TriageProposal.work_item_id)
+                .where(TriageProposal.status == "pending")
+            )).scalars().all())
+            rows = (await db.execute(
+                select(WorkItem).where(
+                    WorkItem.state == "open",
+                    WorkItem.triage_state == "unclassified")
+            )).scalars().all()
+            return [PendingItemView(
+                repo=w.repo or "", number=w.number or 0, kind=w.kind or "issue",
+                title=w.title or "", body=w.body or "",
+                labels=tuple(w.labels or ()),
+                linked_issue_numbers=tuple(w.linked_issue_numbers or ()),
+            ) for w in rows if w.id not in pending_ids]
+
+    async def _pm_triage_auto_link(self, item) -> bool:
+        """Mechanical PR→feature inheritance (design §6.2): if any issue this PR
+        closes is already classified onto a feature, copy that feature onto the
+        PR's overlay (``classified_by='auto-link'``). No AI session, no proposal —
+        the closing reference IS the evidence. Returns True on a real link."""
+        from datetime import datetime, timezone
+        from sqlalchemy import select
+        from server.db.models import WorkItem
+        numbers = [int(n) for n in (item.linked_issue_numbers or ())]
+        if not numbers:
+            return False
+        async with db_session() as db:
+            issue = (await db.execute(
+                select(WorkItem).where(
+                    WorkItem.repo == item.repo,
+                    WorkItem.kind == "issue",
+                    WorkItem.number.in_(numbers),
+                    WorkItem.feature_id.isnot(None))
+            )).scalars().first()
+            if issue is None:
+                return False
+            pr = (await db.execute(
+                select(WorkItem).where(
+                    WorkItem.repo == item.repo, WorkItem.kind == "pr",
+                    WorkItem.number == item.number)
+            )).scalar_one_or_none()
+            if pr is None:
+                return False
+            pr.feature_id = issue.feature_id
+            pr.triage_state = "classified"
+            pr.classified_by = "auto-link"
+            # Naive-UTC everywhere: never func.now() (Postgres CURRENT_TIMESTAMP
+            # is tz-aware and SQLite-only tests hide the difference).
+            pr.classified_at = datetime.now(timezone.utc)
+        return True
+
+    async def _pm_triage_open_map_diffs(self, clusters) -> tuple[str, ...]:
+        """Suggestions the drift branch must NOT re-propose (``TriageState.
+        open_map_diff_suggestions``).
+
+        A ``no_fit`` cluster is permanent — accepting a proposal never clears its
+        ``no_fit_suggestion`` — and the drift branch is not day-capped, so without
+        this latch every tick opens another archaeology-diff PR for the same
+        capability, forever. Spawn-time dedupe cannot cover it: it matches only
+        NON-terminal sessions, so the tick after the map-diff session finishes
+        spawns a fresh one.
+
+        A suggestion is latched when it is
+          (a) already resolved — a ``Feature`` with that slug exists **in the
+              owning project** (the diff merged; the orphans now flow through the
+              accept path's drift branch, not a second PR). ``Feature.slug`` is
+              unique per ``(project_id, slug)`` only (``uq_feature_slug``), so an
+              unscoped lookup would latch on another product's feature; or
+          (b) already in flight — a non-terminal session exists for the map-diff
+              spawn's ``origin_ref``/``dedupe_key`` ``<slug>:map-diff:<suggestion>``;
+              or
+          (c) unresolvable — the cluster's repo maps to no project, so
+              ``_pm_triage_propose_map_diff`` can only skip. Latching it keeps a
+              dead cluster from monopolising the branch and starving the clusters
+              that CAN be proposed.
+        """
+        from sqlalchemy import select
+        from server.db.models import Feature, Project
+        latched: set[str] = set()
+        slugs: dict[str, str] = {}
+        async with db_session() as db:
+            slugs = await self._pm_owning_project_slugs(
+                db, {c.repo for c in clusters})
+            for c in clusters:
+                slug = slugs.get(c.repo)
+                if slug is None:
+                    latched.add(c.suggestion)          # (c)
+                    continue
+                feat = (await db.execute(
+                    select(Feature.id)
+                    .join(Project, Project.id == Feature.project_id)
+                    .where(Project.slug == slug,
+                           Feature.slug == c.suggestion))).scalars().first()
+                if feat is not None:
+                    latched.add(c.suggestion)          # (a)
+        # (b) runs OUTSIDE the session above: _existing_session opens its own, and
+        # it is deliberately the SAME lookup the spawn dedupes with — reusing the
+        # spawning context means the origin id and the terminal-status set can
+        # never drift from the spawn path.
+        for c in clusters:
+            if c.suggestion in latched:
+                continue
+            slug = slugs.get(c.repo)
+            if slug is None:  # pragma: no cover — already latched by (c)
+                continue
+            key = f"{slug}:map-diff:{c.suggestion}"
+            if await self._pm_onboard_ctx._existing_session(key) is not None:
+                latched.add(c.suggestion)
+        return tuple(sorted(latched))
+
+    async def _pm_triage_count_state(self):
+        """Build the pure engine view from DB counts (design §6). Excludes
+        ``needs_human`` and already-proposed items from ``unclassified_count``.
+
+        ``day_spawns`` is reported as 0 on purpose: the DB holds no record of the
+        sessions THIS process spawned in the window, and ``PmTriageLoop._budgeted``
+        substitutes its own ledger (a non-zero value here would win and defeat
+        the cap)."""
+        from datetime import datetime, timezone
+        from sqlalchemy import func, select
+        from server.db.models import Feature, TriageProposal, WorkItem
+        from server.pm.engine import NoFitCluster, StaleFeature, TriageState
+        mode, config = await self._pm_triage_read_config()
+        stale_days = int(config.get("stale_days", 14))
+        now = datetime.now(timezone.utc)
+        async with db_session() as db:
+            pending_ids = set((await db.execute(
+                select(TriageProposal.work_item_id)
+                .where(TriageProposal.status == "pending")
+            )).scalars().all())
+            open_unclassified = (await db.execute(
+                select(WorkItem.id).where(
+                    WorkItem.state == "open",
+                    WorkItem.triage_state == "unclassified")
+            )).scalars().all()
+            unclassified = sum(1 for wid in open_unclassified
+                               if wid not in pending_ids)
+            pending_count = len(pending_ids)
+            # Drift clusters: accepted no_fit proposals grouped by
+            # (suggestion, repo) — NOT by suggestion alone. A map-diff PR targets
+            # exactly one repo, so merging every repo's item numbers under the
+            # first repo seen would name repo A while citing repo B's issue
+            # numbers, and those numbers resolve to unrelated issues in A.
+            accepted_nofit = (await db.execute(
+                select(TriageProposal.no_fit_suggestion, WorkItem.number,
+                       WorkItem.repo)
+                .join(WorkItem, WorkItem.id == TriageProposal.work_item_id)
+                .where(TriageProposal.status == "accepted",
+                       TriageProposal.no_fit_suggestion.isnot(None))
+            )).all()
+            clusters: dict[tuple[str, str], list[int]] = {}
+            for suggestion, number, repo in accepted_nofit:
+                clusters.setdefault((suggestion, repo or ""), []).append(
+                    int(number or 0))
+            no_fit_clusters = tuple(
+                NoFitCluster(suggestion=s, item_numbers=tuple(sorted(nums)),
+                             repo=r)
+                for (s, r), nums in clusters.items())
+            # Stale features: discovery/delivering with no linked work-item
+            # activity in the window and an untouched index row.
+            feats = (await db.execute(
+                select(Feature).where(
+                    Feature.state.in_(("discovery", "delivering"))))).scalars().all()
+            stale: list[StaleFeature] = []
+            for f in feats:
+                last = (await db.execute(
+                    select(func.max(WorkItem.gh_updated_at))
+                    .where(WorkItem.feature_id == f.id))).scalar_one_or_none()
+                marker = last or f.updated_at
+                if marker is None:
+                    continue
+                if marker.tzinfo is None:
+                    # SQLite hands back naive datetimes for DateTime(timezone=True)
+                    # columns; Postgres hands back aware ones. Everything we
+                    # persist is UTC, so normalize rather than crash on one
+                    # dialect only.
+                    marker = marker.replace(tzinfo=timezone.utc)
+                days_idle = (now - marker).days
+                if days_idle >= stale_days:
+                    stale.append(StaleFeature(
+                        slug=f.slug or "", state=f.state or "",
+                        days_idle=days_idle))
+        return TriageState(
+            mode=mode, unclassified_count=unclassified,
+            pending_count=pending_count, no_fit_clusters=no_fit_clusters,
+            stale_features=tuple(stale), day_spawns=0,
+            day_cap=int(config.get("max_spawns_per_day", 8)),
+            open_map_diff_suggestions=await self._pm_triage_open_map_diffs(
+                no_fit_clusters))
+
+    async def _pm_triage_classify(self, items, count):
+        """Spawn ONE classify session over the batch by REUSING the phase-2
+        classify seam ``pm_classify_run`` (which builds the prompt via
+        ``pm.classification`` and chains ``_pm_classify_ingest`` to record the
+        ``TriageProposal`` rows). There is no second classifier — design §6.1.
+
+        The batch is scoped to ONE project: ``pm_classify_run`` compares items
+        against that project's feature list, so an item from another project's
+        repo would be classified against the wrong map. Items outside the leading
+        item's project stay pending and lead a later tick."""
+        batch = list(items[:count])
+        if not batch:
+            return None
+        async with db_session() as db:
+            owners = await self._pm_owning_project_slugs(
+                db, {i.repo for i in batch})
+        slug = owners.get(batch[0].repo)
+        if slug is None:
+            await self._pm_triage_ctx.emit(
+                "info", f"no project owns {batch[0].repo} — skipping classify",
+                kind="skipped", target=batch[0].repo)
+            return None
+        scoped = [i for i in batch if owners.get(i.repo) == slug]
+        return await self.pm_classify_run(
+            slug, items=[(i.repo, i.number, i.kind) for i in scoped])
+
+    async def _pm_triage_propose_map_diff(self, suggestion, numbers, repo):
+        """Open a scoped archaeology-diff PR for the unnamed capability by
+        REUSING the parameterized phase-2 map seam ``pm_onboard_spawn_map`` with
+        ``scope="diff"`` — there is NO second map-synthesis path (constitution
+        VI). On merge, pm-sync indexes the new Feature and the accept path
+        re-proposes the orphaned items."""
+        slug = await self._pm_project_slug_for_repo(repo)
+        if slug is None:
+            await self._pm_triage_ctx.emit(
+                "info",
+                f"no project owns {repo} — skipping map diff for '{suggestion}'",
+                kind="skipped", target=repo)
+            return None
+        return await self.pm_onboard_spawn_map(
+            slug, scope="diff", suggestion=suggestion,
+            item_numbers=tuple(numbers), repo=repo)
+
+    async def _pm_triage_mark_stale(self, slugs) -> None:
+        """Low-key staleness indicator (design §6.4). Persists NOTHING by design:
+        the board derives staleness from ``Feature.updated_at`` + linked-item
+        activity (the same computation as ``_pm_triage_count_state``), so there is
+        no column to write and no schema change to make. This seam only emits the
+        feed event."""
+        if slugs:
+            await self._pm_triage_ctx.emit(
+                "info", f"stale features: {', '.join(slugs)}",
+                kind="stale_features", detail={"slugs": list(slugs)})
+
+    async def _pm_triage_tick_loop(self, interval: float) -> None:
+        """Periodic driver for the pm-triage control loop (mirrors _pm_sync_tick_loop)."""
+        while True:
+            await self._pm_triage_tick_once()
+            await asyncio.sleep(interval)
+
+    async def _pm_triage_tick_once(self) -> None:
+        """One pm-triage tick + an enabled-only ``last_active_at`` heartbeat.
+        Best-effort — neither the tick nor the heartbeat may crash the loop."""
+        if not await self._schedule_allows_tick("pm-triage"):
+            return
+        try:
+            await self._pm_triage_loop.tick()
+        except Exception:  # pragma: no cover — tick() already swallows; belt+braces
+            log.warning("pm_triage.tick_loop_error", exc_info=True)
+        try:
+            mode, _ = await self._pm_triage_read_config()
+            if mode != "off":
+                await self._bump_automation_active("pm-triage")
+        except Exception:  # pragma: no cover — a heartbeat failure must not stall
+            log.debug("pm_triage.bump_active_failed", exc_info=True)
 
     # ------------------------------------------------------------------
     # GitHub Reconcile control-loop dependencies (injected into GhReconcileLoop)
@@ -8605,6 +8976,7 @@ class SessionOrchestrator:
             "autopilot": getattr(self, "_autopilot_ctx", None),
             "cicd-doctor": getattr(self, "_cicd_ctx", None),
             "pm-sync": getattr(self, "_pm_sync_ctx", None),
+            "pm-triage": getattr(self, "_pm_triage_ctx", None),
             "gh-reconcile": getattr(self, "_gh_reconcile_ctx", None),
         }
         out: dict[str, dict] = {}
