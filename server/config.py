@@ -119,6 +119,13 @@ try:
         # callback listener mid-login (zombie consent page).
         reauth_timeout_s: float = Field(default=900.0, alias="CCSWITCH_REAUTH_TIMEOUT_S")
         enable_xvfb: bool = Field(default=False, alias="CCSWITCH_ENABLE_XVFB")
+        # Route a session's GUI to the host's real X display when the requesting
+        # client sits on that host (tailscale whois node == self_host_name()).
+        # Gated at spawn time on the X socket actually existing, so a headless
+        # worker never sees a native session. Design:
+        # docs/superpowers/specs/2026-09-06-native-display-routing-design.md
+        native_display_enabled: bool = Field(default=True, alias="CCSWITCH_NATIVE_DISPLAY_ENABLED")
+        native_display: str = Field(default=":0", alias="CCSWITCH_NATIVE_DISPLAY")
         enable_adoption: bool = Field(default=False, alias="CCSWITCH_ENABLE_ADOPTION")
         display_start: int = Field(default=100, alias="CCSWITCH_DISPLAY_START")
         display_count: int = Field(default=12, alias="CCSWITCH_DISPLAY_COUNT")
@@ -393,6 +400,12 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         enable_xvfb: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_ENABLE_XVFB", "false").lower() in ("1","true","yes","on")
+        )
+        native_display_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_NATIVE_DISPLAY_ENABLED", "true").lower() in ("1","true","yes","on")
+        )
+        native_display: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_NATIVE_DISPLAY", ":0")
         )
         enable_adoption: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_ENABLE_ADOPTION", "false").lower() in ("1","true","yes","on")

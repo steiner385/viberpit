@@ -55,3 +55,31 @@ def test_reauth_extensions_comma_list(monkeypatch):
     monkeypatch.setenv("CCSWITCH_REAUTH_EXTENSIONS", "aaaa, bbbb ,,cccc")
     s = _fresh()
     assert s.reauth_extension_id_items == ["aaaa", "bbbb", "cccc"]
+
+
+def test_native_display_defaults(monkeypatch):
+    monkeypatch.delenv("CCSWITCH_NATIVE_DISPLAY_ENABLED", raising=False)
+    monkeypatch.delenv("CCSWITCH_NATIVE_DISPLAY", raising=False)
+    s = _fresh()
+    assert s.native_display_enabled is True
+    assert s.native_display == ":0"
+
+
+def test_native_display_env_override(monkeypatch):
+    monkeypatch.setenv("CCSWITCH_NATIVE_DISPLAY_ENABLED", "false")
+    monkeypatch.setenv("CCSWITCH_NATIVE_DISPLAY", ":1")
+    s = _fresh()
+    assert s.native_display_enabled is False
+    assert s.native_display == ":1"
+
+
+def test_native_display_fallback_dataclass_branch(monkeypatch):
+    """The dataclass fallback must define the same fields (omitting it is a silent
+    AttributeError on hosts without pydantic-settings)."""
+    monkeypatch.setenv("CCSWITCH_NATIVE_DISPLAY", ":7")
+    import server.config as cfg
+    importlib.reload(cfg)
+    fallback_cls = getattr(cfg, "Settings", None)
+    inst = fallback_cls()
+    assert inst.native_display == ":7"
+    assert inst.native_display_enabled is True
