@@ -4,14 +4,15 @@
  * inbox land in later phases (design 2026-08-31 §10).
  */
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 
-import { useCreateProject, useProjects, useSyncProject } from '@/api/hooks'
+import { useCreateProject, useProjects, useSyncProject, useTriage } from '@/api/hooks'
 import type { Project } from '@/api/pm'
 import { extractMutationErrorMessage } from '@/api/queryClient'
+import { NAV_BY_ID } from '@/shell/navDefs'
 
 import { DependencyPanel } from './DependencyPanel'
 import { OnboardingWizard } from './OnboardingWizard'
-import { TriageReviewList } from './TriageReviewList'
 import './projects.css'
 
 function NewProjectForm({ onClose }: { onClose: () => void }) {
@@ -98,6 +99,27 @@ function ProjectCard({ project }: { project: Project }) {
   )
 }
 
+/**
+ * Link to the Triage section, with the queue depth as the reason to follow it.
+ *
+ * Phase 2 embedded the whole plain triage review list here (deleted with this
+ * change — see `triage/TriageInbox`). Phase 3 replaces it with
+ * the keyboard-first inbox at `/triage` (design §8), which is cross-project and
+ * so has no business living inside one product's registry page. The path comes
+ * from `NAV_DEFS`, not a literal, so this cannot drift from the route table.
+ */
+function TriageCta() {
+  const { data } = useTriage()
+  const n = data?.length ?? 0
+  return (
+    <Link className="pm-triage-cta" to={NAV_BY_ID.triage.path}>
+      {n === 0
+        ? 'Open the Triage inbox →'
+        : `Review ${n} proposal${n === 1 ? '' : 's'} in Triage →`}
+    </Link>
+  )
+}
+
 export function ProjectsTab() {
   const { data: projects, isLoading } = useProjects()
   const [showForm, setShowForm] = useState(false)
@@ -117,7 +139,7 @@ export function ProjectsTab() {
       <div className="pm-project-grid">
         {(projects ?? []).map((p) => <ProjectCard key={p.id} project={p} />)}
       </div>
-      <TriageReviewList />
+      <TriageCta />
     </div>
   )
 }

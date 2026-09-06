@@ -73,6 +73,7 @@ import { ReviewView } from '@/components/ReviewView'
 import { PipelineTab } from '@/pipeline/PipelineTab'
 import { AutomationsTab } from '@/automations/AutomationsTab'
 import { InitiativesTab } from '@/initiatives/InitiativesTab'
+import { TriageInbox } from '@/triage/TriageInbox'
 import { ProjectsTab } from '@/projects/ProjectsTab'
 import { InsightsView } from '@/components/InsightsView'
 import { SettingsPage } from '@/features/settings/SettingsPage'
@@ -148,6 +149,10 @@ function AutomationsPage() {
 
 function InitiativesPage() {
   return <div className="flex flex-col h-full"><InitiativesTab /></div>
+}
+
+function TriagePage() {
+  return <div className="flex flex-col h-full"><TriageInbox /></div>
 }
 
 function ProjectsPage() {
@@ -279,6 +284,7 @@ const PAGES: RouteObject[] = [
   { path: NAV_BY_ID.pipeline.path, element: <PipelinePage /> },
   { path: NAV_BY_ID.automations.path, element: <AutomationsPage /> },
   { path: NAV_BY_ID.initiatives.path, element: <InitiativesPage /> },
+  { path: NAV_BY_ID.triage.path, element: <TriagePage /> },
   { path: NAV_BY_ID.projects.path, element: <ProjectsPage /> },
   { path: INSIGHTS_PATH, element: <InsightsPage /> },
   { path: `${SETTINGS_PATH}/:section`, element: <SettingsPage /> },
