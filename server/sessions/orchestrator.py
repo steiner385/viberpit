@@ -4079,7 +4079,7 @@ class SessionOrchestrator:
                 rec = self._records.get(session_id)
                 name = rec.name if rec else session_id
                 await push_mod.notify_event(
-                    "session_ended", "ccswitch — session finished", f"{name}: {status}",
+                    "session_ended", f"{brand.NAME} — session finished", f"{name}: {status}",
                     repo=getattr(rec, "repo", None),
                     account=getattr(rec, "account_name", None),
                     session_id=session_id,
@@ -11905,7 +11905,7 @@ class SessionOrchestrator:
                 if account not in self._account_limited_notified:
                     self._account_limited_notified.add(account)
                     await push_mod.notify_event(
-                        "account_limited", "ccswitch — account limited",
+                        "account_limited", f"{brand.NAME} — account limited",
                         f"{account}: {reason.replace('_', ' ')}",
                         account=account, orch=self)
 

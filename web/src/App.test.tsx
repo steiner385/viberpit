@@ -123,7 +123,7 @@ describe('App routing', () => {
     // plain text on purpose, so the page's own `PageHeader` owns the only `h1`
     // (PhoneNav.test.tsx "renders no h1"). The brand itself is still the
     // top-left of the phone shell.
-    expect(screen.getByText('ccswitch')).toBeInTheDocument()
+    expect(screen.getByText('ViberPit')).toBeInTheDocument()
   })
 
   it('redirects / to /sessions', async () => {
@@ -190,7 +190,7 @@ describe('App routing', () => {
     const app = renderApp({ path: '/sessions/sess-1' })
     await user.click(await screen.findByRole('button', { name: /back to session list/i }))
     expect(app.path()).toBe('/sessions')
-    expect(screen.getByText('ccswitch')).toBeInTheDocument()
+    expect(screen.getByText('ViberPit')).toBeInTheDocument()
   })
 
   it('redirects legacy /accounts to the Settings accounts section', async () => {
@@ -258,7 +258,7 @@ describe('App deploy overlay', () => {
       return Promise.resolve([])
     })
     renderApp({ path: '/sessions' })
-    expect(await screen.findByText(/upgrading ccswitch/i)).toBeInTheDocument()
+    expect(await screen.findByText(/upgrading viberpit/i)).toBeInTheDocument()
   })
 })
 

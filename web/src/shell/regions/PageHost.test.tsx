@@ -437,12 +437,12 @@ describe('PageHost — needs-you title', () => {
     SESSIONS = [needsYou('a'), needsYou('b')]
     setBaseTitle(Symbol('page'), 'Pipeline')
     renderAt('/pipeline')
-    expect(document.title).toBe('(2) Pipeline — ccswitch')
+    expect(document.title).toBe('(2) Pipeline — ViberPit')
   })
 
   it('reports no count when nothing needs the user', () => {
     SESSIONS = [session({ id: 'a' }), session({ id: 'b' })]
     renderAt('/sessions')
-    expect(document.title).toBe('ccswitch')
+    expect(document.title).toBe('ViberPit')
   })
 })

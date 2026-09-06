@@ -5,7 +5,7 @@
  */
 
 /** Display name: top bar, document titles, overlays, help copy. */
-export const BRAND_NAME = 'ccswitch'
+export const BRAND_NAME = 'ViberPit'
 
 /**
  * Wire prefix of the app's own MCP tools (`mcp__<server>__<tool>`). A contract

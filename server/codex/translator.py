@@ -37,6 +37,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Final
 
+from ccswitch import brand
 from server.codex import schema
 from server.sessions import events as ev
 from server.sessions.completion import COMPLETION_MARKER, resolution_from_text
@@ -46,7 +47,7 @@ from server.sessions.completion import COMPLETION_MARKER, resolution_from_text
 #: into the daemon's event ring, so an unbounded `cat` of a large file would be
 #: paid for once per viewer.
 MAX_TOOL_OUTPUT_CHARS: Final = 16_000
-OUTPUT_TRUNCATION_MARKER: Final = "\n… [truncated by ccswitch]"
+OUTPUT_TRUNCATION_MARKER: Final = f"\n… [truncated by {brand.NAME}]"
 
 #: Error code for a thread that reported `systemError`. `ThreadStatus` carries
 #: no message, so the text is fixed here rather than synthesized from native
