@@ -30,9 +30,11 @@ import {
   type Project, type CreateProjectInput, type OnboardingView,
 } from './pm'
 import {
-  fetchTriage, acceptProposal, rejectProposal,
-  type TriageProposal, type OverlayEdits,
+  fetchTriage, acceptProposal, rejectProposal, acceptBulk, updateOverlay,
+  type TriageProposal, type OverlayEdits, type AcceptBulkResult, type WorkItemOverlay,
 } from './triage'
+import { useSessionSocket } from '@/ws/client'
+import { extractMutationErrorMessage } from './queryClient'
 import type { SessionEvent } from '@/session/events'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { getPendingSessions, subscribePending, addPendingSession, removePendingSession } from '@/lib/pendingSessions'
@@ -1548,32 +1550,125 @@ export function useTriage(projectSlug?: string) {
   })
 }
 
+/**
+ * Live nudge for the triage inbox — the `useInitiativesLive` idiom keyed to
+ * triage: classification runs in spawned sessions, so the queue grows on `/ws`
+ * status frames. Baseline polling in `useTriage` covers the gaps.
+ */
+export function useTriageLive() {
+  const qc = useQueryClient()
+  const { on, off } = useSessionSocket()
+  useEffect(() => {
+    const nudge = () => void qc.invalidateQueries({ queryKey: QK.triage })
+    on('status', nudge)
+    return () => off('status', nudge)
+  }, [on, off, qc])
+}
+
+/**
+ * The triage mutations below are optimistic: the row leaves the list on `onMutate`
+ * and comes back on `onError`. That removal unmounts the row, so there is no
+ * inline error slot left to render into — these hooks own their failure message
+ * as a toast. They KEEP `PM_MUTATION_META` for exactly the reason it exists: it
+ * silences the global MutationCache toast so the failure is said once, here,
+ * rather than twice.
+ */
+
+/** Optimistic single-accept — remove the row now, roll back (and toast) on error. */
 export function useAcceptProposal(projectSlug?: string) {
   const qc = useQueryClient()
+  const key = [...QK.triage, projectSlug ?? null]
   return useMutation<
     { id: string; status: string },
     ApiRequestError,
-    { id: string; edits?: OverlayEdits }
+    { id: string; edits?: OverlayEdits },
+    { prev?: TriageProposal[] }
   >({
     mutationFn: ({ id, edits }) => acceptProposal(id, edits),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: [...QK.triage, projectSlug ?? null] })
-      void qc.invalidateQueries({ queryKey: QK.projects })
+    onMutate: async ({ id }) => {
+      await qc.cancelQueries({ queryKey: key })
+      const prev = qc.getQueryData<TriageProposal[]>(key)
+      qc.setQueryData<TriageProposal[]>(key, (cur) => (cur ?? []).filter((p) => p.id !== id))
+      return { prev }
     },
+    onError: (e, _v, ctx) => {
+      if (ctx?.prev) qc.setQueryData(key, ctx.prev)
+      toast.error(extractMutationErrorMessage(e, 'Could not accept proposal'))
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: QK.projects }),
+    onSettled: () => void qc.invalidateQueries({ queryKey: QK.triage }),
     meta: PM_MUTATION_META,
   })
 }
 
+/** Optimistic single-reject — same shape, same rollback. */
 export function useRejectProposal(projectSlug?: string) {
   const qc = useQueryClient()
+  const key = [...QK.triage, projectSlug ?? null]
   return useMutation<
     { id: string; status: string },
     ApiRequestError,
-    { id: string }
+    { id: string },
+    { prev?: TriageProposal[] }
   >({
     mutationFn: ({ id }) => rejectProposal(id),
-    onSuccess: () =>
-      void qc.invalidateQueries({ queryKey: [...QK.triage, projectSlug ?? null] }),
+    onMutate: async ({ id }) => {
+      await qc.cancelQueries({ queryKey: key })
+      const prev = qc.getQueryData<TriageProposal[]>(key)
+      qc.setQueryData<TriageProposal[]>(key, (cur) => (cur ?? []).filter((p) => p.id !== id))
+      return { prev }
+    },
+    onError: (e, _v, ctx) => {
+      if (ctx?.prev) qc.setQueryData(key, ctx.prev)
+      toast.error(extractMutationErrorMessage(e, 'Could not reject proposal'))
+    },
+    onSettled: () => void qc.invalidateQueries({ queryKey: QK.triage }),
+    meta: PM_MUTATION_META,
+  })
+}
+
+/** Accept-selected (the inbox's `A` key). Optimistically drops all selected rows. */
+export function useAcceptBulk(projectSlug?: string) {
+  const qc = useQueryClient()
+  const key = [...QK.triage, projectSlug ?? null]
+  return useMutation<
+    AcceptBulkResult,
+    ApiRequestError,
+    string[],
+    { prev?: TriageProposal[] }
+  >({
+    mutationFn: (ids) => acceptBulk(ids),
+    onMutate: async (ids) => {
+      await qc.cancelQueries({ queryKey: key })
+      const prev = qc.getQueryData<TriageProposal[]>(key)
+      const drop = new Set(ids)
+      qc.setQueryData<TriageProposal[]>(key, (cur) => (cur ?? []).filter((p) => !drop.has(p.id)))
+      return { prev }
+    },
+    onError: (e, _ids, ctx) => {
+      if (ctx?.prev) qc.setQueryData(key, ctx.prev)
+      toast.error(extractMutationErrorMessage(e, 'Could not accept selection'))
+    },
+    onSuccess: (res) => {
+      if (res.accepted) toast.success(`Accepted ${res.accepted}`)
+      void qc.invalidateQueries({ queryKey: QK.projects })
+    },
+    onSettled: () => void qc.invalidateQueries({ queryKey: QK.triage }),
+    meta: PM_MUTATION_META,
+  })
+}
+
+/** Inline overlay edit (edit-then-accept `e`, and manual score edits). */
+export function useUpdateOverlay() {
+  const qc = useQueryClient()
+  return useMutation<
+    WorkItemOverlay,
+    ApiRequestError,
+    { itemId: string; edit: OverlayEdits }
+  >({
+    mutationFn: ({ itemId, edit }) => updateOverlay(itemId, edit),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: QK.triage }),
+    onError: (e) => toast.error(extractMutationErrorMessage(e, 'Could not update work item')),
     meta: PM_MUTATION_META,
   })
 }
