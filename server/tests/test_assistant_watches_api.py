@@ -67,9 +67,42 @@ def test_create_automation_watch_error_and_warn():
             assert r.json()["scopeAutomation"] == "backlog-runner"
 
 
-def test_create_watch_rejects_unimplemented_kinds():
+def test_create_session_watch():
     with _client() as c:
-        for kind, condition in (("session", "finishes"), ("account", "limited")):
+        r = c.post("/api/assistant/watches",
+                   json={"kind": "session", "target": "sess-1", "condition": "finishes"},
+                   headers=IDENTITY)
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["eventClass"] == "session_ended"
+        assert body["scopeSessionId"] == "sess-1"
+        assert body["scopeAccount"] is None
+
+
+def test_create_account_watch_with_a_specific_account():
+    with _client() as c:
+        r = c.post("/api/assistant/watches",
+                   json={"kind": "account", "target": "work@acme.com", "condition": "limited"},
+                   headers=IDENTITY)
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["eventClass"] == "account_limited"
+        assert body["scopeAccount"] == "work@acme.com"
+
+
+def test_create_account_watch_wildcard_target_means_every_account():
+    with _client() as c:
+        for target in ("any", "*", "ALL"):
+            r = c.post("/api/assistant/watches",
+                       json={"kind": "account", "target": target, "condition": "limited"},
+                       headers=IDENTITY)
+            assert r.status_code == 201, (target, r.text)
+            assert r.json()["scopeAccount"] is None
+
+
+def test_create_watch_rejects_unknown_condition_for_session_and_account_kinds():
+    with _client() as c:
+        for kind, condition in (("session", "ends"), ("account", "exhausted")):
             r = c.post("/api/assistant/watches",
                        json={"kind": kind, "target": "x", "condition": condition},
                        headers=IDENTITY)

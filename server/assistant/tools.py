@@ -1133,10 +1133,12 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                "without starting a new model turn — good for 'let me know when X'. "
                "kind='pr' with condition='breaks' watches target='owner/repo' for its CI "
                "going red; kind='automation' with condition='error' or 'warn' watches "
-               "target=<automation id> for that severity. once=true (default) disables the "
-               "watch after it fires once; ttl_hours caps how long it stays armed (default "
-               "72). Watching a specific session or an account going limited is not "
-               "supported yet.",
+               "target=<automation id> for that severity; kind='session' with "
+               "condition='finishes' watches target=<session id> for that session handing "
+               "a turn back; kind='account' with condition='limited' watches "
+               "target=<account name> (or 'any' for every account) hitting its usage "
+               "ceiling. once=true (default) disables the watch after it fires once; "
+               "ttl_hours caps how long it stays armed (default 72).",
                _schema(("kind", "target", "condition"), kind=str, target=str, condition=str,
                        once=bool, ttl_hours=int))
     @guarded

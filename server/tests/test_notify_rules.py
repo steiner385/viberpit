@@ -31,6 +31,7 @@ def _rule(
     once=False,
     owner_session_id=None,
     expires_at=None,
+    scope_session_id=None,
 ) -> RuleView:
     return RuleView(
         id=id,
@@ -47,6 +48,7 @@ def _rule(
         once=once,
         owner_session_id=owner_session_id,
         expires_at=expires_at,
+        scope_session_id=scope_session_id,
     )
 
 
@@ -77,6 +79,13 @@ def test_scope_none_is_wildcard_and_exact_must_equal():
     assert not scope_matches(_rule(scope_account="nope"), ev)
     assert scope_matches(_rule(scope_automation="autopilot"), ev)
     assert not scope_matches(_rule(scope_automation="pr-doctor"), ev)
+
+
+def test_scope_session_id_matches_like_the_other_scope_fields():
+    ev = _ev(event_class="session_ended", session_id="sess-1")
+    assert scope_matches(_rule(), ev)  # None → wildcard
+    assert scope_matches(_rule(scope_session_id="sess-1"), ev)
+    assert not scope_matches(_rule(scope_session_id="sess-2"), ev)
 
 
 def test_scope_exact_requires_event_field_present():
