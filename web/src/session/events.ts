@@ -22,7 +22,10 @@ export interface EvToolCall      { type: 'toolCall';      turnId: string; toolId
 export interface EvToolResult    { type: 'toolResult';    toolId: string; ok: boolean; payload: Record<string, unknown>; srcUuid?: string | null; parentToolUseId?: string | null; ts?: number }
 // `alwaysAllowed` is false only for destructive `mcp__ccswitch__*` tools (spec §4.4);
 // mirrors PermissionRequest.always_allowed (server/sessions/events.py), default true.
-export interface EvPermissionRequest { type: 'permissionRequest'; permId: string; turnId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean; alwaysAllowed?: boolean; ts?: number }
+// `items` is set only for a BATCH ccswitch tool (archive_sessions, delete_sessions…):
+// the titles of every session it would act on (spec v2 B4) — mirrors
+// PermissionRequest.items.
+export interface EvPermissionRequest { type: 'permissionRequest'; permId: string; turnId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean; alwaysAllowed?: boolean; items?: string[] | null; ts?: number }
 // A permission's future settled server-side (allowed or denied). Rides the same stream
 // as the request frame so a mid-turn reattach (ring resupply re-delivers the request)
 // clears the recreated card instead of resurrecting an already-decided permission.

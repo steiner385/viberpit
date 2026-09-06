@@ -11,7 +11,7 @@ from server.assistant.client import (AssistantApi, AssistantApiError,  # noqa: F
                                      TOOL_CALL_CAPACITY)
 from server.assistant.server import build_server
 from server.assistant.tools import (OPERATOR_TOOLS, ToolClass, TOOL_SPECS, annotation_for,
-                                    build_tools, wrap_untrusted)
+                                    batch_items, build_tools, wrap_untrusted)
 
 
 def _api(handler):
@@ -1227,4 +1227,65 @@ async def test_consolidate_prs_rejects_an_empty_number_list_locally():
     out = await _tool(build_tools(_api(handler)), "consolidate_prs").handler(
         {"repo": "acme/billing", "numbers": []})
     assert out["is_error"] is True
+
+
+# ---------------------------------------------------------------------------
+# Batch tools (spec v2 B4): archive_sessions, unarchive_sessions, resume_sessions,
+# rotate_sessions, delete_sessions.
+# ---------------------------------------------------------------------------
+
+def test_batch_items_returns_titles():
+    assert batch_items("mcp__ccswitch__archive_sessions",
+                       {"ids": ["a"], "titles": ["Fix auth"]}) == ["Fix auth"]
+    assert batch_items("mcp__ccswitch__archive_session", {"id": "a"}) is None
+    assert batch_items("mcp__ccswitch__list_sessions", {}) is None
+    # Malformed titles yield an empty list rather than raising — the tool handler's
+    # own validation (_batch_args) is what turns that into a corrective error.
+    assert batch_items("mcp__ccswitch__delete_sessions", {"ids": ["a"]}) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name,path", [
+    ("archive_sessions", "/api/sessions/batch/archive"),
+    ("unarchive_sessions", "/api/sessions/batch/unarchive"),
+    ("resume_sessions", "/api/sessions/batch/resume"),
+    ("rotate_sessions", "/api/sessions/batch/rotate"),
+    ("delete_sessions", "/api/sessions/batch/permanent-delete"),
+])
+async def test_batch_tools_post_ids_to_their_endpoint(name, path):
+    seen = {}
+
+    def handler(req: httpx.Request):
+        seen["path"] = req.url.path
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(200, json={"succeeded": [], "failed": []})
+
+    tools = build_tools(_api(handler))
+    ids = ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]
+    out = await _tool(tools, name).handler({"ids": ids, "titles": ["A", "B"]})
+    assert out.get("is_error") is not True
+    assert seen == {"path": path, "body": {"ids": ids}}
+
+
+@pytest.mark.asyncio
+async def test_archive_sessions_batch_validates_titles_and_size():
+    calls: list[str] = []
+
+    def handler(req: httpx.Request):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={"succeeded": [], "failed": []})
+
+    tools = build_tools(_api(handler))
+    ids = ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]
+
+    # titles must name every id, in the same order.
+    bad = await _tool(tools, "archive_sessions").handler({"ids": ids, "titles": ["A"]})
+    assert bad["is_error"] is True
+
+    # at most 20 sessions per batch.
+    too_many = await _tool(tools, "archive_sessions").handler(
+        {"ids": ids * 11, "titles": ["x"] * 22})
+    assert too_many["is_error"] is True
+
+    assert calls == [], "a rejected batch must never reach the API"
     assert calls == []

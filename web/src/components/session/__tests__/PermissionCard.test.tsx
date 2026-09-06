@@ -149,4 +149,24 @@ describe('PermissionCard', () => {
     await user.keyboard('2')
     expect(onDecision).toHaveBeenCalledWith(planPerm.permId, 'deny')
   })
+
+  it('lists batch items on the card', () => {
+    const batchPerm: PermBlock = {
+      ...bashPerm,
+      id: 'perm-4',
+      permId: 'perm-4',
+      tool: 'mcp__ccswitch__archive_sessions',
+      toolKind: 'app_action',
+      input: {},
+      items: ['Fix auth', 'CSV importer'],
+    }
+    render(<PermissionCard block={batchPerm} onDecision={vi.fn()} />)
+    expect(screen.getByText('Fix auth')).toBeInTheDocument()
+    expect(screen.getByText('CSV importer')).toBeInTheDocument()
+  })
+
+  it('renders no item list when items is absent', () => {
+    render(<PermissionCard block={bashPerm} onDecision={vi.fn()} />)
+    expect(screen.queryByRole('list')).toBeNull()
+  })
 })

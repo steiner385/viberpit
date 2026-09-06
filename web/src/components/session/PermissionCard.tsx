@@ -64,6 +64,14 @@ export function PermissionCard({ block, mode, onDecision }: Props) {
         {toolLabel}
       </div>
 
+      {block.items && block.items.length > 0 && (
+        <ul className="mb-3 list-disc pl-5 text-xs text-gray-700 dark:text-gray-300 space-y-0.5">
+          {block.items.map((item, i) => (
+            <li key={i} className="truncate">{item}</li>
+          ))}
+        </ul>
+      )}
+
       <div className="flex flex-col sm:flex-row gap-2" {...kb.containerProps}>
         {block.plan ? (
           <>

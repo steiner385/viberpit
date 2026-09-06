@@ -828,7 +828,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 for p in await orchestrator.pending_permissions(session_id):
                     out_q.put_nowait({**PermissionRequest(
                         p["permId"], p["turn_id"], p["tool"], tool_kind(p["tool"]),
-                        p["input"], plan=(p["tool"] == "ExitPlanMode"),
+                        p["input"], plan=(p["tool"] == "ExitPlanMode"), items=p.get("items"),
                     ).to_wire(), "sessionId": session_id})
 
                 # Re-emit any pending AskUserQuestion events for this session. Mirrors

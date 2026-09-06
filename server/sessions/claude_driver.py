@@ -701,13 +701,20 @@ class ClaudeAgentDriver:
             log.warning("driver._can_use_tool: assistant session=%s attempted non-ccswitch "
                         "tool=%s", self.session_id, tool_name)
             return PermissionResultDeny(message="assistant sessions may only use ccswitch tools")
+        # Lazy import: server.assistant.tools does not import server.sessions, but
+        # keeping this at call time avoids a module-load-order cycle (mirrors
+        # PermissionRegistry.request's own lazy import of the same module).
+        from server.assistant import tools as assistant_tools
+        items = assistant_tools.batch_items(tool_name, tool_input)
         perm_id, fut, always_allowed = await self._reg.request(
             self.session_id, turn_id, tool_name, tool_input,
-            mode=self.mode, denylist=self.denylist, allowlist=True, identity=self.identity)
+            mode=self.mode, denylist=self.denylist, allowlist=True, identity=self.identity,
+            items=items)
         if perm_id is not None:
             self._emit(ev.PermissionRequest(
                 perm_id, turn_id, tool_name, ev.tool_kind(tool_name),
-                tool_input, plan=(tool_name == "ExitPlanMode"), always_allowed=always_allowed))
+                tool_input, plan=(tool_name == "ExitPlanMode"), always_allowed=always_allowed,
+                items=items))
             # A prompt is now pending for the user → waiting_input / ready_review.
             await self._emit_status()
         allowed = await fut

@@ -91,6 +91,13 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("resolve_model_approval", ToolClass.MUTATION, "Resolve model approval"),
     ToolSpec("archive_session", ToolClass.MUTATION, "Archive session"),
     ToolSpec("unarchive_session", ToolClass.MUTATION, "Unarchive session"),
+    # Batch tools (spec v2 Pack B4): each acts on up to 20 sessions in one confirmed
+    # action. The permission card enumerates every target by title (PermissionRequest.
+    # items, via batch_items below) rather than just a count.
+    ToolSpec("archive_sessions", ToolClass.MUTATION, "Archive sessions"),
+    ToolSpec("unarchive_sessions", ToolClass.MUTATION, "Unarchive sessions"),
+    ToolSpec("resume_sessions", ToolClass.MUTATION, "Resume sessions"),
+    ToolSpec("rotate_sessions", ToolClass.MUTATION, "Rotate sessions"),
     ToolSpec("set_autopilot_paused", ToolClass.MUTATION, "Pause/resume autopilot"),
     ToolSpec("fix_pr", ToolClass.MUTATION, "Fix a pull request"),
     ToolSpec("set_automation_enabled", ToolClass.MUTATION, "Enable/disable automation"),
@@ -111,6 +118,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     # DESTRUCTIVE — irreversible. `PermissionRegistry.request` gives these a card in
     # EVERY mode (including full-auto) and never offers "Always allow" (spec §4.4).
     ToolSpec("delete_session", ToolClass.DESTRUCTIVE, "Permanently delete session"),
+    ToolSpec("delete_sessions", ToolClass.DESTRUCTIVE, "Permanently delete sessions"),
     ToolSpec("cancel_queued_session", ToolClass.DESTRUCTIVE, "Cancel queued session"),
     ToolSpec("ready_merge_pr", ToolClass.DESTRUCTIVE, "Ready + auto-merge PR"),
     # Automation fan-out (spec v2 §4.3, Pack A). DESTRUCTIVE not because they delete
@@ -206,6 +214,38 @@ def annotation_for(mcp_name: str) -> ToolSpec | None:
     if not mcp_name.startswith(MCP_PREFIX):
         return None
     return TOOL_SPECS.get(mcp_name[len(MCP_PREFIX):])
+
+
+# Batch tools (spec v2 B4): each takes `ids` + `titles` (equal length, capped) and acts
+# on every id in one confirmed action.
+BATCH_TOOLS: frozenset[str] = frozenset({"archive_sessions", "unarchive_sessions",
+                                         "resume_sessions", "rotate_sessions",
+                                         "delete_sessions"})
+_BATCH_MAX = 20
+
+
+def batch_items(mcp_name: str, tool_input: dict[str, Any]) -> list[str] | None:
+    """Titles for a batch tool's permission card (spec v2 B4): the card must name every
+    target, not count them. Called by the driver BEFORE `PermissionRegistry.request`, so
+    it works from the raw, not-yet-validated tool input — a malformed `titles` yields an
+    empty list rather than raising (the tool handler itself, `_batch_args`, is what turns
+    that into a corrective error for the model). None for non-batch tools."""
+    spec = annotation_for(mcp_name)
+    if spec is None or spec.name not in BATCH_TOOLS:
+        return None
+    titles = tool_input.get("titles")
+    return [str(t)[:80] for t in titles][:_BATCH_MAX] if isinstance(titles, list) else []
+
+
+def _batch_args(args: dict[str, Any]) -> list[str]:
+    ids, titles = args.get("ids"), args.get("titles")
+    if not isinstance(ids, list) or not isinstance(titles, list) or not ids:
+        raise ToolArgError("ids and titles are required lists")
+    if len(ids) != len(titles):
+        raise ToolArgError("titles must name every id, in order — read them off list_sessions")
+    if len(ids) > _BATCH_MAX:
+        raise ToolArgError(f"at most {_BATCH_MAX} sessions per batch; split the request")
+    return [str(i) for i in ids]
 
 
 def _annotations(spec: ToolSpec) -> ToolAnnotations:
@@ -895,6 +935,40 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
     async def unarchive_session(args: dict[str, Any]) -> Any:
         return await api.post(f"/api/sessions/{args['id']}/unarchive")
 
+    @spec_tool("archive_sessions",
+               "Archive SEVERAL sessions in one confirmed action (max 20). titles must list each "
+               "session's title in the same order as ids — the confirmation card shows them.",
+               _schema(("ids", "titles"), ids=_STR_ARRAY, titles=_STR_ARRAY))
+    @guarded
+    async def archive_sessions(args: dict[str, Any]) -> Any:
+        return await api.post("/api/sessions/batch/archive", {"ids": _batch_args(args)})
+
+    @spec_tool("unarchive_sessions",
+               "Bring SEVERAL archived sessions back into the live list in one confirmed action "
+               "(max 20). titles must list each session's title in the same order as ids.",
+               _schema(("ids", "titles"), ids=_STR_ARRAY, titles=_STR_ARRAY))
+    @guarded
+    async def unarchive_sessions(args: dict[str, Any]) -> Any:
+        return await api.post("/api/sessions/batch/unarchive", {"ids": _batch_args(args)})
+
+    @spec_tool("resume_sessions",
+               "Resume SEVERAL restart-interrupted sessions in one confirmed action (max 20): "
+               "re-attaches each and nudges it forward. titles must list each session's title in "
+               "the same order as ids.",
+               _schema(("ids", "titles"), ids=_STR_ARRAY, titles=_STR_ARRAY))
+    @guarded
+    async def resume_sessions(args: dict[str, Any]) -> Any:
+        return await api.post("/api/sessions/batch/resume", {"ids": _batch_args(args)})
+
+    @spec_tool("rotate_sessions",
+               "Move SEVERAL sessions to whichever account currently has the most headroom in "
+               "one confirmed action (max 20) — the 'Rotate stalled' bulk action. titles must "
+               "list each session's title in the same order as ids.",
+               _schema(("ids", "titles"), ids=_STR_ARRAY, titles=_STR_ARRAY))
+    @guarded
+    async def rotate_sessions(args: dict[str, Any]) -> Any:
+        return await api.post("/api/sessions/batch/rotate", {"ids": _batch_args(args)})
+
     @spec_tool("set_autopilot_paused",
                "Pin a session to manual (paused=true) so autopilot leaves it alone, or hand it "
                "back to autopilot (paused=false).", {"id": str, "paused": bool})
@@ -1078,6 +1152,15 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
     async def delete_session(args: dict[str, Any]) -> Any:
         return await api.delete(f"/api/sessions/{args['id']}/permanent") or {"ok": True}
 
+    @spec_tool("delete_sessions",
+               "PERMANENTLY delete SEVERAL sessions in one confirmed action (max 20): each "
+               "archive folder and database row is removed and its transcript is gone for good. "
+               "There is no undo. titles must list each session's title in the same order as ids.",
+               _schema(("ids", "titles"), ids=_STR_ARRAY, titles=_STR_ARRAY))
+    @guarded
+    async def delete_sessions(args: dict[str, Any]) -> Any:
+        return await api.post("/api/sessions/batch/permanent-delete", {"ids": _batch_args(args)})
+
     @spec_tool("cancel_queued_session",
                "Drop a session that is still QUEUED off the queue. It never runs; its prompt "
                "is lost.", {"id": str})
@@ -1204,13 +1287,14 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
             create_session, send_prompt, interrupt_session, answer_question,
             resolve_permission, set_model, set_permission_mode, resolve_model_approval,
             archive_session, unarchive_session, set_autopilot_paused, fix_pr,
+            archive_sessions, unarchive_sessions, resume_sessions, rotate_sessions,
             set_automation_enabled,
             rename_session, move_in_queue, pin_account, rotate_session, reload_session,
             adopt_session,
             create_notification_rule, delete_notification_rule,
             watch, delete_watch,
             set_quiet_hours, advance_initiative, resolve_triage, request_product_sync,
-            delete_session, cancel_queued_session, ready_merge_pr,
+            delete_session, delete_sessions, cancel_queued_session, ready_merge_pr,
             trigger_automation_action, dispatch_backlog, consolidate_prs]
     operator_tools = [start_deploy, upgrade_host, refresh_account, set_account_enabled,
                       start_reauth]
