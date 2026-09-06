@@ -10,7 +10,7 @@ so it gets its own reviewed surface selected behind the engine
 ===========================================  ==========================================
 Claude                                       Codex (verified, codex-cli 0.153.2)
 ===========================================  ==========================================
-``mcp_servers={brand.MCP_SERVER_NAME: server}`` ``thread/start`` ``dynamicTools`` —
+``mcp_servers={"ccswitch": server}``         ``thread/start`` ``dynamicTools`` —
 (in-process SDK MCP server)                  client-declared specs, called back as the
                                              server→client request ``item/tool/call``.
                                              No child process, no config file.

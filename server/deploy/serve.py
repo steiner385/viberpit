@@ -11,10 +11,6 @@ from server.deploy.__main__ import _daemon_enabled
 from server.hostpaths import DEPLOY_SOCKET as DEFAULT_DEPLOY_SOCKET, DEPLOY_STATUS_PATH as DEFAULT_DEPLOY_STATUS_PATH
 
 log = logging.getLogger("server.deploy.serve")
-# Same directory as the socket: the unit's RuntimeDirectory=ccswitch makes it writable
-# and RuntimeDirectoryPreserve=yes keeps it across the controller's own restart — the
-# exact window the persisted status must survive (#865). Wiped on reboot, which is
-# fine: after a reboot "no deploy in progress" is the truth.
 
 
 def deploy_socket() -> str:

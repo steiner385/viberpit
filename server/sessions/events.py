@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from ccswitch import brand
 
 if TYPE_CHECKING:
-    # Typing-only, so this module's runtime imports stay stdlib-only. PromptContext is
+    # Typing-only, so this module's runtime imports stay free of server.* imports. PromptContext is
     # a leaf TypedDict (server/assistant/context.py imports nothing from
     # server.sessions), so this direction can never form a cycle.
     from server.assistant.context import PromptContext

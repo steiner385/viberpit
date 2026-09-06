@@ -200,7 +200,8 @@ import pytest
 # test_hostpaths asserts server.ipc.paths.DEFAULT_SOCKET_PATH `is` the
 # server.hostpaths.SESSIOND_SOCKET string it aliases — an identity check the
 # monkeypatch below would defeat.
-_DAEMON_LAYER_MODULE_PREFIXES = ("test_ipc_", "test_remote_", "test_daemon_", "test_hostpaths")
+_DAEMON_LAYER_MODULE_PREFIXES = ("test_ipc_", "test_remote_", "test_daemon_",
+                                 "test_hostpaths")  # exact module; identity test on ipc_paths.DEFAULT_SOCKET_PATH
 
 
 @pytest.fixture(autouse=True)
