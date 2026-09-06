@@ -12,10 +12,15 @@ links:
 > **State.** Phases 1–6 and Phase 7 Tasks 7.1–7.3 have landed behind fail-closed flags:
 > `CCSWITCH_CODEX_ENABLED` and `CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED` are both
 > `false` everywhere, and `CCSWITCH_CODEX_AUTOMATIONS_ENABLED` stays false. The two
-> SDLC origins and the two PM session origins are now `codex_allowed` on
-> live-boundary evidence (#1265/#1266, #1268/#1269); every other automation
-> origin is still `claude_only`. This becomes `live` only when Part 2
-> of the acceptance record —
+> SDLC origins and the two PM session origins are `codex_allowed` on live-boundary
+> evidence (#1265/#1266, #1268/#1269). `backlog-runner` is also `codex_allowed`
+> (#1264) on its offline acceptance suite alone — a live Codex session landing a
+> real PR in a disposable repo remains unverified there, an owner-accepted gap.
+> Every other automation origin is still `claude_only`. In every case the global
+> kill switch, each automation's own `engine` config opt-in, and
+> `CCSWITCH_CODEX_UNATTENDED_NETWORK_OPT_IN` still default off, so none of this
+> starts a live unattended Codex launch by itself. This becomes `live` only when
+> Part 2 of the acceptance record —
 > the real-boundary runs on dobby and rocky — passes and the owner enables the
 > flags. Operator procedures: `docs/runbooks/codex-credential-authority.md`.
 
@@ -94,9 +99,9 @@ compatibility audit; API-key authentication in v1.
   completion-marker mismatch is not a degraded experience. `CCSWITCH_CODEX_AUTOMATIONS_ENABLED`
   (default `false`) is the global kill switch — it forces every `codex_allowed` origin back to
   Claude without an operator unwinding each config, and it is separate from `CCSWITCH_CODEX_ENABLED`
-  so enabling Codex for humans does not enable it for control loops. **The two SDLC origins
-  (`sdlc-intake`, `sdlc-synthesizer`) and the two PM session origins (`pm-onboard`,
-  `pm-classify`) are `codex_allowed`; every other origin is still
+  so enabling Codex for humans does not enable it for control loops. **`backlog-runner` (#1264), the
+  two SDLC origins (`sdlc-intake`, `sdlc-synthesizer`, #1265/#1266) and the two PM session origins
+  (`pm-onboard`, `pm-classify`, #1268/#1269) are `codex_allowed`; every other origin is still
   `claude_only`** — widening one is gated on that origin's Codex acceptance suite passing
   (Tasks 7.2 and 7.3), and the current map is asserted whole in
   `server/tests/test_automation_engine_policy.py`. A ceiling is only half the mechanism: the
