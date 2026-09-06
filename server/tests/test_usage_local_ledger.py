@@ -38,8 +38,9 @@ def test_fresh_local_usage_skips_the_rpc(monkeypatch):
     monkeypatch.setattr(acct_api, "_local_cached_usage",
                         lambda name: anthropic_snapshot(7.0, None, 12.0, None, False) if name == "a" else None)
     orch = _Orch()
-    got = asyncio.run(acct_api._safe_usage(orch, "a", 3.0))
+    got, stale_as_of = asyncio.run(acct_api._safe_usage(orch, "a", 3.0))
     assert got.window("session").used_pct == 7.0, "must return a QuotaSnapshot, not a dict"
+    assert stale_as_of is None, "a fresh local read is never labelled stale"
     assert orch.calls == [], "a fresh local read must not hit the daemon"
 
 
@@ -47,8 +48,9 @@ def test_stale_local_usage_falls_back_to_the_rpc(monkeypatch):
     """Stale/missing cache must still resolve — correctness over latency."""
     monkeypatch.setattr(acct_api, "_local_cached_usage", lambda name: None)
     orch = _Orch()
-    got = asyncio.run(acct_api._safe_usage(orch, "b", 3.0))
+    got, stale_as_of = asyncio.run(acct_api._safe_usage(orch, "b", 3.0))
     assert got.window("session").used_pct == 99.0
+    assert stale_as_of is None, "a fresh RPC read is never labelled stale"
     assert orch.calls == ["b"], "must fall back to the daemon when the cache is cold"
 
 
@@ -59,21 +61,48 @@ def test_local_read_failure_falls_back_not_raises(monkeypatch):
 
     monkeypatch.setattr(acct_api, "_local_cached_usage", boom)
     orch = _Orch()
-    got = asyncio.run(acct_api._safe_usage(orch, "c", 3.0))
+    got, stale_as_of = asyncio.run(acct_api._safe_usage(orch, "c", 3.0))
     assert got.window("session").used_pct == 99.0
+    assert stale_as_of is None
     assert orch.calls == ["c"]
 
 
-def test_rpc_timeout_still_degrades_to_none(monkeypatch):
-    """The existing contract is unchanged when both paths fail."""
+def test_rpc_timeout_degrades_to_stale_ledger_or_none(monkeypatch, tmp_path):
+    """A hung RPC falls back to the stale ledger reading, or None with no ledger."""
     monkeypatch.setattr(acct_api, "_local_cached_usage", lambda name: None)
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
 
     class Slow:
         async def usage(self, name):
             await asyncio.sleep(5)
 
-    got = asyncio.run(acct_api._safe_usage(Slow(), "d", 0.05))
+    got, stale_as_of = asyncio.run(acct_api._safe_usage(Slow(), "d", 0.05))
     assert got is None
+    assert stale_as_of is None
+
+
+def test_rpc_timeout_serves_labelled_stale_usage_when_ledger_has_one(monkeypatch, tmp_path):
+    """A timed-out RPC must serve the last ledger reading, labelled stale."""
+    from ccswitch import ledger
+
+    monkeypatch.setattr(acct_api, "_local_cached_usage", lambda name: None)
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
+    fetched_at = datetime.now(timezone.utc)
+    with ledger.locked_ledger() as led:
+        led["accounts"]["e"] = {"usage": {
+            "session_pct": 55.0, "session_resets_at": None,
+            "weekly_pct": 20.0, "weekly_resets_at": None,
+            "extra_usage_enabled": False, "fetched_at": fetched_at.isoformat(),
+        }}
+
+    class Slow:
+        async def usage(self, name):
+            await asyncio.sleep(5)
+
+    got, stale_as_of = asyncio.run(acct_api._safe_usage(Slow(), "e", 0.05))
+    assert got is not None
+    assert got.window("session").used_pct == 55.0
+    assert stale_as_of == fetched_at
 
 
 def test_real_local_read_returns_a_usage_object(tmp_path, monkeypatch):

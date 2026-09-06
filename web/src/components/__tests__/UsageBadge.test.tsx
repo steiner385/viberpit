@@ -67,6 +67,30 @@ describe('UsageBadge', () => {
     const badge = screen.getByLabelText(/session usage: 0%/i)
     expect(badge.getAttribute('title')).toMatch(/no active window/i)
   })
+
+  // ── stale fallback labeling ────────────────────────────────────────────────
+
+  it('labels a stale reading in the tooltip and aria-label', () => {
+    const fiveMinAgo = new Date(Date.now() - 5 * 60_000).toISOString()
+    render(<UsageBadge pct={42} label="session" staleAsOf={fiveMinAgo} />)
+    const badge = screen.getByLabelText(/session usage: 42%/i)
+    expect(badge.getAttribute('title')).toMatch(/stale/i)
+    expect(badge.getAttribute('aria-label')).toMatch(/stale, fetched 5m ago/i)
+  })
+
+  it('does not mention staleness for a fresh reading', () => {
+    render(<UsageBadge pct={42} label="session" staleAsOf={null} />)
+    const badge = screen.getByLabelText(/session usage: 42%/i)
+    expect(badge.getAttribute('title')).not.toMatch(/stale/i)
+    expect(badge.getAttribute('aria-label')).not.toMatch(/stale/i)
+  })
+
+  it('renders a stale marker in the compact variant too', () => {
+    const fiveMinAgo = new Date(Date.now() - 5 * 60_000).toISOString()
+    render(<UsageBadge compact pct={42} label="session" staleAsOf={fiveMinAgo} />)
+    const badge = screen.getByLabelText(/session usage: 42%/i)
+    expect(badge.getAttribute('aria-label')).toMatch(/stale/i)
+  })
 })
 
 describe('StatusPill — session status tiers', () => {
