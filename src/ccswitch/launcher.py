@@ -11,6 +11,7 @@ from . import accounts
 from .config import load_config
 from .crypto import read_oauth_token
 from .detect import detect_limit_in_jsonl_line
+from .engines import AgentEngine, InvalidAgentEngine, parse_agent_engine
 from .selector import at_ceiling, binding_window, usage_known
 
 
@@ -99,8 +100,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ccmax", add_help=False)
     parser.add_argument("--confirm-switch", action="store_true")
     parser.add_argument("--poll-interval", type=float, default=None)
+    parser.add_argument("--engine", default=None)
     known, claude_args = parser.parse_known_args(sys.argv[1:] if argv is None else argv)
+    try:
+        engine = parse_agent_engine(known.engine, legacy_default=True)
+    except InvalidAgentEngine as exc:
+        print(f"ccmax: {exc}", file=sys.stderr)
+        return 64
     cfg = load_config()
+    if engine is AgentEngine.CODEX:
+        return accounts.codex_cli_launch_gate(cfg, "ccmax")
     poll = cfg.poll_interval_sec if known.poll_interval is None else known.poll_interval
 
     from .configdir import compose
