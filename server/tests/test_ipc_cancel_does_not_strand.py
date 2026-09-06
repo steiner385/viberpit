@@ -254,11 +254,17 @@ async def test_enrich_batch_does_not_orphan_daemon_sockets(blackhole, blackhole_
 
 @pytest.mark.asyncio
 async def test_safe_usage_does_not_orphan_daemon_sockets(blackhole, blackhole_tls,
-                                                         monkeypatch):
+                                                         monkeypatch, tmp_path):
     """GET /api/accounts fans out one usage RPC per account."""
     from server.api import accounts as acct_api
 
     monkeypatch.setattr(acct_api, "_local_cached_usage", lambda name: None)
+    # The blackhole never answers, so _safe_usage always reaches its
+    # stale-ledger fallback. Pin the ledger to a tmp dir: unpinned, that read
+    # locks and parses the REAL ledger.json of whatever box runs the suite,
+    # making the assertion below true only by luck of no live account being
+    # named "acct".
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
     client = blackhole.client(blackhole_tls)
     orch = RemoteOrchestrator(client)
     try:
