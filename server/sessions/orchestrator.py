@@ -12581,21 +12581,71 @@ class SessionOrchestrator:
                         session_id, exc_info=True)
             return None
 
+    async def has_transcript(self, session_id: str) -> bool:
+        """Whether *session_id* has readable history, for EITHER engine.
+
+        The engine-neutral form of "is there a transcript here?", and the reason it
+        needs to exist: ``transcript_window`` answers None both for "no history" and
+        for "the replay timed out", so a download route cannot tell 404 from 504 on
+        its own. It used to disambiguate with ``transcript_path``, which is a Claude
+        question — it returns None for every Codex session by design, so the export
+        404'd before ever reaching the engine-neutral replay below it (#1277).
+
+        Asking the replay adapter instead is the same check for both engines: Claude
+        resolves its JSONL, Codex confirms it can reach the thread on its runner. Both
+        arms already handle archived rows (``_engine_replay`` reads the DB row when
+        this process holds no record), so this answers for live and archived alike.
+
+        Costs one extra adapter construction on the export path — the ``_engine_replay``
+        the replay itself does moments later then finds the same resolution warm (the
+        Codex arm's ``ensure`` is a no-op once a client is live). Never raises: an
+        unreachable runner is "no readable history", which is the truthful answer and
+        the one the 404 already means.
+        """
+        try:
+            return await self._engine_replay(session_id) is not None
+        except Exception:
+            log.warning("session.has_transcript id=%s probe failed", session_id,
+                        exc_info=True)
+            return False
+
     async def transcript_search_text(self, session_id: str) -> str:
         """Return the searchable transcript text for a session (read-only review).
 
-        Resolves the path exactly like transcript_window/transcript_events (works for
-        both active and archived sessions via resolve_transcript_path's DB-glob
-        fallback) and extracts search-relevant text in-process. Returns "" when no
-        transcript is found — never raises for a missing/unreadable file (mirrors
-        search.transcript_text's own OSError handling).
+        Works for both active and archived sessions, and for both engines. Returns ""
+        when there is no readable history — never raises, because one unreadable
+        session must degrade to name-only matching rather than fail the whole search
+        (mirrors search.transcript_text's own OSError handling).
+
+        Claude keeps its direct file read: ``transcript_text`` scans the JSONL with a
+        byte cap and no sub-agent sidecar discovery, which is materially cheaper than a
+        full replay — and this runs once per session, concurrently, for every search
+        the user types. Codex has no such file (its history lives in the app-server),
+        so it goes through the canonical normalized replay and the engine-neutral
+        extractor. Both arms select the same content by construction; see
+        ``search.events_text``.
+
+        The replay arm inherits ``transcript_window``'s interactive ceiling, and its
+        None-on-timeout collapses to "" here rather than to an error: a search that
+        quietly misses one slow session is the established degradation for this path,
+        whereas a 500 would drop the user's entire result list.
         """
-        from server.sessions.search import transcript_text
+        from server.sessions.search import events_text, transcript_text
 
         path = await self.resolve_transcript_path(session_id)
-        if not path:
+        if path:
+            return await asyncio.to_thread(transcript_text, path)
+        # limit=None: search the FULL history. A trailing window would make a term
+        # findable only until the session grew past the page size, which reads as
+        # search randomly forgetting things.
+        window = await self.transcript_window(session_id, limit=None)
+        if window is None:
             return ""
-        return await asyncio.to_thread(transcript_text, path)
+        # In-process replay yields event objects; a remote/daemon hop has already
+        # serialised them to wire dicts. Accept both, exactly as the export does.
+        return events_text([
+            e.to_wire() if hasattr(e, "to_wire") else e for e in window.events
+        ])
 
     def snapshot_deploy(self, *, path: str | None = None) -> dict:
         """SAVE step: record sessions with a live driver so a daemon-affecting restart

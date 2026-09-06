@@ -113,7 +113,7 @@ _PER_SESSION: frozenset[str] = frozenset({
     "orphaned_interaction",
     "pending_permissions", "transcript_path", "transcript_events",
     "resolve_transcript_path", "transcript_window", "engine_replay_window",
-    "transcript_search_text",
+    "transcript_search_text", "has_transcript",
     "command_catalog", "run_command", "latest_suggestions", "generate_suggestions_now",
     "latest_summary", "pop_pending_initial_prompt", "pop_pending_initial_attachment_ids",
     "request_pr_fix", "prs_for", "ring_covers", "ring_tail", "unarchive",

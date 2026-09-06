@@ -308,6 +308,7 @@ def register_orchestrator_rpc(app, orch) -> None:
         "set_permission_mode", "set_model_for_session",
         "cancel_queued", "resolve_permission", "answer_question",
         "transcript_path", "resolve_transcript_path", "transcript_search_text",
+        "has_transcript",
         "pending_questions", "orphaned_interaction", "pop_pending_initial_prompt",
         "pop_pending_initial_attachment_ids", "command_catalog", "run_command", "list_archived",
         "latest_suggestions", "latest_suggestions_many",
