@@ -67,6 +67,9 @@ class RuleView:
     critical: bool
     priority: int
     created_at: object
+    once: bool = False
+    owner_session_id: str | None = None
+    expires_at: datetime | None = None
 
 
 @dataclass
@@ -95,13 +98,19 @@ def scope_matches(rule: RuleView, ev: Event) -> bool:
     return True
 
 
-def select_rule(rules: list[RuleView], ev: Event) -> RuleView | None:
-    """Return the first enabled rule (by priority, then created_at) that matches."""
+def select_rule(rules: list[RuleView], ev: Event, now: datetime | None = None) -> RuleView | None:
+    """Return the first enabled, unexpired rule (by priority, then created_at) that matches.
+
+    ``now`` is optional so existing callers are unchanged; pass it to also skip
+    a rule whose ``expires_at`` has already passed (an assistant watch's TTL).
+    """
     candidates = sorted(
         (r for r in rules if r.enabled),
         key=lambda r: (r.priority, _sort_key(r.created_at)),
     )
     for rule in candidates:
+        if now is not None and rule.expires_at is not None and rule.expires_at < now:
+            continue
         if event_class_matches(rule.event_class, ev.event_class) and scope_matches(rule, ev):
             return rule
     return None
@@ -146,7 +155,7 @@ def plan(
     now: datetime,
 ) -> Decision:
     """Decide delivery for ``ev`` given the rule set and quiet-hours window."""
-    rule = select_rule(rules, ev)
+    rule = select_rule(rules, ev, now)
     if rule is None:
         if not rules:
             # Back-compat: no rules configured ⇒ default push + webhook.
