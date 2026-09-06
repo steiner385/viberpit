@@ -133,6 +133,13 @@ _UUID = "3f2a9c1e-7b4d-4e0a-9c7d-1a2b3c4d5e6f"
     ("GET", "/api/pm/reconcile/journal", False),
     ("POST", "/api/pm/triage/tp-1/accept-bulk", False),
     ("POST", "/api/pm/triage/tp-1", False),
+    # The REAL paths of the human-curation-gate routes (the row above is a path the
+    # router never serves, so it pins nothing). Widening the accept regex to
+    # `.../(accept|accept-bulk|reject)`, or adding ANY `PATCH /api/pm/...` allow
+    # entry, must fail here rather than hand the assistant bulk accept / overlay
+    # edit — those are a human's decisions to make.
+    ("POST", "/api/pm/triage/accept-bulk", False),
+    ("PATCH", "/api/pm/work-items/w1/overlay", False),
 ])
 def test_route_allowlist(method, path, ok):
     assert route_allowed(method, path) is ok
