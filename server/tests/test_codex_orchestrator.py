@@ -60,6 +60,9 @@ class _RecDriver:
     async def set_model(self, model: str | None) -> None:
         self.models.append(model)
 
+    def seed_status(self, persisted: str) -> None:
+        pass
+
 
 class _RecFactory:
     def __init__(self, engine: AgentEngine, *, capabilities=None, fail_start: bool = False):

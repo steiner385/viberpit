@@ -45,6 +45,16 @@ ACTIVITY_STATUSES: frozenset[str] = frozenset({
 # turn — see SessionOrchestrator._settle_model_pending.
 MID_TURN_STATUSES: frozenset[str] = frozenset({"in_progress", "condensing", "retrying"})
 
+# Persisted statuses a freshly rebuilt driver may adopt as its attach snapshot
+# (AgentDriver.seed_status): resting hand-backs with nothing live behind them. Mid-turn
+# statuses can't be true on a fresh driver, and structured-pending ones
+# (waiting_input / ready_review) advertise permission/plan cards that no longer
+# exist to render. Shared by every engine's driver so the seedable vocabulary
+# cannot drift between them.
+SEEDABLE_STATUSES: frozenset[str] = frozenset({
+    "done", "complete", "needs_attention", "waiting_question", "waiting_external",
+})
+
 
 def derive_status(sig: StatusSignals) -> str:
     if sig.pending_plan:

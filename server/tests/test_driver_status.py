@@ -166,6 +166,117 @@ def test_status_needs_attention_when_stream_raises():
     assert asyncio.run(run())[-1] == "needs_attention"
 
 
+def test_emit_status_broadcasts_overlaid_on_status_result():
+    """The live Status event carries the value on_status RETURNS (the orchestrator's
+    overlay — e.g. a parked `done` turn whose prose awaits the user → waiting_question),
+    so the in-session StatusBar and the session list can never disagree."""
+    msgs = [f.sys_init("s1"), f.stream_start(uuid="t1"),
+            f.assistant(TextBlock(text="pick one?"), uuid="t1"),
+            f.result(session_id="s1", uuid="t1")]
+
+    async def on_status(sid, status):
+        return "waiting_question" if status == "done" else status
+
+    async def run():
+        d = ClaudeAgentDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=_factory(msgs), registry=PermissionRegistry(),
+                          identity="me", on_status=on_status)
+        await d.start()
+        out_q: asyncio.Queue = asyncio.Queue()
+        d._subscribers.add(out_q)
+        await d.send_prompt("hello")
+        if d._pump:
+            await d._pump
+        statuses = []
+        while not out_q.empty():
+            e = out_q.get_nowait()
+            if isinstance(e, ev.Status):
+                statuses.append(e.state)
+        cur = d.current_status()
+        await d.aclose()
+        return statuses, cur
+
+    statuses, cur = asyncio.run(run())
+    assert statuses[-1] == "waiting_question"
+    # current_status (WS attach snapshot, remote-mode RPC) reports the same truth.
+    assert cur == "waiting_question"
+
+
+def test_emit_status_tolerates_non_string_on_status_result():
+    """A stubbed on_status returning None/MagicMock must never leak into the wire."""
+    msgs = [f.sys_init("s1"), f.stream_start(uuid="t1"),
+            f.assistant(TextBlock(text="hi"), uuid="t1"),
+            f.result(session_id="s1", uuid="t1")]
+
+    async def on_status(sid, status):
+        return None
+
+    async def run():
+        d = ClaudeAgentDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=_factory(msgs), registry=PermissionRegistry(),
+                          identity="me", on_status=on_status)
+        await d.start()
+        await d.send_prompt("hello")
+        if d._pump:
+            await d._pump
+        cur = d.current_status()
+        await d.aclose()
+        return cur
+
+    assert asyncio.run(run()) == "done"
+
+
+def test_status_overlay_invalidated_when_signals_advance():
+    """The overlay applies only while the raw derivation still equals the base that
+    produced it — a real state advance (new turn) supersedes it without waiting for
+    the next emit."""
+    msgs = [f.sys_init("s1"), f.stream_start(uuid="t1"),
+            f.assistant(TextBlock(text="pick one?"), uuid="t1"),
+            f.result(session_id="s1", uuid="t1")]
+
+    async def on_status(sid, status):
+        return "waiting_question" if status == "done" else status
+
+    async def run():
+        d = ClaudeAgentDriver("s1", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=_factory(msgs), registry=PermissionRegistry(),
+                          identity="me", on_status=on_status)
+        await d.start()
+        await d.send_prompt("hello")
+        if d._pump:
+            await d._pump
+        overlaid = d.current_status()
+        d._turn_active = True   # simulate the next turn opening
+        advanced = d.current_status()
+        d._turn_active = False
+        await d.aclose()
+        return overlaid, advanced
+
+    overlaid, advanced = asyncio.run(run())
+    assert overlaid == "waiting_question"
+    assert advanced == "in_progress"
+
+
+def test_seed_status_adopts_persisted_resting_status():
+    """A rebuilt driver (daemon restart / completion release) derives `idle` from its
+    fresh signals; seeding the persisted status keeps the attach snapshot consistent
+    with the session card instead of flashing a false "Ready"."""
+    d = _make_driver()
+    d.seed_status("waiting_question")
+    assert d.current_status() == "waiting_question"
+    d._turn_active = True   # first real turn supersedes the seed
+    assert d.current_status() == "in_progress"
+
+
+def test_seed_status_ignores_transient_statuses():
+    """Mid-turn statuses can't be resurrected on a fresh driver — never seed them."""
+    d = _make_driver()
+    for transient in ("in_progress", "condensing", "retrying", "queued",
+                      "waiting_input", "ready_review", ""):
+        d.seed_status(transient)
+        assert d.current_status() == "idle"
+
+
 @pytest.mark.asyncio
 async def test_pre_compact_sets_condensing_status():
     d = _make_driver()
