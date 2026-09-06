@@ -762,6 +762,7 @@ async def run_turn(
     ``(observed_tool_names, final_answer_text, HelperOutcome)``."""
     from claude_agent_sdk import ClaudeAgentOptions, create_sdk_mcp_server
 
+    from ccswitch import brand
     from server.assistant.context import render_context_header
     from server.assistant.options import assistant_options
     from server.sessions.account_auth import helper_env
@@ -770,7 +771,7 @@ async def run_turn(
 
     observed: list[str] = []
     tools = _instrumented_tools(observed, operator=case.operator)
-    server = create_sdk_mcp_server(name="ccswitch", version="eval", tools=tools)
+    server = create_sdk_mcp_server(name=brand.MCP_SERVER_NAME, version="eval", tools=tools)
     overlay = assistant_options(server=server, max_turns=max_turns, model=model,
                                 operator=case.operator)
 
