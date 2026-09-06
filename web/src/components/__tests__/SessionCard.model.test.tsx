@@ -66,10 +66,10 @@ describe('SessionCard model chip', () => {
     expect(screen.queryByTestId('card-model')).not.toBeInTheDocument()
   })
 
-  it('lives in line 1 next to the account chip and is wide-card only', () => {
+  it('lives on the meta row next to the account chip and is wide-card only', () => {
     renderCard({ ...base, model: 'sonnet' })
-    const identity = screen.getByTestId('card-identity')
-    const chip = within(identity).getByTestId('card-model')
+    const meta = screen.getByTestId('card-meta')
+    const chip = within(meta).getByTestId('card-model')
     expect(chip).toHaveClass('hidden', '@md:inline-flex')
     // Model directly precedes the account chip so the pair reads together.
     expect(chip.nextElementSibling).toHaveTextContent('work')
@@ -178,7 +178,7 @@ describe('SessionCard in a mixed Claude/Codex list', () => {
         ))}
       </MemoryRouter>,
     )
-    const cards = screen.getAllByTestId('card-identity')
+    const cards = screen.getAllByTestId('card-meta')
     expect(within(cards[0]).queryByTestId('card-engine')).toBeNull()
     expect(within(cards[0]).getByTestId('card-model')).toHaveTextContent('Opus')
     expect(within(cards[1]).getByTestId('card-engine')).toHaveTextContent('Codex')
@@ -194,9 +194,9 @@ describe('SessionCard in a mixed Claude/Codex list', () => {
       model: 'gpt-5.1-codex-with-an-absurdly-long-suffix',
       reasoningEffort: 'extremely-high-effort-setting',
     })
-    // The always-visible account chip keeps its 30% cap + truncation …
+    // The always-visible account chip keeps its cap + truncation …
     const account = screen.getByTestId('card-account')
-    expect(account).toHaveClass('max-w-[30%]', 'truncate')
+    expect(account).toHaveClass('max-w-[50%]', 'truncate')
     expect(account).toHaveAttribute('title', expect.stringContaining('a-really-long-account-alias'))
     // … and the @md-gated chips truncate too, so neither can starve the title.
     for (const id of ['card-model', 'card-effort', 'card-engine']) {
