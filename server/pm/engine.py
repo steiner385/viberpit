@@ -21,6 +21,22 @@ pre-classify pass. Rejection is signal (design §6): a rejected proposal moves
 its item to ``needs_human`` and the loop never re-classifies it, so a
 ``needs_human`` item simply never appears in ``unclassified_count`` — no engine
 branch is needed for it.
+
+**The drift branch is latched** by ``TriageState.open_map_diff_suggestions``,
+the pm counterpart of the ``sdlc.engine`` propose-only gate (which returns
+``AwaitApproval`` while a stage's artifact PR is open). ``no_fit`` clusters are
+*permanent*: accepting a proposal never clears its ``no_fit_suggestion``, so the
+cluster stays at/over threshold forever. Without the latch every tick would
+re-propose the same capability, and the spawn-time dedupe cannot save us — it
+matches only *non-terminal* sessions, so each time the map-diff session finishes
+the next tick opens another archaeology-diff PR, unbounded (the drift branch is
+also not covered by the day cap, which gates ``ClassifyBatch`` only). A
+suggestion in ``open_map_diff_suggestions`` is therefore excluded from the
+qualifying clusters.
+
+Note: ``sdlc.engine`` defines its own frozen ``NeedsHuman``. The two are
+*distinct types* — an ``isinstance`` check against the wrong import silently
+never matches, so import ``NeedsHuman`` from the engine whose action you handle.
 """
 from __future__ import annotations
 
@@ -58,7 +74,15 @@ class TriageState:
     have no pending proposal (the loop excludes ``needs_human`` and
     already-proposed items). ``pending_count`` is informational (surfaced in
     status). ``day_spawns``/``day_cap`` bound classify-session cost (design §6.1
-    "Daily session cap bounds cost")."""
+    "Daily session cap bounds cost").
+
+    ``open_map_diff_suggestions`` latches the drift branch: a suggestion belongs
+    here when a map diff for it is already **in flight or already resolved** —
+    i.e. either a non-terminal map-diff session exists for that suggestion, or a
+    ``Feature`` with that slug now exists (the diff merged, the capability is on
+    the map, and the orphaned items get re-proposed through the accept path
+    rather than through a second PR). ``no_fit`` clusters never shrink, so
+    without this the engine would re-propose the same capability forever."""
     mode: str
     unclassified_count: int
     pending_count: int
@@ -66,6 +90,9 @@ class TriageState:
     stale_features: tuple[StaleFeature, ...]
     day_spawns: int
     day_cap: int
+    # Defaulted (and trailing) on purpose: callers built before the latch
+    # existed stay valid.
+    open_map_diff_suggestions: tuple[str, ...] = ()
 
 
 # --------------------------------------------------------------------------- #
@@ -131,10 +158,18 @@ def next_triage_action(state: TriageState, config: dict) -> TriageAction:
         return ClassifyBatch(count=min(state.unclassified_count, batch_size))
 
     # 2. Drift: the largest cluster at/over threshold becomes a map-diff PR.
+    #    Latched suggestions (diff in flight or already merged onto the map) are
+    #    excluded so one capability is proposed exactly once — see module docs.
     threshold = int(config.get("drift_threshold", 5))
-    qualifying = [c for c in state.no_fit_clusters if len(c.item_numbers) >= threshold]
+    latched = set(state.open_map_diff_suggestions)
+    qualifying = [
+        c for c in state.no_fit_clusters
+        if len(c.item_numbers) >= threshold and c.suggestion not in latched
+    ]
     if qualifying:
-        top = max(qualifying, key=lambda c: len(c.item_numbers))
+        # Secondary key on ``suggestion``: cluster order comes from an unordered
+        # SELECT, so equal-size clusters must not alternate between ticks.
+        top = max(qualifying, key=lambda c: (len(c.item_numbers), c.suggestion))
         return ProposeFeatureMapDiff(
             suggestion=top.suggestion, item_numbers=top.item_numbers, repo=top.repo)
 
