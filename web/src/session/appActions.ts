@@ -1,3 +1,5 @@
+import { MCP_TOOL_PREFIX } from '@/brand'
+
 /** Presenter for `ToolKind.APP_ACTION` tool calls (the ccswitch MCP server
  * talking to itself — spec §4.4/§4.8). Keyed by the BARE tool name (the part
  * after the `mcp__ccswitch__` prefix), mirroring `TOOL_SPECS` in
@@ -6,7 +8,6 @@
  * server/tests/test_assistant_tools.py). Title text itself is independent:
  * the server side names tools for permission-card summaries ("List sessions"),
  * this side names completed actions for transcript rows ("Listed sessions"). */
-const MCP_CCSWITCH_PREFIX = 'mcp__ccswitch__'
 
 export const APP_ACTION_TITLES: Record<string, string> = {
   list_sessions: 'Listed sessions',
@@ -101,6 +102,6 @@ export const APP_ACTION_TITLES: Record<string, string> = {
  * `undefined` for anything not in the map (including non-ccswitch MCP tools) so
  * callers can fall back to the raw name. */
 export function appActionTitle(fullToolName: string): string | undefined {
-  if (!fullToolName.startsWith(MCP_CCSWITCH_PREFIX)) return undefined
-  return APP_ACTION_TITLES[fullToolName.slice(MCP_CCSWITCH_PREFIX.length)]
+  if (!fullToolName.startsWith(MCP_TOOL_PREFIX)) return undefined
+  return APP_ACTION_TITLES[fullToolName.slice(MCP_TOOL_PREFIX.length)]
 }
