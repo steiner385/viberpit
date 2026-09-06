@@ -135,10 +135,10 @@ def _git_stash(wt: str) -> str | None:
     """
     r = _run([
         "git", "-C", wt,
-        "-c", "user.email=ccswitch-janitor@local",
-        "-c", "user.name=ccswitch-janitor",
+        "-c", f"user.email={brand.SLUG}-janitor@local",
+        "-c", f"user.name={brand.SLUG}-janitor",
         "stash", "push", "-u",
-        "-m", "ccswitch-janitor: max-age eviction",
+        "-m", f"{brand.SLUG}-janitor: max-age eviction",
     ])
     if r.returncode != 0:
         return None

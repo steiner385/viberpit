@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import logging
 
-from ccswitch import gitrepos
+from ccswitch import brand, gitrepos
 
 log = logging.getLogger(__name__)
 
@@ -16,7 +16,7 @@ LABEL = "ci-doctor"
 def _ensure_label(repo: str, run) -> None:
     # 422 already_exists is the steady state; any failure is non-fatal.
     run(["api", f"repos/{repo}/labels", "-f", f"name={LABEL}",
-         "-f", "color=1d76db", "-f", "description=Filed by the ccswitch CI/CD Doctor"])
+         "-f", "color=1d76db", "-f", f"description=Filed by the {brand.NAME} CI/CD Doctor"])
 
 
 def create_issue(repo: str, title: str, body: str, *,

@@ -4364,7 +4364,7 @@ class SessionOrchestrator:
         Posts a brief linking comment on each issue so a human sees who claimed
         it and can trace back to the runner via the ``origin_ref``."""
         from server.automations import backlog_github
-        comment = (f"Claimed by ccswitch Backlog Runner ({batch.primary}) — "
+        comment = (f"Claimed by {brand.NAME} Backlog Runner ({batch.primary}) — "
                    f"an implementation session is in progress.")
         return await asyncio.to_thread(
             backlog_github.claim_batch, batch, gh_run=self._gh_run, comment=comment)
