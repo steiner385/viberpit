@@ -158,8 +158,8 @@ def test_released_mid_view_then_external_resume_converges(tmp_path):
 
 def test_detach_stops_auto_reattach(tmp_path):
     """After the client detaches, external activity must NOT trigger a re-attach —
-    detach removes the session from the socket's attached-set. Observed via a
-    terminator attach: the only replayReset in the drain is the terminator's own."""
+    detach removes the session from the socket's attached-set. Observed via an
+    unknown-type terminator: no replayReset may appear at all."""
     with _Harness(tmp_path) as h:
         orch = h.orch
         with TestClient(h.app, raise_server_exceptions=False) as client:
@@ -181,14 +181,19 @@ def test_detach_stops_auto_reattach(tmp_path):
                     lambda: orch._last_prompt.get(sid) == "unwatched work")
                 time.sleep(0.5)   # window in which a buggy auto re-attach would fire
 
-                # Terminator: frames are handled in order, so this attach bounds the
-                # drain (a regression that emits nothing must FAIL, not hang).
-                ws.send_text(json.dumps({"type": "attach", "sessionId": sid}))
-                events = _drain_until(ws, until_type="replayComplete", timeout=8.0)
+                # Terminator, deliberately NOT an attach: frames are answered in order,
+                # so an unknown type bounds the drain with a top-level error (a
+                # regression must FAIL, not hang) without emitting a replay of its own.
+                # An attach terminator makes this test VACUOUS: _drain_until returns at
+                # the FIRST replayComplete, which under the regression is the auto
+                # re-attach's own — so its replayReset is miscounted as the terminator's
+                # and `len(resets) == 1` holds whether or not detach still works.
+                ws.send_text(json.dumps({"type": "bogus", "sessionId": sid}))
+                events = _drain_until(ws, until_type="error", timeout=8.0)
                 resets = [e for e in events if e.get("type") == "replayReset"]
-                assert len(resets) == 1, (
-                    f"detached socket must not auto re-attach; saw {len(resets)} "
-                    "replayReset frames (expected only the terminator's)")
+                assert not resets, (
+                    f"a detached socket must not auto re-attach; saw {len(resets)} "
+                    "unsolicited replayReset frame(s)")
 
             client.portal.call(orch.close_session, sid)
 
