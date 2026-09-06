@@ -113,6 +113,105 @@ def test_list_governed_excludes_all_complete(tmp_path):
     asyncio.run(run())
 
 
+def test_list_governed_includes_codex_sessions(tmp_path):
+    """Autopilot's generic session selection has no engine filter: it approves/
+    denies/answers/nudges through driver seams that work identically regardless of
+    which native agent is running the session, so a Codex-engine session is
+    governed exactly like a Claude one (#1262 — the origin's CLAUDE_ONLY spawn
+    ceiling does not, and must not, apply here)."""
+    async def run():
+        from server.sessions.engine import AgentEngine
+        from server.sessions.types import SessionRecord
+        await _init_db(tmp_path)
+        orch = _bare_orch()
+        orch._records = {
+            "codex1": SessionRecord(id="codex1", name="n", account="openai-a",
+                                    engine=AgentEngine.CODEX, engine_session_id="",
+                                    cols=80, rows=24, cwd="/tmp", status="waiting_input"),
+        }
+        governed = set(await orch._autopilot_list_governed())
+        assert "codex1" in governed
+    asyncio.run(run())
+
+
+def test_helper_config_dir_uses_own_dir_for_anthropic_account(monkeypatch):
+    """The decider/composer's own Claude/Haiku helper call may use the governed
+    session's account directly ONLY when that account is Anthropic."""
+    orch = _bare_orch()
+    monkeypatch.setattr("ccswitch.accounts.provider_or_none", lambda name: "anthropic")
+    monkeypatch.setattr("server.sessions.orchestrator.compose", lambda name: f"/cfg/{name}")
+    fallback_called = []
+    monkeypatch.setattr("server.sessions.helper_call.pick_helper_config_dir",
+                        lambda: fallback_called.append(True) or "/fallback")
+    out = orch._autopilot_helper_config_dir("claude-acct")
+    assert out == "/cfg/claude-acct"
+    assert not fallback_called
+
+
+def test_helper_config_dir_never_composes_non_anthropic_account(monkeypatch):
+    """A Codex (or any non-Anthropic) governed session's OWN account must never be
+    composed for the Claude helper call — doing so would write that account's
+    stored credentials into a file shaped for Claude OAuth (#1262). The helper call
+    falls back to a genuinely Anthropic account's dir instead."""
+    orch = _bare_orch()
+    monkeypatch.setattr("ccswitch.accounts.provider_or_none", lambda name: "openai")
+    composed_with = []
+
+    def _fake_compose(name):
+        composed_with.append(name)
+        return f"/cfg/{name}"
+
+    monkeypatch.setattr("server.sessions.orchestrator.compose", _fake_compose)
+    monkeypatch.setattr("server.sessions.helper_call.pick_helper_config_dir",
+                        lambda: "/fallback/claude-acct")
+    out = orch._autopilot_helper_config_dir("codex-acct")
+    assert out == "/fallback/claude-acct"
+    assert composed_with == []
+
+
+def test_helper_config_dir_falls_back_on_unclassifiable_account(monkeypatch):
+    """An account whose provider cannot be determined (unknown account, ledger
+    error) fails CLOSED to the generic Claude-safe fallback — it is never assumed
+    to be Anthropic."""
+    orch = _bare_orch()
+    monkeypatch.setattr("ccswitch.accounts.provider_or_none", lambda name: None)
+    monkeypatch.setattr("server.sessions.helper_call.pick_helper_config_dir", lambda: None)
+    assert orch._autopilot_helper_config_dir("unknown-acct") is None
+
+
+@pytest.mark.asyncio
+async def test_autopilot_decide_and_compose_use_engine_safe_config_dir(monkeypatch):
+    """`_autopilot_decide` and `_autopilot_compose` must route through
+    `_autopilot_helper_config_dir` rather than composing `ctx.account` directly —
+    regression guard for the credential-mixing bug (#1262)."""
+    orch = _bare_orch()
+
+    async def _fake_tail(*a, **kw):
+        return []
+
+    orch._autopilot_transcript_tail = _fake_tail
+    seen = []
+    orch._autopilot_helper_config_dir = lambda account: seen.append(account) or "/safe/dir"
+
+    async def fake_decide(ctx, *, _config_dir=None, **kw):
+        seen.append(("decide", _config_dir))
+        return "decision"
+
+    async def fake_compose_nudge(ctx, *, _config_dir=None, **kw):
+        seen.append(("compose", _config_dir))
+        return "text"
+
+    monkeypatch.setattr("server.automations.autopilot_decider.decide", fake_decide)
+    monkeypatch.setattr("server.automations.nudge_composer.compose_nudge", fake_compose_nudge)
+
+    ctx = make_decision_context(account="codex-acct")
+    d = Decision(action="nudge", prompt="hint")
+    assert await orch._autopilot_decide(ctx) == "decision"
+    assert await orch._autopilot_compose(ctx, d) == "text"
+    assert seen == ["codex-acct", ("decide", "/safe/dir"),
+                    "codex-acct", ("compose", "/safe/dir")]
+
+
 def _perm_ctx(perm_id, command):
     from server.automations.autopilot_policy import DecisionContext
     return DecisionContext(

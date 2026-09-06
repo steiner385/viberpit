@@ -6258,13 +6258,32 @@ class SessionOrchestrator:
         except Exception:  # pragma: no cover — best-effort provenance
             log.debug("autopilot.mark_assisted_failed sid=%s", session_id, exc_info=True)
 
-    async def _autopilot_decide(self, ctx):
-        """Wrap the one-shot LLM decider, passing the account's config dir when resolvable."""
-        from server.automations.autopilot_decider import decide
+    def _autopilot_helper_config_dir(self, account: str) -> str | None:
+        """Config dir for the decider/composer's OWN Claude/Haiku helper call.
+
+        Autopilot governs sessions of ANY engine (it only approves/denies/answers/
+        nudges through the generic driver seams), but its decider and nudge composer
+        are Claude-only helper calls (``helper_env``'s nine call sites). Composing
+        *account*'s config dir unconditionally would, for a Codex or Copilot governed
+        session, write that account's own credentials into a file shaped for Claude
+        OAuth — silently handing OpenAI credentials to a Claude SDK call. Only an
+        Anthropic account's own dir is used directly; every other account falls back
+        to :func:`pick_helper_config_dir`, the same engine-safe helper identity
+        ``model_pick`` already uses for its Haiku complexity assessor.
+        """
+        from ccswitch import accounts as _accts
+        from server.sessions.helper_call import pick_helper_config_dir
         try:
-            cfg_dir = str(compose(ctx.account))
-        except Exception:  # pragma: no cover — fall back to the process env config dir
-            cfg_dir = None
+            if _accts.provider_or_none(account) == "anthropic":
+                return str(compose(account))
+        except Exception:  # pragma: no cover — fall through to the safe fallback
+            pass
+        return pick_helper_config_dir()
+
+    async def _autopilot_decide(self, ctx):
+        """Wrap the one-shot LLM decider, passing an engine-safe config dir."""
+        from server.automations.autopilot_decider import decide
+        cfg_dir = self._autopilot_helper_config_dir(ctx.account)
         return await decide(ctx, _config_dir=cfg_dir)
 
     async def _autopilot_refresh_pr_facts(self, session_id: str):
@@ -6309,10 +6328,7 @@ class SessionOrchestrator:
         from server.automations import nudge_composer
         rich_tail = await self._autopilot_transcript_tail(
             ctx.session_id, turns=20, max_entries=40, max_chars=1500, tool_chars=400)
-        try:
-            cfg_dir = str(compose(ctx.account))
-        except Exception:  # pragma: no cover — fall back to process env
-            cfg_dir = None
+        cfg_dir = self._autopilot_helper_config_dir(ctx.account)
         recent = [str(e.get("text", "")) for e in (ctx.ledger or {}).get("recent_nudges", [])]
         return await nudge_composer.compose_nudge(
             ctx, intent_hint=decision.prompt,

@@ -23,9 +23,13 @@ class Autopilot:
     name = "Autopilot"
     description = "Continuously advances every governed session toward its goal."
     modes: tuple[str, ...] = ("off", "propose", "auto")
-    # Audited engine ceiling (Phase 7, Task 7.1). This origin has no Codex
-    # acceptance evidence, so it launches Claude only. Widening it is a
-    # reviewable one-line change gated on its acceptance suite passing.
+    # Declared for `audited_policy_map()`'s whole-fleet ceiling view, but autopilot
+    # never spawns a session — it only acts on sessions the operator already
+    # launched, on any engine, through the generic driver seams (approve/deny/
+    # answer/nudge). This ceiling therefore gates nothing here; the actual
+    # engine-safety boundary is the decider/composer's helper LLM call, which
+    # must never reuse a governed session's own account when that account is not
+    # Anthropic (`SessionOrchestrator._autopilot_helper_config_dir`, #1262).
     engine_policy: EnginePolicy = EnginePolicy.CLAUDE_ONLY
     config_schema = [
         ConfigField(key="allow_tool_approvals", label="Approve tool permissions", type="bool",
