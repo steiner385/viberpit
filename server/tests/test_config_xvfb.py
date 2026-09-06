@@ -77,9 +77,25 @@ def test_native_display_fallback_dataclass_branch(monkeypatch):
     """The dataclass fallback must define the same fields (omitting it is a silent
     AttributeError on hosts without pydantic-settings)."""
     monkeypatch.setenv("CCSWITCH_NATIVE_DISPLAY", ":7")
+
     import server.config as cfg
-    importlib.reload(cfg)
-    fallback_cls = getattr(cfg, "Settings", None)
-    inst = fallback_cls()
-    assert inst.native_display == ":7"
-    assert inst.native_display_enabled is True
+    import builtins
+
+    original_import = builtins.__import__
+
+    def mock_import(name, *args, **kwargs):
+        if name == "pydantic_settings":
+            raise ImportError(f"No module named '{name}'")
+        return original_import(name, *args, **kwargs)
+
+    try:
+        monkeypatch.setattr(builtins, "__import__", mock_import)
+        importlib.reload(cfg)
+        # After reload with pydantic_settings blocked, Settings should be the dataclass
+        inst = cfg.Settings()
+        assert inst.native_display == ":7"
+        assert inst.native_display_enabled is True
+    finally:
+        # Restore pydantic Settings for the rest of the test suite
+        monkeypatch.setattr(builtins, "__import__", original_import)
+        importlib.reload(cfg)
