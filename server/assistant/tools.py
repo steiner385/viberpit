@@ -523,8 +523,10 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
         return await api.get("/api/github/branches", params={"repo": args["repo"]})
 
     @spec_tool("list_stage_models",
-               "Per-repository CI stage model: which checks run, typical durations and recent "
-               "regressions. Pair with get_pipeline_health for a window.", {})
+               "For 'what regressed in CI recently': per-repository CI stage model — which "
+               "checks run, typical durations and each repo's regressedChecks (not the "
+               "CI/CD doctor's own findings — that's get_cicd_findings). Pair with "
+               "get_pipeline_health for a window.", {})
     @guarded
     async def list_stage_models(args: dict[str, Any]) -> Any:
         return await api.get("/api/pipeline/repos")
@@ -570,8 +572,11 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
         return await api.get("/api/notifications/quiet-hours")
 
     @spec_tool("test_notification",
-               "Dry-run the notification routing engine for a hypothetical event — shows which "
-               "rule would match and whether quiet hours would suppress it. Delivers nothing.",
+               "Answers 'what would happen if X event happened right now' (e.g. a session "
+               "needing input, a PR going limited) WITHOUT a real event or session — this is "
+               "a simulation, not a lookup. Dry-runs the notification routing engine for a "
+               "hypothetical event_class (default 'needs_input') and shows which rule would "
+               "match and whether quiet hours would suppress it. Delivers nothing.",
                _schema(event_class=str, repo=str, account=str, automation=str))
     @guarded
     async def test_notification(args: dict[str, Any]) -> Any:
@@ -592,10 +597,12 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
     # The one tool with NO backing endpoint: the gap it records is precisely that no
     # endpoint exists. `test_every_tool_hits_an_allowed_route` exempts it by name.
     @spec_tool("report_gap",
-               "Call this whenever you tell the user that NO tool can do what they asked "
-               "(a deploy, a settings change, a code edit…). capability is a short kebab-case "
-               "label ('deploy', 'edit-settings', 'merge-pr'); detail is one sentence. It "
-               "records the gap for the product team and returns immediately.",
+               "MANDATORY second step, every time you tell the user that no tool can do what "
+               "they asked (a deploy, a credential/settings change, editing code directly…): "
+               "explaining the limitation is not enough on its own — also call this in the "
+               "same turn, or the gap goes uncounted. capability is a short kebab-case label "
+               "('deploy', 'edit-settings', 'edit-code', 'merge-pr'); detail is one sentence. "
+               "It records the gap for the product team and returns immediately.",
                _schema(("capability",), capability=str, detail=str))
     @guarded
     async def report_gap(args: dict[str, Any]) -> Any:
@@ -614,8 +621,11 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
         return {"recorded": cap}
 
     @spec_tool("list_initiatives",
-               "Delivery initiatives (intent → spec → plan → build) with status, linked repos and "
-               "the session working on each. Optional status filter.", _schema(status=str))
+               "Delivery initiatives (intent → spec → plan → build) with each one's stage, "
+               "status and linked repo — NOT which session (if any) is working on it; use "
+               "get_initiative(slug) for that. Only intent/spec/plan stage, or a 'blocked' "
+               "status, means no active build session; 'build' stage + 'active' status means "
+               "one is. Optional status filter.", _schema(status=str))
     @guarded
     async def list_initiatives(args: dict[str, Any]) -> Any:
         rows = await api.get("/api/sdlc/initiatives")
@@ -698,10 +708,11 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
     # Task 6.4; nothing here starts work.
 
     @spec_tool("get_automation_actionable",
-               "Items one automation has detected and could act on right now (a failing "
-               "PR, a stale branch…), each with the action kinds it offers. Use the id "
-               "from list_automations. Looking is free — acting on an item is a separate, "
-               "unattended action.", {"id": str})
+               "What one automation is proposing right now: the items it has detected "
+               "and could act on (e.g. the PR doctor's failing-CI and merge-conflict "
+               "PRs), each with the action kinds it offers. Use the id from "
+               "list_automations — for the PR doctor that id is 'pr-doctor'. Looking is "
+               "free — acting on an item is a separate, unattended action.", {"id": str})
     @guarded
     async def get_automation_actionable(args: dict[str, Any]) -> Any:
         return await api.get(f"/api/automations/{_slug(args['id'], field='id')}/actionable")
@@ -734,10 +745,11 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
         return await api.get("/api/automations/backlog-runner/groups")
 
     @spec_tool("get_cicd_findings",
-               "CI/CD doctor findings (flaky checks, broken workflows, stuck runs), newest "
-               "first, each with its repo, kind, status and any issue it filed. status "
-               "defaults to 'open'; pass 'all' to include resolved ones, or a repo "
-               "'owner/name' to narrow it.",
+               "For 'CI/CD doctor findings': that automation's own detections (flaky checks, "
+               "broken workflows, stuck runs), newest first, each with its repo, kind, status "
+               "and any issue it filed (not per-repo timing regressions — that's "
+               "list_stage_models). status defaults to 'open'; pass 'all' to include resolved "
+               "ones, or a repo 'owner/name' to narrow it.",
                _schema(status=str, repo=str))
     @guarded
     async def get_cicd_findings(args: dict[str, Any]) -> Any:
@@ -747,8 +759,9 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                        max(0, len(rows) - _AUTOMATION_LIST_CAP))
 
     @spec_tool("get_pr_doctor_consolidation",
-               "Open pull requests per repo plus the PR doctor's suggested consolidation "
-               "clusters — which PRs it thinks should be combined into one. A proposal "
+               "Specifically the PR doctor's MERGE-clustering proposal: which open PRs "
+               "per repo it thinks should be combined into one (not the failing-CI/"
+               "merge-conflict items — those are get_automation_actionable). A proposal "
                "only; nothing is consolidated by reading it.", {})
     @guarded
     async def get_pr_doctor_consolidation(args: dict[str, Any]) -> Any:
@@ -989,7 +1002,8 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                "Fire ONE of an automation's offered actions on ONE detected item — use "
                "get_automation_actionable first for the item id and the kinds it offers. "
                "This launches a coding session that will act on its own; there is no "
-               "undo. Ask the user before calling it.",
+               "undo. The user confirms via the permission card this call raises — call "
+               "it directly once the user has asked for the action, don't ask again in chat.",
                {"id": str, "item_id": str, "kind": str})
     @guarded
     async def trigger_automation_action(args: dict[str, Any]) -> Any:
@@ -1003,8 +1017,9 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                "waiting for the backlog runner's next pass. refs are 'owner/repo#123' "
                "strings from list_backlog_candidates; they are bundled into one session "
                "and one PR, with the first as the primary. This launches a coding "
-               "session that will act on its own; there is no undo. Ask the user before "
-               "calling it.",
+               "session that will act on its own; there is no undo. The user confirms "
+               "via the permission card this call raises — call it directly once the "
+               "user has asked for the dispatch, don't ask again in chat.",
                _schema(("refs",), refs=_STR_ARRAY))
     @guarded
     async def dispatch_backlog(args: dict[str, Any]) -> Any:
@@ -1016,7 +1031,9 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                "into a single PR — get_pr_doctor_consolidation suggests the clusters. "
                "The session rewrites branches and closes the PRs it folds in. This "
                "launches a coding session that will act on its own; there is no undo. "
-               "Ask the user before calling it.",
+               "The user confirms via the permission card this call raises — call it "
+               "directly once the user has asked for the consolidation, don't ask again "
+               "in chat.",
                _schema(("repo", "numbers"), repo=str, numbers=_INT_ARRAY))
     @guarded
     async def consolidate_prs(args: dict[str, Any]) -> Any:
