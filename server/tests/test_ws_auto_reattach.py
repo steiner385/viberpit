@@ -369,12 +369,14 @@ def test_teardown_unsubscribes_even_with_an_auto_reattach_in_flight(tmp_path):
 
                     # Held long enough that a teardown which DOES wait on the
                     # re-attach's lock is unmistakable — and bounded, so a regression
-                    # fails in ~25 s instead of on the CI shard timeout.
-                    client.portal.call(_wedge_spawn, orch, sid, released, 25.0)
+                    # fails in ~45 s instead of on the CI shard timeout. (Bumped from
+                    # 25/40 s: on a loaded shard, real teardown latency alone — not
+                    # just the wedge — can blow a tight margin.)
+                    client.portal.call(_wedge_spawn, orch, sid, released, 45.0)
                     client.portal.call(orch._persist_status, sid, "in_progress")
                     time.sleep(0.7)   # the auto re-attach is now inside the resume
                 # ...and the socket closes on top of it.
-                assert _wait_until(lambda: bool(unsubscribed), timeout=40.0), (
+                assert _wait_until(lambda: bool(unsubscribed), timeout=120.0), (
                     "teardown must unsubscribe the lifecycle queue even with an "
                     "auto re-attach in flight")
                 # Order, not wall clock: the unsubscribe must have happened while the

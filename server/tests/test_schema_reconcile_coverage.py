@@ -69,6 +69,14 @@ RECONCILE_EXEMPT: set[str] = {
     # host row without an endpoint is unreachable by definition, so there is no
     # synthesizable default that would be anything but a lie.
     "hosts.endpoint",          # required at host registration; no sane default
+    # assistant_tokens: a NEW table (create_all builds it fully-formed on dev SQLite;
+    # Alembic 0028_assistant_tokens builds it on prod). identity/scope/token_hash are
+    # part of the initial CREATE TABLE, never ALTER-added to a populated table, and
+    # each is mandatory at mint time, so no synthesizable default.
+    "assistant_tokens.identity",    # required at mint; the caller's verified identity
+    "assistant_tokens.scope",       # required at mint; "read" | "act"
+    "assistant_tokens.token_hash",  # required at mint; sha256 of the minted token
+    "assistant_tokens.expires_at",  # required at mint; computed from ttlDays, no sane default
 }
 
 

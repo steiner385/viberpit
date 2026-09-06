@@ -226,6 +226,10 @@ _REQUIRED_EXTRAS: dict[str, dict[str, object]] = {
     "host_heartbeats": {"host": "dtcheck-host"},
     # deploy_state joins the sweep via deployed_at; id is the PK (Python-side default).
     "deploy_state": {"id": "dtcheck-deploy-state"},
+    # assistant_tokens joins the sweep via created_at/expires_at; identity/scope/
+    # token_hash are NOT NULL with no synthesizable default (set at mint time).
+    "assistant_tokens": {"identity": "dtcheck@example.invalid", "scope": "read",
+                          "token_hash": "0" * 64},
 }
 
 # FK columns that must be filled from a parent row inserted earlier in this

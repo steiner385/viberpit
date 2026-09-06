@@ -3,10 +3,12 @@
   "answer_question",
   "archive_session",
   "cancel_queued_session",
+  "consolidate_prs",
   "create_notification_rule",
   "create_session",
   "delete_notification_rule",
   "delete_session",
+  "dispatch_backlog",
   "export_session",
   "fix_pr",
   "get_automation_actionable",
@@ -62,6 +64,7 @@
   "start_deploy",
   "start_reauth",
   "test_notification",
+  "trigger_automation_action",
   "unarchive_session",
   "upgrade_host"
 ]

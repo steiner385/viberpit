@@ -262,6 +262,15 @@ try:
         # the real binary before claiming parity).
         assistant_engine: str = Field(
             default="claude_code", alias="CCSWITCH_ASSISTANT_ENGINE")
+        # User-scoped external `ccas2:` bearer tokens (v2 spec §5/§7, Pack O/X, Task 9.5):
+        # lets an external client (e.g. `ccswitch mcp`) reach the edge over the tailnet
+        # without a browser session. Default OFF — same blast-radius reasoning as the
+        # operator tier above; assistant_token_max_days caps how long a minted token
+        # may live regardless of the ttlDays the caller requests.
+        assistant_external_tokens: bool = Field(
+            default=False, alias="CCSWITCH_ASSISTANT_EXTERNAL_TOKENS")
+        assistant_token_max_days: int = Field(
+            default=90, alias="CCSWITCH_ASSISTANT_TOKEN_MAX_DAYS")
 
         model_config = {"populate_by_name": True, "env_file": ".env", "extra": "ignore"}
 
@@ -522,6 +531,12 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         assistant_engine: str = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_ASSISTANT_ENGINE", "claude_code")
+        )
+        assistant_external_tokens: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_ASSISTANT_EXTERNAL_TOKENS", "false").lower() in ("1", "true", "yes", "on")
+        )
+        assistant_token_max_days: int = dataclasses.field(
+            default_factory=lambda: int(os.environ.get("CCSWITCH_ASSISTANT_TOKEN_MAX_DAYS", "90"))
         )
 
         @property

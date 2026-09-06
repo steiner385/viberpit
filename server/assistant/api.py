@@ -4,15 +4,21 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import uuid
+from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from sqlalchemy import select
 
 from ccswitch.selector import AllAccountsBusy
+from server.assistant.token import mint_user_token
 from server.audit import record_audit
 from server.auth.middleware import current_identity
+from server.config import get_settings
 from server.db import get_db
+from server.db.models import AssistantToken
 from server.sessions.model_policy import resolve_model_policy
 from server.sessions.engine import AgentEngineUnavailable
 from server.sessions.types import ASSISTANT_KIND
@@ -112,3 +118,76 @@ async def create(body: CreateBody, request: Request,
                        {"sessionId": rec.id, "model": model, "engine": engine.value})
     await db.commit()
     return {"id": rec.id, "model": model, "engine": engine.value, "state": "created"}
+
+
+class TokenCreateBody(BaseModel):
+    scope: str = "read"
+    ttlDays: int = 30
+    label: str | None = None
+
+
+def _token_dict(row: AssistantToken) -> dict:
+    return {
+        "id": row.id,
+        "scope": row.scope,
+        "label": row.label,
+        "createdAt": row.created_at.isoformat(),
+        "expiresAt": row.expires_at.isoformat(),
+        "revokedAt": row.revoked_at.isoformat() if row.revoked_at else None,
+        "lastUsedAt": row.last_used_at.isoformat() if row.last_used_at else None,
+    }
+
+
+@router.post("/tokens", status_code=status.HTTP_201_CREATED)
+async def create_token(body: TokenCreateBody, request: Request,
+                       identity: str = Depends(current_identity), db=Depends(get_db)):
+    """Mint a user-scoped external `ccas2:` token (spec v2 §5/§7, Task 9.5). Browser
+    identity only: an already-issued assistant token (`via` set, whether `ccas1:` or
+    `ccas2:`) must never be able to mint another — this route is also unreachable via
+    either bearer scheme regardless, since neither appears in `ASSISTANT_ROUTE_ALLOW`,
+    but the explicit check keeps that true even if a future allowlist edit forgets it."""
+    if getattr(request.state, "via", None):
+        return _err("ASSISTANT_RECURSION", "an assistant token cannot mint another token", 403)
+    if body.scope not in ("read", "act"):
+        return _err("INVALID_SCOPE", "scope must be 'read' or 'act'", 422)
+    max_days = get_settings().assistant_token_max_days
+    if not (0 < body.ttlDays <= max_days):
+        return _err("INVALID_TTL", f"ttlDays must be between 1 and {max_days}", 422)
+    token_id = str(uuid.uuid4())
+    token = mint_user_token(identity, body.scope, token_id)
+    row = AssistantToken(
+        id=token_id, identity=identity, scope=body.scope,
+        token_hash=hashlib.sha256(token.encode()).hexdigest(),
+        expires_at=datetime.now(timezone.utc) + timedelta(days=body.ttlDays),
+        label=body.label)
+    db.add(row)
+    await record_audit(db, "assistant.token.create", identity,
+                       {"id": token_id, "scope": body.scope, "ttlDays": body.ttlDays,
+                        "label": body.label})
+    await db.commit()
+    return {**_token_dict(row), "token": token}
+
+
+@router.get("/tokens")
+async def list_tokens(identity: str = Depends(current_identity), db=Depends(get_db)):
+    rows = (await db.execute(
+        select(AssistantToken).where(AssistantToken.identity == identity)
+        .order_by(AssistantToken.created_at.desc())
+    )).scalars().all()
+    return [_token_dict(r) for r in rows]
+
+
+@router.delete("/tokens/{token_id}")
+async def revoke_token(token_id: str, identity: str = Depends(current_identity),
+                       db=Depends(get_db)):
+    row = (await db.execute(
+        select(AssistantToken).where(AssistantToken.id == token_id,
+                                     AssistantToken.identity == identity)
+    )).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404, "token not found")
+    if row.revoked_at is None:
+        row.revoked_at = datetime.now(timezone.utc)
+        await record_audit(db, "assistant.token.revoke", identity, {"id": token_id})
+        await db.commit()
+    return {"ok": True}
