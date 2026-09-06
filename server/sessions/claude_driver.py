@@ -17,6 +17,7 @@ from ccswitch.accounts import provider_or_none as _provider_of
 from server.aio import bounded_wait, cancel_and_reap
 from server.assistant.context import PromptContext, render_context_header
 from server.hostname import self_host_name
+from server.mcp_spec import MCP_PREFIX
 from server.obs.metrics import assistant_sessions_live, assistant_ttft_ms, assistant_turn_ms
 from . import events as ev
 from .driver_stream import _STREAM_DONE, DriverStream
@@ -692,7 +693,7 @@ class ClaudeAgentDriver:
         turn_id = self._turn()
         if tool_name == "AskUserQuestion":
             return await self._handle_ask_user_question(tool_input, turn_id)
-        if is_assistant_kind(self.kind) and not tool_name.startswith("mcp__ccswitch__"):
+        if is_assistant_kind(self.kind) and not tool_name.startswith(MCP_PREFIX):
             # An assistant-kind session's model is scoped to the ccswitch MCP
             # server only (spec §4.4) — anything else (Bash, a third-party MCP
             # server, …) is a hard deny with no card: this is a programming

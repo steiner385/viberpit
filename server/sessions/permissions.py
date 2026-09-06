@@ -3,6 +3,7 @@ import asyncio, os, time, uuid as _uuid
 from pathlib import Path
 
 from ccswitch import paths as _paths
+from server.mcp_spec import MCP_PREFIX
 
 # File-writing tools whose target is a single path argument.
 _FILE_WRITE_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
@@ -133,15 +134,14 @@ class PermissionRegistry:
         # tool's ANNOTATION (read/mutation/destructive), not on session mode, so
         # this branch sits ABOVE both the full-auto/bypassPermissions shortcut and
         # the generic mcp__ auto-allow: a destructive ccswitch tool must prompt
-        # even in full-auto. Local import avoids a module-load-order cycle with
-        # server.assistant.tools (which itself does not import server.sessions,
-        # but keeping this import lazy is cheap insurance).
-        if tool.startswith("mcp__ccswitch__"):
-            from server.assistant import tools as assistant_tools
-            ann = assistant_tools.annotation_for(tool)
-            if ann is not None and ann.tool_class == assistant_tools.ToolClass.READ:
+        # even in full-auto. Local import: server.mcp_spec imports only mcp.types so
+        # there is no module-load-order cycle, but keeping it lazy is cheap insurance.
+        if tool.startswith(MCP_PREFIX):
+            from server.mcp_spec import ToolClass, annotation_for
+            ann = annotation_for(tool)
+            if ann is not None and ann.tool_class == ToolClass.READ:
                 return None, _resolved(True), True
-            if ann is not None and ann.tool_class == assistant_tools.ToolClass.DESTRUCTIVE:
+            if ann is not None and ann.tool_class == ToolClass.DESTRUCTIVE:
                 # Never consults the grant cache, in ANY mode — a destructive
                 # ccswitch action always surfaces a card, and that card never
                 # offers "Always allow" (always_allowed=False on the pending
