@@ -58,7 +58,7 @@ def test_validate_context_rejects_injection_attempts():
 
 def test_validate_context_accepts_every_known_route_root():
     for root in ("sessions", "pipeline", "automations", "initiatives",
-                 "projects", "insights", "settings"):
+                 "projects", "insights", "settings", "cli"):
         assert validate_context({"route": f"/{root}"}) == {"route": f"/{root}"}
 
 

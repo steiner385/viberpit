@@ -38,7 +38,10 @@ ARGS: dict[str, dict] = {
     "set_autopilot_paused": {"id": UUID, "paused": True}, "fix_pr": {"id": UUID, "number": 1},
     "set_automation_enabled": {"id": "autopilot", "enabled": False},
     "create_notification_rule": {"event_class": "session.done", "action": "push"},
-    "delete_notification_rule": {"id": "rule-1"}, "set_quiet_hours": {"start": "22:00"},
+    "delete_notification_rule": {"id": "rule-1"},
+    "watch": {"kind": "pr", "target": "o/n", "condition": "breaks"},
+    "list_watches": {}, "delete_watch": {"id": "watch-1"},
+    "set_quiet_hours": {"start": "22:00"},
     "delete_session": {"id": UUID}, "cancel_queued_session": {"id": UUID},
     "ready_merge_pr": {"repo": "o/n", "number": 1},
     "list_initiatives": {"status": "build"}, "get_initiative": {"slug": "a"},
@@ -61,6 +64,12 @@ ARGS: dict[str, dict] = {
     "refresh_account": {"name": "a1"},
     "set_account_enabled": {"name": "a1", "enabled": False},
     "start_reauth": {"name": "a1"},
+    "list_adoptable_sessions": {}, "suggest_next_prompt": {"id": UUID},
+    "rename_session": {"id": UUID, "name": "New name"},
+    "move_in_queue": {"id": UUID, "op": "top"},
+    "pin_account": {"id": UUID, "pinned": True},
+    "rotate_session": {"id": UUID}, "reload_session": {"id": UUID},
+    "adopt_session": {"claude_session_id": "ext-1"},
 }
 
 

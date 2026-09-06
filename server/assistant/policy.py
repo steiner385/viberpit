@@ -118,6 +118,7 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("POST", r"/api/automations/pr-doctor/consolidate"),
         ("GET", r"/api/deploy/status"),
         ("GET", r"/api/auth/me"),
+        ("GET", r"/api/sessions/adoptable"),
         ("GET", r"/api/sdlc/initiatives"),
         ("GET", r"/api/sdlc/initiatives/[a-z0-9-]+"),
         ("POST", r"/api/sdlc/initiatives/[a-z0-9-]+/advance"),
@@ -149,6 +150,13 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("DELETE", _S + r"/permanent"),
         ("DELETE", _S + r"/queue"),
         ("POST", r"/api/pipeline/pr/ready-merge"),
+        ("PATCH", _S),
+        ("POST", _S + r"/queue-move"),
+        ("POST", _S + r"/account-pin"),
+        ("POST", _S + r"/rotate"),
+        ("POST", _S + r"/reload"),
+        ("POST", _S + r"/suggest"),
+        ("POST", r"/api/sessions/adopt"),
         ("GET", r"/api/notifications/channels"),
         ("GET", r"/api/notifications/rules"),
         ("POST", r"/api/notifications/rules"),
@@ -156,6 +164,13 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("GET", r"/api/notifications/quiet-hours"),
         ("PUT", r"/api/notifications/quiet-hours"),
         ("POST", r"/api/notifications/test"),
+        # Watches (spec v2 §4.7, Task 8.3): the one `/api/assistant/*` exception —
+        # every other route under that prefix is blocked for the assistant token
+        # (`/session`, `/tokens`, `/status`), but a watch belongs to the thread that
+        # created it, so the tool needs to reach its own CRUD.
+        ("GET", r"/api/assistant/watches"),
+        ("POST", r"/api/assistant/watches"),
+        ("DELETE", r"/api/assistant/watches/[A-Za-z0-9-]+"),
     ]
 )
 
@@ -188,4 +203,5 @@ def route_allowed(method: str, path: str, *, operator: bool = False) -> bool:
 # READ-class tools whose backing route is a POST that mutates nothing (a dry-run or a
 # render). The conformance test (server/tests/test_assistant_conformance.py) lets a
 # READ tool use POST only when it is listed here. Later tasks add names to this set.
-READ_POSTS: frozenset[str] = frozenset({"test_notification", "preview_schedule"})
+READ_POSTS: frozenset[str] = frozenset({"test_notification", "preview_schedule",
+                                        "suggest_next_prompt"})

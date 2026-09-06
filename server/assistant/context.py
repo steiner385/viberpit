@@ -8,7 +8,7 @@ from xml.sax.saxutils import quoteattr, unescape
 # \Z (not $): `$` matches just before a single trailing "\n" too, so a route or
 # sessionId with a smuggled newline would pass validation and reach the wire
 # (UserMessage.context) unescaped — quoteattr only protects the SDK-bound header.
-_ROUTE = re.compile(r"\A/(sessions|pipeline|automations|initiatives|projects|insights|settings)(/[A-Za-z0-9._-]+)*\Z")
+_ROUTE = re.compile(r"\A/(sessions|pipeline|automations|initiatives|projects|insights|settings|cli)(/[A-Za-z0-9._-]+)*\Z")
 _SID = re.compile(r"\A[A-Za-z0-9-]{8,64}\Z")
 
 # A route is rendered verbatim into the model's prompt on every context change, and the

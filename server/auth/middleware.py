@@ -141,29 +141,24 @@ async def _bump_last_used_at(token_id: str) -> None:
         log.debug("assistant external token last_used_at bump failed", exc_info=True)
 
 
-async def _dispatch_user_token(request: Request, call_next, token: str):
-    """Handle a `Bearer ccas2:…` request end to end (spec v2 §5/§7, Task 9.5).
-
-    Unlike `ccas1:`, this token is accepted from any peer — it is meant for an
-    external client reaching the edge over the tailnet, not just the local daemon —
-    so the signature plus the DB row (revocation, per-token expiry, scope) is the
-    whole trust boundary rather than a loopback check. Always returns a Response:
-    the caller only reaches this function once the `ccas2:` prefix is confirmed, and
-    a token that fails here has nothing else to fall back on (`verify_identity` can
-    only ever fail it too), so failure paths terminate the request rather than
-    falling through.
+async def _validate_user_token(token: str) -> "UserClaims | None":
+    """Verify a `ccas2:…` token's signature AND its DB row (revocation, per-token
+    expiry) — the full check both the HTTP dispatch below and the WS upgrade
+    (`require_ws_identity`, Task 9.7) need, since `BaseHTTPMiddleware` never runs on a
+    WebSocket upgrade and so cannot share `_dispatch_user_token` directly. Bumps
+    `last_used_at` (fire-and-forget) on success; returns None on any failure without
+    distinguishing why — callers that need a specific 401 message check
+    `settings.assistant_external_tokens` themselves before calling this.
     """
     settings = get_settings()
     if not settings.assistant_external_tokens:
-        return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"error": {
-            "code": "UNAUTHORIZED", "message": "external assistant tokens are disabled"}})
+        return None
 
     from server.assistant.token import verify_user_token  # noqa: PLC0415
     claims: "UserClaims | None" = verify_user_token(
         token, max_age_s=settings.assistant_token_max_days * 86400)
     if claims is None:
-        return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"error": {
-            "code": "UNAUTHORIZED", "message": "invalid or expired token"}})
+        return None
 
     from server.db import db_session as _token_db_session  # noqa: PLC0415
     from server.db.models import AssistantToken  # noqa: PLC0415
@@ -185,9 +180,32 @@ async def _dispatch_user_token(request: Request, call_next, token: str):
             expires_at = expires_at.astimezone(timezone.utc).replace(tzinfo=None)
         valid = expires_at > now and hmac.compare_digest(row.token_hash, token_hash)
     if not valid:
+        return None
+    _spawn_bg(_bump_last_used_at(claims.token_id))
+    return claims
+
+
+async def _dispatch_user_token(request: Request, call_next, token: str):
+    """Handle a `Bearer ccas2:…` request end to end (spec v2 §5/§7, Task 9.5).
+
+    Unlike `ccas1:`, this token is accepted from any peer — it is meant for an
+    external client reaching the edge over the tailnet, not just the local daemon —
+    so the signature plus the DB row (revocation, per-token expiry, scope) is the
+    whole trust boundary rather than a loopback check. Always returns a Response:
+    the caller only reaches this function once the `ccas2:` prefix is confirmed, and
+    a token that fails here has nothing else to fall back on (`verify_identity` can
+    only ever fail it too), so failure paths terminate the request rather than
+    falling through.
+    """
+    settings = get_settings()
+    if not settings.assistant_external_tokens:
+        return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"error": {
+            "code": "UNAUTHORIZED", "message": "external assistant tokens are disabled"}})
+
+    claims = await _validate_user_token(token)
+    if claims is None:
         return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"error": {
             "code": "UNAUTHORIZED", "message": "invalid or expired token"}})
-    _spawn_bg(_bump_last_used_at(claims.token_id))
 
     from server.assistant.policy import route_allowed  # noqa: PLC0415
     # `operator=False` unconditionally: an external ccas2 token may never reach the
@@ -392,7 +410,30 @@ def current_identity(request: Request) -> str:
 
 
 async def require_ws_identity(websocket: WebSocket) -> str:
-    """FastAPI WebSocket dependency — closes the socket with 1008 if no identity."""
+    """FastAPI WebSocket dependency — closes the socket with 1008 if no identity.
+
+    Also accepts a `Bearer ccas2:…` external assistant token (spec v2 Task 9.7,
+    `ccswitch ask`): `BaseHTTPMiddleware` never runs on a WebSocket upgrade, so this
+    dependency is the ONLY enforcement point for that path and must redo the same
+    signature+DB check `_dispatch_user_token` does for HTTP. A `read`-scope token is
+    refused here rather than admitted and gated per-message — unlike HTTP routes,
+    `/ws` has no per-message-type allowlist, and every message type this socket
+    accepts once attached (prompt, permissionResponse, answerQuestion) mutates.
+    `websocket.state.via = "cli"` records how this connection authenticated so the
+    message loop can audit permission answers `via="cli"` instead of the default
+    (human-in-the-browser) `None`.
+    """
+    from server.assistant.token import USER_PREFIX  # noqa: PLC0415
+    auth_header = websocket.headers.get("authorization", "")
+    if auth_header.startswith("Bearer " + USER_PREFIX):
+        claims = await _validate_user_token(auth_header[len("Bearer "):])
+        if claims is None or claims.scope != "act":
+            await websocket.close(code=1008)
+            raise HTTPException(status_code=403,
+                                 detail="WebSocket: invalid, expired, or read-scope token")
+        websocket.state.via = "cli"
+        return claims.identity
+
     identity = verify_identity(websocket)  # WebSocket also has .headers
     if identity is None:
         await websocket.close(code=1008)

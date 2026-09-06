@@ -219,3 +219,52 @@ def test_instructions_none_preserves_existing_research_escape():
     v = met_bar("review the consolidation approach", "inferred",
                 _facts([], has_repo=True))
     assert v.met and v.confidence == "low"
+
+
+# ---------------------------------------------------------------------------
+# Self-certified (marker-sourced) resolution on a code goal
+#
+# Prod 2026-09-06 (session fdc6b27a, goal "Ship PR adding persistent color field
+# per family member …"): the agent researched, wrote no code, recommended a spec,
+# offered to draft it, and ended with `<!-- ccswitch:no-pr -->`. The marker's own
+# `not-needed` token then satisfied the bar with HIGH confidence — the session's
+# claim was its own verification. A marker-sourced not-needed on a repo-attached
+# code goal is a claim to verify (classifier salvage), never a verdict.
+# ---------------------------------------------------------------------------
+
+_CODE_GOAL = ("Ship PR adding persistent color field per family member with schema "
+              "migration and UI controls.")
+
+
+def test_marker_not_needed_on_code_goal_is_not_met():
+    v = met_bar(_CODE_GOAL, "inferred", _facts([], has_repo=True),
+                pr_resolution="not-needed", pr_resolution_source="marker")
+    assert v.met is False and v.confidence == "low"
+    assert "self-declared" in v.reason
+    assert v.remedy and "ask" in v.remedy.lower()
+
+
+def test_marker_not_needed_on_research_goal_is_met():
+    v = met_bar("investigate the flaky ci job", "explicit", _facts([], has_repo=True),
+                pr_resolution="not-needed", pr_resolution_source="marker")
+    assert v.met is True
+
+
+def test_marker_not_needed_without_repo_is_met():
+    v = met_bar(_CODE_GOAL, "inferred", _facts([], has_repo=False),
+                pr_resolution="not-needed", pr_resolution_source="marker")
+    assert v.met is True
+
+
+def test_marker_cancelled_on_code_goal_keeps_precedence():
+    """An explicit cancellation is a decision, not a claim of completion."""
+    v = met_bar(_CODE_GOAL, "inferred", _facts([], has_repo=True),
+                pr_resolution="cancelled", pr_resolution_source="marker")
+    assert v.met is True and v.confidence == "high"
+
+
+def test_classifier_not_needed_on_code_goal_is_met_high():
+    """A classifier-verified resolution is the verification — it still short-circuits."""
+    v = met_bar(_CODE_GOAL, "inferred", _facts([], has_repo=True),
+                pr_resolution="not-needed", pr_resolution_source="classifier")
+    assert v.met is True and v.confidence == "high"

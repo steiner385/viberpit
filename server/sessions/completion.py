@@ -22,13 +22,17 @@ COMPLETION_INSTRUCTION = (
 NO_PR_MARKER = "<!-- ccswitch:no-pr -->"
 
 NO_PR_INSTRUCTION = (
-    "If the work is genuinely finished but NO pull request is appropriate — either "
-    "the task needed no code change, or you have deliberately decided to cancel / not "
-    f"open a PR — end your final message with `{NO_PR_MARKER}` on its own line "
-    "(optionally preceded by a short reason). Use this INSTEAD of "
-    f"`{COMPLETION_MARKER}` when finishing without a PR; never emit it while a PR is "
-    "still expected or you are still working. The same no-question rule applies: "
-    "never combine this marker with a question to the user."
+    "If the work is genuinely finished but NO pull request is appropriate — the "
+    "objective is already satisfied without a code change, or the user has cancelled "
+    "the work / you have deliberately decided not to open a PR — end your final message "
+    f"with `{NO_PR_MARKER}` on its own line (optionally preceded by a short reason). "
+    f"Use this INSTEAD of `{COMPLETION_MARKER}` when finishing without a PR; never emit "
+    "it while a PR is still expected or you are still working. An objective that asks "
+    "for a code change is not finished by investigating it: discovering that the work "
+    "is larger than expected, recommending a spec or next step, or offering to "
+    "continue is not a reason for this marker — it is a hand-back. State what you "
+    "found, ask the user how to proceed, and emit no marker at all. The same "
+    "no-question rule applies: never combine this marker with a question to the user."
 )
 
 _CANCEL_RE = re.compile(

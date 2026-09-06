@@ -92,8 +92,15 @@ _UUID = "3f2a9c1e-7b4d-4e0a-9c7d-1a2b3c4d5e6f"
     ("POST", "/api/sessions/batch/unarchive", False),
     ("POST", "/api/sessions/batch/archive", False),
     ("POST", "/api/sessions/batch/resume", False),
-    ("GET", "/api/sessions/adoptable", False),
-    ("POST", "/api/sessions/adopt", False),
+    # Task 7.1: adoption and single-session power tools.
+    ("GET", "/api/sessions/adoptable", True),
+    ("POST", "/api/sessions/adopt", True),
+    ("PATCH", f"/api/sessions/{_UUID}", True),
+    ("POST", f"/api/sessions/{_UUID}/queue-move", True),
+    ("POST", f"/api/sessions/{_UUID}/account-pin", True),
+    ("POST", f"/api/sessions/{_UUID}/rotate", True),
+    ("POST", f"/api/sessions/{_UUID}/reload", True),
+    ("POST", f"/api/sessions/{_UUID}/suggest", True),
     ("DELETE", "/api/sessions/abc", False),
     # Task 8.1 — notification channel/rule/quiet-hours tools.
     ("GET", "/api/notifications/channels", True),
@@ -140,6 +147,17 @@ _UUID = "3f2a9c1e-7b4d-4e0a-9c7d-1a2b3c4d5e6f"
     # edit — those are a human's decisions to make.
     ("POST", "/api/pm/triage/accept-bulk", False),
     ("PATCH", "/api/pm/work-items/w1/overlay", False),
+    # Task 8.3 — watches are the one `/api/assistant/*` exception: a watch belongs
+    # to the thread that created it.
+    ("GET", "/api/assistant/watches", True),
+    ("POST", "/api/assistant/watches", True),
+    ("DELETE", "/api/assistant/watches/watch-1", True),
+    # Regression: every OTHER /api/assistant/* route stays blocked for the token —
+    # this exception must not widen into a general assistant-recursion opening.
+    ("GET", "/api/assistant/status", False),
+    ("POST", "/api/assistant/session", False),
+    ("GET", "/api/assistant/tokens", False),
+    ("POST", "/api/assistant/tokens", False),
 ])
 def test_route_allowlist(method, path, ok):
     assert route_allowed(method, path) is ok

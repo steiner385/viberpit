@@ -519,3 +519,28 @@ def test_autopilot_archive_still_unarchived_when_premature(tmp_path):
         assert out[0]["bucket"] == "premature"
         assert unarchived == ["s-auto"]
     asyncio.run(run())
+
+
+def test_self_declared_no_pr_row_on_code_goal_is_not_legit():
+    """A row whose no-PR resolution is the session's OWN marker on a code goal with
+    no real PR is a claim, not a verdict: it must not bucket as legit (prod 2026-09-06,
+    fdc6b27a). Ambiguous/report-only — never auto-unarchived, never auto-blessed."""
+    unarchived = []
+    row = _row_with_resolution("s1", "ship the color field PR", pr_resolution="not-needed")
+    row["pr_resolution_source"] = "marker"
+    out = asyncio.run(aa.run_audit([row], _gh_returning(None), unarchived.append))
+    assert out[0]["bucket"] == "ambiguous", (
+        f"expected ambiguous, got {out[0]['bucket']}: {out[0]['reason']}"
+    )
+    assert unarchived == []
+
+
+def test_archived_row_dict_carries_resolution_source():
+    """The audit's row shape must carry provenance or classify() cannot tell a
+    self-certified marker from a classifier-verified resolution."""
+    import types
+    row = types.SimpleNamespace(
+        id="s1", repo="o/r", branch="b", authored_branches=[], initial_prompt=None,
+        active_goal=None, inferred_goal=None, name="n",
+        pr_resolution="not-needed", pr_resolution_source="marker")
+    assert aa._archived_row_to_dict(row)["pr_resolution_source"] == "marker"
