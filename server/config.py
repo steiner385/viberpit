@@ -271,6 +271,11 @@ try:
             default=False, alias="CCSWITCH_ASSISTANT_EXTERNAL_TOKENS")
         assistant_token_max_days: int = Field(
             default=90, alias="CCSWITCH_ASSISTANT_TOKEN_MAX_DAYS")
+        # Proactive watches (v2 spec §4.7, Task 8.3): a per-identity cap on live
+        # `NotificationRule` rows created via `watch()`, so a runaway loop can't spam
+        # the notification table. Counted against the identity's `assistant` channel.
+        assistant_watch_max_per_identity: int = Field(
+            default=20, alias="CCSWITCH_ASSISTANT_WATCH_MAX_PER_IDENTITY")
 
         model_config = {"populate_by_name": True, "env_file": ".env", "extra": "ignore"}
 
@@ -537,6 +542,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         assistant_token_max_days: int = dataclasses.field(
             default_factory=lambda: int(os.environ.get("CCSWITCH_ASSISTANT_TOKEN_MAX_DAYS", "90"))
+        )
+        assistant_watch_max_per_identity: int = dataclasses.field(
+            default_factory=lambda: int(os.environ.get("CCSWITCH_ASSISTANT_WATCH_MAX_PER_IDENTITY", "20"))
         )
 
         @property

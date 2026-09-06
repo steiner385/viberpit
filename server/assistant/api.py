@@ -18,11 +18,12 @@ from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.config import get_settings
 from server.db import get_db
-from server.db.models import AssistantToken
+from server.db.models import AssistantToken, NotificationChannel, NotificationRule
 from server.sessions.model_policy import resolve_model_policy
 from server.sessions.engine import AgentEngineUnavailable
 from server.sessions.types import ASSISTANT_KIND
 
+from . import watches as watch_conditions
 from .policy import (assistant_enabled, assistant_engine, assistant_model,
                      operator_tools_enabled)
 
@@ -191,3 +192,115 @@ async def revoke_token(token_id: str, identity: str = Depends(current_identity),
         await record_audit(db, "assistant.token.revoke", identity, {"id": token_id})
         await db.commit()
     return {"ok": True}
+
+
+class WatchBody(BaseModel):
+    kind: str
+    target: str
+    condition: str
+    once: bool = True
+    ttl_hours: int = 72
+
+
+def _assistant_channel_url(identity: str) -> str:
+    """The one `NotificationChannel(kind="assistant")` per identity that watches route
+    through — deterministic from the identity so create/list/delete always find the
+    same row without persisting the identity anywhere new (spec v2 §4.7)."""
+    return "assistant:" + hashlib.sha256(identity.encode()).hexdigest()[:16]
+
+
+async def _find_assistant_channel(db, identity: str) -> NotificationChannel | None:
+    return (await db.execute(
+        select(NotificationChannel).where(
+            NotificationChannel.url == _assistant_channel_url(identity))
+    )).scalar_one_or_none()
+
+
+async def _get_or_create_assistant_channel(db, identity: str) -> NotificationChannel:
+    channel = await _find_assistant_channel(db, identity)
+    if channel is None:
+        channel = NotificationChannel(
+            name=f"assistant:{identity}", kind="assistant",
+            url=_assistant_channel_url(identity), enabled=True)
+        db.add(channel)
+        await db.flush()
+    return channel
+
+
+def _watch_dict(r: NotificationRule) -> dict:
+    return {
+        "id": r.id,
+        "eventClass": r.event_class,
+        "scopeRepo": r.scope_repo,
+        "scopeAutomation": r.scope_automation,
+        "once": bool(r.once),
+        "ownerSessionId": r.owner_session_id,
+        "expiresAt": r.expires_at.isoformat() if r.expires_at else None,
+        "createdAt": r.created_at.isoformat() if r.created_at else None,
+    }
+
+
+@router.post("/watches", status_code=status.HTTP_201_CREATED)
+async def create_watch(body: WatchBody, request: Request,
+                       identity: str = Depends(current_identity), db=Depends(get_db)):
+    """Create a proactive watch (spec v2 §4.7, Task 8.3): a `NotificationRule` scoped
+    to this identity's `assistant` channel, delivered into the drawer instead of an
+    outbound webhook. `kind`/`condition` are resolved against real, currently-emitted
+    event classes only — see `server/assistant/watches.py` for why `session`/`account`
+    kinds are not accepted."""
+    try:
+        event_class, scope_field = watch_conditions.resolve(body.kind, body.condition)
+    except watch_conditions.UnknownWatchCondition as e:
+        return _err("WATCH_CONDITION_UNSUPPORTED", str(e), 422)
+    if body.ttl_hours <= 0:
+        return _err("INVALID_TTL", "ttl_hours must be positive", 422)
+
+    channel = await _get_or_create_assistant_channel(db, identity)
+    existing = (await db.execute(
+        select(NotificationRule.id).where(NotificationRule.channel_id == channel.id)
+    )).scalars().all()
+    cap = get_settings().assistant_watch_max_per_identity
+    if len(existing) >= cap:
+        return _err("WATCH_CAP_EXCEEDED", f"at most {cap} watches per identity", 409)
+
+    rule = NotificationRule(
+        event_class=event_class, action="channel", channel_id=channel.id,
+        once=body.once, owner_session_id=getattr(request.state, "assistant_session_id", None),
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=body.ttl_hours),
+        **{scope_field: body.target},
+    )
+    db.add(rule)
+    await db.flush()
+    await record_audit(db, "assistant.watch.create", identity,
+                       {"id": rule.id, "kind": body.kind, "condition": body.condition,
+                        "target": body.target, "once": body.once})
+    await db.commit()
+    return _watch_dict(rule)
+
+
+@router.get("/watches")
+async def list_watches(identity: str = Depends(current_identity), db=Depends(get_db)) -> list[dict]:
+    channel = await _find_assistant_channel(db, identity)
+    if channel is None:
+        return []
+    rows = (await db.execute(
+        select(NotificationRule).where(NotificationRule.channel_id == channel.id)
+        .order_by(NotificationRule.created_at)
+    )).scalars().all()
+    return [_watch_dict(r) for r in rows]
+
+
+@router.delete("/watches/{watch_id}")
+async def delete_watch(watch_id: str, identity: str = Depends(current_identity),
+                       db=Depends(get_db)) -> dict:
+    channel = await _find_assistant_channel(db, identity)
+    if channel is not None:
+        rule = (await db.execute(
+            select(NotificationRule).where(
+                NotificationRule.id == watch_id, NotificationRule.channel_id == channel.id)
+        )).scalar_one_or_none()
+        if rule is not None:
+            await db.delete(rule)
+            await db.commit()
+            return {"ok": True}
+    raise HTTPException(404, "watch not found")

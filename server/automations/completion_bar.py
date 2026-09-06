@@ -100,13 +100,47 @@ def _is_code_goal(goal: str) -> bool:
     return not _RESEARCH_RE.search(goal or "")
 
 
+# The ``pr_resolution_source`` under which a stored resolution is the session's OWN
+# ``<!-- ccswitch:no-pr -->`` marker (see ``SessionOrchestrator._persist_status``).
+# Every other source has already been judged (``classifier``) or is not a completion
+# claim at all (``queue-drain``: the session never ran).
+SELF_CERTIFIED_SOURCE = "marker"
+
+
+def is_unverified_self_resolution(goal: str, facts: PrFacts,
+                                  pr_resolution: str | None,
+                                  pr_resolution_source: str | None) -> bool:
+    """True when *pr_resolution* is the session's own ``not-needed`` marker on a
+    repo-attached code goal with no PR behind it — the one shape where the claim
+    contradicts the goal unless something other than the claimant verifies it.
+
+    Prod 2026-09-06 (session fdc6b27a): an "implement X with persistent storage"
+    session researched, wrote no code, recommended a spec, offered to draft it and
+    emitted the no-PR marker; the marker's token then satisfied the bar with high
+    confidence. The agent's claim was its own verification. ``cancelled`` is a
+    decision rather than a completion claim and stays trusted; a research/Q&A goal
+    or a repo-less session is where a bare no-PR is met anyway, so nothing to verify."""
+    return (pr_resolution == "not-needed"
+            and pr_resolution_source == SELF_CERTIFIED_SOURCE
+            and facts.has_repo and _is_code_goal(goal))
+
+
 def met_bar(goal: str, goal_source: str, facts: PrFacts,
             pr_resolution: str | None = None, *,
+            pr_resolution_source: str | None = None,
             instructions: str | None = None) -> BarVerdict:
     """Is the session's goal genuinely met? Precedence: merged > armed >
-    open-unarmed > pr_resolution(no-PR) > instructions-arm-required > no-PR-nudge.
-    Only high-confidence verdicts are safe to auto-act on. A real PR fact always
-    overrides a pr_resolution (a stale 'no PR' claim never masks an actual PR).
+    open-unarmed > pr_resolution(no-PR, verified) > instructions-arm-required >
+    no-PR-nudge. Only high-confidence verdicts are safe to auto-act on. A real PR
+    fact always overrides a pr_resolution (a stale 'no PR' claim never masks an
+    actual PR).
+
+    ``pr_resolution_source`` decides whether a resolution is a verdict or a claim:
+    a marker-sourced ``not-needed`` on a repo-attached code goal
+    (``is_unverified_self_resolution``) does NOT short-circuit — it lands on the
+    low-confidence code-goal branch with a remedy that tells the session to finish
+    or ask, so the caller's classifier salvage judges the claim against the goal.
+    ``None`` (callers without provenance) keeps the resolution trusted.
 
     ``instructions`` is the session's initial prompt (or equivalent task text).
     When it contains an explicit ``--squash --auto`` arming step, the bar
@@ -134,7 +168,9 @@ def met_bar(goal: str, goal_source: str, facts: PrFacts,
             False, f"PR #{unarmed.number} is open but not armed",
             f"ready the PR and arm auto-merge: `gh pr ready {unarmed.number}` then "
             f"`gh pr merge {unarmed.number} --squash --auto`", "high")
-    if pr_resolution:
+    self_claim = is_unverified_self_resolution(goal, facts, pr_resolution,
+                                               pr_resolution_source)
+    if pr_resolution and not self_claim:
         return BarVerdict(True, f"session resolved no PR needed ({pr_resolution})",
                           None, "high")
     # When the task instructions include an explicit arming step (`--squash --auto`),
@@ -145,6 +181,14 @@ def met_bar(goal: str, goal_source: str, facts: PrFacts,
             False, "task instructions require auto-merge but no armed PR found",
             "open a PR (if needed) then arm auto-merge: `gh pr merge --squash --auto`",
             "high")
+    if self_claim:
+        return BarVerdict(
+            False, "code goal but no PR opened — session self-declared no PR needed "
+            "(unverified)",
+            "the objective is a code change, but no PR exists and the transcript does "
+            "not show the goal is already met. Either finish the work (open a PR and arm "
+            "auto-merge), or — if you need a decision from the user — ask it as a direct "
+            "question and emit no completion marker.", "low")
     if facts.has_repo and _is_code_goal(goal):
         return BarVerdict(False, "code goal but no PR opened",
                           "open a PR and arm auto-merge before finishing", "low")

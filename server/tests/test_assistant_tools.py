@@ -266,7 +266,7 @@ _ALL_OPTIONAL_TOOLS = ("list_sessions", "list_prs", "list_accounts", "list_hosts
                        "list_notification_channels", "list_notification_rules",
                        "get_quiet_hours", "test_notification", "set_quiet_hours",
                        "list_initiatives", "list_backlog_candidates", "get_backlog_groups",
-                       "get_cicd_findings", "get_pr_doctor_consolidation")
+                       "get_cicd_findings", "get_pr_doctor_consolidation", "list_watches")
 
 
 @pytest.mark.asyncio

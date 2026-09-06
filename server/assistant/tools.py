@@ -57,6 +57,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("get_deploy_status", ToolClass.READ, "Get deploy status"),
     ToolSpec("list_notification_channels", ToolClass.READ, "List notification channels"),
     ToolSpec("list_notification_rules", ToolClass.READ, "List notification rules"),
+    ToolSpec("list_watches", ToolClass.READ, "List watches"),
     ToolSpec("get_quiet_hours", ToolClass.READ, "Get quiet hours"),
     ToolSpec("test_notification", ToolClass.READ, "Preview notification routing"),
     ToolSpec("list_initiatives", ToolClass.READ, "List initiatives"),
@@ -93,6 +94,8 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("set_automation_enabled", ToolClass.MUTATION, "Enable/disable automation"),
     ToolSpec("create_notification_rule", ToolClass.MUTATION, "Create notification rule"),
     ToolSpec("delete_notification_rule", ToolClass.MUTATION, "Delete notification rule"),
+    ToolSpec("watch", ToolClass.MUTATION, "Create a watch"),
+    ToolSpec("delete_watch", ToolClass.MUTATION, "Delete a watch"),
     ToolSpec("set_quiet_hours", ToolClass.MUTATION, "Set quiet hours"),
     ToolSpec("advance_initiative", ToolClass.MUTATION, "Advance initiative"),
     ToolSpec("resolve_triage", ToolClass.MUTATION, "Accept/reject triage proposal"),
@@ -911,6 +914,38 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
     async def delete_notification_rule(args: dict[str, Any]) -> Any:
         return await api.delete(f"/api/notifications/rules/{args['id']}") or {"ok": True}
 
+    @spec_tool("watch",
+               "Get notified in the drawer (plus push) the next time something happens, "
+               "without starting a new model turn — good for 'let me know when X'. "
+               "kind='pr' with condition='breaks' watches target='owner/repo' for its CI "
+               "going red; kind='automation' with condition='error' or 'warn' watches "
+               "target=<automation id> for that severity. once=true (default) disables the "
+               "watch after it fires once; ttl_hours caps how long it stays armed (default "
+               "72). Watching a specific session or an account going limited is not "
+               "supported yet.",
+               _schema(("kind", "target", "condition"), kind=str, target=str, condition=str,
+                       once=bool, ttl_hours=int))
+    @guarded
+    async def watch(args: dict[str, Any]) -> Any:
+        body: dict[str, Any] = {"kind": args["kind"], "target": args["target"],
+                                "condition": args["condition"]}
+        if "once" in args:
+            body["once"] = args["once"]
+        if "ttl_hours" in args:
+            body["ttl_hours"] = args["ttl_hours"]
+        return await api.post("/api/assistant/watches", body)
+
+    @spec_tool("list_watches", "List this identity's active watches.", {})
+    @guarded
+    async def list_watches(args: dict[str, Any]) -> Any:
+        return await api.get("/api/assistant/watches")
+
+    @spec_tool("delete_watch", "Cancel a watch before it fires. Use the id from "
+               "list_watches.", {"id": str})
+    @guarded
+    async def delete_watch(args: dict[str, Any]) -> Any:
+        return await api.delete(f"/api/assistant/watches/{args['id']}") or {"ok": True}
+
     @spec_tool("set_quiet_hours",
                "Set (or clear, by omitting a field) the quiet-hours window during which "
                "non-critical notifications are suppressed. Times are 'HH:MM', 24h, local.",
@@ -1075,7 +1110,7 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
             list_archived_sessions, list_accounts, list_hosts, list_prs, get_pipeline_health,
             list_automations, get_automation_events, get_deploy_status,
             list_notification_channels, list_notification_rules, get_quiet_hours,
-            test_notification,
+            test_notification, list_watches,
             list_repos, list_branches, list_stage_models,
             list_initiatives, get_initiative,
             list_products, get_product, get_product_deps, get_priority_queue, list_triage,
@@ -1088,6 +1123,7 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
             resolve_permission, set_model, set_permission_mode, resolve_model_approval,
             archive_session, unarchive_session, set_autopilot_paused, fix_pr,
             set_automation_enabled, create_notification_rule, delete_notification_rule,
+            watch, delete_watch,
             set_quiet_hours, advance_initiative, resolve_triage, request_product_sync,
             delete_session, cancel_queued_session, ready_merge_pr,
             trigger_automation_action, dispatch_backlog, consolidate_prs]

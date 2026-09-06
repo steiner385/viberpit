@@ -156,6 +156,13 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("GET", r"/api/notifications/quiet-hours"),
         ("PUT", r"/api/notifications/quiet-hours"),
         ("POST", r"/api/notifications/test"),
+        # Watches (spec v2 §4.7, Task 8.3): the one `/api/assistant/*` exception —
+        # every other route under that prefix is blocked for the assistant token
+        # (`/session`, `/tokens`, `/status`), but a watch belongs to the thread that
+        # created it, so the tool needs to reach its own CRUD.
+        ("GET", r"/api/assistant/watches"),
+        ("POST", r"/api/assistant/watches"),
+        ("DELETE", r"/api/assistant/watches/[A-Za-z0-9-]+"),
     ]
 )
 

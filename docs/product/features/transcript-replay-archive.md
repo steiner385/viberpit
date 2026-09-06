@@ -71,7 +71,12 @@ oldest archived sessions once a configurable ceiling is exceeded.
   `EXDEV`) with free-byte + inode pre-checks so a restore never drives disk to zero (#305, #621,
   #624). Auto-archive is provenance-tracked (`autopilot`/`backlog-runner`/`completion`) and a manual
   unarchive pins the session opt-out so it is never auto-archived again and is fed a "why you're
-  back" seed prompt (#655, #658, #469, #651). A global setting can disable auto-archival (#783).
+  back" seed prompt (#655, #658, #469, #651). A global setting can disable auto-archival (#783);
+  it gates only the archive step — a self-declared `complete` is still verified against the
+  goal (open-question hold, completion bar, classifier salvage, corrective nudge) with the
+  toggle off. A session's own `<!-- ccswitch:no-pr -->` on a repo-attached code goal is a claim,
+  not a verdict: the bar refuses it until the PR-intent classifier confirms the goal genuinely
+  needed no code change, otherwise the session is nudged to finish or ask the user.
 - **Export & attachments.** `export.py` renders a session to downloadable Markdown (#180).
   `attachments.py` / `server/api/attachments.py` store per-turn file/image uploads content-addressed
   by sha256, dedup, reference-count deletion, sweep orphans, and enforce byte/count caps with
