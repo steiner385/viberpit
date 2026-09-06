@@ -511,3 +511,199 @@ def test_remote_pm_onboarding_counts_returns_dataclass():
     # Verify attribute access works — this is what the API does; a dict would raise
     # AttributeError here, which is exactly the second defect being fixed.
     assert view.map_pr_open is False
+
+
+# ---------------------------------------------------------------------------
+# Phase-3 tests: accept-bulk, overlay PATCH, drift re-propose, projectSlug
+# ---------------------------------------------------------------------------
+
+
+def _seed_one_pending(*, feature_slug=None, no_fit_suggestion=None, repo="o/r",
+                      number=1, project_slug="ccswitch"):
+    """Seed (optionally) a Feature plus a WorkItem and a pending TriageProposal
+    against the already-registered project. Returns (proposalId, workItemId)."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import Feature, Project, TriageProposal, WorkItem
+
+    async def _run():
+        async with db_session() as db:
+            p = (await db.execute(select(Project).where(
+                Project.slug == project_slug))).scalar_one()
+            feat = None
+            if feature_slug:
+                feat = Feature(project_id=p.id, slug=feature_slug,
+                               title=feature_slug, state="live")
+                db.add(feat)
+                await db.flush()
+            w = WorkItem(repo=repo, number=number, kind="issue", title="Fix",
+                         state="open", triage_state="unclassified")
+            db.add(w)
+            await db.flush()
+            tp = TriageProposal(
+                work_item_id=w.id, rationale="looks like sessions",
+                reach=3, impact=2, effort=1, confidence=2, status="pending",
+                proposed_feature_id=(feat.id if feat and not no_fit_suggestion
+                                     else None),
+                no_fit_suggestion=no_fit_suggestion)
+            db.add(tp)
+            await db.flush()
+            return tp.id, w.id
+    return asyncio.run(_run())
+
+
+def test_accept_bulk_copies_overlay():
+    """accept-bulk runs the SAME copy-onto-overlay path as single-accept and
+    reports per-id outcomes in a 200 aggregate."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import WorkItem
+
+    with _client() as c:
+        _register(c, "Ccswitch", repo="o/r")
+        pid, wid = _seed_one_pending(feature_slug="sessions")
+
+        r = c.post("/api/pm/triage/accept-bulk",
+                   json={"ids": [pid, "ghost"]}, headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["accepted"] == 1
+        by_id = {x["id"]: x for x in body["results"]}
+        assert by_id[pid]["ok"] is True
+        assert by_id["ghost"]["ok"] is False
+        assert by_id["ghost"]["error"] == "not_found"
+
+        # re-accepting an already-accepted proposal is not_pending, not a 500
+        r2 = c.post("/api/pm/triage/accept-bulk", json={"ids": [pid]},
+                    headers=IDENTITY_HEADERS)
+        assert r2.status_code == 200, r2.text
+        assert r2.json()["accepted"] == 0
+        assert r2.json()["results"][0]["error"] == "not_pending"
+
+        async def _check():
+            async with db_session() as db:
+                w = (await db.execute(select(WorkItem).where(
+                    WorkItem.id == wid))).scalar_one()
+                assert w.triage_state == "classified"
+                assert w.classified_by == "human"
+                assert w.feature_id is not None
+                assert (w.reach, w.impact, w.effort, w.confidence) == (3, 2, 1, 2)
+        asyncio.run(_check())
+
+        # the accepted proposal has left the pending queue
+        listed = c.get("/api/pm/triage", headers=IDENTITY_HEADERS)
+        assert listed.status_code == 200
+        assert [i["id"] for i in listed.json()] == []
+
+
+def test_overlay_patch_manual_classify():
+    with _client() as c:
+        _register(c, "Ccswitch", repo="o/r")
+        _pid, wid = _seed_one_pending(feature_slug="sessions")
+
+        r = c.patch(f"/api/pm/work-items/{wid}/overlay",
+                    json={"reach": 5, "triageState": "classified"},
+                    headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["reach"] == 5
+        assert body["triageState"] == "classified"
+        assert body["classifiedBy"] == "human"
+        assert body["classifiedAt"] is not None
+
+        bad = c.patch(f"/api/pm/work-items/{wid}/overlay",
+                      json={"triageState": "bogus"}, headers=IDENTITY_HEADERS)
+        assert bad.status_code == 422
+        assert bad.json()["detail"]["error"] == "bad_triage_state"
+
+        missing = c.patch("/api/pm/work-items/nope/overlay",
+                          json={"reach": 1}, headers=IDENTITY_HEADERS)
+        assert missing.status_code == 404
+        assert missing.json()["detail"]["error"] == "not_found"
+
+        bad_feat = c.patch(f"/api/pm/work-items/{wid}/overlay",
+                           json={"featureId": "ghost"}, headers=IDENTITY_HEADERS)
+        assert bad_feat.status_code == 404
+        assert bad_feat.json()["detail"]["error"] == "feature_not_found"
+
+
+def test_drift_accept_reproposes_orphaned_siblings():
+    """Two no_fit items share a suggestion; the drift map merged a matching
+    Feature. Accepting one links it AND re-proposes the sibling against the new
+    feature as a fresh pending proposal (design §6.3)."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import Feature, Project, TriageProposal, WorkItem
+
+    with _client() as c:
+        _register(c, "Ccswitch", repo="o/r")
+
+        async def _seed():
+            async with db_session() as db:
+                p = (await db.execute(select(Project).where(
+                    Project.slug == "ccswitch"))).scalar_one()
+                feat = Feature(project_id=p.id, slug="offline-mode",
+                               title="Offline mode", state="live")
+                db.add(feat)
+                await db.flush()
+                ids = []
+                for n in (1, 2):
+                    w = WorkItem(repo="o/r", number=n, kind="issue",
+                                 title=f"#{n}", state="open",
+                                 triage_state="unclassified")
+                    db.add(w)
+                    await db.flush()
+                    tp = TriageProposal(work_item_id=w.id, status="pending",
+                                        no_fit_suggestion="offline-mode",
+                                        rationale="offline")
+                    db.add(tp)
+                    await db.flush()
+                    ids.append((tp.id, w.id))
+                return ids
+        (pid1, wid1), (pid2, _wid2) = asyncio.run(_seed())
+
+        r = c.post("/api/pm/triage/accept-bulk", json={"ids": [pid1]},
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json()["accepted"] == 1
+
+        async def _check():
+            async with db_session() as db:
+                sib = (await db.execute(select(TriageProposal).where(
+                    TriageProposal.id == pid2))).scalar_one()
+                accepted_item = (await db.execute(select(WorkItem).where(
+                    WorkItem.id == wid1))).scalar_one()
+                return (sib.status, sib.proposed_feature_id,
+                        sib.no_fit_suggestion, accepted_item.feature_id)
+        status_, fid, no_fit, accepted_fid = asyncio.run(_check())
+        # the sibling stays pending but now points at the newly-merged feature
+        assert status_ == "pending"
+        assert fid is not None
+        assert no_fit is None
+        # the accepted item itself was linked to the drift-resolved feature
+        assert accepted_fid == fid
+
+
+def test_triage_rows_carry_project_slug():
+    """The inbox header groups by project, so every row resolves its project
+    server-side via ProjectRepo.repo → Project.slug (the client must not guess)."""
+    with _client() as c:
+        _register(c, "Ccswitch", repo="o/r")
+        _seed_one_pending(feature_slug="sessions", repo="o/r", number=1)
+        # an item whose repo belongs to no project → projectSlug is null
+        _seed_one_pending(feature_slug=None, repo="other/unowned", number=7)
+
+        rows = c.get("/api/pm/triage", headers=IDENTITY_HEADERS)
+        assert rows.status_code == 200, rows.text
+        by_repo = {row["repo"]: row for row in rows.json()}
+        assert by_repo["o/r"]["projectSlug"] == "ccswitch"
+        assert by_repo["other/unowned"]["projectSlug"] is None
+
+        # the projectSlug filter still narrows the list
+        filtered = c.get("/api/pm/triage?projectSlug=ccswitch",
+                         headers=IDENTITY_HEADERS)
+        assert filtered.status_code == 200
+        assert [row["repo"] for row in filtered.json()] == ["o/r"]
