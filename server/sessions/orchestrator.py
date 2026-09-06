@@ -5065,47 +5065,6 @@ class SessionOrchestrator:
     # ``pm_onboard_spawn_map(slug, scope="diff", …)``.
     # ------------------------------------------------------------------
 
-    async def _pm_project_slug_for_repo(self, repo: str) -> str | None:
-        """The slug of the project that owns *repo*, or ``None``.
-
-        ``None`` means "no project owns this repo" and every caller treats it as
-        *skip, do not spawn*: the phase-2 seams are keyed by project slug, so
-        there is nothing to classify against and no map to diff. Guessing a
-        project would bind items to another product's feature rows.
-
-        The API layer answers the same question in
-        ``server/api/pm.py:_owning_projects_by_repo`` (it needs the project *id*
-        too); the tie-break MUST agree with it — ``ProjectRepo``'s uniqueness is
-        ``(project_id, repo)`` and nothing forbids two projects registering one
-        repo, so the lowest ``Project.slug`` wins deterministically rather than
-        an arbitrary row flipping between ticks.
-        """
-        async with db_session() as db:
-            return (await self._pm_owning_project_slugs(db, {repo})).get(repo)
-
-    @staticmethod
-    async def _pm_owning_project_slugs(db, repos: set[str]) -> dict[str, str]:
-        """``repo`` → owning project slug for *repos*, in ONE query.
-
-        The batched core of :meth:`_pm_project_slug_for_repo`; the loop resolves a
-        whole classify batch / every drift cluster at once, so this must not be a
-        per-repo round trip."""
-        from sqlalchemy import select
-        from server.db.models import Project, ProjectRepo
-        wanted = {r for r in repos if r}
-        if not wanted:
-            return {}
-        rows = (await db.execute(
-            select(ProjectRepo.repo, Project.slug)
-            .join(Project, Project.id == ProjectRepo.project_id)
-            .where(ProjectRepo.repo.in_(wanted))
-            .order_by(Project.slug))).all()
-        out: dict[str, str] = {}
-        for repo, slug in rows:
-            if repo and slug and repo not in out:  # first row wins → lowest slug
-                out[repo] = slug
-        return out
-
     async def _pm_triage_read_config(self) -> tuple[str, dict]:
         """The pm-triage row's (mode, config) merged onto schema defaults.
 
@@ -5210,11 +5169,13 @@ class SessionOrchestrator:
         """
         from sqlalchemy import select
         from server.db.models import Feature, Project
+        from server.pm.repo_project import owning_projects_by_repo
         latched: set[str] = set()
         slugs: dict[str, str] = {}
         async with db_session() as db:
-            slugs = await self._pm_owning_project_slugs(
-                db, {c.repo for c in clusters})
+            slugs = {repo: owner.slug for repo, owner in (
+                await owning_projects_by_repo(
+                    db, {c.repo for c in clusters})).items()}
             for c in clusters:
                 slug = slugs.get(c.repo)
                 if slug is None:
@@ -5332,37 +5293,43 @@ class SessionOrchestrator:
         against that project's feature list, so an item from another project's
         repo would be classified against the wrong map. Items outside the leading
         item's project stay pending and lead a later tick."""
+        from server.pm.repo_project import owning_projects_by_repo
         batch = list(items[:count])
         if not batch:
             return None
         async with db_session() as db:
-            owners = await self._pm_owning_project_slugs(
-                db, {i.repo for i in batch})
-        slug = owners.get(batch[0].repo)
-        if slug is None:
+            owners = await owning_projects_by_repo(db, {i.repo for i in batch})
+        owner = owners.get(batch[0].repo)
+        if owner is None:
             await self._pm_triage_ctx.emit(
                 "info", f"no project owns {batch[0].repo} — skipping classify",
                 kind="skipped", target=batch[0].repo)
             return None
-        scoped = [i for i in batch if owners.get(i.repo) == slug]
+        scoped = [i for i in batch if owners.get(i.repo) == owner]
         return await self.pm_classify_run(
-            slug, items=[(i.repo, i.number, i.kind) for i in scoped])
+            owner.slug, items=[(i.repo, i.number, i.kind) for i in scoped])
 
     async def _pm_triage_propose_map_diff(self, suggestion, numbers, repo):
         """Open a scoped archaeology-diff PR for the unnamed capability by
         REUSING the parameterized phase-2 map seam ``pm_onboard_spawn_map`` with
         ``scope="diff"`` — there is NO second map-synthesis path (constitution
         VI). On merge, pm-sync indexes the new Feature and the accept path
-        re-proposes the orphaned items."""
-        slug = await self._pm_project_slug_for_repo(repo)
-        if slug is None:
+        re-proposes the orphaned items.
+
+        A repo no project owns is a skip, never a guess: the map seam is keyed by
+        project slug and ``Feature.slug`` is unique only within a project, so a
+        guessed project would diff another product's map."""
+        from server.pm.repo_project import owning_projects_by_repo
+        async with db_session() as db:
+            owner = (await owning_projects_by_repo(db, {repo})).get(repo)
+        if owner is None:
             await self._pm_triage_ctx.emit(
                 "info",
                 f"no project owns {repo} — skipping map diff for '{suggestion}'",
                 kind="skipped", target=repo)
             return None
         return await self.pm_onboard_spawn_map(
-            slug, scope="diff", suggestion=suggestion,
+            owner.slug, scope="diff", suggestion=suggestion,
             item_numbers=tuple(numbers), repo=repo)
 
     async def _pm_triage_mark_stale(self, slugs) -> None:

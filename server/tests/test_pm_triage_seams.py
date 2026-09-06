@@ -114,19 +114,14 @@ def _triage_orch(*, onboard=None, emitter=None):
     return orch
 
 
-# --------------------------------------------------------------------------- #
-# repo → project                                                              #
-# --------------------------------------------------------------------------- #
-
-
-@pytest.mark.asyncio
-async def test_project_slug_for_repo_resolves_and_returns_none(db_env):
-    await _seed(db_env)
-    orch = _triage_orch()
-    assert await orch._pm_project_slug_for_repo(REPO) == "ccswitch"
-    assert await orch._pm_project_slug_for_repo(OTHER_REPO) == "kindash"
-    # An unregistered repo maps to no project — callers must skip, not guess.
-    assert await orch._pm_project_slug_for_repo("someone/unknown") is None
+# repo → project ownership itself is NOT tested here: the orchestrator no longer
+# owns a resolver to test. Every seam below routes through the one implementation
+# in ``server/pm/repo_project.py`` (``test_pm_repo_project.py`` pins the
+# lowest-slug tie-break and the batch shape); the seams' own contract — resolve,
+# and SKIP rather than guess when no project owns the repo — stays pinned by
+# ``test_classify_skips_when_repo_maps_to_no_project``,
+# ``test_propose_map_diff_skips_when_repo_maps_to_no_project`` and
+# ``test_cluster_repo_with_no_project_is_latched``.
 
 
 # --------------------------------------------------------------------------- #

@@ -34,6 +34,7 @@ from server.pm.desired_state import STATUS_READY
 from server.pm.mirror_store import deps_in_repos
 from server.pm.queue import MIN_STATUS_OPTIONS, rank
 from server.pm.queue_store import load_queue_rows
+from server.pm.repo_project import owning_projects_by_repo
 from server.pm.score import RICE_FIELDS, validate_rice
 from server.pm.sync_request import request_project_sync
 
@@ -676,33 +677,6 @@ def _triage_to_dict(prop: TriageProposal, wi: WorkItem | None,
     }
 
 
-async def _owning_projects_by_repo(db, repos: set[str]) -> dict[str, tuple[str, str]]:
-    """``repo`` → ``(project_id, project_slug)`` for the project that owns it.
-
-    ONE query, and the single place that answers "which project does this repo
-    belong to?" — the triage list's ``projectSlug`` and the drift branch's feature
-    scoping must not disagree.
-
-    Ownership is ambiguous by construction: ``ProjectRepo``'s uniqueness is
-    ``(project_id, repo)`` and ``POST /projects`` does no cross-project check, so the
-    same repo CAN be registered under several projects. We resolve that
-    deterministically — lowest ``Project.slug`` wins — so the winner cannot flip
-    between requests (an unordered dict build picked an arbitrary row).
-    """
-    if not repos:
-        return {}
-    rows = (await db.execute(
-        select(ProjectRepo.repo, Project.id, Project.slug)
-        .join(Project, Project.id == ProjectRepo.project_id)
-        .where(ProjectRepo.repo.in_(repos))
-        .order_by(Project.slug))).all()
-    out: dict[str, tuple[str, str]] = {}
-    for repo, project_id, slug in rows:
-        if repo and repo not in out:  # first row wins → lowest slug
-            out[repo] = (project_id, slug)
-    return out
-
-
 @router.get("/triage")
 async def list_triage(
     projectSlug: str | None = None,
@@ -730,8 +704,8 @@ async def list_triage(
     # header can group rows by project (the client must not infer it from repo).
     repos = {w.repo for w in work_items.values() if w.repo}
     slug_by_repo: dict[str, str] = {
-        repo: slug for repo, (_pid, slug)
-        in (await _owning_projects_by_repo(db, repos)).items()}
+        repo: owner.slug for repo, owner
+        in (await owning_projects_by_repo(db, repos)).items()}
     allowed_repos: set[str] | None = None
     if projectSlug:
         proj = (await db.execute(select(Project).where(
@@ -783,12 +757,12 @@ async def _repropose_siblings(db, accepted: TriageProposal, feature_id: str,
             TriageProposal.status == "pending",
             TriageProposal.no_fit_suggestion == accepted.no_fit_suggestion)
     )).all()
-    owners = await _owning_projects_by_repo(
+    owners = await owning_projects_by_repo(
         db, {repo for _sib, repo in candidates if repo})
     moved: list[str] = []
     for sib, repo in candidates:
         owner = owners.get(repo) if repo else None
-        if owner is None or owner[0] != project_id:
+        if owner is None or owner.project_id != project_id:
             continue
         sib.proposed_feature_id = feature_id
         sib.no_fit_suggestion = None  # now has a home; no longer a drift item
@@ -824,16 +798,16 @@ async def _apply_accept(db, proposal: TriageProposal, identity: str, *,
     # Projects reconciler, board panes, roadmap scoring). If the item's repo maps
     # to no project we cannot scope the lookup, so the branch does not fire.
     if feature_id is None and proposal.no_fit_suggestion:
-        owner = (await _owning_projects_by_repo(
+        owner = (await owning_projects_by_repo(
             db, {wi.repo} if wi.repo else set())).get(wi.repo or "")
         if owner is not None:
             feat = (await db.execute(select(Feature).where(
-                Feature.project_id == owner[0],
+                Feature.project_id == owner.project_id,
                 Feature.slug == proposal.no_fit_suggestion))).scalar_one_or_none()
             if feat is not None:
                 feature_id = feat.id
                 moved = await _repropose_siblings(db, proposal, feat.id,
-                                                  project_id=owner[0])
+                                                  project_id=owner.project_id)
                 if moved:
                     # Spec §7: every accept mutation is audited, and this one
                     # rewrites proposals the caller never named (destroying their
@@ -841,7 +815,7 @@ async def _apply_accept(db, proposal: TriageProposal, identity: str, *,
                     await record_audit(
                         db=db, type="pm.triage.repropose", identity=identity,
                         detail={"proposalId": proposal.id,
-                                "projectId": owner[0],
+                                "projectId": owner.project_id,
                                 "featureId": feat.id,
                                 "featureSlug": proposal.no_fit_suggestion,
                                 "siblingProposalIds": moved})
