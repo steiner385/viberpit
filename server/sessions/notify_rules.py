@@ -31,6 +31,7 @@ EVENT_CLASSES: frozenset[str] = frozenset(
         "automation_warn",
         "pr_broke",
         "pr_merged",
+        "account_limited",
     }
 )
 
@@ -46,6 +47,7 @@ class Event:
     account: str | None = None
     automation: str | None = None
     url: str | None = None
+    session_id: str | None = None
 
 
 @dataclass
@@ -68,6 +70,7 @@ class RuleView:
     priority: int
     created_at: object
     once: bool = False
+    scope_session_id: str | None = None
     owner_session_id: str | None = None
     expires_at: datetime | None = None
 
@@ -100,6 +103,8 @@ def scope_matches(rule: RuleView, ev: Event) -> bool:
     if rule.scope_account is not None and rule.scope_account != ev.account:
         return False
     if rule.scope_automation is not None and rule.scope_automation != ev.automation:
+        return False
+    if rule.scope_session_id is not None and rule.scope_session_id != ev.session_id:
         return False
     return True
 
