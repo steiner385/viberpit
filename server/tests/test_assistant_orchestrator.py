@@ -12,7 +12,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from server.assistant.options import DISALLOWED_BUILTINS, assistant_options
-from server.assistant.prompt import ASSISTANT_SYSTEM_PROMPT
+from server.assistant.prompt import (ASSISTANT_SYSTEM_PROMPT, OPERATOR_TOOLS_DISABLED_LINE,
+                                     OPERATOR_TOOLS_ENABLED_LINE)
 from server.db import dispose_db, init_db
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.types import ASSISTANT_KIND, is_assistant
@@ -65,7 +66,13 @@ def test_overlay_disables_builtins():
     assert inner["type"] == "sdk" and inner["name"] == "ccswitch"
     assert ov["strict_mcp_config"] is True
     assert ov["max_turns"] == 7 and ov["model"] == "sonnet" and ov["effort"] == "low"
-    assert ov["system_prompt"] == ASSISTANT_SYSTEM_PROMPT
+    assert ov["system_prompt"] == ASSISTANT_SYSTEM_PROMPT + OPERATOR_TOOLS_DISABLED_LINE
+
+
+def test_overlay_appends_the_operator_enabled_line_when_operator_true():
+    ov = assistant_options(server=_server(), max_turns=7, model="sonnet", operator=True)
+    assert ov["system_prompt"] == ASSISTANT_SYSTEM_PROMPT + OPERATOR_TOOLS_ENABLED_LINE
+    assert OPERATOR_TOOLS_DISABLED_LINE not in ov["system_prompt"]
 
 
 def test_overlay_omits_setting_sources():
@@ -88,7 +95,7 @@ def test_overlay_never_overrides_cli_path():
     merged = merge_options_overlay(base, {**ov, "cli_path": "/nope/claude"})
     assert merged["cli_path"] == "/home/tony/.local/bin/claude"
     assert merged["model"] == "sonnet"                       # overlay wins elsewhere
-    assert merged["system_prompt"] == ASSISTANT_SYSTEM_PROMPT
+    assert merged["system_prompt"] == ASSISTANT_SYSTEM_PROMPT + OPERATOR_TOOLS_DISABLED_LINE
     assert base["model"] == "opus"                           # base is not mutated
 
 

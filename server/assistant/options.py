@@ -21,7 +21,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from .prompt import ASSISTANT_SYSTEM_PROMPT
+from .prompt import (ASSISTANT_SYSTEM_PROMPT, OPERATOR_TOOLS_DISABLED_LINE,
+                     OPERATOR_TOOLS_ENABLED_LINE)
 
 # Built-ins denied by name in addition to ``tools=[]``: belt and braces, because the
 # CLI's built-in tool set is not something the SDK lets us enumerate
@@ -40,18 +41,25 @@ DISALLOWED_BUILTINS: tuple[str, ...] = (
 )
 
 
-def assistant_options(*, server: Any, max_turns: int, model: str) -> dict[str, Any]:
+def assistant_options(*, server: Any, max_turns: int, model: str,
+                      operator: bool = False) -> dict[str, Any]:
     """The options overlay for one assistant session.
 
     *server* is the in-process MCP server config from
     ``server.assistant.server.build_server`` (an ``McpSdkServerConfig`` mapping); it is
     mounted under the wire name ``ccswitch`` so the CLI sees ``mcp__ccswitch__*`` tools.
+
+    *operator* must match the ``operator`` flag *server* was built with
+    (``operator_tools_enabled(db)``, spec v2 §7, Task 9.3) — it only selects which frozen
+    prompt line to append, so a caller building a mismatched pair would give the model a
+    prompt that describes a tool surface it does not actually have.
     """
     return {
         # A plain string REPLACES the factory's claude_code preset + ccswitch marker
         # append: the completion/PR/model-request marker contracts are coding-session
         # contracts and mean nothing here.
-        "system_prompt": ASSISTANT_SYSTEM_PROMPT,
+        "system_prompt": ASSISTANT_SYSTEM_PROMPT + (
+            OPERATOR_TOOLS_ENABLED_LINE if operator else OPERATOR_TOOLS_DISABLED_LINE),
         "tools": [],
         "disallowed_tools": list(DISALLOWED_BUILTINS),
         "mcp_servers": {"ccswitch": server},

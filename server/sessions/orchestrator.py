@@ -1208,7 +1208,7 @@ class SessionOrchestrator:
             operator = await operator_tools_enabled(db)
         self.register_assistant_overlay(session_id, assistant_options(
             server=build_server(api, operator=operator), max_turns=cfg.assistant_max_turns,
-            model=model or cfg.assistant_model))
+            model=model or cfg.assistant_model, operator=operator))
         return api
 
     def _session_factory(self, session_id: str):
