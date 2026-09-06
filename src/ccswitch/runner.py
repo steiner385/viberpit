@@ -12,6 +12,7 @@ from .config import load_config
 from .configdir import compose
 from .crypto import read_oauth_token
 from .detect import detect_limit_in_result
+from .engines import AgentEngine, InvalidAgentEngine, parse_agent_engine
 from .selector import AllAccountsBusy
 
 
@@ -39,15 +40,39 @@ def _last_result(stdout: str) -> dict | None:
     return None
 
 
+def _parse_leading_flags(argv: list[str]) -> tuple[bool, str | None, list[str]]:
+    """Consume ccrun's own leading flags (``--wait``, ``--engine``); everything else
+    passes through verbatim to the underlying agent binary."""
+    wait = False
+    engine_value: str | None = None
+    while argv:
+        if argv[0] == "--wait":
+            wait = True
+            argv = argv[1:]
+        elif argv[0] == "--engine" and len(argv) > 1:
+            engine_value = argv[1]
+            argv = argv[2:]
+        elif argv[0].startswith("--engine="):
+            engine_value = argv[0].split("=", 1)[1]
+            argv = argv[1:]
+        else:
+            break
+    return wait, engine_value, argv
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    wait = False
-    if argv and argv[0] == "--wait":
-        wait = True
-        argv = argv[1:]
+    wait, engine_value, argv = _parse_leading_flags(argv)
+    try:
+        engine = parse_agent_engine(engine_value, legacy_default=True)
+    except InvalidAgentEngine as exc:
+        print(f"ccrun: {exc}", file=sys.stderr)
+        return 64
     if argv and argv[0] == "--":
         argv = argv[1:]
     cfg = load_config()
+    if engine is AgentEngine.CODEX:
+        return accounts.codex_cli_launch_gate(cfg, "ccrun")
     tried: set[str] = set()
     seen_resets: list[datetime] = []
     while True:
