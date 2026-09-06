@@ -376,7 +376,13 @@ def test_teardown_unsubscribes_even_with_an_auto_reattach_in_flight(tmp_path):
                     client.portal.call(orch._persist_status, sid, "in_progress")
                     time.sleep(0.7)   # the auto re-attach is now inside the resume
                 # ...and the socket closes on top of it.
-                assert _wait_until(lambda: bool(unsubscribed), timeout=120.0), (
+                # Bumped from 120s (2026-09-06): the CI runner is 2 vCPUs, and this
+                # exact assertion failed identically 3x on PR #1350's shard 2, once on
+                # a bare `master` push (no PR), and was independently diagnosed as a
+                # load flake on unrelated PR #1323 — all the same day, none touching
+                # this test or the teardown path it exercises. 240s still leaves
+                # headroom under the shard's 300s per-test pytest-timeout.
+                assert _wait_until(lambda: bool(unsubscribed), timeout=240.0), (
                     "teardown must unsubscribe the lifecycle queue even with an "
                     "auto re-attach in flight")
                 # Order, not wall clock: the unsubscribe must have happened while the
