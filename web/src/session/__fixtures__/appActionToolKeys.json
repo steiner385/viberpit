@@ -8,6 +8,7 @@
   "create_session",
   "delete_notification_rule",
   "delete_session",
+  "delete_watch",
   "dispatch_backlog",
   "export_session",
   "fix_pr",
@@ -45,6 +46,7 @@
   "list_sessions",
   "list_stage_models",
   "list_triage",
+  "list_watches",
   "preview_schedule",
   "ready_merge_pr",
   "refresh_account",
@@ -66,5 +68,6 @@
   "test_notification",
   "trigger_automation_action",
   "unarchive_session",
-  "upgrade_host"
+  "upgrade_host",
+  "watch"
 ]
