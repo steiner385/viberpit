@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from server.pipeline.merge_train import MergeTrainState
     from server.pipeline.track import StageModel
     from server.pm.onboarding import ProjectOnboardingView
+    from server.sessions.native_display import NativeDisplay
     from server.sessions.replay import EngineReplay
 
 from ccswitch import accounts as ccswitch_accounts
@@ -97,6 +98,7 @@ from server.sessions.recovery import (
     STALL_TIMEOUT, STALL_TIMEOUT_THROTTLED,
 )
 from server.sessions.selection import AllAccountsBusy, Picked, select_account  # noqa: F401
+from server.sessions.display_policy import DISPLAY_NATIVE, DISPLAY_VIRTUAL, resolve_display_mode
 from server.sessions.background_tasks import scan_open_background_tasks, build_rearm_prompt, OpenBgTask
 from server.obs.context import log_event, PROC_EPOCH
 from server.sessions.title_generator import generate_title
@@ -564,6 +566,9 @@ class SessionOrchestrator:
         self._schedule_blocked: dict[str, bool] = {}
         self._sdk_factory = sdk_factory or real_sdk_factory
         self._x11 = x11  # X11Manager | None — per-session virtual displays
+        # NativeDisplay | None — the host's real X display; wired by app.py / ipc.serve
+        # exactly like _x11. Sessions created from that host's own desktop render here.
+        self._native: "NativeDisplay | None" = None
         self._copilot = copilot  # CopilotProxyManager | None — per-account translating proxy
         self._copilot_auth = copilot_auth  # CopilotAuthManager | None — device-flow auth manager
         # CodexRunnerManager | None — per-account `codex app-server` supervision.
@@ -1259,6 +1264,18 @@ class SessionOrchestrator:
             model=model or cfg.assistant_model, operator=operator))
         return api
 
+    def _display_env(self, session_id: str) -> dict[str, str]:
+        """The DISPLAY/XAUTHORITY env for this session's process — the one place it
+        is chosen. Native records get the host desktop (no XAUTHORITY, see
+        NativeDisplay); everything else the Xvfb lease if one exists. A native record
+        whose desktop is gone gets {} — the same degrade an exhausted pool gives."""
+        rec = self._records.get(session_id)
+        if rec is not None and rec.display_mode == DISPLAY_NATIVE:
+            if self._native is not None and self._native.available():
+                return self._native.env()
+            return {}
+        return self._x11.env_for(session_id) if self._x11 else {}
+
     def _session_factory(self, session_id: str):
         """Return a factory closure injecting this session's DISPLAY and PreCompact hook.
 
@@ -1270,9 +1287,8 @@ class SessionOrchestrator:
         existing factory — including the test fakes — keeps its current signature.
         """
         base = self._sdk_factory
-        x11 = self._x11
         def _factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
-            extra = {**(x11.env_for(session_id) if x11 else {}), **self._oat_env(session_id)}
+            extra = {**self._display_env(session_id), **self._oat_env(session_id)}
             kw: dict = {"on_pre_compact": on_pre_compact}
             overlay = getattr(self, "_assistant_overlays", {}).get(session_id)
             # `dict` and not merely "not None": the Codex overlay for an assistant
@@ -1866,6 +1882,8 @@ class SessionOrchestrator:
         kind: str | None = None,
         owner_identity: str | None = None,
         engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
+        client_node: str | None = None,
+        display: str | None = None,
     ) -> SessionRecord:
         """Pick an account, start an AgentDriver, persist a DB row, return a SessionRecord.
 
@@ -1954,7 +1972,8 @@ class SessionOrchestrator:
             attachment_ids=attachment_ids, name_is_auto=name_is_auto,
             origin=origin, origin_ref=origin_ref, model=model,
             reasoning_effort=reasoning_effort, kind=kind,
-            owner_identity=owner_identity, engine=selected_engine)
+            owner_identity=owner_identity, engine=selected_engine,
+            client_node=client_node, display=display)
 
     def _active_session_count(self) -> int:
         """Sessions consuming a runtime capacity slot (see CAPACITY_EXEMPT_STATUSES).
@@ -2818,6 +2837,8 @@ class SessionOrchestrator:
         preexisting_row: bool = False,
         resume: str | None = None,
         engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
+        client_node: str | None = None,
+        display: str | None = None,
     ) -> SessionRecord:
         """Start an AgentDriver, persist/update a DB row, return a SessionRecord.
 
@@ -2887,13 +2908,6 @@ class SessionOrchestrator:
             selected_engine, account, cwd, kind
         )
 
-        # Allocate a virtual X11 display for this session (if X11Manager wired in).
-        if self._x11 is not None:
-            try:
-                await self._x11.start_display(session_id)
-            except Exception:
-                log.exception("session.display_start_failed id=%s", session_id)
-
         # Ensure the Copilot proxy is running for copilot-backed accounts.
         if self._copilot is not None and _provider_of(account) == _copilot_mod.PROVIDER:
             await self._copilot.ensure(account)
@@ -2909,6 +2923,24 @@ class SessionOrchestrator:
         # A session promoted from the queue keeps its queue-time created_at (and
         # host stamp); a fresh spawn is born now, on this host (worker) / NULL.
         _prior = self._records.get(session_id)
+        # Decide where this session's GUI renders — ONCE, here — then either lease a
+        # virtual Xvfb display or leave the host's real one to _display_env. A
+        # previously-queued/resumed row keeps its persisted decision.
+        display_mode = getattr(_prior, "display_mode", None) or resolve_display_mode(
+            requested=display, client_node=client_node, runner=self_host_name(),
+            native_available=self._native is not None and self._native.available())
+        if display_mode == DISPLAY_VIRTUAL and self._x11 is not None:
+            try:
+                await self._x11.start_display(session_id)
+            except Exception:
+                log.exception("session.display_start_failed id=%s", session_id)
+        elif display_mode == DISPLAY_NATIVE:
+            # self._native can still be None here: a queued/resumed row's persisted
+            # decision (via _prior) wins even if this host no longer has native
+            # display wired up. _display_env degrades that case to {} at inject time.
+            log.info("session.display_native id=%s client_node=%s display=%s",
+                     session_id, client_node,
+                     self._native.display if self._native is not None else None)
         _host = getattr(_prior, "host", None) or local_host_stamp()
         # Belt-and-suspenders for #1107: the queue-drain call site threads the
         # row's engine_session_id through `resume` explicitly, but if some future
@@ -2938,6 +2970,7 @@ class SessionOrchestrator:
             reasoning_effort=reasoning_effort, host=_host,
             kind=kind, owner_identity=owner_identity,
             last_activity_at=time.monotonic(),
+            display_mode=display_mode,
         )
         self._records[session_id] = _pre_record
         # Track the spawn from the pre-seed until the driver is registered (or the
@@ -3013,16 +3046,21 @@ class SessionOrchestrator:
                 self._pending_initial_attachment_ids[session_id] = list(attachment_ids)
 
             if preexisting_row:
-                # UPDATE the existing queued row → idle with resolved account/cwd/branch/model
+                # UPDATE the existing queued row → idle with resolved account/cwd/branch/model.
+                # display_mode only overwrites a NULL (legacy/pre-decision row) — a row
+                # that already carries a persisted decision (native or virtual) keeps it,
+                # matching the in-memory `display_mode` resolved above from `_prior`.
                 async with db_session() as db:
                     from sqlalchemy import update as sa_update
+                    from sqlalchemy import func as sa_func
                     await db.execute(
                         sa_update(DbSession)
                         .where(DbSession.id == session_id)
                         .values(status="idle", account_name=account,
                                 engine=selected_engine.value, cwd=cwd,
                                 branch=branch_name, model=model,
-                                reasoning_effort=reasoning_effort)
+                                reasoning_effort=reasoning_effort,
+                                display_mode=sa_func.coalesce(DbSession.display_mode, display_mode))
                     )
             else:
                 # Persist DB row (fresh session, not previously queued)
@@ -3048,6 +3086,7 @@ class SessionOrchestrator:
                         host=_host,
                         kind=kind,
                         owner_identity=owner_identity,
+                        display_mode=display_mode,
                     )
                     db.add(row)
             row_persisted = True
@@ -3278,7 +3317,32 @@ class SessionOrchestrator:
                 await self._x11.stop_display(session_id)
             except Exception:
                 log.exception("session.display_cleanup_failed id=%s", session_id)
+
+        if self._native is not None:
+            try:
+                await self._native.close(session_id)
+            except Exception:
+                log.exception("session.native_display_cleanup_failed id=%s", session_id)
         return driver
+
+    async def open_browser(self, session_id: str, url: str | None) -> dict:
+        """Launch a managed Chromium for this session on whichever display it owns.
+
+        Returns {"ok", "reason"}; reasons: no_display (no such live session / no lease),
+        cap (per-session browser limit), native_unavailable (the desktop went away).
+        The daemon RPC ``x11_open_browser`` and the in-process API route both call
+        this, so the native/virtual branch exists exactly once.
+        """
+        rec = self._records.get(session_id)
+        if rec is not None and rec.display_mode == DISPLAY_NATIVE:
+            if self._native is None or not self._native.available():
+                return {"ok": False, "reason": "native_unavailable"}
+            ok = await self._native.launch_browser(session_id, url)
+            return {"ok": bool(ok), "reason": None if ok else "cap"}
+        if self._x11 is None or self._x11.display_for(session_id) is None:
+            return {"ok": False, "reason": "no_display"}
+        ok = await self._x11.launch_browser(session_id, url)
+        return {"ok": bool(ok), "reason": None if ok else "cap"}
 
     async def _cleanup_session_paths(
         self, session_id: str, record: SessionRecord | None,
@@ -10315,7 +10379,7 @@ class SessionOrchestrator:
             # with the display-injecting factory but x11.env_for() returns {}, so the
             # claude subprocess launches with no DISPLAY and X rendering escapes the
             # virtual viewport. start_display is idempotent (no-op if already leased).
-            if self._x11 is not None:
+            if self._x11 is not None and getattr(rec, "display_mode", None) != DISPLAY_NATIVE:
                 try:
                     await self._x11.start_display(session_id)
                 except Exception:
