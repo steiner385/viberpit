@@ -1706,13 +1706,19 @@ async def export_session_markdown(
     request: Request,
     _identity: str = Depends(current_identity),
 ):
-    """Download session transcript as a human-readable Markdown file."""
+    """Download session transcript as a human-readable Markdown file.
+
+    Engine-neutral: the replay below already speaks both engines, so the only thing
+    that used to make this Claude-only was the existence gate — ``transcript_path``
+    answers None for every Codex session by design, 404'ing the export before it
+    reached that replay (#1277). ``has_transcript`` asks the same question of
+    whichever engine owns the session.
+    """
     from server.audit import redact_event
     from server.sessions.export import transcript_markdown, safe_filename
     from server.sessions.orchestrator import TRANSCRIPT_EXPORT_CEILING_S
     orch = _get_orchestrator(request)
-    path = await orch.transcript_path(session_id)
-    if not path:
+    if not await orch.has_transcript(session_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail={"code": "not_found", "message": "No transcript"})
     record = await orch.get_session(session_id)
@@ -1721,7 +1727,7 @@ async def export_session_markdown(
     # truncated to a trailing slice of the session (B1).
     #
     # A download is not the session-open critical path, so it gets the larger export
-    # ceiling instead of the interactive one. And because transcript_path() above
+    # ceiling instead of the interactive one. And because has_transcript() above
     # already proved a transcript EXISTS, a None here can only mean the replay timed
     # out or failed — surface that as 504 rather than a 200 with an empty document,
     # which would look to the user like a successful export of an empty session.
@@ -1750,32 +1756,75 @@ async def export_session_jsonl(
     request: Request,
     _identity: str = Depends(current_identity),
 ):
-    """Download session transcript as a raw unredacted JSONL file.
+    """Download the session transcript as an unredacted machine-readable JSONL file.
 
-    This endpoint streams the SDK's on-disk transcript verbatim — the user's own
-    data over an already-authenticated connection (deliberate exception to the
-    redaction rule).
+    Two shapes, because the engines genuinely differ and pretending otherwise is the
+    bug (#1277):
 
-    Note: archived sessions whose path only resolves via the DB-glob fallback may
-    return 404 here, because transcript_path() relies on in-memory driver state for
-    those sessions.  The Markdown export (/export.md) still works for them via
-    transcript_events().  This is an accepted limitation.
+    * A session with a native transcript file (Claude) streams that file VERBATIM,
+      byte for byte, exactly as before — the user's own data over an
+      already-authenticated connection (deliberate exception to the redaction rule).
+    * A session without one (Codex keeps its history inside the app-server) gets
+      ccswitch's normalized replay events as NDJSON, led by a header record naming
+      the format. It is NOT relabelled as Claude-native JSONL: the two schemas share
+      no field names, so a consumer that assumed otherwise would silently read
+      garbage instead of failing. See ``export.normalized_ndjson``.
+
+    Resolution uses ``resolve_transcript_path`` rather than ``transcript_path``, so an
+    ARCHIVED Claude session now streams its real file instead of 404ing — the
+    in-memory-driver-state limitation this route used to document.
     """
-    from server.sessions.export import safe_filename
+    from server.sessions.export import normalized_ndjson, safe_filename
+    from server.sessions.orchestrator import TRANSCRIPT_EXPORT_CEILING_S
     orch = _get_orchestrator(request)
-    path = await orch.transcript_path(session_id)
-    if not path:
+    path = await orch.resolve_transcript_path(session_id)
+    # A path resolved by the orchestrator is only meaningful on the host that
+    # resolved it: in fleet mode this is a WORKER daemon's filesystem, and the edge
+    # opening it would raise inside the streaming generator, after the response had
+    # already begun — an unrecoverable truncated download rather than an error. So
+    # the verbatim branch is taken only for a file this process can actually read;
+    # everything else falls through to the (host-independent) replay below, which is
+    # the same RPC the rest of this API already uses to read foreign transcripts.
+    #
+    # to_thread, not a bare stat: transcripts live on an sshfs mount in production, and
+    # a stalled mount turns this into a multi-second block of the whole event loop
+    # (#826, the same reason resolve_transcript_path itself is offloaded).
+    if path and await asyncio.to_thread(os.path.exists, path):
+        def _iter():
+            with open(path, "rb") as f:
+                while chunk := f.read(65536):
+                    yield chunk
+
+        fname = safe_filename(f"{session_id}") + ".jsonl"
+        return StreamingResponse(_iter(), media_type="application/x-ndjson",
+                                 headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+    if not await orch.has_transcript(session_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail={"code": "not_found", "message": "No transcript"})
 
-    def _iter():
-        with open(path, "rb") as f:
-            while chunk := f.read(65536):
-                yield chunk
-
-    fname = safe_filename(f"{session_id}") + ".jsonl"
-    return StreamingResponse(_iter(), media_type="application/x-ndjson",
-                             headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+    # Same ceiling and the same None-means-error reading as /export.md: has_transcript
+    # already proved the history exists, so a None here is a timeout, not emptiness.
+    window = await orch.transcript_window(session_id, timeout_s=TRANSCRIPT_EXPORT_CEILING_S)
+    if window is None:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail={"code": "transcript_timeout",
+                    "message": "Transcript replay timed out; export not generated"},
+        )
+    record = await orch.get_session(session_id)
+    engine = getattr(record, "engine", None) if record else None
+    body = normalized_ndjson(
+        # In-process orchestrator yields event objects (.to_wire()); the remote/daemon
+        # orchestrator returns already-serialised wire dicts. Handle both (#172).
+        [e.to_wire() if hasattr(e, "to_wire") else e for e in window.events],
+        session_id=session_id,
+        engine=getattr(engine, "value", None) or str(engine or "unknown"),
+        model=getattr(record, "model", None) if record else None,
+    )
+    fname = safe_filename(f"{session_id}") + ".events.jsonl"
+    return Response(content=body, media_type="application/x-ndjson",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
 @router.post("/{session_id}/model-approval")

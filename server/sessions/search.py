@@ -7,6 +7,13 @@ CLI's own `type:"user"` bookkeeping (harness/meta/compaction records nobody
 typed — see `transcript_entries`) are excluded so a substring match means
 something real. No SQLAlchemy / SDK imports — this stays cheap and trivially
 unit-testable.
+
+`events_text` is its ENGINE-NEUTRAL sibling: the same selection rule applied to
+normalized replay events (`server/sessions/events.py` wire dicts) instead of to
+Claude's on-disk JSONL. Codex keeps its history inside the app-server and has no
+transcript file, so it can only be searched through replay (#1278). The two
+functions deliberately agree on what counts as searchable text — one concept,
+two input shapes — so a term matches the same content whichever engine ran it.
 """
 from __future__ import annotations
 
@@ -67,6 +74,39 @@ def transcript_text(jsonl_path: str, *, max_bytes: int = 8 * 1024 * 1024) -> str
                             parts.append(b.get("thinking", ""))
     except OSError:
         return ""
+    return "\n".join(parts)
+
+
+# Normalized wire-event types that carry text a human wrote or read, mapped to the
+# key holding it. Mirrors transcript_text's Claude selection: a `user` entry, an
+# assistant `text` block (→ textDelta) and a `thinking` block (→ thinkingDelta).
+# toolCall/toolResult stay out for the same reason they do there — matching a term
+# inside a tool's JSON argument is not the user finding their own conversation.
+_TEXT_EVENTS = {"user": "text", "textDelta": "text", "thinkingDelta": "text"}
+
+
+def events_text(events) -> str:
+    """Extract searchable text from normalized replay events (engine-neutral).
+
+    *events* are wire dicts as produced by ``Event.to_wire()`` — what
+    ``ReplayWindow.events`` carries once serialised. Accepts anything iterable and
+    skips non-dicts, so a caller need not pre-validate a replay it did not build.
+
+    Sub-agent output (``parentToolUseId`` set) is dropped: it is the normalized
+    counterpart of the ``isSidechain`` entries ``transcript_text`` skips, and
+    indexing it would make a session match on text its own operator never saw in
+    the main thread.
+    """
+    parts: list[str] = []
+    for e in events or ():
+        if not isinstance(e, dict):
+            continue
+        key = _TEXT_EVENTS.get(str(e.get("type", "")))
+        if key is None or e.get("parentToolUseId"):
+            continue
+        text = e.get(key)
+        if isinstance(text, str) and text:
+            parts.append(text)
     return "\n".join(parts)
 
 

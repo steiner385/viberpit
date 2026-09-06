@@ -885,6 +885,16 @@ class RemoteOrchestrator:
         resolve too. Search and transcript replay both depend on that."""
         return await self._client.call("resolve_transcript_path", session_id=session_id)
 
+    async def has_transcript(self, session_id) -> bool:
+        """Whether the session has readable history, for either engine, via the daemon.
+
+        Must be an RPC and not an edge-side `resolve_transcript_path(...) is not None`:
+        a Codex session's history is only reachable from the app-server on its OWN
+        host, so only the owning daemon can answer. Coerced to bool so a daemon that
+        predates this RPC (returning None mid-deploy) reads as "no transcript" — the
+        pre-existing 404 — rather than as a truthy object."""
+        return bool(await self._client.call("has_transcript", session_id=session_id))
+
     async def transcript_window(self, session_id, *, before=None, limit=None, timeout_s=None):
         """Windowed transcript replay via the daemon's transcript_window RPC.
 

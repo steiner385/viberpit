@@ -161,6 +161,9 @@ class InProcessOrchestratorAdapter:
     async def set_account_pin(self, *a, **k): return await _maybe_await(self._orch.set_account_pin(*a, **k))
     async def transcript_path(self, *a, **k): return await _maybe_await(self._orch.transcript_path(*a, **k))
     async def resolve_transcript_path(self, *a, **k): return await _maybe_await(self._orch.resolve_transcript_path(*a, **k))
+    # Engine-neutral "is there history?" — the export routes' 404-vs-504 gate, which
+    # transcript_path cannot answer for an engine with no transcript file.
+    async def has_transcript(self, *a, **k): return await _maybe_await(self._orch.has_transcript(*a, **k))
     async def transcript_search_text(self, *a, **k): return await _maybe_await(self._orch.transcript_search_text(*a, **k))
     async def pending_questions(self, *a, **k): return await _maybe_await(self._orch.pending_questions(*a, **k))
     async def orphaned_interaction(self, *a, **k): return await _maybe_await(self._orch.orphaned_interaction(*a, **k))
