@@ -58,6 +58,7 @@ from server.pm.classification import (
 )
 from server.sessions.completion import commit_trailer
 from server.sessions.events import TextDelta, ThinkingDelta
+from server.tests.fakes.fake_automation_ctx import FakeAutomationContext
 
 CLAUDE = AgentEngine.CLAUDE_CODE
 CODEX = AgentEngine.CODEX
@@ -193,26 +194,6 @@ def test_an_unattended_codex_pm_session_is_refused_without_the_network_opt_in():
 # 3. The spawn paths — one engine decision, threaded everywhere.               #
 # --------------------------------------------------------------------------- #
 
-class _Ctx:
-    """Fake AutomationContext modelling the two calls a spawn site makes."""
-
-    def __init__(self, engine=CLAUDE, *, refuse=False):
-        self._engine = engine
-        self._refuse = refuse
-        self.plans = []
-        self.calls = []
-
-    async def launch_plan_or_refuse(self, origin_ref):
-        self.plans.append(origin_ref)
-        if self._refuse:
-            return None
-        return self._engine, {}
-
-    async def spawn_session(self, **kw):
-        self.calls.append(kw)
-        return SimpleNamespace(id=f"sess-{len(self.calls)}", model=None)
-
-
 def _bare_orch():
     from server.sessions.orchestrator import SessionOrchestrator
     return SessionOrchestrator.__new__(SessionOrchestrator)
@@ -271,7 +252,7 @@ async def test_map_synthesis_spawns_on_the_engine_it_resolved(db_env):
     session — not re-resolved by ``spawn_session`` off a second config read."""
     await _seed(db_env)
     orch = _bare_orch()
-    ctx = _Ctx(CODEX)
+    ctx = FakeAutomationContext(CODEX)
     orch._pm_onboard_ctx = ctx
     probe: list = []
     _wire(orch, account_probe=probe)
@@ -294,7 +275,7 @@ async def test_a_refused_map_synthesis_costs_nothing_and_advances_nothing(db_env
     must not leave the wizard showing a proposal nobody is producing."""
     await _seed(db_env)
     orch = _bare_orch()
-    orch._pm_onboard_ctx = _Ctx(refuse=True)
+    orch._pm_onboard_ctx = FakeAutomationContext(refuse=True)
     orch._effective_repo_root = _exploding("_effective_repo_root")
     orch._sdlc_default_branch = _exploding("_sdlc_default_branch")
     orch._automation_account_for = _exploding("_automation_account_for")
@@ -313,7 +294,7 @@ async def test_a_refused_map_synthesis_costs_nothing_and_advances_nothing(db_env
 async def test_the_coverage_critic_spawns_on_the_engine_it_resolved(db_env):
     await _seed(db_env)
     orch = _bare_orch()
-    ctx = _Ctx(CODEX)
+    ctx = FakeAutomationContext(CODEX)
     orch._pm_onboard_ctx = ctx
     probe: list = []
     _wire(orch, account_probe=probe)
@@ -332,7 +313,7 @@ async def test_the_coverage_critic_spawns_on_the_engine_it_resolved(db_env):
 async def test_a_refused_critic_never_clones(db_env):
     await _seed(db_env)
     orch = _bare_orch()
-    orch._pm_onboard_ctx = _Ctx(refuse=True)
+    orch._pm_onboard_ctx = FakeAutomationContext(refuse=True)
     orch._effective_repo_root = _exploding("_effective_repo_root")
     orch._automation_account_for = _exploding("_automation_account_for")
     with patch("ccswitch.gitrepos.ensure_clone",
@@ -344,7 +325,7 @@ async def test_a_refused_critic_never_clones(db_env):
 async def test_classification_spawns_on_the_engine_it_resolved(db_env):
     await _seed(db_env)
     orch = _bare_orch()
-    ctx = _Ctx(CODEX)
+    ctx = FakeAutomationContext(CODEX)
     orch._pm_classify_ctx = ctx
     probe: list = []
     _wire(orch, account_probe=probe)
@@ -368,7 +349,7 @@ async def test_a_refused_classification_dispatches_nothing_and_starts_no_ingest(
     chain must not be started for a session that does not exist."""
     await _seed(db_env)
     orch = _bare_orch()
-    orch._pm_classify_ctx = _Ctx(refuse=True)
+    orch._pm_classify_ctx = FakeAutomationContext(refuse=True)
     orch._effective_repo_root = _exploding("_effective_repo_root")
     orch._automation_account_for = _exploding("_automation_account_for")
     spawned: list = []

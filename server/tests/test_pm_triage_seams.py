@@ -19,17 +19,16 @@ from __future__ import annotations
 import os
 import tempfile
 from dataclasses import replace
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-from ccswitch.engines import AgentEngine
 from server.automations.context import AutomationContext
 from server.automations.pm_triage import PendingItemView
 from server.db import db_session, init_db
 from server.db.models import (
     Feature, Project, ProjectRepo, Session as DbSession, TriageProposal, WorkItem)
+from server.tests.fakes.fake_automation_ctx import FakeAutomationContext
 
 REPO = "steiner385/ccswitch"
 OTHER_REPO = "steiner385/kindash"
@@ -48,28 +47,6 @@ class _Emitter:
 
     async def emit(self, level, summary, **kw):
         self.events.append((level, summary, kw))
-
-
-class _SpawnRec:
-    """Fake AutomationContext capturing spawn_session calls.
-
-    Models BOTH calls a PM spawn site makes: the engine resolution (#1268/#1269
-    moved it ahead of the account probe and the clone, so a refused launch costs
-    nothing) and the spawn itself. Answers Claude — the Codex half of the
-    contract lives in ``test_pm_codex_acceptance.py``.
-    """
-
-    def __init__(self):
-        self.calls = []
-        self.plans = []
-
-    async def launch_plan_or_refuse(self, origin_ref):
-        self.plans.append(origin_ref)
-        return AgentEngine.CLAUDE_CODE, {}
-
-    async def spawn_session(self, **kw):
-        self.calls.append(kw)
-        return SimpleNamespace(id=f"sess-{len(self.calls)}", model=None)
 
 
 @pytest.fixture
@@ -446,7 +423,7 @@ async def test_classify_skips_when_repo_maps_to_no_project(db_env):
 @pytest.mark.asyncio
 async def test_propose_map_diff_reuses_the_phase2_map_seam(db_env):
     await _seed(db_env)
-    rec = _SpawnRec()
+    rec = FakeAutomationContext()
     orch = _triage_orch(onboard=rec)
     orch._backlog_healthy_account = _mk_async("acct1")
     orch._effective_repo_root = _mk_async("/tmp/root")
@@ -470,7 +447,7 @@ async def test_propose_map_diff_reuses_the_phase2_map_seam(db_env):
 @pytest.mark.asyncio
 async def test_propose_map_diff_skips_when_repo_maps_to_no_project(db_env):
     await _seed(db_env)
-    rec = _SpawnRec()
+    rec = FakeAutomationContext()
     emitter = _Emitter()
     orch = _triage_orch(onboard=rec, emitter=emitter)
     out = await orch._pm_triage_propose_map_diff("orphan-cap", (1, 2),
