@@ -17,6 +17,7 @@ links:
     - server/assistant/server.py
     - server/assistant/token.py
     - server/assistant/tools.py
+    - src/ccswitch/assistant_mcp.py
     - web/src/features/assistant/AssistantSheet.tsx
     - web/src/features/assistant/AssistantHeader.tsx
     - web/src/features/assistant/StarterChips.tsx
@@ -110,9 +111,51 @@ sharing, voice, or proactive/unsolicited messages — the assistant only speaks 
 - **Eval lives at** `docs/superpowers/evals/assistant/` (`cases.jsonl` + dated `results-*.md`), run
   via `scripts/eval_assistant.py` against a dev server with a fixture orchestrator; tool-expectation
   grading is deterministic, the rubric is graded by a one-shot Haiku judge.
+- **Use from other agents** — see the section below: `ccswitch mcp` serves the same tool table to
+  any MCP client over stdio, authenticated by a user-scoped `ccas2:` token.
 - Delivered across Phases 0–4 of `docs/superpowers/plans/2026-09-04-ai-assistant.md`: Phase 0
   verified the SDK tool-restriction + in-process MCP approach against the real binary (#1087)
   before any product code landed (constitution III); Phase 1 built the backend (schema, tools,
   session API, idle reap); Phase 2 the frontend (`AssistantSheet`, socket channel); Phase 3 added
   mutations with confirmation and a per-identity prompt rate limit; Phase 4 turned the flag on by
   default, added metrics/Settings UI, and shipped the eval set.
+
+## Use from other agents
+
+`ccswitch mcp` (`src/ccswitch/assistant_mcp.py`) serves the assistant's tool table to **any** MCP
+client — Claude Code, Codex, an editor — over stdio. It is the drawer's own tools reached from
+outside the drawer: same handlers, same schemas, same trimming and untrusted-data framing, because
+it builds the identical MCP server (`server/assistant/server.py:build_server`) rather than
+re-declaring one. The bridge runs wherever the client runs and talks to the edge over HTTP.
+
+```json
+{
+  "mcpServers": {
+    "ccswitch": {
+      "command": "ccswitch",
+      "args": ["mcp", "--url", "https://ccswitch.tailnet.ts.net"],
+      "env": { "CCSWITCH_ASSISTANT_TOKEN": "ccas2:…" }
+    }
+  }
+}
+```
+
+- **Authentication** — a user-scoped `ccas2:` token, minted from a signed-in browser session with
+  `POST /api/assistant/tokens {"scope": "read"|"act", "ttlDays": N, "label": "…"}` (returned once;
+  `GET`/`DELETE /api/assistant/tokens[/{id}]` list and revoke — there is no Settings UI for them
+  yet), revocable and expiring, read from `$CCSWITCH_ASSISTANT_TOKEN`
+  (rename the variable with `--token-env`). Every call is re-checked at the edge by
+  `IdentityMiddleware` against the token's scope and the route allowlist, so the bridge grants no
+  authority the token doesn't already carry: a `read`-scope token can only ever issue `GET`s, and
+  `CCSWITCH_ASSISTANT_EXTERNAL_TOKENS=false` turns the whole path off server-side.
+- **Read-only by default** — only `ToolClass.READ` tools are served. `--allow-mutations` adds the
+  mutating ones, and they then run **immediately**: nothing on this path shows the human the
+  permission card the drawer would, so the calling client is the only place a human can intervene.
+  Give a mutation-capable bridge a token whose scope is `act`, and prefer a client that confirms
+  tool calls.
+- **Operator-tier tools are never served** — `start_deploy`, `upgrade_host`, `refresh_account`,
+  `set_account_enabled` and `start_reauth` are withheld regardless of flags, matching the
+  middleware, which pins `operator=False` for every `ccas2:` request.
+- **Needs the `[server]` extra** (`pip install 'ccswitch[server]'`) — the tool table lives in
+  `server/assistant/`; without it the command exits 3 with that instruction. Diagnostics and the
+  startup banner go to **stderr**: stdout is the JSON-RPC channel.

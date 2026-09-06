@@ -1,12 +1,13 @@
 """ccswitch: account store management (add / remove / list / link / use / crypto)
-plus clone maintenance (clones doctor / repair / remove)."""
+plus clone maintenance (clones doctor / repair / remove) and the `mcp` bridge that
+serves the assistant's tools to another agent."""
 import argparse
 import shlex
 import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from . import accounts, configdir
+from . import accounts, assistant_mcp, configdir
 from .config import load_config
 from .selector import AllAccountsBusy
 
@@ -367,6 +368,16 @@ def main(argv: list[str] | None = None) -> int:
                           help="recorded in the audit log line")
     p_remove.add_argument("--force", action="store_true",
                           help="remove even though worktrees reference it (destructive)")
+    p_mcp = sub.add_parser(
+        "mcp", help="serve the ccswitch assistant tools to another agent over stdio MCP")
+    p_mcp.add_argument("--url", default=assistant_mcp.DEFAULT_URL,
+                       help=f"ccswitch edge base URL (default: {assistant_mcp.DEFAULT_URL})")
+    p_mcp.add_argument("--token-env", default=assistant_mcp.DEFAULT_TOKEN_ENV,
+                       help="env var holding the ccas2: assistant token "
+                            f"(default: {assistant_mcp.DEFAULT_TOKEN_ENV})")
+    p_mcp.add_argument("--allow-mutations", action="store_true",
+                       help="also serve mutating tools; they run with no ccswitch "
+                            "confirmation, so the calling client is the only gate")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     cfg = load_config()
 
@@ -416,4 +427,6 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_crypto(args)
     if args.cmd == "clones":
         return _cmd_clones(args)
+    if args.cmd == "mcp":
+        return assistant_mcp.run(args)
     return 1
