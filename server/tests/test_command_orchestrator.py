@@ -92,3 +92,76 @@ async def test_run_command_dispatches_passthrough():
     res = await orch.run_command("s1", "review", "64")
     assert res is None
     assert client.sent == ["/review 64"]
+
+
+# --- #1286: the palette and the dispatcher must agree ------------------------
+
+
+@pytest.mark.anyio
+async def test_the_catalog_is_gated_on_the_live_driver_s_capabilities():
+    """The driver IS the running engine, so its declaration decides which
+    app-owned commands the session is offered — not a per-engine `if`."""
+    from server.sessions.claude_driver import ClaudeAgentDriver
+    from server.sessions.engine import AgentCapabilities
+    from server.sessions.permissions import PermissionRegistry
+    from server.sessions.types import SessionRecord
+    orch, client = _orch_with_driver(server_info={"commands": []})
+    orch._records["s1"] = SessionRecord(
+        id="s1", name="Live", account="a", engine=AgentEngine.CLAUDE_CODE,
+        engine_session_id="c", cols=80, rows=24, cwd="/tmp",
+    )
+    d = ClaudeAgentDriver("s1", "a", "/tmp", "/tmp/c", mode="interactive",
+                          sdk_factory=lambda *a, **k: client,
+                          registry=PermissionRegistry(), identity="t")
+    await d.start()
+    d.capabilities = AgentCapabilities(models=False, account_rotation=True)
+    orch._drivers["s1"] = d
+
+    names = {c["name"] for c in await orch.command_catalog("s1")}
+    assert "account" in names
+    assert "model" not in names, "an engine that cannot switch models must not offer /model"
+
+
+@pytest.mark.anyio
+async def test_model_is_refused_on_an_engine_that_never_offered_it():
+    """`/model` used to be intercepted by NAME, before the catalog was ever
+    consulted — so it was dispatchable on any engine while being invisible on
+    some. It must now be refused exactly where it is not offered."""
+    from server.sessions.claude_driver import ClaudeAgentDriver
+    from server.sessions.engine import AgentCapabilities
+    from server.sessions.permissions import PermissionRegistry
+    orch, client = _orch_with_driver(server_info={"commands": []})
+    d = ClaudeAgentDriver("s1", "a", "/tmp", "/tmp/c", mode="interactive",
+                          sdk_factory=lambda *a, **k: client,
+                          registry=PermissionRegistry(), identity="t")
+    await d.start()
+    d.capabilities = AgentCapabilities(models=False, account_rotation=True)
+    orch._drivers["s1"] = d
+
+    with pytest.raises(KeyError):
+        await orch.run_command("s1", "model", "opus")
+
+
+@pytest.mark.anyio
+async def test_the_catalog_labels_who_owns_each_command():
+    """Vendor vs app is on the wire so the palette can say whose command it is
+    instead of implying the engine published all of them."""
+    from server.sessions.claude_driver import ClaudeAgentDriver
+    from server.sessions.permissions import PermissionRegistry
+    from server.sessions.types import SessionRecord
+    orch, client = _orch_with_driver(
+        server_info={"commands": [{"name": "review", "description": "Review a PR"}]}
+    )
+    orch._records["s1"] = SessionRecord(
+        id="s1", name="Live", account="a", engine=AgentEngine.CLAUDE_CODE,
+        engine_session_id="c", cols=80, rows=24, cwd="/tmp",
+    )
+    d = ClaudeAgentDriver("s1", "a", "/tmp", "/tmp/c", mode="interactive",
+                          sdk_factory=lambda *a, **k: client,
+                          registry=PermissionRegistry(), identity="t")
+    await d.start()
+    orch._drivers["s1"] = d
+
+    by = {c["name"]: c for c in await orch.command_catalog("s1")}
+    assert by["review"]["source"] == "vendor"
+    assert by["account"]["source"] == "app"

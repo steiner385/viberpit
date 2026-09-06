@@ -8,10 +8,18 @@ import time
 import pytest
 
 
+class _NullResult:
+    """Enough of a SQLAlchemy Result for a settings lookup that finds no row."""
+
+    def scalar_one_or_none(self): return None
+    def scalars(self): return self
+    def all(self): return []
+
+
 class _NullCtx:
     async def __aenter__(self):
         class _Db:
-            async def execute(self, *a, **k): pass
+            async def execute(self, *a, **k): return _NullResult()
         return _Db()
 
     async def __aexit__(self, *a):
@@ -53,6 +61,14 @@ async def test_reassign_rebuilds_assistant_api_for_assistant_kind(monkeypatch):
     monkeypatch.setattr(orch_mod, "compose", lambda a: "/cfg")
     monkeypatch.setattr(orch_mod.configdir, "trust_project", lambda *a, **k: None)
     monkeypatch.setattr(orch_mod, "db_session", lambda: _NullCtx())
+    # `_setup_assistant_overlay` imports `db_session` INSIDE the function
+    # (orchestrator.py: `from server.db import db_session`), so the module-level
+    # patch above never reaches it — it only covers `_reassign_locked`'s own use.
+    # Without this second patch the test reads the real, uninitialised database
+    # and passes only when some OTHER test in the same pytest worker happened to
+    # call init_db() first, which made it a shard-composition coin flip.
+    import server.db as db_mod
+    monkeypatch.setattr(db_mod, "db_session", lambda: _NullCtx())
 
     from server.sessions.orchestrator import SessionOrchestrator
     from server.sessions.engine import AgentEngine

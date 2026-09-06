@@ -58,7 +58,21 @@ export interface Command {
   name: string
   description: string
   argumentHint: string | null
-  kind: 'client' | 'control' | 'passthrough'
+  /**
+   * How the command runs. `passthrough` and `skill` are both "the engine runs
+   * this catalog entry"; they differ in HOW it is handed over (slash text the
+   * engine parses vs. a native invocation by identity), which the server
+   * decides — see server/sessions/commands/dispatcher.py.
+   */
+  kind: 'client' | 'control' | 'passthrough' | 'skill'
+  /**
+   * Who owns the command: the engine's own catalog, or ccswitch's. Optional
+   * because a DETACHED session replays the catalog persisted on its record
+   * (SessionRecord.command_catalog), and a row written before #1286 has no
+   * `source` — it gains one the next time the session is live. Nothing may
+   * branch on its absence meaning anything other than "not known yet".
+   */
+  source?: 'vendor' | 'app'
 }
 
 // The set of `type` strings that are session events (used by the WS fan-out).

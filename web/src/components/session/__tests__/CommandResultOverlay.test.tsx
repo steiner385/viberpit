@@ -4,7 +4,7 @@ import { render, screen } from '@testing-library/react'
 import { CommandResultOverlay } from '@/components/session/CommandResultOverlay'
 import type { Command } from '@/session/events'
 
-const CMDS: Command[] = [{ name: 'help', description: 'List commands', argumentHint: null, kind: 'client' }]
+const CMDS: Command[] = [{ name: 'help', description: 'List commands', argumentHint: null, kind: 'client', source: 'app' }]
 
 describe('CommandResultOverlay', () => {
   it('renders the help list', () => {

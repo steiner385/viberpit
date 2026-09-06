@@ -150,6 +150,11 @@ class ClaudeAgentDriver:
         subagents=True,
         attachments=True,
         account_rotation=True,
+        # The CLI enumerates its own built-ins, custom commands and skills
+        # through `get_server_info()`, and parses `/name` itself when a turn
+        # starts — so text passthrough IS this engine's native dispatch and
+        # `vendor_skills` stays False.
+        vendor_commands=True,
     )
 
     def __init__(self, session_id, account, cwd, config_dir, *, mode, sdk_factory, registry,

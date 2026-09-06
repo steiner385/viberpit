@@ -71,6 +71,7 @@ from server.sessions.commands import catalog as cmd_catalog
 from server.sessions.commands import dispatcher as cmd_dispatcher
 from server.sessions.claude_driver import ClaudeAgentDriverFactory
 from server.sessions.engine import (
+    AgentCapabilities,
     AgentDriver,
     AgentDriverConfig,
     AgentDriverFactory,
@@ -10454,6 +10455,27 @@ class SessionOrchestrator:
         if d:
             await d.set_permission_mode(mode)
 
+    def _capabilities_of(self, session_id) -> AgentCapabilities:
+        """The capability set the command catalog for *session_id* is gated on.
+
+        The live driver answers first because it IS the running engine; the
+        registry covers a detached session, whose engine is known from its
+        record even though nothing is running. The final fallback is the Claude
+        driver's own declaration, matching ``_engine_supports``'s tolerance for
+        an orchestrator built with ``__new__`` (tests) — there is no registry
+        there to state a policy, so the pre-existing Claude behaviour is
+        preserved rather than a policy invented.
+        """
+        caps = getattr(self._drivers.get(session_id), "capabilities", None)
+        if isinstance(caps, AgentCapabilities):
+            return caps
+        registry = getattr(self, "_engine_registry", None)
+        if registry is not None:
+            from_registry = registry.capabilities_for(self._engine_of(session_id))
+            if from_registry is not None:
+                return from_registry
+        return ClaudeAgentDriverFactory.capabilities
+
     def _cached_command_catalog(self, session_id) -> list[dict]:
         """Last-known catalog cached on the record, or []. Used when there is no live
         driver (a detached session) so the palette still populates on view."""
@@ -10480,7 +10502,10 @@ class SessionOrchestrator:
         except Exception:
             log.warning("command_catalog: server_info failed session=%s", session_id, exc_info=True)
             return self._cached_command_catalog(session_id)
-        catalog = [c.to_wire() for c in cmd_catalog.build_catalog(info)]
+        catalog = [
+            c.to_wire()
+            for c in cmd_catalog.build_catalog(info, self._capabilities_of(session_id))
+        ]
         if catalog:
             rec = self._records.get(session_id)
             if rec is not None:
@@ -10490,10 +10515,19 @@ class SessionOrchestrator:
     async def run_command(self, session_id, name, args,
                           identity: str = SYSTEM_IDENTITY) -> dict | None:
         """Dispatch a slash command. Raises KeyError if the command is unknown."""
+        # The app-owned commands are declared ONCE, in `catalog.APP_COMMANDS`,
+        # with the engine capability each needs — so the two interceptors below
+        # can only fire for a command this session's palette actually offered.
+        # Consulting the declaration here rather than matching the name outright
+        # is what keeps "dispatchable" and "visible" the same set: `/model` was
+        # previously reachable on any engine because it was matched before the
+        # catalog was ever consulted (#1286).
+        capabilities = self._capabilities_of(session_id)
+        app_cmd = cmd_catalog.app_command(name, capabilities)
         # /account is an orchestrator-level operation: it doesn't touch the driver
         # subprocess at all, so it must work even when no driver exists (e.g. the
         # session is driverless because the Copilot proxy died).
-        if str(name).lstrip("/") == "account":
+        if app_cmd is not None and app_cmd.name == "account":
             acct = (args or "").strip()
             if not acct:
                 return {"name": "account", "render": "notice",
@@ -10523,7 +10557,7 @@ class SessionOrchestrator:
         # /model is likewise orchestrator-level (record + DB, driver optional): it
         # must sit ABOVE the driver guard so a detached session persists the model
         # instead of getting "isn't live" — the picker was a silent no-op there.
-        if str(name).lstrip("/") == "model":
+        if app_cmd is not None and app_cmd.name == "model":
             # `/model <alias> [--after-turn]`. The flag is how the picker's "switch
             # after this turn" choice rides the existing command frame: no
             # interrupt, the SDK applies the model on the next turn (see
@@ -10577,7 +10611,7 @@ class SessionOrchestrator:
                 log.warning("goal capture/persist failed session=%s", session_id, exc_info=True)
             # fall through: forward /goal to the CLI regardless
         info = await d.server_info()
-        by_name = {c.name: c for c in cmd_catalog.build_catalog(info)}
+        by_name = {c.name: c for c in cmd_catalog.build_catalog(info, capabilities)}
         cmd = by_name.get(str(name).lstrip("/"))
         if cmd is None:
             raise KeyError(name)

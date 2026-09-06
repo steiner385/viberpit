@@ -350,6 +350,12 @@ class CodexAgentDriver:
         #: the git subprocess it shells out to is a one-time cost, not a
         #: per-attachment one.
         self._staging_ignored = False
+        #: Skill name -> absolute path, from the last `skills/list`. `turn/start`
+        #: identifies a skill by BOTH, but the command catalog carries only the
+        #: name, so the path is resolved HERE — the driver that published the
+        #: entry is the only thing that can answer for it, and a dispatch that
+        #: guessed a path would run whatever happened to be there.
+        self._skill_paths: dict[str, str] = {}
 
     def __repr__(self) -> str:
         return (
@@ -1448,11 +1454,89 @@ class CodexAgentDriver:
         Codex path does not build, so there is nothing to seed."""
         return None
 
+    # -- vendor command catalog --------------------------------------------
+
     async def server_info(self) -> dict | None:
-        """None: `server_info` exists to build the SLASH-COMMAND catalog from the
-        Claude CLI's own list. Codex publishes no such list, and synthesizing one
-        would offer commands the app-server would reject."""
-        return None
+        """This engine's own catalog of invocable actions, in the shared shape.
+
+        `server_info` is the engine-neutral "what do you publish?" hook that
+        ``server/sessions/commands/catalog.py`` normalizes; the Claude driver
+        answers it from the CLI's `get_server_info`, and this one answers it from
+        `skills/list`. It used to return None, which left a Codex palette holding
+        only ccswitch's own commands and no way to tell "this engine publishes
+        nothing" from "we never asked" (#1286).
+
+        Nothing here is synthesized: every entry is a skill the app-server just
+        reported, at a path it resolved, and each one is dispatchable through the
+        `SkillUserInput` variant of `turn/start`. A read failure returns None
+        rather than an empty list — the orchestrator falls back to the last-known
+        catalog for None, which is the honest answer for "could not ask".
+        """
+        try:
+            response = await self._client().list_skills(
+                schema.SkillsListParams(cwds=(self.cwd,) if self.cwd else ())
+            )
+        except Exception as exc:  # noqa: BLE001 -- any failure means "no answer"
+            log_event(
+                logger,
+                logging.WARNING,
+                "codex.driver.skills_list_failed",
+                session=self.session_id,
+                error=scrub_exception(exc),
+            )
+            return None
+        skills = response.enabled_skills()
+        # Scan errors are reported, not rendered: a skill directory that failed
+        # to parse is why a name the user expects is missing, and silently
+        # serving the shorter list is how that becomes unexplainable.
+        errors = sum(len(entry.errors) for entry in response.data)
+        if errors:
+            log_event(
+                logger,
+                logging.INFO,
+                "codex.driver.skills_list_errors",
+                session=self.session_id,
+                errors=errors,
+                skills=len(skills),
+            )
+        self._skill_paths = {skill.name: skill.path for skill in skills}
+        return {
+            "commands": [
+                {"name": skill.name, "description": skill.summary}
+                for skill in skills
+            ]
+        }
+
+    async def send_skill(self, name: str, args: str = "") -> None:
+        """Run one published skill natively, optionally with extra instructions.
+
+        The skill is sent as a `SkillUserInput`, so the app-server runs the entry
+        it published rather than being shown a `/name` token it does not parse.
+        ``args`` rides along as an ordinary text input in the SAME turn, which is
+        how a skill invocation carries "…and here is what to apply it to".
+
+        Raises ``KeyError`` for a name this driver never published: the catalog
+        the caller looked the name up in came from `server_info` above, so a miss
+        means the skill was removed between the two calls, and a turn started on
+        a guessed path would run the wrong thing.
+        """
+        path = self._skill_paths.get(name)
+        if path is None:
+            raise KeyError(name)
+        inputs: tuple[schema.UserInput, ...] = (
+            schema.SkillUserInput(name=name, path=path),
+        )
+        if args:
+            inputs = (*inputs, schema.TextUserInput(text=args))
+        entry = _QueuedPrompt(text=f"/{name}" + (f" {args}" if args else ""))
+        if self._thread_id is None:
+            raise CodexThreadNotStarted(
+                "CodexAgentDriver.send_skill called before start()"
+            )
+        if self._turn_active and self._turn_id is not None:
+            await self._steer(entry, inputs)
+            return
+        await self._start_turn(entry, inputs)
 
     async def context_usage(self) -> dict:
         """The last `thread/tokenUsage/updated` reading, in the same shape the

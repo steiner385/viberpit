@@ -160,8 +160,8 @@ describe('Composer', () => {
 
   // ── Slash commands ──────────────────────────────────────────────────────────
 
-  const goalCmd = { name: 'goal', description: 'Set the goal', argumentHint: '<text>', kind: 'passthrough' as const }
-  const clearCmd = { name: 'clear', description: 'Clear conversation', argumentHint: null, kind: 'control' as const }
+  const goalCmd = { name: 'goal', description: 'Set the goal', argumentHint: '<text>', kind: 'passthrough' as const, source: 'vendor' as const }
+  const clearCmd = { name: 'clear', description: 'Clear conversation', argumentHint: null, kind: 'control' as const, source: 'app' as const }
 
   it('runs a slash command with trailing text as args on Enter', async () => {
     const user = userEvent.setup()
@@ -298,7 +298,7 @@ describe('Composer', () => {
 
   it('does not recall history while the slash-command palette is open', async () => {
     const user = userEvent.setup()
-    const goalCmd: Command = { name: 'goal', description: 'set goal', argumentHint: '', kind: 'client' }
+    const goalCmd: Command = { name: 'goal', description: 'set goal', argumentHint: '', kind: 'client', source: 'app' }
     render(<Composer {...defaults} history={['older', 'newer']} commands={[goalCmd]} onCommand={vi.fn()} />)
     const box = screen.getByRole('textbox', { name: /message/i })
     await user.type(box, '/g')                 // palette is picking a command
@@ -308,7 +308,7 @@ describe('Composer', () => {
 
   it('does not recall history when slash-prefix matches NO command (unmatched slash)', async () => {
     const user = userEvent.setup()
-    const goalCmd: Command = { name: 'goal', description: 'set goal', argumentHint: '', kind: 'client' }
+    const goalCmd: Command = { name: 'goal', description: 'set goal', argumentHint: '', kind: 'client', source: 'app' }
     render(<Composer {...defaults} history={['older', 'newer']} commands={[goalCmd]} onCommand={vi.fn()} />)
     const box = screen.getByRole('textbox', { name: /message/i })
     await user.type(box, '/zzz')               // pickingCommand=true, palette has zero matches

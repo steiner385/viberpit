@@ -6,9 +6,9 @@ import { CommandPalette, type CommandPaletteHandle } from '@/components/session/
 import type { Command } from '@/session/events'
 
 const CMDS: Command[] = [
-  { name: 'model', description: 'Switch model', argumentHint: '<model>', kind: 'control' },
-  { name: 'help', description: 'List commands', argumentHint: null, kind: 'client' },
-  { name: 'review', description: 'Review a PR', argumentHint: '<pr#>', kind: 'passthrough' },
+  { name: 'model', description: 'Switch model', argumentHint: '<model>', kind: 'control', source: 'app' },
+  { name: 'help', description: 'List commands', argumentHint: null, kind: 'client', source: 'app' },
+  { name: 'review', description: 'Review a PR', argumentHint: '<pr#>', kind: 'passthrough', source: 'vendor' },
 ]
 
 describe('CommandPalette', () => {
@@ -30,5 +30,23 @@ describe('CommandPalette', () => {
   it('renders nothing when no match', () => {
     const { container } = render(<CommandPalette commands={CMDS} query="zzz" onSelect={vi.fn()} onComplete={vi.fn()} onDismiss={vi.fn()} />)
     expect(container).toBeEmptyDOMElement()
+  })
+
+  // #1286: an engine whose catalog is skills (Codex) groups them under their own
+  // heading. `skill` sorts with `passthrough` because both mean "the engine runs
+  // this"; only the label differs, so the group is named for what it holds
+  // rather than borrowing Claude's "Custom".
+  it('groups an engine-published skill under a Skills heading', () => {
+    const cmds: Command[] = [
+      { name: 'model', description: 'Switch model', argumentHint: '<model>', kind: 'control', source: 'app' },
+      { name: 'pr-review', description: 'Review a PR', argumentHint: null, kind: 'skill', source: 'vendor' },
+    ]
+    render(<CommandPalette commands={cmds} query="" onSelect={vi.fn()} onComplete={vi.fn()} onDismiss={vi.fn()} />)
+    expect(screen.getByText('Skills')).toBeInTheDocument()
+    expect(screen.queryByText('Custom')).not.toBeInTheDocument()
+    // App-owned commands stay above the engine's own catalog.
+    const names = screen.getAllByRole('option').map((o) => o.textContent)
+    expect(names[0]).toContain('model')
+    expect(names[1]).toContain('pr-review')
   })
 })

@@ -29,6 +29,7 @@ def test_capability_set_covers_every_declared_field():
         "models", "reasoning_effort", "steer", "interrupt", "approvals",
         "questions", "fork", "adopt", "self_model_switch", "subagents", "attachments",
         "account_rotation", "account_switch_new_thread",
+        "vendor_commands", "vendor_skills",
     }
 
 
@@ -56,6 +57,12 @@ def test_codex_advertises_the_planned_controls():
     # ...but a fresh thread on the target account's OWN app-server needs none of
     # that Claude-specific machinery, so the honest fallback is available (#1275).
     assert CODEX_CAPABILITIES.account_switch_new_thread
+    # The app-server publishes a catalog (`skills/list`) AND invokes one of its
+    # entries natively (`SkillUserInput` on `turn/start`), so both halves are
+    # claimed — an engine that could only do the first would have to leave both
+    # False rather than borrow Claude's slash syntax (#1286).
+    assert CODEX_CAPABILITIES.vendor_commands
+    assert CODEX_CAPABILITIES.vendor_skills
 
 
 def test_no_capabilities_is_all_false():

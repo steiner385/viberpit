@@ -82,6 +82,13 @@ CODEX_CAPABILITIES: Final[AgentCapabilities] = AgentCapabilities(
     attachments=True,
     account_rotation=False,
     account_switch_new_thread=True,
+    # The app-server publishes a catalog through `skills/list` and invokes one
+    # of its entries through the `SkillUserInput` variant of `turn/start` — both
+    # documented in the pinned contract, neither synthesized (#1286). It has no
+    # built-in slash commands beyond that, so what the palette offers a Codex
+    # session is: this catalog, plus the app-owned commands below.
+    vendor_commands=True,
+    vendor_skills=True,
 )
 
 #: What an unavailable engine advertises. Not "unknown" — *nothing*.

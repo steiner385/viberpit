@@ -3,7 +3,7 @@
 Scope. ccswitch speaks a deliberately tiny slice of the app-server protocol: the
 `codex app-server generate-json-schema --experimental` output declares 155 client
 requests, 11 server requests, and 81 server notifications, and this phase supports
-thirteen requests, one client notification, three server requests, and fourteen
+fourteen requests, one client notification, three server requests, and fourteen
 server notifications. Everything else is *declared* (recognized by name, counted,
 never acted on) or *unrecognized* (counted under one bucket).
 `server/codex/protocol.py` enforces that split; this module owns the vocabulary
@@ -54,7 +54,7 @@ from server.codex.redaction import Redacted, contains_secret_shaped_value
 
 PINNED_CLI_VERSION: Final = "codex-cli 0.153.2"
 PINNED_CONTRACT_SHA256: Final = (
-    "cb145bc3b0f3d2885dadc17f41c4bb7f20912b8e30c0cf4540fefc54e87935c3"
+    "3caf4b92e54c19755ecc0386d6e2a64501aa9a7736fa7681d2514c09580d07a0"
 )
 
 #: Schema documents copied verbatim into the fixtures and covered by the hash.
@@ -105,6 +105,10 @@ CURATED_SCHEMA_FILES: Final[tuple[str, ...]] = (
     "CommandExecutionRequestApprovalResponse.json",
     "FileChangeRequestApprovalParams.json",
     "FileChangeRequestApprovalResponse.json",
+    # The vendor command/skill catalog — the Codex counterpart of the Claude
+    # CLI's `get_server_info()["commands"]` list (#1286).
+    "v2/SkillsListParams.json",
+    "v2/SkillsListResponse.json",
 )
 
 #: Envelope files contributing only their method-name inventory to the hash.
@@ -160,6 +164,7 @@ METHOD_LOGIN_START: Final = "account/login/start"
 METHOD_ACCOUNT_READ: Final = "account/read"
 METHOD_RATE_LIMITS_READ: Final = "account/rateLimits/read"
 METHOD_MODEL_LIST: Final = "model/list"
+METHOD_SKILLS_LIST: Final = "skills/list"
 METHOD_AUTH_TOKENS_REFRESH: Final = "account/chatgptAuthTokens/refresh"
 
 # Thread / turn lifecycle (client -> server).
@@ -201,6 +206,7 @@ SUPPORTED_CLIENT_REQUESTS: Final[frozenset[str]] = frozenset(
         METHOD_ACCOUNT_READ,
         METHOD_RATE_LIMITS_READ,
         METHOD_MODEL_LIST,
+        METHOD_SKILLS_LIST,
         METHOD_THREAD_START,
         METHOD_THREAD_RESUME,
         METHOD_THREAD_READ,
@@ -1177,6 +1183,160 @@ def parse_model_list_response(payload: Any) -> ModelListResponse:
 
 
 # ---------------------------------------------------------------------------
+# skills/list
+#
+# The Codex engine's own published catalog of invocable actions, and the
+# counterpart of the Claude CLI's `get_server_info()["commands"]` list. It is
+# modelled here rather than synthesized because a synthesized catalog is exactly
+# the untruthful one #1286 exists to remove: a skill offered in the palette must
+# be one this app-server actually knows, at a `path` it actually resolves.
+#
+# Only the fields ccswitch renders or dispatches with are modelled. The upstream
+# `SkillMetadata` also carries plugin ids, icon paths, tool dependencies and a
+# `SkillInterface` display block — none of which the command palette consumes, so
+# pulling them in would widen the pinned contract for nothing.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True, repr=False)
+class Skill:
+    """One skill the app-server can run, as `skills/list` reports it.
+
+    ``path`` is not decoration: it is half of the `SkillUserInput` identity that
+    `turn/start` requires, so a `Skill` without one cannot be dispatched and is
+    dropped at parse time rather than offered and later failing a turn.
+    """
+
+    name: str
+    description: str
+    path: str
+    enabled: bool
+    short_description: str | None = None
+
+    @property
+    def summary(self) -> str:
+        """The one-line description to render, preferring the short form."""
+        return self.short_description or self.description
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class SkillsListEntry:
+    """Every skill discovered under one working directory, plus its scan errors.
+
+    ``errors`` is carried rather than dropped: a skill directory that failed to
+    parse is the difference between "this project has no skills" and "we could
+    not read them", and only the first of those is safe to render as an empty
+    palette.
+    """
+
+    cwd: str
+    skills: tuple[Skill, ...] = ()
+    errors: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class SkillsListParams:
+    """`skills/list`.
+
+    ``cwds`` is always sent explicitly by ccswitch. Upstream defaults an empty
+    list to "the current session working directory", but a ccswitch runner's
+    app-server is shared by every session on one account — so "the current
+    session" is not a thing it can resolve, and the session's own cwd must be
+    named.
+    """
+
+    cwds: tuple[str, ...] = ()
+    force_reload: bool | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        wire: dict[str, Any] = {}
+        if self.cwds:
+            wire["cwds"] = list(self.cwds)
+        if self.force_reload is not None:
+            wire["forceReload"] = self.force_reload
+        return wire
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class SkillsListResponse:
+    data: tuple[SkillsListEntry, ...] = ()
+
+    def enabled_skills(self) -> tuple[Skill, ...]:
+        """Every enabled skill across all scanned roots, de-duplicated by name.
+
+        Two roots can surface the same skill name (a user-scope skill and a
+        repo-scope one). The FIRST wins, which follows the order the app-server
+        answered in, so the catalog cannot show one name twice and leave the
+        dispatcher to guess which path the user meant.
+        """
+        seen: set[str] = set()
+        out: list[Skill] = []
+        for entry in self.data:
+            for skill in entry.skills:
+                if not skill.enabled or skill.name in seen:
+                    continue
+                seen.add(skill.name)
+                out.append(skill)
+        return tuple(out)
+
+
+def parse_skill(payload: Any, what: str) -> Skill | None:
+    """Parse one `SkillMetadata`, or None when it could never be dispatched.
+
+    Returning None rather than raising is deliberate: one malformed skill in a
+    project must degrade to "that skill is not offered", not to an empty palette
+    for the whole session.
+    """
+    body = _as_mapping(payload, what)
+    name = _optional_str(body, "name", what) or ""
+    path = _optional_str(body, "path", what) or ""
+    if not name or not path:
+        return None
+    return Skill(
+        name=name,
+        description=_optional_str(body, "description", what) or "",
+        path=path,
+        # Absent `enabled` means enabled: the field is `required` in the pinned
+        # schema, so a missing one is an upstream addition/removal, and refusing
+        # to offer every skill over it would be a harsher failure than the pin
+        # itself (which reports the drift) already applies.
+        enabled=_optional_bool(body, "enabled", what) is not False,
+        short_description=_optional_str(body, "shortDescription", what),
+    )
+
+
+def parse_skills_list_response(payload: Any) -> SkillsListResponse:
+    what = "skills/list response"
+    body = _as_mapping(payload, what)
+    data = body.get("data")
+    if not isinstance(data, list):
+        raise CodexSchemaError(f"{what} field 'data' must be an array")
+    entries: list[SkillsListEntry] = []
+    for item in data:
+        entry_body = _as_mapping(item, f"{what} entry")
+        raw_skills = entry_body.get("skills")
+        if raw_skills is not None and not isinstance(raw_skills, list):
+            raise CodexSchemaError(f"{what} field 'skills' must be an array")
+        parsed = [
+            parse_skill(skill, f"{what} skill") for skill in (raw_skills or [])
+        ]
+        raw_errors = entry_body.get("errors")
+        if raw_errors is not None and not isinstance(raw_errors, list):
+            raise CodexSchemaError(f"{what} field 'errors' must be an array")
+        errors: list[str] = []
+        for error in raw_errors or []:
+            error_body = _as_mapping(error, f"{what} error")
+            errors.append(_optional_str(error_body, "message", f"{what} error") or "")
+        entries.append(
+            SkillsListEntry(
+                cwd=_optional_str(entry_body, "cwd", f"{what} entry") or "",
+                skills=tuple(skill for skill in parsed if skill is not None),
+                errors=tuple(errors),
+            )
+        )
+    return SkillsListResponse(data=tuple(entries))
+
+
+# ---------------------------------------------------------------------------
 # Thread / turn / item vocabulary
 #
 # This is the surface a live session runs on. Two rules shape every DTO below:
@@ -1224,8 +1384,33 @@ class LocalImageUserInput:
 
 
 @dataclass(frozen=True, slots=True, repr=False)
+class SkillUserInput:
+    """Run one skill from the app-server's own catalog, by identity.
+
+    This is the reason a Codex skill is not dispatched by writing ``/name`` into
+    a text input: the app-server has a first-class input variant for invoking a
+    skill, and using it means the engine resolves the skill it published rather
+    than the model guessing at a slash token that means nothing to it (#1286).
+    Both fields are `required` upstream — a skill is identified by name AND path,
+    because the same name can exist at user and repo scope.
+    """
+
+    name: str
+    path: str
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise CodexSchemaError("skill user input requires a non-empty name")
+        if not self.path:
+            raise CodexSchemaError("skill user input requires a non-empty path")
+
+    def to_wire(self) -> dict[str, Any]:
+        return {"type": "skill", "name": self.name, "path": self.path}
+
+
+@dataclass(frozen=True, slots=True, repr=False)
 class UnknownUserInput:
-    """An inbound user-input variant ccswitch does not model (audio, skill, …).
+    """An inbound user-input variant ccswitch does not model (audio, mention, …).
 
     Parse-only: it has no `to_wire`, so it can never be echoed back.
     """
@@ -1233,8 +1418,10 @@ class UnknownUserInput:
     type: str
 
 
-UserInput = TextUserInput | LocalImageUserInput
-InboundUserInput = TextUserInput | LocalImageUserInput | UnknownUserInput
+UserInput = TextUserInput | LocalImageUserInput | SkillUserInput
+InboundUserInput = (
+    TextUserInput | LocalImageUserInput | SkillUserInput | UnknownUserInput
+)
 
 
 def parse_user_input(payload: Any, what: str = "user input") -> InboundUserInput:
@@ -1245,6 +1432,11 @@ def parse_user_input(payload: Any, what: str = "user input") -> InboundUserInput
         return TextUserInput(text=_optional_str(body, "text", what) or "")
     if variant == "localImage":
         return LocalImageUserInput(path=_require_str(body, "path", what))
+    if variant == "skill":
+        return SkillUserInput(
+            name=_require_str(body, "name", what),
+            path=_require_str(body, "path", what),
+        )
     return UnknownUserInput(type=variant)
 
 
@@ -2130,6 +2322,12 @@ def validate_client_request_params(method: str, payload: Any) -> dict[str, Any]:
             include_hidden=_optional_bool(body, "includeHidden", what),
             limit=limit,
         ).to_wire()
+    if method == METHOD_SKILLS_LIST:
+        _reject_unknown_fields(body, frozenset({"cwds", "forceReload"}), what)
+        return SkillsListParams(
+            cwds=_parse_string_tuple(body, "cwds", what, ()),
+            force_reload=_optional_bool(body, "forceReload", what),
+        ).to_wire()
     if method == METHOD_THREAD_START:
         _reject_unknown_fields(
             body,
@@ -2773,6 +2971,7 @@ ClientResponse = (
     | GetAccountResponse
     | GetAccountRateLimitsResponse
     | ModelListResponse
+    | SkillsListResponse
     | ThreadStartResponse
     | ThreadResumeResponse
     | ThreadReadResponse
@@ -2796,6 +2995,8 @@ def parse_client_response(method: str, payload: Any) -> ClientResponse:
         return parse_rate_limits_response(payload)
     if method == METHOD_MODEL_LIST:
         return parse_model_list_response(payload)
+    if method == METHOD_SKILLS_LIST:
+        return parse_skills_list_response(payload)
     if method == METHOD_THREAD_START:
         return parse_thread_start_response(payload)
     if method == METHOD_THREAD_RESUME:

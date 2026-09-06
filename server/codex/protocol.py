@@ -515,6 +515,15 @@ class CodexAppServerClient:
         assert isinstance(response, schema.ModelListResponse)
         return response
 
+    async def list_skills(
+        self, params: schema.SkillsListParams | None = None
+    ) -> schema.SkillsListResponse:
+        response = await self.call(
+            schema.METHOD_SKILLS_LIST, (params or schema.SkillsListParams()).to_wire()
+        )
+        assert isinstance(response, schema.SkillsListResponse)
+        return response
+
     # -- thread / turn -----------------------------------------------------
     #
     # Typed conveniences only: every one goes through `call()`, so the gate,

@@ -54,6 +54,20 @@ class AgentCapabilities:
     #: first and only falls back to this — never silently prefers a lossy switch
     #: over a lossless one.
     account_switch_new_thread: bool = False
+    #: The engine publishes its own catalog of invocable actions (custom
+    #: commands, skills) that ``server_info()`` reports and that the command
+    #: palette offers alongside ccswitch's own app-owned commands. False means
+    #: this engine has no vendor catalog at all — NOT that one failed to load —
+    #: so the palette can say so instead of looking empty.
+    vendor_commands: bool = False
+    #: A vendor catalog entry is dispatched through a first-class engine call
+    #: (Codex `SkillUserInput`) rather than by writing ``/name`` into the prompt.
+    #: Claude leaves this False on purpose: its CLI parses its own slash syntax,
+    #: so text passthrough IS its native dispatch. An engine that publishes
+    #: skills but has no native invocation must leave BOTH False rather than
+    #: borrow Claude's syntax — forwarding ``/name`` at an engine that does not
+    #: parse it is the untruthful catalog #1286 removed.
+    vendor_skills: bool = False
 
 
 def capabilities_to_wire(caps: AgentCapabilities) -> dict[str, bool]:
