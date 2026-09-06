@@ -64,7 +64,7 @@ from server.assistant.context import PromptContext
 from server.assistant.options_codex import (ASSISTANT_CODEX_RESUME_UNSUPPORTED,
                                             CodexAssistantOverlay,
                                             assistant_approval_decision, tool_error)
-from server.codex import schema
+from server.codex import background, schema
 from server.codex.capabilities import CODEX_CAPABILITIES
 from server.codex.manager import (
     RECOVER_VIA_THREAD_READ,
@@ -85,6 +85,7 @@ from server.codex.redaction import scrub_exception
 from server.codex.translator import TRANSLATED_NOTIFICATIONS, CodexEventTranslator
 from server.obs.context import log_event
 from server.sessions import events as ev
+from server.sessions.background_tasks import OpenBgTask
 from server.sessions.completion import marker_instructions
 from server.sessions.driver_stream import _STREAM_DONE, DriverStream
 from server.sessions.engine import (
@@ -1883,6 +1884,29 @@ class CodexAgentDriver:
         """The last `thread/tokenUsage/updated` reading, in the same shape the
         Claude driver returns, or ``{}`` before the first one arrives."""
         return dict(self._context_usage)
+
+    async def open_background_work(self) -> list[OpenBgTask]:
+        """This thread's live background terminals, as engine-neutral open tasks.
+
+        The Codex half of the engine-neutral "is this session parked on work of its
+        own?" question (#1284); the Claude half is a transcript scan, which is why
+        the orchestrator asks each engine its own way and both answers land in the
+        same ``OpenBgTask`` vocabulary.
+
+        Every entry comes back ``replayable=False``. That is not caution, it is the
+        contract: these processes die with the app-server and nothing in the pinned
+        protocol can start one again (``server/codex/background.py``).
+
+        Raises rather than degrading to ``[]``. "Could not ask the app-server" and
+        "nothing is running" are different facts, and collapsing them here would hide
+        a broken runner behind a plausible empty list. The orchestrator does choose to
+        degrade — but it logs the failure first, which it can only do if it sees one.
+        """
+        thread_id = self._require_thread()
+        terminals = await background.open_background_terminals(
+            self._client(), thread_id
+        )
+        return [background.to_open_task(terminal) for terminal in terminals]
 
     # -- helpers -----------------------------------------------------------
 

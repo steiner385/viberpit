@@ -3,7 +3,7 @@
 Scope. ccswitch speaks a deliberately tiny slice of the app-server protocol: the
 `codex app-server generate-json-schema --experimental` output declares 155 client
 requests, 11 server requests, and 81 server notifications, and this phase supports
-fourteen requests, one client notification, four server requests, and fourteen
+fifteen requests, one client notification, four server requests, and fourteen
 server notifications. Everything else is *declared* (recognized by name, counted,
 never acted on) or *unrecognized* (counted under one bucket).
 `server/codex/protocol.py` enforces that split; this module owns the vocabulary
@@ -54,7 +54,7 @@ from server.codex.redaction import Redacted, contains_secret_shaped_value
 
 PINNED_CLI_VERSION: Final = "codex-cli 0.153.2"
 PINNED_CONTRACT_SHA256: Final = (
-    "02cb1ad1dc30f9cf305ede6b7e37cd942d11302a80b49911ab3dff012f6b1f32"
+    "eca341dd40e380b9e91c01e6ad62617e4ec05a6c3a8085cf96fd8e8a4a45a44a"
 )
 
 #: Schema documents copied verbatim into the fixtures and covered by the hash.
@@ -118,6 +118,15 @@ CURATED_SCHEMA_FILES: Final[tuple[str, ...]] = (
     # surface on Codex, and `item/tool/call` is the callback that executes it.
     "DynamicToolCallParams.json",
     "DynamicToolCallResponse.json",
+    # Task: Codex background-work parity (#1284) — the vendor answer to "is this
+    # session parked on work of its own?". `list` is pinned; the sibling
+    # `terminate`/`clean` methods are deliberately NOT, because ccswitch never
+    # calls them: a background terminal is a grandchild of the app-server child,
+    # so daemon shutdown (`CodexRunnerManager.stop_all`) and the boot sweep
+    # (`sweep_orphans`, `terminate_process_tree`) already end every one. Pinning
+    # a method with no caller would be exactly the dead surface Principle VI bans.
+    "v2/ThreadBackgroundTerminalsListParams.json",
+    "v2/ThreadBackgroundTerminalsListResponse.json",
 )
 
 #: Envelope files contributing only their method-name inventory to the hash.
@@ -186,6 +195,15 @@ METHOD_TURN_STEER: Final = "turn/steer"
 METHOD_TURN_INTERRUPT: Final = "turn/interrupt"
 METHOD_TURN_SETTINGS_UPDATE: Final = "turn/settings/update"
 
+# Background work (#1284). `thread/backgroundTerminals/list` is the app-server's
+# own register of long-running processes a thread started and did not wait for —
+# the Codex counterpart of the Claude transcript's open `Monitor` /
+# `run_in_background` tool calls. It is *live* state rather than replayed history,
+# which makes it strictly more trustworthy than a transcript scan; what it cannot
+# do is survive the app-server, so there is no restore half to this parity (see
+# `server/codex/background.py`).
+METHOD_THREAD_BACKGROUND_TERMINALS_LIST: Final = "thread/backgroundTerminals/list"
+
 # Approvals (server -> client requests). `item/permissions/requestApproval` is
 # deliberately absent: its response hands the server a permissions *grant*, and
 # ccswitch has no vocabulary to describe one, so answering it at all would mean
@@ -250,6 +268,7 @@ SUPPORTED_CLIENT_REQUESTS: Final[frozenset[str]] = frozenset(
         METHOD_TURN_STEER,
         METHOD_TURN_INTERRUPT,
         METHOD_TURN_SETTINGS_UPDATE,
+        METHOD_THREAD_BACKGROUND_TERMINALS_LIST,
     }
 )
 #: Methods that only exist on the experimental surface and carry host-supplied
@@ -755,6 +774,18 @@ def _optional_int(payload: Mapping[str, Any], key: str, what: str) -> int | None
     if type(value) is not int:
         raise CodexSchemaError(f"{what} field {key!r} must be an integer or null")
     return value
+
+
+def _optional_float(payload: Mapping[str, Any], key: str, what: str) -> float | None:
+    """A JSON ``number`` field. Accepts an integer literal (JSON has one numeric
+    type, so a whole-valued double arrives as ``int``) but never a ``bool``, which
+    is an ``int`` subclass and would otherwise read as 0.0/1.0."""
+    if key not in payload or payload[key] is None:
+        return None
+    value = payload[key]
+    if type(value) not in (int, float):
+        raise CodexSchemaError(f"{what} field {key!r} must be a number or null")
+    return float(value)
 
 
 def _optional_redacted(
@@ -2185,6 +2216,40 @@ class ThreadArchiveParams:
 
 
 @dataclass(frozen=True, slots=True, repr=False)
+class ThreadBackgroundTerminalsListParams:
+    """`thread/backgroundTerminals/list` — one page of a thread's live terminals.
+
+    ``limit``/``cursor`` are the vendor's own pagination. ccswitch always sends an
+    explicit ``limit`` so one answer is bounded even for a thread that has spawned
+    an unreasonable number of them; the caller
+    (:func:`server.codex.background.open_background_terminals`) follows
+    ``nextCursor`` under its own page cap.
+    """
+
+    thread_id: str
+    cursor: str | None = None
+    limit: int | None = None
+
+    def __post_init__(self) -> None:
+        if not self.thread_id:
+            raise CodexSchemaError(
+                "thread/backgroundTerminals/list requires a non-empty threadId"
+            )
+        if self.limit is not None and self.limit < 0:
+            raise CodexSchemaError(
+                "thread/backgroundTerminals/list limit must not be negative"
+            )
+
+    def to_wire(self) -> dict[str, Any]:
+        wire: dict[str, Any] = {"threadId": self.thread_id}
+        if self.cursor:
+            wire["cursor"] = self.cursor
+        if self.limit is not None:
+            wire["limit"] = self.limit
+        return wire
+
+
+@dataclass(frozen=True, slots=True, repr=False)
 class TurnStartParams:
     """`turn/start`.
 
@@ -2315,6 +2380,37 @@ class ThreadArchiveResponse:
 
 
 @dataclass(frozen=True, slots=True, repr=False)
+class ThreadBackgroundTerminal:
+    """One long-running process a thread started and did not wait for.
+
+    ``item_id`` ties it back to the ``commandExecution`` thread item the user can
+    already see in the transcript, and ``process_id`` is the app-server's own
+    handle. Both are carried verbatim rather than re-derived, so a report about a
+    terminal always names the same identity the vendor uses.
+
+    ``cpu_percent``/``rss_kb``/``os_pid`` are optional telemetry the app-server
+    fills in when it can. ccswitch keeps them off its own reporting path — they
+    are point-in-time samples that would go stale the instant they were persisted
+    — but they are parsed rather than dropped so the DTO stays a faithful reading
+    of the pinned document.
+    """
+
+    command: str
+    cwd: str
+    item_id: str
+    process_id: str
+    os_pid: int | None = None
+    cpu_percent: float | None = None
+    rss_kb: int | None = None
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ThreadBackgroundTerminalsListResponse:
+    data: tuple[ThreadBackgroundTerminal, ...] = ()
+    next_cursor: str | None = None
+
+
+@dataclass(frozen=True, slots=True, repr=False)
 class TurnStartResponse:
     turn: Turn
 
@@ -2382,6 +2478,45 @@ def parse_thread_read_response(payload: Any) -> ThreadReadResponse:
 def parse_thread_archive_response(payload: Any) -> ThreadArchiveResponse:
     _as_mapping(payload, "thread/archive response")
     return ThreadArchiveResponse()
+
+
+def parse_background_terminal(payload: Any, what: str) -> ThreadBackgroundTerminal | None:
+    """Parse one `ThreadBackgroundTerminal`, or None when it names no process.
+
+    Returning None rather than raising mirrors :func:`parse_skill`: one entry the
+    app-server could not fully describe must degrade to "that terminal is not
+    reported", never to "this session has no background work" — the latter would
+    silently un-park a session that really is waiting on something.
+    """
+    body = _as_mapping(payload, what)
+    process_id = _optional_str(body, "processId", what) or ""
+    item_id = _optional_str(body, "itemId", what) or ""
+    if not process_id or not item_id:
+        return None
+    return ThreadBackgroundTerminal(
+        command=_optional_str(body, "command", what) or "",
+        cwd=_optional_str(body, "cwd", what) or "",
+        item_id=item_id,
+        process_id=process_id,
+        os_pid=_optional_int(body, "osPid", what),
+        cpu_percent=_optional_float(body, "cpuPercent", what),
+        rss_kb=_optional_int(body, "rssKb", what),
+    )
+
+
+def parse_thread_background_terminals_list_response(
+    payload: Any,
+) -> ThreadBackgroundTerminalsListResponse:
+    what = "thread/backgroundTerminals/list response"
+    body = _as_mapping(payload, what)
+    data = body.get("data")
+    if not isinstance(data, list):
+        raise CodexSchemaError(f"{what} field 'data' must be an array")
+    parsed = [parse_background_terminal(entry, f"{what} entry") for entry in data]
+    return ThreadBackgroundTerminalsListResponse(
+        data=tuple(entry for entry in parsed if entry is not None),
+        next_cursor=_optional_str(body, "nextCursor", what) or None,
+    )
 
 
 def parse_turn_start_response(payload: Any) -> TurnStartResponse:
@@ -2583,6 +2718,16 @@ def validate_client_request_params(method: str, payload: Any) -> dict[str, Any]:
         _reject_unknown_fields(body, frozenset({"threadId"}), what)
         return ThreadArchiveParams(
             thread_id=_require_str(body, "threadId", what)
+        ).to_wire()
+    if method == METHOD_THREAD_BACKGROUND_TERMINALS_LIST:
+        _reject_unknown_fields(body, frozenset({"threadId", "cursor", "limit"}), what)
+        limit = _optional_int(body, "limit", what)
+        if limit is not None and not 0 <= limit <= (2**32 - 1):
+            raise CodexSchemaError("client request params field 'limit' is out of range")
+        return ThreadBackgroundTerminalsListParams(
+            thread_id=_require_str(body, "threadId", what),
+            cursor=_optional_str(body, "cursor", what),
+            limit=limit,
         ).to_wire()
     if method == METHOD_TURN_START:
         _reject_unknown_fields(
@@ -3312,6 +3457,7 @@ ClientResponse = (
     | ThreadResumeResponse
     | ThreadReadResponse
     | ThreadArchiveResponse
+    | ThreadBackgroundTerminalsListResponse
     | TurnStartResponse
     | TurnSteerResponse
     | TurnInterruptResponse
@@ -3341,6 +3487,8 @@ def parse_client_response(method: str, payload: Any) -> ClientResponse:
         return parse_thread_read_response(payload)
     if method == METHOD_THREAD_ARCHIVE:
         return parse_thread_archive_response(payload)
+    if method == METHOD_THREAD_BACKGROUND_TERMINALS_LIST:
+        return parse_thread_background_terminals_list_response(payload)
     if method == METHOD_TURN_START:
         return parse_turn_start_response(payload)
     if method == METHOD_TURN_STEER:

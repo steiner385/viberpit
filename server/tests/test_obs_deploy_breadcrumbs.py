@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from server.obs.context import log_event
+from server.sessions.engine import AgentEngine
 
 
 # ---------------------------------------------------------------------------
@@ -62,17 +63,28 @@ def test_deploy_sessions_reattach_breadcrumb_shape(caplog):
 
 
 class _MinimalOrch:
-    """Minimal stand-in for SessionOrchestrator for _snapshot_open_tasks."""
-    # Bind the real method so it runs against this instance.
+    """Minimal stand-in for SessionOrchestrator for _snapshot_open_tasks.
+
+    ``_open_background_work`` is bound too (not stubbed): it is the per-engine seam
+    the snapshot reads through since #1284, so a fake would let the breadcrumb pass
+    while the real dispatch was broken.
+    """
+    # Bind the real methods so they run against this instance.
     from server.sessions.orchestrator import SessionOrchestrator
     _snapshot_open_tasks = SessionOrchestrator._snapshot_open_tasks
+    _open_background_work = SessionOrchestrator._open_background_work
 
-    def __init__(self, drivers: dict, transcript_paths: dict):
+    def __init__(self, drivers: dict, transcript_paths: dict,
+                 engine=AgentEngine.CLAUDE_CODE):
         self._drivers = drivers
         self._transcript_paths = transcript_paths
+        self._engine = engine
 
     def transcript_path(self, sid: str):
         return self._transcript_paths.get(sid)
+
+    def _engine_of(self, sid: str):
+        return self._engine
 
 
 @asynccontextmanager
