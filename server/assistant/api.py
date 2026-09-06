@@ -14,9 +14,11 @@ from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.db import get_db
 from server.sessions.model_policy import resolve_model_policy
+from server.sessions.engine import AgentEngineUnavailable
 from server.sessions.types import ASSISTANT_KIND
 
-from .policy import assistant_enabled, assistant_model, operator_tools_enabled
+from .policy import (assistant_enabled, assistant_engine, assistant_model,
+                     operator_tools_enabled)
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/assistant", tags=["assistant"])
@@ -47,6 +49,11 @@ async def status_(request: Request, identity: str = Depends(current_identity), d
     rec = await orch.find_assistant(identity) if enabled else None
     return {"enabled": enabled, "sessionId": rec.id if rec else None,
             "model": (rec.model if rec and rec.model else await assistant_model(db)),
+            # Reported so the drawer can say which engine answered rather than
+            # assuming Claude; the session's own engine wins over the deployment
+            # default for an already-running drawer.
+            "engine": (rec.engine.value if rec and rec.engine
+                       else assistant_engine().value),
             "operatorTools": operator}
 
 
@@ -62,6 +69,10 @@ async def create(body: CreateBody, request: Request,
     if await resolve_model_policy(db, model=model) != "allow":
         return _err("MODEL_GATED", f"{model} needs approval and cannot run the assistant", 400)
 
+    # Resolved before the reuse branch so every return path can report the engine
+    # that will actually answer — a running thread's own, not the deployment
+    # default it may no longer match.
+    engine = assistant_engine()
     existing = await orch.find_assistant(identity)
     if existing is not None and not body.fresh:
         state = "existing"
@@ -75,7 +86,9 @@ async def create(body: CreateBody, request: Request,
             # unanswerable, and the reap-and-reopen flow leans on this path.
             await orch.ensure_driver(existing.id, identity=identity)
             state = "resumed"
-        return {"id": existing.id, "model": existing.model or model, "state": state}
+        return {"id": existing.id, "model": existing.model or model,
+                "engine": (existing.engine.value if existing.engine else engine.value),
+                "state": state}
     if existing is not None:
         await orch.archive_session(existing.id, archived_by="user",
                                    context={"reason": "assistant-reset"})
@@ -86,10 +99,16 @@ async def create(body: CreateBody, request: Request,
         rec = await orch.create_session(
             name="Assistant", cwd=_scratch_cwd(identity), identity=identity,
             permission_mode="interactive", name_is_auto=False, model=model,
-            kind=ASSISTANT_KIND, owner_identity=identity)
+            kind=ASSISTANT_KIND, owner_identity=identity, engine=engine)
+    except AgentEngineUnavailable as e:
+        # A deployment that asked for a Codex drawer on a host with no Codex
+        # runner gets a typed refusal, not a silent Claude fallback: the two
+        # engines have different overlays and different boundaries, so quietly
+        # substituting one would answer a question the operator did not ask.
+        return _err("ASSISTANT_ENGINE_UNAVAILABLE", str(e), 409)
     except AllAccountsBusy as e:
         return _err("ALL_ACCOUNTS_LIMITED", str(e), 409)
     await record_audit(db, "assistant.session.create", identity,
-                       {"sessionId": rec.id, "model": model})
+                       {"sessionId": rec.id, "model": model, "engine": engine.value})
     await db.commit()
-    return {"id": rec.id, "model": model, "state": "created"}
+    return {"id": rec.id, "model": model, "engine": engine.value, "state": "created"}

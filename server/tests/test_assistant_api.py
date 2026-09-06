@@ -82,6 +82,32 @@ def test_status_reports_operator_tools_on_via_env(tmp_path):
         assert c.get("/api/assistant/status", headers=_H).json()["operatorTools"] is True
 
 
+def test_status_reports_the_engine_the_drawer_runs_on(tmp_path):
+    with _client(tmp_path) as c:
+        assert c.get("/api/assistant/status", headers=_H).json()["engine"] == "claude_code"
+
+
+def test_every_create_path_reports_an_engine(tmp_path):
+    # The drawer's boundary IS its overlay, so "which engine answered?" must never
+    # be something a client has to assume — including on the reuse path, where the
+    # running thread's engine wins over the deployment default.
+    with _client(tmp_path) as c:
+        created = c.post("/api/assistant/session", json={}, headers=_H).json()
+        existing = c.post("/api/assistant/session", json={}, headers=_H).json()
+    assert created["engine"] == "claude_code"
+    assert existing["engine"] == "claude_code"
+
+
+def test_a_codex_drawer_is_refused_rather_than_downgraded(tmp_path):
+    # A host with no Codex runner must answer 409, never fall back to Claude: the
+    # two engines have different overlays, so substituting one silently would
+    # answer a question the operator did not ask.
+    with _client(tmp_path, {"CCSWITCH_ASSISTANT_ENGINE": "codex"}) as c:
+        r = c.post("/api/assistant/session", json={}, headers=_H)
+    assert r.status_code == 409
+    assert r.json()["error"]["code"] == "ASSISTANT_ENGINE_UNAVAILABLE"
+
+
 def test_create_is_idempotent_per_identity_and_hidden(tmp_path):
     with _client(tmp_path) as c:
         r1 = c.post("/api/assistant/session", json={}, headers=_H)

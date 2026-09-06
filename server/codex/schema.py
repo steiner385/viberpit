@@ -54,7 +54,7 @@ from server.codex.redaction import Redacted, contains_secret_shaped_value
 
 PINNED_CLI_VERSION: Final = "codex-cli 0.153.2"
 PINNED_CONTRACT_SHA256: Final = (
-    "e6381998acfed041c94358d3fb5149e6a8a85839c123cfa65e3643948b5ae4cc"
+    "02cb1ad1dc30f9cf305ede6b7e37cd942d11302a80b49911ab3dff012f6b1f32"
 )
 
 #: Schema documents copied verbatim into the fixtures and covered by the hash.
@@ -113,6 +113,11 @@ CURATED_SCHEMA_FILES: Final[tuple[str, ...]] = (
     # `request_user_input` surface the audit found declared but unpinned.
     "ToolRequestUserInputParams.json",
     "ToolRequestUserInputResponse.json",
+    # Task: the engine-neutral assistant overlay (#1321/#1290). `dynamicTools`
+    # on `thread/start` is how the in-app assistant mounts its ccswitch tool
+    # surface on Codex, and `item/tool/call` is the callback that executes it.
+    "DynamicToolCallParams.json",
+    "DynamicToolCallResponse.json",
 )
 
 #: Envelope files contributing only their method-name inventory to the hash.
@@ -198,6 +203,22 @@ METHOD_FILE_CHANGE_APPROVAL: Final = "item/fileChange/requestApproval"
 # wired up for Codex threads — so it stays declared-but-unsupported until one is.
 METHOD_ITEM_TOOL_REQUEST_USER_INPUT: Final = "item/tool/requestUserInput"
 
+# Client-declared tool execution (server -> client request). The Codex half of
+# the in-app assistant's tool surface (#1321): a thread started with
+# `dynamicTools` calls back here for every one of them, and ccswitch — the host —
+# is what actually runs the tool. That inversion is the whole security argument
+# for the Codex assistant overlay. `thread/start` has no `disallowed_tools`
+# equivalent, so the built-ins stay declared; what makes the drawer safe is that
+# the ccswitch tools cannot run without ccswitch answering this request, while
+# the built-ins are held by `sandbox: read-only` + `approvalPolicy: untrusted` +
+# a default-deny approval handler (docs/superpowers/spikes/
+# 2026-09-06-assistant-codex-findings.md, verified against codex-cli 0.153.2).
+#
+# `mcpServer/toolCall` is a DIFFERENT surface (the app-server asking the client
+# to proxy a call into a configured MCP server) and stays declared-but-unsupported:
+# no ccswitch Codex thread configures one.
+METHOD_ITEM_TOOL_CALL: Final = "item/tool/call"
+
 # Thread / turn / item stream (server -> client notifications).
 METHOD_THREAD_STARTED: Final = "thread/started"
 METHOD_THREAD_STATUS_CHANGED: Final = "thread/status/changed"
@@ -252,6 +273,7 @@ SUPPORTED_SERVER_REQUESTS: Final[frozenset[str]] = frozenset(
         METHOD_COMMAND_EXECUTION_APPROVAL,
         METHOD_FILE_CHANGE_APPROVAL,
         METHOD_ITEM_TOOL_REQUEST_USER_INPUT,
+        METHOD_ITEM_TOOL_CALL,
     }
 )
 SUPPORTED_SERVER_NOTIFICATIONS: Final[frozenset[str]] = frozenset(
@@ -1921,6 +1943,45 @@ def _parse_sandbox_policy(value: Any, what: str) -> str:
     return _require_enum(body, "type", f"{what} sandbox", SANDBOX_POLICY_TYPES)
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class FunctionDynamicToolSpec:
+    """One `FunctionDynamicToolSpec` — the only `DynamicToolSpec` variant ccswitch sends.
+
+    The union also carries a `namespace` variant (a named group of tools). It is
+    deliberately not modelled: `ThreadStartParams` pins only the knobs ccswitch
+    actually sets, and the assistant's surface is flat.
+
+    `deferLoading` is likewise absent. It asks the app-server to withhold a
+    tool's schema until the model reaches for it, which trades a locked-down
+    surface the model can see for one it must guess at — the opposite of what a
+    drawer whose whole contract is "these tools and nothing else" wants.
+    """
+
+    name: str
+    description: str
+    input_schema: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise CodexSchemaError("a dynamic tool spec requires a non-empty name")
+        if not self.description:
+            raise CodexSchemaError(
+                f"dynamic tool {self.name!r} requires a non-empty description"
+            )
+        if not isinstance(self.input_schema, Mapping):
+            raise CodexSchemaError(
+                f"dynamic tool {self.name!r} requires an object inputSchema"
+            )
+
+    def to_wire(self) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "name": self.name,
+            "description": self.description,
+            "inputSchema": dict(self.input_schema),
+        }
+
+
 # -- outbound thread params --------------------------------------------------
 
 
@@ -1938,6 +1999,22 @@ class ThreadStartParams:
     `permissions` names a server-side profile and the pinned schema states it
     cannot be combined with `sandbox`; sending both would let the app-server pick
     which one wins, so it is refused here instead.
+
+    `base_instructions` REPLACES the app-server's own agent instructions, where
+    `developer_instructions` appends to them — the same distinction as passing a
+    plain string to the Claude SDK's `system_prompt` versus its preset+append
+    form. A coding session appends (it wants Codex to be Codex, plus ccswitch's
+    marker contracts); the assistant drawer replaces (spec §4.1: the completion
+    /PR/model-request markers are coding-session contracts and mean nothing
+    there). Both are sendable, and both being set is refused, because which one
+    would win is the app-server's choice, not ccswitch's.
+
+    `ephemeral` is deliberately absent, and its absence is load-bearing rather
+    than an omission: an ephemeral thread cannot be replayed —
+    `thread/read {includeTurns: true}` answers `-32600 ephemeral threads do not
+    support includeTurns` and `thread/items/list` is `-32601` on 0.153.2 — so
+    every ccswitch thread, assistant threads included, is durable by never
+    asking for the other thing.
     """
 
     cwd: str | None = None
@@ -1946,7 +2023,9 @@ class ThreadStartParams:
     approval_policy: str | None = None
     permissions: str | None = None
     developer_instructions: str | None = None
+    base_instructions: str | None = None
     personality: str | None = None
+    dynamic_tools: tuple[FunctionDynamicToolSpec, ...] = ()
 
     def __post_init__(self) -> None:
         _validate_optional_enum(self.sandbox, SANDBOX_MODES, "thread/start 'sandbox'")
@@ -1960,6 +2039,14 @@ class ThreadStartParams:
             raise CodexSchemaError(
                 "thread/start cannot combine 'sandbox' with a named 'permissions' profile"
             )
+        if self.developer_instructions is not None and self.base_instructions is not None:
+            raise CodexSchemaError(
+                "thread/start cannot combine 'developerInstructions' with "
+                "'baseInstructions'"
+            )
+        names = [spec.name for spec in self.dynamic_tools]
+        if len(set(names)) != len(names):
+            raise CodexSchemaError("thread/start 'dynamicTools' has a duplicate name")
 
     def to_wire(self) -> dict[str, Any]:
         wire: dict[str, Any] = {}
@@ -1970,15 +2057,30 @@ class ThreadStartParams:
             ("approvalPolicy", self.approval_policy),
             ("permissions", self.permissions),
             ("developerInstructions", self.developer_instructions),
+            ("baseInstructions", self.base_instructions),
             ("personality", self.personality),
         ):
             if value is not None:
                 wire[key] = value
+        if self.dynamic_tools:
+            wire["dynamicTools"] = [spec.to_wire() for spec in self.dynamic_tools]
         return wire
 
 
 @dataclass(frozen=True, slots=True, repr=False)
 class ThreadResumeParams:
+    """`thread/resume` — the knobs ccswitch sets when re-opening a thread.
+
+    **`dynamicTools` is absent from this method's pinned params, and that is a
+    vendor boundary, not an omission here** (`v2/ThreadResumeParams.json` on
+    codex-cli 0.153.2 declares `baseInstructions` but no tool field). A resumed
+    thread therefore cannot re-declare the host-executed tool surface a
+    `thread/start` mounted, so an assistant thread must never be resumed: it
+    would come back with the built-ins still declared and the ccswitch tools
+    gone — precisely inverting the drawer's security property. See
+    ``server/assistant/options_codex.py`` and ``CodexAgentDriver.start``.
+    """
+
     thread_id: str
     cwd: str | None = None
     model: str | None = None
@@ -2259,6 +2361,40 @@ def parse_turn_settings_update_response(payload: Any) -> TurnSettingsUpdateRespo
     )
 
 
+def _parse_dynamic_tool_specs(
+    body: Mapping[str, Any], what: str
+) -> tuple[FunctionDynamicToolSpec, ...]:
+    """Re-read an outbound `dynamicTools` array back into specs.
+
+    Part of the outbound re-validation gate, so a tool table assembled by the
+    assistant overlay is checked against the same contract an inbound frame would
+    be — a spec with no description, or the unmodelled `namespace` variant, is
+    refused before it reaches the app-server rather than after.
+    """
+    raw = body.get("dynamicTools")
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise CodexSchemaError(f"{what} field 'dynamicTools' must be an array")
+    specs: list[FunctionDynamicToolSpec] = []
+    for index, entry in enumerate(raw):
+        entry_what = f"{what} field 'dynamicTools[{index}]'"
+        spec = _as_mapping(entry, entry_what)
+        if _require_str(spec, "type", entry_what) != "function":
+            raise CodexSchemaError(f"{entry_what} is not a function tool spec")
+        schema_body = spec.get("inputSchema")
+        if not isinstance(schema_body, Mapping):
+            raise CodexSchemaError(f"{entry_what} field 'inputSchema' must be an object")
+        specs.append(
+            FunctionDynamicToolSpec(
+                name=_require_str(spec, "name", entry_what),
+                description=_require_str(spec, "description", entry_what),
+                input_schema=schema_body,
+            )
+        )
+    return tuple(specs)
+
+
 def validate_client_request_params(method: str, payload: Any) -> dict[str, Any]:
     """Validate and rebuild one outbound request using the pinned method schema."""
     what = "client request params"
@@ -2354,7 +2490,9 @@ def validate_client_request_params(method: str, payload: Any) -> dict[str, Any]:
                     "approvalPolicy",
                     "permissions",
                     "developerInstructions",
+                    "baseInstructions",
                     "personality",
+                    "dynamicTools",
                 }
             ),
             what,
@@ -2368,7 +2506,9 @@ def validate_client_request_params(method: str, payload: Any) -> dict[str, Any]:
             ),
             permissions=_optional_str(body, "permissions", what),
             developer_instructions=_optional_str(body, "developerInstructions", what),
+            base_instructions=_optional_str(body, "baseInstructions", what),
             personality=_optional_enum(body, "personality", what, PERSONALITIES),
+            dynamic_tools=_parse_dynamic_tool_specs(body, what),
         ).to_wire()
     if method == METHOD_THREAD_RESUME:
         _reject_unknown_fields(
@@ -3162,3 +3302,98 @@ def parse_client_response(method: str, payload: Any) -> ClientResponse:
     if method == METHOD_TURN_SETTINGS_UPDATE:
         return parse_turn_settings_update_response(payload)
     raise CodexSchemaError("unsupported client response method")
+
+
+# ---------------------------------------------------------------------------
+# Client-declared tools (`thread/start` `dynamicTools` + `item/tool/call`)
+# ---------------------------------------------------------------------------
+#
+# The Codex counterpart of the Claude assistant's in-process SDK MCP server. A
+# thread declares its tools up front and the app-server calls back for each one;
+# there is no child process and no `~/.codex/config.toml` edit. The gate is the
+# callback itself — ccswitch executes every declared tool, so one cannot run
+# without ccswitch's participation (#1321, spike 2026-09-06).
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class DynamicToolCallParams:
+    """`item/tool/call` — the app-server asking the host to run a declared tool.
+
+    `arguments` is `true` (any JSON) in the vendor schema, so it is carried
+    verbatim and normalized where it is used rather than being forced into a
+    mapping here: a model that sends a non-object argument must reach the tool's
+    own argument validation and get a tool error, not a protocol error that
+    fails the whole turn.
+    """
+
+    thread_id: str
+    turn_id: str
+    call_id: str
+    tool: str
+    arguments: Any = None
+    namespace: str | None = None
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class DynamicToolCallContentItem:
+    """One `inputText` output item.
+
+    The union also has `inputImage` and `inputAudio` members. ccswitch answers
+    with text only — every assistant tool returns a JSON envelope
+    (`server/assistant/tools.wrap_untrusted`) — so the other two are refused on
+    the way out rather than half-supported.
+    """
+
+    text: str
+
+    def to_wire(self) -> dict[str, Any]:
+        return {"type": "inputText", "text": self.text}
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class DynamicToolCallResponse:
+    success: bool
+    content_items: tuple[DynamicToolCallContentItem, ...] = ()
+
+    def to_wire(self) -> dict[str, Any]:
+        return {
+            "success": self.success,
+            "contentItems": [item.to_wire() for item in self.content_items],
+        }
+
+
+def parse_dynamic_tool_call_params(payload: Any) -> DynamicToolCallParams:
+    what = "item/tool/call params"
+    body = _as_mapping(payload, what)
+    return DynamicToolCallParams(
+        thread_id=_require_str(body, "threadId", what),
+        turn_id=_require_str(body, "turnId", what),
+        call_id=_require_str(body, "callId", what),
+        tool=_require_str(body, "tool", what),
+        arguments=body.get("arguments"),
+        namespace=_optional_str(body, "namespace", what),
+    )
+
+
+def parse_dynamic_tool_call_response(payload: Any) -> DynamicToolCallResponse:
+    """Re-validate a tool result immediately before it is written.
+
+    Runs against the same contract inbound parsing uses, for the same reason the
+    approval path does: the handler is application code, and this is the last
+    point before a tool result reaches the model.
+    """
+    what = "item/tool/call response"
+    body = _as_mapping(payload, what)
+    raw_items = body.get("contentItems")
+    if not isinstance(raw_items, list):
+        raise CodexSchemaError(f"{what} field 'contentItems' must be an array")
+    items: list[DynamicToolCallContentItem] = []
+    for index, raw in enumerate(raw_items):
+        entry_what = f"{what} field 'contentItems[{index}]'"
+        entry = _as_mapping(raw, entry_what)
+        if _require_str(entry, "type", entry_what) != "inputText":
+            raise CodexSchemaError(f"{entry_what} is not an inputText item")
+        items.append(DynamicToolCallContentItem(text=_require_str(entry, "text", entry_what)))
+    return DynamicToolCallResponse(
+        success=_require_bool(body, "success", what), content_items=tuple(items)
+    )

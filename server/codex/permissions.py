@@ -198,6 +198,30 @@ _BYPASS = CodexPermissionProfile(
 )
 
 #: The mapping. Read-only so a caller cannot mutate the security policy in place.
+#: The profile an ASSISTANT-kind Codex thread runs under, regardless of the
+#: session's permission mode (#1321).
+#:
+#: Not a `PROFILES` entry, because it is not selected by a mode name — it is
+#: pinned for the life of the thread by ``server/assistant/options_codex.py`` and
+#: `CodexAgentDriver` refuses to move it. It lives here anyway so this module
+#: stays the ONE answer to "how much authority does a Codex thread get?", rather
+#: than the assistant overlay growing a second, unreviewed pair of literals.
+#:
+#: `read-only` + `untrusted` is the strictest pair the wire enums offer, and for
+#: the drawer it is not a conservative default but the entire boundary: Codex
+#: cannot remove its built-in tools, so the only thing standing between the
+#: assistant and a shell is that every command asks, in a sandbox that could not
+#: write even if one were approved — and ccswitch declines every ask.
+ASSISTANT_PROFILE: Final = CodexPermissionProfile(
+    sandbox_mode=CodexSandboxMode.READ_ONLY,
+    approval_policy=CodexApprovalPolicy.UNTRUSTED,
+    description=(
+        "The ccswitch assistant: a read-only sandbox with every command routed "
+        "through an approval ccswitch always declines. Its only tools are the "
+        "ccswitch tools, which ccswitch itself executes."
+    ),
+)
+
 PROFILES: Final[Mapping[str, CodexPermissionProfile]] = MappingProxyType({
     # Transient driver-level overlay (web plan toggle).
     "plan": _PLAN,

@@ -1164,7 +1164,9 @@ class SessionOrchestrator:
         overlays[session_id] = overlay
 
     async def _setup_assistant_overlay(self, session_id: str, *, identity: str,
-                                       model: str | None) -> "AssistantApi":
+                                       model: str | None,
+                                       engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
+                                       ) -> "AssistantApi":
         """Everything that makes one session an ASSISTANT rather than a coding agent:
         mint its loopback bearer token, build the in-process ``ccswitch`` MCP server on
         top of it, and register the resulting ``ClaudeAgentOptions`` overlay. Returns
@@ -1194,7 +1196,7 @@ class SessionOrchestrator:
         while the row is still alive and resumable.
         """
         from server.assistant.client import AssistantApi
-        from server.assistant.options import assistant_options
+        from server.assistant.options import assistant_overlay_for
         from server.assistant.policy import operator_tools_enabled
         from server.assistant.server import build_server
         from server.assistant.token import mint_token
@@ -1206,8 +1208,14 @@ class SessionOrchestrator:
                            identity=identity)
         async with db_session() as db:
             operator = await operator_tools_enabled(db)
-        self.register_assistant_overlay(session_id, assistant_options(
-            server=build_server(api, operator=operator), max_turns=cfg.assistant_max_turns,
+        selected = parse_agent_engine(engine, legacy_default=True)
+        # The Claude MCP server is built ONLY for the engine that mounts one: it
+        # spawns nothing, but building it for a Codex assistant would be a second,
+        # unused copy of the tool table whose drift nothing would catch.
+        server = (build_server(api, operator=operator)
+                  if selected is AgentEngine.CLAUDE_CODE else None)
+        self.register_assistant_overlay(session_id, assistant_overlay_for(
+            selected, api=api, server=server, max_turns=cfg.assistant_max_turns,
             model=model or cfg.assistant_model, operator=operator))
         return api
 
@@ -1227,7 +1235,11 @@ class SessionOrchestrator:
             extra = {**(x11.env_for(session_id) if x11 else {}), **self._oat_env(session_id)}
             kw: dict = {"on_pre_compact": on_pre_compact}
             overlay = getattr(self, "_assistant_overlays", {}).get(session_id)
-            if overlay is not None:
+            # `dict` and not merely "not None": the Codex overlay for an assistant
+            # session lands in the same registry and is a different type entirely
+            # (server/assistant/options_codex.CodexAssistantOverlay). It is read by
+            # `_codex_assistant_overlay_for_session`, never by this factory.
+            if isinstance(overlay, dict):
                 kw["options_overlay"] = overlay
             if extra:
                 return base(cwd, config_dir, can_use_tool, mode, resume,
@@ -1265,7 +1277,8 @@ class SessionOrchestrator:
         if self._codex is not None:
             from server.codex.driver import CodexAgentDriverFactory
             factories[AgentEngine.CODEX] = CodexAgentDriverFactory(
-                self._codex, self._registry, self._launch_model_for_session)
+                self._codex, self._registry, self._launch_model_for_session,
+                self._codex_assistant_overlay_for_session)
         return factories
 
     def _launch_model_for_session(self, session_id: str) -> str | None:
@@ -1281,6 +1294,20 @@ class SessionOrchestrator:
         """
         rec = self._records.get(session_id)
         return getattr(rec, "model", None) if rec is not None else None
+
+    def _codex_assistant_overlay_for_session(self, session_id: str):
+        """The Codex assistant overlay registered for *session_id*, if any.
+
+        Type-checked rather than assumed: ``_assistant_overlays`` holds whichever
+        overlay ``assistant_overlay_for`` built, and the two engines' overlays are
+        different types on purpose. Handing a Claude options dict to the Codex
+        driver — or the reverse — is the one mistake this seam can make, so it is
+        made unrepresentable here instead of guarded at each use.
+        """
+        from server.assistant.options_codex import CodexAssistantOverlay
+
+        overlay = getattr(self, "_assistant_overlays", {}).get(session_id)
+        return overlay if isinstance(overlay, CodexAssistantOverlay) else None
 
     def _engine_supports(self, engine: AgentEngine | str, capability: str) -> bool:
         """True iff this host's driver for *engine* declares *capability*.
@@ -2884,7 +2911,8 @@ class SessionOrchestrator:
             assistant_api = None
             if is_assistant_kind(kind):
                 assistant_api = await self._setup_assistant_overlay(
-                    session_id, identity=identity, model=model)
+                    session_id, identity=identity, model=model,
+                    engine=selected_engine)
 
             driver = self._create_driver(
                 engine=selected_engine,
@@ -9525,7 +9553,8 @@ class SessionOrchestrator:
                     # Must run before _create_driver: the SDK factory reads
                     # self._assistant_overlays[session_id] when it builds the client.
                     assistant_api = await self._setup_assistant_overlay(
-                        session_id, identity=identity, model=rec.model)
+                        session_id, identity=identity, model=rec.model,
+                        engine=resume_engine)
                     built_assistant_apis.append(assistant_api)
                 return self._create_driver(
                     engine=resume_engine,
@@ -11873,7 +11902,8 @@ class SessionOrchestrator:
             assistant_api = None
             if is_assistant_kind(getattr(record, "kind", None)):
                 assistant_api = await self._setup_assistant_overlay(
-                    record.id, identity=identity, model=record.model)
+                    record.id, identity=identity, model=record.model,
+                    engine=record.engine)
             new_driver = self._create_driver(
                 engine=record.engine,
                 session_id=record.id,

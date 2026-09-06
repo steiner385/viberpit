@@ -946,7 +946,17 @@ async def test_no_secret_shaped_value_reaches_the_logs(
                 with pytest.raises(protocol.CodexRequestFailed):
                     await login
                 fake.notify("totally/made/up", {"accessToken": JWT, "prompt": "hello"})
-                fake.request("item/tool/call", {"command": ["rm", "-rf", "/"]}, request_id=95)
+                # A DECLARED but unsupported server request — its params must
+                # never be logged. `item/tool/call` used to stand here; it became
+                # supported with the assistant overlay (#1321), and
+                # `item/permissions/requestApproval` is the one that stays
+                # unsupported by design (its response would hand the app-server a
+                # permissions grant ccswitch has no vocabulary for).
+                fake.request(
+                    "item/permissions/requestApproval",
+                    {"command": ["rm", "-rf", "/"]},
+                    request_id=95,
+                )
                 await fake.receive_reply(95)
                 fake.eof()
                 await fake.drained()

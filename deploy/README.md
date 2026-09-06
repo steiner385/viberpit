@@ -99,6 +99,7 @@ it reuses the normal session stack, so there is no extra venv extra and no model
 | `CCSWITCH_ASSISTANT_IDLE_S` | `900` | Idle grace before an assistant's driver is closed. **Also sets the assistant bearer token's max age (`idle_s × 4`, `server/auth/middleware.py`)** — raising it lengthens a credential's lifetime, so treat it as a security knob, not just a timeout. |
 | `CCSWITCH_ASSISTANT_MAX_TURNS` | `30` | SDK turn cap per assistant session. |
 | `CCSWITCH_ASSISTANT_MAX_PROMPTS_PER_HOUR` | `120` | Per-identity prompt rate limit; over it the WS replies `promptRejected` / `RATE_LIMITED`. |
+| `CCSWITCH_ASSISTANT_ENGINE` | `claude_code` | Which agent engine the drawer runs on. `codex` mounts the Codex overlay (`server/assistant/options_codex.py`): the ccswitch tools become client-declared `dynamicTools` that the edge itself executes, the thread runs `read-only` + `untrusted` in a repo-free `cwd`, and every built-in approval is declined. Default Claude because the boundary is unit-tested but has no end-to-end acceptance run yet (#1321/#1290). Needs `CCSWITCH_CODEX_ENABLED=true` and an OpenAI account on the host, or `POST /api/assistant/session` answers 409 `ASSISTANT_ENGINE_UNAVAILABLE` rather than falling back to Claude. Env only — deliberately not a Settings toggle, because the engine picks the security overlay. **A Codex drawer does not resume**: `thread/resume` cannot re-declare the tool surface, so each reopen after the idle reap starts a fresh thread and the model loses prior context (the ccswitch transcript is unaffected). |
 | `CCSWITCH_ASSISTANT_OPERATOR_TOOLS` | `false` | Opt-in operator tier: deploy start, host upgrade, account refresh/enable and re-auth kick-off. Off by default because of the blast radius. `AppSettings.assistant_operator_tools` (Settings → General → AI assistant → Operator tools) overrides it with the same precedence as the kill switch below. Takes effect for a thread on its **next** spawn — the tools are registered at session start, so an assistant already running keeps the surface it started with until the idle reap. |
 
 **The Settings toggle overrides the env var, not the other way round.** `assistant_enabled` in
@@ -114,7 +115,7 @@ Check what a running edge actually resolved — this is the assistant's analogue
 and unlike STT it is **not** in `GET /api/config`, because the answer depends on DB state:
 
 ```bash
-curl -s https://dobby.tail0dd570.ts.net/api/assistant/status   # {"enabled":true,"sessionId":…,"model":"sonnet"}
+curl -s https://dobby.tail0dd570.ts.net/api/assistant/status   # {"enabled":true,"sessionId":…,"model":"sonnet","engine":"claude_code"}
 ```
 
 Assistant sessions are ordinary sessions with `kind == "assistant"`, hidden from the session
