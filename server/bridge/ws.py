@@ -395,6 +395,13 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
         await websocket.accept()
         log.debug("ws.connect identity=%s", identity)
 
+        # Set by require_ws_identity when this socket authenticated with a `ccas2:`
+        # external token (Task 9.7, `ccswitch ask`) — None for the ordinary
+        # human-in-the-browser Tailscale-identity connection. Threaded into the
+        # permission/question audit rows below so `via="cli"` distinguishes an
+        # answer typed at a shell from one clicked in the drawer.
+        via: str | None = getattr(websocket.state, "via", None)
+
         # Live orchestrator (see build_ws_router docstring). Falls back to the
         # build-time reference only if app.state has no sessions bound yet.
         orchestrator = getattr(websocket.app.state, "sessions", None) or default_orchestrator
@@ -1709,10 +1716,19 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                     break
 
                 # Per-frame identity re-verification (handshake drift / revocation).
-                ident = verify_identity(websocket)
-                if ident is None or ident != identity:
-                    await websocket.close(code=1008)
-                    return
+                # Skipped for a `ccas2:` (via="cli") socket: `verify_identity` only ever
+                # reads the Tailscale proxy header, which a bearer-token connection
+                # never carries — re-running it every frame would close a valid
+                # ccswitch-ask socket on its very first message. The token's validity
+                # (signature + DB revocation + expiry) was already fully checked once
+                # at the handshake in `require_ws_identity`, and unlike a Tailscale
+                # header behind a proxy, the Authorization header cannot drift mid-
+                # socket, so there is nothing here for a per-frame re-check to catch.
+                if via != "cli":
+                    ident = verify_identity(websocket)
+                    if ident is None or ident != identity:
+                        await websocket.close(code=1008)
+                        return
 
                 # 256KB frame cap.
                 if len(raw) > _MAX_FRAME:
@@ -1781,7 +1797,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                         try:
                             await session_actions.resolve_permission(
                                 orchestrator, db, session_id=session_id, perm_id=perm_id,
-                                decision=decision, identity=identity)
+                                decision=decision, identity=identity, via=via)
                         except ActionError as exc:
                             action_error = exc
                     if action_error is not None:
@@ -1804,7 +1820,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                             await session_actions.answer_question(
                                 orchestrator, db, session_id=session_id,
                                 question_id=question_id, selected=selected, mode=mode,
-                                identity=identity)
+                                identity=identity, via=via)
                         except ActionError as exc:
                             action_error = exc
                     if action_error is not None:
