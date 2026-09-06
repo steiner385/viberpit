@@ -37,14 +37,15 @@ def test_every_registered_origin_declares_its_audited_policy():
     reviewable record of which ones passed a Codex acceptance suite.
 
     ``backlog-runner`` was widened to ``codex_allowed`` by #1264, the two SDLC
-    origins by #1265/#1266, and the two PM session origins by #1268/#1269 — the
-    *option*, not the traffic (``default_engine`` still answers Claude, and both
-    the automations kill switch and the network opt-in ship off). Everything
-    else is still ``claude_only``: widening one is a one-line diff here."""
+    origins by #1265/#1266, the two PM session origins by #1268/#1269, and
+    ``pr-doctor`` by #1267 — the *option*, not the traffic (``default_engine``
+    still answers Claude, and both the automations kill switch and the network
+    opt-in ship off). Everything else is still ``claude_only``: widening one is
+    a one-line diff here."""
     audited = audited_policy_map()
     assert set(audited) == {a.id for a in registry.all()}
     assert audited == {
-        "pr-doctor": EnginePolicy.CLAUDE_ONLY,
+        "pr-doctor": EnginePolicy.CODEX_ALLOWED,
         "backlog-runner": EnginePolicy.CODEX_ALLOWED,
         "autopilot": EnginePolicy.CLAUDE_ONLY,
         "cicd-doctor": EnginePolicy.CLAUDE_ONLY,
@@ -130,9 +131,9 @@ def test_codex_only_origin_offers_codex_as_the_sole_choice():
 
 
 def test_effective_config_schema_appends_nothing_for_a_claude_only_origin():
-    pr_doctor = registry.get("pr-doctor")
-    own = [f.key for f in pr_doctor.config_schema]
-    effective = [f.key for f in effective_config_schema(pr_doctor)]
+    autopilot = registry.get("autopilot")
+    own = [f.key for f in autopilot.config_schema]
+    effective = [f.key for f in effective_config_schema(autopilot)]
     assert effective == own
 
 

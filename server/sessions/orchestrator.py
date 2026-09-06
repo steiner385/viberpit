@@ -7299,8 +7299,10 @@ class SessionOrchestrator:
         seeded with that prompt. Emits the same ``attempted`` / ``spawn_failed``
         events as before. Returns ``(status, session_id)`` where status is
         ``"sent"`` | ``"spawned"`` (real injection) | ``"transient"`` |
-        ``"clone_failed"`` | ``"spawn_failed"``. Does NOT touch per-target engine
-        state — the caller records the attempt on a real injection.
+        ``"clone_failed"`` | ``"spawn_failed"`` | ``"refused"`` (fresh-spawn only —
+        the origin's engine policy refused the launch before any clone/model
+        cost was paid). Does NOT touch per-target engine state — the caller
+        records the attempt on a real injection.
 
         ``on_phase(phase)`` — optional progress hook the async manual trigger
         (issue #668) uses to advance its job through ``cloning`` → ``assessing``
@@ -7308,15 +7310,19 @@ class SessionOrchestrator:
         """
         phase = on_phase or (lambda _p: None)
         target = f"{repo}#{info.number}"
-        # Select the branch-aware first prompt by failure kind. Single source of
-        # truth for both the live-driver inject and the fresh-spawn seed.
-        if kind == "merge_conflict":
-            prompt = build_conflict_fix_prompt(repo, info)
-        else:  # "failing_ci"
-            prompt = build_pr_fix_prompt(repo, info)
 
         live_rec = rec if (rec is not None and rec.id in self._drivers) else None
         if live_rec is not None:
+            # Injection into an already-live session reuses THAT session's own
+            # already-resolved engine (decided once, at its original spawn) via
+            # the shared, engine-neutral AgentDriver.send_prompt contract
+            # (request_pr_fix routes through it too) — there is no fresh engine
+            # decision to make here, but the prompt's commit-trailer instruction
+            # still has to name the engine actually running the session.
+            if kind == "merge_conflict":
+                prompt = build_conflict_fix_prompt(repo, info, engine=live_rec.engine)
+            else:  # "failing_ci"
+                prompt = build_pr_fix_prompt(repo, info, engine=live_rec.engine)
             # LIVE driver → near-instant injection, no clone/assess. Report the
             # spawning phase so a polling job still sees forward motion.
             phase("spawning")
@@ -7353,6 +7359,19 @@ class SessionOrchestrator:
         # `spawned`; a repeated poll for the same target returns the existing
         # session instead of a second spawn.
         #
+        # Engine FIRST, before any network or disk work: the seed prompt states a
+        # commit trailer so it has to be built for the engine that will actually
+        # run (Phase 7, #1267, mirrors _backlog_spawn) — and a refused launch must
+        # cost nothing, not a full clone + model assessment.
+        plan = await self._pr_doctor_ctx.launch_plan_or_refuse(target)
+        if plan is None:                       # out of policy — the ctx recorded why
+            return "refused", None
+        eng, _launch_config = plan
+        if kind == "merge_conflict":
+            prompt = build_conflict_fix_prompt(repo, info, engine=eng)
+        else:  # "failing_ci"
+            prompt = build_pr_fix_prompt(repo, info, engine=eng)
+
         # Resolve the ccswitch-owned clone `cwd` first (mirrors the New-Session
         # API): create_session's worktree block only runs when `cwd` is a real git
         # repo, so without it the spawn falls to an empty scratch dir with
@@ -7371,14 +7390,29 @@ class SessionOrchestrator:
                 "error", f"clone failed for {target}: {exc}",
                 kind="spawn_failed", target=target)
             return "clone_failed", None
-        from server.automations.model_pick import resolve_model
         phase("assessing")
-        failing = ", ".join(
-            d.name for d in info.checks_detail if d.conclusion == "failure")
-        model, model_source = await resolve_model(
-            await self._pr_doctor_config(),
-            f"{kind} fix for PR {target}: {info.title}"
-            + (f"\nfailing checks: {failing}" if failing else ""))
+        model = model_source = None
+        detail: dict = {"engine": eng.value}
+        if eng is AgentEngine.CLAUDE_CODE:
+            # `resolve_model` is a Claude complexity assessor returning Claude
+            # catalog aliases — skip it for another engine rather than making the
+            # call and dropping the answer (Phase 7, Task 7.1).
+            from server.automations.model_pick import resolve_model
+            failing = ", ".join(
+                d.name for d in info.checks_detail if d.conclusion == "failure")
+            model, model_source = await resolve_model(
+                await self._pr_doctor_config(),
+                f"{kind} fix for PR {target}: {info.title}"
+                + (f"\nfailing checks: {failing}" if failing else ""))
+            if model is not None:
+                detail.update(model=model, model_source=model_source)
+        # Codex auto-effort assessment (mirrors _backlog_spawn's Codex branch) is
+        # skipped here: unlike backlog-runner, PR Doctor does not pre-resolve an
+        # account (create_session picks a healthy one below), and the assessor
+        # needs a resolved account to query that account's live model catalog. A
+        # Codex spawn therefore runs on the account's/engine's own default model
+        # rather than an auto-picked effort tier — refining that is a follow-up,
+        # not a blocker for widening the ceiling.
         phase("spawning")
         try:
             rec2 = await self._pr_doctor_ctx.spawn_session(
@@ -7388,11 +7422,11 @@ class SessionOrchestrator:
                 branch=branch,
                 cwd=cwd,
                 account=None,  # create_session picks a healthy account
+                engine=eng,
                 name=f"pr-doctor fix {target}",
                 initial_prompt=prompt,
                 model=model,
-                detail={"model": model, "model_source": model_source}
-                if model is not None else None,
+                detail=detail,
             )
         except AllAccountsBusy as exc:
             # Distinguish genuine ceiling (all accounts exhausted) from a transient
@@ -7413,6 +7447,11 @@ class SessionOrchestrator:
                 "error", f"spawn failed for {target}: {exc}",
                 kind="spawn_failed", target=target)
             return "spawn_failed", None
+        if rec2 is None:
+            # spawn_session already emitted why (engine_launch_refused /
+            # engine_policy_refused) — e.g. a Codex engine resolved under a
+            # sandboxed permission mode that cannot push. Attempt NOT consumed.
+            return "refused", None
         # Real successful spawn.
         sid = getattr(rec2, "id", None)
         await self._pr_doctor_ctx.emit(
@@ -7575,13 +7614,21 @@ class SessionOrchestrator:
         from server.sessions.pr_fix import build_consolidation_prompt
 
         try:
+            # Engine FIRST, before any network or disk work — same reasoning as
+            # _pr_doctor_session_fix's fresh-spawn branch (Phase 7, #1267): the
+            # seed prompt states a commit trailer, and a refused launch must cost
+            # nothing, not a remote branch listing + full clone + model call.
+            plan = await self._pr_doctor_ctx.launch_plan_or_refuse(target)
+            if plan is None:                   # out of policy — the ctx recorded why
+                return
+            eng, _launch_config = plan
             try:
                 default_branch = await asyncio.to_thread(
                     lambda: gitrepos.list_remote_branches(repo).get("default") or "master"
                 )
             except Exception:
                 default_branch = "master"
-            prompt = build_consolidation_prompt(repo, default_branch, prs)
+            prompt = build_consolidation_prompt(repo, default_branch, prs, engine=eng)
             url = f"https://github.com/{repo}.git"
             try:
                 cwd = await asyncio.to_thread(
@@ -7591,20 +7638,26 @@ class SessionOrchestrator:
                     "error", f"clone failed for {target}: {exc}",
                     kind="spawn_failed", target=target)
                 return
-            from server.automations.model_pick import resolve_model
-            model, model_source = await resolve_model(
-                await self._pr_doctor_config(),
-                f"consolidate {len(prs)} PRs in {repo}:\n"
-                + "\n".join(f"#{p.number}  {p.title}" for p in prs))
+            model = model_source = None
+            detail: dict = {"engine": eng.value}
+            if eng is AgentEngine.CLAUDE_CODE:
+                # See _pr_doctor_session_fix: skip the Claude complexity assessor
+                # for another engine rather than making the call and dropping it.
+                from server.automations.model_pick import resolve_model
+                model, model_source = await resolve_model(
+                    await self._pr_doctor_config(),
+                    f"consolidate {len(prs)} PRs in {repo}:\n"
+                    + "\n".join(f"#{p.number}  {p.title}" for p in prs))
+                if model is not None:
+                    detail.update(model=model, model_source=model_source)
             try:
                 rec = await self._pr_doctor_ctx.spawn_session(
                     origin_ref=target, dedupe_key=target, repo=repo,
-                    account=None, cwd=cwd,
+                    account=None, cwd=cwd, engine=eng,
                     name=f"pr-doctor consolidate {repo} ({len(prs)} PRs)",
                     initial_prompt=prompt,
                     model=model,
-                    detail={"model": model, "model_source": model_source}
-                    if model is not None else None)
+                    detail=detail)
             except AllAccountsBusy:
                 await self._pr_doctor_ctx.emit(
                     "warn", f"consolidate deferred for {target}: all accounts at/above usage ceiling",
@@ -7614,6 +7667,10 @@ class SessionOrchestrator:
                 await self._pr_doctor_ctx.emit(
                     "error", f"consolidate spawn failed for {target}: {exc}",
                     kind="spawn_failed", target=target)
+                return
+            if rec is None:
+                # spawn_session already emitted why (engine_launch_refused /
+                # engine_policy_refused) — nothing further to record here.
                 return
             sid = getattr(rec, "id", None)
             await self._pr_doctor_ctx.emit(
@@ -8965,7 +9022,7 @@ class SessionOrchestrator:
             return "no_pr"
         if info.state not in ("open", "draft"):
             return "not_actionable"
-        prompt = build_pr_fix_prompt(rec.repo, info)
+        prompt = build_pr_fix_prompt(rec.repo, info, engine=rec.engine)
         return await self.send_prompt(session_id, prompt)
 
     def _pr_doctor_owning_rec(self, repo: str, branch: str):
