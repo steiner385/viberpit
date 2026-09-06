@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer,
-                        String, UniqueConstraint, text)
+                        String, Text, UniqueConstraint, text)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import JSON
 
@@ -774,6 +774,36 @@ class CiFinding(Base):
         DateTime(timezone=True), nullable=True, default=_utcnow)
     resolved_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None)
+
+
+class SessionFeedback(Base):
+    """A report a coding session made about ccswitch itself via the `report_feedback`
+    session tool (session tools spec §4–§5). Fingerprint-deduped; Phase 2's filer turns
+    `pending` rows into `session-feedback` GitHub issues and links `issue_number`.
+
+    Every column is nullable so `_reconcile_columns` adds the table's columns on both
+    dialects without a hand migration; `reported_at` is naive UTC like every other
+    timestamp column (DB clock rule, server/db/clock.py)."""
+
+    __tablename__ = "session_feedback"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    session_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    fingerprint: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    category: Mapped[str | None] = mapped_column(String, nullable=True)
+    impact: Mapped[str | None] = mapped_column(String, nullable=True)
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Snapshot of the reporting session: repo, branch, origin, origin_ref, engine,
+    # model, host, account (display name only), session_url.
+    context: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    # pending | filed | merged | capped | throttled | dismissed (server/sessions/feedback.py)
+    status: Mapped[str | None] = mapped_column(String, nullable=True, default="pending")
+    issue_number: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    reported_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    filed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
 
 
 # ---------------------------------------------------------------------------
