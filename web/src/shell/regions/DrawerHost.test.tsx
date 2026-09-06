@@ -145,7 +145,7 @@ function renderAt(entries: string[], index = entries.length - 1) {
         element: <Layout />,
         children: [
           { path: 'sessions', element: <div>sessions page</div> },
-          { path: 'archived', element: <div>archived page</div> },
+          { path: 'sessions/archived', element: <div>archived page</div> },
         ],
       },
     ],
@@ -386,9 +386,9 @@ describe('DrawerHost', () => {
     const before = region()
     expect(before).not.toBeNull()
     await act(async () => {
-      await router.navigate('/archived?drawer=help')
+      await router.navigate('/sessions/archived?drawer=help')
     })
-    expect(screen.getByTestId('url')).toHaveTextContent('/archived?drawer=help')
+    expect(screen.getByTestId('url')).toHaveTextContent('/sessions/archived?drawer=help')
     expect(region()).toBe(before)
   })
 

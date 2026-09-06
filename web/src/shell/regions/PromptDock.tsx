@@ -42,6 +42,14 @@ export interface PromptDockProps {
   onAllLimited: (earliestReset: string | null) => void
   /** Bumped by the shell to pull focus back to the prompt (e.g. after detach). */
   autoFocusKey?: unknown
+  /**
+   * Whether the Sessions list column on screen is the live scope this dock's
+   * cursor drives. False in the archived scope, where `SessionListColumn`
+   * renders `ArchivedScopeBody` instead of `SessionList` — see
+   * `DispatchBar`'s `drivesList` doc for why the gating lives there, not here.
+   * Default true (the shell passes it explicitly; see `AppShell.tsx`).
+   */
+  drivesList?: boolean
 }
 
 /**
@@ -126,6 +134,7 @@ function NewSessionBar({
   onShowHelp,
   onAllLimited,
   autoFocusKey,
+  drivesList,
 }: PromptDockProps) {
   const navigate = useNavigate()
   const reposQuery = useGithubRepos()
@@ -276,6 +285,7 @@ function NewSessionBar({
       activeDescendantIsHeader={!!nav.highlightedGroupKey}
       autoFocusKey={autoFocusKey}
       isPending={createSession.isPending}
+      drivesList={drivesList}
     />
   )
 }

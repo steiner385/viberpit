@@ -33,10 +33,6 @@ export const STARTERS: Record<NavId, readonly string[]> = {
     'What needs my attention?',
     'Which sessions are limited or queued?',
   ],
-  archived: [
-    'Which archived sessions never opened a PR?',
-    'What did I archive today?',
-  ],
   insights: [
     'What regressed in CI recently?',
     'Which repo has the slowest checks?',

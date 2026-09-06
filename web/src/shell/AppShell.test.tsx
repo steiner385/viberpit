@@ -29,7 +29,7 @@
 // evidence of adequate contrast. Contrast is checked separately by
 // src/__tests__/contrast.test.ts against the tokens in index.css.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { axe, toHaveNoViolations } from 'jest-axe'
 import { createMemoryRouter, RouterProvider, type RouteObject } from 'react-router-dom'
@@ -37,7 +37,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 expect.extend(toHaveNoViolations)
 
-import type { Session } from '@/api/types'
+import type { ArchivedSession, Session } from '@/api/types'
+import { archivedSession } from '@/test/factories'
+// The mocked client itself — imported so `vi.mocked(api.post)` can assert a
+// dispatch actually reached the API, the same mock object `vi.mock` below hands
+// to every hook the shell mounts.
+import { api } from '@/api/client'
 
 // ── typed fixtures (R10: real values, never `as unknown as T`) ────────────────
 
@@ -57,6 +62,10 @@ function session(over: Partial<Session> = {}): Session {
 
 const SESSIONS: Session[] = [session({ id: 'a', name: 'First' }), session({ id: 'b', name: 'Second' })]
 
+/** One archived row, so the list column's archived scope has something to show
+ *  and the scope segment has a count to announce. */
+const ARCHIVED: ArchivedSession[] = [archivedSession({ id: 'arc-1', name: 'Old work' })]
+
 // ── the fake daemon ──────────────────────────────────────────────────────────
 //
 // The api CLIENT is faked, not the hooks: every hook the shell mounts —
@@ -71,6 +80,9 @@ vi.mock('@/api/client', async (importOriginal) => {
     api: {
       get: vi.fn(async (path: string): Promise<unknown> => {
         if (path === '/sessions' || path === '/sessions?viewing=1') return SESSIONS
+        // A DIFFERENT endpoint from `/sessions` — answering it with the live
+        // list would make every session look archived.
+        if (path === '/sessions/archived') return ARCHIVED
         if (path === '/fleet/hosts') return { hosts: [] }
         if (path === '/config') return { adoptionEnabled: false }
         return []
@@ -311,6 +323,67 @@ describe('AppShell — the conditional regions', () => {
     expect(regionCounts().get('app.list')).toBe(1)
   })
 
+  it('hides the list behind the archived reader on a phone', async () => {
+    // A phone gives its one content band to EITHER the list or the page, and
+    // the reader is a page. Before `useOpenItem` the shell asked whether there
+    // was an `:id`; the reader has `:archivedId`, so the list stayed up on top
+    // of the transcript.
+    renderShell({ path: '/sessions/archived/abc', mode: 'phone' })
+    await waitFor(() => expect(presentAppRegions()).not.toContain('app.list'))
+  })
+
+  it('keeps the list beside the archived reader on desktop', async () => {
+    renderShell({ path: '/sessions/archived/abc', mode: 'desktop' })
+    await waitFor(() => expect(presentAppRegions()).toContain('app.list'))
+  })
+
+  /**
+   * The shell's ONE derivation of list scope (`listScopeForPath(pathname)` in
+   * `useSessionsWorkspace`), asserted end to end.
+   *
+   * Nothing else covers it: `ContextList.test.tsx` re-derives it test-side and
+   * `SessionListColumn.test.tsx` passes a literal, so hardcoding `scope: 'live'`
+   * in the shell would make the archived list unreachable from the UI with the
+   * whole suite still green. Mutation-checked: with that hardcode in place this
+   * case fails on "Old work", and the rest of the file still passes.
+   *
+   * Asserted inside `app.list` specifically — the archived ROWS, not merely a
+   * route that resolved. The page beside them is `ArchivedWelcome`, which holds
+   * no rows, so a match here can only have come from the column.
+   */
+  it('puts the list column in the archived scope on /sessions/archived', async () => {
+    renderShell({ path: '/sessions/archived', mode: 'desktop' })
+    const list = await waitFor(() => {
+      const el = document.querySelector('[data-region="app.list"]')
+      if (!el) throw new Error('app.list is not on screen')
+      return el as HTMLElement
+    })
+    // The archived rows themselves …
+    expect(await within(list).findByText('Old work')).toBeInTheDocument()
+    // … the archived scope marked current on the segment, with its count …
+    expect(within(list).getByRole('link', { name: 'Archived (1)' })).toHaveAttribute(
+      'aria-current',
+      'page',
+    )
+    // … and the live scope's own affordances gone.
+    expect(within(list).queryByRole('button', { name: 'New Session' })).not.toBeInTheDocument()
+  })
+
+  it('puts the list column in the live scope on /sessions', async () => {
+    renderShell({ path: '/sessions', mode: 'desktop' })
+    const list = await waitFor(() => {
+      const el = document.querySelector('[data-region="app.list"]')
+      if (!el) throw new Error('app.list is not on screen')
+      return el as HTMLElement
+    })
+    expect(await within(list).findByText('First')).toBeInTheDocument()
+    expect(within(list).queryByText('Old work')).not.toBeInTheDocument()
+    expect(within(list).getByRole('link', { name: 'Active (2)' })).toHaveAttribute(
+      'aria-current',
+      'page',
+    )
+  })
+
   it('shows the list and the dock together on phone, with the page hidden behind them', async () => {
     renderShell({ path: '/sessions', mode: 'phone' })
     await screen.findByTestId('page-sessions')
@@ -343,6 +416,130 @@ describe('AppShell — the conditional regions', () => {
     renderShell({ path: '/sessions?drawer=help', mode: 'desktop' })
     await screen.findByTestId('page-sessions')
     expect(regionCounts().get('app.drawer')).toBe(1)
+  })
+})
+
+/**
+ * `app.dock` renders in BOTH scopes of the Sessions section — `/sessions/archived`
+ * resolves to `sessions`, which is what brings the list column along, and the
+ * dock is the only way to start a session without switching scope first. What it
+ * must NOT do there is act as though the live list were under it: the column
+ * renders `ArchivedScopeBody` in that scope, so `SessionList` — the owner of
+ * `#session-listbox` and of every `row-<id>` — is not mounted.
+ *
+ * Before the `drivesList` gate the dock pointed `aria-controls` at that absent
+ * id permanently, one ArrowDown left `aria-activedescendant="row-a"` naming a
+ * node that does not exist, and Tab was a keyboard trap: `DispatchBar`
+ * `preventDefault`s it on an empty prompt and calls `onEnterList()`, which sets
+ * a `listMode` only `SessionList`'s `onExit` can clear — and `SessionList` is
+ * unmounted here, so the flag stuck and came back on the next scope switch.
+ */
+describe('AppShell — the dock does not drive a list that is not on screen', () => {
+  it('names no list and no row in the archived scope', async () => {
+    const user = userEvent.setup()
+    renderShell({ path: '/sessions/archived', mode: 'desktop' })
+    const prompt = await screen.findByRole('textbox', { name: 'New session prompt' })
+    // The live list really is absent — this is the state the attributes lied about.
+    expect(document.getElementById('session-listbox')).toBeNull()
+    expect(prompt).not.toHaveAttribute('aria-controls')
+
+    await user.click(prompt)
+    await user.keyboard('{ArrowDown}')
+    expect(prompt).not.toHaveAttribute('aria-activedescendant')
+  })
+
+  it('lets Tab out of the prompt, and never leaks list-focus mode into the live scope', async () => {
+    const user = userEvent.setup()
+    renderShell({ path: '/sessions/archived', mode: 'desktop' })
+    const prompt = await screen.findByRole('textbox', { name: 'New session prompt' })
+    await user.click(prompt)
+    expect(document.activeElement).toBe(prompt)
+
+    // With no list to enter, Tab keeps its native job rather than being
+    // swallowed by a mode nothing on screen can leave.
+    await user.tab()
+    expect(document.activeElement).not.toBe(prompt)
+
+    // …and switching back to the live scope does not find it in list-focus
+    // mode: `listMode` + a highlighted row is what pulls focus onto the row.
+    await user.click(screen.getByRole('link', { name: /^Active/ }))
+    const row = await screen.findByRole('button', { name: 'Open session First' })
+    expect(document.activeElement).not.toBe(row)
+  })
+
+  it('still drives the list in the live scope', async () => {
+    const user = userEvent.setup()
+    renderShell({ path: '/sessions', mode: 'desktop' })
+    const prompt = await screen.findByRole('textbox', { name: 'New session prompt' })
+    await waitFor(() => expect(document.getElementById('session-listbox')).not.toBeNull())
+    expect(prompt).toHaveAttribute('aria-controls', 'session-listbox')
+
+    await user.click(prompt)
+    await user.keyboard('{ArrowDown}')
+    expect(prompt).toHaveAttribute('aria-activedescendant', 'row-a')
+    expect(document.getElementById('row-a')).not.toBeNull()
+  })
+
+  /**
+   * The exact sequence a reviewer reproduced before the fix: highlight a row in
+   * the live scope, switch to archived (the highlight is `useSessionListState`
+   * state held in `AppShell`, above the route, so it survives the switch), then
+   * hit Enter on an EMPTY prompt. Before `drivesList` gated `onOpenHighlighted()`
+   * and the header-toggle branch, this navigated to the held-over live session
+   * and the archived list — never told its row was gone — unmounted under it.
+   */
+  it('does not let a highlight held over from the live scope drive Enter after switching to archived', async () => {
+    const user = userEvent.setup()
+    renderShell({ path: '/sessions', mode: 'desktop' })
+    const prompt = await screen.findByRole('textbox', { name: 'New session prompt' })
+    await waitFor(() => expect(document.getElementById('session-listbox')).not.toBeNull())
+
+    await user.click(prompt)
+    await user.keyboard('{ArrowDown}')
+    expect(prompt).toHaveAttribute('aria-activedescendant', 'row-a')
+
+    await user.click(screen.getByRole('link', { name: /^Archived/ }))
+    const list = await waitFor(() => {
+      const el = document.querySelector('[data-region="app.list"]')
+      if (!el) throw new Error('app.list is not on screen')
+      return el as HTMLElement
+    })
+    expect(await within(list).findByText('Old work')).toBeInTheDocument()
+
+    const archivedPrompt = await screen.findByRole('textbox', { name: 'New session prompt' })
+    await user.click(archivedPrompt)
+    await user.keyboard('{Enter}')
+
+    // The archived list survives — Enter did not navigate to the held-over row.
+    expect(within(list).queryByText('Old work')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByTestId('page-session')).not.toBeInTheDocument())
+  })
+
+  /**
+   * The other half of the same gate: `drivesList` must disable only the
+   * LIST-CURSOR behaviour, never dispatch itself. The dock is the only way to
+   * start a session from archived scope without switching scope first, so
+   * Enter with real text has to reach `onDispatch` exactly as it does live.
+   */
+  it('still dispatches on Enter with text in the archived scope', async () => {
+    const user = userEvent.setup()
+    // `openSession` (the mutation's `onSuccess`) reads `session.id` — give it a
+    // real one so the created-session path doesn't throw on the default `{}`
+    // the file's shared `api.post` mock resolves with.
+    vi.mocked(api.post).mockResolvedValueOnce(session({ id: 'new-1' }))
+    renderShell({ path: '/sessions/archived', mode: 'desktop' })
+    const prompt = await screen.findByRole('textbox', { name: 'New session prompt' })
+    expect(prompt).not.toHaveAttribute('aria-controls')
+
+    await user.click(prompt)
+    await user.keyboard('fix the bug{Enter}')
+
+    await waitFor(() =>
+      expect(vi.mocked(api.post)).toHaveBeenCalledWith(
+        '/sessions',
+        expect.objectContaining({ initialPrompt: 'fix the bug' }),
+      ),
+    )
   })
 })
 
@@ -448,7 +645,88 @@ describe('AppShell — accessibility', () => {
     // (`findByTestId`, then `withSessionRows` for the dock's `aria-controls`
     // target), so there is nothing left for a retry to fix.
     expect(await axe(document.body, AXE_OPTIONS)).toHaveNoViolations()
-  })
+    // …and the same reasoning applies one level out, to the CASE timeout.
+    //
+    // Under a parallel full-suite run the phone pass measured 5.1s against
+    // vitest's 5s default. It is NOT a render that got slower: measured in
+    // isolation, phone is ~0.7s here and was ~3.1s before the scope segment
+    // landed. What it is, is run-to-run noise — two consecutive isolated runs
+    // put the same desktop case at 2797ms and then 460ms, a 6x swing from JIT
+    // warm-up landing on whichever axe case happens to run first. A 5s bound
+    // sits inside that swing, so it decides on scheduling luck.
+    //
+    // 20s is ~6x the slowest pass measured anywhere here. The bound is wall
+    // clock only; the assertion is still `toHaveNoViolations`, so nothing is
+    // weakened — the same argument this file already makes one level in for the
+    // `waitFor`. Letting the default trip turns a contended machine (or CI,
+    // slower than a dev box) into a red accessibility test that says nothing
+    // about accessibility.
+  }, 20_000)
+
+  /**
+   * The ARCHIVED scope, which the four cases above never reach.
+   *
+   * `/sessions/archived` resolves to the `sessions` section (D2 — that is what
+   * brings the list column along), so `inSessions` is true and `app.dock`
+   * renders there too. But the column renders `ArchivedScopeBody` in that scope,
+   * so the live `SessionList` — the owner of `#session-listbox` — is never
+   * mounted. The dock's `aria-controls` therefore named an element that does not
+   * exist (`aria-valid-attr-value`), and the archived list's own
+   * `role="list"` owned an `input` and an `article`
+   * (`aria-required-children`). Neither is transient: `withSessionRows` above
+   * waits a one-frame version of the first defect out on the LIVE route, and
+   * there was nothing to wait for here — it was the steady state.
+   *
+   * Kiosk is excluded because `KioskPageGuard` redirects it off Sessions
+   * entirely, so the case would re-run the `/pipeline` pass above.
+   */
+  it.each(LAYOUT_MODES.filter((m) => m !== 'kiosk'))(
+    'has no axe violations in the archived scope in %s',
+    async (mode) => {
+      renderShell({ path: '/sessions/archived', mode })
+      // Lower bounds, so a clean pass cannot be a pass over an empty document:
+      // the archived rows really rendered, the dock really mounted beside them,
+      // and the live listbox really is absent (which is the whole hazard).
+      expect(await screen.findByText('Old work')).toBeInTheDocument()
+      expect(regionCounts().get('app.dock')).toBe(1)
+      expect(document.getElementById('session-listbox')).toBeNull()
+
+      expect(await axe(document.body, AXE_OPTIONS)).toHaveNoViolations()
+      // Same whole-body pass as the cases above, so the same case timeout and
+      // the same reasoning for it.
+    },
+    20_000,
+  )
+
+  /**
+   * The other two of the archived scope's three grouping modes — the case
+   * above only ever renders `groupBy: 'none'` (`ARCHIVED_DEFAULT_PREF`), which
+   * is exactly the gap that let the earlier fix (a `role="listitem"` on each
+   * row) ship broken: axe's `aria-required-parent` needs a `list` ancestor for
+   * every `listitem`, and `getOwnedRoles` only descends through a
+   * `role="group"` panel when `group` is itself a required role for `list` —
+   * it is not. So a single outer `role="list"` wrapper covered the ungrouped
+   * mode and orphaned the very same rows once grouping was on. Grouping is
+   * persisted per real usage (`saveOrderPref` under `ARCHIVED_SPEC.namespace`
+   * — `ccswitch.sessionOrder.archived`), so it is set here the way a user's
+   * choice would be, rather than reached into the component.
+   */
+  it.each(['account', 'repo'] as const)(
+    'has no axe violations in the archived scope grouped by %s',
+    async (groupBy) => {
+      window.localStorage.setItem(
+        'ccswitch.sessionOrder.archived',
+        JSON.stringify({ groupBy, sortBy: 'archived' }),
+      )
+      renderShell({ path: '/sessions/archived', mode: 'desktop' })
+      // Lower bound: the row really rendered inside a group panel, not an
+      // empty document passing axe for lack of anything to check.
+      expect(await screen.findByText('Old work')).toBeInTheDocument()
+
+      expect(await axe(document.body, AXE_OPTIONS)).toHaveNoViolations()
+    },
+    20_000,
+  )
 
   /**
    * Push mode is the ordinary desktop (≥1280px) shape of the drawer, and it was
@@ -473,5 +751,7 @@ describe('AppShell — accessibility', () => {
     expect(regionCounts().get('app.drawer')).toBe(1)
 
     expect(await axe(document.body, AXE_OPTIONS)).toHaveNoViolations()
-  })
+    // Same whole-body axe pass as the cases above, so the same case timeout —
+    // this one renders MORE than they do (a push-mode drawer plus its resizer).
+  }, 20_000)
 })

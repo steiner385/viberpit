@@ -25,9 +25,11 @@
  *
  * Every session URL a user has bookmarked today is `/session/:id` (singular) and
  * every review URL is `/review/:id`. The canonical spellings are `/sessions/:id`
- * and `/archived/:id`, so those old paths survive here as redirects and nowhere
- * else — `session/sessionNavState` is now the only thing that builds a session
- * path, so nothing in the app generates the legacy spelling any more.
+ * and `/sessions/archived/:archivedId`, so those old paths survive here as
+ * redirects and nowhere else — `session/sessionNavState` is now the only thing
+ * that builds a session path, so nothing in the app generates the legacy
+ * spelling any more. The pre-scope-switch `/archived` and `/archived/:id`
+ * spellings, from when Archived was its own nav section, redirect the same way.
  *
  * Every redirect REPLACES. A pushed redirect leaves the pre-redirect URL in the
  * history stack, so Back lands on it and is immediately bounced forward again —
@@ -52,19 +54,22 @@
    would put the table and its own redirect targets in two files, which is the
    drift this file exists to prevent. */
 import type { ReactElement } from 'react'
-import { Navigate, Outlet, useNavigate, useParams, useSearchParams, type RouteObject } from 'react-router-dom'
+import {
+  Navigate, Outlet, useLocation, useNavigate, useParams, useSearchParams, type RouteObject,
+} from 'react-router-dom'
 import { NAV_BY_ID, settingsSectionPath } from './navDefs'
 import {
   SESSIONS_PATH, ARCHIVED_PATH,
   SESSION_ROUTE, SUBAGENT_ROUTE, ARCHIVED_SESSION_ROUTE,
+  LEGACY_ARCHIVED_PATH, LEGACY_ARCHIVED_SESSION_ROUTE,
   sessionPath, subAgentPath, archivedSessionPath,
 } from '@/session/sessionNavState'
 import { MainPaneSession } from '@/features/sessions/MainPaneSession'
 import { WelcomePane } from '@/features/sessions/WelcomePane'
+import { ArchivedWelcome } from '@/features/sessions/ArchivedWelcome'
 import { useArchiveAdvance } from '@/features/sessions/useArchiveAdvance'
 import { SubSessionView } from '@/components/session/SubSessionView'
 import { ReviewView } from '@/components/ReviewView'
-import { ArchivedSessionList } from '@/components/ArchivedSessionList'
 import { PipelineTab } from '@/pipeline/PipelineTab'
 import { AutomationsTab } from '@/automations/AutomationsTab'
 import { InitiativesTab } from '@/initiatives/InitiativesTab'
@@ -153,21 +158,24 @@ function InsightsPage() {
   return <div className="p-4 overflow-y-auto h-full"><InsightsView /></div>
 }
 
+/** `/sessions/archived` — the archived scope's page slot. The archived LIST is
+ *  the sessions column's archived scope (`ArchivedScopeBody`), not a page, so
+ *  this is the empty state beside it. */
 function ArchivedPage() {
-  const navigate = useNavigate()
   return (
     <div className="p-4 overflow-y-auto h-full">
-      <ArchivedSessionList onReviewSession={(id) => navigate(archivedSessionPath(id))} />
+      <ArchivedWelcome />
     </div>
   )
 }
 
-/** `/archived/:id` — read-only transcript (DEC-6). Never gets a live runtime. */
+/** `/sessions/archived/:archivedId` — read-only transcript (DEC-6). Never gets
+ *  a live runtime: the param is not `id`, so `useOpenSessionId` finds nothing. */
 function ReviewPage() {
-  const { id } = useParams()
+  const { archivedId } = useParams()
   const navigate = useNavigate()
-  if (!id) return <Navigate to={ARCHIVED_PATH} replace />
-  return <ReviewView sessionId={id} onBack={() => navigate(ARCHIVED_PATH)} />
+  if (!archivedId) return <Navigate to={ARCHIVED_PATH} replace />
+  return <ReviewView sessionId={archivedId} onBack={() => navigate(ARCHIVED_PATH)} />
 }
 
 // ── redirects ────────────────────────────────────────────────────────────────
@@ -194,6 +202,25 @@ function RedirectSubAgent() {
 function RedirectReview() {
   const { sessionId } = useParams()
   return <Navigate to={sessionId ? archivedSessionPath(sessionId) : ARCHIVED_PATH} replace />
+}
+
+/** `/archived` → `/sessions/archived`. The search is carried so a reload of the
+ *  redirected URL is still `?kiosk=1`. */
+function RedirectLegacyArchived() {
+  const { search } = useLocation()
+  return <Navigate to={{ pathname: ARCHIVED_PATH, search }} replace />
+}
+
+/** `/archived/:sessionId` → `/sessions/archived/:sessionId`, search carried. */
+function RedirectLegacyArchivedSession() {
+  const { sessionId } = useParams()
+  const { search } = useLocation()
+  return (
+    <Navigate
+      to={{ pathname: sessionId ? archivedSessionPath(sessionId) : ARCHIVED_PATH, search }}
+      replace
+    />
+  )
 }
 
 /**
@@ -241,6 +268,12 @@ const PAGES: RouteObject[] = [
   { path: '/', element: <Navigate to={SESSIONS_PATH} replace /> },
 
   { path: SESSIONS_PATH, element: <SessionsPage /> },
+  // Before SESSION_ROUTE: `/sessions/archived` is a static sibling of
+  // `/sessions/:id`, and the reader must not resolve as a session id.
+  // (react-router ranks a static segment above a dynamic one regardless of
+  // declaration order; this order documents that dependency.)
+  { path: ARCHIVED_PATH, element: <ArchivedPage /> },
+  { path: ARCHIVED_SESSION_ROUTE, element: <ReviewPage /> },
   { path: SESSION_ROUTE, element: <SessionsPage /> },
   { path: SUBAGENT_ROUTE, element: <SubAgentPage /> },
   { path: NAV_BY_ID.pipeline.path, element: <PipelinePage /> },
@@ -248,8 +281,6 @@ const PAGES: RouteObject[] = [
   { path: NAV_BY_ID.initiatives.path, element: <InitiativesPage /> },
   { path: NAV_BY_ID.projects.path, element: <ProjectsPage /> },
   { path: INSIGHTS_PATH, element: <InsightsPage /> },
-  { path: ARCHIVED_PATH, element: <ArchivedPage /> },
-  { path: ARCHIVED_SESSION_ROUTE, element: <ReviewPage /> },
   { path: `${SETTINGS_PATH}/:section`, element: <SettingsPage /> },
   // Bare `/settings` is a PAGE, not a redirect: on phone and tablet-portrait it
   // is the grouped section list (the list half of list-then-detail). It still
@@ -261,6 +292,8 @@ const PAGES: RouteObject[] = [
   { path: '/session/:sessionId', element: <RedirectSession /> },
   { path: '/session/:sessionId/subagent/:agentId', element: <RedirectSubAgent /> },
   { path: '/review/:sessionId', element: <RedirectReview /> },
+  { path: LEGACY_ARCHIVED_PATH, element: <RedirectLegacyArchived /> },
+  { path: LEGACY_ARCHIVED_SESSION_ROUTE, element: <RedirectLegacyArchivedSession /> },
   { path: '/accounts', element: <Navigate to={settingsSectionPath('accounts')} replace /> },
   { path: '/automation', element: <Navigate to={settingsSectionPath('automation')} replace /> },
   { path: '/library', element: <LibraryRedirect /> },

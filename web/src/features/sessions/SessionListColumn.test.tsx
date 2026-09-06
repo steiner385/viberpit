@@ -22,19 +22,28 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { axe, toHaveNoViolations } from 'jest-axe'
+import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import type { DaemonHealth, Session } from '@/api/types'
-import { account, session } from '@/test/factories'
+import type { ArchivedSession, DaemonHealth, Session } from '@/api/types'
+import { account, archivedSession, session } from '@/test/factories'
 
 expect.extend(toHaveNoViolations)
 
-// Partial mock: only the daemon-health query is replaced, because the indicator
+// Partial mock: the daemon-health query is replaced, because the indicator
 // renders nothing at all without a payload and "desktop was missing it" is one
-// of the regressions under test. Every other hook stays real.
+// of the regressions under test; and the archived query, which the column reads
+// for the scope segment's count and the archived scope reads for its rows —
+// letting the real one fire would put a network call behind every case here.
+// Every other hook stays real.
 const daemonHealthData = vi.fn<() => DaemonHealth | undefined>()
+const archivedData = vi.fn<() => ArchivedSession[]>(() => [])
 vi.mock('@/api/hooks', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/hooks')>()
-  return { ...actual, useDaemonHealth: () => ({ data: daemonHealthData() }) }
+  return {
+    ...actual,
+    useDaemonHealth: () => ({ data: daemonHealthData() }),
+    useArchivedSessions: () => ({ data: archivedData() }),
+  }
 })
 
 import { SessionListColumn, type SessionListColumnProps } from './SessionListColumn'
@@ -67,6 +76,10 @@ type HarnessProps = {
   highlight?: string
 } & Partial<Omit<SessionListColumnProps, 'state' | 'accounts'>>
 
+/** `archived` is not a column prop — it stands the archived QUERY up, which is
+ *  what the scope segment counts and what the archived scope renders. */
+type RenderProps = HarnessProps & { archived?: ArchivedSession[] }
+
 /**
  * Mirrors how the shell will mount the column: one `useSessionListState()` above
  * it, whose handles the shell also reads for the prompt bar. Tests therefore run
@@ -81,6 +94,7 @@ function Harness({ sessions, highlight, ...props }: HarnessProps) {
   }, [highlight, highlightSession])
   return (
     <SessionListColumn
+      scope="live"
       state={state}
       accounts={ACCOUNTS}
       selectedId={null}
@@ -90,16 +104,22 @@ function Harness({ sessions, highlight, ...props }: HarnessProps) {
       onClose={noop}
       onDelete={noop}
       onQuickResume={noop}
+      onReviewSession={noop}
       {...props}
     />
   )
 }
 
-function renderColumn(props: HarnessProps) {
+function renderColumn({ archived = [], ...props }: RenderProps) {
+  archivedData.mockReturnValue(archived)
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const at = props.scope === 'archived' ? '/sessions/archived' : '/sessions'
   return render(
     <QueryClientProvider client={qc}>
-      <Harness {...props} />
+      {/* The scope segment navigates, so the column needs a router. */}
+      <MemoryRouter initialEntries={[at]}>
+        <Harness {...props} />
+      </MemoryRouter>
     </QueryClientProvider>,
   )
 }
@@ -107,6 +127,7 @@ function renderColumn(props: HarnessProps) {
 beforeEach(() => {
   localStorage.clear()
   daemonHealthData.mockReturnValue(daemonHealth())
+  archivedData.mockReturnValue([])
 })
 
 // ── tests ────────────────────────────────────────────────────────────────────
@@ -354,6 +375,69 @@ describe('SessionListColumn — the Status/Project/Environment filters (DEC-8)',
     await userEvent.click(screen.getByRole('button', { name: 'Clear search and filters' }))
     expect(screen.getByRole('button', { name: 'Open session First' })).toBeTruthy()
     expect(screen.getByLabelText('Status')).toHaveValue('')
+  })
+})
+
+describe('SessionListColumn — scope switch', () => {
+  it('renders the live sections and the New Session button in the live scope', () => {
+    renderColumn({ sessions: [session({ id: 'sess-1', name: 'First' })], scope: 'live' })
+    expect(screen.getByRole('button', { name: 'New Session' })).toBeInTheDocument()
+    expect(screen.getByRole('navigation', { name: 'Session scope' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Open session First' })).toBeInTheDocument()
+  })
+
+  it('drops New Session and the live sections in the archived scope', () => {
+    renderColumn({
+      sessions: [session({ id: 'sess-2', name: 'Parked', status: 'pending_approval' })],
+      scope: 'archived',
+    })
+    expect(screen.queryByRole('button', { name: 'New Session' })).not.toBeInTheDocument()
+    // PendingApprovalSection belongs to the live list only.
+    expect(screen.queryByRole('button', { name: /awaiting approval/i })).not.toBeInTheDocument()
+    expect(screen.getByRole('navigation', { name: 'Session scope' })).toBeInTheDocument()
+  })
+
+  it('renders the archived rows and their own controls in the archived scope', () => {
+    renderColumn({
+      sessions: [],
+      scope: 'archived',
+      archived: [archivedSession({ id: 'arc-1', name: 'Old work' })],
+    })
+    expect(screen.getByText('Old work')).toBeInTheDocument()
+    // The ARCHIVED option sets, from the column's fixed head — and no
+    // Status/Project/Environment filters, which archived rows cannot carry.
+    expect(screen.getByRole('searchbox', { name: 'Search archived sessions' })).toBeInTheDocument()
+    expect(screen.queryByLabelText('Status')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Project')).not.toBeInTheDocument()
+  })
+
+  it('counts each scope on the segment, and omits a zero count', () => {
+    renderColumn({
+      sessions: [session({ id: 'sess-1' }), session({ id: 'sess-2' })],
+      scope: 'live',
+      archived: [],
+    })
+    // Exact accessible names: a count rendered as a sibling node would be
+    // announced "Active2", and a `/Active/` regex would pass on it.
+    expect(screen.getByRole('link', { name: 'Active (2)' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Archived' })).toBeInTheDocument()
+  })
+
+  it('keeps the daemon indicator in both scopes', () => {
+    daemonHealthData.mockReturnValue(daemonHealth({ uptimeSec: 7200 }))
+    renderColumn({ sessions: [session()], scope: 'archived' })
+    expect(screen.getByTestId('daemon-health')).toBeTruthy()
+  })
+
+  it('keeps one scroll owner in the archived scope too', () => {
+    renderColumn({
+      sessions: [],
+      scope: 'archived',
+      archived: [archivedSession({ id: 'arc-1', name: 'Old work' })],
+    })
+    const scroll = screen.getByTestId('session-list-scroll')
+    expect(scroll.className).toContain('overflow-y-auto')
+    expect(scroll.contains(screen.getByRole('navigation', { name: 'Session scope' }))).toBe(false)
   })
 })
 

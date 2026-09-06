@@ -31,7 +31,7 @@ import { TopBar } from './TopBar'
 function navBadges(over: Partial<NavBadges> = {}): NavBadges {
   return {
     sessions: undefined, pipeline: undefined, automations: undefined,
-    archived: undefined, settings: undefined,
+    settings: undefined,
     ...over,
   }
 }
@@ -66,12 +66,6 @@ const topBar = () => screen.getByRole('banner')
 const visibleText = (el: HTMLElement) =>
   [...el.querySelectorAll('span')].filter((s) => !s.classList.contains('sr-only')).map((s) => s.textContent)
 
-/** The rendered badge nodes: visible spans that are decorative (`aria-hidden`). */
-const visibleBadges = (el: HTMLElement) =>
-  [...el.querySelectorAll<HTMLElement>('span[aria-hidden="true"]')].filter(
-    (s) => !s.classList.contains('sr-only'),
-  )
-
 async function openMore() {
   await userEvent.click(within(bar()).getByRole('button', { name: /^More/ }))
   return screen.getByRole('dialog', { name: 'More' })
@@ -95,11 +89,14 @@ describe('NavBar', () => {
   })
 
   it('folds the badges of the sections it hides into More', () => {
-    // archived (2) is behind More; settings' attention flag is too. Sessions (3)
-    // is on the bar, so it must NOT be counted twice.
-    badges.mockReturnValue(navBadges({ sessions: 3, archived: 2, settings: true }))
+    // Settings' attention flag is behind More. Sessions (3) is on the bar, so
+    // it must NOT be counted twice. (Archived used to be the overflow section
+    // with a numeric badge; now that it has left the nav, Settings — boolean
+    // only — is the sole overflow badge, so there is no real-data example of a
+    // COUNT folding into More any more.)
+    badges.mockReturnValue(navBadges({ sessions: 3, settings: true }))
     renderPhoneNav()
-    expect(within(bar()).getByRole('button', { name: 'More (2, needs attention)' })).toBeInTheDocument()
+    expect(within(bar()).getByRole('button', { name: 'More (needs attention)' })).toBeInTheDocument()
   })
 
   it('shows a plain More when nothing behind it is badged', () => {
@@ -126,19 +123,6 @@ describe('NavBar', () => {
     renderPhoneNav()
     const pipeline = within(bar()).getByRole('link', { name: 'Pipeline (needs attention)' })
     expect(pipeline.querySelector('span.bg-warning')).not.toBeNull()
-  })
-
-  it('draws one amber count badge when a bar control is both counted and needing attention', () => {
-    // More hides Archived (2) and Settings (attention): one indicator carrying
-    // the count in the attention tone, not a count and a dot fighting for the
-    // same corner of the icon.
-    badges.mockReturnValue(navBadges({ archived: 2, settings: true }))
-    renderPhoneNav()
-    const more = within(bar()).getByRole('button', { name: 'More (2, needs attention)' })
-    const indicators = visibleBadges(more)
-    expect(indicators).toHaveLength(1)
-    expect(indicators[0].textContent).toBe('2')
-    expect(indicators[0].className).toContain('text-warning')
   })
 
   it('carries Settings’ attention flag onto More, and shows it inline in the sheet', async () => {

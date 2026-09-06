@@ -45,6 +45,7 @@ import { NAV_DEFS } from '@/shell/navDefs'
 import { stubMatchMedia, WIDTH_TIER_QUERIES } from '@/test/matchMedia'
 import { ViewportProvider } from '@/shell/useViewport'
 import { SIDEBAR_MAX, SIDEBAR_STORAGE_KEY } from '@/lib/sidebarWidth'
+import { listScopeForPath } from '@/session/sessionNavState'
 import { useSessionListState } from '@/features/sessions/useSessionListState'
 import { ContextList } from './ContextList'
 import { anthropicUsage } from '@/test/factories'
@@ -110,6 +111,8 @@ function Harness({ sessions = SESSIONS }: { sessions?: Session[] }) {
   return (
     <ContextList
       sessions={{
+        // Scope comes from the route, exactly as `AppShell` derives it.
+        scope: listScopeForPath(pathname),
         state,
         accounts: ACCOUNTS,
         selectedId: id,
@@ -120,6 +123,7 @@ function Harness({ sessions = SESSIONS }: { sessions?: Session[] }) {
         onClose: noop,
         onDelete: noop,
         onQuickResume: noop,
+        onReviewSession: noop,
       }}
     />
   )

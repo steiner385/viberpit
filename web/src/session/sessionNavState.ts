@@ -15,7 +15,10 @@
  * than merely unlikely.
  *
  * The singular `/session/:id` and `/review/:id` spellings survive only as
- * redirects in `shell/routes.tsx`, for bookmarks already in the wild.
+ * redirects in `shell/routes.tsx`, for bookmarks already in the wild — as do
+ * the pre-scope-switch `/archived` and `/archived/:id` spellings (see
+ * `LEGACY_ARCHIVED_PATH` below), from when Archived was its own nav section
+ * rather than a scope of this one.
  *
  * ## The state
  *
@@ -39,18 +42,38 @@ import { NAV_BY_ID } from '@/shell/navDefs'
 
 /** `/sessions` — the session list. */
 export const SESSIONS_PATH = NAV_BY_ID.sessions.path
-/** `/archived` — the archived list. */
-export const ARCHIVED_PATH = NAV_BY_ID.archived.path
+
+/**
+ * `/sessions/archived` — the archived SCOPE of the sessions list.
+ *
+ * Archived was its own nav section until the scope switch landed. It is a
+ * scope now, so its paths hang off `SESSIONS_PATH`: `navDefForPath` resolves
+ * them to `sessions`, which is what keeps the list column beside the
+ * read-only transcript on desktop. The constant keeps its name — every caller
+ * (`useArchiveAdvance`, the automations page, `ReviewView`'s back button) was
+ * already routing through it and needs no edit.
+ */
+export const ARCHIVED_PATH = `${SESSIONS_PATH}/archived`
 
 /**
  * Route patterns for the session detail routes. The param is `id` (not
- * `sessionId`) because `useOpenSessionId` reads `useParams().id`; `/archived/:id`
- * reuses the same name deliberately, which is what makes `PageHost`'s
- * section-based gate load-bearing instead of defensive.
+ * `sessionId`) because `useOpenSessionId` reads `useParams().id`.
  */
 export const SESSION_ROUTE = `${SESSIONS_PATH}/:id`
 export const SUBAGENT_ROUTE = `${SESSIONS_PATH}/:id/agents/:agentId`
-export const ARCHIVED_SESSION_ROUTE = `${ARCHIVED_PATH}/:id`
+
+/**
+ * The archived transcript route. Its param is `archivedId`, NOT `id`, and that
+ * is the entire mechanism keeping a live runtime off a dead session:
+ * `useOpenSessionId` reads `useParams().id`, so an archived transcript simply
+ * has no session id to find. Rename this param and `PageHost` will mount a
+ * `SessionRuntimeProvider` over an archived transcript with nothing to fail.
+ */
+export const ARCHIVED_SESSION_ROUTE = `${ARCHIVED_PATH}/:archivedId`
+
+/** Pre-scope-switch spellings. Bookmarks only — nothing in the app builds these. */
+export const LEGACY_ARCHIVED_PATH = '/archived'
+export const LEGACY_ARCHIVED_SESSION_ROUTE = '/archived/:sessionId'
 
 /** The route of an open session. */
 export function sessionPath(id: string): string {
@@ -65,6 +88,28 @@ export function subAgentPath(id: string, agentId: string): string {
 /** The route of an archived session's read-only transcript (DEC-6). */
 export function archivedSessionPath(id: string): string {
   return `${ARCHIVED_PATH}/${id}`
+}
+
+/**
+ * Which half of the sessions list is on screen. Declared here, beside the paths
+ * it is derived from, so `ScopeSegment`, `SessionListColumn` and `AppShell` all
+ * name one type instead of each restating the union.
+ */
+export type ListScope = 'live' | 'archived'
+
+/**
+ * Which scope of the sessions list a route is in.
+ *
+ * Scope is derived from the URL and nowhere else — not a `?scope=` param (this
+ * shell has a history of overlay params leaking onto unrelated URLs) and not
+ * localStorage (a bookmark or the Back button must land on the scope it names).
+ * This is the ONLY derivation: every component that needs the scope takes it as
+ * a prop from the shell rather than re-testing the pathname itself.
+ */
+export function listScopeForPath(pathname: string): ListScope {
+  return pathname === ARCHIVED_PATH || pathname.startsWith(`${ARCHIVED_PATH}/`)
+    ? 'archived'
+    : 'live'
 }
 
 /** Router state understood by the session route. */

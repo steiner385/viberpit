@@ -1,5 +1,5 @@
 import type { NavBadgeKey, NavDef } from './navDefs'
-import { useAccounts, useSessions, useArchivedSessions, useAllPrs, useAutomations } from '@/api/hooks'
+import { useAccounts, useSessions, useAllPrs, useAutomations } from '@/api/hooks'
 import { inFlightPrCount } from '@/session/prStatus'
 
 export type NavBadges = Record<NavBadgeKey, number | boolean | undefined>
@@ -14,10 +14,14 @@ export type NavBadges = Record<NavBadgeKey, number | boolean | undefined>
  *
  * A zero count comes back as `undefined`, not `0`, so no badge renders.
  * `settings` is boolean-or-undefined — an amber attention dot, never a count.
+ *
+ * There is no `archived` badge: Archived is a scope of the Sessions list
+ * (the segmented control in `ScopeSegment`), not its own nav section, and its
+ * count lives on that switch (`SessionListColumn` reads `useArchivedSessions()`
+ * directly) rather than here.
  */
 export function useNavBadges(): NavBadges {
   const { data: sessions = [] } = useSessions()
-  const { data: archivedSessions = [] } = useArchivedSessions()
   const { data: prs = [] } = useAllPrs()
   const { data: automationsData = [] } = useAutomations()
   const { data: accounts = [] } = useAccounts()
@@ -31,7 +35,6 @@ export function useNavBadges(): NavBadges {
     sessions: sessions.length || undefined,
     pipeline: inFlightPrCount(prs) || undefined,
     automations: automationsActiveSessions || undefined,
-    archived: archivedSessions.length || undefined,
     settings: hasNeedsReauth || undefined,
   }
 }

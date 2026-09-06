@@ -1,6 +1,41 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
-import { sessionOpenState, readInitialPrompt } from '../sessionNavState'
+import {
+  sessionOpenState, readInitialPrompt,
+  ARCHIVED_PATH, ARCHIVED_SESSION_ROUTE, SESSIONS_PATH,
+  archivedSessionPath, listScopeForPath,
+} from '../sessionNavState'
+
+describe('archived paths', () => {
+  it('nests the archived scope under the sessions section', () => {
+    expect(ARCHIVED_PATH).toBe(`${SESSIONS_PATH}/archived`)
+    expect(archivedSessionPath('abc')).toBe('/sessions/archived/abc')
+  })
+
+  it('names the archived detail param `archivedId`, never `id`', () => {
+    // `useOpenSessionId` reads useParams().id. Reusing the name here would
+    // attach a live session runtime to a read-only transcript.
+    expect(ARCHIVED_SESSION_ROUTE).toBe('/sessions/archived/:archivedId')
+    expect(ARCHIVED_SESSION_ROUTE).not.toContain(':id')
+  })
+})
+
+describe('listScopeForPath', () => {
+  it.each([
+    ['/sessions', 'live'],
+    ['/sessions/abc', 'live'],
+    ['/sessions/abc/agents/x', 'live'],
+    ['/sessions/archived', 'archived'],
+    ['/sessions/archived/abc', 'archived'],
+    ['/pipeline', 'live'],
+  ])('%s → %s', (path, scope) => {
+    expect(listScopeForPath(path)).toBe(scope)
+  })
+
+  it('does not mistake a session whose id merely starts with "archived"', () => {
+    expect(listScopeForPath('/sessions/archivedxyz')).toBe('live')
+  })
+})
 
 // The two halves of one contract: what the open-a-session navigation WRITES and
 // what the session route READS. They were a bare object literal in App.tsx and a

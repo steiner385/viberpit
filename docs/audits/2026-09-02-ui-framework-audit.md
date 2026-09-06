@@ -272,7 +272,7 @@ says "hand-rolled everywhere". Either adopt the primitive set or remove the scaf
 | Kind | Instances | Root wrapper today (desktop / mobile) | Heading |
 |---|---|---|---|
 | **List + detail (Sessions)** | `DesktopShell` sidebar+pane / `Dashboard` sessions panel | `<aside>`+`<main>` / `flex flex-1 min-h-0 flex-col gap-3` | none / uppercase-xs `h2` "Sessions" |
-| **Tab page** | Pipeline, Automations, Initiatives, Products, Insights, Archived | `p-4 overflow-y-auto h-full` · `flex flex-col h-full` · `overflow-y-auto h-full` / `flex-1 min-h-0 overflow-y-auto pb-4` · `flex flex-col flex-1 min-h-0` | none · `h2.init-board-title` (16px CSS) · bare `<h2>Products</h2>` · uppercase-xs `h2` |
+| **Tab page** | Pipeline, Automations, Initiatives, Products, Insights, Archived (as of 2026-09-05: a SCOPE of the Sessions list, not a Standard page — the reader below is still Reader) | `p-4 overflow-y-auto h-full` · `flex flex-col h-full` · `overflow-y-auto h-full` / `flex-1 min-h-0 overflow-y-auto pb-4` · `flex flex-col flex-1 min-h-0` | none · `h2.init-board-title` (16px CSS) · bare `<h2>Products</h2>` · uppercase-xs `h2` |
 | **Split page (Settings)** | `SettingsView` + 14 sections | `max-w-3xl mx-auto w-full` (centered; the only page with a max-width) | sections use `h3 text-sm font-semibold` or none |
 | **Workspace (session)** | `MainPaneSession` / `SessionView` | `flex flex-col h-full min-h-0` / `flex flex-col flex-1 min-h-0 bg-white dark:bg-gray-950` | title in header bar |
 | **Reader (review)** | `ReviewView` (in-pane / routed) | `flex flex-col flex-1 min-h-0 bg-gray-50 dark:bg-gray-900` | — |
@@ -349,6 +349,9 @@ These are the constraints the target-state design should satisfy; the design its
 3. **Adopt a page-variant contract** in the spirit of KinDash's `PAGE-LAYOUT-STANDARD.md` (three-zone
    anatomy, variants, invariants, audit checklist): **Standard** (Automations, Archived, Insights,
    Products, Initiatives), **Split** (Settings), **Workspace** (Sessions, Pipeline), **Reader** (Review).
+   As of 2026-09-05, Archived is a SCOPE of the Sessions list rather than its own Standard page (the
+   nav section was deleted; the list column's scope switch replaces it) — its transcript reader stays
+   classified as Reader, unchanged.
    Invariants: one `h1` per page, `document.title` sync, `page.header` renders before data, content owns
    scroll, URL-driven tabs, no page-level horizontal scroll.
 4. **One token layer.** A single `@theme` in `index.css` declaring semantic colors (surface / ink /

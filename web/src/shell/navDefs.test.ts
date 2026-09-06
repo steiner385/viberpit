@@ -10,7 +10,6 @@ describe('navDefs', () => {
       ['automations', 'Automations'],
       ['initiatives', 'Initiatives'],
       ['projects', 'Products'],
-      ['archived', 'Archived'],
       ['insights', 'Insights'],
       ['settings', 'Settings'],
     ])
@@ -44,10 +43,11 @@ describe('navDefs', () => {
   /**
    * R9 successor for 'excludes Settings from kiosk and includes every other
    * section', which asserted the inverse rule — everything is kiosk-safe unless
-   * excluded. That rule is what put `/sessions/:id` and `/archived` on an
-   * unattended wall display, where Archive (`closeSession.mutate`), Unarchive
-   * (`unarchiveSession.mutate`) and a pending permission card are all one tap
-   * from a passer-by. `showInKiosk` now means "verified read-only" (the field's
+   * excluded. That rule is what put `/sessions/:id` and `/sessions/archived`
+   * (a top-level `/archived` route at the time) on an unattended wall display,
+   * where Archive (`closeSession.mutate`), Unarchive (`unarchiveSession.mutate`)
+   * and a pending permission card are all one tap from a passer-by. `showInKiosk`
+   * now means "verified read-only" (the field's
    * docstring carries the criterion and each row its evidence), so the set is
    * pinned by EQUALITY rather than by exclusion: widening it has to edit this
    * line, which is the point at which the evidence gets asked for.
@@ -66,7 +66,7 @@ describe('navDefs', () => {
   // key useNavBadges actually produces. Kept here (not in useNavBadges.test) so
   // the failure names the offending nav entry.
   it('declares only known badge keys', () => {
-    const known = new Set(['sessions', 'pipeline', 'automations', 'archived', 'settings'])
+    const known = new Set(['sessions', 'pipeline', 'automations', 'settings'])
     for (const d of NAV_DEFS) {
       if (d.badge !== undefined) expect(known.has(d.badge), `${d.id} badge=${d.badge}`).toBe(true)
     }

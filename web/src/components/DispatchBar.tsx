@@ -87,6 +87,24 @@ export interface DispatchBarProps {
   onToggleHighlighted?: () => void
   /** True when the active descendant is a group header (not a session row). */
   activeDescendantIsHeader?: boolean
+  /**
+   * Whether a session list is on screen for this bar to drive. Default true.
+   *
+   * The bar has always assumed one: it points `aria-controls` at
+   * `#session-listbox`, names a `row-<id>` in `aria-activedescendant`, and
+   * swallows Tab / ↑↓ / ←→ / Alt+digit to move that list's cursor. The Sessions
+   * column has TWO scopes now, and the archived one renders
+   * `ArchivedScopeBody` — so `SessionList`, which owns that id and every
+   * `row-<id>`, is not mounted while the dock still is.
+   *
+   * With this false the bar stays a working composer and stops pretending:
+   * both ARIA references are dropped (they were dangling — axe
+   * `aria-valid-attr-value`), and every list key falls through to its native
+   * behaviour. Tab in particular MUST be gated here rather than by handing the
+   * bar an inert `onEnterList`: the `preventDefault` is this component's, so a
+   * no-op callback would leave focus pinned to the prompt — a keyboard trap.
+   */
+  drivesList?: boolean
 }
 
 export function DispatchBar({
@@ -112,6 +130,7 @@ export function DispatchBar({
   onCollapseHighlighted,
   onToggleHighlighted,
   activeDescendantIsHeader,
+  drivesList = true,
 }: DispatchBarProps) {
   const [text, setText] = useState('')
   const [repo, setRepo] = useState<string>(() => getLastRepo() ?? '')
@@ -223,7 +242,12 @@ export function DispatchBar({
     const trimmed = text.trim()
     const refs = att.refs()
     if (!trimmed && refs.length === 0) {
-      onOpenHighlighted()
+      // List-cursor behaviour — with no list on screen there is nothing for an
+      // empty Enter to open. `nav`'s highlight is shell state that survives a
+      // scope switch, so without this gate a highlight set in the live scope
+      // stays live while the dock renders in the archived one and Enter would
+      // navigate to a session whose list is not even mounted.
+      if (drivesList) onOpenHighlighted()
       return
     }
     setDispatchError(null)
@@ -259,17 +283,23 @@ export function DispatchBar({
     const caret = el.selectionStart ?? 0
     const empty = text === ''
 
-    // Alt+Digit1..9 → jump to session by index
-    if (e.altKey && /^[1-9]$/.test(e.key)) {
+    // Alt+Digit1..9 → jump to session by index. List-cursor behaviour — no list,
+    // no jump; let the key fall through.
+    if (drivesList && e.altKey && /^[1-9]$/.test(e.key)) {
       e.preventDefault()
       onJump(Number(e.key) - 1)
       return
     }
 
     // Enter (no Shift) → toggle a highlighted header (empty prompt), else dispatch/open.
+    // The header-toggle branch is list-cursor behaviour, same as the rest of this
+    // function's `drivesList &&` guards — with no list on screen a held-over
+    // header highlight must not collapse an off-screen group. `dispatchNow`
+    // itself is NOT gated: with real text it must still start a session here,
+    // since the dock is the only way to do that without switching scope first.
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      if (empty && activeDescendantIsHeader) { onToggleHighlighted?.(); return }
+      if (drivesList && empty && activeDescendantIsHeader) { onToggleHighlighted?.(); return }
       dispatchNow()
       return
     }
@@ -291,22 +321,23 @@ export function DispatchBar({
       return
     }
 
-    // ArrowUp → navigate up only at the first line (or empty)
-    if (e.key === 'ArrowUp' && (empty || caretLineEdges(text, caret).atFirstLine)) {
+    // ArrowUp → navigate up only at the first line (or empty). List-cursor
+    // behaviour — with no list on screen, let the key move the caret/scroll natively.
+    if (drivesList && e.key === 'ArrowUp' && (empty || caretLineEdges(text, caret).atFirstLine)) {
       e.preventDefault()
       onNavigate('up')
       return
     }
 
     // ArrowDown → navigate down only at the last line (or empty)
-    if (e.key === 'ArrowDown' && (empty || caretLineEdges(text, caret).atLastLine)) {
+    if (drivesList && e.key === 'ArrowDown' && (empty || caretLineEdges(text, caret).atLastLine)) {
       e.preventDefault()
       onNavigate('down')
       return
     }
 
     // ArrowRight (empty prompt) → expand a highlighted header, else open the highlighted session.
-    if (empty && e.key === 'ArrowRight') {
+    if (drivesList && empty && e.key === 'ArrowRight') {
       e.preventDefault()
       if (activeDescendantIsHeader) onExpandHighlighted?.()
       else onOpenHighlighted()
@@ -314,7 +345,7 @@ export function DispatchBar({
     }
 
     // ArrowLeft (empty prompt) → collapse a highlighted header. (No-op otherwise.)
-    if (empty && e.key === 'ArrowLeft' && activeDescendantIsHeader) {
+    if (drivesList && empty && e.key === 'ArrowLeft' && activeDescendantIsHeader) {
       e.preventDefault()
       onCollapseHighlighted?.()
       return
@@ -322,7 +353,10 @@ export function DispatchBar({
 
     // Tab on an empty prompt → enter list-focus mode. With a draft, Tab keeps its
     // native job (move focus to the Create button) so keyboard send still works.
-    if (empty && e.key === 'Tab' && !e.shiftKey) {
+    // With no list on screen (drivesList false) Tab ALWAYS keeps its native job —
+    // gated here, not by handing in an inert `onEnterList`, because the
+    // `preventDefault` below is what would otherwise pin focus to the prompt.
+    if (drivesList && empty && e.key === 'Tab' && !e.shiftKey) {
       e.preventDefault()
       onEnterList()
       return
@@ -650,8 +684,8 @@ export function DispatchBar({
           ref={textareaRef}
           id="dispatch-bar-prompt"
           aria-label="New session prompt"
-          aria-controls="session-listbox"
-          aria-activedescendant={activeDescendantId}
+          aria-controls={drivesList ? 'session-listbox' : undefined}
+          aria-activedescendant={drivesList ? activeDescendantId : undefined}
           value={text}
           onChange={handleChange}
           onKeyDown={handleKeyDown}

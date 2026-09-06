@@ -3,7 +3,7 @@
    them would put the layout and the rule that decides what the layout contains
    in two files, which is the drift this module exists to prevent. */
 import * as React from 'react'
-import { Navigate, useLocation, useNavigate, useParams } from 'react-router-dom'
+import { Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { DeployControllerProvider } from '@/lib/deployController'
 import { BannerStack, type BannerStackItem } from '@/ui/BannerStack'
@@ -19,12 +19,14 @@ import { isPendingSessionId } from '@/lib/pendingSessions'
 import { setServerSttEnabled } from '@/lib/sttCapability'
 import { textEntryClaimsKey } from '@/lib/detachKeyGuard'
 import { nextSessionAfterClose } from '@/session/nextAfterArchive'
-import { SESSIONS_PATH, sessionPath } from '@/session/sessionNavState'
+import {
+  SESSIONS_PATH, archivedSessionPath, listScopeForPath, sessionPath,
+} from '@/session/sessionNavState'
 import { useDrawerName, useOpenDrawer, type DrawerName } from './drawerParam'
 import { InteractionProvider } from './InteractionContext'
 import { readKioskConfig } from './kiosk'
 import { NAV_BY_ID, navDefForPath } from './navDefs'
-import { useOpenSessionId } from './openSessionId'
+import { useOpenItem, useOpenSessionId } from './openSessionId'
 import { SessionGestureProvider, useSessionGestureHandle } from './sessionGestures'
 import { overlayIsOpen } from './useOverlayState'
 import { useShortcuts } from './useShortcuts'
@@ -83,7 +85,7 @@ export interface RegionContext {
   mode: LayoutMode
   /** `navDefForPath(pathname)?.hasList` — never a hardcoded list of sections. */
   hasList: boolean
-  /** The route has an `:id` — a detail view is open. */
+  /** `useOpenItem() !== null` — a detail view (live or archived) is open. */
   itemOpen: boolean
   /** The current section is Sessions (DEC-10 gates the dock on it). */
   inSessions: boolean
@@ -209,8 +211,9 @@ function AppShellInner() {
   const { pathname } = useLocation()
   // Layout-route `useParams()` sees the child route's params (react-router
   // shares one params object across a matched branch) — the same read
-  // `useOpenSessionId` makes from `PageHost`, which is mounted the same way.
-  const { id } = useParams()
+  // `useOpenItem` makes from `PageHost`/`PromptDock`, which are mounted the
+  // same way.
+  const openItem = useOpenItem()
   const drawer = useDrawerName()
   const openDrawer = useOpenDrawer()
 
@@ -218,7 +221,9 @@ function AppShellInner() {
   const region: RegionContext = {
     mode,
     hasList: def?.hasList ?? false,
-    itemOpen: id !== undefined,
+    // "Is something open", not "is there an `:id`" — the archived reader has no
+    // `:id` and must still take the phone's single content band.
+    itemOpen: openItem !== null,
     inSessions: def?.id === 'sessions',
     drawer,
   }
@@ -353,6 +358,9 @@ function AppShellInner() {
  */
 function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
   const navigate = useNavigate()
+  // Scope is the ROUTE (D1). Derived ONCE, here, through the one function that
+  // knows the archived paths — never re-tested inside the column or the segment.
+  const { pathname } = useLocation()
   const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
   const { data: accounts = [] } = useAccounts()
   const { data: config } = useConfig()
@@ -436,7 +444,12 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
   const nameOf = (id: string) =>
     sessions.find((s) => s.id === id)?.name ?? id.slice(0, 8)
 
+  // Scope, derived exactly once — `listProps.scope` and the dock's `drivesList`
+  // must never disagree about which half of the list is on screen.
+  const scope = listScopeForPath(pathname)
+
   const listProps: SessionListColumnProps = {
+    scope,
     state: list,
     accounts,
     isLoading: sessionsLoading,
@@ -459,6 +472,10 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
     // the mutation runs only on confirm — both old shells did the same.
     onDelete: (id) => setDeleteTarget({ id, name: nameOf(id) }),
     onQuickResume: (id, text) => sendPrompt.mutate({ id, text: text || 'continue' }),
+    // Archived scope: opening a row is a READ, so it goes to the runtime-less
+    // transcript route (its param is `archivedId`, which is what keeps
+    // `PageHost` from mounting a session runtime over a dead session).
+    onReviewSession: (id) => navigate(archivedSessionPath(id)),
     onExitList: () => {
       setListMode(false)
       setPromptFocusKey((n) => n + 1)
@@ -472,6 +489,10 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
     onShowHelp: () => openDrawer('help'),
     onAllLimited: (earliestReset: string | null) => setAllLimitedReset(earliestReset),
     autoFocusKey: promptFocusKey,
+    // The archived scope renders `ArchivedScopeBody`, not `SessionList` — the
+    // dock must stop pretending it owns `#session-listbox` and its rows there.
+    // See `DispatchBar`'s `drivesList` doc.
+    drivesList: scope === 'live',
   }
 
   const dialogs = (

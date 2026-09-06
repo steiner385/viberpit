@@ -148,11 +148,11 @@ describe('App routing', () => {
 
   it('deep-links to the archived review view at the legacy /review/:id', async () => {
     const app = renderApp({ path: '/review/sess-1' })
-    await waitFor(() => expect(app.path()).toBe('/archived/sess-1'))
+    await waitFor(() => expect(app.path()).toBe('/sessions/archived/sess-1'))
     expect(await screen.findByRole('button', { name: /back to dashboard/i })).toBeInTheDocument()
   })
 
-  it('redirects /sessions/:id to /archived/:id for an archived session', async () => {
+  it('redirects /sessions/:id to /sessions/archived/:id for an archived session', async () => {
     // An archived session has no live driver, so the live-attach route 404s. The
     // route must redirect it to the read-only review view instead (safety net for
     // links — e.g. automation activity-log entries — that carry no status).
@@ -170,10 +170,10 @@ describe('App routing', () => {
       return Promise.resolve([])
     })
     const app = renderApp({ path: '/sessions/arch-1' })
-    await waitFor(() => expect(app.path()).toBe('/archived/arch-1'))
-    // …and lands on the read-only view, not on the Archived list: /archived/:id
-    // has to out-rank the /archived tab route, or the redirect silently drops
-    // the user on a list with no transcript.
+    await waitFor(() => expect(app.path()).toBe('/sessions/archived/arch-1'))
+    // …and lands on the read-only view, not on the Archived list:
+    // /sessions/archived/:id has to out-rank the /sessions/archived list route,
+    // or the redirect silently drops the user on a list with no transcript.
     expect(await screen.findByRole('button', { name: /back to dashboard/i })).toBeInTheDocument()
   })
 
