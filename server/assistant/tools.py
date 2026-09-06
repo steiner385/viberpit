@@ -78,6 +78,12 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("get_pr_doctor_consolidation", ToolClass.READ, "Get PR consolidation candidates"),
     ToolSpec("get_pr_doctor_job", ToolClass.READ, "Get PR doctor job status"),
     ToolSpec("preview_schedule", ToolClass.READ, "Preview an automation schedule"),
+    # Pack C — session-start conveniences (spec v2 §4.5): presets, templates and
+    # permission profiles a session can be started from.
+    ToolSpec("list_presets", ToolClass.READ, "List presets"),
+    ToolSpec("list_templates", ToolClass.READ, "List templates"),
+    ToolSpec("render_template", ToolClass.READ, "Render a template"),
+    ToolSpec("list_permission_profiles", ToolClass.READ, "List permission profiles"),
     # READ because it changes nothing a user can see: it increments a counter and
     # writes an audit row. The ONE tool that calls no endpoint (see build_tools).
     ToolSpec("report_gap", ToolClass.READ, "Record a capability gap"),
@@ -857,6 +863,45 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
         return await api.post("/api/automations/schedule/preview",
                               {"schedule": args["schedule"]})
 
+    # -- Session-start conveniences (spec v2 §4.5, Pack C) ------------------------------
+    # Presets, templates and permission profiles a session can be started from. This
+    # task only reads them; Task 7.4 wires preset/profile/branch into create_session.
+
+    @spec_tool("list_presets",
+               "Saved session-start presets: repo, account, model, permission mode, "
+               "initial prompt and permission profile bundled together for reuse.", {})
+    @guarded
+    async def list_presets(args: dict[str, Any]) -> Any:
+        return await api.get("/api/presets")
+
+    @spec_tool("list_templates",
+               "Saved prompt templates with their {{variable}} placeholders and tags. "
+               "Optional tag narrows the list to templates carrying it.", _schema(tag=str))
+    @guarded
+    async def list_templates(args: dict[str, Any]) -> Any:
+        params = {"tag": args["tag"]} if args.get("tag") else None
+        return await api.get("/api/templates", params=params)
+
+    @spec_tool("render_template",
+               "Render a saved prompt template by id, substituting {{variable}} "
+               "placeholders from vars. Missing variables are left as-is; extra ones are "
+               "ignored. Changes nothing — it only returns the rendered text.",
+               _schema(("id",), id=str, vars={"type": "object"}))
+    @guarded
+    async def render_template(args: dict[str, Any]) -> Any:
+        tid = str(args["id"])
+        if not _OPAQUE_ID.match(tid):
+            raise ToolArgError("id must be a template id")
+        return await api.post(f"/api/templates/{tid}/render",
+                              {"variables": args.get("vars") or {}})
+
+    @spec_tool("list_permission_profiles",
+               "Saved permission profiles: named, ordered tool-pattern allowlists (e.g. "
+               "'Bash(git *)', 'Read') that can be applied at session spawn.", {})
+    @guarded
+    async def list_permission_profiles(args: dict[str, Any]) -> Any:
+        return await api.get("/api/permission-profiles")
+
     # -- Mutations (spec §4.2, class M) ------------------------------------------------
     # Each is a thin adapter over ONE endpoint: rename args to the endpoint's field
     # names, call, return. Business logic lives behind the endpoint
@@ -1300,6 +1345,7 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
             get_automation_actionable, list_automation_sessions, list_backlog_candidates,
             get_backlog_groups, get_cicd_findings, get_pr_doctor_consolidation,
             get_pr_doctor_job, preview_schedule,
+            list_presets, list_templates, render_template, list_permission_profiles,
             report_gap,
             create_session, send_prompt, interrupt_session, answer_question,
             resolve_permission, set_model, set_permission_mode, resolve_model_approval,

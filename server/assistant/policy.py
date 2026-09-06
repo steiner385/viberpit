@@ -112,6 +112,11 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("GET", r"/api/automations/pr-doctor/consolidation"),
         ("GET", r"/api/automations/pr-doctor/jobs/[A-Za-z0-9-]+"),
         ("POST", r"/api/automations/schedule/preview"),
+        # Session-start conveniences (spec v2 §4.5, Pack C).
+        ("GET", r"/api/presets"),
+        ("GET", r"/api/templates"),
+        ("POST", r"/api/templates/[A-Za-z0-9-]+/render"),
+        ("GET", r"/api/permission-profiles"),
         # Fan-out half (Task 6.4), each DESTRUCTIVE: they start unattended sessions.
         ("POST", r"/api/automations/[A-Za-z0-9_-]+/trigger"),
         ("POST", r"/api/automations/backlog-runner/dispatch"),
@@ -206,4 +211,4 @@ def route_allowed(method: str, path: str, *, operator: bool = False) -> bool:
 # render). The conformance test (server/tests/test_assistant_conformance.py) lets a
 # READ tool use POST only when it is listed here. Later tasks add names to this set.
 READ_POSTS: frozenset[str] = frozenset({"test_notification", "preview_schedule",
-                                        "suggest_next_prompt"})
+                                        "suggest_next_prompt", "render_template"})
