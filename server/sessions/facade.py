@@ -200,6 +200,7 @@ class InProcessOrchestratorAdapter:
     async def codex_account_status(self, *a, **k): return await _maybe_await(self._orch.codex_account_status(*a, **k))
     async def codex_validate_model(self, *a, **k): return await _maybe_await(self._orch.codex_validate_model(*a, **k))
     async def codex_invalidate_credentials(self, *a, **k): return await _maybe_await(self._orch.codex_invalidate_credentials(*a, **k))
+    async def refine_prompt_codex(self, *a, **k): return await _maybe_await(self._orch.refine_prompt_codex(*a, **k))
     # --- pipeline / merge-queue methods (GET /api/pipeline/events and siblings) ---
     async def latest_queue_entries(self, *a, **k): return await _maybe_await(self._orch.latest_queue_entries(*a, **k))
     async def all_merge_trains(self, *a, **k): return await _maybe_await(self._orch.all_merge_trains(*a, **k))

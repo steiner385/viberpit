@@ -1005,6 +1005,27 @@ class RemoteOrchestrator:
         """Drop this daemon's cached Codex credentials for an account."""
         return await self._client.call("codex_invalidate_credentials", account=account)
 
+    async def refine_prompt_codex(
+        self, account: str, prompt: str, *, timeout_s: float | None = None,
+    ) -> str | None:
+        """One-shot Codex-native prompt refinement, run on the daemon that owns
+        the account's app-server (see ``SessionOrchestrator.refine_prompt_codex``).
+
+        ``timeout_s`` is forwarded to the daemon ONLY when set (its own default —
+        matching the Claude path's ``REFINE_TIMEOUT_S`` — applies otherwise) and is
+        NOT the RPC's native ``timeout=``: the daemon's own turn-collection loop must
+        stay bounded even if the client-side deadline fires first, or a wedged Codex
+        turn would keep running (and its thread open) after the caller gave up. The
+        client-side RPC deadline is widened past it for the same reason
+        ``transcript_window`` widens its own — the edge must not give up before the
+        daemon's own ceiling ever fires.
+        """
+        extra = {} if timeout_s is None else {"timeout_s": timeout_s,
+                                              "timeout": timeout_s + 10.0}
+        return await self._client.call(
+            "refine_prompt_codex", account=account, prompt=prompt, **extra
+        )
+
     async def subscribe_events(self) -> asyncio.Queue:
         """Return a queue that receives global lifecycle events.
 

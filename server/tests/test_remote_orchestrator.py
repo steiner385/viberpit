@@ -358,6 +358,35 @@ async def test_daemon_unavailable_propagates():
     await ro.aclose()
 
 
+@pytest.mark.asyncio
+async def test_remote_orchestrator_refine_prompt_codex_forwards_to_daemon():
+    client = _RecordingClient("Refined via Codex.")
+    remote = RemoteOrchestrator(client)
+
+    result = await remote.refine_prompt_codex("codex-bot", "fix the bug", timeout_s=20.0)
+
+    assert result == "Refined via Codex."
+    # timeout_s (not "timeout") reaches the daemon's payload so the orchestrator's own
+    # turn-collection loop stays bounded; "timeout" is the WIDER native RPC deadline
+    # (transcript_window's pattern) so the client does not give up first.
+    assert client.last_call == (
+        "refine_prompt_codex",
+        {"account": "codex-bot", "prompt": "fix the bug", "timeout_s": 20.0, "timeout": 30.0},
+    )
+
+
+@pytest.mark.asyncio
+async def test_remote_orchestrator_refine_prompt_codex_omits_timeout_when_unset():
+    client = _RecordingClient("Refined via Codex.")
+    remote = RemoteOrchestrator(client)
+
+    await remote.refine_prompt_codex("codex-bot", "fix the bug")
+
+    assert client.last_call == (
+        "refine_prompt_codex", {"account": "codex-bot", "prompt": "fix the bug"},
+    )
+
+
 def test_remote_orchestrator_latest_summary_proxies_with_viewing():
     from unittest.mock import AsyncMock
 

@@ -327,7 +327,7 @@ def register_orchestrator_rpc(app, orch) -> None:
         # this transport (the runner gets its envelope from the authority directly,
         # over its own mTLS connection, never through the edge).
         "codex_models", "codex_account_status", "codex_invalidate_credentials",
-        "codex_validate_model",
+        "codex_validate_model", "refine_prompt_codex",
         "session_queue_move", "session_queue_cancel", "session_queue_positions", "maybe_start_queued",
         "git_credential_alerts", "dismiss_git_credential_alert",
         "list_adoptable_candidates", "migrate_archive_home", "cloned_repos",
