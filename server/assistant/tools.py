@@ -102,6 +102,12 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("delete_session", ToolClass.DESTRUCTIVE, "Permanently delete session"),
     ToolSpec("cancel_queued_session", ToolClass.DESTRUCTIVE, "Cancel queued session"),
     ToolSpec("ready_merge_pr", ToolClass.DESTRUCTIVE, "Ready + auto-merge PR"),
+    # Automation fan-out (spec v2 §4.3, Pack A). DESTRUCTIVE not because they delete
+    # anything but because each one STARTS an unattended coding session that then acts
+    # on its own — the card is the only point at which a human can stop it.
+    ToolSpec("trigger_automation_action", ToolClass.DESTRUCTIVE, "Trigger automation action"),
+    ToolSpec("dispatch_backlog", ToolClass.DESTRUCTIVE, "Dispatch backlog work"),
+    ToolSpec("consolidate_prs", ToolClass.DESTRUCTIVE, "Consolidate pull requests"),
     # Operator tier (spec v2 §7, Pack O) — only registered and route-allowlisted when
     # `operator_tools_enabled(db)` is true (Task 9.2). See OPERATOR_TOOLS below.
     ToolSpec("start_deploy", ToolClass.DESTRUCTIVE, "Start deploy"),
@@ -155,6 +161,34 @@ def _slug(s: str, *, field: str = "slug") -> str:
     if not _SLUG.match(s):
         raise ToolArgError(f"{field} must be lowercase letters, digits and dashes")
     return s
+
+
+def _nonempty(s: Any, *, field: str) -> str:
+    if not isinstance(s, str) or not s.strip():
+        raise ToolArgError(f"{field} must be a non-empty string")
+    return s.strip()
+
+
+def _str_list(v: Any, *, field: str) -> list[str]:
+    """A required list-of-strings argument. A JSON-Schema array does not stop the model
+    from sending a bare string or an empty list, and both reach the endpoint as an opaque
+    422/400 — rejecting here turns that into a corrective message the model can act on."""
+    if not isinstance(v, list) or not v:
+        raise ToolArgError(f"{field} must be a non-empty array")
+    return [_nonempty(x, field=field) for x in v]
+
+
+def _int_list(v: Any, *, field: str) -> list[int]:
+    """Same, for list-of-int arguments. Values are coerced because the model routinely
+    emits "42" for an integer field, but only whole numbers survive: parsing `str(x)`
+    (rather than `int(x)`) is what rejects 42.7 and True instead of silently reading
+    them as 42 and 1."""
+    if not isinstance(v, list) or not v:
+        raise ToolArgError(f"{field} must be a non-empty array of numbers")
+    try:
+        return [int(str(x).strip()) for x in v]
+    except (TypeError, ValueError):
+        raise ToolArgError(f"{field} must contain only whole numbers") from None
 
 
 def annotation_for(mcp_name: str) -> ToolSpec | None:
@@ -241,6 +275,7 @@ _JSON_TYPE: dict[type, str] = {str: "string", int: "integer", bool: "boolean"}
 
 # For fields no plain python type covers; passed through verbatim by `_schema`.
 _STR_ARRAY: dict[str, Any] = {"type": "array", "items": {"type": "string"}}
+_INT_ARRAY: dict[str, Any] = {"type": "array", "items": {"type": "integer"}}
 
 
 def _schema(required: tuple[str, ...] = (), **fields: Any) -> dict[str, Any]:
@@ -943,6 +978,52 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
         return await api.post("/api/pipeline/pr/ready-merge",
                               {"repo": args["repo"], "number": int(args["number"])})
 
+    # -- Automation fan-out (spec v2 §4.3, Pack A, class D) -----------------------------
+    # The acting half of Pack A. Each spawns an unattended coding session, so each
+    # description states that plainly: the model chooses a tool from its description,
+    # and a card the user waves through is the last stop before real work starts.
+    # Nothing about WHICH items are eligible is decided here — that is the automation's
+    # own config (e.g. backlog-runner's `max_issues_per_pr`) behind the endpoint.
+
+    @spec_tool("trigger_automation_action",
+               "Fire ONE of an automation's offered actions on ONE detected item — use "
+               "get_automation_actionable first for the item id and the kinds it offers. "
+               "This launches a coding session that will act on its own; there is no "
+               "undo. Ask the user before calling it.",
+               {"id": str, "item_id": str, "kind": str})
+    @guarded
+    async def trigger_automation_action(args: dict[str, Any]) -> Any:
+        return await api.post(
+            f"/api/automations/{_slug(args['id'], field='id')}/trigger",
+            {"item_id": _nonempty(args.get("item_id"), field="item_id"),
+             "kind": _nonempty(args.get("kind"), field="kind")})
+
+    @spec_tool("dispatch_backlog",
+               "Claim the given backlog issues and start work on them NOW, without "
+               "waiting for the backlog runner's next pass. refs are 'owner/repo#123' "
+               "strings from list_backlog_candidates; they are bundled into one session "
+               "and one PR, with the first as the primary. This launches a coding "
+               "session that will act on its own; there is no undo. Ask the user before "
+               "calling it.",
+               _schema(("refs",), refs=_STR_ARRAY))
+    @guarded
+    async def dispatch_backlog(args: dict[str, Any]) -> Any:
+        return await api.post("/api/automations/backlog-runner/dispatch",
+                              {"refs": _str_list(args.get("refs"), field="refs")})
+
+    @spec_tool("consolidate_prs",
+               "Start a session that combines the given open pull requests in one repo "
+               "into a single PR — get_pr_doctor_consolidation suggests the clusters. "
+               "The session rewrites branches and closes the PRs it folds in. This "
+               "launches a coding session that will act on its own; there is no undo. "
+               "Ask the user before calling it.",
+               _schema(("repo", "numbers"), repo=str, numbers=_INT_ARRAY))
+    @guarded
+    async def consolidate_prs(args: dict[str, Any]) -> Any:
+        return await api.post("/api/automations/pr-doctor/consolidate",
+                              {"repo": _nonempty(args.get("repo"), field="repo"),
+                               "numbers": _int_list(args.get("numbers"), field="numbers")})
+
     # -- Operator tier (spec v2 §7, Pack O, class D/M) ---------------------------------
     # Registered only when `operator=True` (Task 9.2). Each is still a thin adapter
     # over ONE endpoint; the route allowlist independently requires `operator=True` too
@@ -1008,7 +1089,8 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
             archive_session, unarchive_session, set_autopilot_paused, fix_pr,
             set_automation_enabled, create_notification_rule, delete_notification_rule,
             set_quiet_hours, advance_initiative, resolve_triage, request_product_sync,
-            delete_session, cancel_queued_session, ready_merge_pr]
+            delete_session, cancel_queued_session, ready_merge_pr,
+            trigger_automation_action, dispatch_backlog, consolidate_prs]
     operator_tools = [start_deploy, upgrade_host, refresh_account, set_account_enabled,
                       start_reauth]
     return base_tools + (operator_tools if operator else [])

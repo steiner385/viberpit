@@ -132,6 +132,25 @@ def test_destructive_ccswitch_tool_always_decision_does_not_grant(fake_specs):
     _run(run())
 
 
+@pytest.mark.parametrize("name", ["trigger_automation_action", "dispatch_backlog",
+                                  "consolidate_prs"])
+def test_automation_fan_out_tools_prompt_in_full_auto_with_the_real_specs(name):
+    """No `fake_specs` here on purpose (plan Task 6.4): these three are registered
+    DESTRUCTIVE in the REAL TOOL_SPECS, so the card in full-auto — the only thing
+    standing between an injected "trigger everything" and an unattended session — is
+    asserted against what ships, not against an injected spec."""
+    reg = PermissionRegistry()
+
+    async def run():
+        return await reg.request(
+            "s1", "t1", f"mcp__ccswitch__{name}", {},
+            mode="full-auto", denylist=frozenset(), allowlist=True, identity="me")
+
+    pid, _fut, always_allowed = _run(run())
+    assert pid is not None, f"{name} must prompt even in full-auto"
+    assert always_allowed is False, f"{name} must never offer 'Always allow'"
+
+
 # ---------------------------------------------------------------------------
 # An unknown / not-yet-registered ccswitch tool (annotation_for returns None,
 # e.g. a Task-3.3 tool not added yet) must be treated conservatively as
