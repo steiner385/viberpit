@@ -30,8 +30,11 @@ async def _connect_rfb(port: int, attempts: int = 20, interval: float = 0.05):
     raise last
 
 
-def register_x11(app, x11) -> None:
-    """Register the daemon /vnc WS endpoint and x11 RPCs against `x11` (may be None)."""
+def register_x11(app, x11, orchestrator=None) -> None:
+    """Register the daemon /vnc WS endpoint and x11 RPCs against `x11` (may be None).
+
+    `orchestrator` owns the native-vs-virtual branch for "Open a browser"; when it is
+    absent (older callers, unit tests) the RPC keeps the virtual-only behaviour."""
 
     @app.websocket("/vnc")
     async def vnc(ws: WebSocket) -> None:
@@ -58,6 +61,8 @@ def register_x11(app, x11) -> None:
 
     async def x11_open_browser(params: dict) -> dict:
         session_id = params["session_id"]
+        if orchestrator is not None and hasattr(orchestrator, "open_browser"):
+            return await orchestrator.open_browser(session_id, params.get("url"))
         if x11 is None or x11.display_for(session_id) is None:
             return {"ok": False, "reason": "no_display"}
         ok = await x11.launch_browser(session_id, params.get("url"))
