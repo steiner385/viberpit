@@ -290,3 +290,37 @@ def test_unknown_permission_profile_returns_404():
         assert resp.json()["detail"]["code"] == "not_found"
     finally:
         os.unlink(db_url.split("///")[1])
+
+
+# ---------------------------------------------------------------------------
+# 6. A preset's own permission_profile_id reaches tool_allowlist, with no
+#    permissionProfileId in the request body at all.
+# ---------------------------------------------------------------------------
+
+
+def test_preset_permission_profile_id_sets_tool_allowlist():
+    db_url = _new_db_url()
+    try:
+        _seed_permission_profile(
+            db_url, id="pp1", name="p", patterns=["Bash(git *)", "Read"],
+        )
+        _seed_preset(
+            db_url,
+            id="p1", name="p", model="opus", permission_mode="auto",
+            repo="acme/billing", permission_profile_id="pp1",
+        )
+        _seed_session_row(
+            db_url, id="sess-1", name="x", account_name="a", cwd="/tmp",
+        )
+        fake = FakeOrch()
+        client = _build_client(fake, db_url)
+        with patch.dict(os.environ, _make_env(db_url)), client:
+            resp = client.post(
+                "/api/sessions",
+                json={"initialPrompt": "x", "presetId": "p1"},
+                headers=_H,
+            )
+        assert resp.status_code == 201, resp.text
+        assert _read_tool_allowlist(db_url, "sess-1") == ["Bash(git *)", "Read"]
+    finally:
+        os.unlink(db_url.split("///")[1])

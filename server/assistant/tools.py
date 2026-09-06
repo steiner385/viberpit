@@ -912,7 +912,9 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                "Start a NEW coding session on a repo with an initial prompt, and return its id "
                "and the URL to open it. Use only when the user wants new work started; to add "
                "to work already running use send_prompt instead. preset and permission_profile "
-               "ids can be discovered via list_presets / list_permission_profiles.",
+               "ids can be discovered via list_presets / list_permission_profiles. Note: "
+               "permission_profile's patterns are recorded on the session but not yet "
+               "enforced — no tool restriction happens today.",
                _schema(("prompt",), prompt=str, repo=str, model=str, permission_mode=str,
                        account=str, branch=str, preset=str, permission_profile=str))
     @guarded

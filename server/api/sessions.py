@@ -831,6 +831,10 @@ async def create_session(
         )
 
     if _resolved_tool_allowlist is not None:
+        # Recorded, not enforced: this column has zero readers today (see the
+        # resolution block above), so this write only persists the profile's
+        # patterns on the row — it does not restrict which tools the session
+        # can use.
         from sqlalchemy import update as sa_update
 
         await db.execute(
