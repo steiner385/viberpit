@@ -219,10 +219,16 @@ def build_pr_facts(
 
 def classify(goal: str, goal_source: str, facts: PrFacts,
              pr_resolution: str | None = None, *,
+             pr_resolution_source: str | None = None,
              instructions: str | None = None) -> tuple[str, BarVerdict]:
     """Bucket via met_bar: met→legit; not-met+open-unarmed→premature;
-    not-met+closed-target+code-goal→review; not-met+low→ambiguous."""
-    v = met_bar(goal, goal_source, facts, pr_resolution, instructions=instructions)
+    not-met+closed-target+code-goal→review; not-met+low→ambiguous.
+
+    ``pr_resolution_source`` is passed through so a session's own no-PR marker on a
+    code goal reads as ambiguous (a claim), not legit (a verdict) — see
+    ``completion_bar.is_unverified_self_resolution``."""
+    v = met_bar(goal, goal_source, facts, pr_resolution,
+                pr_resolution_source=pr_resolution_source, instructions=instructions)
     if v.met:
         return "legit", v
     if v.confidence == "high":
@@ -269,6 +275,7 @@ async def run_audit(
             continue
         bucket, verdict = classify(row.get("goal", ""), row.get("goal_source", ""), facts,
                                     row.get("pr_resolution"),
+                                    pr_resolution_source=row.get("pr_resolution_source"),
                                     instructions=row.get("initial_prompt"))
         action = "none"
         if bucket == "premature" and not dry_run:
@@ -388,7 +395,8 @@ def _archived_row_to_dict(row) -> dict:
             "authored_branches": list(row.authored_branches or []),
             "goal": goal, "goal_source": source,
             "initial_prompt": row.initial_prompt,
-            "pr_resolution": getattr(row, "pr_resolution", None)}
+            "pr_resolution": getattr(row, "pr_resolution", None),
+            "pr_resolution_source": getattr(row, "pr_resolution_source", None)}
 
 
 async def load_archived_rows(session_factory) -> list[dict]:

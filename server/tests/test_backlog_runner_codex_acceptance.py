@@ -4,10 +4,13 @@ The plan gates widening ``BacklogRunner.engine_policy`` past ``claude_only`` on
 this suite. It covers the parts of that gate that are decidable without a live
 OpenAI account: the prompt contract, the launch preconditions, the
 claim → spawn → reconcile → completion/give-up state machine under a Codex
-launch, and shared-account concurrency. The two items it deliberately does NOT
-cover — a real Codex session landing a real PR, and the sanitized evidence
-record — are live-boundary work (constitution III), which is why the ceiling
-stays ``claude_only`` at the end of this file.
+launch, and shared-account concurrency. The one item it deliberately does NOT
+cover — a real Codex session landing a real PR with sanitized evidence recorded
+— is live-boundary work (constitution III) that remains outstanding. The owner
+reviewed that gap and explicitly accepted it to widen the ceiling to
+``codex_allowed`` now rather than block on it (#1264); the assertion at the end
+of this file is the reviewable record of that decision, not a claim that the
+live run happened.
 
 The headline finding is :func:`test_a_full_auto_codex_automation_is_refused`:
 Codex's ``full-auto`` profile is network-isolated, so an unattended session
@@ -501,16 +504,20 @@ def test_two_runners_on_one_account_cannot_claim_the_same_batch(tmp_path, monkey
 # 6. The gate itself.                                                          #
 # --------------------------------------------------------------------------- #
 
-def test_the_backlog_runner_ceiling_is_still_claude_only():
-    """The plan widens this ONLY after a real Codex session lands a real PR and
-    the sanitized evidence is recorded. Everything above is decidable offline;
-    that last step is not (constitution III), so the ceiling holds and this
-    assertion is what a future widening has to come back and change.
+def test_the_backlog_runner_ceiling_is_codex_allowed():
+    """Widened by the owner (#1264): everything decidable offline passes, and the
+    remaining live-boundary item — a real Codex session landing a real PR with
+    sanitized evidence recorded — was explicitly accepted as outstanding rather
+    than blocking the ceiling.
 
-    Widening it also requires answering the finding above: today the only mode a
-    Codex automation can complete in is ``bypassPermissions``, which is a
-    separate security decision from "may this origin run Codex".
+    Three independent gates still stand between this and an actual live Codex
+    launch, none of which this test flips: ``CCSWITCH_CODEX_AUTOMATIONS_ENABLED``
+    (global kill switch, default false), the automation's own ``engine`` config
+    opt-in (default Claude), and ``CCSWITCH_CODEX_UNATTENDED_NETWORK_OPT_IN``
+    (default false — without it, ``unattended_launch_blocker`` still refuses an
+    unattended Codex launch outright because ``full-auto`` cannot reach the
+    network).
     """
     from server.automations.registry import registry
 
-    assert registry.get("backlog-runner").engine_policy is EnginePolicy.CLAUDE_ONLY
+    assert registry.get("backlog-runner").engine_policy is EnginePolicy.CODEX_ALLOWED

@@ -36,16 +36,16 @@ def test_every_registered_origin_declares_its_audited_policy():
     """No implicit "any": every origin declares a policy, and this map is the
     reviewable record of which ones passed a Codex acceptance suite.
 
-    The two SDLC origins were widened to ``codex_allowed`` by #1265/#1266, and
-    the two PM session origins by #1268/#1269 — the *option*, not the traffic
-    (``default_engine`` still answers Claude, and both the automations kill
-    switch and the network opt-in ship off). Everything else is still
-    ``claude_only``: widening one is a one-line diff here."""
+    ``backlog-runner`` was widened to ``codex_allowed`` by #1264, the two SDLC
+    origins by #1265/#1266, and the two PM session origins by #1268/#1269 — the
+    *option*, not the traffic (``default_engine`` still answers Claude, and both
+    the automations kill switch and the network opt-in ship off). Everything
+    else is still ``claude_only``: widening one is a one-line diff here."""
     audited = audited_policy_map()
     assert set(audited) == {a.id for a in registry.all()}
     assert audited == {
         "pr-doctor": EnginePolicy.CLAUDE_ONLY,
-        "backlog-runner": EnginePolicy.CLAUDE_ONLY,
+        "backlog-runner": EnginePolicy.CODEX_ALLOWED,
         "autopilot": EnginePolicy.CLAUDE_ONLY,
         "cicd-doctor": EnginePolicy.CLAUDE_ONLY,
         "archive-audit": EnginePolicy.CLAUDE_ONLY,
@@ -129,13 +129,21 @@ def test_codex_only_origin_offers_codex_as_the_sole_choice():
     assert fields[ENGINE_CONFIG_KEY].default == "codex"
 
 
-def test_effective_config_schema_appends_engine_fields_without_dropping_any():
+def test_effective_config_schema_appends_nothing_for_a_claude_only_origin():
+    pr_doctor = registry.get("pr-doctor")
+    own = [f.key for f in pr_doctor.config_schema]
+    effective = [f.key for f in effective_config_schema(pr_doctor)]
+    assert effective == own
+
+
+def test_effective_config_schema_appends_engine_fields_for_an_audited_origin():
+    # backlog-runner is codex_allowed (#1264): its own schema is preserved in
+    # order, with the engine-selection fields appended after it.
     backlog = registry.get("backlog-runner")
     own = [f.key for f in backlog.config_schema]
     effective = [f.key for f in effective_config_schema(backlog)]
     assert effective[:len(own)] == own
-    # claude_only today, so nothing is appended.
-    assert effective == own
+    assert effective[len(own):] == ["engine", "codex_model", "codex_reasoning_effort"]
 
 
 # --------------------------------------------------------------------------- #

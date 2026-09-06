@@ -417,3 +417,124 @@ def test_bare_orchestrator_without_gate_surfaces_still_archives():
         await _drain()
         assert [a["session_id"] for a in archived] == ["s1"]
     asyncio.run(run())
+
+
+# --------------------------------------------------------- claim verification
+#
+# Prod 2026-09-06 (session fdc6b27a, cairnea/KinDash, goal "Ship PR adding persistent
+# color field per family member …"): the agent researched, wrote no code, recommended
+# a spec, offered to draft it, and ended with `<!-- ccswitch:no-pr -->`. The card read
+# "Complete" for the next eight minutes. Two holes: (1) the app-wide auto-archive
+# toggle was OFF, and the toggle gated the WHOLE readiness gate (question hold, bar,
+# classifier salvage, nudge), not just the archive; (2) even with it on, the marker's
+# own `not-needed` token satisfied the bar with high confidence.
+
+_CODE_GOAL = ("Ship PR adding persistent color field per family member with schema "
+              "migration and UI controls.")
+
+
+def _code_goal_rec(sid="s1", *, resolution=None, source=None):
+    rec = _rec(sid, origin=None)
+    rec.inferred_goal = _CODE_GOAL
+    rec.pr_resolution = resolution
+    rec.pr_resolution_source = source
+    rec.status = "complete"
+    return rec
+
+
+def _stub_intent(monkeypatch, verdict):
+    """Pin the PR-intent salvage classifier (never the real model in tests)."""
+    calls: list[str] = []
+
+    async def fake_classify(tail, goal, **kw):
+        calls.append(goal)
+        return verdict
+
+    monkeypatch.setattr("server.automations.pr_intent.classify_pr_intent", fake_classify)
+    return calls
+
+
+async def _settle(pred, timeout: float = 5.0) -> None:
+    """Wait until *pred()* holds instead of counting loop ticks. The claim-verification
+    path awaits more than ``_drain``'s fixed budget — ``_autopilot_resolve_pr_intent``
+    persists a confirmed verdict through ``db_session()``, a real round-trip whenever
+    another test file in the same xdist worker already initialised a DB — so a
+    tick-counting wait raced it (one local failure on 2026-09-06; green in CI)."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not pred():
+        if asyncio.get_running_loop().time() > deadline:
+            raise AssertionError("completion gate did not settle in time")
+        await asyncio.sleep(0.005)
+
+
+def test_global_disable_still_nudges_unmet_bar():
+    """Auto-archive OFF gates the archive step ONLY: a completed session that is not
+    actually done (open-unarmed PR) is still nudged toward the remaining work."""
+    async def run():
+        rec = _rec("s1", origin=None)
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=_unarmed_pr())
+
+        async def _disabled() -> bool:
+            return False
+
+        orch._read_auto_archive_enabled = _disabled  # type: ignore[method-assign]
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _drain()
+        assert archived == [], "global disable must block the completion archive"
+        assert nudged and "99" in nudged[0], "the readiness gate must still nudge"
+    asyncio.run(run())
+
+
+def test_global_disable_still_holds_open_question(monkeypatch):
+    """Auto-archive OFF must not bury a hand-back: a completion message that still
+    awaits the user flips to waiting_question exactly as it does with archive on."""
+    async def run():
+        rec = _rec("s1", origin=None)
+        orch, archived, nudged, statuses = _orch_question(
+            {"s1": rec}, _armed_pr(), awaits=True, monkeypatch=monkeypatch)
+
+        async def _disabled() -> bool:
+            return False
+
+        orch._read_auto_archive_enabled = _disabled  # type: ignore[method-assign]
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _drain()
+        assert archived == [] and nudged == []
+        assert statuses == [("s1", "waiting_question")]
+    asyncio.run(run())
+
+
+def test_self_declared_no_pr_on_code_goal_is_nudged_when_unverified(monkeypatch):
+    """A marker-sourced `not-needed` on a repo-attached code goal with zero PRs is a
+    claim: the salvage classifier judges it against the goal, and when it does NOT
+    confirm, the session is nudged (finish the work or ask the user) — not archived."""
+    from server.automations.pr_intent import PrIntentVerdict
+
+    async def run():
+        rec = _code_goal_rec(resolution="not-needed", source="marker")
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=None)
+        calls = _stub_intent(monkeypatch, PrIntentVerdict(False, "", "high"))
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _settle(lambda: bool(nudged or archived))
+        assert calls == [_CODE_GOAL], "the claim must be verified by the classifier"
+        assert archived == [], "an unverified self-declared no-PR is not the finished state"
+        assert nudged and "ask" in nudged[0].lower()
+        assert rec.pr_resolution == "not-needed" and rec.pr_resolution_source == "marker"
+    asyncio.run(run())
+
+
+def test_self_declared_no_pr_on_code_goal_archives_when_classifier_confirms(monkeypatch):
+    """When the classifier confirms the goal genuinely needed no code change, the
+    resolution is upgraded to a verified one and the session archives."""
+    from server.automations.pr_intent import PrIntentVerdict
+
+    async def run():
+        rec = _code_goal_rec(resolution="not-needed", source="marker")
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=None)
+        _stub_intent(monkeypatch, PrIntentVerdict(True, "not-needed", "high"))
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _settle(lambda: bool(archived or nudged))
+        assert [a["session_id"] for a in archived] == ["s1"]
+        assert nudged == []
+        assert rec.pr_resolution_source == "classifier"
+    asyncio.run(run())

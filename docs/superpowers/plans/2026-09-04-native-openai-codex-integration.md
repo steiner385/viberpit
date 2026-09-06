@@ -1102,7 +1102,13 @@ hosts but contains no account ids, tokens, prompts, commands, patches, or raw na
 - [x] Verify shared-account concurrent backlog sessions on different runners do not collide in auth,
   branch/worktree, origin refs, or quota handling.
 - [ ] Run one opt-in low-risk repository issue through a Codex session and record sanitized evidence.
-- [ ] Change only backlog runner's policy to `codex_allowed` after its acceptance suite passes.
+  Still outstanding; the owner explicitly accepted this gap to unblock the item below rather than
+  wait on it (#1264).
+- [x] Change only backlog runner's policy to `codex_allowed` after its acceptance suite passes.
+  Landed via #1264: the offline acceptance suite passes; the live-run item above remains open but is
+  no longer blocking. `CCSWITCH_CODEX_AUTOMATIONS_ENABLED`, the automation's own `engine` config
+  opt-in, and `CCSWITCH_CODEX_UNATTENDED_NETWORK_OPT_IN` all still default off, so this alone does not
+  start a live Codex launch.
 
 **Audit findings (blocking the two open items):**
 

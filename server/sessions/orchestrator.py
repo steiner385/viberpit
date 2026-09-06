@@ -3755,15 +3755,17 @@ class SessionOrchestrator:
         answer's turn can complete cleanly later, and no completion nudge is consumed
         (the cap bounds not-ready nudges — a held session did nothing wrong).
 
-        Before all of that, the app-wide kill switch: when a user has turned
-        auto-archive off globally, a completed session is left exactly as a
+        The app-wide kill switch gates the ARCHIVE step only. The question hold and
+        the readiness gate (bar → refresh → salvage → nudge) run regardless: they are
+        how a self-declared "Complete" is verified, and the toggle promises "keep it
+        on the dashboard", not "take the agent's word for it". Prod 2026-09-06
+        (fdc6b27a): with the toggle off, a research-only reply on an implement goal
+        sat at Complete for eight minutes because the whole gate was skipped. When
+        the bar is met and archiving is off, the session is left exactly as a
         per-session manual opt-out would be — no archive, no nudge, no status flip
-        (its driver was already released by ``_persist_status``). The guard is
+        (its driver was already released by ``_persist_status``); the guard is
         cleared so re-enabling the setting and a later ``complete`` can retry."""
-        if not await self._read_auto_archive_enabled():
-            self._auto_archiving.discard(session_id)
-            log.info("completion.autoarchive_disabled sid=%s", session_id)
-            return
+        archive_enabled = await self._read_auto_archive_enabled()
         rec = self._records.get(session_id)
         origin = getattr(rec, "origin", None) if rec is not None else None
         try:
@@ -3787,8 +3789,12 @@ class SessionOrchestrator:
             pr = self._autopilot_pr_facts(rec)
             initial_prompt = getattr(rec, "initial_prompt", None)
             resolution = getattr(rec, "pr_resolution", None)
+            # Provenance matters: a marker-sourced not-needed on a code goal is the
+            # session's own claim and does not satisfy the bar until the salvage
+            # classifier below confirms it (is_unverified_self_resolution).
+            source = getattr(rec, "pr_resolution_source", None)
             verdict = met_bar(goal_text, goal_source, pr, resolution,
-                              instructions=initial_prompt)
+                              pr_resolution_source=source, instructions=initial_prompt)
             if not verdict.met:
                 # Verify-before-directing: the cached PR facts may lag a just-armed PR.
                 # Refresh once (a no-op without a poller), then re-judge.
@@ -3796,17 +3802,22 @@ class SessionOrchestrator:
                 if refreshed is not None:
                     pr = refreshed
                     verdict = met_bar(goal_text, goal_source, pr, resolution,
+                                      pr_resolution_source=source,
                                       instructions=initial_prompt)
                 # Salvage the low-confidence "code goal but no PR" case: a research/Q&A
-                # session that legitimately opens no PR shouldn't be nudged to open one.
+                # session that legitimately opens no PR shouldn't be nudged to open one,
+                # and a self-declared no-PR is verified (or not) against the goal here.
                 if not verdict.met and verdict.confidence == "low":
                     try:
                         tail = await self._autopilot_transcript_tail(session_id)
                         resolution = await self._autopilot_resolve_pr_intent(
                             rec, goal_text, goal_source, pr, tail)
                         if resolution:
-                            verdict = met_bar(goal_text, goal_source, pr, resolution,
-                                              instructions=initial_prompt)
+                            verdict = met_bar(
+                                goal_text, goal_source, pr, resolution,
+                                pr_resolution_source=getattr(
+                                    rec, "pr_resolution_source", None),
+                                instructions=initial_prompt)
                     except Exception:  # pragma: no cover — salvage is best-effort
                         log.debug("completion.intent_salvage_failed sid=%s",
                                   session_id, exc_info=True)
@@ -3852,6 +3863,12 @@ class SessionOrchestrator:
                 "goal_source": "completion",
                 "reason": "completion marker — goal met",
             }
+        # The bar is met (or there is nothing to judge). Archiving is the one step the
+        # app-wide toggle owns: off → leave the session on the dashboard, guard cleared.
+        if not archive_enabled:
+            self._auto_archiving.discard(session_id)
+            log.info("completion.autoarchive_disabled sid=%s", session_id)
+            return
         # Provenance: keep backlog-runner's existing tag; everything else is 'completion'.
         # Both are in AUTO_ARCHIVE_PROVENANCE, so the retro audit + reversal-learning
         # cover completion archives too.
@@ -6663,11 +6680,21 @@ class SessionOrchestrator:
     async def _autopilot_resolve_pr_intent(self, rec, goal_text, goal_source,
                                            pr_facts, transcript_tail) -> "str | None":
         """Durable PR-resolution for a governed session. Returns the record's stored
-        value if set; else, ONLY on the 'code goal but no PR' met_bar branch, runs the
-        gated Haiku classifier and persists a high-confidence 'resolved' verdict.
-        Any classifier failure returns None (autopilot falls back to its normal nudge)."""
+        value if set AND trustworthy; else, ONLY on the 'code goal but no PR' met_bar
+        branch, runs the gated Haiku classifier and persists a high-confidence
+        'resolved' verdict. Any classifier failure returns None (autopilot falls back
+        to its normal nudge).
+
+        A stored value is NOT trustworthy when it is the session's own no-PR marker on
+        a repo-attached code goal (``is_unverified_self_resolution``): that is the
+        claim this classifier exists to verify, so it runs here instead of being
+        short-circuited by the claim itself. A confirmation upgrades the source to
+        ``classifier``; a non-confirmation returns None and leaves the marker token
+        in place for audit (the bar then lands on its self-declared nudge branch)."""
+        from server.automations.completion_bar import is_unverified_self_resolution
         existing = getattr(rec, "pr_resolution", None)
-        if existing:
+        if existing and not is_unverified_self_resolution(
+                goal_text, pr_facts, existing, getattr(rec, "pr_resolution_source", None)):
             return existing
         # Only classify a session that has self-declared done (emitted the completion
         # marker → status "complete"). For any still-active status the low-confidence
