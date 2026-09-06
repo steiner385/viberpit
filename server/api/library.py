@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from ccswitch import brand
 from server.audit import record_audit
 from server.auth.middleware import current_identity
+from server.codex.capabilities import CODEX_CAPABILITIES, CODEX_LIBRARY_UNSUPPORTED_DETAIL
 from server.db import get_db
 from server.library import mutate, scan
 from server.library.mutate import ConfigUnreadableError
@@ -26,8 +27,33 @@ from server.library.names import (
     valid_skill_name,
 )
 from server.mcp_auth import McpAuthBusy
+from server.sessions.claude_driver import ClaudeAgentDriver
 
 router = APIRouter(prefix="/api/library", tags=["library"])
+
+
+@router.get("/engines")
+async def get_library_engine_support(_identity: str = Depends(current_identity)) -> dict:
+    """Which engines' shared configuration this Library surface manages.
+
+    A static per-engine fact, not a live probe: `/plugins`, `/skills`,
+    `/commands` and `/mcp` above always scan Claude's shared config directory
+    (`CLAUDE_CONFIG_DIR`) and nothing else. Codex isolates each account's
+    configuration under a credential-authority-owned `CODEX_HOME` instead
+    (see `server/codex/capabilities.py`), so there is no shared, scannable
+    surface for it here — `supported: false` reports that honestly rather than
+    a consumer inferring "no Codex data" from an empty or missing response.
+    """
+    return {
+        "claudeCode": {"supported": ClaudeAgentDriver.capabilities.library_management},
+        "codex": {
+            "supported": CODEX_CAPABILITIES.library_management,
+            "detail": (
+                None if CODEX_CAPABILITIES.library_management
+                else CODEX_LIBRARY_UNSUPPORTED_DETAIL
+            ),
+        },
+    }
 
 
 class ToggleBody(BaseModel):

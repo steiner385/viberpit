@@ -161,6 +161,10 @@ class ClaudeAgentDriver:
         # marker/tool instructions) and `mcp_servers` overlay again — unlike
         # Codex's `thread/resume`, nothing declared at session start is lost.
         durable_tool_surface=True,
+        # The Library surface scans/mutates CLAUDE_CONFIG_DIR directly
+        # (server/library/scan.py, mutate.py) — Claude's shared config
+        # directory, not a per-session concept.
+        library_management=True,
     )
 
     def __init__(self, session_id, account, cwd, config_dir, *, mode, sdk_factory, registry,

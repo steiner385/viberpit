@@ -10,6 +10,7 @@ from server.codex import schema
 from server.codex.capabilities import (
     CODEX_CAPABILITIES,
     CODEX_ENGINE,
+    CODEX_LIBRARY_UNSUPPORTED_DETAIL,
     NO_CAPABILITIES,
     CodexAvailability,
     CodexUnavailableReason,
@@ -30,6 +31,7 @@ def test_capability_set_covers_every_declared_field():
         "questions", "fork", "adopt", "self_model_switch", "subagents", "attachments",
         "account_rotation", "account_switch_new_thread",
         "vendor_commands", "vendor_skills", "durable_tool_surface",
+        "library_management",
     }
 
 
@@ -80,6 +82,10 @@ def test_codex_advertises_the_planned_controls():
     # False rather than borrow Claude's slash syntax (#1286).
     assert CODEX_CAPABILITIES.vendor_commands
     assert CODEX_CAPABILITIES.vendor_skills
+    # Deferred by design (#1285): CODEX_HOME is credential-authority-owned and
+    # per-account, never a shared directory the Library surface could scan.
+    assert not CODEX_CAPABILITIES.library_management
+    assert "CODEX_HOME" in CODEX_LIBRARY_UNSUPPORTED_DETAIL
 
 
 def test_no_capabilities_is_all_false():

@@ -135,6 +135,24 @@ CODEX_CAPABILITIES: Final[AgentCapabilities] = AgentCapabilities(
     # contract instead; this flips True on its own once the vendor contract
     # carries both fields on resume.
     durable_tool_surface=False,
+    # Deferred by design (docs/superpowers/specs/2026-09-04-native-openai-codex-
+    # integration-design.md §11.2), not merely unimplemented: each Codex
+    # account's configuration lives under a credential-authority-owned
+    # CODEX_HOME (server/codex/process.py), never a shared directory the way
+    # CLAUDE_CONFIG_DIR is, so ccswitch's Library surface has nothing analogous
+    # to scan or mutate there. See CODEX_LIBRARY_UNSUPPORTED_DETAIL (#1285).
+    library_management=False,
+)
+
+#: Human-readable reason the Library surface (`GET /api/library/engines`)
+#: reports for Codex's `library_management=False` — see the comment above
+#: `CODEX_CAPABILITIES` for why this is a scope decision, not a probe result.
+CODEX_LIBRARY_UNSUPPORTED_DETAIL: Final = (
+    "Codex configuration-library management is deferred (design doc "
+    "docs/superpowers/specs/2026-09-04-native-openai-codex-integration-design.md "
+    "§ 11.2). Each Codex account's configuration lives under a "
+    "credential-authority-owned CODEX_HOME rather than a shared, scannable "
+    "directory, so ccswitch's Library surface neither reads nor writes it."
 )
 
 #: What an unavailable engine advertises. Not "unknown" — *nothing*.

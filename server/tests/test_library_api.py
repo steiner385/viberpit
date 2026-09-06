@@ -38,6 +38,16 @@ def test_plugins_list_and_toggle(client: TestClient):
                         headers=IDENTITY_HEADERS).status_code == 400
 
 
+def test_engine_support_reports_claude_yes_codex_deferred(client: TestClient):
+    """#1285 — the Library surface only ever scans CLAUDE_CONFIG_DIR; a consumer
+    must be told that plainly rather than inferring it from an empty Codex
+    result."""
+    out = client.get("/api/library/engines", headers=IDENTITY_HEADERS).json()
+    assert out["claudeCode"] == {"supported": True}
+    assert out["codex"]["supported"] is False
+    assert "CODEX_HOME" in out["codex"]["detail"]
+
+
 def test_skill_crud_roundtrip(client: TestClient):
     r = client.put("/api/library/skills/my-skill", json={"content": "hello\n"},
                    headers=IDENTITY_HEADERS)
