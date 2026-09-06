@@ -3706,6 +3706,14 @@ class SessionOrchestrator:
         race; (2) a prose question in the last assistant message, judged by the gated
         LLM classifier (heuristic degrade) AFTER stripping the completion markers —
         the marker trails the message, so it masks a closing "?" from any tail check.
+
+        The prose text is read differently per engine: ``transcript_path`` only ever
+        resolves for Claude (Codex keeps no JSONL — see its docstring), so a Codex
+        session falls back to the driver's in-memory turn buffer, extracted the same
+        way ``suggestions.last_turn_context`` does for idle-suggestion seeding. Both
+        feed the SAME classifier below. Without this fallback, Codex's structurally
+        false ``pending_question`` (no AskUserQuestion equivalent) combined with a
+        None transcript path left it with NO prose safeguard at all.
         Raises only to the caller's best-effort catch (reads as 'no question')."""
         driver = getattr(self, "_drivers", {}).get(session_id)
         if driver is not None:
@@ -3716,13 +3724,18 @@ class SessionOrchestrator:
             except Exception:
                 log.debug("completion.question_signals_failed sid=%s",
                           session_id, exc_info=True)
-        tpath = self.transcript_path(session_id)
-        if not tpath:
-            return False
-        from .background_tasks import last_assistant_text
         from .completion import strip_markers
         from .open_question import completion_awaits_user
-        text = strip_markers(last_assistant_text(tpath))
+        tpath = self.transcript_path(session_id)
+        if tpath:
+            from .background_tasks import last_assistant_text
+            text = strip_markers(last_assistant_text(tpath))
+        elif driver is not None:
+            from .suggestions import last_turn_context
+            _, assistant_text = last_turn_context(list(getattr(driver, "_turn_buffer", [])))
+            text = strip_markers(assistant_text)
+        else:
+            return False
         if not text:
             return False
         rec = self._records.get(session_id)
