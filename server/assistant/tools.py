@@ -15,13 +15,14 @@ from urllib.parse import urlparse
 from claude_agent_sdk import SdkMcpTool, tool
 from mcp.types import ToolAnnotations
 
+from ccswitch import brand
 from server.obs.metrics import assistant_gap_reports_total, assistant_tool_calls_total
 
 from .client import AssistantApi, AssistantApiError
 
 log = logging.getLogger(__name__)
 
-MCP_PREFIX = "mcp__ccswitch__"
+MCP_PREFIX = brand.MCP_TOOL_PREFIX
 
 
 class ToolClass(str, Enum):

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ccswitch import brand
 from .prompt import (ASSISTANT_SYSTEM_PROMPT, OPERATOR_TOOLS_DISABLED_LINE,
                      OPERATOR_TOOLS_ENABLED_LINE)
 
@@ -62,7 +63,7 @@ def assistant_options(*, server: Any, max_turns: int, model: str,
             OPERATOR_TOOLS_ENABLED_LINE if operator else OPERATOR_TOOLS_DISABLED_LINE),
         "tools": [],
         "disallowed_tools": list(DISALLOWED_BUILTINS),
-        "mcp_servers": {"ccswitch": server},
+        "mcp_servers": {brand.MCP_SERVER_NAME: server},
         # Hide the account's own configured MCP servers (the operator has ~10).
         "strict_mcp_config": True,
         "max_turns": max_turns,

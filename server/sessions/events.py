@@ -4,6 +4,8 @@ from enum import Enum
 import time
 from typing import TYPE_CHECKING
 
+from ccswitch import brand
+
 if TYPE_CHECKING:
     # Typing-only, so this module's runtime imports stay stdlib-only. PromptContext is
     # a leaf TypedDict (server/assistant/context.py imports nothing from
@@ -31,7 +33,7 @@ _TOOL_KIND = {
 # presenter can render "Listed sessions" instead of the raw mcp__ name and the
 # permission card can apply its non-grantable-destructive rule (spec §4.4).
 # Checked before the generic "mcp__" branch so it wins the more specific match.
-_APP_ACTION_PREFIX = "mcp__ccswitch__"
+_APP_ACTION_PREFIX = brand.MCP_TOOL_PREFIX
 
 def tool_kind(name: str) -> ToolKind:
     # MCP tools are namespaced `mcp__<server>__<tool>`; the server/tool parts are
