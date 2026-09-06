@@ -3422,17 +3422,23 @@ class SessionOrchestrator:
                 .values(name=name, name_is_auto=False)
             )
 
-    async def _persist_status(self, session_id: str, status: str) -> None:
+    async def _persist_status(self, session_id: str, status: str) -> str:
         """Driver ``on_status`` callback: persist the derived dashboard status.
 
         Updates the in-memory record (which the dashboard's 5s poll reads) and the DB
         row. Never downgrades a terminal ``ended`` status. When a turn finishes
         (``done``), opportunistically refresh the auto-name from Claude's title.
+
+        Returns the FINAL effective status — after the parked/prose overlays below
+        and the ``ended`` guard — so the driver's ``_emit_status`` broadcasts the
+        same value on the live in-session stream. Persisting one status while the
+        driver emitted another was the "card says Answer needed, open session says
+        Your turn" mismatch.
         """
         from server.sessions.status import ACTIVITY_STATUSES
         rec = self._records.get(session_id)
         if rec is not None and rec.status == "ended":
-            return
+            return "ended"
         # A "switch after this turn" model change is in force once the turn is over.
         self._settle_model_pending(session_id, status)
         self._maybe_handle_model_request(session_id, status)
@@ -3444,7 +3450,7 @@ class SessionOrchestrator:
         # (ended) and every other status still persist during shutdown.
         if status == "needs_attention" and self._shutting_down:
             log.info("persist.skip_needs_attention_during_shutdown session=%s", session_id)
-            return
+            return status
         # Overlay: a turn that finished (`done`) but left the agent parked on an external
         # event — an open background task or an armed self-scheduled wakeup — is "Waiting…",
         # not "Your turn". Computed here (not in the pure `derive_status`) because it needs
@@ -3620,6 +3626,7 @@ class SessionOrchestrator:
         # (WS-attach-reentrant).
         if status in CAPACITY_EXEMPT_STATUSES and status != "queued":
             self._spawn(self._maybe_start_queued(), name="queue-drain-on-status")
+        return status
 
     def _maybe_autoarchive_completed(self, session_id: str, status: str, rec) -> None:
         """Schedule a completion auto-archive for ANY session that self-declares done.
@@ -9640,6 +9647,13 @@ class SessionOrchestrator:
             # the existing accounting is simply true again (one source of truth).
             if rec.status == "complete":
                 await self._exit_complete_on_resume(session_id, rec)
+            # Seed the rebuilt driver's status snapshot from the persisted record so
+            # the WS-attach status frame agrees with the session card (an "Answer
+            # needed" card must not open to a freshly-derived "Ready"). After the
+            # complete→done landing above so the seed matches what the card now
+            # shows. seed_status ignores statuses that can't be true on a fresh
+            # driver, and the first real emit supersedes it.
+            driver.seed_status(rec.status)
             await self._maybe_rearm_on_attach(session_id)
             log.info("session.resume id=%s resume=%s", session_id, resume or "<fresh>")
             return driver
