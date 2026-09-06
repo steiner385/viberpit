@@ -1,6 +1,11 @@
 import { render, screen } from '@testing-library/react'
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { Composer } from '../Composer'
+
+// Composer looks up the session's engine (for attachment gating) via the
+// sessions list cache; no test here passes a sessionId that resolves, so an
+// empty list keeps `engine` undefined (unrestricted) for every case.
+vi.mock('@/api/hooks', () => ({ useSessions: () => ({ data: [] }) }))
 
 describe('Composer queued strip', () => {
   it('renders queued item text and image thumbnails', () => {

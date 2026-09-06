@@ -2,6 +2,11 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { Composer } from '../Composer'
 
+// Composer looks up the session's engine (for attachment gating) via the
+// sessions list cache; no test here passes a sessionId that resolves, so an
+// empty list keeps `engine` undefined (unrestricted) for every case.
+vi.mock('@/api/hooks', () => ({ useSessions: () => ({ data: [] }) }))
+
 beforeEach(() => {
   localStorage.clear()
   URL.createObjectURL = vi.fn(() => 'blob:p')

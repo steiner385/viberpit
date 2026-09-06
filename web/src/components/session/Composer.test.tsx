@@ -3,6 +3,11 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { Composer } from './Composer'
 import { QUICK_REPLIES } from '@/lib/quickReplies'
 
+// Composer looks up the session's engine (for attachment gating) via the
+// sessions list cache; no test here passes a sessionId that resolves, so an
+// empty list keeps `engine` undefined (unrestricted) for every case.
+vi.mock('@/api/hooks', () => ({ useSessions: () => ({ data: [] }) }))
+
 function defaultProps(overrides: Partial<Parameters<typeof Composer>[0]> = {}): Parameters<typeof Composer>[0] {
   return {
     status: { state: 'idle', count: 0 },
