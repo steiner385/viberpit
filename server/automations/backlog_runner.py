@@ -144,10 +144,19 @@ class BacklogRunner:
     name = "Backlog Runner"
     description = "Continuously implements high-priority backlog issues into reviewed-ready PRs."
     modes: tuple[str, ...] = ("off", "propose", "auto")
-    # Audited engine ceiling (Phase 7, Task 7.1). This origin has no Codex
-    # acceptance evidence, so it launches Claude only. Widening it is a
-    # reviewable one-line change gated on its acceptance suite passing.
-    engine_policy: EnginePolicy = EnginePolicy.CLAUDE_ONLY
+    # Audited engine ceiling (Phase 7, Task 7.1; widened Task 7.2/#1264). The
+    # offline acceptance suite (server/tests/test_backlog_runner_codex_acceptance.py)
+    # passes: prompt contract, claim/spawn/reconcile state machine, refusal
+    # handling, and shared-account concurrency are all covered. The suite's own
+    # last item — a live Codex session landing a real PR in a disposable repo —
+    # is explicitly NOT covered here; the owner reviewed that gap and accepted
+    # it to widen this ceiling now rather than block on it (#1264). Three
+    # independent gates still stand between this and a live Codex launch:
+    # CCSWITCH_CODEX_AUTOMATIONS_ENABLED (default false, global kill switch),
+    # this automation's own `engine` config opt-in (default "claude"), and
+    # CCSWITCH_CODEX_UNATTENDED_NETWORK_OPT_IN (default false, required for an
+    # unattended Codex session to reach the network at all).
+    engine_policy: EnginePolicy = EnginePolicy.CODEX_ALLOWED
     config_schema = [
         ConfigField(key="enabled_repos", label="Repositories", type="repo-multiselect",
                     default=[], help="Repos to draw issues from (empty = all)."),

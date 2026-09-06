@@ -528,11 +528,13 @@ def test_stage_dedupe_is_engine_blind_so_flipping_the_engine_cannot_double_propo
 def test_the_build_handoff_crosses_engines_because_it_is_an_issue_not_a_session():
     """#1266's "mixed-engine build handoff" criterion.
 
-    The front chain can run on Codex while ``backlog-runner`` is still
-    ``claude_only``, and that is not a mismatch to reconcile: the Build stage
-    hands over the initiative's underlying GitHub *issue*, so the receiving
-    origin resolves its own engine under its own ceiling. Nothing about the
-    handoff carries the producing session or its engine."""
+    The front chain's engine and ``backlog-runner``'s ceiling are independently
+    decided (backlog-runner was itself later widened to ``codex_allowed`` by
+    #1264, on its own acceptance suite), and that independence is not a mismatch
+    to reconcile: the Build stage hands over the initiative's underlying GitHub
+    *issue*, so the receiving origin resolves its own engine under its own
+    ceiling. Nothing about the handoff carries the producing session or its
+    engine."""
     from server.automations.registry import registry
     from server.sdlc.engine import HandoffToBuild, InitiativeView, next_action
 
@@ -542,7 +544,7 @@ def test_the_build_handoff_crosses_engines_because_it_is_an_issue_not_a_session(
         [], "auto", {})
     assert action == HandoffToBuild("o/r#42")
     # The receiving origin's ceiling is independent of the SDLC ones.
-    assert registry.get("backlog-runner").engine_policy is EnginePolicy.CLAUDE_ONLY
+    assert registry.get("backlog-runner").engine_policy is EnginePolicy.CODEX_ALLOWED
 
 
 def test_a_proposed_artifact_survives_a_restart_without_re_proposing():
