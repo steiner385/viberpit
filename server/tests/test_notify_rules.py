@@ -1,7 +1,7 @@
 """Unit tests for the pure notification routing engine (#602)."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from server.sessions.notify_rules import (
     EVENT_CLASSES,
@@ -28,6 +28,9 @@ def _rule(
     critical=False,
     priority=100,
     created_at="2024-01-01T00:00:00",
+    once=False,
+    owner_session_id=None,
+    expires_at=None,
 ) -> RuleView:
     return RuleView(
         id=id,
@@ -41,6 +44,9 @@ def _rule(
         critical=critical,
         priority=priority,
         created_at=created_at,
+        once=once,
+        owner_session_id=owner_session_id,
+        expires_at=expires_at,
     )
 
 
@@ -106,6 +112,35 @@ def test_select_rule_returns_none_when_no_match():
     assert select_rule([_rule(event_class="pr_merged")], _ev("needs_input")) is None
 
 
+def test_rule_view_watch_fields_default_to_unset():
+    r = _rule()
+    assert r.once is False
+    assert r.owner_session_id is None
+    assert r.expires_at is None
+
+
+def test_select_rule_skips_expired_when_now_given():
+    now = datetime(2024, 1, 1, 12, 0)
+    expired = _rule(id="expired", priority=1, expires_at=now - timedelta(hours=1))
+    live = _rule(id="live", priority=100)
+    chosen = select_rule([expired, live], _ev(), now=now)
+    assert chosen is not None and chosen.id == "live"
+
+
+def test_select_rule_keeps_expired_rule_when_now_omitted():
+    # Back-compat: existing callers that don't pass `now` never filter by expiry.
+    expired = _rule(id="expired", priority=1, expires_at=datetime(2000, 1, 1))
+    chosen = select_rule([expired], _ev())
+    assert chosen is not None and chosen.id == "expired"
+
+
+def test_select_rule_keeps_rule_expiring_exactly_now():
+    now = datetime(2024, 1, 1, 12, 0)
+    at_now = _rule(id="at-now", expires_at=now)
+    chosen = select_rule([at_now], _ev(), now=now)
+    assert chosen is not None and chosen.id == "at-now"
+
+
 # --------------------------------------------------------------------------- #
 # plan: empty vs unmatched vs matched                                         #
 # --------------------------------------------------------------------------- #
@@ -135,6 +170,12 @@ def test_plan_push_delivers():
 def test_plan_channel_carries_channel_id():
     d = plan(_ev(), [_rule(action="channel", channel_id="c9")], None, None, NOW)
     assert d.action == "channel" and d.deliver is True and d.channel_id == "c9"
+
+
+def test_plan_skips_expired_watch_rule():
+    expired = _rule(action="channel", channel_id="watch", expires_at=NOW - timedelta(hours=1))
+    d = plan(_ev(), [expired], None, None, NOW)
+    assert d.action == "ignore" and d.deliver is False
 
 
 # --------------------------------------------------------------------------- #
